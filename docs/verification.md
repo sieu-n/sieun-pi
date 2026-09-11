@@ -27,8 +27,19 @@ OS clipboard, file-picker dialogs, mobile visuals and authenticated Claude compa
 
 Application follow-up run `34590417976` passed all JS checks and Python typechecks. Only crawler lint remained red.
 Git and prior-run evidence attribute those diagnostics to prior or concurrent crawler changes. Their owners were notified where inbox delivery allowed.
-Global profile apply, legacy Virev retirement and idle-root reload remain pending.
-Fresh protected-state fingerprints are required before that live apply.
+The reviewed live plan changed seven targets and verified all 67 managed targets plus the existing pool bundle patches.
+All six fresh protected-state fingerprints matched after apply, native loading and idle-root reload.
+The live-profile loader found 81 skills: 51 managed definitions and 30 repository skills.
+It registered all four commands once each, with no status command or `context` handler, across two reloads.
+Its provider checks made zero network calls.
+Three roots passed current-idle checks and completed native resource reload. Their command catalogs then resolved through user-global paths.
+No workers were restarted. A fresh live repeat plan reported zero changes.
+
+The UI commit `52ee0a4f273d4ba9564c38f8819adde951fce941` also passed anonymous Git installation and the installed native proof.
+Its isolated profile was removed through the receipt. The proof fixture needs a Git boundary to exclude ancestor host skills.
+Application legacy retirement is commit `b9bc5f64687f0dbc5959224c709229fb543a6381`.
+Final [Actions run `34592276762`](https://github.com/sieu-n/auto-sns-agent/actions/runs/34592276762) passed at that retirement commit.
+It passed JS checks, Python lint/typechecks/unit tests, and the configured PostgreSQL integration and replay tests.
 
 ## Historical migration, September 10
 
