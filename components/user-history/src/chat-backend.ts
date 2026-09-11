@@ -1,4 +1,5 @@
-import { DaemonAgentConnection, DaemonClient, SessionManager, defaultDaemonSocketPath } from "prime-agent";
+import { DaemonAgentConnection, DaemonClient, SessionManager, defaultDaemonSocketPath, type SessionSummary } from "prime-agent";
+import { parseChatImages, sanitizeNativeImages, type ChatImage } from "./chat-images.ts";
 
 export interface ChatSession {
   sessionId: string;
@@ -16,24 +17,49 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   streaming: boolean;
+  images: ChatImage[];
 }
+
+type NativeModel = Awaited<ReturnType<DaemonAgentConnection["setModel"]>>;
+type NativeState = Awaited<ReturnType<DaemonAgentConnection["getState"]>>;
+type NativeQueue = Awaited<ReturnType<DaemonAgentConnection["getQueue"]>>;
+type NativeUsageSummary = NonNullable<SessionSummary["usage"]>;
+type ChatContextUsage = NonNullable<NativeState["contextUsage"]> | null;
+
+export type ChatModel = Pick<NativeModel, "provider" | "id" | "name" | "contextWindow" | "input">;
+
+export interface ChatModelCatalog {
+  sessionId: string;
+  models: ChatModel[];
+  configuredProviders: string[];
+}
+
+export type ChatUsage =
+  | (NativeUsageSummary & { kind: "native-session"; context: ChatContextUsage; providerLimits: "unavailable" })
+  | { kind: "unavailable"; reason: "not-recorded"; context: ChatContextUsage; providerLimits: "unavailable" };
 
 export interface ChatView {
   session: ChatSession;
   messages: ChatMessage[];
   queueCount: number;
+  controls:
+    | { kind: "live"; currentModel: ChatModel | null; canChangeModel: boolean }
+    | { kind: "saved"; currentModel: null; canChangeModel: false };
+  usage: ChatUsage;
 }
 
 export interface ChatBackend {
   list(): Promise<ChatSession[]>;
   read(sessionId: string): Promise<ChatView>;
-  send(input: { sessionId: string; message: string }): Promise<void>;
+  models(sessionId: string): Promise<ChatModelCatalog>;
+  setModel(input: { sessionId: string; provider: string; modelId: string }): Promise<ChatModel>;
+  send(input: { sessionId: string; message: string; images?: ChatImage[] }): Promise<void>;
   close(): Promise<void>;
 }
 
-type CatalogRow =
-  | { kind: "live"; session: ChatSession; activeSessionId: string }
-  | { kind: "saved"; session: ChatSession; sessionFile: string | undefined };
+type CatalogRow = { session: ChatSession; usage: NativeUsageSummary | null } & (
+  | { kind: "live"; activeSessionId: string }
+  | { kind: "saved"; sessionFile: string | undefined });
 type NativeMessage = Awaited<ReturnType<DaemonAgentConnection["getMessages"]>>[number];
 type NativeTree = Awaited<ReturnType<DaemonAgentConnection["getSessionTree"]>>;
 type NativeEntry = NativeTree["tree"][number]["entry"];
@@ -46,6 +72,30 @@ type CachedConnection = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function usageSummary(value: unknown): NativeUsageSummary | null {
+  if (!isRecord(value)) return null;
+  const { inputTokens, outputTokens, cost } = value;
+  if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens) || inputTokens < 0 ||
+    typeof outputTokens !== "number" || !Number.isFinite(outputTokens) || outputTokens < 0 ||
+    typeof cost !== "number" || !Number.isFinite(cost) || cost < 0) return null;
+  return { inputTokens, outputTokens, cost };
+}
+
+function chatUsage(usage: NativeUsageSummary | null, context: ChatContextUsage): ChatUsage {
+  return usage ? { kind: "native-session", ...usage, context, providerLimits: "unavailable" }
+    : { kind: "unavailable", reason: "not-recorded", context, providerLimits: "unavailable" };
+}
+
+function chatModel(model: NativeModel): ChatModel {
+  return { provider: model.provider, id: model.id, name: model.name, contextWindow: model.contextWindow,
+    input: [...model.input] };
+}
+
+function isBusy(state: NativeState, queue: NativeQueue): boolean {
+  return state.isStreaming || state.isBashRunning || state.isCompacting || state.retryAttempt > 0 ||
+    state.sessionActions.queuedCount > 0 || queue.steering.length > 0 || queue.followUp.length > 0;
 }
 
 function catalogRows(value: unknown): CatalogRow[] {
@@ -69,17 +119,23 @@ function catalogRows(value: unknown): CatalogRow[] {
       ...(isRecord(row.model) && typeof row.model.provider === "string" && typeof row.model.id === "string"
         ? { model: `${row.model.provider}/${row.model.id}` } : {}),
     };
+    const usage = usageSummary(row.usage);
     return activeSessionId === undefined
-      ? { kind: "saved", session, sessionFile: typeof row.sessionFile === "string" ? row.sessionFile : undefined }
-      : { kind: "live", session, activeSessionId };
+      ? { kind: "saved", session, usage, sessionFile: typeof row.sessionFile === "string" ? row.sessionFile : undefined }
+      : { kind: "live", session, usage, activeSessionId };
   });
 }
 
 function chatMessage(id: string, message: NativeMessage, streaming = false): ChatMessage[] {
   if (message.role !== "user" && message.role !== "assistant") return [];
-  const text = typeof message.content === "string" ? message.content : message.content.flatMap(part =>
-    part.type === "text" ? [part.text] : part.type === "image" ? ["[Saved image]"] : []).join("\n\n");
-  return text.trim() ? [{ id, role: message.role, text, streaming }] : [];
+  const images = sanitizeNativeImages(message);
+  const body = typeof message.content === "string" ? message.content : message.content.flatMap(part =>
+    part.type === "text" ? [part.text] : []).join("\n\n");
+  const omittedImageCount = typeof message.content === "string" ? 0
+    : message.content.filter(part => part.type === "image").length - images.length;
+  const text = [body, ...Array.from({ length: omittedImageCount }, () => "[Saved image]")]
+    .filter(part => part.length > 0).join("\n\n");
+  return text.trim() || images.length ? [{ id, role: message.role, text, streaming, images }] : [];
 }
 
 function branchFromTree({ tree, leafId }: NativeTree): NativeEntry[] {
@@ -202,6 +258,7 @@ export async function createChatBackend(options: { socketPath?: string } = {}): 
         manager.setSessionFile(row.sessionFile);
         if (manager.getSessionId() !== sessionId) throw new Error("The saved session is missing or has changed");
         return { session: row.session, queueCount: 0,
+          controls: { kind: "saved", currentModel: null, canChangeModel: false }, usage: chatUsage(row.usage, null),
           messages: manager.getBranch().flatMap(entry => entry.type === "message" ? chatMessage(entry.id, entry.message) : []) };
       }
       return withConnection(row, async connection => {
@@ -219,18 +276,58 @@ export async function createChatBackend(options: { socketPath?: string } = {}): 
           "timestamp" in entry.message && "timestamp" in streaming && entry.message.timestamp === streaming.timestamp)) {
           messages.push(...chatMessage(`streaming:${sessionId}`, streaming, true));
         }
+        const currentModel = snapshot.state.model ? chatModel(snapshot.state.model) : null;
+        const busy = isBusy(snapshot.state, queue);
         return { session: { ...row.session, name: snapshot.state.sessionName ?? row.session.name,
-          status: snapshot.state.isStreaming || snapshot.state.isBashRunning || snapshot.state.isCompacting ? "running" : row.session.status },
+          ...(currentModel ? { model: `${currentModel.provider}/${currentModel.id}` } : {}),
+          status: busy ? "running" : "idle" },
+          controls: { kind: "live", currentModel, canChangeModel: row.session.canSend && !busy },
+          usage: chatUsage(row.usage, snapshot.state.contextUsage ?? null),
           messages, queueCount: queue.steering.length + queue.followUp.length };
       });
     },
-    async send({ sessionId, message }) {
-      if (!message.trim()) throw new Error("Enter a message before sending");
+    async models(sessionId) {
+      const row = await resolve(sessionId);
+      if (row.kind !== "live") throw new Error("Resume this session in Prime Agent before choosing a model");
+      return withConnection(row, async connection => {
+        const catalog = await connection.getModelCatalog();
+        const header = await connection.getSessionHeader();
+        if (header?.id !== sessionId) throw new Error("The live session changed. Refresh the session list.");
+        return { sessionId, models: catalog.models.map(chatModel), configuredProviders: catalog.configuredProviders };
+      });
+    },
+    async setModel({ sessionId, provider, modelId }) {
+      if (!provider.trim() || !modelId.trim()) throw new Error("Choose a provider and model");
+      const row = await resolve(sessionId);
+      if (row.kind !== "live" || !row.session.canSend) {
+        throw new Error("Resume this session in Prime Agent before changing its model");
+      }
+      return withConnection(row, async connection => {
+        const [state, queue] = await Promise.all([connection.getState(), connection.getQueue()]);
+        const header = await connection.getSessionHeader();
+        if (state.sessionId !== sessionId || header?.id !== sessionId) {
+          throw new Error("The live session changed. Refresh before changing its model.");
+        }
+        if (isBusy(state, queue)) throw new Error("Wait for this session to finish before changing its model");
+        return chatModel(await connection.setModel(provider, modelId));
+      });
+    },
+    async send({ sessionId, message, images: inputImages }) {
+      const images = parseChatImages(inputImages);
+      if (!message.trim() && !images.length) throw new Error("Add a message or image");
       const row = await resolve(sessionId);
       if (row.kind !== "live" || !row.session.canSend) throw new Error("Resume this session in Prime Agent before sending");
-      return withConnection(row, connection => connection.prompt(message, {
-        source: "interactive", streamingBehavior: "followUp", queueIfBusy: true,
-      }));
+      return withConnection(row, async connection => {
+        if (images.length) {
+          const state = await connection.getState();
+          if (!state.model?.input.includes("image")) throw new Error("Choose a model that accepts images");
+          const header = await connection.getSessionHeader();
+          if (header?.id !== sessionId) throw new Error("The live session changed. Refresh before sending.");
+        }
+        await connection.prompt(message, {
+          source: "interactive", streamingBehavior: "followUp", queueIfBusy: true, ...(images.length ? { images } : {}),
+        });
+      });
     },
     async close() {
       if (closed) return;

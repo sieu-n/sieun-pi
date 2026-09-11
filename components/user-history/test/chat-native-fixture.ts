@@ -99,7 +99,7 @@ import { appendFileSync, existsSync, watch } from 'node:fs';
 import { dirname } from 'node:path';
 const calls = ${JSON.stringify(input.calls)};
 const gate = ${JSON.stringify(input.gate)};
-function log(stage, message) { appendFileSync(calls, JSON.stringify({ stage, message, pid: process.pid }) + '\\n'); }
+function log(stage, message, details = {}) { appendFileSync(calls, JSON.stringify({ stage, message, pid: process.pid, ...details }) + '\\n'); }
 function waitForRelease(signal) {
   return new Promise((resolve, reject) => {
     const abort = () => { cleanup(); reject(new Error('Synthetic provider aborted')); };
@@ -114,20 +114,24 @@ function waitForRelease(signal) {
 export default function(pi) {
   pi.registerProvider('chat-native-test', {
     baseUrl: 'http://127.0.0.1:1/never', apiKey: 'synthetic-not-a-secret', api: 'chat-native-test-api',
-    models: [{ id: 'synthetic', name: 'Deterministic native chat fixture', reasoning: false, input: ['text'],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000000, maxTokens: 1024 }],
+    models: [
+      { id: 'synthetic', name: 'Deterministic native chat fixture', reasoning: false, input: ['text'],
+        cost: { input: 10, output: 100, cacheRead: 1, cacheWrite: 10 }, contextWindow: 1000000, maxTokens: 1024 },
+      { id: 'synthetic-vision', name: 'Deterministic native vision fixture', reasoning: false, input: ['text', 'image'],
+        cost: { input: 10, output: 100, cacheRead: 1, cacheWrite: 10 }, contextWindow: 2000000, maxTokens: 1024 },
+    ],
     streamSimple(model, context, options) {
       const stream = createAssistantMessageEventStream();
       const user = context.messages.findLast(message => message.role === 'user');
       const text = typeof user?.content === 'string' ? user.content
         : (user?.content ?? []).filter(part => part.type === 'text').map(part => part.text).join('\\n');
       const output = { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id,
-        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        usage: { input: 100, output: 25, cacheRead: 40, cacheWrite: 10, totalTokens: 175,
+          cost: { input: 0.001, output: 0.0025, cacheRead: 0.00004, cacheWrite: 0.0001, total: 0.00364 } },
         stopReason: 'stop', timestamp: Date.now() };
       void (async () => {
         try {
-          log('start', text);
+          log('start', text, { provider: model.provider, model: model.id, content: user?.content });
           stream.push({ type: 'start', partial: output });
           const block = { type: 'text', text: '' };
           output.content.push(block);

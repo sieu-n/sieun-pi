@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Marked } from "marked";
 import { parseSkillBlock } from "prime-agent";
 import type { HistorySnapshot, QuestionPart } from "./history.ts";
+import { chatImageDataUrl, type ChatImage } from "./chat-images.ts";
 
 const css = `
 :root { color-scheme: light; font: 16px/1.7 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #252525; background: #fff; }
@@ -106,13 +107,14 @@ function renderReply(texts: readonly string[]): string {
 }
 
 
-export function renderChatMessages(messages: readonly { id: string; role: "user" | "assistant"; text: string; streaming: boolean }[]): string {
+export function renderChatMessages(messages: readonly { id: string; role: "user" | "assistant"; text: string; streaming: boolean; images?: readonly ChatImage[] }[]): string {
   return messages.map(message => {
     const skill = message.role === "user" ? parseSkillBlock(message.text) : null;
     const body = skill
       ? renderParts([{ kind: "skill", name: skill.name, instructions: skill.content, arguments: skill.userMessage ?? "" }])
       : renderReply([message.text]);
-    return `<section class="${message.role === "user" ? "question" : "response"}" data-message-id="${escapeText(message.id)}" aria-label="${message.role === "user" ? "You" : "Assistant"}">${body}${message.streaming ? '<p class="notice">Responding...</p>' : ''}</section>`;
+    const images = (message.images ?? []).map((image, index) => `<button class="chat-image-button" type="button" aria-label="Open attached image ${index + 1}"><img class="chat-image" src="${escapeText(chatImageDataUrl(image))}" alt="Attached image ${index + 1}" loading="lazy"></button>`).join("");
+    return `<section class="${message.role === "user" ? "question" : "response"}" data-message-id="${escapeText(message.id)}" aria-label="${message.role === "user" ? "You" : "Assistant"}">${images ? `<div class="message-images">${images}</div>` : ''}${body}${message.streaming ? '<p class="notice">Responding...</p>' : ''}</section>`;
   }).join("\n") || '<p class="missing">No messages in this conversation yet.</p>';
 }
 

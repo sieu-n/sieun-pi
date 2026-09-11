@@ -36,6 +36,7 @@ test("packed production install, native reload, update, rollback and uninstall",
     for (const path of ["scripts/cli.mjs", "scripts/manage.py", "install-manifest.json",
       "components/user-history/package.json", "components/user-history/SOURCE.md",
       "components/user-history/extension/index.ts", "components/user-history/src/page.ts",
+      "components/user-history/src/chat-client.ts", "components/user-history/src/chat-images.ts",
       "components/virev/extensions/virev.ts", "skills/unslop/SKILL.md",
       "NOTICE", "LICENSES/pstack-MIT.txt", "LICENSES/tokenmaxxing-MIT.txt", "LICENSES/prime-agent-MIT.txt",
       "docs/attribution-pstack.json", "skills/poteto-mode/scripts/check-source-paths.test.mjs"]) assert(paths.includes(path), path);

@@ -1,11 +1,39 @@
 # Source installation verification
 
-Initial migration verified on 2026-09-10 against Prime Agent 0.9.4.
-The tables below record that migration run.
+## Current public release, September 11
 
-The status command was removed after that run.
-The current native runtime proof expects only `/account` and `/virev-reload`.
-It verifies the loaded guard and writing-rule handlers directly across two resource reloads.
+The public source is https://github.com/sieu-n/sieun-pi.
+The clean root commit is `394aa56e801b9a951347b7d298a707ac372e502d`.
+The non-global proof fix is `a4f0093e0b679e8918b124fa40c7ad50bb2c42f7`.
+
+| Check | Verified result |
+| --- | --- |
+| Integrated source with new history UI | 581 tests, syntax/type checks and three Python wheels passed. |
+| Updated packed artifact | 276 files, including both new history runtime modules. Global and non-global production installs passed native loading, repeat, update, rollback and uninstall. |
+| Public Git installation | Passed with saved credentials, SSH and global/system Git configuration disabled. |
+| Public installed native proof | Prime Agent 0.9.4, Node 25.9.0, 51 skills, four unique commands and two reloads. No `context` handler or status command. Zero provider network calls. |
+| Public installed lifecycle | Separate Git-installed revisions passed repeat, update, rollback and uninstall. All seven seeded private-state files retained bytes and modes. The native proof profile was also rolled back through its receipt. |
+| Application consumers | Public dependency installed through the repository wrapper. Reader and rendered Prime context view worked after nine old implementations were removed. |
+| Daily recap runtime | Regenerated outside Documents. Existing private files and six protected files matched at the write boundary. The schedule was restored without a report run. A separate launchd help command exited 0 with no stderr. |
+| Application Actions | Run `34589013666` passed installation, monorepo guards and earlier JS checks. It failed in search history continuation and crawler lint/type checks. Triage is in progress. |
+
+The native proof expects `/account`, `/agent-chat`, `/what-did-i-say` and `/virev-reload`.
+Its provider payload capture aborts before network access. This proves stable payload history, not a server-side cache hit.
+The canonical history UI passed 77 unit/HTTP tests and both native command tests on Node 25.9.0 and 26.8.1.
+Aside review checked model switching, native usage, image-only sending, enlargement, draft isolation, saved placeholders and read-only controls.
+It used four synthetic calls and zero real calls. Closing the viewer preserved workers and saved bytes.
+The desktop viewport was 1440 by 900 with no page overflow.
+OS clipboard, file-picker dialogs, mobile visuals and authenticated Claude comparison remain untested.
+
+Application follow-up run `34590417976` passed all JS checks and Python typechecks. Only crawler lint remained red.
+Git and prior-run evidence attribute those diagnostics to prior or concurrent crawler changes. Their owners were notified where inbox delivery allowed.
+Global profile apply, legacy Virev retirement and idle-root reload remain pending.
+Fresh protected-state fingerprints are required before that live apply.
+
+## Historical migration, September 10
+
+The following tables describe the original private migration against Prime Agent 0.9.4.
+Their project-local registration and command counts are historical, not the current public design.
 
 ## 1. What it does
 
@@ -74,7 +102,7 @@ Their guards are test sentinels, not an operating-system sandbox.
 - Live OAuth refresh, provider calls, Aside operations and Linear publication were not exercised.
 - Full upstream Pi compatibility is not established.
 - npm reports two high-severity entries through Prime's `extract-zip` dependency, with no available fix. See [dependency audit](security.md).
-- Imported-source redistribution rights remain unresolved. See [provenance](provenance.md).
+- At this historical checkpoint, redistribution rights were unresolved. The public release later removed unlicensed material and added scoped notices. See [provenance](provenance.md).
 - `auto-sns-agent` now has intentional local source links and a project marker. Its Git history was not changed.
 - The old pool directory retains its state and Git metadata. Make source commits in `sieun-pi`, not that old working tree.
 
@@ -92,7 +120,7 @@ Older permission-error stderr remains in the log history. Its timestamp did not 
 The final source plan reported zero changes.
 
 
-## Public consolidation source checks, September 11
+## Earlier pre-publication checks, September 11
 
 The combined Virev and shared-utility run passed 150 tests.
 The native proof passed on the installed Prime Agent 0.9.4 with Node 25.9.0.

@@ -29,7 +29,7 @@ Owner's custom setup         Public upstream source
 | Owner's app extensions and Git guards | `components/virev/` | Imported from the owner's `auto-sns-agent` repository. Its history credits Sieun Park. The writing rules include adapted pstack guidance. |
 | Owner's account pool | `components/pi-pool/` | Imported from the owner's maintained pool source. Tokenmaxxing-derived behavior and Prime bundle excerpts retain separate notices below. |
 | Daily recap | `components/daily-recap/` | Imported from the owner's `auto-sns-agent/scripts/sieun/daily_recap` source. Its Git history credits Sieun Park. Sunsama client code remains a separately installed dependency. |
-| Saved history and agent chat | `components/user-history/` | Imported from the owner's `prime-agent-user-history` at `289feca4885bbb0f92939a3ae5523007f00128ed`. Local history credits Sieun Park. See the component's `SOURCE.md`. |
+| Saved history and agent chat | `components/user-history/` | Imported from the owner's `prime-agent-user-history` baseline `289feca4885bbb0f92939a3ae5523007f00128ed`, with the UI update from `a069eb63da99b02ab13c3ccd2875dac0e1d20163` and a canonical saved-image display fix. Local history credits Sieun Park. See the component's `SOURCE.md`. |
 | Agent identity and Prime context utilities | `utils/agent-identity.mjs`, `utils/prime-context.mjs` | Extracted from `auto-sns-agent/scripts/skills/agent-identity.mjs` and `derive-context.mjs`. Local Git history credits Sieun Park. Private incident examples were removed. |
 | Setup and source tooling | `config/`, root manifests, `scripts/`, `tests/` | Owner-authored source and repository-specific work. The repository history records the changes. |
 

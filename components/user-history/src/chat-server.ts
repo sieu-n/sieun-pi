@@ -1,10 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { ChatBackend, ChatSession } from "./chat-backend.ts";
 import { chatContentSecurityPolicy, renderChatPage } from "./chat-page.ts";
 import { renderChatMessages } from "./page.ts";
+import { parseChatImages } from "./chat-images.ts";
 
-const maxBodyBytes = 64 * 1024;
+const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
 const maxSends = 256;
 
@@ -61,11 +62,15 @@ async function jsonBody(request: IncomingMessage): Promise<unknown> {
 function parseMessage(value: unknown) {
   if (typeof value !== "object" || value === null ||
     !("sessionId" in value) || typeof value.sessionId !== "string" || !value.sessionId || value.sessionId.length > 256 ||
-    !("message" in value) || typeof value.message !== "string" || !value.message.trim() || value.message.length > maxMessageLength ||
+    !("message" in value) || typeof value.message !== "string" || value.message.length > maxMessageLength ||
     !("requestId" in value) || typeof value.requestId !== "string" || !/^[a-zA-Z0-9_-]{16,100}$/.test(value.requestId)) {
-    throw new RequestError(400, "Expected a session, a non-empty message up to 32,000 characters, and a request ID.");
+    throw new RequestError(400, "Expected a session, message text up to 32,000 characters, and a request ID.");
   }
-  return { sessionId: value.sessionId, message: value.message, requestId: value.requestId };
+  let images;
+  try { images = parseChatImages("images" in value ? value.images : undefined); }
+  catch (error) { throw new RequestError(400, error instanceof Error ? error.message : "Invalid images."); }
+  if (!value.message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
+  return { sessionId: value.sessionId, message: value.message, images, requestId: value.requestId };
 }
 
 export async function startChatServer({ backend, initialSessionId, idleMs = 30 * 60 * 1000 }: {
@@ -74,7 +79,7 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
   const base = "/" + randomBytes(24).toString("hex") + "/";
   const csrfToken = randomBytes(32).toString("hex");
   const page = renderChatPage({ initialSessionId, csrfToken });
-  const sends = new Map<string, { sessionId: string; message: string; result: Promise<void> }>();
+  const sends = new Map<string, { fingerprint: string; result: Promise<void> }>();
   let host = "";
   let timer: ReturnType<typeof setTimeout> | undefined;
   let closing: Promise<void> | undefined;
@@ -136,10 +141,17 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
         if (!id || id.length > 256) throw new RequestError(400, "A session ID is required.");
         touch();
         const view = await backend.read(id);
-        json(res, 200, { ...sessionItem(view.session), html: renderChatMessages(view.messages), queueCount: view.queueCount });
+        json(res, 200, { ...sessionItem(view.session), html: renderChatMessages(view.messages), queueCount: view.queueCount, controls: view.controls, usage: view.usage });
         return;
       }
-      if (route !== "api/message" && route !== "api/close") throw new RequestError(404, "Not found.");
+      if (req.method === "GET" && route === "api/models") {
+        const id = url.searchParams.get("id");
+        if (!id || id.length > 256) throw new RequestError(400, "A session ID is required.");
+        touch();
+        json(res, 200, await backend.models(id));
+        return;
+      }
+      if (!["api/message", "api/model", "api/close"].includes(route)) throw new RequestError(404, "Not found.");
       if (req.method !== "POST") throw new RequestError(405, "Expected POST.");
       if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== `http://${host}`) {
         throw new RequestError(403, "Message authorization is missing. Reopen /agent-chat.");
@@ -151,14 +163,25 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
         json(res, 200, { closed: true });
         return;
       }
+      if (route === "api/model") {
+        if (typeof body !== "object" || body === null ||
+          !("sessionId" in body) || typeof body.sessionId !== "string" || !body.sessionId || body.sessionId.length > 256 ||
+          !("provider" in body) || typeof body.provider !== "string" || !body.provider || body.provider.length > 256 ||
+          !("modelId" in body) || typeof body.modelId !== "string" || !body.modelId || body.modelId.length > 512) {
+          throw new RequestError(400, "Choose a session and model.");
+        }
+        json(res, 200, { model: await backend.setModel({ sessionId: body.sessionId, provider: body.provider, modelId: body.modelId }) });
+        return;
+      }
       const input = parseMessage(body);
+      const fingerprint = createHash("sha256").update(JSON.stringify([input.sessionId, input.message, input.images])).digest("hex");
       let pending = sends.get(input.requestId);
-      if (pending && (pending.sessionId !== input.sessionId || pending.message !== input.message)) {
+      if (pending && pending.fingerprint !== fingerprint) {
         throw new RequestError(409, "This request ID belongs to a different message.");
       }
       if (!pending) {
         if (sends.size >= maxSends) throw new RequestError(429, "Reopen /agent-chat before sending more messages.");
-        pending = { ...input, result: backend.send({ sessionId: input.sessionId, message: input.message }) };
+        pending = { fingerprint, result: backend.send({ sessionId: input.sessionId, message: input.message, images: input.images }) };
         sends.set(input.requestId, pending);
       }
       try { await pending.result; }
