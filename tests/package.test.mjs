@@ -50,11 +50,11 @@ test("packed production install, native reload, update, rollback and uninstall",
     assert.equal(metadata.pi.extensions.length, 3);
     const tarball = join(base, packed.filename);
     const releases = [join(base, "release-a"), join(base, "release-b")];
-    for (const prefix of releases) {
-      run("npm", ["install", "--global", "--prefix", prefix, "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund", tarball], { env });
+    for (const [index, prefix] of releases.entries()) {
+      run("npm", ["install", ...(index === 0 ? ["--global"] : []), "--prefix", prefix, "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund", tarball], { env });
     }
     assert(!existsSync(join(home, ".prime")), "npm install must not mutate the profile");
-    const roots = releases.map(prefix => join(prefix, "lib/node_modules/sieun-pi"));
+    const roots = [join(releases[0], "lib/node_modules/sieun-pi"), join(releases[1], "node_modules/sieun-pi")];
     run(process.execPath, ["--test", join(roots[0], "skills/poteto-mode/scripts/check-source-paths.test.mjs")], { env, cwd: home });
     run(process.execPath, ["--input-type=module", "-e", 'const identity = await import("sieun-pi/agent-identity"); const context = await import("sieun-pi/prime-context"); const exporter = import.meta.resolve("sieun-pi/daily-recap/drifty_focus_export.py"); if (!exporter.endsWith("/components/daily-recap/drifty_focus_export.py") || typeof identity.detectAgentIdentity !== "function" || typeof context.derivePrimeAgent !== "function") process.exit(1);'], { env, cwd: roots[0] });
     const metadataHome = join(base, "metadata-home");
@@ -113,6 +113,10 @@ test("packed production install, native reload, update, rollback and uninstall",
     cli(1, "plan", "--home", home, "--project", project, "--out", planB);
     const receiptB = cli(1, "apply", "--plan", planB).receipt;
     cli(1, "verify", "--home", home, "--project", project);
+    const localProof = JSON.parse(run(process.execPath, [join(roots[1], "scripts/prove_runtime.mjs"),
+      "--home", home, "--project", project], { env }));
+    assert.equal(localProof.passes, 2);
+    assert.equal(localProof.checks.providerNetworkCalls, 0);
     cli(1, "rollback", "--receipt", receiptB);
     cli(0, "verify", "--home", home, "--project", project);
     cli(0, "uninstall", "--receipt", receiptA);

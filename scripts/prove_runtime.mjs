@@ -22,7 +22,8 @@ process.env.PI_SKIP_VERSION_CHECK = "1";
 process.env.VIREV_PROJECTS_FILE = join(home, ".prime", "agent", "virev-projects.json");
 process.env.VIREV_EXT_LOG = join(home, "virev-runtime-proof.log");
 process.chdir(project);
-const primeRoot = values["prime-root"] ? realpathSync(values["prime-root"]) : join(source, "node_modules", "prime-agent");
+const primeRoot = values["prime-root"] ? realpathSync(values["prime-root"])
+  : dirname(dirname(fileURLToPath(import.meta.resolve("prime-agent"))));
 const primePackage = JSON.parse(readFileSync(join(primeRoot, "package.json"), "utf8"));
 assert.equal(primePackage.version, "0.9.4");
 const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(join(primeRoot, "dist", "index.js")).href);
