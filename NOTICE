@@ -1,0 +1,116 @@
+Third-party notices
+
+This file records upstream material used by sieun-pi. It does not grant a
+license for owner-authored files or change any third party's license.
+See docs/provenance.md for source evidence and scope.
+
+pstack
+  Copyright (c) 2026 Lauren Tan
+  License: MIT, reproduced in LICENSES/pstack-MIT.txt.
+  Source: https://github.com/cursor/plugins/tree/main/pstack
+  Scope: the pstack-derived skill files listed in
+  docs/attribution-pstack.json, including the poteto-agent and comment-sicko
+  personas. Local changes adapt Cursor instructions to Prime Agent, update
+  model selection, and add the owner's workflow and writing rules.
+  The pstack-derived writing rules also inform the Virev linter and the
+  linear-ticket writing checks. The notice does not claim pstack authorship
+  of those local implementations.
+
+Prime Agent and Pi
+  Copyright (c) 2025 Mario Zechner
+  Copyright (c) 2026 Prime Intellect
+  License: MIT, reproduced in LICENSES/prime-agent-MIT.txt.
+  Source: https://github.com/PrimeIntellect-ai/prime-agent/tree/v0.9.4
+  Scope: upstream bundle excerpts and adapted replacement strings in
+  components/pi-pool/app/patch_prime_agent.py and its patch fixtures/tests.
+  Prime Agent and its bundled dependencies are separate installations.
+
+Tokenmaxxing
+  Copyright (c) 2026 anaclumos
+  License: MIT, reproduced in LICENSES/tokenmaxxing-MIT.txt.
+  Source: https://github.com/anaclumos/tokenmaxxing
+  Scope: components/pi-pool/vend.py follows tokenmaxxing's credential refresh,
+  account-store, expiry, and usage-cap contracts. This notice covers any
+  adapted portions. It does not claim tokenmaxxing authorship of the whole
+  account pool. The tokenmaxxing application and account stores are not
+  distributed here.
+
+Keep this notice and the applicable LICENSES files when redistributing
+these portions. External dependencies retain their own licenses.
+
+Full license texts for packaged copies
+
+The sections below apply only to the upstream portions named above.
+
+--- pstack ---
+
+MIT License
+
+Copyright (c) 2026 Lauren Tan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- Prime Agent and Pi ---
+
+MIT License
+
+Copyright (c) 2025 Mario Zechner
+Copyright (c) 2026 Prime Intellect
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- Tokenmaxxing ---
+
+MIT License
+
+Copyright (c) 2026 anaclumos
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -1,0 +1,37 @@
+{
+  "name": "prime-agent-user-history",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Read saved history and chat with native Prime Agent sessions in Aside.",
+  "engines": {
+    "node": ">=22.8.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extension/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --import tsx scripts/test.ts",
+    "typecheck": "tsc --noEmit",
+    "test:native": "node --import tsx --test test/native.test.ts test/chat-native.test.ts"
+  },
+  "dependencies": {
+    "marked": "18.0.12",
+    "prime-agent": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-0.9.4.tgz"
+  },
+  "devDependencies": {
+    "@types/node": "25.3.0",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "parse5": "8.0.1",
+    "@earendil-works/pi-ai": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-ai-0.9.4.tgz"
+  },
+  "files": [
+    "extension/",
+    "src/",
+    "README.md",
+    "SOURCE.md"
+  ]
+}

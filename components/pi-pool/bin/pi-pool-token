@@ -1,0 +1,8 @@
+#!/usr/bin/python3 -B
+from pathlib import Path
+import runpy
+import sys
+
+source = Path(__file__).resolve().parents[1] / "vend.py"
+sys.argv = [str(source), *sys.argv[1:]]
+runpy.run_path(str(source), run_name="__main__")

@@ -1,0 +1,21 @@
+{
+  "telemetry": false,
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-6-astra",
+  "defaultThinkingLevel": "xhigh",
+  "packages": [],
+  "bundledSkills": {
+    "websearch": false
+  },
+  "mcpServers": {
+    "aside": {
+      "type": "stdio",
+      "command": "aside",
+      "args": [
+        "mcp"
+      ],
+      "startupTimeoutMs": 20000,
+      "callTimeoutMs": 130000
+    }
+  }
+}

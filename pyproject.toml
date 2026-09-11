@@ -1,0 +1,20 @@
+[project]
+name = "sieun-pi"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6",
+  "httpx",
+  "Pillow",
+  "websearch",
+  "linear-ticket",
+  "aside-browser",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+websearch = { path = "skills/websearch", editable = true }
+linear-ticket = { path = "skills/linear-ticket", editable = true }
+aside-browser = { path = "skills/aside-browser", editable = true }

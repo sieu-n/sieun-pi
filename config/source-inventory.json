@@ -1,0 +1,922 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "skills/figure-it-out/SKILL.md",
+      "origin": "~/.prime/agent/skills/figure-it-out/SKILL.md",
+      "sha256": "c5885cac023a029f005bccd2e139cd0652a45deac0f8686b6e1d1ec7578104c4"
+    },
+    {
+      "path": "skills/bro/SKILL.md",
+      "origin": "~/.prime/agent/skills/bro/SKILL.md",
+      "sha256": "aa329d0ceeeecb6822a7174ad76bb07a7826a3c52ceb6a588dec4138815084bb"
+    },
+    {
+      "path": "skills/interrogate/SKILL.md",
+      "origin": "~/.prime/agent/skills/interrogate/SKILL.md",
+      "sha256": "50803cb264c9f200e103c8e2d729f9f171afdd1037f2fe45e4c5154074e6022d"
+    },
+    {
+      "path": "skills/interrogate/references/code-quality-review.md",
+      "origin": "~/.prime/agent/skills/interrogate/references/code-quality-review.md",
+      "sha256": "2462f1347b99b412b04fcb0577b96d8744c801f792f2651746f9409fd4465dc9"
+    },
+    {
+      "path": "skills/interrogate/references/reviewer-prompt.md",
+      "origin": "~/.prime/agent/skills/interrogate/references/reviewer-prompt.md",
+      "sha256": "a397cc61102add709803d917fb23d726920525bf23e7c06dc4ed0b5cbeb00e54"
+    },
+    {
+      "path": "skills/interrogate/references/rubric.md",
+      "origin": "~/.prime/agent/skills/interrogate/references/rubric.md",
+      "sha256": "a67bf02426f88714634ff481d667db821d4b2cea7b335bcd165fe3126e427fb5"
+    },
+    {
+      "path": "skills/interrogate/references/lead-judgment.md",
+      "origin": "~/.prime/agent/skills/interrogate/references/lead-judgment.md",
+      "sha256": "d2cea6cc308758201c6b8b82baf780947645f1ab752707ddf97fab374bf473f9"
+    },
+    {
+      "path": "skills/principle-boundary-discipline/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-boundary-discipline/SKILL.md",
+      "sha256": "ab3c690ce361542ca00446b8406f5afd47776f544b8ce06a9ef2eaa2338bde6d"
+    },
+    {
+      "path": "skills/setup-pstack/SKILL.md",
+      "origin": "~/.prime/agent/skills/setup-pstack/SKILL.md",
+      "sha256": "f6a88edff16fa59a62c6a3b384cea93ef52d793546e41612302d360b21b0dab8"
+    },
+    {
+      "path": "skills/setup-pstack/references/prime-agent-runtime.md",
+      "origin": "~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md",
+      "sha256": "81b71d64de96a32926c875918d8365d3638bee56eec5a57b42ef2f4ede0c1f9a"
+    },
+    {
+      "path": "skills/setup-pstack/scripts/toggle-model-invocation.py",
+      "origin": "~/.prime/agent/skills/setup-pstack/scripts/toggle-model-invocation.py",
+      "sha256": "071e29fc01998c609f1040e19541401552e8362b9946b941de0d00c82d971988"
+    },
+    {
+      "path": "skills/setup-pstack/scripts/validate-frontmatter.py",
+      "origin": "~/.prime/agent/skills/setup-pstack/scripts/validate-frontmatter.py",
+      "sha256": "916f1dd93b4915ae1b25baa5117026af27d246f0e5a78f517d2b111a28441748"
+    },
+    {
+      "path": "skills/swarm/SKILL.md",
+      "origin": "~/.prime/agent/skills/swarm/SKILL.md",
+      "sha256": "e4a7873334c08488fc50895bca6d5a0b40971a415a98f21220b22f54f1409186"
+    },
+    {
+      "path": "skills/principle-model-the-domain/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-model-the-domain/SKILL.md",
+      "sha256": "6b359783c5c9be87860d0999321e864940ff17729b9f9a27f38abae449640022"
+    },
+    {
+      "path": "skills/technical-writing/SKILL.md",
+      "origin": "~/.prime/agent/skills/technical-writing/SKILL.md",
+      "sha256": "dfa6791cf4657f82df0f1c16eb013fc8b65cf403a859601e27f7ee8e5c7d02f0"
+    },
+    {
+      "path": "skills/principle-fix-root-causes/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-fix-root-causes/SKILL.md",
+      "sha256": "cfae13b5a3e27bc88d069092cae97b3e95246879d5bf14f0e9a4db719c781952"
+    },
+    {
+      "path": "skills/why/SKILL.md",
+      "origin": "~/.prime/agent/skills/why/SKILL.md",
+      "sha256": "61c6676ad17b27b33ab01b3a9925c05d7dc05006641c64043787d2d441f18e6f"
+    },
+    {
+      "path": "skills/why/references/investigator-prompt.md",
+      "origin": "~/.prime/agent/skills/why/references/investigator-prompt.md",
+      "sha256": "e35d8eaea13f0a027dd35572d525e9f66e8f8918ca9e555237dc228f26278d5f"
+    },
+    {
+      "path": "skills/why/references/epistemics.md",
+      "origin": "~/.prime/agent/skills/why/references/epistemics.md",
+      "sha256": "ba99dcdc4fbce91a83b50fc0c9b2c5769febd95540b1722c6b87fe8f900bb60a"
+    },
+    {
+      "path": "skills/why/references/synthesizer-prompt.md",
+      "origin": "~/.prime/agent/skills/why/references/synthesizer-prompt.md",
+      "sha256": "fcdc69ede22f94da9e22f510bb0c4a75a63820f0b49b8d5fd54a196b4010bf2a"
+    },
+    {
+      "path": "skills/why/references/source-playbook.md",
+      "origin": "~/.prime/agent/skills/why/references/source-playbook.md",
+      "sha256": "3cfb0245d5b2019eeeaa7a0e023579d390f2cdcdff6942d2fe009b9efac0eb11"
+    },
+    {
+      "path": "skills/why/references/sources/incident-postmortem.md",
+      "origin": "~/.prime/agent/skills/why/references/sources/incident-postmortem.md",
+      "sha256": "486132457d3782eea64292ce7a2d3bbe3b24b372b20ca00de4329e820f74cd42"
+    },
+    {
+      "path": "skills/why/references/sources/slack.md",
+      "origin": "~/.prime/agent/skills/why/references/sources/slack.md",
+      "sha256": "60e4c8dbb941f563c86aec7267cde66443b1dc651422569c8d112bc9da7551f6"
+    },
+    {
+      "path": "skills/why/references/sources/datadog.md",
+      "origin": "~/.prime/agent/skills/why/references/sources/datadog.md",
+      "sha256": "db80803f1635a5015e3190f4753c4228083e6cebf222c84e24fc3c3919aa5574"
+    },
+    {
+      "path": "skills/why/references/sources/notion.md",
+      "origin": "~/.prime/agent/skills/why/references/sources/notion.md",
+      "sha256": "2ce336dd3052967187a56ec33d308c7a69e7ef3b04ba7b17386a8b3914a0f000"
+    },
+    {
+      "path": "skills/why/references/sources/databricks.md",
+      "origin": "~/.prime/agent/skills/why/references/sources/databricks.md",
+      "sha256": "269a22032f027ee30a33c1b5e30443d13dd6d127ff20d8d1e8a20715b06a69cc"
+    },
+    {
+      "path": "skills/why/references/sources/sentry.md",
+      "origin": "~/.prime/agent/skills/why/references/sources/sentry.md",
+      "sha256": "0eef902cb0f835f7fa9bd85a8e19ba1505d05e59a0173dfe852d8d52d828266d"
+    },
+    {
+      "path": "skills/why/references/sources/linear.md",
+      "origin": "~/.prime/agent/skills/why/references/sources/linear.md",
+      "sha256": "7e1b72ba459089168efd701502f8c268d2481154aeeda1ddd84f840f7e974760"
+    },
+    {
+      "path": "skills/why/references/sources/code-archaeology.md",
+      "origin": "~/.prime/agent/skills/why/references/sources/code-archaeology.md",
+      "sha256": "8c14aa382f0de40829b2668d43e3f54814480bb93a486c9282ada4003f6b9dbd"
+    },
+    {
+      "path": "skills/principle-encode-lessons-in-structure/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-encode-lessons-in-structure/SKILL.md",
+      "sha256": "4acdb3f466efd0a433899aafce3e0f100566228b63ccff43f363a83e80624d81"
+    },
+    {
+      "path": "skills/how/SKILL.md",
+      "origin": "~/.prime/agent/skills/how/SKILL.md",
+      "sha256": "9cda65989c3afb2a7d1697c8c54e23969d6bc771ffdd7af5fd1285912e0227b3"
+    },
+    {
+      "path": "skills/how/references/critique-rubric.md",
+      "origin": "~/.prime/agent/skills/how/references/critique-rubric.md",
+      "sha256": "5774ff2caf51796e54c4a61b63620a165de5801f23c8f47406e527abfbe9addc"
+    },
+    {
+      "path": "skills/how/references/explorer-prompt.md",
+      "origin": "~/.prime/agent/skills/how/references/explorer-prompt.md",
+      "sha256": "fd1218b8cf1f467c644d4ce6fa5e54e6089ede65a28fbbae61f6ee7a2d462f85"
+    },
+    {
+      "path": "skills/how/references/critic-prompt.md",
+      "origin": "~/.prime/agent/skills/how/references/critic-prompt.md",
+      "sha256": "aa77a15590814c814bd5cb074842029ab7b790c2e8379050525bdbc20739d1bb"
+    },
+    {
+      "path": "skills/how/references/explainer-prompt.md",
+      "origin": "~/.prime/agent/skills/how/references/explainer-prompt.md",
+      "sha256": "04336086e7c415394459ca2f461717d920e15339517dbf5a56ca042f8b4fead3"
+    },
+    {
+      "path": "skills/blast-radius/SKILL.md",
+      "origin": "~/.prime/agent/skills/blast-radius/SKILL.md",
+      "sha256": "0c67f1864c6eb7619672324f27f908e92895983a23248b85d71da2fce8771d03"
+    },
+    {
+      "path": "skills/principle-guard-the-context-window/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-guard-the-context-window/SKILL.md",
+      "sha256": "291d0125125eabbc2109c880b1c1083aa95826187119a648b26c1c8ea6367179"
+    },
+    {
+      "path": "skills/principle-subtract-before-you-add/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-subtract-before-you-add/SKILL.md",
+      "sha256": "3999888dc21ced33b86054c2ffde1a3cb438e16bed1213f5dab2b5c000446292"
+    },
+    {
+      "path": "skills/reflect/SKILL.md",
+      "origin": "~/.prime/agent/skills/reflect/SKILL.md",
+      "sha256": "325e29933046befee0d42ce100ba9fc3ab4ccaaf88e9a4df41da0e251e2b6897"
+    },
+    {
+      "path": "skills/reflect/references/synthesizer.md",
+      "origin": "~/.prime/agent/skills/reflect/references/synthesizer.md",
+      "sha256": "afdc68e60eec01f037d5b7b579d9353ffe9d9fffb8249b037127d5a6c862de29"
+    },
+    {
+      "path": "skills/reflect/references/judgment-reviewer.md",
+      "origin": "~/.prime/agent/skills/reflect/references/judgment-reviewer.md",
+      "sha256": "6efc3efa4273766f039f98acd75f092dfee6b923abf0ea4774056c33e11ba9ee"
+    },
+    {
+      "path": "skills/reflect/references/tooling-reviewer.md",
+      "origin": "~/.prime/agent/skills/reflect/references/tooling-reviewer.md",
+      "sha256": "4a332aab3e9071dbd0b5f2c6b74a198b2210bc33f22fff45bc2805d57905b5b3"
+    },
+    {
+      "path": "skills/reflect/references/divergent-reviewer.md",
+      "origin": "~/.prime/agent/skills/reflect/references/divergent-reviewer.md",
+      "sha256": "522870712f5f3f1e8a51ef395c8cec870bc5b9bcaa5070539c50fd6ff5045e22"
+    },
+    {
+      "path": "skills/principle-foundational-thinking/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-foundational-thinking/SKILL.md",
+      "sha256": "a522488c9d4481e8bfcbe35cbf3838169c8e3801ee0738ae2859067684144579"
+    },
+    {
+      "path": "skills/show-me-your-work/SKILL.md",
+      "origin": "~/.prime/agent/skills/show-me-your-work/SKILL.md",
+      "sha256": "6842f635a626265577e86f1b563afb5c7f3bedaafd80f82d7c4f1ca730210c44"
+    },
+    {
+      "path": "skills/show-me-your-work/references/decision-log-template.tsv",
+      "origin": "~/.prime/agent/skills/show-me-your-work/references/decision-log-template.tsv",
+      "sha256": "6779378006a2f5225e8c06deb84f1d913fb532041ebbb6e50d94600bfe3f4b76"
+    },
+    {
+      "path": "skills/show-me-your-work/scripts/log.sh",
+      "origin": "~/.prime/agent/skills/show-me-your-work/scripts/log.sh",
+      "sha256": "1601bc18f9aba0af3f5d6375e4f2d5dc6102334d1bca935026c0e3547cdadbbf"
+    },
+    {
+      "path": "skills/principle-build-the-lever/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-build-the-lever/SKILL.md",
+      "sha256": "3a0b02b1b890538810f27d00c525b2e677bb5d931f602fd7a774d5cd13b61c93"
+    },
+    {
+      "path": "skills/comment-sicko/SKILL.md",
+      "origin": "~/.prime/agent/skills/comment-sicko/SKILL.md",
+      "sha256": "f5c1e39df0191d2ad93cf9b7ea4b5d80d4533d364c76153d446ef23c98fca158"
+    },
+    {
+      "path": "skills/websearch/pyproject.toml",
+      "origin": "~/.prime/agent/skills/websearch/pyproject.toml",
+      "sha256": "4f26fbbffd92d3177880339a0ebc79fb14046201d6f1280a62f047a7c1dde303"
+    },
+    {
+      "path": "skills/websearch/SKILL.md",
+      "origin": "~/.prime/agent/skills/websearch/SKILL.md",
+      "sha256": "0be4eef7928f2e3b3336b48419281fa95105e01486ce86e26aa281ea7683778e"
+    },
+    {
+      "path": "skills/websearch/src/websearch/__init__.py",
+      "origin": "~/.prime/agent/skills/websearch/src/websearch/__init__.py",
+      "sha256": "fc7aaa8449b3382d3400517d5c76988580d88ab6d77bb02ae9dc7e57c8efa3ea"
+    },
+    {
+      "path": "skills/poteto-mode/SKILL.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/SKILL.md",
+      "sha256": "2f6da4b08836bc60f47725c5d3164b5028785f670b8e03f8e6ae2f476b5bfc92"
+    },
+    {
+      "path": "skills/poteto-mode/references/bugbot-triage.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/references/bugbot-triage.md",
+      "sha256": "fb9e5cdc5ce20a1e4d1a5bdece14eac8b0161be19872a2f5fe08acdc32d811a3"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/bug-fix.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/bug-fix.md",
+      "sha256": "a638da5aeff8f476e480eb89d3531daec096b4fab3f334bac41f8f8b2efff39a"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/shipping.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/shipping.md",
+      "sha256": "fe83e36db200a21e6899b57d408a35a1b243e87fe2d64a32ecd7d2d39a2d5204"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/trace-forensics.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/trace-forensics.md",
+      "sha256": "fcae1f68f349072a8b2518f09b73dedeb826192d2ec33befb8906f42292e38be"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/multi-phase-plan.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/multi-phase-plan.md",
+      "sha256": "497b028cfbaff8b98c59c61360afa21349b1251aae9174ab59e0529bb1237596"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/autonomous-run.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/autonomous-run.md",
+      "sha256": "2c51dc7a15d7170dfc80af5547ce7ad0857ceedc820dd4ae9bb0aad87e90f7a0"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/authoring-a-skill.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/authoring-a-skill.md",
+      "sha256": "067412523ef4837782f15e3f795a662e6d56bea596775d61735cb3b6835a2b35"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/session-pickup.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/session-pickup.md",
+      "sha256": "91554969ef7abec32debc4d5ea348e9ff824c8a03564f4c390e6f75917a1bdcf"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/eval.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/eval.md",
+      "sha256": "564ded240a6d95e7c31442e1df58d06d5a96d2047b743a30c375bef7fa376270"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/prototype.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/prototype.md",
+      "sha256": "0e539b57aa33deb09472e10ccab2a20cd166a86bea94c50e0b8be39e41164d33"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/investigation.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/investigation.md",
+      "sha256": "bb28bfe2912511dbb777057326a8ccff3ef279d219e52271dcb5b10f68a38b5b"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/worktree-cleanup.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/worktree-cleanup.md",
+      "sha256": "0cc9e636cb267f93fa2bfe8e03ac3695778e8f96261f882d6fd5ab7aef64c334"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/opening-a-pr.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/opening-a-pr.md",
+      "sha256": "bbcb6821a66dfe1381af2e4d0df43a8d0f5b22b097d97c46e3aec74c85b4f5bf"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/autopilot-full.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/autopilot-full.md",
+      "sha256": "21c818819560295cb410f37793e09bf4c3fcc9c13b8c7a72ca3a7a9e5abd1b63"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/hillclimb.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/hillclimb.md",
+      "sha256": "58b3f60075aba5709a18f7e23971f2b300c745c0d5d61e3936a0953303161cc7"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/pause-safely.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/pause-safely.md",
+      "sha256": "829bb107ace6ac104f871fa4c4b04bd64c648eb7d93c92411975f6075c4e5e63"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/autopilot-stack.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/autopilot-stack.md",
+      "sha256": "86f9cd2b8f65d3c7da4c65876615af05903d4daa2974e934d6846f35a7b9d331"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/babysit.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/babysit.md",
+      "sha256": "84c51481272e2f212758a6efd2d0dcbe7ac1360a93267d8ada8e1c5718535616"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/orchestrate.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/orchestrate.md",
+      "sha256": "421145e8ff75403c885dcf7335713ee42ab8e1734ab02ab5c9ab12042064d8bd"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/feature.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/feature.md",
+      "sha256": "6af47433c3918bada865794dbd495e32068de31d7615ad9688b5677f1f5f736e"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/visual-parity.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/visual-parity.md",
+      "sha256": "33165e74665bf8ddec181598c2b21b4a1cd310b1adf23742af90ac0d10652b39"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/perf-issue.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/perf-issue.md",
+      "sha256": "5290f11e930bf023ee5721cae6017b1b782085ff5efbdf7ec08bd18917d847fd"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/runtime-forensics.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/runtime-forensics.md",
+      "sha256": "dfde7b2c48eb789dd92f65d1c0748a51dbd3bac9f5fbfb45506b83078e0a9b26"
+    },
+    {
+      "path": "skills/poteto-mode/playbooks/refactoring.md",
+      "origin": "~/.prime/agent/skills/poteto-mode/playbooks/refactoring.md",
+      "sha256": "566128505805f6763e3fed0c1b57364079fb78ba6aa9a073ba46eabb1f69cbfd"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/bun.lock",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/bun.lock",
+      "sha256": "667d9cf7222e9aae3fa42a4be383e657784216e9df115da02227fbc5ac7bbe46"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/package.json",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/package.json",
+      "sha256": "d1f815091209d49763775cc188e8e06ff32d5fec648bffd2272bc25a165e87c3"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/check-plan.mjs",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/check-plan.mjs",
+      "sha256": "4f5118edf719b481983dc87dfadd5b4b5473d05aad04a7ba65191ff9c73faf1b"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/worktree-audit.sh",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/worktree-audit.sh",
+      "sha256": "48a720241af2b5b5489cd8233b5748b62e997bba61aca394d8cb2407ec43ea1e"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/bootstrap.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/bootstrap.ts",
+      "sha256": "ccd2ed08fd9da9d0d942e5f2491cfc74bb92d8a08fa51755e0da1ac8de287361"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/watch-pr",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/watch-pr",
+      "sha256": "d955603be6cc0e8b8ffcec722f635192b2261410b1f2929abea94480e47eb5d4"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/policy.test.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/policy.test.ts",
+      "sha256": "a9fedb25feefd1f57ef6a662f80c99018690170a3a8070773a08eaf694d1d3d9"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/github.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/github.ts",
+      "sha256": "d1bbbafbe8e2c703c84da2029de7f2c4011412512f8cf65a42100f46bcb92c8a"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/types.compile.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/types.compile.ts",
+      "sha256": "621af4c9a664fbf699a9737efccdc248abb416df8819c9dc5f824beae2b9b1d6"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/cli.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/cli.ts",
+      "sha256": "89c08863089181a232be782c4b2ed90a1552f44aeecb0dcb7aac2c623620e680"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/github.test.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/github.test.ts",
+      "sha256": "0cbce011050522938523e36bb42a260e92b812dcd2076930fa681672ad316b24"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/fakes.test-helper.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/fakes.test-helper.ts",
+      "sha256": "e53e31b7f03068063f53a99a3591b052aaed66e4e2b196b3a364980f60324ab1"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/types.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/types.ts",
+      "sha256": "64ba6221e3bfe61bbb292337d199cdec6309455477280efb060203dba34e0e91"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/policy.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/policy.ts",
+      "sha256": "68d240505852cf23c9b2dea463342e9e61243f486b3cc86c735d140f9ee7be49"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/tsconfig.json",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/tsconfig.json",
+      "sha256": "1ecccc72320b086c63ce3f73c959896fd747363e63553b3b1136296ea4069e45"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/render.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/render.ts",
+      "sha256": "2b709e86628d5b8fdb61f860e60ababc342b0626c67576305442cf548283a604"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/watch-pr/cli.test.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/watch-pr/cli.test.ts",
+      "sha256": "a35592b4c6da96caf8d47987e9cd503fab6c7774ab87d11a43f24b4b5df2a9d1"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/orch/orch.test.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/orch/orch.test.ts",
+      "sha256": "174b86d21ff51ccd28d1a8c938cb2e0c6fa287b209d4ca6c03932fcb1b53372e"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/orch/orch.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/orch/orch.ts",
+      "sha256": "f091687df627a0b75fabd54af58945a9cd6c7039ef0622012ac9ed60cd8ec434"
+    },
+    {
+      "path": "skills/poteto-mode/scripts/orch/store.ts",
+      "origin": "~/.prime/agent/skills/poteto-mode/scripts/orch/store.ts",
+      "sha256": "0eae7cf69282e827b1227166f2e32cee3560f2f3e65b3f1f2faf6fb83d3b4c5b"
+    },
+    {
+      "path": "skills/principle-make-operations-idempotent/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-make-operations-idempotent/SKILL.md",
+      "sha256": "540738217c3da7bf513b9886924ad6a2bc77e58be867f5bd2e1831c74bf2ce70"
+    },
+    {
+      "path": "skills/resume-paused-sessions/SKILL.md",
+      "origin": "~/.prime/agent/skills/resume-paused-sessions/SKILL.md",
+      "sha256": "9fe8269f3e244bf15a8e94ee21757d2bd6c0f746538006a52db9869940516b17"
+    },
+    {
+      "path": "skills/resume-paused-sessions/scripts/resume_paused.py",
+      "origin": "~/.prime/agent/skills/resume-paused-sessions/scripts/resume_paused.py",
+      "sha256": "b7ef4db5c093dea2366abb5e1c2715e71c9e5f06cd39570522e4d4ec3a64c714"
+    },
+    {
+      "path": "skills/recall/SKILL.md",
+      "origin": "~/.prime/agent/skills/recall/SKILL.md",
+      "sha256": "2fe2575d8ffe04b3140186eadedca8c67999998958ee19957e4c28ad03affb21"
+    },
+    {
+      "path": "skills/spec-report/SKILL.md",
+      "origin": "~/.prime/agent/skills/spec-report/SKILL.md",
+      "sha256": "efe172f5123912684317ae8a38c787a189bcd1ae6a145c4e6f019afa6ddc4779"
+    },
+    {
+      "path": "skills/spec-report/references/approved-email-editor-spec.md",
+      "origin": "~/.prime/agent/skills/spec-report/references/approved-email-editor-spec.md",
+      "sha256": "8e038701a6524c8bbe31af7529615c2754d24fc2e9b9f0e0ab2768adf28f2f65"
+    },
+    {
+      "path": "skills/principle-sequence-verifiable-units/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-sequence-verifiable-units/SKILL.md",
+      "sha256": "7478f8160ba5701ca40c742a81e90aff12d45f53ac9191e80ad79b9763e4489f"
+    },
+    {
+      "path": "skills/linear-ticket/pyproject.toml",
+      "origin": "~/.prime/agent/skills/linear-ticket/pyproject.toml",
+      "sha256": "dd8d60562314454a49dcf188ba6df68a6e3a725f82163f964a9b7f3f75cb501d"
+    },
+    {
+      "path": "skills/linear-ticket/SKILL.md",
+      "origin": "~/.prime/agent/skills/linear-ticket/SKILL.md",
+      "sha256": "018b5a75322f69c386e3afbf92da027eaf46ed5572db52f60d2e358f170701e6"
+    },
+    {
+      "path": "skills/linear-ticket/references/pipeline.md",
+      "origin": "~/.prime/agent/skills/linear-ticket/references/pipeline.md",
+      "sha256": "7f598f5285aefb010a510118487c886576d2421cc01014206589e4d7ad96c77e"
+    },
+    {
+      "path": "skills/linear-ticket/references/spec-page.md",
+      "origin": "~/.prime/agent/skills/linear-ticket/references/spec-page.md",
+      "sha256": "b32132aedfc145176e9220264be07d3bb850e7ae672477b71a44524a48a72f69"
+    },
+    {
+      "path": "skills/linear-ticket/references/example-after-openapi.json",
+      "origin": "~/.prime/agent/skills/linear-ticket/references/example-after-openapi.json",
+      "sha256": "dbd58ad6d6464717c1e4263f77bddccd831afabd4ba5dfd73b0af5553eb73685"
+    },
+    {
+      "path": "skills/linear-ticket/references/example-vir-371.md",
+      "origin": "~/.prime/agent/skills/linear-ticket/references/example-vir-371.md",
+      "sha256": "6cb5a475a5293d4c8402d91ba96ba6f21166cca8c50cea94aef928cb0fd5f261"
+    },
+    {
+      "path": "skills/linear-ticket/tests/test_linear_ticket.py",
+      "origin": "~/.prime/agent/skills/linear-ticket/tests/test_linear_ticket.py",
+      "sha256": "1e95e086562a71fe810a2e35b800bdbd48e35d8b1c1f3463153fd15628a1d852"
+    },
+    {
+      "path": "skills/linear-ticket/src/linear_ticket/__init__.py",
+      "origin": "~/.prime/agent/skills/linear-ticket/src/linear_ticket/__init__.py",
+      "sha256": "147fc51c4df9ebbe6104bcdd8ae631833edd892d49d9429a212510194fa2b43f"
+    },
+    {
+      "path": "skills/maintain-verification-skill/SKILL.md",
+      "origin": "~/.prime/agent/skills/maintain-verification-skill/SKILL.md",
+      "sha256": "db2dc8178e6d787e928f69cbf43e5e9c68756ad78262769e21aca402fdaa48cb"
+    },
+    {
+      "path": "skills/principle-outcome-oriented-execution/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-outcome-oriented-execution/SKILL.md",
+      "sha256": "beedcaed75572a6a1662d47f16da203c2bd2c9dbffbbd678d4ba187d67b7e670"
+    },
+    {
+      "path": "skills/typescript-best-practices/SKILL.md",
+      "origin": "~/.prime/agent/skills/typescript-best-practices/SKILL.md",
+      "sha256": "df0ecd7518b33778f4b02c2f85ee577bbaea52caa1c49df6816b0594e128bb64"
+    },
+    {
+      "path": "skills/typescript-best-practices/references/patterns.md",
+      "origin": "~/.prime/agent/skills/typescript-best-practices/references/patterns.md",
+      "sha256": "83d89dd2fdb81021eb18c77c57437f60314a60da79447756a547f08ece64b433"
+    },
+    {
+      "path": "skills/architect/SKILL.md",
+      "origin": "~/.prime/agent/skills/architect/SKILL.md",
+      "sha256": "25867c8f3b2b05cb8aba381ead44767ada471777171bf4852d3c6bb6f222bc88"
+    },
+    {
+      "path": "skills/architect/references/design-red-flags.md",
+      "origin": "~/.prime/agent/skills/architect/references/design-red-flags.md",
+      "sha256": "905066f9bbac81c573c2b325be47751d2c0f9325e0a0772bd4384e82dafe9336"
+    },
+    {
+      "path": "skills/architect/references/rationale-template.md",
+      "origin": "~/.prime/agent/skills/architect/references/rationale-template.md",
+      "sha256": "6645a0e5f68c003298ec95b85a23262bdda0c79f998b926060169b54d9f23fbb"
+    },
+    {
+      "path": "skills/architect/references/runner-prompt.md",
+      "origin": "~/.prime/agent/skills/architect/references/runner-prompt.md",
+      "sha256": "3ef8c1452a0382a15b7601c7c94f2a16a00954170d705b7af8cc49ac78080ec9"
+    },
+    {
+      "path": "skills/principle-never-block-on-the-human/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-never-block-on-the-human/SKILL.md",
+      "sha256": "f656f3b7581df55e79f53cc47df93905c3a940b822c25071ba95f40e530d102a"
+    },
+    {
+      "path": "skills/principle-redesign-from-first-principles/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-redesign-from-first-principles/SKILL.md",
+      "sha256": "9ae97b35d6338cc9e34c7023c995a39cb7afdaf4bfd41e1d3d665da04d7515d5"
+    },
+    {
+      "path": "skills/principle-minimize-reader-load/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-minimize-reader-load/SKILL.md",
+      "sha256": "480f4ddec29e7e3058a8f17eb97c0cec4a2c8b4b33ba6401e960167c1fc95a81"
+    },
+    {
+      "path": "skills/principle-exhaust-the-design-space/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-exhaust-the-design-space/SKILL.md",
+      "sha256": "8583310d7297b7823d75494faa57b003564d436807febecdecbd8321abe5cf6e"
+    },
+    {
+      "path": "skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-migrate-callers-then-delete-legacy-apis/SKILL.md",
+      "sha256": "e29b6b6534a23dcaf8c7e16fc25d6484000d7b6e289c48eb0a32a97280633c5d"
+    },
+    {
+      "path": "skills/automate-me/SKILL.md",
+      "origin": "~/.prime/agent/skills/automate-me/SKILL.md",
+      "sha256": "9f6dabeea37fd84a9f63f973292766fe8dc625eede21dff47b5ca4adca592261"
+    },
+    {
+      "path": "skills/teach/SKILL.md",
+      "origin": "~/.prime/agent/skills/teach/SKILL.md",
+      "sha256": "0a5987b0588dc56e14bfd84d0300e2ab405abc7c5c2aa81e0d3d7c6b243db7a7"
+    },
+    {
+      "path": "skills/skills/__init__.py",
+      "origin": "~/.prime/agent/skills/skills/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "skills/skills/prime_agent/__init__.py",
+      "origin": "~/.prime/agent/skills/skills/prime_agent/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "skills/skills/prime_agent/fleet_health.py",
+      "origin": "~/.prime/agent/skills/skills/prime_agent/fleet_health.py",
+      "sha256": "29b50ca475e246e476d3a11658ab91e852445ec3eb54309aebf963b23de24d0f"
+    },
+    {
+      "path": "skills/arena/SKILL.md",
+      "origin": "~/.prime/agent/skills/arena/SKILL.md",
+      "sha256": "0f514c8102dc2da6abcfa2be5a585f2ef1572f718061c2615b2fa038e82e4bb9"
+    },
+    {
+      "path": "skills/create-verification-skill/SKILL.md",
+      "origin": "~/.prime/agent/skills/create-verification-skill/SKILL.md",
+      "sha256": "caf52094efe56bbf3570fb44b048ee8ed0d3e8e4dd331e7701694012f0510aa2"
+    },
+    {
+      "path": "skills/create-verification-skill/references/feature-map-example/search.md",
+      "origin": "~/.prime/agent/skills/create-verification-skill/references/feature-map-example/search.md",
+      "sha256": "6e87b9e7f2791a7776ba1bb83f371cd285c306c67f19d245cc4dd6ca3015c823"
+    },
+    {
+      "path": "skills/create-verification-skill/references/feature-map-example/create-note.md",
+      "origin": "~/.prime/agent/skills/create-verification-skill/references/feature-map-example/create-note.md",
+      "sha256": "644a44c74f35d38c2feb7cd05a0121fdebbb623e8dc376c185b565a581d1ccf7"
+    },
+    {
+      "path": "skills/create-verification-skill/references/feature-map-example/README.md",
+      "origin": "~/.prime/agent/skills/create-verification-skill/references/feature-map-example/README.md",
+      "sha256": "cb7bd782cf89968a4ba3d58a5151db837430db92d19a6f52a906973b77b516ba"
+    },
+    {
+      "path": "skills/no-comments/SKILL.md",
+      "origin": "~/.prime/agent/skills/no-comments/SKILL.md",
+      "sha256": "faa3c9b62b373338a4143ed64262e473b870937d6f285c914cc101069f39bbb4"
+    },
+    {
+      "path": "skills/poteto-agent/SKILL.md",
+      "origin": "~/.prime/agent/skills/poteto-agent/SKILL.md",
+      "sha256": "3d000725253228d0f6804b6b59a8906206091c63deb42412589d0a3234b9dae2"
+    },
+    {
+      "path": "skills/principle-laziness-protocol/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-laziness-protocol/SKILL.md",
+      "sha256": "8999fda9fde65fd905835c86e3bfc64190369a84bba30b1e93769f39ad6580fe"
+    },
+    {
+      "path": "skills/principle-experience-first/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-experience-first/SKILL.md",
+      "sha256": "f8d643ddf2f6aa91d9607d1bb340fd2baf227d702e9738848b85312a312bb971"
+    },
+    {
+      "path": "skills/unslop/SKILL.md",
+      "origin": "~/.prime/agent/skills/unslop/SKILL.md",
+      "sha256": "bfccfd961d708bf73801fdd791fda9dd4c0f68e6637e9bb9f250027f13c967d9"
+    },
+    {
+      "path": "skills/aside-browser/pyproject.toml",
+      "origin": "~/.prime/agent/skills/aside-browser/pyproject.toml",
+      "sha256": "f0db8dae84fd7ff25037017367ae3b0c68c230e9fa73b280a25ad1381e3c9342"
+    },
+    {
+      "path": "skills/aside-browser/SKILL.md",
+      "origin": "~/.prime/agent/skills/aside-browser/SKILL.md",
+      "sha256": "7ce047aad89a62491d75ea45818e3369d6490e79f64a2321753ad3e7b8b288fb"
+    },
+    {
+      "path": "skills/aside-browser/references/repl-api.md",
+      "origin": "~/.prime/agent/skills/aside-browser/references/repl-api.md",
+      "sha256": "1e454eb64f613c08076e04ababcfbe3c6b5a103546bd2a830940bf467dde916d"
+    },
+    {
+      "path": "skills/aside-browser/src/aside_browser/__init__.py",
+      "origin": "~/.prime/agent/skills/aside-browser/src/aside_browser/__init__.py",
+      "sha256": "7d8dd158cea0477582f620aa95b2dd84c79fcb7fc0ce42382fa743c1d29c455c"
+    },
+    {
+      "path": "skills/tdd/SKILL.md",
+      "origin": "~/.prime/agent/skills/tdd/SKILL.md",
+      "sha256": "adad031f9e79d7f7389fa128f7af8e03344831270e282cf4e40bdacb8418c386"
+    },
+    {
+      "path": "skills/principle-prove-it-works/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-prove-it-works/SKILL.md",
+      "sha256": "9bbe6138505be34d81e9395d95d3639b384f71d71d65cc1903075126e1da1508"
+    },
+    {
+      "path": "skills/principle-separate-before-serializing-shared-state/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-separate-before-serializing-shared-state/SKILL.md",
+      "sha256": "5b14fd656441580061f760968c828f3f4ba034242d8fa06b544763efb25e89ee"
+    },
+    {
+      "path": "skills/principle-type-system-discipline/SKILL.md",
+      "origin": "~/.prime/agent/skills/principle-type-system-discipline/SKILL.md",
+      "sha256": "662ed1ad53fb491e97b9c4eac7317fba8ec5ed722fec8d71beb94da0111619cf"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/standing-rules.md",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/standing-rules.md",
+      "sha256": "60074ce6644310a47b408352aa62631aa14b639b56e5d1d21dd5e7bda3fdeeaf"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/REPORT.md",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/REPORT.md",
+      "sha256": "1ac89a1a6fa9412699bc8481ead2749871dc4a0ae3559a2e15569c9275cbc761"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/log.mjs",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/log.mjs",
+      "sha256": "38b4db9a280c3a1f9cd63572fa7e6756393422f529466c913a99207c7fe61b1d"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/lint.mjs",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/lint.mjs",
+      "sha256": "61b6fe521abaa2e85fbb50c9e1ff186c069dc6c066ca44cdc8496b19a74b3331"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/README.md",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/README.md",
+      "sha256": "ecfb28dbe66ae3a2e2cfb5551066418cbad40fa6e29ebbf9272350168ede5ece"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/git-guard.mjs",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/git-guard.mjs",
+      "sha256": "d604c830dcac60936a7649f37d3519d0aa449bc64249c53b6292855c8337cb8d"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/index.mjs",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/index.mjs",
+      "sha256": "fce1e7675153680b1382f2159c8ed2310dd665528f5e38ab98019f754a6f54fc"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/standing-rules.mjs",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/standing-rules.mjs",
+      "sha256": "8d72f997a46f7fd5827d0ea8399159f32de0f4fb4e90fba0c6375196dcdd472e"
+    },
+    {
+      "path": "components/virev/ext-impl/virev/lint-core.mjs",
+      "origin": "auto-sns-agent/.prime/agent/ext-impl/virev/lint-core.mjs",
+      "sha256": "a91872f24eae81c292f1f9a726cb58f6603e1196008a85194bb937d5ab12b3da"
+    },
+    {
+      "path": "components/virev/extensions/virev.ts",
+      "origin": "auto-sns-agent/.prime/agent/extensions/virev.ts",
+      "sha256": "063eb34fd3a1bb3507a5fa91824ef77e90afc1d421001dae9d87a853fe8d0b0f"
+    },
+    {
+      "path": "components/virev/repo-hooks/agent-git-guard.mjs",
+      "origin": "auto-sns-agent/.claude/hooks/agent-git-guard.mjs",
+      "sha256": "9ed98fdb5b2ef6363324f99ba21e57f5f7d5dd238b10c35f4cafe1a5266c79ba"
+    },
+    {
+      "path": "components/virev/repo-hooks/agent-guards.mjs",
+      "origin": "auto-sns-agent/.claude/hooks/agent-guards.mjs",
+      "sha256": "76dae1f841aebe5d81ea53fd80111ce1b235546e8acc82c6881041f0be0ff744"
+    },
+    {
+      "path": "components/pi-pool/README.md",
+      "origin": "~/.config/pi-pool/README.md",
+      "sha256": "8d0bbfc465a90d49dcafeeb8221c7b5fa4e3b5917958e1c963a31e86ae374cb9"
+    },
+    {
+      "path": "components/pi-pool/app/extension/index.ts",
+      "origin": "~/.config/pi-pool/app/extension/index.ts",
+      "sha256": "6ea4b70539d9bb64d43095dc120941b7d9e620bba58f20a80b676320ef4cc4b8"
+    },
+    {
+      "path": "components/pi-pool/app/patch_prime_agent.py",
+      "origin": "~/.config/pi-pool/app/patch_prime_agent.py",
+      "sha256": "337da0d76a7ecbc42f190a48f6a2d80a970a3214b0774c3d7a507f3d19becd54"
+    },
+    {
+      "path": "components/pi-pool/app/pi-pool-status.js",
+      "origin": "~/.config/pi-pool/app/pi-pool-status.js",
+      "sha256": "3504f653da8966ee0a6640181c51e8cda5a85796820b48ec5b45a920665f7956"
+    },
+    {
+      "path": "components/pi-pool/bin/pi-pool-token",
+      "origin": "~/.config/pi-pool/bin/pi-pool-token",
+      "sha256": "22d5cd0f1a4d370e441f76ac8ae52e560cb385eedbe2cc0c927cee38ae61bde2"
+    },
+    {
+      "path": "components/pi-pool/tests/native/README.md",
+      "origin": "~/.config/pi-pool/tests/native/README.md",
+      "sha256": "9abaf360589303b3aacceb750974b81e0fd7d7c7fda76a07e660dc3086038141"
+    },
+    {
+      "path": "components/pi-pool/tests/native/abort-hook.mjs",
+      "origin": "~/.config/pi-pool/tests/native/abort-hook.mjs",
+      "sha256": "d0d8824a629aa5678c36fb68758b419011c2faad06260bd31b69e601d865428d"
+    },
+    {
+      "path": "components/pi-pool/tests/native/assertions.mjs",
+      "origin": "~/.config/pi-pool/tests/native/assertions.mjs",
+      "sha256": "9b628cc4178302909f6b5f25f6d1c2df28845530b5c7de3faf0fec1d7faf3c02"
+    },
+    {
+      "path": "components/pi-pool/tests/native/blocked-hook.py",
+      "origin": "~/.config/pi-pool/tests/native/blocked-hook.py",
+      "sha256": "8d051818fc09783a99cec138a3eaa632fd44bd71814947c09a4388da075e113b"
+    },
+    {
+      "path": "components/pi-pool/tests/native/fixture-extension.mjs",
+      "origin": "~/.config/pi-pool/tests/native/fixture-extension.mjs",
+      "sha256": "f436e2afbee593357090e3808c6b35ddec585a8a525dbd2b591255cf3f8a4bc4"
+    },
+    {
+      "path": "components/pi-pool/tests/native/header.py",
+      "origin": "~/.config/pi-pool/tests/native/header.py",
+      "sha256": "cf44e8b280bed306a751c69ed188148d42376a02e90eb937fa3e0483674d1dbd"
+    },
+    {
+      "path": "components/pi-pool/tests/native/hook.py",
+      "origin": "~/.config/pi-pool/tests/native/hook.py",
+      "sha256": "04085074fd9eff6ecf43c94cd5ad6be7e999081da2441dc310ca7d75853b447a"
+    },
+    {
+      "path": "components/pi-pool/tests/native/recovery.mjs",
+      "origin": "~/.config/pi-pool/tests/native/recovery.mjs",
+      "sha256": "1040599ab93e351bde141f51ce9b244d5f54a7d111e24f8340da18122b297437"
+    },
+    {
+      "path": "components/pi-pool/tests/native/registry.mjs",
+      "origin": "~/.config/pi-pool/tests/native/registry.mjs",
+      "sha256": "e415278029992b47e1e81f9a095677131f9846e11595b34019dd63b99eb5b087"
+    },
+    {
+      "path": "components/pi-pool/tests/native/retry.mjs",
+      "origin": "~/.config/pi-pool/tests/native/retry.mjs",
+      "sha256": "d6ebaae726041030061f9343f4ddf554d49218dc5245a790749c0c119fd35a72"
+    },
+    {
+      "path": "components/pi-pool/tests/test_core.py",
+      "origin": "~/.config/pi-pool/tests/test_core.py",
+      "sha256": "3616d07962f7884a0e6149a04b4ab7a7d87e2be2a082ac196d232d0cdcfb82e6"
+    },
+    {
+      "path": "components/pi-pool/tests/test_enable_recovery.py",
+      "origin": "~/.config/pi-pool/tests/test_enable_recovery.py",
+      "sha256": "45129c2d50cbe5fa19b40aae360f4d9ab6d5a0b84363b5dcf53b098fbbac7362"
+    },
+    {
+      "path": "components/pi-pool/tests/test_patch.py",
+      "origin": "~/.config/pi-pool/tests/test_patch.py",
+      "sha256": "69bac21468dea48693294422d261a44fbc2ba5a98ce23a379480c8940a4c15d1"
+    },
+    {
+      "path": "components/pi-pool/vend.py",
+      "origin": "~/.config/pi-pool/vend.py",
+      "sha256": "0122c0e13c54c80f736e327859d2fbe4bb14c8ae0ea86bcd5ff2be3a15e16843"
+    },
+    {
+      "path": "components/pi-pool/bin/pi-pool",
+      "origin": "~/.local/bin/pi-pool",
+      "sha256": "3e52cebf5f6e2e1ac76dd86b7a66ac45ae571aba2700df23aaf9f1f4d950e62b"
+    },
+    {
+      "path": "config/AGENTS.md",
+      "origin": "~/.prime/agent/AGENTS.md",
+      "sha256": "5601118dc703c986e67086354d4c6fa95ac1279c92a322da3895ac28d22986c7"
+    },
+    {
+      "path": "config/pstack-models.json",
+      "origin": "~/.prime/agent/pstack-models.json",
+      "sha256": "4b09b44dd79c6c88d960dddda849d0a0f2681675cb2630791a1fee98292b5321"
+    }
+  ],
+  "excluded": [
+    "credentials and auth stores",
+    "session transcripts and learned memories",
+    "logs, caches, node_modules and binaries",
+    "pi-pool/vend.py.v1 (retired implementation)",
+    "upstream Prime Agent, upstream Pi and Aside (external dependencies)"
+  ]
+}

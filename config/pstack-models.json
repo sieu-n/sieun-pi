@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "roles": {
+    "feature, refactoring": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "bug-fix": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "perf-issue": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "hillclimb": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "judgment and prose": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "hardest tasks": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "how explorer": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "xhigh"
+      }
+    ],
+    "how explainer": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "how critics": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "xhigh"
+      },
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "why investigators": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "xhigh"
+      }
+    ],
+    "why synthesizer": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "reflect tooling": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "reflect judgment, divergent, synthesizer": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "arena runners": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "xhigh"
+      },
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "arena cross-judge pool": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "xhigh"
+      },
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "swarm workers": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "xhigh"
+      }
+    ],
+    "architect runners": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "xhigh"
+      },
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ],
+    "interrogate reviewers": [
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "xhigh"
+      },
+      {
+        "model": "anthropic/claude-fable-5-1",
+        "thinking": "max"
+      }
+    ]
+  },
+  "policy": {
+    "rule": "Use the written model policy in AGENTS.md. Run setup-pstack to detect available models and change role assignments."
+  }
+}

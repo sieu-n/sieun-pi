@@ -1,0 +1,477 @@
+{
+  "version": 1,
+  "host": {
+    "name": "prime-agent",
+    "version": "0.9.4"
+  },
+  "entries": [
+    {
+      "id": "skill:architect",
+      "kind": "link",
+      "source": "skills/architect",
+      "scope": "home",
+      "target": ".prime/agent/skills/architect"
+    },
+    {
+      "id": "skill:arena",
+      "kind": "link",
+      "source": "skills/arena",
+      "scope": "home",
+      "target": ".prime/agent/skills/arena"
+    },
+    {
+      "id": "skill:aside-browser",
+      "kind": "link",
+      "source": "skills/aside-browser",
+      "scope": "home",
+      "target": ".prime/agent/skills/aside-browser"
+    },
+    {
+      "id": "skill:automate-me",
+      "kind": "link",
+      "source": "skills/automate-me",
+      "scope": "home",
+      "target": ".prime/agent/skills/automate-me"
+    },
+    {
+      "id": "skill:blast-radius",
+      "kind": "link",
+      "source": "skills/blast-radius",
+      "scope": "home",
+      "target": ".prime/agent/skills/blast-radius"
+    },
+    {
+      "id": "skill:bro",
+      "kind": "link",
+      "source": "skills/bro",
+      "scope": "home",
+      "target": ".prime/agent/skills/bro"
+    },
+    {
+      "id": "skill:comment-sicko",
+      "kind": "link",
+      "source": "skills/comment-sicko",
+      "scope": "home",
+      "target": ".prime/agent/skills/comment-sicko"
+    },
+    {
+      "id": "skill:create-verification-skill",
+      "kind": "link",
+      "source": "skills/create-verification-skill",
+      "scope": "home",
+      "target": ".prime/agent/skills/create-verification-skill"
+    },
+    {
+      "id": "skill:figure-it-out",
+      "kind": "link",
+      "source": "skills/figure-it-out",
+      "scope": "home",
+      "target": ".prime/agent/skills/figure-it-out"
+    },
+    {
+      "id": "skill:how",
+      "kind": "link",
+      "source": "skills/how",
+      "scope": "home",
+      "target": ".prime/agent/skills/how"
+    },
+    {
+      "id": "skill:interrogate",
+      "kind": "link",
+      "source": "skills/interrogate",
+      "scope": "home",
+      "target": ".prime/agent/skills/interrogate"
+    },
+    {
+      "id": "skill:linear-ticket",
+      "kind": "link",
+      "source": "skills/linear-ticket",
+      "scope": "home",
+      "target": ".prime/agent/skills/linear-ticket"
+    },
+    {
+      "id": "skill:maintain-verification-skill",
+      "kind": "link",
+      "source": "skills/maintain-verification-skill",
+      "scope": "home",
+      "target": ".prime/agent/skills/maintain-verification-skill"
+    },
+    {
+      "id": "skill:no-comments",
+      "kind": "link",
+      "source": "skills/no-comments",
+      "scope": "home",
+      "target": ".prime/agent/skills/no-comments"
+    },
+    {
+      "id": "skill:poteto-agent",
+      "kind": "link",
+      "source": "skills/poteto-agent",
+      "scope": "home",
+      "target": ".prime/agent/skills/poteto-agent"
+    },
+    {
+      "id": "skill:poteto-mode",
+      "kind": "link",
+      "source": "skills/poteto-mode",
+      "scope": "home",
+      "target": ".prime/agent/skills/poteto-mode"
+    },
+    {
+      "id": "skill:principle-boundary-discipline",
+      "kind": "link",
+      "source": "skills/principle-boundary-discipline",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-boundary-discipline"
+    },
+    {
+      "id": "skill:principle-build-the-lever",
+      "kind": "link",
+      "source": "skills/principle-build-the-lever",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-build-the-lever"
+    },
+    {
+      "id": "skill:principle-encode-lessons-in-structure",
+      "kind": "link",
+      "source": "skills/principle-encode-lessons-in-structure",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-encode-lessons-in-structure"
+    },
+    {
+      "id": "skill:principle-exhaust-the-design-space",
+      "kind": "link",
+      "source": "skills/principle-exhaust-the-design-space",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-exhaust-the-design-space"
+    },
+    {
+      "id": "skill:principle-experience-first",
+      "kind": "link",
+      "source": "skills/principle-experience-first",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-experience-first"
+    },
+    {
+      "id": "skill:principle-fix-root-causes",
+      "kind": "link",
+      "source": "skills/principle-fix-root-causes",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-fix-root-causes"
+    },
+    {
+      "id": "skill:principle-foundational-thinking",
+      "kind": "link",
+      "source": "skills/principle-foundational-thinking",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-foundational-thinking"
+    },
+    {
+      "id": "skill:principle-guard-the-context-window",
+      "kind": "link",
+      "source": "skills/principle-guard-the-context-window",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-guard-the-context-window"
+    },
+    {
+      "id": "skill:principle-laziness-protocol",
+      "kind": "link",
+      "source": "skills/principle-laziness-protocol",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-laziness-protocol"
+    },
+    {
+      "id": "skill:principle-make-operations-idempotent",
+      "kind": "link",
+      "source": "skills/principle-make-operations-idempotent",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-make-operations-idempotent"
+    },
+    {
+      "id": "skill:principle-migrate-callers-then-delete-legacy-apis",
+      "kind": "link",
+      "source": "skills/principle-migrate-callers-then-delete-legacy-apis",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-migrate-callers-then-delete-legacy-apis"
+    },
+    {
+      "id": "skill:principle-minimize-reader-load",
+      "kind": "link",
+      "source": "skills/principle-minimize-reader-load",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-minimize-reader-load"
+    },
+    {
+      "id": "skill:principle-model-the-domain",
+      "kind": "link",
+      "source": "skills/principle-model-the-domain",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-model-the-domain"
+    },
+    {
+      "id": "skill:principle-never-block-on-the-human",
+      "kind": "link",
+      "source": "skills/principle-never-block-on-the-human",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-never-block-on-the-human"
+    },
+    {
+      "id": "skill:principle-outcome-oriented-execution",
+      "kind": "link",
+      "source": "skills/principle-outcome-oriented-execution",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-outcome-oriented-execution"
+    },
+    {
+      "id": "skill:principle-prove-it-works",
+      "kind": "link",
+      "source": "skills/principle-prove-it-works",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-prove-it-works"
+    },
+    {
+      "id": "skill:principle-redesign-from-first-principles",
+      "kind": "link",
+      "source": "skills/principle-redesign-from-first-principles",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-redesign-from-first-principles"
+    },
+    {
+      "id": "skill:principle-separate-before-serializing-shared-state",
+      "kind": "link",
+      "source": "skills/principle-separate-before-serializing-shared-state",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-separate-before-serializing-shared-state"
+    },
+    {
+      "id": "skill:principle-sequence-verifiable-units",
+      "kind": "link",
+      "source": "skills/principle-sequence-verifiable-units",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-sequence-verifiable-units"
+    },
+    {
+      "id": "skill:principle-subtract-before-you-add",
+      "kind": "link",
+      "source": "skills/principle-subtract-before-you-add",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-subtract-before-you-add"
+    },
+    {
+      "id": "skill:principle-type-system-discipline",
+      "kind": "link",
+      "source": "skills/principle-type-system-discipline",
+      "scope": "home",
+      "target": ".prime/agent/skills/principle-type-system-discipline"
+    },
+    {
+      "id": "skill:recall",
+      "kind": "link",
+      "source": "skills/recall",
+      "scope": "home",
+      "target": ".prime/agent/skills/recall"
+    },
+    {
+      "id": "skill:reflect",
+      "kind": "link",
+      "source": "skills/reflect",
+      "scope": "home",
+      "target": ".prime/agent/skills/reflect"
+    },
+    {
+      "id": "skill:resume-paused-sessions",
+      "kind": "link",
+      "source": "skills/resume-paused-sessions",
+      "scope": "home",
+      "target": ".prime/agent/skills/resume-paused-sessions"
+    },
+    {
+      "id": "skill:setup-pstack",
+      "kind": "link",
+      "source": "skills/setup-pstack",
+      "scope": "home",
+      "target": ".prime/agent/skills/setup-pstack"
+    },
+    {
+      "id": "skill:show-me-your-work",
+      "kind": "link",
+      "source": "skills/show-me-your-work",
+      "scope": "home",
+      "target": ".prime/agent/skills/show-me-your-work"
+    },
+    {
+      "id": "skill:skills",
+      "kind": "link",
+      "source": "skills/skills",
+      "scope": "home",
+      "target": ".prime/agent/skills/skills"
+    },
+    {
+      "id": "skill:spec-report",
+      "kind": "link",
+      "source": "skills/spec-report",
+      "scope": "home",
+      "target": ".prime/agent/skills/spec-report"
+    },
+    {
+      "id": "skill:swarm",
+      "kind": "link",
+      "source": "skills/swarm",
+      "scope": "home",
+      "target": ".prime/agent/skills/swarm"
+    },
+    {
+      "id": "skill:tdd",
+      "kind": "link",
+      "source": "skills/tdd",
+      "scope": "home",
+      "target": ".prime/agent/skills/tdd"
+    },
+    {
+      "id": "skill:teach",
+      "kind": "link",
+      "source": "skills/teach",
+      "scope": "home",
+      "target": ".prime/agent/skills/teach"
+    },
+    {
+      "id": "skill:technical-writing",
+      "kind": "link",
+      "source": "skills/technical-writing",
+      "scope": "home",
+      "target": ".prime/agent/skills/technical-writing"
+    },
+    {
+      "id": "skill:typescript-best-practices",
+      "kind": "link",
+      "source": "skills/typescript-best-practices",
+      "scope": "home",
+      "target": ".prime/agent/skills/typescript-best-practices"
+    },
+    {
+      "id": "skill:unslop",
+      "kind": "link",
+      "source": "skills/unslop",
+      "scope": "home",
+      "target": ".prime/agent/skills/unslop"
+    },
+    {
+      "id": "skill:websearch",
+      "kind": "link",
+      "source": "skills/websearch",
+      "scope": "home",
+      "target": ".prime/agent/skills/websearch"
+    },
+    {
+      "id": "skill:why",
+      "kind": "link",
+      "source": "skills/why",
+      "scope": "home",
+      "target": ".prime/agent/skills/why"
+    },
+    {
+      "id": "agent-rules",
+      "kind": "link",
+      "source": "config/AGENTS.md",
+      "scope": "home",
+      "target": ".prime/agent/AGENTS.md"
+    },
+    {
+      "id": "model-roles",
+      "kind": "link",
+      "source": "config/pstack-models.json",
+      "scope": "home",
+      "target": ".prime/agent/pstack-models.json"
+    },
+    {
+      "id": "settings",
+      "kind": "generated-json",
+      "source": "config/settings.example.json",
+      "scope": "home",
+      "target": ".prime/agent/settings.json",
+      "seed_only": true
+    },
+    {
+      "id": "pool:vend.py",
+      "kind": "link",
+      "source": "components/pi-pool/vend.py",
+      "scope": "home",
+      "target": ".config/pi-pool/vend.py"
+    },
+    {
+      "id": "pool:app",
+      "kind": "link",
+      "source": "components/pi-pool/app",
+      "scope": "home",
+      "target": ".config/pi-pool/app"
+    },
+    {
+      "id": "pool:bin",
+      "kind": "link",
+      "source": "components/pi-pool/bin",
+      "scope": "home",
+      "target": ".config/pi-pool/bin"
+    },
+    {
+      "id": "pool-command",
+      "kind": "link",
+      "source": "components/pi-pool/bin/pi-pool",
+      "scope": "home",
+      "target": ".local/bin/pi-pool"
+    },
+    {
+      "id": "pool-extension",
+      "kind": "link",
+      "source": "components/pi-pool/app/extension",
+      "scope": "home",
+      "target": ".prime/agent/extensions/pi-pool"
+    },
+    {
+      "id": "virev-extension",
+      "kind": "link",
+      "source": "components/virev/extensions/virev.ts",
+      "scope": "home",
+      "target": ".prime/agent/extensions/virev.ts"
+    },
+    {
+      "id": "user-history",
+      "kind": "link",
+      "source": "components/user-history",
+      "scope": "home",
+      "target": ".prime/agent/extensions/user-history"
+    },
+    {
+      "id": "legacy-user-history",
+      "kind": "remove",
+      "scope": "home",
+      "target": ".prime/agent/extensions/what-did-i-say",
+      "link_target": "code/prime-agent-user-history"
+    },
+    {
+      "id": "virev-projects",
+      "kind": "generated-json",
+      "scope": "home",
+      "target": ".prime/agent/virev-projects.json",
+      "seed_only": false,
+      "merge_projects": true
+    },
+    {
+      "id": "legacy-virev-extension",
+      "kind": "remove",
+      "scope": "project",
+      "target": ".prime/agent/extensions/virev.ts"
+    },
+    {
+      "id": "legacy-virev-implementation",
+      "kind": "remove",
+      "scope": "project",
+      "target": ".prime/agent/ext-impl/virev"
+    },
+    {
+      "id": "legacy-virev-project",
+      "kind": "remove",
+      "scope": "project",
+      "target": ".prime/agent/virev-project.json"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+.work/
+.venv/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+.env
+.env.*
+auth.json
+models.json
+credentials.json
+*.bak-pi-pool
+*.stage-pi-pool
