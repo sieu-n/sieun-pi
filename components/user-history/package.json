@@ -15,7 +15,7 @@
   "scripts": {
     "test": "node --import tsx scripts/test.ts",
     "typecheck": "tsc --noEmit",
-    "test:native": "node --import tsx --test test/native.test.ts test/chat-native.test.ts"
+    "test:native": "node --import tsx --test test/chat-native.test.ts"
   },
   "dependencies": {
     "marked": "18.0.12",

@@ -140,7 +140,7 @@ export const chatClientScript = String.raw`
   function hasPendingSend() { return Array.from(deliveries.values()).some(item => item.kind === 'pending'); }
   function supportsImages() { return selected?.controls.currentModel?.input.includes('image') === true; }
   function updateStatus() {
-    status.textContent = closed || !loaded ? '' : !connected || !navigator.onLine ? 'Offline' : !writable() ? 'Read-only' : ['running', 'busy'].includes(selected.status) ? 'Running' : '';
+    status.textContent = closed || !loaded ? '' : !connected || !navigator.onLine ? 'Offline' : !writable() ? 'Read-only' : ['running', 'busy'].includes(selected.status) ? 'Running' : 'Idle';
     status.hidden = !status.textContent;
   }
   function updateComposer() {
@@ -155,7 +155,7 @@ export const chatClientScript = String.raw`
     for (const button of previews.querySelectorAll('button')) button.disabled = composer.disabled;
     closeButton.disabled = closed || suspended || closing || hasPendingSend() || modelMutation?.phase === 'pending';
     $('composer-target').textContent = closed ? 'Chat closed' : selected ? 'To ' + (selected.name || 'Untitled session') : 'Choose a session';
-    composer.placeholder = closed ? 'This chat is closed' : !selectedId ? 'Choose a session' : !loaded ? 'Loading...' : !writable() ? 'This session is read-only' : !connected || !navigator.onLine ? 'Reconnect to send a message' : pending ? 'Sending...' : 'Reply...';
+    composer.placeholder = closed ? 'This chat is closed' : !selectedId ? 'Choose a session' : !loaded ? 'Loading...' : !writable() ? 'Resume this session in Prime Agent to reply' : !connected || !navigator.onLine ? 'Reconnect to send a message' : pending ? 'Sending...' : 'Ask anything, or follow up';
     send.setAttribute('aria-label', pending ? 'Sending message' : 'Send message');
     sendNotice.hidden = !delivery;
     sendNotice.textContent = delivery ? delivery.text : '';

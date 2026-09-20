@@ -86,7 +86,7 @@ function seedSession(cwd: string, sessions: string, name: string) {
 
 test("native chat targets sessions, changes models, reports usage, sends images, and preserves workers", { timeout: process.env.CHAT_TEST_BROWSER === "1" ? 480000 : 120000 }, async () => {
   const id = randomBytes(6).toString("hex");
-  const root = join(packageRoot, ".test-artifacts", `chat-native-${id}`);
+  const root = join(process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(packageRoot, ".test-artifacts"), `chat-native-${id}`);
   const home = join(root, "home");
   const config = join(home, ".prime/agent");
   const cwd = join(root, "project");
@@ -358,8 +358,9 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     const commands = await daemon.request({ type: "get_commands", activeSessionId: alphaNative.activeSessionId });
     assert(commands.success, JSON.stringify(commands));
     assert.match(JSON.stringify(commands), /agent-chat/);
+    assert.match(JSON.stringify(commands), /what-did-i-say/);
     const openedCommand = await daemon.request({ type: "prompt", activeSessionId: alphaNative.activeSessionId,
-      message: "/agent-chat", source: "interactive" });
+      message: "/what-did-i-say", source: "interactive" });
     assert(openedCommand.success, JSON.stringify(openedCommand));
     const opened: unknown = JSON.parse(await waitForChatNativeFile(asideUrl, text => text.length > 0));
     assert(typeof opened === "object" && opened !== null && "url" in opened && typeof opened.url === "string");

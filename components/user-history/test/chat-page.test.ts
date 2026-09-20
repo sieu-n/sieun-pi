@@ -930,10 +930,11 @@ test('sent image buttons open validated data images, close with Escape, and reje
   assert.equal(client.el('image-viewer').hidden, true);
 });
 
-test('idle header status stays hidden and sidebar status is a labelled dot without visible metadata', async () => {
+test('native idle status is visible and sidebar status is a labelled dot', async () => {
   const client = startClient();
   await ready(client);
-  assert.equal(client.el('session-status').hidden, true);
+  assert.equal(client.el('session-status').hidden, false);
+  assert.equal(client.el('session-status').textContent, 'Idle');
   const first = client.el('session-list').children[0]?.children[0];
   assert(first);
   const dot = first.children[1];

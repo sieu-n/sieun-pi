@@ -124,7 +124,7 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
       const url = new URL(req.url ?? "/", `http://${host}`);
       if (url.origin !== `http://${host}` || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
       const route = url.pathname.slice(base.length);
-      if (closing) throw new RequestError(410, "Chat is closed. Run /agent-chat again.");
+      if (closing) throw new RequestError(410, "Chat is closed. Run /what-did-i-say again.");
       if (req.method === "GET" && route === "") {
         touch();
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -154,7 +154,7 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
       if (!["api/message", "api/model", "api/close"].includes(route)) throw new RequestError(404, "Not found.");
       if (req.method !== "POST") throw new RequestError(405, "Expected POST.");
       if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== `http://${host}`) {
-        throw new RequestError(403, "Message authorization is missing. Reopen /agent-chat.");
+        throw new RequestError(403, "Message authorization is missing. Reopen /what-did-i-say.");
       }
       const body = await jsonBody(req);
       touch();
@@ -180,7 +180,7 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
         throw new RequestError(409, "This request ID belongs to a different message.");
       }
       if (!pending) {
-        if (sends.size >= maxSends) throw new RequestError(429, "Reopen /agent-chat before sending more messages.");
+        if (sends.size >= maxSends) throw new RequestError(429, "Reopen /what-did-i-say before sending more messages.");
         pending = { fingerprint, result: backend.send({ sessionId: input.sessionId, message: input.message, images: input.images }) };
         sends.set(input.requestId, pending);
       }

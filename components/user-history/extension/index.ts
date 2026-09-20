@@ -1,29 +1,36 @@
 import type { ExtensionAPI } from "prime-agent";
-import { collectHistory } from "../src/history.ts";
-import { renderPage } from "../src/page.ts";
-import { oneShotPage } from "../src/delivery.ts";
-import { registerChatCommand } from "./chat.ts";
+import { createChatBackend } from "../src/chat-backend.ts";
+import { startChatServer } from "../src/chat-server.ts";
 
 export default function historyExtension(pi: ExtensionAPI, asideExecutable = "/usr/bin/open"): void {
-  registerChatCommand(pi, asideExecutable);
-  pi.registerCommand("what-did-i-say", {
-    description: "Read saved questions and final responses in Aside",
+  let chat: Awaited<ReturnType<typeof startChatServer>> | undefined;
+  pi.registerFlag("agent-chat-socket", {
+    description: "Daemon socket for browser chat when using a non-default --daemon-socket",
+    type: "string",
+  });
+  pi.on("session_shutdown", async () => { await chat?.close(); chat = undefined; });
+  for (const command of ["what-did-i-say", "agent-chat"]) pi.registerCommand(command, {
+    description: "Message sessions and browse agents in Aside",
     async handler(_args, ctx) {
-      const snapshot = collectHistory(ctx.sessionManager.getBranch());
-      const delivery = await oneShotPage(renderPage(snapshot));
+      await chat?.close();
+      chat = undefined;
+      const socketPath = pi.getFlag("agent-chat-socket");
+      let backend: Awaited<ReturnType<typeof createChatBackend>> | undefined;
       try {
-        const opened = await pi.exec(asideExecutable, ["-b", "at.studio.AsideBrowser", delivery.url], { timeout: 30000 });
-        if (opened.code !== 0 || opened.killed) {
-          ctx.ui.notify("Aside could not open the snapshot. This command requires macOS and the Aside app.", "error");
-          return;
+        backend = await createChatBackend(typeof socketPath === "string" ? { socketPath } : {});
+        const initialSessionId = ctx.sessionManager.getSessionId();
+        if (!(await backend.list()).some(session => session.sessionId === initialSessionId)) {
+          throw new Error("This session is not in the selected daemon. For a custom daemon, set --agent-chat-socket to the same path.");
         }
-        const status = await delivery.closed;
-        ctx.ui.notify(status === "consumed"
-          ? "Opened saved questions and final responses in Aside."
-          : "The snapshot was not delivered before the local listener closed. Run /what-did-i-say again.",
-        status === "consumed" ? "info" : "warning");
-      } finally {
-        delivery.close();
+        chat = await startChatServer({ backend, initialSessionId });
+        const opened = await pi.exec(asideExecutable, ["-b", "at.studio.AsideBrowser", chat.url], { timeout: 30000 });
+        if (opened.code !== 0 || opened.killed) throw new Error("Aside could not open chat. This command requires macOS and the Aside app.");
+        ctx.ui.notify("Opened agent chat in Aside. Closing chat does not stop your agents.", "info");
+      } catch (error) {
+        await chat?.close();
+        await backend?.close();
+        chat = undefined;
+        ctx.ui.notify(error instanceof Error ? error.message : "Could not open agent chat.", "error");
       }
     },
   });

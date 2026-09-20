@@ -1,12 +1,15 @@
-# Saved history and agent chat
+# Native session chat
 
-`/what-did-i-say` opens saved questions and final responses in Aside. It reads the active conversation branch, oldest first, including messages before compaction.
+`/what-did-i-say` opens an interactive view of Prime Agent sessions in Aside. `/agent-chat` opens the same view.
+Run `/reload` in an existing terminal session after updating the extension.
 
-The snapshot command does not call a model, change saved history, replay tools, or create a history file. `/agent-chat` also lets you send messages through native Prime Agent sessions. This package is separate from pi-pool.
+The browser projects the native daemon catalog, active conversation branch, streaming message and follow-up queue.
+It does not infer final responses or task completion. Assistant text appears in saved order, including replies without provider-specific final markers.
+The native daemon owns prompt admission and execution. Opening the page does not call a model or rewrite history.
 
 ## Chat with sessions and agents
 
-Run `/agent-chat` to open the interactive view in Aside. After updating this source, run `/reload` once in the terminal to register the new command.
+Run `/what-did-i-say` to open the active session in Aside. Use the left sidebar to switch sessions and the bottom composer to reply.
 
 ```text
 Chats | Agents          Selected conversation             Usage
@@ -22,7 +25,7 @@ Conversation list       Image previews
 - Text and image drafts stay in browser memory for each session. Switching preserves them. Reloading or closing the tab discards them.
 - Acceptance means Prime Agent accepted the message, not that the agent completed its work. An uncertain send keeps the draft and never resends automatically.
 - Close chat stops the local browser connection. It does not stop agents. An inactive listener expires after 30 minutes without requests.
-- Running `/agent-chat` again closes the previous listener owned by that extension. Existing tabs then become disconnected.
+- Running either command again closes the previous listener owned by that extension. Existing tabs then become disconnected.
 
 The extension uses the default native daemon socket. If you launch with a custom `--daemon-socket`, also pass `--agent-chat-socket` with the same path.
 
@@ -108,52 +111,27 @@ The browser does not implement authentication setup, other model settings, inter
 
 ### Chat source map
 
-- `extension/chat.ts` registers `/agent-chat`, opens Aside and closes its listener on native session shutdown.
+- `extension/index.ts` registers both commands, opens Aside and closes its listener on native session shutdown.
 - `src/chat-backend.ts` adapts public Prime Agent session, model and usage APIs.
 - `src/chat-server.ts` exposes list, read, message and close routes, plus `GET api/models` and `POST api/model`.
 - `src/chat-page.ts` contains the page, styles and fixed CSP hashes.
 - `src/chat-client.ts` handles browser state, polling, model selection and image drafts.
 - `src/chat-images.ts` validates native image payloads and selects supported saved user images.
-- `src/page.ts` shares the existing inert Markdown renderer and renders native chat images.
+- `src/page.ts` renders native message text, collapsed injected skills and validated images. It does not filter by response phase.
 - `test/chat-server.test.ts` checks loopback HTTP, request limits and message authorization.
 - `test/chat-native.test.ts` exercises the installed daemon with isolated synthetic sessions and a test provider.
 
-## Read the snapshot
+## Layout and response rendering
 
-Run `/what-did-i-say` in Prime Agent on macOS with Aside.app installed. The command uses `/usr/bin/open -b at.studio.AsideBrowser` to open the generated local URL in Aside. It does not use the default browser or a temporary Aside REPL session.
+The page follows the OpenAI Codex layout: a pale gray session sidebar, white conversation area, sans-serif text,
+right-aligned user messages and a bottom composer with attachment, model and send controls.
+The header shows native Running or Idle state. Saved sessions show Read-only and disable sending.
+The sidebar collapses on narrow screens. Usage, models and connection errors remain available.
 
-Each question group shows its latest marked final response. Expand **Earlier final responses** to read previous marked finals. Expand **Injected skill instructions** to read a saved skill body. Skill arguments stay beside the `/skill:name` label.
-
-If a provider did not record final metadata, the page says **No marked final response saved**. Expand **Last reply without a final marker** to read its last successful, tool-free text. That text may include progress.
-
-An expired or consumed URL cannot reload. Run the command again for a new snapshot.
-
-## Snapshot scope and limits
-
-- Responses follow saved question order. Prime Agent does not record exact question-to-response links.
-- A final marker does not prove that a task succeeded. Later messages may not be in the snapshot.
-- Consecutive saved questions share a group only when no assistant, tool, or custom message separates them.
-- Inactive branches and parent-session files are not included. Compaction summaries do not replace saved questions.
-- Ordinary saved user-role messages are included. Native history cannot prove human authorship for every such entry.
-- Unsaved slash commands and keystrokes are not recoverable. Skill invocation labels come from native saved skill metadata, not exact original command spelling.
-- Thinking, commentary, tools, custom agent messages, shell notices, and partial failed responses are omitted.
-- Images show placeholders. Their bytes are not included. Links and image destinations appear as inert text.
-
-## Snapshot privacy and delivery
-
-```text
-getBranch() once
-  -> ordered questions and marked final text
-  -> script-free Markdown page in memory
-  -> one GET at a random 127.0.0.1 URL
-  -> Aside tab
-```
-
-The server accepts only its exact Host, random path, and GET method. It stops after delivery or after 30 seconds. It never serves a directory or writes conversation data to disk.
-
-A fixed CSS hash and restrictive Content Security Policy block scripts and external resources. Raw message HTML is text. Native `details` elements expand without JavaScript. Responses use `Cache-Control: no-store`.
-
-Closing the listener does not delete an open tab, screenshots, or browser-managed copies. Other local processes able to discover the random URL could request it first. This is local delivery, not encryption or authenticated sharing.
+All saved user and assistant text on the active branch stays visible, including pre-compaction history.
+The current native streaming message appears after saved entries. The view omits thinking blocks, tool calls and custom messages.
+Injected skill instructions start collapsed. Their arguments remain visible.
+A displayed reply, an idle worker or successful prompt admission does not establish task success.
 
 ## Package setup
 
@@ -178,53 +156,18 @@ The component reads existing sessions through the daemon and native session file
 
 ## Verification
 
-`npm test` runs on the current Node executable. It exercises pure pairing against public native session types, native in-memory compaction and branches, hostile HTML parsing, Markdown layout structure, and real loopback HTTP requests. It includes an idle TCP preconnection, an 8.4 MB slow reader, and a mocked 30-second expiry clock. Different Node versions can close idle sockets differently; record the Node version with test results.
+Use `npm run check` from the sieun-pi root for source checks. The chat tests cover inert Markdown, CSP hashes,
+loopback access controls, drafts, stale responses, native usage, image validation and prompt admission.
+`npm run test:native --prefix components/user-history` runs an isolated native daemon with a deterministic test provider.
+It tests `/what-did-i-say`, switching sessions, saved read-only sessions, unmarked assistant replies, queued follow-ups and worker cleanup.
+It makes no real model calls and sends no prompts to working sessions.
 
-`npm run test:native` launches the packaged Prime Agent CLI in RPC mode. The CLI starts its own daemon supervisor and worker. The test uses generated session content, an allowlisted environment, a synthetic HOME and config, and a unique explicit socket. A fake provider throws on every inference call. A test-only Aside executable captures the URL and fetches the page without opening a browser.
-
-The test compares native entries, branch, and leaf before and after the command. It checks zero model calls and retained pre-compaction content. It stops only its own CLI and daemon through the explicit socket. Synthetic evidence stays in `.test-artifacts/native-*` for review.
-
-The native test proves the RPC command route through the normal daemon. It does not prove TUI interaction or browser behavior.
-
-For browser review, run `node --import tsx scripts/preview.ts`. Open the printed URL through the Aside browser skill within 30 seconds. This preview contains generated fixture text only. Check the first and last questions, native details, wrapping, and absence of live links or external resources.
-
-## Source map
-
-- `src/history.ts` projects public saved entries into ordered question groups.
-- `src/page.ts` renders Markdown and a static page.
-- `src/delivery.ts` owns the one-shot listener and its deadline.
-- `extension/index.ts` registers the command and invokes the macOS Aside URL handler through `pi.exec`.
-- `test/native.test.ts` exercises the installed CLI and its isolated daemon.
-
-## Review the native command in Aside
-
-Run the native test with its browser-review flag. This changes only the test executable, not the production Aside command.
-
-```sh
-HISTORY_TEST_BROWSER=1 npm run test:native
-```
-
-The test prints the location of `aside-url.json`. Read its `url` after the file appears, then open it through the Aside browser skill within 30 seconds. Do not fetch it first. The command waits for one page delivery. It then verifies unchanged saved entries and active branch, zero model calls, and scoped shutdown.
-
-In this mode, HTML checks belong to the browser reviewer. The native result records `browserReview: true` and does not claim an HTTP-captured HTML check. Check the first and last saved questions, latest and earlier finals, skill instructions, collapsed snapshot notes, and inert hostile content.
-
-## Verify the real opener
-
-This mode opens the installed Aside app through the production command. Do not use it for unattended checks without a browser reviewer.
-
-```sh
-HISTORY_TEST_REAL_ASIDE=1 npm run test:native
-```
-
-Before the run, record the current Aside tabs through the Aside browser skill. After the native test exits, find the new tab and verify that it still contains the question snapshot. Check its first and last questions, latest and earlier finals, and skill instructions. Close only that test tab when review ends.
-
-The native test calls the default `/usr/bin/open` directly through `pi.exec`. It does not create or invoke the fake opener in this mode. It waits for page delivery, compares saved history and branch, checks zero model calls, and stops its owned daemon. No `aside-url.json` is produced. The browser reviewer identifies the new tab from the before-and-after tab lists.
-
-`result.json` records `realAside: true` and `postExitTabCheckRequired: true`. A passing native test alone does not prove the tab remains open. The post-exit Aside check is a separate acceptance step.
+Set `HISTORY_TEST_ARTIFACTS_DIR` to the session evidence folder to keep native test output with the review.
+Without it, artifacts go into the component's ignored `.test-artifacts` directory.
 
 ## Chat verification
 
-Run `npm test` for unit and HTTP checks, then `npm run test:native` for both commands through the installed CLI and daemon. Native tests use a synthetic HOME, an explicit test-owned socket, and a deterministic provider. They do not send prompts to your working sessions or call real models.
+Run `npm test` for unit and HTTP checks, then `npm run test:native` for the command through the installed CLI and daemon. Native tests use a synthetic HOME, an explicit test-owned socket, and a deterministic provider. They do not send prompts to your working sessions or call real models.
 
 For Aside review, run:
 
@@ -235,19 +178,3 @@ CHAT_TEST_BROWSER=1 node --import tsx --test test/chat-native.test.ts
 The test prints `CHAT_TEST_BROWSER_READY` and saves `browser-ready.json` under its test artifact directory. Open that URL through the Aside browser skill. Send a message to beta, switch to alpha, check saved read-only history, and close chat. Write the printed `browserDone` marker file within five minutes so the test can verify that viewers left its workers running and then remove its own daemon.
 
 The native checks cover user-message and image persistence, live replies, queued follow-ups without interruption, selected-session isolation and stale selections after a terminal switch. They also check model selection, native usage, unchanged saved history and viewer cleanup. Browser review checks model and usage controls, image display, per-session drafts and saved read-only state. Narrow-screen layout requires its own visual check.
-
-### Source verification on 2026-09-11
-
-The source author recorded these checks before UI integration. They describe the frozen source checkout, not a new browser review of this component. See `SOURCE.md` for both source commits.
-
-- `npm run typecheck` passed, `npm test` passed 77/77 tests, and `git diff --check` passed.
-- `npm run test:native` passed 2/2 command tests on the installed Prime Agent 0.9.4 CLI.
-- Aside browser fixture `chat-native-09f818ecf802` passed with four synthetic provider calls and zero real model calls.
-- The browser changed a text-only model to the native vision fixture model. The inspected usage view showed 450 input tokens, 75 output tokens, $0.0109 cost and a 175 / 2,000,000-token context estimate.
-- A synthetic `ClipboardEvent` exercised the paste handler. An images-only browser send persisted empty text and PNG bytes in native history. The 360 x 180 image displayed and enlarged in Aside.
-- Image drafts stayed with their selected session and could be removed. Saved sessions disabled send and model controls and showed not-recorded usage where native totals were absent.
-- Closing chat through the UI preserved its native workers. At 1440 x 900, the composer ended at y=900 with no page overflow.
-
-An earlier browser fixture expired during its five-minute review window. The fresh fixture above passed. The review did not exercise the OS clipboard, file-picker dialog or mobile layout. The authenticated claude.ai comparison stopped at sign-in, so this review does not establish logged-in visual parity.
-
-Test artifacts and screenshots stay in ignored `.test-artifacts/`. This UI integration does not change the live extension registration. The sieun-pi installer owns that switch; `/reload` then registers both commands in an existing terminal session.

@@ -1,5 +1,7 @@
 # Source provenance
 
+This page records the imported baselines. The current commands, native projection and verification procedure are in `README.md`.
+
 This component first came from `prime-agent-user-history` at commit `289feca4885bbb0f92939a3ae5523007f00128ed`. The UI update integrates the same source at frozen commit `a069eb63da99b02ab13c3ccd2875dac0e1d20163`.
 
 The import includes tracked source, tests, documentation and configuration. It excludes histories, credentials, installed dependencies, caches and test artifacts. The original checkout stays unchanged.
