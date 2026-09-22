@@ -6,7 +6,8 @@ Prime Agent owns every run, queue, name, model, skill and worker. The browser at
 
 ## What you see
 
-- Sidebar: threads grouped by Today, Yesterday, Previous 7 days and Older. A spinner marks a running thread, a dot marks one that finished since you last had it open. Hover a row to rename it. Archived threads sit behind a toggle. Drag the right edge (or focus it and use Left/Right, Home/End) to set a width from 180 to 480 px; the width is saved in the browser.
+- Sidebar: two tabs, Threads and Heartbeats. A thread with an active or paused heartbeat or cron job (daemon `cron_list`) sits under Heartbeats. Each tab sorts Needs response first, then Working, then the rest by priority and recent activity. Needs response means the thread is not running, has messages, and had activity after you last opened it in the browser. Each row has two lines: the title with a status on the right (a spinner and how long it has worked, or a dot), then the creation date (or the heartbeat label and next run), tag chips and a priority glyph of 0 to 3 bars. Working time starts at the open thread's native run start, else when the server first saw the thread busy. Hover a row for its menu, or right click it: rename, priority, and tags (assign, create, rename, delete). With a row focused, Up and Down move, 0 to 3 set priority, T opens the menu and F2 renames. Archived threads sit behind a toggle. Drag the right edge (or focus it and use Left/Right, Home/End) to set a width from 180 to 480 px; the width is saved in the browser.
+- Agents view: the list button at the top of the sidebar opens a table of every thread with search, filters (status, kind, tag, priority, workspace, model, created date range, archived), sortable columns and bulk tags and priority. Up and Down move, Enter opens, Space selects, 0 to 3 set priority, T edits tags.
 - New chat: the default screen. A greeting and the composer. The bar under the input holds the workspace and account on the left and the model and effort on the right. The first send creates a resident native session, attaches, and streams the reply.
 - Thread: the whole transcript, opened at the bottom. Only what the user typed is a bubble on the right; a skill invocation shows the typed text with a skill tag. Agent messages, heartbeats and background command completions show as one muted line that also holds the turn's work. The header is one 40 px row: the title (click or F2 to rename; its tooltip shows the session id), the Default and Questions toggle, and the agents button. Questions lists every prompt, and a click jumps back to that turn in Default. The bar under the input holds attach, the account with its email and a meter per usage window, and context on the left, and one model button ("GPT-6 Astra · high") and Send or Stop on the right. In Default each turn shows the prompt, or a one-line trigger, and only its final reply. Everything else in the turn (thinking, tool calls, interim messages, system notes, agent messages that arrived mid-run) folds into one collapsed row such as "Worked 6m 12s · 39 tool calls · 3 notes". While the turn runs, that row shows the current step with a spinner and stays collapsed until you open it. Replies render as markdown with copy buttons. Errors and stopped replies stay visible.
 - Composer: Enter sends, Shift+Enter adds a line, "/" opens the native command and skill menu, images paste or drop in. The menu matches a skill with or without its `skill:` prefix and by description, and it works on the new-chat screen too. It lists the native session commands `/compact`, `/refine`, `/goal` and `/autonomous`; they run through the normal prompt path.
@@ -28,7 +29,7 @@ browser  <- SSE api/threads/:id/stream - ThreadHub: one DaemonAgentConnection pe
 browser  -> POST api/threads/:id/prompt  ThreadHub.prompt -> connection.prompt(...)
 ```
 
-- `src/chat-catalog.ts` keeps the session list. It subscribes to `roster_update`, refreshes `list all` after a short debounce, and pushes the projected rows to every open browser.
+- `src/chat-catalog.ts` keeps the session list. It subscribes to `roster_update`, refreshes `list all` and `cron_list` after a short debounce, merges tags and priority from `src/chat-labels.ts`, and pushes the projected rows and tags to every open browser.
 - `src/chat-threads.ts` keeps an attached connection per thread (up to 8 live, idle ones close after 3 minutes). On subscribe it sends one snapshot, then forwards native events. `message_update` is coalesced to one per 40 ms.
 - `src/chat-projection.ts` trims payloads without renaming anything: tool output over 600 characters and long tool arguments get `truncated: true` and a fetch endpoint, thinking is cut to 240 characters, image bytes become `api/images/<hash>` URLs from a bounded memory store.
 - `src/shared/thread-state.ts` is the reducer. The server and the browser apply the same events to the same `ThreadState`, so there is no polling and no DOM diffing.
@@ -53,11 +54,13 @@ All routes sit under the capability URL. Writes need JSON, the page token in `X-
 | `GET api/workspaces` | recent working directories |
 | `GET api/accounts?id=` | pool state for a thread |
 | `GET api/images/:hash` | an image from the transcript |
+| `GET api/labels` | saved tags and per-thread tags and priority |
 | `POST api/threads` | create a thread and send the first message |
 | `POST api/threads/:id/prompt` | send, queue or steer |
 | `POST api/threads/:id/abort`, `rename`, `model`, `thinking`, `queue`, `read` | thread controls |
 | `POST api/warm` | attach ahead of a click |
 | `POST api/accounts` | pool actions |
+| `POST api/labels` | `create`, `rename`, `delete` a tag; `tag` threads on or off; set `priority` 0 to 3 |
 
 ## Commands
 
@@ -68,7 +71,7 @@ npm test               # unit and service tests
 npm run test:native    # isolated daemon, deterministic provider, real HTTP and SSE
 ```
 
-The service keeps its configuration, instance record and read markers under `~/.prime/agent/browser-chat` by default. Use `--data-dir` for a second instance.
+The service keeps its configuration, instance record, read markers and labels (`labels.json`) under `~/.prime/agent/browser-chat` by default. Use `--data-dir` for a second instance.
 
 ## Limits
 

@@ -288,6 +288,18 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert.equal((await post(`api/threads/${threadId}/prompt`, { message: "/unknown-command", requestId: requestId() })).status, 400);
     assert.equal((await post(`api/threads/${threadId}/read`, {})).status, 200);
     await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.unread === false), 20000, "read marker");
+    const tagged = await post("api/labels", { op: "create", name: "native-proof", ids: [threadId] });
+    assert.equal(tagged.status, 200, JSON.stringify(tagged.body));
+    const tagId = tagged.body.tagId;
+    assert(typeof tagId === "string");
+    assert.equal((await post("api/labels", { op: "priority", ids: [threadId], priority: 3 })).status, 200);
+    assert.equal((await post("api/labels", { op: "priority", ids: [threadId], priority: 4 })).status, 400);
+    assert.equal((await post("api/labels", { op: "tag", tagId: "missing", ids: [threadId], on: true })).status, 404);
+    assert.equal((await fetch(chatUrl + "api/labels", { method: "POST", headers: { "Content-Type": "application/json", Origin: new URL(chatUrl).origin }, body: JSON.stringify({ op: "delete", tagId }) })).status, 403);
+    await sessionsStream.waitFor(frame => frame.data.tags.some(tag => tag.id === tagId) && frame.data.sessions.some(row => row.id === threadId && row.tags.includes(tagId) && row.priority === 3), 20000, "labels on the sessions stream");
+    const stored = await (await fetch(chatUrl + "api/labels")).json() as { threads: Record<string, { priority: number }> };
+    assert.equal(stored.threads[threadId]?.priority, 3);
+    assert.equal(JSON.parse(await readFile(join(chatData, "labels.json"), "utf8")).threads[threadId].priority, 3, "labels live next to the read markers");
 
     const savedThread = threadWatcher(chatUrl + `api/threads/${saved.sessionId}/stream`);
     watchers.push(savedThread);

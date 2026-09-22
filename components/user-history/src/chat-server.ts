@@ -4,9 +4,10 @@ import { createGzip, type Gzip } from "node:zlib";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
+import { isPriority, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { listAccounts, runAccountAction } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
-import type { AccountAction, SendMode, ThinkingLevel } from "./shared/types.ts";
+import type { AccountAction, LabelAction, SendMode, ThinkingLevel } from "./shared/types.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
@@ -97,6 +98,27 @@ function parseAccountAction(body: Record<string, unknown>): AccountAction {
     case "refresh": return { action: "refresh", provider };
     case "recheck": return { action: "recheck", provider };
     default: throw new RequestError(400, "Unknown account action.");
+  }
+}
+
+function threadIds(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 1000 || !value.every(id => typeof id === "string")) throw new RequestError(400, "Expected up to 1000 thread IDs.");
+  return [...new Set(value.map(id => threadId(id)))];
+}
+function parseLabelAction(body: Record<string, unknown>): LabelAction {
+  const tagId = () => text(body.tagId, "tagId", 64);
+  const name = () => text(body.name, "name", TAG_NAME_MAX * 2);
+  switch (body.op) {
+    case "create": return { op: "create", name: name(), ids: body.ids === undefined ? [] : threadIds(body.ids) };
+    case "rename": return { op: "rename", tagId: tagId(), name: name() };
+    case "delete": return { op: "delete", tagId: tagId() };
+    case "tag":
+      if (typeof body.on !== "boolean") throw new RequestError(400, "Choose on or off.");
+      return { op: "tag", tagId: tagId(), ids: threadIds(body.ids), on: body.on };
+    case "priority":
+      if (!isPriority(body.priority)) throw new RequestError(400, "Choose a priority from 0 to 3.");
+      return { op: "priority", ids: threadIds(body.ids), priority: body.priority };
+    default: throw new RequestError(400, "Unknown label action.");
   }
 }
 
@@ -217,6 +239,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           res.once("close", unsubscribe);
           return;
         }
+        if (route === "api/labels") { json(res, 200, await backend.labels.snapshot()); return; }
         if (route === "api/workspaces") { json(res, 200, { workspaces: await backend.catalog.workspaces() }); return; }
         if (route === "api/models") {
           const id = url.searchParams.get("id");
@@ -292,6 +315,11 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         }
         json(res, 200, await creation.result); return;
       }
+      if (route === "api/labels") {
+        const result = await backend.labels.apply(parseLabelAction(body));
+        await backend.catalog.notify();
+        json(res, 200, { ok: true, ...result }); return;
+      }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
       if (route === "api/accounts") {
         const action = parseAccountAction(body);
@@ -345,7 +373,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       }
       json(res, 200, { ok: true });
     } catch (error) {
-      const status = error instanceof RequestError || error instanceof ThreadError ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError ? error.status : 502;
       if (!res.headersSent && !res.destroyed) json(res, status, { error: error instanceof Error ? error.message : "Prime Agent is unavailable." });
     }
   }

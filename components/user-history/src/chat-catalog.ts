@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
+import type { ChatLabels } from "./chat-labels.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
-import type { SessionRow, SessionsEvent, Workspace } from "./shared/types.ts";
+import type { SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -28,7 +29,9 @@ export function isBusySummary(row: SessionSummary): boolean {
     Boolean(row.sessionActions?.active) || (row.sessionActions?.queuedCount ?? 0) > 0;
 }
 
-export function projectRow(row: SessionSummary, readMarker: number | undefined, baseline: number): SessionRow {
+export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; workingSince?: number }
+
+export function projectRow(row: SessionSummary, readMarker: number | undefined, baseline: number, extras: RowExtras = {}): SessionRow {
   const live = row.activeSessionId !== undefined;
   const named = typeof row.sessionName === "string" && row.sessionName.trim().length > 0;
   const lastActivity = Date.parse(row.lastActivityAt ?? row.modified ?? "");
@@ -50,7 +53,31 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     unread: status !== "running" && row.messageCount > 0 && finishedAt > Math.max(baseline, readMarker ?? 0),
     ...(row.workerState ? { workerState: row.workerState } : {}),
     ...(row.statusLabel ? { statusLabel: row.statusLabel } : {}),
+    tags: extras.labels?.tags ?? [],
+    priority: extras.labels?.priority ?? 0,
+    ...(status === "running" && extras.workingSince !== undefined ? { workingSince: new Date(extras.workingSince).toISOString() } : {}),
+    ...(extras.schedule ? { schedule: extras.schedule } : {}),
   };
+}
+
+/** Active and paused scheduled jobs per session, from the daemon `cron_list` reply. One schedule per session: active before paused, then the next run. */
+export function parseSchedules(value: unknown): Map<string, ThreadSchedule> {
+  const byId = new Map<string, ThreadSchedule>();
+  const jobs = isRecord(value) && Array.isArray(value.jobs) ? value.jobs : [];
+  for (const job of jobs) {
+    if (!isRecord(job) || typeof job.sessionId !== "string" || (job.status !== "active" && job.status !== "paused")) continue;
+    const schedule: ThreadSchedule = {
+      kind: job.source === "heartbeat" || job.source === "rlm_heartbeat" ? "heartbeat" : "cron",
+      status: job.status,
+      expression: isRecord(job.schedule) && typeof job.schedule.expression === "string" ? job.schedule.expression : "",
+      ...(typeof job.label === "string" && job.label ? { label: job.label } : {}),
+      ...(typeof job.nextRunAt === "string" ? { nextRunAt: job.nextRunAt } : {}),
+    };
+    const current = byId.get(job.sessionId);
+    const earlier = (left: ThreadSchedule, right: ThreadSchedule) => (left.nextRunAt ?? "~").localeCompare(right.nextRunAt ?? "~") < 0;
+    if (!current || (schedule.status === "active" && current.status === "paused") || (schedule.status === current.status && earlier(schedule, current))) byId.set(job.sessionId, schedule);
+  }
+  return byId;
 }
 
 export function parseSummaries(value: unknown): SessionSummary[] {
@@ -61,6 +88,10 @@ export function parseSummaries(value: unknown): SessionSummary[] {
 export class Catalog {
   readonly client: DaemonClient;
   private summaries = new Map<string, SessionSummary>();
+  private schedules = new Map<string, ThreadSchedule>();
+  private readonly workingSince = new Map<string, number>();
+  /** The attached thread's native run start, when the browser has that thread open. */
+  runStartedAt: (sessionId: string) => number | null = () => null;
   private readonly listeners = new Set<(event: SessionsEvent) => void>();
   private daemon: "up" | "down" = "down";
   private lastError: string | undefined;
@@ -71,7 +102,7 @@ export class Catalog {
   private refreshing: Promise<void> | undefined;
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly readState: ChatReadState) {
+  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels) {
     this.client = new DaemonClient(socketPath);
     this.client.onMessage(message => {
       if (message.type === "roster_update") this.scheduleRefresh();
@@ -127,8 +158,12 @@ export class Catalog {
     if (this.refreshing) return this.refreshing;
     this.refreshing = (async () => {
       await this.connect();
-      const response = await this.client.request({ type: "list", all: true }, 30000, { recoverable: false });
+      const [response, jobs] = await Promise.all([
+        this.client.request({ type: "list", all: true }, 30000, { recoverable: false }),
+        this.client.request({ type: "cron_list" }, 10000, { recoverable: false }).catch(() => null),
+      ]);
       if (!response.success) throw new Error(response.error);
+      if (jobs?.success) this.schedules = parseSchedules(jobs.data);
       const next = new Map<string, SessionSummary>();
       for (const row of parseSummaries(response.data)) {
         if (!isTopLevel(row)) continue;
@@ -141,16 +176,37 @@ export class Catalog {
     return this.refreshing;
   }
 
-  async rows(): Promise<SessionRow[]> {
-    const state = await this.readState.snapshot().catch(() => null);
-    return [...this.summaries.values()]
-      .filter(row => isListed(row))
-      .map(row => projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0))
-      .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
+  /** Working time starts at the attached thread's native run start, else when this server first saw the session busy. */
+  private trackWorking(row: SessionSummary, now: number): number | undefined {
+    if (!isBusySummary(row) || row.activeSessionId === undefined) { this.workingSince.delete(row.sessionId); return undefined; }
+    const native = this.runStartedAt(row.sessionId);
+    const since = Math.min(this.workingSince.get(row.sessionId) ?? now, native ?? now);
+    this.workingSince.set(row.sessionId, since);
+    return since;
   }
 
+  private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
+    const [state, labels] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null)]);
+    const now = Date.now();
+    for (const id of this.workingSince.keys()) if (!this.summaries.has(id)) this.workingSince.delete(id);
+    const rows = [...this.summaries.values()]
+      .filter(row => isListed(row))
+      .map(row => {
+        const schedule = this.schedules.get(row.sessionId);
+        const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
+        const workingSince = this.trackWorking(row, now);
+        return projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
+          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), ...(workingSince === undefined ? {} : { workingSince }) });
+      })
+      .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
+    return { rows, tags: labels?.tags ?? [] };
+  }
+
+  async rows(): Promise<SessionRow[]> { return (await this.project()).rows; }
+
   async event(): Promise<SessionsEvent> {
-    return { type: "sessions", sessions: await this.rows(), daemon: this.daemon, ...(this.lastError && this.daemon === "down" ? { error: this.lastError } : {}) };
+    const { rows, tags } = await this.project();
+    return { type: "sessions", sessions: rows, tags, daemon: this.daemon, ...(this.lastError && this.daemon === "down" ? { error: this.lastError } : {}) };
   }
 
   private async emit(): Promise<void> {

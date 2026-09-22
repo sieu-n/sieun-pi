@@ -44,23 +44,6 @@ export function compactNumber(value: number): string {
   return (value / 1_000_000).toFixed(1) + "M";
 }
 
-export type DateGroup = "Today" | "Yesterday" | "Previous 7 days" | "Older";
-const GROUPS: readonly { label: DateGroup; withinDays: number }[] = [
-  { label: "Today", withinDays: 0 },
-  { label: "Yesterday", withinDays: 1 },
-  { label: "Previous 7 days", withinDays: 7 },
-];
-
-export function dateGroup(value: string | number | undefined, now = Date.now()): DateGroup {
-  const ms = toMs(value);
-  if (ms === null) return "Older";
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-  const daysAgo = Math.floor((startOfToday.getTime() - ms) / DAY) + 1;
-  for (const group of GROUPS) if (daysAgo <= group.withinDays) return group.label;
-  return "Older";
-}
-
 export function clockTime(value: number): string {
   return new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }

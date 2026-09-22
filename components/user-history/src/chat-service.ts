@@ -121,7 +121,7 @@ async function serve(options: Options): Promise<void> {
   const [{ buildClientBundle }, { createChatBackend }, { startChatServer }] = await Promise.all([
     import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts")]);
   const bundle = await buildClientBundle();
-  const backend = await createChatBackend({ socketPath: service.config.socketPath, readStatePath: join(service.directory, "read-state.json") });
+  const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory });
   let stopped: () => void = () => {};
   const done = new Promise<void>(resolve => { stopped = resolve; });
   let closing: Promise<void> | undefined;

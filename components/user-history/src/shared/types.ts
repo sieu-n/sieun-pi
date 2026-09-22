@@ -126,8 +126,23 @@ export interface SessionRow {
   unread: boolean;
   workerState?: string;
   statusLabel?: string;
+  tags: string[];
+  priority: Priority;
+  workingSince?: string;
+  schedule?: ThreadSchedule;
 }
-export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; daemon: "up" | "down"; error?: string }
+export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
+
+export type Priority = 0 | 1 | 2 | 3;
+export interface Tag { id: string; name: string; hue: number }
+export interface ThreadLabels { tags: string[]; priority: Priority }
+export interface ThreadSchedule { kind: "heartbeat" | "cron"; label?: string; status: "active" | "paused"; expression: string; nextRunAt?: string }
+export type LabelAction =
+  | { op: "create"; name: string; ids: string[] }
+  | { op: "rename"; tagId: string; name: string }
+  | { op: "delete"; tagId: string }
+  | { op: "tag"; tagId: string; ids: string[]; on: boolean }
+  | { op: "priority"; ids: string[]; priority: Priority };
 
 export interface ModelCatalog { models: ModelInfo[]; configuredProviders: string[]; current: ModelInfo | null; thinkingLevel: ThinkingLevel | null; availableThinkingLevels: ThinkingLevel[] }
 export interface Command { name: string; description?: string; argumentHint?: string; source: "extension" | "prompt" | "skill" | "session" }

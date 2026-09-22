@@ -1,6 +1,6 @@
 import { api, ApiError, requestId } from "./api.ts";
 import { applyThreadEvent, isThreadBusy } from "../shared/thread-state.ts";
-import type { ImageInput, SendMode, SessionRow, ThreadState } from "../shared/types.ts";
+import type { ImageInput, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info" }
 export interface PendingChat { cwd: string; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; startedAt: number }
@@ -9,6 +9,7 @@ type ThreadEntry = { state: ThreadState | null; error: string | null; loading: b
 
 class Store {
   sessions = $state<SessionRow[]>([]);
+  tags = $state<Tag[]>([]);
   daemon = $state<"up" | "down" | "unknown">("unknown");
   daemonError = $state<string | null>(null);
   selectedId = $state<string | null>(null);
@@ -25,6 +26,7 @@ class Store {
     window.addEventListener("hashchange", () => { this.selectedId = decodeURIComponent(location.hash.slice(1)) || null; });
     this.sessionsStop = api.sessionsStream(event => {
       this.sessions = event.sessions;
+      this.tags = event.tags;
       this.daemon = event.daemon;
       this.daemonError = event.error ?? null;
     }, () => { if (this.daemon === "unknown") this.daemon = "down"; });

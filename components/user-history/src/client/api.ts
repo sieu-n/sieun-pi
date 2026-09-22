@@ -1,4 +1,4 @@
-import type { AccountAction, AccountsView, Command, ImageInput, ModelCatalog, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountsView, Command, ImageInput, LabelAction, ModelCatalog, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -64,5 +64,6 @@ export const api = {
   setThinking: (id: string, level: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/thinking", { level }),
   queue: (id: string, input: { lane: "steering" | "followUp"; index: number; expectedText: string; text?: string }) =>
     post<{ status: string; error?: string }>("api/threads/" + encodeURIComponent(id) + "/queue", input),
+  labels: (action: LabelAction) => post<{ ok: true; tagId?: string }>("api/labels", action),
   read: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/read", {}),
 };
