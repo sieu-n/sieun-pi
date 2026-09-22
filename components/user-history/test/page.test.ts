@@ -17,8 +17,9 @@ test("native assistant text renders without a final marker or question pairing",
     { id: "reply", role: "assistant", text: "Provider reply", streaming: false },
     { id: "live", role: "assistant", text: "Live reply", streaming: true },
   ]);
-  for (const text of ["Provider progress", "Provider reply", "Live reply", "Responding..."]) assert(html.includes(text));
+  for (const text of ["Provider progress", "Provider reply", "Live reply"]) assert(html.includes(text));
   assert(!html.includes("No marked final"));
+  assert(!html.includes("Responding..."));
   assert.equal(nodes(parse(html)).filter(n => "tagName" in n && n.tagName === "details").length, 0);
 });
 

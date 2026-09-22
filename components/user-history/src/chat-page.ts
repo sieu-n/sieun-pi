@@ -171,6 +171,10 @@ hr { border: 0; border-top: 1px solid #e5e5e5; margin: 24px 0; }
 #queue-items { max-height: 160px; overflow: auto; }
 #queue-items > div { border-bottom: 1px solid var(--line); padding: 4px; overflow-wrap: anywhere; }
 #queue-items textarea { width: 100%; }
+.response.tool-only { margin-top: 4px; line-height: 1.5; }
+.response.tool-only + .response.tool-only { margin-top: 0; }
+.transcript .tool-only details { margin-top: 0; }
+.tool-only .tool > summary { min-height: 24px; line-height: 24px; font-size: 12px; }
 .tool { color: var(--muted); font-size: 12px; }
 .tool summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
 .response[data-outcome="error"], .response[data-outcome="aborted"] { border-left: 2px solid #ad642d; padding-left: 12px; }

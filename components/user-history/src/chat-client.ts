@@ -877,11 +877,15 @@ export const chatClientScript = String.raw`
     if (accountError) { button.textContent = 'Pool unavailable'; button.title = accountError; return; }
     if (!poolListing) { button.textContent = 'Pool…'; button.title = 'Loading pi-pool'; return; }
     if (poolListing.kind === 'none') { button.textContent = 'No pool'; button.title = 'No account pool for ' + (poolListing.provider || 'this model'); return; }
-    const choice = poolListing.rows.find(row => row.pinned) || poolListing.rows.find(row => row.current) || poolListing.rows.find(row => row.seat);
+    const resolution = poolListing.resolution;
+    if (resolution?.kind !== 'resolved') { button.textContent = 'Pool unresolved'; button.title = 'Next-request account unavailable. Open Account to refresh. Seat and last-used account remain separate details.'; return; }
+    if (resolution.accountId === null) { button.textContent = 'No usable account'; button.title = 'pi-pool resolved no usable account for the next request'; return; }
+    const choice = poolListing.rows.find(row => row.id === resolution.accountId);
+    if (!choice) { button.textContent = 'Pool unresolved'; button.title = 'pi-pool resolution changed after the listing. Open Account to refresh.'; return; }
     const used = value => typeof value === 'number' ? value + '%' : '?';
-    const identity = choice ? (choice.pinned ? choice.email.split('@')[0] : 'Pool') + (choice.plan ? ' · ' + choice.plan : '') : 'Pool';
-    button.textContent = identity + (choice ? ' · ' + used(choice.session_pct) + '/' + used(choice.weekly_pct) : ' · Usage unavailable');
-    button.title = choice ? choice.email + (choice.pinned ? ' · Next request' : ' · Follow the pool') + '\n' + choice.usage + '\nSession/week used; ? means unavailable' + (choice.reason ? '\n' + choice.reason : '') : 'Follow the pool · usage unavailable';
+    const identity = choice.email.split('@')[0] + (choice.plan ? ' · ' + choice.plan : '');
+    button.textContent = identity + ' · ' + used(choice.session_pct) + '/' + used(choice.weekly_pct);
+    button.title = choice.email + ' · Next request · ' + (resolution.source || 'pi-pool') + '\n' + choice.usage + '\nSession/week used; ? means unavailable' + (choice.reason ? '\n' + choice.reason : '');
   }
   function addAccountRefresh() { const refresh = document.createElement('button'); refresh.type = 'button'; refresh.className = 'quiet-button'; refresh.textContent = 'Refresh'; refresh.addEventListener('click', openAccounts); $('account-panel').append(refresh); }
   function renderAccounts() {
@@ -890,7 +894,8 @@ export const chatClientScript = String.raw`
     if (poolListing.kind === 'none') { renderAccountWidget(); panel.textContent = 'No account pool for ' + (poolListing.provider || 'this model'); return; }
     renderAccountWidget();
     const note = document.createElement('p'); note.className = 'panel-note';
-    note.textContent = 'Next provider request · session-tree pin · percentages used. Checked ' + new Date(poolListing.checkedAt).toLocaleTimeString(); panel.append(note);
+    const resolved = poolListing.resolution?.kind === 'resolved' ? poolListing.rows.find(row => row.id === poolListing.resolution.accountId) : null;
+    note.textContent = (resolved ? 'Next request: ' + resolved.email + ' · ' + (poolListing.resolution.source || 'pi-pool') : poolListing.resolution?.kind === 'resolved' && poolListing.resolution.accountId === null ? 'No usable account for the next request' : 'Next-request resolution unavailable') + '. Percentages used. Checked ' + new Date(poolListing.checkedAt).toLocaleTimeString(); panel.append(note);
     const option = (label, target, row) => {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'model-option'; button.textContent = label;
       button.setAttribute('aria-pressed', String(row ? row.pinned : !poolListing.rows.some(row => row.pinned)));
@@ -946,7 +951,7 @@ export const chatClientScript = String.raw`
   }
   async function markVisibleRead() {
     const last = selected?.lastAssistant;
-    if (!last || !selected.unread || document.hidden || !document.hasFocus() || !loaded || !connected || !atBottom() || readRequests.has(last.entryId)) return;
+    if (!last || selected.status === 'running' || !selected.unread || document.hidden || !document.hasFocus() || !loaded || !connected || !atBottom() || readRequests.has(last.entryId)) return;
     const entry = Array.from(transcript.querySelectorAll('[data-message-id]')).find(element => element.dataset.messageId === last.entryId);
     if (!entry) return;
     const rect = entry.getBoundingClientRect(); const viewport = scroller.getBoundingClientRect();

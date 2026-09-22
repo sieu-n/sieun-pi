@@ -8,7 +8,8 @@ export interface PoolAccount {
   usable: boolean; reason: string | null; current: boolean; pinned: boolean; force: boolean;
   live: boolean; seat: boolean; score: number | null; plan?: string;
 }
-export type PoolListing = { kind: "pool"; provider: string; sessionId: string; checkedAt: string; rows: PoolAccount[] }
+export type PoolResolution = { kind: "resolved"; accountId: string | null; source: string | null; pinned: boolean } | { kind: "unavailable" };
+export type PoolListing = { kind: "pool"; provider: string; sessionId: string; checkedAt: string; rows: PoolAccount[]; resolution: PoolResolution }
   | { kind: "none"; provider: string; sessionId: string };
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -16,7 +17,7 @@ function record(value: unknown): value is Record<string, unknown> {
 function percent(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
-export function parsePoolListing(value: unknown, provider: string, sessionId: string): PoolListing {
+export function parsePoolListing(value: unknown, provider: string, sessionId: string, resolution: PoolResolution = { kind: "unavailable" }): PoolListing {
   if (!record(value) || value.provider !== provider || value.session !== sessionId || !Array.isArray(value.rows)) {
     throw new Error("pi-pool returned an invalid session listing");
   }
@@ -32,7 +33,15 @@ export function parsePoolListing(value: unknown, provider: string, sessionId: st
       session_pct: percent(row.session_pct), weekly_pct: percent(row.weekly_pct), score: percent(row.score),
       ...(typeof row.plan === "string" ? { plan: row.plan } : {}) };
   });
-  return { kind: "pool", provider, sessionId, rows, checkedAt: new Date().toISOString() };
+  return { kind: "pool", provider, sessionId, rows, resolution, checkedAt: new Date().toISOString() };
+}
+export function parsePoolResolution(value: unknown, provider: string, sessionId: string): PoolResolution {
+  if (!record(value) || value.session !== sessionId || !record(value.providers)) throw new Error("Invalid pi-pool resolution");
+  const selected = value.providers[provider];
+  if (!record(selected) || "error" in selected) return { kind: "unavailable" };
+  if (!(selected.account === null || typeof selected.account === "string") ||
+    !(selected.reason === null || typeof selected.reason === "string") || typeof selected.pinned !== "boolean") throw new Error("Invalid pi-pool provider resolution");
+  return { kind: "resolved", accountId: selected.account, source: selected.reason, pinned: selected.pinned };
 }
 async function run(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -44,11 +53,15 @@ async function run(args: string[]): Promise<string> {
 }
 export async function listPool(provider: string, sessionId: string): Promise<PoolListing> {
   if (!pooledProviders.has(provider)) return { kind: "none", provider, sessionId };
-  const output = await run(["ls", "--json", "--provider", provider, "--session", sessionId]);
+  const [output, resolution] = await Promise.all([
+    run(["ls", "--json", "--provider", provider, "--session", sessionId]),
+    run(["who", "--json", "--session", sessionId]).then(output => parsePoolResolution(JSON.parse(output), provider, sessionId))
+      .catch((): PoolResolution => ({ kind: "unavailable" })),
+  ]);
   let value: unknown;
   try { value = JSON.parse(output); } catch { throw new Error("pi-pool returned unreadable data"); }
   if (record(value) && typeof value.error === "string") throw new Error("pi-pool could not list this session. Check /account in Prime Agent.");
-  return parsePoolListing(value, provider, sessionId);
+  return parsePoolListing(value, provider, sessionId, resolution);
 }
 export async function choosePool(input: { provider: string; sessionId: string; target: string; force: boolean }): Promise<PoolListing> {
   const { provider, sessionId, target, force } = input;

@@ -23,7 +23,7 @@ Select a session to change only the browser view. The terminal keeps its own sel
 
 The header has no permanent Idle line. Native work appears beside a compact spinner above the composer. Its elapsed time comes from native run-start messages, using the same backward scan as Pi's TUI. A reattach does not create a new start time. Compaction, retries, bash and child work keep their native distinctions. Missing start times have no timer.
 
-Tools start collapsed. Each row shows its native name, status and short output summary. Expand to load exact arguments and output through the read-only tool endpoint. Collapsed transcript polls contain only summaries. Expanded live details reload when the native tool revision changes. Native tool events update partial output. Tool duration appears only when the native result supplies it. Reattached tools with no recorded duration do not get an invented timer. Thinking content stays hidden. Error-only and aborted assistant messages remain visible.
+Tools start collapsed. Tool-only assistant messages use compact 24-pixel summary rows without empty reply blocks. Each row shows its native name, status and short output summary. Expand to load exact arguments and output through the read-only tool endpoint. Collapsed transcript polls contain only summaries. Expanded live details reload when the native tool revision changes. Native tool events update partial output. Tool duration appears only when the native result supplies it. Reattached tools with no recorded duration do not get an invented timer. Thinking content stays hidden. Error-only and aborted assistant messages remain visible.
 
 ### Slash commands
 
@@ -39,7 +39,7 @@ The catalog refreshes on session selection, browser reload, a new `/` picker ope
 
 ### Account, model, effort and context
 
-The account widget loads the sanitized pool listing when the selected session or provider changes. Its compact label shows the pool or pinned identity, plan and session/week percentages used. A question mark means unavailable usage. Opening the menu refreshes the listing.
+The account widget loads the sanitized pool listing when the selected session or provider changes. Its compact label shows the effective next-request account, plan and session/week percentages used. `who --json --session ...` resolves that account through pi-pool. The widget never chooses a usable row, last-used account or seat itself. If resolution is unavailable, the widget says Pool unresolved. Current, pinned and seat flags remain separate menu details. A question mark means unavailable usage. Opening the menu refreshes the listing.
 
 The model menu uses the native catalog, configured providers and current selection. Search and More models expose other native entries. It shows input support and native prices when supplied. `setModel()` also changes Prime Agent's default model; the menu states this. Model and effort changes require an idle native session, empty queue and no active children. Controls wait for native readback before displaying the new choice. Effort uses only `availableThinkingLevels`.
 
@@ -63,7 +63,7 @@ Running sessions show a spinner. An idle session with an unseen committed assist
 
 Pi currently has no native browser read record. This component stores only a baseline timestamp and last-read assistant entry per session at `getAgentDir()/browser-chat/read-state.json`. The first use treats older history as read. The file stays outside Git and native conversation history. Atomic rename and a process-owned lock protect concurrent listeners; markers never move backward in time. Reads do not rewrite the file. A damaged or locked read file does not prevent native chat.
 
-A tab marks read only when it has foreground focus and the latest committed assistant response is visible at the bottom. A click on a session while scrolled up does not clear its dot. Reading in the terminal does not change browser markers.
+A tab marks read only when native work is idle, it has foreground focus and the latest committed assistant response is visible at the bottom. A click on a session while scrolled up does not clear its dot. Reading in the terminal does not change browser markers.
 
 The native catalog has no last-assistant field. The adapter caches observed entry metadata against catalog revisions. Each list refresh reads at most four changed recent sessions, rather than every saved history. Other pending response checks say unavailable until inspected. Native modification times invalidate the cache but never become assistant-response timestamps. Old sessions with no observed assistant entry show an unavailable reply date.
 

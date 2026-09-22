@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ChatReadState } from "../src/chat-read-state.ts";
-import { parsePoolListing } from "../src/chat-pool.ts";
+import { parsePoolListing, parsePoolResolution } from "../src/chat-pool.ts";
 import { previewTitle, transcriptMessages } from "../src/chat-backend.ts";
 import { renderChatMessages } from "../src/page.ts";
 
@@ -91,4 +91,19 @@ test("separate listener processes cannot overwrite each other's read markers", a
     const state = await new ChatReadState(path).snapshot();
     for (const id of ['a', 'b', 'c']) assert.equal(state.sessions[id]?.timestamp, 8);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('who resolution validates selected session/provider and omits unrelated provider data', () => {
+  const result = parsePoolResolution({ session: 'sid', providers: { anthropic: { account: 'effective', email: 'email', reason: 'seat_move', pinned: false, shadowed: ['secret'], at: 1 }, 'openai-codex': { error: '/private/credentials' } } }, 'anthropic', 'sid');
+  assert.deepEqual(result, { kind: 'resolved', accountId: 'effective', source: 'seat_move', pinned: false });
+  assert.deepEqual(parsePoolResolution({ session: 'sid', providers: { anthropic: { error: '/private/credentials' } } }, 'anthropic', 'sid'), { kind: 'unavailable' });
+  assert.throws(() => parsePoolResolution({ session: 'other', providers: {} }, 'anthropic', 'sid'));
+});
+
+test('tool-only messages omit empty text blocks and use compact tool rows', () => {
+  const html = renderChatMessages([{ id: 'call', role: 'assistant', text: '', streaming: false, images: [], tools: [{ id: 'tool', name: 'proof', status: 'running', summary: 'Executing', args: {}, output: '', revision: '1' }] }]);
+  assert(html.includes('class="response tool-only"')); assert(!html.includes('class="block"'));
+  const ordinary = renderChatMessages([{ id: 'text', role: 'assistant', text: 'Real reply', streaming: false, images: [] }]);
+  assert(!ordinary.includes('tool-only')); assert(ordinary.includes('class="block"'));
 });

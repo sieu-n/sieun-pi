@@ -1082,13 +1082,13 @@ test('account widget loads once per selected provider and shows pool plan and us
   client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session()); await client.flush();
   assert.equal(client.requests.filter(request => request.path.startsWith('api/accounts')).length, before);
   client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { controls: { ...controls, currentModel: { ...visionModel, provider: 'anthropic' } } })); await client.flush();
-  const listing = { kind: 'pool', sessionId: initialId, provider: 'anthropic', checkedAt: new Date().toISOString(), rows: [{ id: 'one', email: 'reader@example.test', plan: 'Pro', usage: '6% / 42%', session_pct: 6, weekly_pct: 42, current: true, pinned: false, seat: true, usable: true }] };
+  const listing = { kind: 'pool', sessionId: initialId, provider: 'anthropic', checkedAt: new Date().toISOString(), resolution: { kind: 'resolved', accountId: 'one', source: 'seat', pinned: false }, rows: [{ id: 'one', email: 'reader@example.test', plan: 'Pro', usage: '6% / 42%', session_pct: 6, weekly_pct: 42, current: true, pinned: false, seat: true, usable: true }] };
   client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve(listing); await client.flush();
-  assert.equal(client.el('account-button').textContent, 'Pool · Pro · 6%/42%');
+  assert.equal(client.el('account-button').textContent, 'reader · Pro · 6%/42%');
   assert.match(client.el('account-button').title, /reader@example.test/);
   client.el('account-button').click();
   client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve({ ...listing, rows: [{ ...listing.rows[0], session_pct: null, weekly_pct: null }] }); await client.flush();
-  assert.equal(client.el('account-button').textContent, 'Pool · Pro · ?/?');
+  assert.equal(client.el('account-button').textContent, 'reader · Pro · ?/?');
   assert.match(client.el('account-button').title, /unavailable/);
 });
 
@@ -1138,4 +1138,34 @@ test('disconnected running sessions hide stale work indicators until native read
   client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'running', work })); await client.flush();
   assert.equal(client.el('work-status').hidden, false);
   client.window.emit('pagehide'); assert.equal(client.el('work-status').hidden, true);
+});
+
+
+test('account widget follows pi-pool resolution rather than stale seat or locally eligible rows', async () => {
+  const client = startClient(); await ready(client); client.el('account-button').click();
+  const listing = { kind: 'pool', sessionId: initialId, provider: 'native', checkedAt: new Date().toISOString(),
+    resolution: { kind: 'resolved', accountId: 'next', source: 'seat_move', pinned: false }, rows: [
+      { id: 'old', email: 'stale@example.test', plan: 'Pro', usage: '0% / 100%', session_pct: 0, weekly_pct: 100, current: true, pinned: false, seat: true, usable: false, reason: 'needs-reauth' },
+      { id: 'eligible', email: 'not-chosen@example.test', usage: '0% / 0%', session_pct: 0, weekly_pct: 0, current: false, pinned: false, seat: false, usable: true },
+      { id: 'next', email: 'effective@example.test', plan: 'Pro', usage: '20% / 30%', session_pct: 20, weekly_pct: 30, current: false, pinned: false, seat: false, usable: true },
+    ] };
+  client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve(listing); await client.flush();
+  assert.equal(client.el('account-button').textContent, 'effective · Pro · 20%/30%');
+  assert.match(client.el('account-button').title, /seat_move/);
+  client.el('account-button').click();
+  client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve({ ...listing, resolution: { kind: 'unavailable' } }); await client.flush();
+  assert.equal(client.el('account-button').textContent, 'Pool unresolved');
+  assert(!client.el('account-button').textContent.includes('stale'));
+});
+
+
+test('visible committed tool-call entries stay unread while native work is running', async () => {
+  const client = startClient(); await ready(client);
+  const latest = { entryId: 'tool-call-assistant', timestamp: 1000 };
+  client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'running', unread: true, lastAssistant: latest })); await client.flush();
+  const entry = new Element(); entry.dataset.messageId = latest.entryId; client.el('transcript').append(entry);
+  client.el('conversation').scrollTop = 1000; client.el('conversation').emit('scroll'); await client.flush();
+  assert(!client.requests.some(request => request.path === 'api/read'));
+  client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'idle', unread: true, lastAssistant: latest })); await client.flush();
+  assert.deepEqual(JSON.parse(client.findRequest('api/read').options.body ?? ''), { sessionId: initialId, entryId: latest.entryId });
 });
