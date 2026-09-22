@@ -28,7 +28,7 @@ NOW = 1000000.0
 def account(id, email, session_pct=0, weekly_pct=0, gated_pct=0, needs_reauth=False, is_live=False):
     return vend.Account(provider="anthropic", id=id, email=email, needs_reauth=needs_reauth,
                         session_pct=session_pct, weekly_pct=weekly_pct, gated_pct=gated_pct,
-                        is_live=is_live, cred=vend.Keychain("tokenmaxxing-cred-" + id))
+                        is_live=is_live, cred=vend.Keychain("Claude Code-credentials-" + id, "/dev/null"))
 
 
 def codex_account(id, email, plan, session_pct=0, weekly_pct=0):
@@ -291,43 +291,116 @@ class Writers(unittest.TestCase):
         state = state_v2()
         vended = vend.HookWriter(state).record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW)
         self.assertIs(vended, state["sessions"][KEY.key]["vends"]["anthropic"])
-class CodexIndexParsing(unittest.TestCase):
-    """Synthetic Codex accounts, classified by windowSeconds rather than array position."""
+class IndexV2Windows(unittest.TestCase):
+    """tokenmaxxing index v2 windows, classified by windowSeconds and name
+    rather than array position, for both providers."""
 
-    THIRTY_DAY_ONLY = {
-        "accountId": "00000000-0000-4000-8000-000000000001",
-        "email": "monthly@example.test",
-        "lastUsageAt": NOW * 1000,
-        "lastUsage": {"aggregate": [
-            {"usedPercentage": 0, "resetsAt": (NOW + 2592000) * 1000, "windowSeconds": 2592000},
-        ]},
-    }
-    FIVE_H_PLUS_WEEKLY = {
-        "accountId": "00000000-0000-4000-8000-000000000002",
-        "email": "weekly@example.test",
-        "lastUsageAt": NOW * 1000,
-        "lastUsage": {"aggregate": [
-            {"usedPercentage": 0, "resetsAt": (NOW + 18000) * 1000, "windowSeconds": 18000},
-            {"usedPercentage": 100, "resetsAt": (NOW + 604800) * 1000, "windowSeconds": 604800},
-        ]},
-    }
+    @staticmethod
+    def win(pct, secs, reset_in=None, name=None, sampled=NOW):
+        return {"name": name, "usedPercentage": pct, "windowSeconds": secs, "sampledAt": sampled * 1000,
+                "resetsAt": None if reset_in is None else (NOW + reset_in) * 1000}
 
     def test_a_plan_with_only_a_thirty_day_window_has_no_session_bar(self):
-        self.assertEqual(vend.codex_window_pcts(self.THIRTY_DAY_ONLY, NOW), (0, 0))
+        acct = {"windows": [self.win(40, 2592000, 2592000)]}
+        self.assertEqual(vend.usage_pct(acct, NOW), (0, 40))
 
     def test_a_five_hour_and_weekly_pair_is_classified_by_window_seconds(self):
-        self.assertEqual(vend.codex_window_pcts(self.FIVE_H_PLUS_WEEKLY, NOW), (0, 100))
-
-    def test_classification_ignores_array_order(self):
-        reordered = dict(self.FIVE_H_PLUS_WEEKLY)
-        reordered["lastUsage"] = {"aggregate": list(reversed(self.FIVE_H_PLUS_WEEKLY["lastUsage"]["aggregate"]))}
-        self.assertEqual(vend.codex_window_pcts(reordered, NOW), (0, 100))
+        acct = {"windows": [self.win(100, 604800, 604800), self.win(12, 18000, 18000)]}
+        self.assertEqual(vend.usage_pct(acct, NOW), (12, 100))
 
     def test_a_passed_reset_self_heals_to_zero(self):
-        stale = {"lastUsageAt": (NOW - 90000) * 1000,
-                 "lastUsage": {"aggregate": [
-                     {"usedPercentage": 87, "resetsAt": (NOW - 60) * 1000, "windowSeconds": 18000}]}}
-        self.assertEqual(vend.codex_window_pcts(stale, NOW), (0, 0))
+        acct = {"windows": [self.win(87, 18000, -60)]}
+        self.assertEqual(vend.usage_pct(acct, NOW), (0, 0))
+
+    def test_a_null_reset_expires_after_its_own_window(self):
+        acct = {"windows": [self.win(87, 18000, None, sampled=NOW - 18001)]}
+        self.assertEqual(vend.usage_pct(acct, NOW), (0, 0))
+
+    def test_named_windows_feed_only_the_gated_cap(self):
+        acct = {"windows": [self.win(5, 18000, 100), self.win(10, 604800, 100),
+                            self.win(100, 604800, 100, name="Fable"), self.win(70, 604800, 100, name="Sonnet")]}
+        self.assertEqual(vend.usage_pct(acct, NOW), (5, 10))
+        self.assertEqual(vend.gated_pct(acct, CFG, NOW), 100)
+        self.assertEqual(vend.gated_pct(acct, dict(CFG, switch_models=["opus"]), NOW), 0)
+
+
+class StoreLayout(unittest.TestCase):
+    """The store path and keychain service must match tokenmaxxing's
+    storeDirFor and namespacedCredService byte for byte."""
+
+    def test_service_is_sha256_of_the_store_path(self):
+        store = "/Users/someone/.config/tokenmaxxing/stores/382bc870"
+        import hashlib
+        expected = "Claude Code-credentials-" + hashlib.sha256(store.encode()).hexdigest()[:8]
+        self.assertEqual(vend.store_service(store), expected)
+
+    def test_store_dir_uses_the_first_eight_chars(self):
+        self.assertEqual(os.path.basename(vend.store_dir("382bc870-8dc4-484d")), "382bc870")
+
+    def test_a_v1_index_is_refused_with_the_version(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "accounts.json")
+            with open(path, "w") as f:
+                json.dump({"version": 1, "accounts": []}, f)
+            with self.assertRaisesRegex(RuntimeError, "schema v1"):
+                vend._read_index(path)
+
+    def test_mark_needs_reauth_flags_one_account_and_keeps_the_rest(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "accounts.json")
+            idx = {"version": 2, "accounts": [{"id": "a", "email": "a@x", "windows": [], "extra": 1},
+                                              {"id": "b", "email": "b@x", "windows": []}]}
+            with open(path, "w") as f:
+                json.dump(idx, f)
+            vend.mark_needs_reauth(path, "a")
+            out = json.load(open(path))
+            self.assertEqual(out["accounts"][0]["needsReauth"], True)
+            self.assertEqual(out["accounts"][0]["extra"], 1)
+            self.assertNotIn("needsReauth", out["accounts"][1])
+
+
+class AnthropicRefusal(unittest.TestCase):
+    """Only 401 and 403 refuse; rate limits and outages do not."""
+
+    @staticmethod
+    def raising(code, body):
+        import urllib.error
+        def fake(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(body.encode()))
+        return fake
+
+    def test_an_org_that_disallows_oauth_is_named(self):
+        body = '{"error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}'
+        with unittest.mock.patch.object(vend.urllib.request, "urlopen", self.raising(403, body)):
+            self.assertEqual(vend.anthropic_refusal("t"), "oauth not allowed for organization")
+
+    def test_a_revoked_token_is_a_refusal(self):
+        with unittest.mock.patch.object(vend.urllib.request, "urlopen", self.raising(401, "{}")):
+            self.assertEqual(vend.anthropic_refusal("t"), "token rejected (401)")
+
+    def test_rate_limits_and_outages_are_not(self):
+        for code in (400, 429, 500):
+            with unittest.mock.patch.object(vend.urllib.request, "urlopen", self.raising(code, "{}")):
+                self.assertIsNone(vend.anthropic_refusal("t"))
+
+
+class ClaudeRefreshLockDirs(unittest.TestCase):
+    def test_takes_and_releases_both_lock_dirs(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = os.path.join(d, "stores", "abcd1234")
+            with vend.ClaudeRefreshLock(store):
+                self.assertTrue(os.path.isdir(os.path.join(store, ".oauth_refresh.lock")))
+                self.assertTrue(os.path.isdir(os.path.realpath(store) + ".lock"))
+            self.assertFalse(os.path.exists(os.path.join(store, ".oauth_refresh.lock")))
+            self.assertFalse(os.path.exists(os.path.realpath(store) + ".lock"))
+
+    def test_a_held_lock_is_contested(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = os.path.join(d, "s")
+            with vend.ClaudeRefreshLock(store):
+                with self.assertRaises(TimeoutError):
+                    with vend.ClaudeRefreshLock(store, attempts=2, retry_sec=0.01):
+                        pass
 
 
 class JWTClaimDecode(unittest.TestCase):

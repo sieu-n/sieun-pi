@@ -54,19 +54,30 @@ Running processes still need a restart to load changed JavaScript.
 
 ## External credential dependencies
 
-pi-pool depends on the user's existing tokenmaxxing stores under
-`~/.config/tokenmaxxing`. This repository does not install or seed those stores.
+pi-pool depends on the user's existing tokenmaxxing pool under
+`~/.config/tokenmaxxing` (or `TOKENMAXXING_HOME`). It reads the per-account
+store layout that tokenmaxxing 1.44 and later use, index schema version 2.
+A version 1 index makes every command fail with the schema version in the error.
+This repository does not install or seed those stores.
 
 | dependency | use |
 |---|---|
-| `accounts.json` | Claude account ids, emails, usage, active account and each `keychainItem` service name |
+| `accounts.json` (v2) | Claude account ids, emails, usage `windows` and `needsReauth` |
+| `stores/<uuid8>/` | One Claude store per account. Its credential is the Keychain item `Claude Code-credentials-<sha256(store path)[:8]>`, the same item a supervised `claude` reads |
 | macOS Keychain | Claude credentials, read and written through `/usr/bin/security` using `USER` as the keychain account |
-| `Claude Code-credentials` Keychain service | Read-only credential for the account currently active in Claude Code |
-| `lock` | tokenmaxxing's Claude refresh lock |
-| `codex-accounts.json` | Codex account ids, emails, plans, usage and each `credFile` name |
-| `codex-creds/<credFile>.json` | Parked Codex credentials and in-place refresh results |
+| `lock` and `stores/<uuid8>/.oauth_refresh.lock` + `stores/<uuid8>.lock` | tokenmaxxing's Claude pool lock, then Claude Code's own refresh lock on that store |
+| `live/` | Presence files of supervised `claude` sessions, a picker penalty only |
+| `codex-accounts.json` (v2) | Codex account ids, emails, plan (`tier`), usage `windows` and `needsReauth` |
+| `codex-stores/<uuid8>/auth.json` | One Codex store per account, refreshed in place |
 | `codex-lock` | tokenmaxxing's Codex refresh lock |
-| `codex-live/` and `~/.codex/auth.json` | Detect accounts owned by a live Codex CLI session |
+| `codex-live/` | Presence files of supervised `codex` sessions. pi-pool never refreshes a store one of them runs on |
+
+A dead refresh token (`invalid_grant`, `refresh_token_reused`) sets `needsReauth`
+on that account in tokenmaxxing's index, so `tokenmaxxing auth --all` offers it.
+On a seat move or a fresh rotation, pi-pool also sends one free
+`/v1/messages/count_tokens` request. A 401 or a 403 such as
+`oauth_not_allowed_for_organization` puts the account on a
+`refused_cooldown_sec` cooldown (6 hours by default).
 
 Refresh requests use `https://platform.claude.com/v1/oauth/token` and
 `https://auth.openai.com/oauth/token`. They require network access and valid grants.

@@ -183,11 +183,11 @@ assert.equal(snapshot.sessions['synthetic-root'].uuid, 'synthetic-root');
     def test_account_completions_return_items_from_both_pools(self):
         tokenmaxxing = self.home / ".config" / "tokenmaxxing"
         tokenmaxxing.mkdir(parents=True)
-        (tokenmaxxing / "accounts.json").write_text(json.dumps({"accounts": [
-            {"accountUuid": "synthetic-claude", "email": "claude@example.test", "keychainItem": "not-read"}
+        (tokenmaxxing / "accounts.json").write_text(json.dumps({"version": 2, "accounts": [
+            {"id": "synthetic-claude", "label": "claude", "email": "claude@example.test", "windows": []}
         ]}))
-        (tokenmaxxing / "codex-accounts.json").write_text(json.dumps({"accounts": [
-            {"accountId": "synthetic-codex", "email": "codex@example.test", "credFile": "not-read"}
+        (tokenmaxxing / "codex-accounts.json").write_text(json.dumps({"version": 2, "accounts": [
+            {"id": "synthetic-codex", "label": "codex", "email": "codex@example.test", "windows": []}
         ]}))
         before = self.snapshot()
         script = """import assert from 'node:assert/strict';

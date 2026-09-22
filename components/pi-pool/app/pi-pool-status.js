@@ -12,8 +12,8 @@
  * which is the bug this file used to have.
  *
  * Inputs, all local files, re-read only when their mtime moves:
- *   ~/.config/tokenmaxxing/accounts.json        anthropic usage bars
- *   ~/.config/tokenmaxxing/codex-accounts.json   openai-codex usage bars
+ *   ~/.config/tokenmaxxing/accounts.json        anthropic usage bars (index v2 windows)
+ *   ~/.config/tokenmaxxing/codex-accounts.json   openai-codex usage bars (index v2 windows)
  *   ~/.config/pi-pool/state.json                 v2: providers[p], sessions[key]
  *   ~/.config/pi-pool/config.json                overrides of vend.py DEFAULTS
  *   ~/.prime/agent/models.json                   is a provider's apiKey the pool hook?
@@ -34,10 +34,8 @@ import { join } from "node:path";
 
 const HOME = homedir();
 const POOL_DIR = process.env.PI_POOL_DIR || join(HOME, ".config", "pi-pool");
-const TM_DIR = join(HOME, ".config", "tokenmaxxing");
-const FIVE_H_MS = 5 * 3600 * 1000;
-const WEEK_MS = 7 * 24 * 3600 * 1000;
-const CODEX_SESSION_WINDOW_MAX_S = 6 * 3600;
+const TM_DIR = process.env.TOKENMAXXING_HOME || join(HOME, ".config", "tokenmaxxing");
+const SESSION_WINDOW_MAX_S = 6 * 3600;
 const STAT_INTERVAL_MS = 1000;
 const USAGE_STALE_AFTER_MS = 20 * 60 * 1000;
 const DOT = "\xB7";
@@ -89,14 +87,34 @@ function config() {
 }
 
 // ---------------------------------------------------------------- usage math
-// Same rules as vend.py live_pct / usage_pct / gated_pct / depleted / score.
-function livePct(window, windowMs, sampledAtMs, nowMs) {
+// Same rules as vend.py live_pct / usage_pct / gated_pct / depleted / score,
+// over tokenmaxxing index v2 windows: {name, usedPercentage, resetsAt, windowSeconds, sampledAt}.
+function livePct(window, nowMs) {
 	if (!window) return 0;
 	const pct = window.usedPercentage || 0;
 	const resets = window.resetsAt;
 	if (resets !== null && resets !== undefined) return resets <= nowMs ? 0 : pct;
-	if (sampledAtMs && nowMs >= sampledAtMs + windowMs) return 0;
+	const secs = window.windowSeconds;
+	if (secs !== null && secs !== undefined && nowMs >= (window.sampledAt || 0) + secs * 1000) return 0;
 	return pct;
+}
+
+function isSessionWindow(w) {
+	return w.windowSeconds !== null && w.windowSeconds !== undefined && w.windowSeconds <= SESSION_WINDOW_MAX_S;
+}
+
+function sessionWindow(account) {
+	return (account.windows ?? []).find((w) => w.name == null && isSessionWindow(w)) ?? null;
+}
+
+function weeklyWindow(account) {
+	const rows = (account.windows ?? []).filter((w) => w.name == null && !isSessionWindow(w));
+	if (!rows.length) return null;
+	return rows.reduce((best, w) => ((w.windowSeconds ?? 0) > (best.windowSeconds ?? 0) ? w : best));
+}
+
+function familyTokens(name) {
+	return name.trim().toLowerCase().split(/[\s.-]+/).filter((t) => t.length > 0);
 }
 
 function resetIn(window, nowMs) {
@@ -118,66 +136,34 @@ export function formatDuration(sec) {
 	return `${m}m`;
 }
 
-function gatedFamilies(account, cfg) {
-	const out = [];
-	const at = account.lastPerModelAt || account.lastUsageAt || 0;
-	for (const [model, window] of Object.entries(account.lastPerModel ?? {})) {
-		if (cfg.switch_models.some((f) => model.toLowerCase().includes(String(f).toLowerCase()))) {
-			out.push({ model, window, at });
-		}
-	}
-	return out;
-}
-
 // ---------------------------------------------------------- account normalizing
 // Both providers land on one shape here, the same boundary vend.py draws
 // (D5), so describeAccount, ranking, and score run unchanged for either.
-function normalizeAnthropicAccount(a, cfg, nowMs) {
-	const lu = a.lastUsage ?? {};
-	const at = a.lastUsageAt || 0;
-	const session = livePct(lu.fiveHour, FIVE_H_MS, at, nowMs);
-	const weekly = livePct(lu.sevenDay, WEEK_MS, at, nowMs);
+function normalizeAccount(provider, a, cfg, nowMs) {
+	const session = sessionWindow(a);
+	const weekly = weeklyWindow(a);
 	let gated = 0;
 	let gatedReset = null;
-	for (const fam of gatedFamilies(a, cfg)) {
-		const p = livePct(fam.window, WEEK_MS, fam.at, nowMs);
-		if (p > gated || gatedReset === null) {
-			gated = Math.max(gated, p);
-			gatedReset = resetIn(fam.window, nowMs);
+	if (provider === "anthropic") {
+		const families = cfg.switch_models.map((f) => String(f).toLowerCase());
+		for (const w of a.windows ?? []) {
+			if (w.name == null || !families.some((f) => familyTokens(w.name).includes(f))) continue;
+			const p = livePct(w, nowMs);
+			if (p > gated || gatedReset === null) {
+				gated = Math.max(gated, p);
+				gatedReset = resetIn(w, nowMs);
+			}
 		}
 	}
 	return {
-		provider: "anthropic", id: a.accountUuid, email: a.email,
-		needsReauth: Boolean(a.needsReauth), sessionPct: session, weeklyPct: weekly, gatedPct: gated,
-		sessionReset: resetIn(lu.fiveHour, nowMs), weeklyReset: resetIn(lu.sevenDay, nowMs), gatedReset,
-		usageAt: at,
+		provider, id: a.id, email: a.email ?? a.label,
+		needsReauth: Boolean(a.needsReauth), sessionPct: livePct(session, nowMs), weeklyPct: livePct(weekly, nowMs), gatedPct: gated,
+		sessionReset: resetIn(session, nowMs), weeklyReset: resetIn(weekly, nowMs), gatedReset,
+		usageAt: a.lastUsageAt || 0,
 	};
 }
 
-/** The codex aggregate entry on the wanted side of the 6h line, closest to it. */
-function codexWindow(account, above) {
-	const items = account.lastUsage?.aggregate ?? [];
-	const pool = items.filter((w) => (above ? w.windowSeconds > CODEX_SESSION_WINDOW_MAX_S : w.windowSeconds <= CODEX_SESSION_WINDOW_MAX_S));
-	if (!pool.length) return null;
-	pool.sort((x, y) => (above ? x.windowSeconds - y.windowSeconds : y.windowSeconds - x.windowSeconds));
-	return pool[0];
-}
-
-function normalizeCodexAccount(a, nowMs) {
-	const at = a.lastUsageAt || 0;
-	const sessionWindow = codexWindow(a, false);
-	const weeklyWindow = codexWindow(a, true);
-	const session = sessionWindow ? livePct(sessionWindow, (sessionWindow.windowSeconds || 0) * 1000, at, nowMs) : 0;
-	const weekly = weeklyWindow ? livePct(weeklyWindow, (weeklyWindow.windowSeconds || 0) * 1000, at, nowMs) : 0;
-	return {
-		provider: "openai-codex", id: a.accountId, email: a.email,
-		needsReauth: Boolean(a.needsReauth), sessionPct: session, weeklyPct: weekly, gatedPct: 0,
-		sessionReset: resetIn(sessionWindow, nowMs), weeklyReset: resetIn(weeklyWindow, nowMs), gatedReset: null,
-		usageAt: at,
-	};
-}
-
-function describeAccount(norm, cfg, providerState, activeId, nowMs) {
+function describeAccount(norm, cfg, providerState, nowMs) {
 	const cooldownUntil = providerState.cooldowns?.[norm.id] ?? 0;
 	const cooldownLeft = cooldownUntil * 1000 > nowMs ? cooldownUntil - nowMs / 1000 : 0;
 	const depleted = norm.sessionPct >= cfg.five_hour_max_pct || norm.weeklyPct >= cfg.seven_day_max_pct || norm.gatedPct >= cfg.seven_day_max_pct;
@@ -187,7 +173,6 @@ function describeAccount(norm, cfg, providerState, activeId, nowMs) {
 		cooldownLeft,
 		depleted,
 		usable,
-		isLive: norm.id === activeId,
 		isSeat: providerState.seat?.account_id === norm.id,
 		isPoolPinned: providerState.pin === norm.id,
 	};
@@ -209,12 +194,11 @@ function buildSnapshot(nowMs, provider) {
 	const providerState = state.providers?.[provider] ?? emptyProviderState();
 	const sessions = state.sessions ?? {};
 	let accounts;
-	if (provider === "anthropic") {
-		const index = readJson(join(TM_DIR, "accounts.json")) ?? {};
-		accounts = (index.accounts ?? []).map((a) => describeAccount(normalizeAnthropicAccount(a, cfg, nowMs), cfg, providerState, index.activeAccountUuid, nowMs));
-	} else if (provider === "openai-codex") {
-		const index = readJson(join(TM_DIR, "codex-accounts.json")) ?? {};
-		accounts = (index.accounts ?? []).map((a) => describeAccount(normalizeCodexAccount(a, nowMs), cfg, providerState, index.activeAccountId, nowMs));
+	const indexFile = { anthropic: "accounts.json", "openai-codex": "codex-accounts.json" }[provider];
+	if (indexFile) {
+		const index = readJson(join(TM_DIR, indexFile)) ?? {};
+		const rows = index.version === 2 ? index.accounts ?? [] : [];
+		accounts = rows.map((a) => describeAccount(normalizeAccount(provider, a, cfg, nowMs), cfg, providerState, nowMs));
 	} else {
 		accounts = [];
 	}
@@ -469,8 +453,7 @@ export function tableLines(provider, sessionId, sessionUuid) {
 		const who = sa.hasVend && sa.pin && sa.row && sa.pin.account_id === sa.row.id ? `${sa.row.email} (pinned)` : snap.seat ? snap.seat.email : "unset";
 		const lines = [`seat ${who} ${DOT} ${snap.usable.length}/${snap.accounts.length} usable`];
 		for (const a of snap.accounts) {
-			const liveTag = a.isLive ? (provider === "openai-codex" ? "codex-live" : "claude-code-live") : "";
-			const tags = [a.isSeat ? "seat" : "", liveTag, ...flags(a)].filter(Boolean);
+			const tags = [a.isSeat ? "seat" : "", ...flags(a)].filter(Boolean);
 			lines.push(`${a.email.padEnd(26)} 5h ${String(a.sessionPct).padStart(3)}% ${formatDuration(a.sessionReset).padEnd(6)} 7d ${String(a.weeklyPct).padStart(3)}% ${formatDuration(a.weeklyReset).padEnd(6)} ${tags.join(" ") || "available"}`);
 		}
 		return lines;

@@ -9,26 +9,29 @@ protocols accept a bare access token as the apiKey (pi-ai sniffs
 account id straight out of the JWT), so a short-lived ACCESS token is all
 either provider ever needs.
 
-Prime receives access tokens only. This script reads tokenmaxxing's parked
-credentials (a keychain item for anthropic, a JSON file for codex), refreshes
-in place under tokenmaxxing's own flock, and prints only an access token.
+Prime receives access tokens only. This script reads tokenmaxxing's
+per-account credential stores (tokenmaxxing >= 1.37: a keychain item keyed by
+stores/<uuid8> for anthropic, codex-stores/<uuid8>/auth.json for codex),
+refreshes in place under the same locks tokenmaxxing and Claude Code take, and
+prints only an access token.
 Private rotation journals live under the pool state directory.
 
 stdout = the token, and nothing else. All diagnostics go to the log file.
 """
-import base64, collections, dataclasses, fcntl, json, os, shlex, subprocess, sys, time, urllib.request, urllib.error
+import base64, collections, dataclasses, fcntl, hashlib, json, os, re, shlex, subprocess, sys, time, unicodedata, urllib.request, urllib.error
 
 HOME = os.path.expanduser("~")
-TM = os.path.join(HOME, ".config", "tokenmaxxing")
+TM = os.environ.get("TOKENMAXXING_HOME") or os.path.join(HOME, ".config", "tokenmaxxing")
 TM_ACCOUNTS = os.path.join(TM, "accounts.json")
 TM_CODEX_ACCOUNTS = os.path.join(TM, "codex-accounts.json")
-TM_CODEX_CREDS = os.path.join(TM, "codex-creds")
+TM_STORES = os.path.join(TM, "stores")
+TM_CODEX_STORES = os.path.join(TM, "codex-stores")
+TM_LIVE = os.path.join(TM, "live")
 TM_CODEX_LIVE = os.path.join(TM, "codex-live")
 TM_LOCK = os.path.join(TM, "lock")
 TM_CODEX_LOCK = os.path.join(TM, "codex-lock")
-CODEX_AUTH_PATH = os.path.join(HOME, ".codex", "auth.json")
-LIVE_SERVICE = "Claude Code-credentials"
-KC_ACCOUNT = os.environ.get("USER") or "unknown"
+TM_INDEX_VERSION = 2
+KC_ACCOUNT = os.environ.get("TOKENMAXXING_KEYCHAIN_ACCOUNT") or os.environ.get("USER") or "unknown"
 
 CODE_ROOT = os.path.dirname(os.path.realpath(__file__))
 POOL = os.environ.get("PI_POOL_DIR") or os.path.join(HOME, ".config", "pi-pool")
@@ -58,16 +61,19 @@ DEFAULTS = {
     # cooldown applied to an account after a vend-failure signal
     "cooldown_sec": 1200,
     # picker smoothing: usage-% equivalent charged per session already on an
-    # account, and for being the account another tool is currently live on
+    # account, and for an account a tokenmaxxing-supervised claude/codex
+    # session is running on right now
     "session_penalty": 8,
     "active_account_penalty": 15,
-    # allow the account another tool is currently live on (read-only, never
-    # refreshed here) when nothing else is available
+    # allow an account a supervised session is running on
     "allow_active_account": True,
     # anthropic-only per-model weekly caps that also count toward depletion
     "switch_models": ["fable"],
     # a session record with no vend and no fresh pin for this long is dropped
     "pin_ttl_sec": 7 * 24 * 3600,
+    # cooldown for an anthropic account whose organization refuses OAuth
+    # (HTTP 403 oauth_not_allowed_for_organization) or rejects its token
+    "refused_cooldown_sec": 6 * 3600,
 }
 
 
@@ -155,6 +161,71 @@ def kc_write(service, secret):
         raise RuntimeError(f"keychain write failed for {service}: {r.stderr.strip()[:200]}")
 
 
+def store_dir(account_id):
+    """tokenmaxxing's storeDirFor: stores/<first 8 chars of the account id>."""
+    return os.path.join(TM_STORES, account_id[:8])
+
+
+def store_service(store):
+    """tokenmaxxing's namespacedCredService, which is also the keychain service
+    Claude Code itself uses when CLAUDE_SECURESTORAGE_CONFIG_DIR names `store`."""
+    digest = hashlib.sha256(unicodedata.normalize("NFC", store).encode()).hexdigest()
+    return f"Claude Code-credentials-{digest[:8]}"
+
+
+class ClaudeRefreshLock:
+    """Claude Code's credential-refresh lock on one store, mirroring
+    tokenmaxxing's withClaudeRefreshLock: mkdir `<store>/.oauth_refresh.lock`
+    and `<realpath store>.lock`, both treated as stale after 60s. Supervised
+    claude sessions on the same store refresh under this lock, so a refresh
+    here never races theirs."""
+
+    STALE_SEC = 60.0
+
+    def __init__(self, store, attempts=5, retry_sec=0.4):
+        self.store, self.attempts, self.retry_sec = store, attempts, retry_sec
+        self.held = []
+
+    @classmethod
+    def _try(cls, path):
+        try:
+            os.mkdir(path)
+            return True
+        except FileExistsError:
+            pass
+        try:
+            if time.time() - os.stat(path).st_mtime > cls.STALE_SEC:
+                os.rmdir(path)
+                os.mkdir(path)
+                return True
+        except OSError:
+            pass
+        return False
+
+    def __enter__(self):
+        os.makedirs(self.store, exist_ok=True)
+        primary = os.path.join(self.store, ".oauth_refresh.lock")
+        legacy = os.path.realpath(self.store) + ".lock"
+        for attempt in range(1, self.attempts + 1):
+            if self._try(primary):
+                if self._try(legacy):
+                    self.held = [legacy, primary]
+                    return self
+                os.rmdir(primary)
+            if attempt < self.attempts:
+                time.sleep(self.retry_sec)
+        raise TimeoutError(f"claude's refresh lock on {self.store} is contested")
+
+    def __exit__(self, *exc):
+        for path in self.held:
+            try:
+                os.rmdir(path)
+            except OSError:
+                pass
+        self.held = []
+        return False
+
+
 def jwt_claims(token):
     """Read a JWT's payload without verifying the signature: the token was
     already handed to us by a store we trust, we are only reading its exp
@@ -210,6 +281,55 @@ def refresh_token(creds):
     if data.get("scope"):
         out["scopes"] = [s for s in data["scope"].split(" ") if s]
     return out
+
+
+PROBE_URL = "https://api.anthropic.com/v1/messages/count_tokens"
+PROBE_MODEL = "claude-opus-4-8"
+PROBE_TIMEOUT = 3.0
+
+
+def anthropic_refusal(access_token):
+    """Why the API refuses this token, or None. Uses count_tokens: it costs
+    nothing, it is not rate limited like the usage endpoint, and it answers
+    with the same 403 as inference when the account's organization has OAuth
+    turned off (verified 2026-09-23 on an account whose usage figures looked
+    fine). 401 is a revoked token. Anything else (400, 429, 5xx, network) is
+    not a refusal."""
+    body = json.dumps({"model": PROBE_MODEL, "messages": [{"role": "user", "content": "ok"}]}).encode()
+    req = urllib.request.Request(PROBE_URL, data=body, method="POST", headers={
+        "Authorization": f"Bearer {access_token}", "anthropic-beta": "oauth-2025-04-20",
+        "anthropic-version": "2023-06-01", "Content-Type": "application/json", "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT):
+            return None
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            return "token rejected (401)"
+        if e.code == 403:
+            text = e.read().decode(errors="replace")
+            return "oauth not allowed for organization" if "OAuth authentication is currently not allowed" in text or "oauth_not_allowed" in text else "forbidden (403)"
+        return None
+    except Exception:
+        return None
+
+
+def mark_needs_reauth(index_path, account_id):
+    """Flag a dead grant in tokenmaxxing's own index, so `tokenmaxxing auth
+    --all` offers it and no later request retries the dead refresh. Call under
+    that index's flock."""
+    idx = load_json(index_path)
+    if not idx or idx.get("version") != TM_INDEX_VERSION:
+        return
+    for rec in idx.get("accounts", []):
+        if rec.get("id") == account_id and not rec.get("needsReauth"):
+            rec["needsReauth"] = True
+            tmp = f"{index_path}.tmp.{os.getpid()}"
+            with open(tmp, "w") as f:
+                f.write(json.dumps(idx, indent=2) + "\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, index_path)
+            log("marked_needs_reauth", account=rec.get("email"))
+            return
 
 
 def refresh_codex_token(refresh_token_value):
@@ -310,7 +430,7 @@ class KeychainAdapter:
 
 
 class CodexFileAdapter:
-    """recover_rotation's view of one parked codex-creds/<id>.json file."""
+    """recover_rotation's view of one codex-stores/<uuid8>/auth.json file."""
 
     def __init__(self, path):
         self.path = path
@@ -322,6 +442,7 @@ class CodexFileAdapter:
         return jwt_claims(blob["tokens"]["access_token"])["exp"] * 1000
 
     def write(self, blob):
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         save_json(self.path, blob)
 
 
@@ -338,13 +459,11 @@ def proc_info(pid):
 
 
 # ------------------------------------------------------------- usage math
-FIVE_H_MS = 5 * 3600 * 1000
-WEEK_MS = 7 * 24 * 3600 * 1000
-CODEX_SESSION_WINDOW_MAX_SEC = 6 * 3600
+SESSION_WINDOW_MAX_SEC = 6 * 3600
 
 
-def live_pct(window, window_ms, sampled_at_ms, now):
-    """A window's usable-against percentage NOW, mirroring tokenmaxxing's
+def live_pct(window, now):
+    """A v2 window's usable-against percentage NOW, mirroring tokenmaxxing's
     liveUsed: a cached reset that has passed means the window is empty again
     (never a block reason), and a NULL reset self-bounds at sampledAt + the
     window's own duration so a stale snapshot cannot block forever."""
@@ -355,46 +474,51 @@ def live_pct(window, window_ms, sampled_at_ms, now):
     now_ms = now * 1000
     if resets is not None:
         return 0 if resets <= now_ms else pct
-    if sampled_at_ms and now_ms >= sampled_at_ms + window_ms:
+    secs = window.get("windowSeconds")
+    if secs is not None and now_ms >= (window.get("sampledAt") or 0) + secs * 1000:
         return 0
     return pct
 
 
+def is_session_window(window):
+    """tokenmaxxing's isSessionWindow: classified by duration, never by position."""
+    secs = window.get("windowSeconds")
+    return secs is not None and secs <= SESSION_WINDOW_MAX_SEC
+
+
+def session_window(account):
+    """The unnamed session (5h) window, tokenmaxxing's sessionWindow."""
+    return next((w for w in account.get("windows") or []
+                 if w.get("name") is None and is_session_window(w)), None)
+
+
+def weekly_window(account):
+    """The longest unnamed non-session window, tokenmaxxing's weeklyWindow."""
+    rows = [w for w in account.get("windows") or []
+            if w.get("name") is None and not is_session_window(w)]
+    return max(rows, key=lambda w: w.get("windowSeconds") or 0) if rows else None
+
+
 def usage_pct(account, now):
-    lu = account.get("lastUsage") or {}
-    at = account.get("lastUsageAt") or 0
-    five = live_pct(lu.get("fiveHour"), FIVE_H_MS, at, now)
-    seven = live_pct(lu.get("sevenDay"), WEEK_MS, at, now)
-    return five, seven
+    """(session %, weekly %) from an index v2 account's unnamed windows."""
+    return live_pct(session_window(account), now), live_pct(weekly_window(account), now)
+
+
+def family_tokens(name):
+    """tokenmaxxing's familyTokens: lowercase, split on space, dot and dash."""
+    return [t for t in re.split(r"[\s.-]+", name.strip().lower()) if t]
 
 
 def gated_pct(account, cfg, now):
-    """Worst live per-model weekly cap among the gated families
-    (switch_models), tokenmaxxing's capForFamily over accounts.json's
-    lastPerModel rows. anthropic only; codex has no per-model rows."""
+    """Worst live per-model cap among the gated families (switch_models),
+    tokenmaxxing's gatedWindows over the index's NAMED windows."""
+    families = [f.lower() for f in cfg["switch_models"]]
     worst = 0
-    at = account.get("lastPerModelAt") or account.get("lastUsageAt") or 0
-    for model, w in (account.get("lastPerModel") or {}).items():
-        if any(f.lower() in model.lower() for f in cfg["switch_models"]):
-            worst = max(worst, live_pct(w, WEEK_MS, at, now))
+    for w in account.get("windows") or []:
+        name = w.get("name")
+        if name is not None and any(f in family_tokens(name) for f in families):
+            worst = max(worst, live_pct(w, now))
     return worst
-
-
-def codex_window_pcts(account, now):
-    """Classify lastUsage.aggregate[] by windowSeconds, never by array
-    position: some plans carry only a 30-day window, others a 5h + weekly
-    pair. live_pct still applies, so a passed reset self-heals here too."""
-    windows = (account.get("lastUsage") or {}).get("aggregate") or []
-    at = account.get("lastUsageAt") or 0
-    session_pct, weekly_pct = 0, 0
-    for w in windows:
-        secs = w.get("windowSeconds") or 0
-        pct = live_pct(w, secs * 1000, at, now)
-        if secs <= CODEX_SESSION_WINDOW_MAX_SEC:
-            session_pct = max(session_pct, pct)
-        else:
-            weekly_pct = max(weekly_pct, pct)
-    return session_pct, weekly_pct
 
 
 def fmt_dur(sec):
@@ -430,7 +554,7 @@ def reset_in(window, now):
 # truth (usage, needs-reauth) is never written here at all - it is read from
 # tokenmaxxing's indexes on every request. "A pin exists but its account cannot
 # serve" is derived per request and never stored, so it heals itself.
-Keychain = collections.namedtuple("Keychain", "service")
+Keychain = collections.namedtuple("Keychain", "service store", defaults=(None,))
 CredFile = collections.namedtuple("CredFile", "path")
 
 
@@ -518,26 +642,32 @@ def resolve_session_arg(id_str, state):
     return None
 
 
-# ---------------------------------------------------------- codex identity
-def codex_live_account_id():
-    """The account ~/.codex/auth.json names, decoded from its own access
-    token claim. No file on this machine stores that id directly."""
-    blob = load_json(CODEX_AUTH_PATH)
-    token = ((blob or {}).get("tokens") or {}).get("access_token")
-    if not token:
-        return None
-    try:
-        claims = jwt_claims(token)
-    except Exception:
-        return None
-    return (claims.get("https://api.openai.com/auth") or {}).get("chatgpt_account_id")
+# ---------------------------------------------------- supervised-session presence
+def presence_account_ids(presence_dir):
+    """Accounts a tokenmaxxing-supervised session is running on right now.
 
-
-def codex_presence_ids():
+    Each presence file is {accountId, pid, startedAt}, named by session id.
+    tokenmaxxing verifies the pid's start time; a live pid is enough here,
+    because the answer only adds a picker penalty and blocks a codex refresh.
+    An unreadable record is skipped, never guessed.
+    """
+    ids = set()
     try:
-        return set(os.listdir(TM_CODEX_LIVE))
+        names = os.listdir(presence_dir)
     except FileNotFoundError:
-        return set()
+        return ids
+    for name in names:
+        rec = load_json(os.path.join(presence_dir, name))
+        if not isinstance(rec, dict) or not rec.get("accountId") or not isinstance(rec.get("pid"), int):
+            continue
+        try:
+            os.kill(rec["pid"], 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass
+        ids.add(rec["accountId"])
+    return ids
 
 
 def assert_codex_identity(token, expected_id):
@@ -560,37 +690,44 @@ def load_index(provider):
     raise ValueError(f"unknown provider {provider}")
 
 
-def _load_index_anthropic():
-    idx = load_json(TM_ACCOUNTS)
+def _read_index(path):
+    idx = load_json(path)
     if not idx:
-        raise RuntimeError("tokenmaxxing accounts.json unreadable")
-    cfg, now, active = config(), time.time(), idx.get("activeAccountUuid")
+        raise RuntimeError(f"tokenmaxxing {os.path.basename(path)} unreadable")
+    if idx.get("version") != TM_INDEX_VERSION:
+        raise RuntimeError(f"tokenmaxxing {os.path.basename(path)} is schema v{idx.get('version')}; "
+                           f"pi-pool reads v{TM_INDEX_VERSION} (tokenmaxxing >= 1.44)")
+    return idx
+
+
+def _load_index_anthropic():
+    idx = _read_index(TM_ACCOUNTS)
+    cfg, now, live = config(), time.time(), presence_account_ids(TM_LIVE)
     out = []
     for a in idx.get("accounts", []):
         five, seven = usage_pct(a, now)
+        store = store_dir(a["id"])
         out.append(Account(
-            provider="anthropic", id=a["accountUuid"], email=a["email"],
+            provider="anthropic", id=a["id"], email=a.get("email") or a["label"],
             needs_reauth=bool(a.get("needsReauth")), session_pct=five, weekly_pct=seven,
-            gated_pct=gated_pct(a, cfg, now), is_live=(a["accountUuid"] == active),
-            cred=Keychain(a["keychainItem"]),
+            gated_pct=gated_pct(a, cfg, now), is_live=a["id"] in live,
+            cred=Keychain(store_service(store), store),
         ))
     return out
 
 
 def _load_index_codex():
-    idx = load_json(TM_CODEX_ACCOUNTS)
-    if not idx:
-        raise RuntimeError("tokenmaxxing codex-accounts.json unreadable")
-    now, live_id = time.time(), codex_live_account_id()
+    idx = _read_index(TM_CODEX_ACCOUNTS)
+    now, live = time.time(), presence_account_ids(TM_CODEX_LIVE)
     out = []
     for a in idx.get("accounts", []):
-        session_pct, weekly_pct = codex_window_pcts(a, now)
+        session_pct, weekly_pct = usage_pct(a, now)
         out.append(Account(
-            provider="openai-codex", id=a["accountId"], email=a["email"],
+            provider="openai-codex", id=a["id"], email=a.get("email") or a["label"],
             needs_reauth=bool(a.get("needsReauth")), session_pct=session_pct,
-            weekly_pct=weekly_pct, gated_pct=0, is_live=(a["accountId"] == live_id),
-            cred=CredFile(os.path.join(TM_CODEX_CREDS, a["credFile"] + ".json")),
-            plan=(a.get("planType") or "").lower(),
+            weekly_pct=weekly_pct, gated_pct=0, is_live=a["id"] in live,
+            cred=CredFile(os.path.join(TM_CODEX_STORES, a["id"][:8], "auth.json")),
+            plan=(a.get("tier") or "").lower(),
         ))
     return out
 
@@ -850,29 +987,37 @@ class IntentWriter:
 
 # ----------------------------------------------------------------- credentials
 def credential_for_keychain(a, cfg):
-    """(access_token, source). Never refreshes the live item: while an
-    account is live, Claude Code owns its rotation."""
-    service = LIVE_SERVICE if a.is_live else a.cred.service
-    raw = kc_read(service)
-    if not raw:
-        raise RuntimeError(f"no credential in {service}")
-    creds = json.loads(raw)["claudeAiOauth"]
+    """(access_token, source) from the account's tokenmaxxing store.
+
+    Supervised claude sessions share the same store and refresh it themselves,
+    so a refresh here takes tokenmaxxing's pool flock and Claude Code's own
+    refresh lock on the store, then re-reads before rotating."""
+    service, store = a.cred.service, a.cred.store
+    adapter = KeychainAdapter(service)
+    creds = adapter.read()
+    if not creds:
+        raise RuntimeError(f"no credential in {a.email}'s store; run `tokenmaxxing auth {a.email}`")
+    if not creds.get("accessToken") or not creds.get("refreshToken"):
+        raise RuntimeError(f"{a.email}'s store was cleared after a failed refresh (needs reauth)")
     remaining = (creds["expiresAt"] - time.time() * 1000) / 1000
     if remaining > cfg["refresh_skew_sec"]:
-        return creds["accessToken"], ("live" if a.is_live else "parked")
-    if a.is_live:
-        raise RuntimeError("live credential expiring; leaving rotation to Claude Code")
+        return creds["accessToken"], "store"
 
-    with Flock(TM_LOCK, timeout=TM_LOCK_TIMEOUT):
-        creds2 = recover_rotation(service, KeychainAdapter(service))
+    with Flock(TM_LOCK, timeout=TM_LOCK_TIMEOUT), ClaudeRefreshLock(store):
+        creds2 = recover_rotation(service, adapter)
         if (creds2["expiresAt"] - time.time() * 1000) / 1000 > cfg["refresh_skew_sec"]:
-            return creds2["accessToken"], "parked"
-        merged = refresh_token(creds2)
+            return creds2["accessToken"], "store"
+        try:
+            merged = refresh_token(creds2)
+        except RuntimeError as e:
+            if str(e).startswith("invalid_grant"):
+                mark_needs_reauth(TM_ACCOUNTS, a.id)
+            raise
         # A refresh rotates the grant server-side the instant it returns: journal
         # it BEFORE the keychain write, or a crash in between strands the account
         # on a superseded refresh token that neither pi nor Claude Code can use.
         journal_write(service, merged)
-        KeychainAdapter(service).write(merged)
+        adapter.write(merged)
         journal_clear(service)
         log("refreshed", account=a.email, provider="anthropic",
             expires_in_h=round((merged["expiresAt"] - time.time() * 1000) / 3600000, 2))
@@ -880,35 +1025,36 @@ def credential_for_keychain(a, cfg):
 
 
 def credential_for_codex(a, cfg):
-    """(access_token, source). Never refreshes the account named by
-    ~/.codex/auth.json, nor one with a live-session presence file; both are
-    tokenmaxxing's own refusal rules for a grant another tool owns."""
-    if a.is_live:
-        blob = load_json(CODEX_AUTH_PATH)
-        token = ((blob or {}).get("tokens") or {}).get("access_token")
-        if not token:
-            raise RuntimeError("no credential in ~/.codex/auth.json")
-        remaining = jwt_claims(token)["exp"] - time.time()
-        if remaining <= cfg["refresh_skew_sec"]:
-            raise RuntimeError("live codex credential expiring; leaving rotation to the codex CLI")
+    """(access_token, source) from the account's codex-stores/<uuid8>/auth.json.
+    Never refreshes a store a supervised codex session is running on: the codex
+    CLI holds that grant and a rotation here would revoke it."""
+    adapter = CodexFileAdapter(a.cred.path)
+    store_key = "codex-" + a.id[:8]
+    blob = adapter.read()
+    if not blob or not (blob.get("tokens") or {}).get("access_token"):
+        raise RuntimeError(f"no credential in {a.email}'s codex store; run `tokenmaxxing auth --codex {a.email}`")
+    token = blob["tokens"]["access_token"]
+    if jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"]:
         assert_codex_identity(token, a.id)
-        return token, "live"
+        return token, "store"
+    if a.is_live:
+        raise RuntimeError("codex store expiring while a codex session runs on it; leaving rotation to the codex CLI")
 
-    if a.id in codex_presence_ids():
-        raise RuntimeError("codex session running on it")
-
-    store_key = os.path.splitext(os.path.basename(a.cred.path))[0]
     with Flock(TM_CODEX_LOCK, timeout=TM_LOCK_TIMEOUT):
-        blob = recover_rotation(store_key, CodexFileAdapter(a.cred.path))
+        blob = recover_rotation(store_key, adapter)
         token = blob["tokens"]["access_token"]
-        remaining = jwt_claims(token)["exp"] - time.time()
-        if remaining > cfg["refresh_skew_sec"]:
+        if jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"]:
             assert_codex_identity(token, a.id)
-            return token, "parked"
-        fresh = refresh_codex_token(blob["tokens"]["refresh_token"])
+            return token, "store"
+        try:
+            fresh = refresh_codex_token(blob["tokens"]["refresh_token"])
+        except RuntimeError as e:
+            if str(e).startswith("refresh_token_reused"):
+                mark_needs_reauth(TM_CODEX_ACCOUNTS, a.id)
+            raise
         merged = merge_codex_tokens(blob, fresh)
         journal_write(store_key, merged)
-        CodexFileAdapter(a.cred.path).write(merged)
+        adapter.write(merged)
         journal_clear(store_key)
         token = merged["tokens"]["access_token"]
         assert_codex_identity(token, a.id)
@@ -987,6 +1133,20 @@ def vend(provider):
             log("account_unusable", provider=provider, account=account.email, error=str(e))
             continue
         reason = res.reason if account.id == res.account.id else "seat_move"
+        # A seat move or a fresh rotation is rare (hours apart), so it can afford
+        # one no-spend probe; that is where an organization-level OAuth refusal
+        # shows up, which usage figures and needsReauth never reflect.
+        if provider == "anthropic" and (source == "refreshed" or reason in ("seat_move", "seat_upgrade")):
+            refusal = anthropic_refusal(token)
+            if refusal:
+                errors.append(f"{account.email}: {refusal}")
+                log("account_refused", provider=provider, account=account.email, error=refusal)
+                with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+                    state = load_state()
+                    HookWriter(state).set_cooldown(provider, account.id, now + cfg["refused_cooldown_sec"])
+                    save_json(STATE, state)
+                cooldowns[account.id] = now + cfg["refused_cooldown_sec"]
+                continue
         with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
             state = load_state()
             writer = HookWriter(state)
@@ -1077,7 +1237,10 @@ def _bundle_patched():
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod.check(quiet=True) == 0
-    except Exception:
+    except (Exception, SystemExit):
+        # package_root()/locate() answer a missing or binary-release prime-agent
+        # with SystemExit, which is a BaseException; letting it escape killed
+        # every `ls` (and with it /account) instead of degrading to unpatched.
         return False
 
 
