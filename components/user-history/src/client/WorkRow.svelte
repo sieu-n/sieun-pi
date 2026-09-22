@@ -194,6 +194,7 @@
   .head { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 4px 8px; border-radius: var(--radius-small); font-size: 13px; color: var(--text-muted); text-align: left; }
   .head:hover { color: var(--text); background: var(--bg-hover); }
   .work.open .head { border-radius: 0; padding: 7px 10px; }
+  .head > :global(svg) { flex: none; }
   .chevron { display: inline-flex; flex: none; transition: transform 0.15s ease; color: var(--text-faint); }
   .chevron.down { transform: rotate(90deg); }
   .label { white-space: nowrap; flex: none; }
@@ -202,7 +203,7 @@
   .step { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
   .trigger-label { font-weight: 500; flex: none; }
   .trigger-detail { color: var(--text-faint); flex: none; white-space: nowrap; }
-  .trigger-inline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
+  .trigger-inline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
   .trigger-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; color: var(--text-muted); }
   .system summary { cursor: pointer; color: var(--text-muted); }
   .system-title { font-weight: 500; text-transform: capitalize; }

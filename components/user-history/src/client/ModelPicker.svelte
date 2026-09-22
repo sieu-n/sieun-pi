@@ -17,7 +17,7 @@
   }
 </script>
 
-<Popover {open} onclose={() => { open = false; }} align="end" side="above" width="300px">
+<Popover {open} onclose={() => { open = false; }} align="end" side="above" width="340px">
   {#snippet trigger()}
     <button class="bar-button" {disabled} {title} aria-expanded={open} onclick={toggle}>
       <span class="label">{label}</span><Icon name="chevronDown" size={12} />

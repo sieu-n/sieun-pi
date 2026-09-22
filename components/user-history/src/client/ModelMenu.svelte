@@ -108,10 +108,10 @@
   .star:hover { background: var(--bg-hover); color: var(--text); }
   .star.on { color: var(--warning); }
   .star.on :global(svg) { fill: currentColor; }
-  .effort { position: sticky; bottom: -6px; display: flex; align-items: center; gap: 8px; margin: 6px -6px -6px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--bg-elevated); }
+  .effort { position: sticky; bottom: -6px; display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 6px -6px -6px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--bg-elevated); }
   .effort-label { font-size: 12px; color: var(--text-muted); }
-  .segmented { display: inline-flex; flex-wrap: wrap; padding: 2px; border-radius: var(--radius-small); background: var(--bg-hover); }
-  .segmented button { height: 24px; padding: 0 8px; border-radius: 6px; font-size: 12px; color: var(--text-muted); }
+  .segmented { display: flex; padding: 2px; border-radius: var(--radius-small); background: var(--bg-hover); }
+  .segmented button { flex: 1 1 auto; height: 24px; padding: 0 5px; white-space: nowrap; border-radius: 6px; font-size: 12px; color: var(--text-muted); }
   .segmented button:hover { color: var(--text); }
   .segmented button.on { background: var(--bg-elevated); color: var(--text); box-shadow: 0 1px 2px var(--shadow-near); }
   .footnote { padding: 6px 10px 2px; font-size: 11px; color: var(--text-faint); }
