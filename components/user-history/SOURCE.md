@@ -43,3 +43,9 @@ The integrated UI initially hid image-only saved messages when every image faile
 The backend now keeps one `[Saved image]` placeholder for each omitted native image block. Unsupported MIME types, corrupt data, oversized images and images beyond the preview count remain excluded from previews. Upload and preview limits are unchanged, and saved history bytes are never rewritten by this projection.
 
 The migration does not fix the native terminal session-replacement race. See the warning under "Native architecture" in `README.md`.
+
+## Standalone server changes
+
+The canonical repository now owns a shared fixed-port server and CLI lifecycle. The extension prints a session-targeted URL without a browser opener. The production package declares `tsx` to load its TypeScript sources in installed `node_modules` paths. Existing native session, model, skill and pi-pool projections retain their source lineage.
+
+The native fixture now reads the CLI URL and uses an isolated standalone service. It no longer injects a test browser executable. Current checks belong in the coordinating session's evidence folder. Historical check counts above describe the imported revisions.

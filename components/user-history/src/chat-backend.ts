@@ -246,13 +246,6 @@ export async function createChatBackend(options: { socketPath?: string; readStat
   const observed = new Map<string, { revision: string; name?: string; lastAssistant?: ReadMarker }>();
   const initialReadState = await readState.snapshot().catch(() => null);
   const responseBaseline = initialReadState?.baseline ?? Date.now();
-  try {
-    await catalogClient.connect();
-    await catalogClient.waitForHello();
-  } catch (error) {
-    catalogClient.close();
-    throw error;
-  }
 
   function assertOpen(): void {
     if (closed) throw new Error("Agent chat is closed");
@@ -260,6 +253,13 @@ export async function createChatBackend(options: { socketPath?: string; readStat
 
   async function catalog(): Promise<CatalogRow[]> {
     assertOpen();
+    try {
+      await catalogClient.reconnect(1500);
+      await catalogClient.waitForHello(1500);
+    } catch (error) {
+      catalogClient.resetTransportForReconnect();
+      throw new Error("Native daemon disconnected. Start Prime Agent and retry. " + (error instanceof Error ? error.message : String(error)));
+    }
     const response = await catalogClient.request({ type: "list", all: true }, 30000, { recoverable: false });
     if (!response.success) throw new Error(response.error);
     return catalogRows(response.data);

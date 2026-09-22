@@ -10,7 +10,7 @@ type Node = DefaultTreeAdapterMap['node'];
 function nodes(node: Node): Node[] {
   return [node, ...('childNodes' in node ? node.childNodes.flatMap(nodes) : [])];
 }
-const rendered = renderChatPage({ initialSessionId: 'session/a?b', csrfToken: 'test-token' });
+const rendered = renderChatPage({ csrfToken: 'test-token' });
 function inlineScript(html: string): string {
   const source = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
   assert(source);
@@ -19,10 +19,9 @@ function inlineScript(html: string): string {
 
 test('chat has exact CSP hashes and untrusted configuration cannot escape attributes', () => {
   const attack = '\"><script>ATTACK()</script><img src="https://evil.invalid">&\'';
-  const html = renderChatPage({ initialSessionId: attack, csrfToken: attack });
+  const html = renderChatPage({ csrfToken: attack });
   const elements = nodes(parse(html)).filter(n => 'tagName' in n);
   const body = elements.find(n => n.tagName === 'body');
-  assert.equal(body?.attrs.find(a => a.name === 'data-initial-session-id')?.value, attack);
   assert.equal(body?.attrs.find(a => a.name === 'data-chat-token')?.value, attack);
   assert.equal(elements.filter(n => n.tagName === 'script').length, 1);
   assert.equal(elements.filter(n => n.tagName === 'style').length, 1);
@@ -172,7 +171,7 @@ function startClient({ abortRequests = true }: { abortRequests?: boolean } = {})
     }
   }
   const context = createContext({
-    document, window, navigator, location: { hash: "" }, history: { replaceState() {} }, confirm: () => false, AbortController, Error, TypeError, DOMException, FileReader,
+    document, window, navigator, location: { hash: "#" + encodeURIComponent(initialId) }, history: { replaceState() {} }, confirm: () => false, AbortController, Error, TypeError, DOMException, FileReader,
     crypto: { randomUUID: () => 'request-' + ++requestId },
     matchMedia: () => ({ matches: false }),
     setTimeout(callback: () => void, delay: number) { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
@@ -218,7 +217,7 @@ const imageFile = (extra = {}) => ({ name: 'image.png', type: 'image/png', size:
 const sessionList = { sessions: [
   { id: initialId, name: 'First conversation', status: 'idle', writable: true },
   { id: secondId, name: 'Second conversation', status: 'busy', writable: true },
-], initialSessionId: initialId };
+] };
 async function ready(client: ReturnType<typeof startClient>): Promise<void> {
   client.findRequest('api/sessions').resolve(sessionList);
   client.findRequest(sessionPath(initialId)).resolve(session());
@@ -401,15 +400,12 @@ test('invalid or mismatched server sessions never reach the transcript', async (
   assert.match(client.el('connection-text').textContent, /invalid session/);
 });
 
-test('close chat authenticates, stops polling, and keeps the transcript readable', async () => {
+test('close view stops only this tab polling and keeps the transcript readable', async () => {
   const client = startClient();
   await ready(client);
   client.el('close-chat').emit('click');
-  const close = client.findRequest('api/close');
-  assert.equal(close.options.method, 'POST');
-  assert.equal(close.options.headers?.['X-Chat-Token'], 'test-token');
+  assert(!client.requests.some(request => request.path === 'api/close'));
   assert.equal(client.el('message').disabled, true);
-  close.resolve({ closed: true });
   await client.flush();
   assert.match(client.el('connection-text').textContent, /Prime Agent sessions keep running/);
   assert.equal(client.el('transcript').innerHTML, session().html);
@@ -421,6 +417,18 @@ test('close chat authenticates, stops polling, and keeps the transcript readable
   assert.equal(client.el('message').disabled, true);
 });
 
+
+test('closing one view leaves another view polling', async () => {
+  const first = startClient(); const second = startClient();
+  await ready(first); await ready(second);
+  first.el('close-chat').emit('click');
+  const count = first.requests.length;
+  first.advance(10000); second.advance(2000);
+  assert.equal(first.requests.length, count);
+  second.findRequest(sessionPath(initialId)).resolve(session());
+  await second.flush();
+  assert.equal(second.el('message').disabled, false);
+});
 
 test('a timed-out send keeps its draft without replay and GET failures can retry', async () => {
   const client = startClient();
@@ -549,7 +557,6 @@ test('BFCache restoration never reopens an explicitly closed chat', async () => 
   const client = startClient();
   await ready(client);
   client.el('close-chat').emit('click');
-  client.findRequest('api/close').resolve({ closed: true });
   await client.flush();
   const closedCount = client.requests.length;
   client.window.emit('pagehide', { persisted: true });
@@ -560,7 +567,7 @@ test('BFCache restoration never reopens an explicitly closed chat', async () => 
   assert.equal(client.requests.length, closedCount);
   assert.equal(client.el('message').disabled, true);
   assert.equal(client.el('close-chat').disabled, true);
-  assert.match(client.el('connection-text').textContent, /Chat closed/);
+  assert.match(client.el('connection-text').textContent, /View closed/);
 });
 
 

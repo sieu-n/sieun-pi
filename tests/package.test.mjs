@@ -15,7 +15,7 @@ function run(command, args, options = {}) {
 }
 
 test("packed production install, native reload, update, rollback and uninstall", { timeout: 600_000 }, () => {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), "sieun-pi-package-")));
+  const base = realpathSync(mkdtempSync(join(process.env.HISTORY_TEST_ARTIFACTS_DIR ?? tmpdir(), "sieun-pi-package-")));
   try {
     const home = join(base, "home");
     const project = join(base, "project");
@@ -37,6 +37,7 @@ test("packed production install, native reload, update, rollback and uninstall",
       "components/user-history/package.json", "components/user-history/SOURCE.md",
       "components/user-history/extension/index.ts", "components/user-history/src/page.ts",
       "components/user-history/src/chat-client.ts", "components/user-history/src/chat-images.ts",
+      "components/user-history/src/chat-service.ts", "components/user-history/src/chat-service-cli.mjs",
       "components/virev/extensions/virev.ts", "skills/unslop/SKILL.md",
       "NOTICE", "LICENSES/pstack-MIT.txt", "LICENSES/tokenmaxxing-MIT.txt", "LICENSES/prime-agent-MIT.txt",
       "docs/attribution-pstack.json", "skills/poteto-mode/scripts/check-source-paths.test.mjs"]) assert(paths.includes(path), path);
@@ -48,6 +49,7 @@ test("packed production install, native reload, update, rollback and uninstall",
     assert(metadata.repository.url.includes("github.com/sieu-n/sieun-pi.git"));
     assert(metadata.dependencies["prime-agent"].startsWith("https://pub-"));
     assert.equal(metadata.dependencies.marked, "18.0.12");
+    assert.equal(metadata.dependencies.tsx, "4.23.13");
     assert.equal(metadata.pi.extensions.length, 3);
     const tarball = join(base, packed.filename);
     const releases = [join(base, "release-a"), join(base, "release-b")];
@@ -88,6 +90,19 @@ test("packed production install, native reload, update, rollback and uninstall",
       { env: { ...env, HOME: metadataHome, PRIME_AGENT_CODING_AGENT_DIR: metadataAgent, VIREV_PROJECTS_FILE: join(metadataAgent, "virev-projects.json") } });
     const cli = (index, ...args) => JSON.parse(run(process.execPath, [join(roots[index], "scripts/cli.mjs"), ...args], { env }));
     assert.equal(run(join(releases[0], "bin/sieun-pi"), ["source"], { env }).trim(), roots[0]);
+    const port = run(process.execPath, ["--input-type=module", "-e", 'import {createServer} from "node:net"; const server=createServer(); server.listen(0,"127.0.0.1",()=>{console.log(server.address().port); server.close();});'], { env }).trim();
+    const chatArgs = ["--port", port, "--socket", join(base, "absent.sock"), "--data-dir", join(base, "chat")];
+    const chat = (command) => run(join(releases[0], "bin/sieun-pi"), ["chat", command, ...chatArgs], { env }).trim();
+    try {
+      const url = chat("start");
+      assert.equal(new URL(url).port, port);
+      assert.equal(chat("start"), url);
+      assert.equal(chat("url"), url);
+      assert.match(chat("status"), /Chat is running/);
+      chat("stop");
+      assert.equal(chat("start"), url);
+    } finally { chat("stop"); }
+
     const settings = join(home, ".prime/agent/settings.json");
     mkdirSync(dirname(settings), { recursive: true });
     const originalSettings = '{ "packages": [], "custom": "preserve" }\n';

@@ -18,7 +18,7 @@ Credentials, settings, sessions and account stores stay outside the source tree.
 ## Install from GitHub
 
 Use Node.js 22.8 or later and Python 3.11 or later on macOS or Linux.
-History/chat UI, Keychain account operations and the updater require macOS. The UI uses Aside.
+Native chat runs as a standalone loopback server on macOS and Linux. It never opens a browser. Keychain account operations and the updater require macOS.
 Install the Prime Agent 0.9.4 host separately. Provider credentials and account enrollment are not included.
 
 ```sh
@@ -43,7 +43,17 @@ To add that policy, pass `--project /absolute/path/to/auto-sns-agent` to `plan` 
 Existing project entries remain intact. Without `--project`, a new profile has no configured project policy.
 
 Commands include `/account`, `/virev-reload`, `/what-did-i-say` and `/agent-chat`.
-`/virev-status` does not exist. The whole history package also registers `--agent-chat-socket`.
+`/virev-status` does not exist. `/what-did-i-say` and `/agent-chat` print a URL for the current native session.
+
+```sh
+sieun-pi chat start    # detached server, default 127.0.0.1:5182
+sieun-pi chat status
+sieun-pi chat url
+sieun-pi chat stop     # leaves native workers running
+sieun-pi chat serve   # foreground server
+```
+
+The URL and port survive restarts. No browser opens automatically. The service stays separate from pi-pool's CLI/token hook. Custom instances accept `--port`, `--socket` and `--data-dir`. The extension accepts `--agent-chat-port`, `--agent-chat-socket` and `--agent-chat-data-dir`. See the component README for the private capability model and lifecycle rules.
 Do not register this package through Prime's package settings as well as the source installer.
 The `pi.extensions` and `pi.skills` metadata support resource discovery; they do not install pool tools or migrate old links.
 

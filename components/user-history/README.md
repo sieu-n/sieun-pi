@@ -1,6 +1,6 @@
 # Native session chat
 
-`/what-did-i-say` and `/agent-chat` open Prime Agent in Aside. Run `/reload` in the terminal after updating the extension.
+`/what-did-i-say` and `/agent-chat` start or reuse the shared server and print its URL. They never open a browser. Run `/reload` in the terminal after updating the extension.
 
 The browser reads native sessions and sends through `DaemonAgentConnection`. Prime Agent owns each run, queue, saved name, model and skill expansion. Closing or refreshing a browser never stops a worker.
 
@@ -77,7 +77,7 @@ Saved sessions are readable and renamable. Resume them in Prime Agent before sen
 
 ```mermaid
 flowchart LR
-    Aside[Aside browser] --> HTTP[Loopback adapter]
+    Browser[Browser tab] --> HTTP[Standalone loopback server]
     HTTP --> Native[DaemonAgentConnection]
     Native --> Worker[Native session, tools and queue]
     HTTP --> Catalog[Native session catalog]
@@ -86,7 +86,7 @@ flowchart LR
     HTTP --> UI[Private browser read markers]
 ```
 
-`src/chat-backend.ts` owns the thin native boundary. `src/chat-pool.ts` validates the CLI listing and selects through its CLI. `src/chat-read-state.ts` owns UI read markers. `src/chat-server.ts` validates loopback HTTP. `src/chat-client.ts` owns transient browser view state. `src/chat-page.ts` owns markup, styles and CSP hashes. `src/page.ts` renders inert Markdown, tool disclosures and images.
+`src/chat-service.ts` owns process startup, configuration and verified lifecycle commands. `src/chat-service-cli.mjs` loads TypeScript through the declared production `tsx` dependency. `src/chat-backend.ts` owns the thin native boundary. `src/chat-pool.ts` validates the CLI listing and selects through its CLI. `src/chat-read-state.ts` owns UI read markers. `src/chat-server.ts` validates loopback HTTP. `src/chat-client.ts` owns transient browser view state. `src/chat-page.ts` owns markup, styles and CSP hashes. `src/page.ts` renders inert Markdown, tool disclosures and images.
 
 The adapter caches the immutable native tree inside each viewer connection by session identity and native leaf ID. Branch changes invalidate that tree. Full native user text supplies unnamed-session previews once the branch is already loaded.
 
@@ -96,13 +96,35 @@ The native API has no atomic expected-session-ID or idle precondition for mutati
 
 ## HTTP contract and security
 
-All paths are below a random per-listener capability URL. Reads use `GET api/sessions`, `api/session?id=...`, `api/models?id=...`, `api/commands?id=...`, `api/accounts?id=...` and `api/tool?id=...&toolId=...`. Tool reads return exact native arguments and output only for calls on the selected branch.
+All paths are below a stable random capability URL stored in the private profile. `GET /` returns 404 and never reveals that URL. Reads use `GET api/sessions`, `api/session?id=...`, `api/models?id=...`, `api/commands?id=...`, `api/accounts?id=...` and `api/tool?id=...&toolId=...`. Tool reads return exact native arguments and output only for calls on the selected branch.
 
-Writes use `POST api/message`, `api/model`, `api/effort`, `api/rename`, `api/account`, `api/stop`, `api/compact`, `api/queue`, `api/read` and `api/close`. All require JSON, the page's write token, and exact loopback Host and Origin. Session paths and executable arguments never come from the browser.
+Writes use `POST api/message`, `api/model`, `api/effort`, `api/rename`, `api/account`, `api/stop`, `api/compact`, `api/queue`, `api/read`. All require JSON, the page's write token, and exact loopback Host and Origin. Session paths and executable arguments never come from the browser.
 
 The listener binds to `127.0.0.1`. A fixed-hash CSP allows no external resources or inline handlers. Transcript HTML stays escaped. Responses use `Cache-Control: no-store`. Do not share the capability URL. Other processes running as the same OS user are outside this protection.
 
-Text is limited to 32,000 characters and request bodies to 12 MiB. Each listener remembers up to 256 send IDs. Reopen chat when that limit is reached. An inactive listener expires after 30 minutes. Reopening the extension command replaces its previous listener. Neither action stops native runs.
+Text is limited to 32,000 characters and request bodies to 12 MiB. The process remembers each admitted send ID and its settled outcome, including uncertain failures. Restart clears this admission cache. After a restart, inspect the native transcript before manually resubmitting an uncertain message. The browser never automatically replays writes.
+
+## Server lifecycle
+
+```sh
+sieun-pi chat start
+sieun-pi chat status
+sieun-pi chat url
+sieun-pi chat stop
+sieun-pi chat serve --port 5182
+```
+
+`start` detaches a reusable Node process and prints the full URL. `serve` runs in the foreground. Both default to `127.0.0.1:5182`; the service never chooses another port automatically or kills a port occupant. `url` prints the stable configured URL even while stopped. `stop` sends an authenticated request to the verified service instance. It never signals a stored PID or stops native workers.
+
+For a separate profile or custom daemon, pass `--data-dir PATH`, `--socket PATH` and an explicit `--port NUMBER`. The first start fixes that directory's port and socket. Later conflicting options fail. Use matching settings, or stop the old service and choose a separate data directory. The extension accepts `--agent-chat-data-dir`, `--agent-chat-socket` and `--agent-chat-port`.
+
+The default directory is `getAgentDir()/browser-chat`. `configuration.json` stores the port, socket and random capability/write/stop tokens. `instance.json` stores the live PID, instance ID and URL. Both files and `service.log` use mode 0600. The directory uses mode 0700. Read markers remain separate in `read-state.json`. Atomic configuration publication and the exclusive TCP bind handle simultaneous starts. Reuse and stop require a capability endpoint response matching the private instance record.
+
+The service survives Pi session shutdown, closed tabs and idle periods. Close view stops polling in that tab only. Reload reconnects it. A missing native daemon leaves the page available with a disconnected message and retry controls. Later reads reconnect through the native client. The service never starts or repairs a daemon.
+
+`GET api/identity` verifies service identity. `POST api/service-stop` requires a separate private stop token, an exact Origin and the expected instance ID. The page never receives the stop token. The capability URL allows local read access, including the page's write token. This is not a remote sharing feature.
+
+pi-pool remains a separate CLI and token hook. Its existing account wrappers remain unchanged.
 
 ## Setup and checks
 

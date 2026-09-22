@@ -16,6 +16,8 @@ try {
     run(process.env.SIEUN_PI_PYTHON || "python3", ["-B", resolve(root, "scripts/manage.py"), command, ...args], process.cwd());
   } else if (command === "daily-recap-setup") {
     run(process.env.SIEUN_PI_PYTHON || "python3", ["-B", resolve(root, "components/daily-recap/install.py"), ...args], process.cwd());
+  } else if (command === "chat") {
+    run(process.execPath, [resolve(root, "components/user-history/src/chat-service-cli.mjs"), ...args], process.cwd());
   } else if (command === "source") {
     process.stdout.write(`${root}\n`);
   } else if (command === "check" || command === "build") {
@@ -28,7 +30,7 @@ try {
     run("npm", ["ci", "--ignore-scripts"], resolve(root, "components/user-history"));
     run("npm", ["ci", "--ignore-scripts"], resolve(root, "components/daily-recap"));
   } else {
-    process.stdout.write("sieun-pi (Prime Agent 0.9.4)\n\nCommands: source, develop, check, build, plan, apply, verify, rollback, uninstall, daily-recap-setup\nRun a profile command with --help for options. Install and update never change HOME automatically.\n");
+    process.stdout.write("sieun-pi (Prime Agent 0.9.4)\n\nCommands: chat, source, develop, check, build, plan, apply, verify, rollback, uninstall, daily-recap-setup\nRun a profile command with --help for options. Install and update never change HOME automatically.\n");
     if (command && command !== "--help" && command !== "-h") process.exitCode = 1;
   }
 } catch (error) {

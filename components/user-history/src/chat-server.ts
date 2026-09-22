@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { ChatBackend, ChatSession } from "./chat-backend.ts";
 import { chatContentSecurityPolicy, renderChatPage } from "./chat-page.ts";
@@ -7,7 +7,6 @@ import { parseChatImages } from "./chat-images.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
-const maxSends = 256;
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -73,15 +72,15 @@ function parseMessage(value: unknown) {
   return { sessionId: value.sessionId, message: value.message, images, requestId: value.requestId };
 }
 
-export async function startChatServer({ backend, initialSessionId, idleMs = 30 * 60 * 1000 }: {
-  backend: ChatBackend; initialSessionId: string; idleMs?: number;
+export async function startChatServer({ backend, port, capability, csrfToken, identity, stopToken, onStop, identityReady = Promise.resolve() }: {
+  backend: ChatBackend; port: number; capability: string; csrfToken: string;
+  identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string;
+  onStop(): Promise<void>; identityReady?: Promise<void>;
 }): Promise<{ url: string; close(): Promise<void> }> {
-  const base = "/" + randomBytes(24).toString("hex") + "/";
-  const csrfToken = randomBytes(32).toString("hex");
-  const page = renderChatPage({ initialSessionId, csrfToken });
+  const base = "/" + capability + "/";
+  const page = renderChatPage({ csrfToken });
   const sends = new Map<string, { fingerprint: string; result: Promise<void> }>();
   let host = "";
-  let timer: ReturnType<typeof setTimeout> | undefined;
   let closing: Promise<void> | undefined;
 
   const server = createServer((req, res) => { void handle(req, res); });
@@ -94,14 +93,8 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(value));
   }
-  function touch() {
-    clearTimeout(timer);
-    timer = setTimeout(() => { void close(); }, idleMs);
-    timer.unref();
-  }
   function close(): Promise<void> {
     if (closing) return closing;
-    clearTimeout(timer);
     closing = (async () => {
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
       sends.clear();
@@ -124,22 +117,37 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
       const url = new URL(req.url ?? "/", `http://${host}`);
       if (url.origin !== `http://${host}` || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
       const route = url.pathname.slice(base.length);
-      if (closing) throw new RequestError(410, "Chat is closed. Run /what-did-i-say again.");
+      if (closing) throw new RequestError(410, "Chat service is stopping. Run sieun-pi chat start again.");
+      if (req.method === "GET" && route === "api/identity") {
+        await identityReady;
+        json(res, 200, { service: "sieun-pi-chat", ...identity });
+        return;
+      }
+      if (route === "api/service-stop") {
+        if (req.method !== "POST") throw new RequestError(405, "Expected POST.");
+        if (req.headers["x-chat-stop-token"] !== stopToken || req.headers.origin !== `http://${host}`) {
+          throw new RequestError(403, "Service authorization is missing.");
+        }
+        const body = await jsonBody(req);
+        if (typeof body !== "object" || body === null || !("instanceId" in body) || body.instanceId !== identity.instanceId) {
+          throw new RequestError(409, "The service instance changed. Check chat status before stopping.");
+        }
+        res.once("finish", () => { void onStop(); });
+        json(res, 200, { stopped: true });
+        return;
+      }
       if (req.method === "GET" && route === "") {
-        touch();
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(page);
         return;
       }
       if (req.method === "GET" && route === "api/sessions") {
-        touch();
-        json(res, 200, { sessions: (await backend.list()).map(sessionItem), initialSessionId });
+        json(res, 200, { sessions: (await backend.list()).map(sessionItem) });
         return;
       }
       if (req.method === "GET" && route === "api/session") {
         const id = url.searchParams.get("id");
         if (!id || id.length > 256) throw new RequestError(400, "A session ID is required.");
-        touch();
         const view = await backend.read(id);
         json(res, 200, { ...sessionItem(view.session), html: renderChatMessages(view.messages), queueCount: view.queueCount, queue: view.queue, work: view.work, controls: view.controls, usage: view.usage });
         return;
@@ -147,7 +155,6 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
       if (req.method === "GET" && route === "api/tool") {
         const id = url.searchParams.get("id"); const toolId = url.searchParams.get("toolId");
         if (!id || id.length > 256 || !toolId || toolId.length > 512) throw new RequestError(400, "Choose a native tool call.");
-        touch();
         const view = await backend.read(id);
         const tool = view.messages.flatMap(message => message.tools ?? []).find(tool => tool.id === toolId);
         if (!tool) throw new RequestError(404, "This tool call is not on the selected native branch.");
@@ -156,22 +163,15 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
       if (req.method === "GET" && ["api/models", "api/commands", "api/accounts"].includes(route)) {
         const id = url.searchParams.get("id");
         if (!id || id.length > 256) throw new RequestError(400, "A session ID is required.");
-        touch();
         json(res, 200, await (route === "api/models" ? backend.models(id) : route === "api/commands" ? backend.commands(id) : backend.accounts(id)));
         return;
       }
-      if (!["api/message", "api/model", "api/close", "api/rename", "api/effort", "api/account", "api/stop", "api/compact", "api/queue", "api/read"].includes(route)) throw new RequestError(404, "Not found.");
+      if (!["api/message", "api/model", "api/rename", "api/effort", "api/account", "api/stop", "api/compact", "api/queue", "api/read"].includes(route)) throw new RequestError(404, "Not found.");
       if (req.method !== "POST") throw new RequestError(405, "Expected POST.");
       if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== `http://${host}`) {
         throw new RequestError(403, "Message authorization is missing. Reopen /what-did-i-say.");
       }
       const body = await jsonBody(req);
-      touch();
-      if (route === "api/close") {
-        res.once("finish", () => { void close(); });
-        json(res, 200, { closed: true });
-        return;
-      }
       if (["api/rename", "api/effort", "api/account", "api/stop", "api/compact", "api/queue", "api/read"].includes(route)) {
         if (typeof body !== "object" || body === null || !("sessionId" in body) || typeof body.sessionId !== "string" || !body.sessionId || body.sessionId.length > 256) throw new RequestError(400, "Choose a session.");
         const sessionId = body.sessionId;
@@ -212,7 +212,6 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
         throw new RequestError(409, "This request ID belongs to a different message.");
       }
       if (!pending) {
-        if (sends.size >= maxSends) throw new RequestError(429, "Reopen /what-did-i-say before sending more messages.");
         pending = { fingerprint, result: backend.send({ sessionId: input.sessionId, message: input.message, images: input.images }) };
         sends.set(input.requestId, pending);
       }
@@ -230,13 +229,12 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+      server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
     });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected a loopback TCP address.");
     host = `127.0.0.1:${address.port}`;
     server.on("error", () => { void close(); });
-    touch();
     return { url: `http://${host}${base}`, close };
   } catch (error) {
     await close();

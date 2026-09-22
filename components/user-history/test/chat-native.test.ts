@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { createServer } from "node:net";
+import { promisify } from "node:util";
 import { test } from "node:test";
 import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -84,7 +87,7 @@ function seedSession(cwd: string, sessions: string, name: string) {
   return { sessionId: manager.getSessionId(), sessionFile, name };
 }
 
-test("native chat targets sessions, changes models, reports usage, sends images, and preserves workers", { timeout: process.env.CHAT_TEST_BROWSER === "1" ? 480000 : 120000 }, async () => {
+test("native chat targets sessions, changes models, reports usage, sends images, and preserves workers", { timeout: process.env.CHAT_TEST_BROWSER === "1" ? 480000 : 120000 }, async context => {
   const id = randomBytes(6).toString("hex");
   const root = join(process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(packageRoot, ".test-artifacts"), `chat-native-${id}`);
   const home = join(root, "home");
@@ -124,33 +127,38 @@ test("native chat targets sessions, changes models, reports usage, sends images,
   const gate = join(root, "release-provider");
   const provider = join(root, "provider.mjs");
   const extension = join(root, "extension.ts");
-  const aside = join(root, "aside-test.mjs");
-  const asideUrl = join(root, "aside-url.json");
-  await writeFile(aside, `#!${node}
-import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
-const [flag, bundle, url] = process.argv.slice(2);
-assert.equal(flag, '-b');
-assert.equal(bundle, 'at.studio.AsideBrowser');
-assert.equal(new URL(url).hostname, '127.0.0.1');
-await writeFile(${JSON.stringify(asideUrl)}, JSON.stringify({ url }));
-`, { mode: 0o700 });
   await writeFile(extension, `import historyExtension from ${JSON.stringify(join(packageRoot, "extension/index.ts"))};
 import provider from ${JSON.stringify(provider)};
-export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); provider(pi); }
+export default function(pi) { historyExtension(pi); provider(pi); }
 `);
+  const probe = createServer();
+  await new Promise<void>(resolve => probe.listen(0, "127.0.0.1", resolve));
+  const address = probe.address(); assert(address && typeof address !== "string");
+  const chatPort = address.port;
+  await new Promise<void>(resolve => probe.close(() => resolve()));
+  const chatData = join(config, "browser-chat");
+  const chatCli = async (command: string) => (await promisify(execFile)(node,
+    [join(packageRoot, "../../scripts/cli.mjs"), "chat", command, "--port", String(chatPort), "--socket", socket, "--data-dir", chatData],
+    { env, timeout: 25000 })).stdout.trim();
+  context.after(async () => { await chatCli("stop"); });
+  const chatUrl = await chatCli("start");
+  assert.equal((await fetch(chatUrl)).status, 200);
+  assert.equal((await fetch(chatUrl + "api/sessions")).status, 502, "service starts before the native daemon");
   await writeFile(calls, "");
   await writeFile(provider, chatNativeProviderSource({ calls, gate,
     aiModule: fileURLToPath(import.meta.resolve("@earendil-works/pi-ai")) }));
-  const native = startChatNativeCli({ node, cwd, env,
-    args: [cli, "--mode", "rpc", "--daemon-socket", socket, "--agent-chat-socket", socket, "--cwd", cwd, "--no-extensions", "-e", extension,
+  const nativeArgs = [cli, "--mode", "rpc", "--daemon-socket", socket, "--agent-chat-socket", socket, "--agent-chat-port", String(chatPort), "--agent-chat-data-dir", chatData, "--cwd", cwd, "--no-extensions", "-e", extension,
       "--no-skills", "--skill", skillFile, "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--tools", "browser_proof_tool", "--no-themes",
-      "--provider", "chat-native-test", "--model", "synthetic", "--no-session"] });
+      "--provider", "chat-native-test", "--model", "synthetic", "--no-session"];
+  const native = startChatNativeCli({ node, cwd, env, args: nativeArgs });
+  let recoveredNative: ReturnType<typeof startChatNativeCli> | undefined;
   const daemon = new DaemonClient(socket);
   let backend: ChatBackend | undefined;
   let supervisorPid: number | undefined;
   try {
-    await native.rpc("get_state");
+    const nativeState = await native.rpc("get_state");
+    assert(typeof nativeState === "object" && nativeState !== null && "data" in nativeState && typeof nativeState.data === "object" && nativeState.data !== null && "sessionId" in nativeState.data && typeof nativeState.data.sessionId === "string");
+    const expectedNotification = chatUrl + "#" + encodeURIComponent(nativeState.data.sessionId);
     await daemon.connect();
     supervisorPid = (await daemon.waitForHello()).supervisorPid;
     assert(supervisorPid && supervisorPid !== native.child.pid);
@@ -159,7 +167,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
         config: { cwd, agentDir: config, sessionDir: sessions, provider: "chat-native-test", model: "synthetic",
           noExtensions: true, extensions: [extension], noSkills: true, skills: [skillFile], noPromptTemplates: true, noContextFiles: true,
           noBuiltinTools: true, tools: ["browser_proof_tool"], noThemes: true, telemetryDisabled: true,
-          extensionFlagValues: { "agent-chat-socket": socket } } }, 30000);
+          extensionFlagValues: { "agent-chat-socket": socket, "agent-chat-port": String(chatPort), "agent-chat-data-dir": chatData } } }, 30000);
       assert(created.success, JSON.stringify(created));
     }
     backend = await createChatBackend({ socketPath: socket, readStatePath: join(root, "browser-read-state.json") });
@@ -435,8 +443,10 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     const openedCommand = await daemon.request({ type: "prompt", activeSessionId: alphaNative.activeSessionId,
       message: "/what-did-i-say", source: "interactive" });
     assert(openedCommand.success, JSON.stringify(openedCommand));
-    const opened: unknown = JSON.parse(await waitForChatNativeFile(asideUrl, text => text.length > 0));
-    assert(typeof opened === "object" && opened !== null && "url" in opened && typeof opened.url === "string");
+    const opened = { url: await chatCli("url") };
+    assert.equal(opened.url, chatUrl);
+    assert.equal((await fetch(opened.url + "api/sessions")).status, 200, "native reads recover after daemon startup");
+    assert.match(native.logs().stdout, /response/);
     const page = await fetch(opened.url);
     assert.equal(page.status, 200);
     await writeFile(join(root, "chat.html"), await page.text());
@@ -448,6 +458,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     }
     await backend.close();
     await backend.close();
+    await chatCli("stop");
     const afterClose = await nativeRows(daemon);
     assert.deepEqual(afterClose.filter(row => row.sessionId !== replacement.sessionId), before,
       "closing a viewer never kills or changes worker identities");
@@ -459,14 +470,36 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     }
     assert.deepEqual(await readFile(saved.sessionFile), savedBytes);
     const syntheticModelCalls = (await readFile(calls, "utf8")).split('"stage":"start"').length - 1;
+    await chatCli("start");
+    for (const command of ["/agent-chat", "/what-did-i-say"]) {
+      await native.rpc("prompt", command);
+      await native.notification(expectedNotification);
+    }
+    await writeFile(join(root, "url-notification.json"), JSON.stringify({ url: expectedNotification, commands: ["/agent-chat", "/what-did-i-say"] }));
+    const identityBeforeDaemonRestart = await (await fetch(chatUrl + "api/identity")).json();
+    assert.equal((await fetch(chatUrl + "api/sessions")).status, 200);
+    await native.close();
+    await stopChatNativeDaemon(daemon, socket);
+    assert.equal((await fetch(chatUrl + "api/sessions")).status, 502, "native disconnect does not replace the HTTP server");
+    assert.equal((await fetch(chatUrl)).status, 200);
+    recoveredNative = startChatNativeCli({ node, cwd, env, args: nativeArgs });
+    await recoveredNative.rpc("get_state");
+    assert.equal((await fetch(chatUrl + "api/sessions")).status, 200, "later reads reconnect to the returned native daemon");
+    assert.deepEqual(await (await fetch(chatUrl + "api/identity")).json(), identityBeforeDaemonRestart);
+
     await writeFile(join(root, "result.json"), JSON.stringify({ passed: true, socket, supervisorPid,
       cliPid: native.child.pid, workers: afterClose, syntheticModelCalls, automatedModelCalls, realModelCalls: 0, nativeSkillExpanded: true, nativeToolAbortReflected: true,
       browserReview: process.env.CHAT_TEST_BROWSER === "1", savedBytesUnchanged: true,
       queueDidNotInterrupt: true, closePreservedWorkers: true, modelChangesTargeted: true,
-      latestModelUsed: visionModel.id, nativeUsage: withImages.usage, imageBytesPreserved: true }, null, 2));
+      nativeDaemonReconnected: true, urlNotificationVerified: true, latestModelUsed: visionModel.id, nativeUsage: withImages.usage, imageBytesPreserved: true }, null, 2));
   } finally {
     await backend?.close();
+    await chatCli("start");
     await native.close();
+    await recoveredNative?.close();
+    assert.equal((await fetch(chatUrl)).status, 200, "native session shutdown leaves the standalone service running");
+    await chatCli("stop");
+    await assert.rejects(fetch(chatUrl));
     try { await stopChatNativeDaemon(daemon, socket); }
     finally {
       daemon.close();

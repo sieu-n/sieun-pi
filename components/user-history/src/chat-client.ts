@@ -36,7 +36,7 @@ export const chatClientScript = String.raw`
   const imageFull = $('image-full');
   const csrfToken = document.body.dataset.chatToken;
   const selectedFragment = () => { try { return decodeURIComponent(location.hash.slice(1)); } catch { return ''; } };
-  let selectedId = selectedFragment() || document.body.dataset.initialSessionId || '';
+  let selectedId = selectedFragment();
   let selected = null;
   let sessions = [];
   let generation = 0;
@@ -48,7 +48,6 @@ export const chatClientScript = String.raw`
   let connected = false;
   let closed = false;
   let suspended = false;
-  let closing = false;
   let followingBottom = true;
   let lastHtml = null;
   let listLoaded = false;
@@ -83,7 +82,7 @@ export const chatClientScript = String.raw`
     return value;
   }
   function parseList(value) {
-    if (!isObject(value) || !Array.isArray(value.sessions) || typeof value.initialSessionId !== 'string') throw new Error('The chat server returned an invalid session list.');
+    if (!isObject(value) || !Array.isArray(value.sessions)) throw new Error('The chat server returned an invalid session list.');
     const ids = new Set();
     for (const item of value.sessions) {
       if (!isObject(item) || typeof item.id !== 'string' || !item.id || ids.has(item.id) || typeof item.name !== 'string' || typeof item.status !== 'string' || typeof item.writable !== 'boolean') throw new Error('The chat server returned an invalid session list.');
@@ -145,15 +144,15 @@ export const chatClientScript = String.raw`
   function updateComposer() {
     const delivery = deliveries.get(selectedId);
     const pending = delivery?.kind === 'pending';
-    const ready = !closed && !suspended && !closing && loaded && connected && navigator.onLine && writable();
+    const ready = !closed && !suspended && loaded && connected && navigator.onLine && writable();
     const attachments = drafts.get(selectedId)?.attachments || [];
     composer.disabled = !ready || pending || modelMutation !== null || controlPending;
     send.disabled = composer.disabled || attachments.some(item => item.kind === 'reading') || (attachments.length > 0 && !supportsImages()) || (!composer.value.trim() && !attachments.length);
     attachButton.disabled = composer.disabled || !supportsImages() || attachments.length >= 4;
     imageInput.disabled = attachButton.disabled;
     for (const button of previews.querySelectorAll('button')) button.disabled = composer.disabled;
-    closeButton.disabled = closed || suspended || closing || hasPendingSend() || modelMutation?.phase === 'pending';
-    $('composer-target').textContent = closed ? 'Chat closed' : selected ? 'To ' + (selected.name || 'Untitled session') : 'Choose a session';
+    closeButton.disabled = closed || suspended || hasPendingSend() || modelMutation?.phase === 'pending' || controlPending;
+    $('composer-target').textContent = closed ? 'View closed' : selected ? 'To ' + (selected.name || 'Untitled session') : 'Choose a session';
     composer.placeholder = closed ? 'This chat is closed' : !selectedId ? 'Choose a session' : !loaded ? 'Loading...' : !writable() ? 'Resume this session in Prime Agent to reply' : !connected || !navigator.onLine ? 'Reconnect to send a message' : pending ? 'Sending...' : 'Ask anything, or follow up';
     send.setAttribute('aria-label', pending ? 'Sending message' : 'Send message');
     sendNotice.hidden = !delivery;
@@ -354,7 +353,6 @@ export const chatClientScript = String.raw`
         (order.get(left.id) ?? -1) - (order.get(right.id) ?? -1) || Date.parse(right.lastActivityAt || right.created || '') - Date.parse(left.lastActivityAt || left.created || ''));
       listLoaded = true;
       $('list-error').hidden = true;
-      if (!selectedId && result.initialSessionId) selectSession(result.initialSessionId);
       renderList();
       updateComposer();
       if (!selectedId) {
@@ -644,23 +642,17 @@ export const chatClientScript = String.raw`
     closeModelPanel();
     closeUsagePanel();
   }
-  async function closeChat() {
-    if (closed || closing || closeButton.disabled) return;
-    closing = true;
+  function closeChat() {
+    if (closed || closeButton.disabled) return;
+    saveView();
+    closed = true;
+    connected = false;
+    stopPolling();
+    closeButton.textContent = 'View closed';
+    status.textContent = 'View closed';
+    showBanner('View closed. Other tabs and Prime Agent sessions keep running. Reload to reconnect.', false);
+    renderList();
     updateComposer();
-    try {
-      await request('api/close', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Chat-Token': csrfToken }, body: '{}' }, new AbortController());
-      closed = true;
-      connected = false;
-      stopPolling();
-      closeButton.textContent = 'Chat closed';
-      status.textContent = 'Chat closed';
-      showBanner('Chat closed. Prime Agent sessions keep running. You can close this tab.', false);
-      renderList();
-    } catch (error) {
-      connected = false;
-      showBanner(errorText(error) + ' Could not confirm that chat closed.', true);
-    } finally { closing = false; updateComposer(); }
   }
 
 

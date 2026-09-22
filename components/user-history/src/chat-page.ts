@@ -225,10 +225,10 @@ function icon(name: keyof typeof icons): string {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
 }
 
-export function renderChatPage({ initialSessionId, csrfToken }: { initialSessionId: string; csrfToken: string }): string {
+export function renderChatPage({ csrfToken }: { csrfToken: string }): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeAttribute(chatContentSecurityPolicy)}"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="referrer" content="no-referrer"><title>Prime Agent</title><style>${css}</style></head>
-<body data-initial-session-id="${escapeAttribute(initialSessionId)}" data-chat-token="${escapeAttribute(csrfToken)}">
+<body data-chat-token="${escapeAttribute(csrfToken)}">
 <div id="app" class="app" data-sidebar-open="true">
 <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" tabindex="-1" aria-label="Hide sidebar" hidden></button>
 <aside id="sidebar" class="sidebar" aria-label="Sessions">
@@ -237,7 +237,7 @@ export function renderChatPage({ initialSessionId, csrfToken }: { initialSession
   <h2 id="list-heading" class="list-heading">Recent chats</h2>
   <div id="list-error" class="list-error" role="status" hidden><p id="list-error-text"></p><button id="retry-list" type="button" class="quiet-button">Retry</button></div>
   <p id="list-notice" class="list-notice">Loading...</p><ul id="session-list" class="session-list" aria-labelledby="list-heading"></ul>
-  <div class="sidebar-footer"><details class="sidebar-menu"><summary aria-label="Chat options">···</summary><button id="close-chat" class="quiet-button" type="button" title="Close this view without stopping agents">Close chat</button></details></div>
+  <div class="sidebar-footer"><details class="sidebar-menu"><summary aria-label="Chat options">···</summary><button id="close-chat" class="quiet-button" type="button" title="Close this view without stopping agents">Close view</button></details></div>
 </aside>
 <main class="chat">
   <header class="chat-header">

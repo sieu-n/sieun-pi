@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
 import { request } from "node:http";
 import { test } from "node:test";
 import type { ChatBackend, ChatModel, ChatSession } from "../src/chat-backend.ts";
@@ -36,7 +37,8 @@ async function fixture(send: ChatBackend["send"] = async () => {}) {
     send,
     async close() { closes++; },
   };
-  const server = await startChatServer({ backend, initialSessionId: session.sessionId });
+  const server = await startChatServer({ backend, port: 0, capability: randomBytes(32).toString("hex"), csrfToken: randomBytes(32).toString("hex"),
+    identity: { pid: process.pid, instanceId: randomUUID(), socketPath: "/test.sock" }, stopToken: randomBytes(32).toString("hex"), onStop: async () => { await server.close(); } });
   const pageResponse = await fetch(server.url);
   assert.equal(pageResponse.status, 200);
   const html = await pageResponse.text();
@@ -123,13 +125,27 @@ test("uncertain native send is never retried with the same request ID", async ()
   } finally { await app.close(); }
 });
 
-test("close chat releases the adapter once", async () => {
+test("removed view-close endpoint cannot stop the service", async () => {
   const app = await fixture();
-  const response = await fetch(app.url + "api/close", { method: "POST", headers: app.headers, body: "{}" });
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { closed: true });
-  await app.close();
+  try {
+    const response = await fetch(app.url + "api/close", { method: "POST", headers: app.headers, body: "{}" });
+    assert.equal(response.status, 404);
+    assert.equal((await fetch(app.url + "api/sessions")).status, 200);
+    assert.equal(app.closes(), 0);
+  } finally { await app.close(); }
   assert.equal(app.closes(), 1);
+});
+
+test("a persistent service accepts more than 256 unique sends and retains earlier admissions", async () => {
+  let sends = 0;
+  const app = await fixture(async () => { sends++; });
+  try {
+    for (let index = 0; index < 260; index++) {
+      assert.equal((await fetch(app.url + "api/message", { method: "POST", headers: app.headers, body: message("persistent_send_" + index) })).status, 200);
+    }
+    assert.equal((await fetch(app.url + "api/message", { method: "POST", headers: app.headers, body: message("persistent_send_0") })).status, 200);
+    assert.equal(sends, 260);
+  } finally { await app.close(); }
 });
 
 test("model catalog and usage are native projections; model changes require write authorization", async () => {

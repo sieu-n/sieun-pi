@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "description": "Read saved history and chat with native Prime Agent sessions in Aside.",
+  "description": "Read saved history and chat with native Prime Agent sessions through a standalone local server.",
   "engines": {
     "node": ">=22.8.0"
   },
@@ -19,14 +19,14 @@
   },
   "dependencies": {
     "marked": "18.0.12",
-    "prime-agent": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-0.9.4.tgz"
+    "prime-agent": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-0.9.4.tgz",
+    "tsx": "4.23.13"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-ai-0.9.4.tgz",
     "@types/node": "25.3.0",
-    "tsx": "4.23.13",
-    "typescript": "5.9.3",
     "parse5": "8.0.1",
-    "@earendil-works/pi-ai": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-ai-0.9.4.tgz"
+    "typescript": "5.9.3"
   },
   "files": [
     "extension/",

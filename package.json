@@ -12,9 +12,9 @@
     "test:package": "node --test tests/package.test.mjs"
   },
   "devDependencies": {
+    "@earendil-works/pi-tui": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-tui-0.9.4.tgz",
     "@types/node": "22.15.30",
-    "typescript": "5.9.3",
-    "@earendil-works/pi-tui": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-tui-0.9.4.tgz"
+    "typescript": "5.9.3"
   },
   "description": "Source-managed extensions, skills and account-pool tools for Prime Agent 0.9.4.",
   "repository": {
@@ -172,8 +172,9 @@
     "!**/.cache/**"
   ],
   "dependencies": {
+    "marked": "18.0.12",
     "prime-agent": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-0.9.4.tgz",
-    "marked": "18.0.12"
+    "tsx": "4.23.13"
   },
   "exports": {
     "./agent-identity": "./utils/agent-identity.mjs",
