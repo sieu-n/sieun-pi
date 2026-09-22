@@ -1,8 +1,55 @@
 #!/usr/bin/python3 -B
+"""pi-pool-token: the models.json credential hook.
+
+With no arguments (or `--provider <p>`) it writes one access token to stdout and
+nothing else. Prime Agent runs it through a pipe on every provider request. A
+person or agent running it by hand would paste the live token into a terminal
+or a transcript, so the token path refuses a TTY and refuses unknown arguments
+(`--help` used to fall through and print the token).
+
+    pi-pool-token [--provider <p>]   token on stdout (pipe only)
+    pi-pool-token --status           pool status
+    pi-pool-token --cli <command>    same as `pi-pool <command>`
+"""
 from pathlib import Path
 import runpy
 import sys
 
-source = Path(__file__).resolve().parents[1] / "vend.py"
-sys.argv = [str(source), *sys.argv[1:]]
-runpy.run_path(str(source), run_name="__main__")
+TOKEN_FLAGS = {"--provider"}
+
+
+def refuse(reason):
+    sys.stderr.write(
+        f"pi-pool-token: {reason}\n"
+        "This command prints a live credential. Prime Agent runs it through a pipe;\n"
+        "use `pi-pool status` or `pi-pool-token --cli <command>` for anything else.\n")
+    return 2
+
+
+def token_args_ok(argv):
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--status":
+            i += 1
+        elif argv[i] == "--provider" and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            i += 2
+        else:
+            return False
+    return True
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--cli":
+        pass
+    elif not token_args_ok(argv):
+        return refuse(f"unknown argument {argv[0]!r}; not printing a token")
+    elif "--status" not in argv and sys.stdout.isatty():
+        return refuse("stdout is a terminal; not printing a token")
+    source = Path(__file__).resolve().parents[1] / "vend.py"
+    sys.argv = [str(source), *argv]
+    runpy.run_path(str(source), run_name="__main__")
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

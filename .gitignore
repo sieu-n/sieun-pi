@@ -13,3 +13,14 @@ models.json
 credentials.json
 *.bak-pi-pool
 *.stage-pi-pool
+
+# Token-shaped file names. A misread `ls` or a stray shell redirect must never stage a credential.
+sk-ant-*
+sk-*
+eyJ*
+ghp_*
+gho_*
+github_pat_*
+xox[abp]-*
+AKIA*
+*.token
