@@ -6,7 +6,7 @@ import { parseChatImages } from "../src/chat-images.ts";
 import { renderChatMessages } from "../src/page.ts";
 import { startChatServer } from "../src/chat-server.ts";
 
-const session: ChatSession = { sessionId: "test-session", name: "Test session", cwd: "/test", kind: "root", status: "idle", canSend: true };
+const session: ChatSession = { sessionId: "test-session", name: "Test session", cwd: "/test", status: "idle", canSend: true };
 
 const testModel: ChatModel = { provider: "test", id: "vision", name: "Test vision", contextWindow: 100000, input: ["text", "image"] };
 const testImage = parseChatImages([{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=" }])[0];
@@ -19,15 +19,20 @@ async function fixture(send: ChatBackend["send"] = async () => {}) {
     async list() { return [session]; },
     async read(id) {
       assert.equal(id, session.sessionId);
-      return { session, queueCount: 0, controls: { kind: "live", currentModel: testModel, canChangeModel: true },
+      return { session, queueCount: 0, queue: { steering: [], followUp: [] }, work: null, controls: { kind: "live", currentModel: testModel, canChangeModel: true, thinkingLevel: "high", availableThinkingLevels: ["low", "high"] },
         usage: { kind: "native-session", inputTokens: 100, outputTokens: 25, cost: .01, context: null, providerLimits: "unavailable" },
         messages: [
           { id: "u1", role: "user", text: "Hello <script>bad()</script>", streaming: false, images: [] },
-          { id: "a1", role: "assistant", text: "**Reply** [blocked](https://example.com)", streaming: false, images: [] },
+          { id: "a1", role: "assistant", text: "**Reply** [blocked](https://example.com)", streaming: false, images: [], tools: [{ id: "call-1", name: "proof", status: "complete", revision: "call-1:1", summary: "Finished", args: { text: "<script>inert</script>" }, output: "full output\n".repeat(10000) }] },
         ] };
     },
     async models(id) { assert.equal(id, session.sessionId); return { sessionId: id, models: [testModel], configuredProviders: ["test"] }; },
     async setModel(input) { assert.deepEqual(input, { sessionId: session.sessionId, provider: "test", modelId: "vision" }); modelChanges++; return testModel; },
+    async commands(id) { return { sessionId: id, commands: [{ name: "skill:proof", source: "skill", description: "Proof skill" }] }; },
+    async rename() {}, async setEffort() {}, async stop() {}, async compact() {}, async markRead() {},
+    async accounts(id) { return { kind: "none", sessionId: id, provider: "test" }; },
+    async setAccount(input) { return { kind: "none", sessionId: input.sessionId, provider: input.provider }; },
+    async mutateQueue() { return "applied"; },
     send,
     async close() { closes++; },
   };
@@ -174,4 +179,43 @@ test("interactive image markup uses only validated data and labelled buttons", (
   assert.match(html, /<button class="chat-image-button" type="button" aria-label="Open attached image 1">/);
   assert.match(html, /src="data:image\/png;base64,/);
   assert.doesNotMatch(html, /https?:|<script|onerror/);
+});
+
+
+test("every native control requires the write token and rejects malformed payloads", async () => {
+  const app = await fixture();
+  try {
+    for (const route of ['rename', 'effort', 'account', 'stop', 'compact', 'queue', 'read']) {
+      const url = app.url + 'api/' + route;
+      assert.equal((await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
+      assert.equal((await fetch(url, { method: 'POST', headers: app.headers, body: '{}' })).status, 400);
+      assert.equal((await fetch(url)).status, 405);
+    }
+    const send = (route: string, input: unknown) => fetch(app.url + 'api/' + route, { method: 'POST', headers: app.headers, body: JSON.stringify(input) });
+    assert.equal((await send('rename', { sessionId: session.sessionId, name: 'New name' })).status, 200);
+    assert.equal((await send('effort', { sessionId: session.sessionId, level: 'high' })).status, 200);
+    assert.equal((await send('account', { sessionId: session.sessionId, provider: 'test', target: 'follow', force: 'yes' })).status, 400);
+    assert.equal((await send('queue', { sessionId: session.sessionId, lane: 'followUp', index: -1, expectedText: 'hi' })).status, 400);
+    assert.equal((await send('queue', { sessionId: session.sessionId, lane: 'followUp', index: 0, expectedText: 'hi', text: 'Updated' })).status, 200);
+    const commands = await (await fetch(app.url + 'api/commands?id=test-session')).json();
+    assert.equal(commands.commands[0].name, 'skill:proof');
+    const account = await (await fetch(app.url + 'api/accounts?id=test-session')).json();
+    assert.equal(account.kind, 'none');
+  } finally { await app.close(); }
+});
+
+
+test('collapsed transcript omits full tool payloads and the read-only tool endpoint returns all evidence', async () => {
+  const app = await fixture();
+  try {
+    const view = await (await fetch(app.url + 'api/session?id=test-session')).json();
+    assert(!view.html.includes('full output')); assert(!view.html.includes('&lt;script&gt;inert'));
+    const response = await fetch(app.url + 'api/tool?id=test-session&toolId=call-1');
+    assert.equal(response.status, 200);
+    const details = await response.json(); assert.equal(details.tool.output.length, 'full output\n'.length * 10000);
+    assert.equal(details.tool.args.text, '<script>inert</script>');
+    assert.equal((await fetch(app.url + 'api/tool?id=test-session&toolId=missing')).status, 404);
+    assert.equal((await fetch(app.url + 'api/tool?id=test-session')).status, 400);
+    assert.equal((await fetch(app.url + 'api/tool?id=test-session&toolId=call-1', { headers: { Origin: 'https://evil.example' } })).status, 403);
+  } finally { await app.close(); }
 });

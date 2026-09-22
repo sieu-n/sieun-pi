@@ -1,180 +1,119 @@
 # Native session chat
 
-`/what-did-i-say` opens an interactive view of Prime Agent sessions in Aside. `/agent-chat` opens the same view.
-Run `/reload` in an existing terminal session after updating the extension.
+`/what-did-i-say` and `/agent-chat` open Prime Agent in Aside. Run `/reload` in the terminal after updating the extension.
 
-The browser projects the native daemon catalog, active conversation branch, streaming message and follow-up queue.
-It does not infer final responses or task completion. Assistant text appears in saved order, including replies without provider-specific final markers.
-The native daemon owns prompt admission and execution. Opening the page does not call a model or rewrite history.
+The browser reads native sessions and sends through `DaemonAgentConnection`. Prime Agent owns each run, queue, saved name, model and skill expansion. Closing or refreshing a browser never stops a worker.
 
-## Chat with sessions and agents
-
-Run `/what-did-i-say` to open the active session in Aside. Use the left sidebar to switch sessions and the bottom composer to reply.
+## Layout and controls
 
 ```text
-Chats | Agents          Selected conversation             Usage
-Search                  Saved messages, images and live replies
-Conversation list       Image previews
-                        Reply...
-                        Attach                    Model v  Send
+220px sidebar           40px header
+Search                  Session title                 Refresh commands
+Session title   2m      User and assistant messages
+Session title   1h      Collapsed native tool details
+                        Executing · 2m 12s
+                        Queued messages
+                        /skill:name User arguments
+                        + Account Context Model Effort Stop Send
 ```
 
-- Switch between daemon-visible sessions and agents in the sidebar. This changes the browser view, not the terminal's selected session. Private client-owned RPC sessions keep their native visibility limits.
-- Send with Enter. Shift+Enter adds a line. Busy sessions receive native follow-up messages after their current turn.
-- Saved sessions are readable. Resume them in Prime Agent before sending; the browser does not create or resume workers.
-- Text and image drafts stay in browser memory for each session. Switching preserves them. Reloading or closing the tab discards them.
-- Acceptance means Prime Agent accepted the message, not that the agent completed its work. An uncertain send keeps the draft and never resends automatically.
-- Close chat stops the local browser connection. It does not stop agents. An inactive listener expires after 30 minutes without requests.
-- Running either command again closes the previous listener owned by that extension. Existing tabs then become disconnected.
+The sidebar contains top-level sessions only. F2 or the row's ellipsis opens rename. Enter saves through the native live or saved-session rename API. Escape cancels. Hover or focus shows the title, creation date, known last assistant response and model. Skill-only previews display `Untitled session` rather than injected markup. Names do not require model calls or scans of every history.
 
-The extension uses the default native daemon socket. If you launch with a custom `--daemon-socket`, also pass `--agent-chat-socket` with the same path.
+Select a session to change only the browser view. The terminal keeps its own selection. The URL fragment restores the selected session after reload. Draft text, images, text selection, scroll position and open disclosures survive session switches within the tab. Reload discards drafts and attachments.
 
-### Choose a model
+The header has no permanent Idle line. Native work appears beside a compact spinner above the composer. Its elapsed time comes from native run-start messages, using the same backward scan as Pi's TUI. A reattach does not create a new start time. Compaction, retries, bash and child work keep their native distinctions. Missing start times have no timer.
 
-Open the model menu beside Send. It shows the current model first, then models from configured providers. **More models** and search reveal the full native catalog. Unavailable entries stay disabled. Check authentication in Prime Agent to use them.
+Tools start collapsed. Each row shows its native name, status and short output summary. Expand to load exact arguments and output through the read-only tool endpoint. Collapsed transcript polls contain only summaries. Expanded live details reload when the native tool revision changes. Native tool events update partial output. Tool duration appears only when the native result supplies it. Reattached tools with no recorded duration do not get an invented timer. Thinking content stays hidden. Error-only and aborted assistant messages remain visible.
 
-Model changes apply only to the selected live session while idle, with no queued messages or active retries. Saved sessions cannot change models. The browser does not interrupt a turn to switch models.
+### Slash commands
 
-Native `setModel()` also updates Prime Agent's default model and provider. The menu warns about this side effect. Prime Agent owns catalog availability, authentication and selection; this package adds no model registry or account manager. After a change or uncertain response, the browser reads the current model before enabling another change.
+Typing `/` opens the selected session's native command and resource catalogs. Search matches names and descriptions. Up/Down moves, Enter or Tab selects, and Escape dismisses. IME composition does not select or submit.
 
-### Read usage
+A skill inserts its real `/skill:name` prefix. The browser sends that invocation and its arguments unchanged, with attached images. Native Pi expands and stores the skill. The browser has no separate skill loader and does not claim multi-skill chip support.
 
-Usage shows native recorded totals for this session's own work across the whole saved file, including inactive branches and compaction history. Input tokens include cache reads and writes. Output tokens and cost come from the same native summary. Totals exclude attributed child-agent usage.
+`/model`, `/account`, `/effort`, `/rename`, `/stop` and `/compact` open or call the corresponding controls. Native extension entries keep their source label, but interactive extension commands require the terminal. Unknown slash commands retain the draft and never become model prompts. Native prompt templates can be sent.
 
-Live sessions also show a separate context estimate against the selected model's context window. That estimate can be unknown after compaction. Saved sessions have no live context estimate.
+Supported control invocations clear their own draft after the control opens or executes. Unknown and unsupported commands keep their draft.
 
-Missing native totals display as not recorded, not zero. The native catalog also omits all-zero totals, so the browser cannot distinguish those cases. Provider account quotas, balances and rate limits are unavailable.
+The catalog refreshes on session selection, browser reload, a new `/` picker opening, or the header refresh button. Use refresh after terminal resource reloads while a picker remains open.
 
-### Send and view images
+### Account, model, effort and context
 
-Paste, drop or upload PNG, JPEG, GIF or WebP images. Choose a model that accepts images. Each message can contain up to four images, at most 3 MiB each and 8 MiB total before base64 encoding. Images-only messages are supported.
+The account widget loads the sanitized pool listing when the selected session or provider changes. Its compact label shows the pool or pinned identity, plan and session/week percentages used. A question mark means unavailable usage. Opening the menu refreshes the listing.
 
-Remove an image from its draft preview before sending. Supported native user images appear in the transcript; click an image to enlarge it. Unsupported, malformed or over-limit saved image bytes stay out of previews. Each omitted block leaves a `[Saved image]` placeholder, including image-only messages. Markdown image URLs remain inert.
+The model menu uses the native catalog, configured providers and current selection. Search and More models expose other native entries. It shows input support and native prices when supplied. `setModel()` also changes Prime Agent's default model; the menu states this. Model and effort changes require an idle native session, empty queue and no active children. Controls wait for native readback before displaying the new choice. Effort uses only `availableThinkingLevels`.
 
-The adapter validates native image payloads and passes them through `prompt(..., { images })`. Prime Agent stores sent images in its existing session history. This package adds no image store or upload service.
+Account reads and selections call the existing `components/pi-pool/bin/pi-pool-token` with `execFile` argument arrays. `ls --json --provider ... --session ...` owns account usage and eligibility. `use ... --provider ... --session ...` sets only the selected session tree, followed by a fresh listing. There is no global pin or browser credential access.
 
-### Native architecture
+A pin affects the next provider request. Follow the pool clears that pin. Unusable accounts require explicit force confirmation. The menu shows CLI status, plan, current/pinned/seat/live flags and percentages labelled used. Missing percentages remain unavailable. The CLI's `patched` field is not a host authentication-health verdict and is not displayed. Providers without a pool show No account pool. Account failures do not block chat.
+
+Context is separate from account capacity. It shows native context estimates, session token totals and recorded cost. Missing data stays unavailable. Session usage covers the whole native saved file, including inactive branches and compaction, excluding attributed child usage.
+
+### Stop, compact and queued prompts
+
+Stop calls native abort and cancels the current turn and its active child runs. It also aborts active retry, bash or compaction. It does not kill a worker. Native queued input stays paused until the next normal prompt. Terminal aborts appear through native readback.
+
+Compact calls the native compact API only while idle. The expandable queue lists native steering and follow-up messages. Edit and Remove use native expected-text checks. A changed queue rejects a stale edit rather than applying it to another message.
+
+Message admission means Pi accepted the request. It does not establish task success. An uncertain send keeps its draft and never resends automatically. Repeating the unchanged request ID checks the same admission result.
+
+### Read indicators
+
+Running sessions show a spinner. An idle session with an unseen committed assistant entry shows a dot. A checked session shows neither. Failed workers, connection errors and unavailable read metadata remain explicit.
+
+Pi currently has no native browser read record. This component stores only a baseline timestamp and last-read assistant entry per session at `getAgentDir()/browser-chat/read-state.json`. The first use treats older history as read. The file stays outside Git and native conversation history. Atomic rename and a process-owned lock protect concurrent listeners; markers never move backward in time. Reads do not rewrite the file. A damaged or locked read file does not prevent native chat.
+
+A tab marks read only when it has foreground focus and the latest committed assistant response is visible at the bottom. A click on a session while scrolled up does not clear its dot. Reading in the terminal does not change browser markers.
+
+The native catalog has no last-assistant field. The adapter caches observed entry metadata against catalog revisions. Each list refresh reads at most four changed recent sessions, rather than every saved history. Other pending response checks say unavailable until inspected. Native modification times invalidate the cache but never become assistant-response timestamps. Old sessions with no observed assistant entry show an unavailable reply date.
+
+## Images and saved sessions
+
+Paste, drop or upload PNG, JPEG, GIF or WebP with an image-capable native model. Limits are four images, 3 MiB each and 8 MiB total before base64 encoding. Image-only messages work. Unsupported saved images leave a `[Saved image]` placeholder. Markdown URLs and images stay inert.
+
+Saved sessions are readable and renamable. Resume them in Prime Agent before sending or changing runtime controls. This slice adds no New, Resume, Archive or Fork flow.
+
+## Native boundary
 
 ```mermaid
 flowchart LR
-    Aside[Aside sidebar and composer] --> HTTP[Loopback HTTP adapter]
+    Aside[Aside browser] --> HTTP[Loopback adapter]
     HTTP --> Native[DaemonAgentConnection]
-    Native --> Prime[Native session and follow-up queue]
-    HTTP --> Catalog[DaemonClient session catalog]
-    HTTP --> Saved[In-memory SessionManager for saved history]
+    Native --> Worker[Native session, tools and queue]
+    HTTP --> Catalog[Native session catalog]
+    HTTP --> Saved[In-memory native saved reader]
+    HTTP --> Pool[pi-pool CLI]
+    HTTP --> UI[Private browser read markers]
 ```
 
-The package adds a browser page and an HTTP adapter. Prime Agent still owns session identity, saved history, model selection, usage and prompt admission. It adds no database, second history store, agent runner, copied session files, runtime patches or frontend framework.
+`src/chat-backend.ts` owns the thin native boundary. `src/chat-pool.ts` validates the CLI listing and selects through its CLI. `src/chat-read-state.ts` owns UI read markers. `src/chat-server.ts` validates loopback HTTP. `src/chat-client.ts` owns transient browser view state. `src/chat-page.ts` owns markup, styles and CSP hashes. `src/page.ts` renders inert Markdown, tool disclosures and images.
 
-```mermaid
-sequenceDiagram
-    participant Aside
-    participant HTTP as Loopback adapter
-    participant Prime as Native Prime Agent
-    Aside->>HTTP: Open model menu for selected session
-    HTTP->>Prime: getModelCatalog()
-    Prime-->>HTTP: Models and configured providers
-    HTTP-->>Aside: Native model catalog
-    Aside->>HTTP: Choose model
-    HTTP->>Prime: Check session identity, state and queue
-    HTTP->>Prime: setModel(provider, modelId)
-    Note over Prime: Updates selected session and native default
-    Aside->>HTTP: Read current model and usage
-    HTTP->>Prime: Read live state and native session summary
-    Prime-->>HTTP: Current model, context and recorded usage
-    HTTP-->>Aside: Update controls and usage
-    Aside->>HTTP: Send text and image payloads
-    Note over HTTP: Validate image types, bytes and size limits
-    HTTP->>Prime: Check identity and image support
-    HTTP->>Prime: prompt(text, options with images and followUp)
-    Prime-->>HTTP: Admission result
-    HTTP-->>Aside: Acceptance, then transcript through polling
-```
+The adapter caches the immutable native tree inside each viewer connection by session identity and native leaf ID. Branch changes invalidate that tree. Full native user text supplies unnamed-session previews once the branch is already loaded.
 
-`DaemonAgentConnection` reads the full native branch and current streaming message. The view omits thinking, tools and custom agent-to-agent messages. User and assistant text use the existing inert Markdown renderer. Saved reads use `SessionManager.inMemory()` and `setSessionFile()` because `SessionManager.open()` can repair or migrate files on disk.
+The selected transcript polls every two seconds and the catalog every ten seconds while visible. The adapter keeps at most four native viewer connections. Those connections subscribe to native tool output but never own worker lifetime. Native snapshot reads rebuild the current run after disconnects. Saved reads use `SessionManager.inMemory()` to avoid migrating or repairing files on disk.
 
-The browser requests one selected transcript every two seconds and the session list every ten seconds while visible. It ignores responses for an older selection. The adapter keeps at most four native viewer connections, then disposes unused ones. Closing viewers does not kill or take ownership of sessions.
+The native API has no atomic expected-session-ID or idle precondition for mutations. The adapter checks native identity and busy state before calls. A terminal session replacement or new turn between the check and call can still race. Avoid replacing that terminal worker's selected session while sending browser mutations.
 
-Before sending or changing models, the adapter resolves the selected session ID in the native catalog and checks the live session header. Model changes also check native busy state and queued input. Image sends check the current model's image support.
+## HTTP contract and security
 
-Prime Agent 0.9.4 has no atomic expected-session-ID or idle condition for these operations. A completed terminal session replacement is detected. A replacement, new turn or model change between the check and the native operation can still race. Avoid changing that worker's session or model in the terminal while submitting from the browser.
+All paths are below a random per-listener capability URL. Reads use `GET api/sessions`, `api/session?id=...`, `api/models?id=...`, `api/commands?id=...`, `api/accounts?id=...` and `api/tool?id=...&toolId=...`. Tool reads return exact native arguments and output only for calls on the selected branch.
 
-### Local access and limits
+Writes use `POST api/message`, `api/model`, `api/effort`, `api/rename`, `api/account`, `api/stop`, `api/compact`, `api/queue`, `api/read` and `api/close`. All require JSON, the page's write token, and exact loopback Host and Origin. Session paths and executable arguments never come from the browser.
 
-The listener binds only to `127.0.0.1`. The random URL grants read access. Writes also require a separate per-listener token, the exact Origin and Host, and JSON. Cross-site requests are rejected. Do not share the URL. Other processes running as your user are outside this protection.
+The listener binds to `127.0.0.1`. A fixed-hash CSP allows no external resources or inline handlers. Transcript HTML stays escaped. Responses use `Cache-Control: no-store`. Do not share the capability URL. Other processes running as the same OS user are outside this protection.
 
-The page's fixed script and stylesheet hashes restrict its Content Security Policy. It loads no outside resources. Transcript HTML, links and Markdown image destinations stay inert. Validated native raster images display through local data URLs. Chat responses use `Cache-Control: no-store`. Browser-managed copies and screenshots can still remain.
+Text is limited to 32,000 characters and request bodies to 12 MiB. Each listener remembers up to 256 send IDs. Reopen chat when that limit is reached. An inactive listener expires after 30 minutes. Reopening the extension command replaces its previous listener. Neither action stops native runs.
 
-Each send carries a request ID. Repeated requests with the same ID, session, text and images reuse the admission result, including uncertain failures. A listener accepts at most 256 distinct send requests; reopen chat to reset it. Text is limited to 32,000 characters. The HTTP JSON body limit is 12 MiB, including base64 image data. There is no automatic send retry or daemon recovery loop.
+## Setup and checks
 
-The browser does not implement authentication setup, other model settings, interactive extension dialogs, new sessions, deletion or terminal commands. Use Prime Agent for those controls.
-
-### Chat source map
-
-- `extension/index.ts` registers both commands, opens Aside and closes its listener on native session shutdown.
-- `src/chat-backend.ts` adapts public Prime Agent session, model and usage APIs.
-- `src/chat-server.ts` exposes list, read, message and close routes, plus `GET api/models` and `POST api/model`.
-- `src/chat-page.ts` contains the page, styles and fixed CSP hashes.
-- `src/chat-client.ts` handles browser state, polling, model selection and image drafts.
-- `src/chat-images.ts` validates native image payloads and selects supported saved user images.
-- `src/page.ts` renders native message text, collapsed injected skills and validated images. It does not filter by response phase.
-- `test/chat-server.test.ts` checks loopback HTTP, request limits and message authorization.
-- `test/chat-native.test.ts` exercises the installed daemon with isolated synthetic sessions and a test provider.
-
-## Layout and response rendering
-
-The page follows the OpenAI Codex layout: a pale gray session sidebar, white conversation area, sans-serif text,
-right-aligned user messages and a bottom composer with attachment, model and send controls.
-The header shows native Running or Idle state. Saved sessions show Read-only and disable sending.
-The sidebar collapses on narrow screens. Usage, models and connection errors remain available.
-
-All saved user and assistant text on the active branch stays visible, including pre-compaction history.
-The current native streaming message appears after saved entries. The view omits thinking blocks, tool calls and custom messages.
-Injected skill instructions start collapsed. Their arguments remain visible.
-A displayed reply, an idle worker or successful prompt admission does not establish task success.
-
-## Package setup
-
-This component targets Prime Agent 0.9.4. Both commands use its public SDK. Runtime dependencies and development dependencies are pinned in `package.json` and `package-lock.json`.
-
-From the sieun-pi repository root:
+This component targets the pinned Prime Agent 0.9.4 SDK. The repository installer owns live registration. Workers must not apply or patch the live installation.
 
 ```sh
-cd components/user-history
-node --version
-npm ci --ignore-scripts
-npm run typecheck
-npm test
-npm run test:native
+npm run typecheck --prefix components/user-history
+npm test --prefix components/user-history
+npm run test:native --prefix components/user-history
 ```
 
-Use Node 22.8.0 or later. The tests use the Node executable that runs npm. The `prime-agent` runtime dependency resolves from the official 0.9.4 R2 release, not a machine-local installation. Native tests resolve the CLI from that dependency. The test provider library is an explicit development dependency from the same release.
+Set `HISTORY_TEST_ARTIFACTS_DIR` to the current session evidence directory. Native tests use an isolated HOME, daemon socket, skills and deterministic provider. They make no production model calls or pool writes.
 
-The sieun-pi root installer owns live registration. This component does not install a global extension itself. Its `pi.extensions` entry points to `extension/index.ts`, which registers both commands and the `--agent-chat-socket` flag. Link or install the whole component, not only `extension/`, so imports into `src/` keep working. The host installation must also resolve `prime-agent` and `marked` at runtime.
-
-The component reads existing sessions through the daemon and native session files. Installation does not move, copy or reset histories. Credentials, runtime settings, test artifacts and session data are not package source.
-
-## Verification
-
-Use `npm run check` from the sieun-pi root for source checks. The chat tests cover inert Markdown, CSP hashes,
-loopback access controls, drafts, stale responses, native usage, image validation and prompt admission.
-`npm run test:native --prefix components/user-history` runs an isolated native daemon with a deterministic test provider.
-It tests `/what-did-i-say`, switching sessions, saved read-only sessions, unmarked assistant replies, queued follow-ups and worker cleanup.
-It makes no real model calls and sends no prompts to working sessions.
-
-Set `HISTORY_TEST_ARTIFACTS_DIR` to the session evidence folder to keep native test output with the review.
-Without it, artifacts go into the component's ignored `.test-artifacts` directory.
-
-## Chat verification
-
-Run `npm test` for unit and HTTP checks, then `npm run test:native` for the command through the installed CLI and daemon. Native tests use a synthetic HOME, an explicit test-owned socket, and a deterministic provider. They do not send prompts to your working sessions or call real models.
-
-For Aside review, run:
-
-```sh
-CHAT_TEST_BROWSER=1 node --import tsx --test test/chat-native.test.ts
-```
-
-The test prints `CHAT_TEST_BROWSER_READY` and saves `browser-ready.json` under its test artifact directory. Open that URL through the Aside browser skill. Send a message to beta, switch to alpha, check saved read-only history, and close chat. Write the printed `browserDone` marker file within five minutes so the test can verify that viewers left its workers running and then remove its own daemon.
-
-The native checks cover user-message and image persistence, live replies, queued follow-ups without interruption, selected-session isolation and stale selections after a terminal switch. They also check model selection, native usage, unchanged saved history and viewer cleanup. Browser review checks model and usage controls, image display, per-session drafts and saved read-only state. Narrow-screen layout requires its own visual check.
+For Aside checks, run `CHAT_TEST_BROWSER=1 node --import tsx --test test/chat-native.test.ts` from the component directory. The fixture writes `browser-ready.json`. The host opens that URL with Aside and records rendered desktop, narrow, dark-mode and keyboard checks. Unit tests alone do not establish browser verification.

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { chatClientScript as script } from './chat-client.ts';
 
 const css = `
-:root { color-scheme: light; font: 15px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #202020; background: #fff; --canvas: #fff; --sidebar: #f9f9f9; --line: #e8e8e8; --muted: #727272; }
+:root { color-scheme: light dark; font: 15px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #202020; background: #fff; --canvas: #fff; --sidebar: #f9f9f9; --line: #e8e8e8; --muted: #727272; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; }
@@ -11,22 +11,19 @@ button { cursor: pointer; color: inherit; }
 button:disabled { cursor: default; opacity: .45; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #555; outline-offset: 3px; }
 button { border: 0; }
-.app { display: grid; grid-template-columns: 240px minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
+.app { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
 .app[data-sidebar-open="false"] { grid-template-columns: 0 minmax(0, 1fr); }
 .app[data-sidebar-open="true"] #sidebar-toggle { display: none; }
 .sidebar { display: flex; flex-direction: column; min-height: 0; padding: 14px 10px 12px; background: var(--sidebar); border-right: 1px solid var(--line); }
-.brand-row { display: flex; justify-content: space-between; align-items: center; margin: 0 8px 24px; gap: 8px; }
+.brand-row { display: flex; justify-content: space-between; align-items: center; margin: 0 8px 10px; gap: 8px; }
 .brand { font-size: 18px; font-weight: 600; letter-spacing: -.5px; }
 .quiet-button { padding: 6px 10px; border-radius: 8px; background: transparent; font-size: .8125rem; white-space: nowrap; }
 .quiet-button:hover:not(:disabled) { background: #ededed; }
-.view-toggle { display: flex; gap: 4px; margin: 0 2px 10px; }
-.view-toggle button { flex: 1; border-radius: 7px; padding: 6px; background: transparent; font-size: .8125rem; color: var(--muted); }
-.view-toggle button[aria-pressed="true"] { background: #e9e9e9; color: #202020; }
 .search:focus { border-color: var(--line); background: #fff; outline-offset: 1px; }
 .search { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid transparent; background: transparent; border-radius: 7px; font-size: .8125rem; }
 .list-heading { margin: 20px 10px 6px; font-size: .6875rem; color: var(--muted); font-weight: 500; }
 .session-list { flex: 1; min-height: 0; overflow: auto; padding: 0; margin: 0; list-style: none; }
-.session-button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; padding: 8px 10px; border-radius: 7px; margin: 1px 0; }
+.session-button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; padding: 3px 6px; height: 30px; border-radius: 5px; margin: 0; }
 .session-button:hover { background: #efefef; }
 .session-button[aria-current="true"] { background: #e9e9e9; }
 .session-name { flex: 1; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8125rem; }
@@ -38,11 +35,10 @@ button { border: 0; }
 .sidebar-footer { padding: 10px 4px 0; margin-top: 8px; }
 .sidebar-footer p { margin: 4px 4px 0; font-size: .75rem; color: #727272; }
 .chat { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
-.chat-header { grid-row: 1; position: relative; display: flex; align-items: center; gap: 12px; padding: 12px 24px; min-height: 64px; }
+.chat-header { grid-row: 1; position: relative; display: flex; align-items: center; gap: 12px; padding: 0 20px; height: 40px; min-height: 40px; }
 .chat-title { min-width: 0; flex: 1; }
 .chat-title h1 { margin: 0; font-size: .9375rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header-status { font-size: .75rem; color: #777; margin: 2px 0 0; overflow-wrap: anywhere; }
-.queue { font-size: .75rem; color: #666; white-space: nowrap; background: #f4f4f2; padding: 4px 9px; border-radius: 99px; }
 .connection-banner { grid-row: 2; display: flex; align-items: center; gap: 12px; padding: 10px 24px; background: #fff7e9; font-size: .8125rem; }
 .connection-banner p { margin: 0; flex: 1; overflow-wrap: anywhere; }
 .conversation { grid-row: 3; min-height: 0; overflow: auto; overscroll-behavior: contain; scroll-behavior: auto; }
@@ -106,6 +102,7 @@ hr { border: 0; border-top: 1px solid #e5e5e5; margin: 24px 0; }
 .header-actions, .composer-right { display: flex; align-items: center; gap: 7px; }
 .model-trigger { display: flex; align-items: center; gap: 5px; max-width: min(250px, 45vw); border-radius: 6px; padding: 5px 7px; background: transparent; font-size: .75rem; }
 .model-trigger:hover:not(:disabled) { background: #f1f1f1; }
+#account-button { display: block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #model-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-trigger svg { width: 13px; height: 13px; flex: none; }
 .popover { position: absolute; z-index: 5; width: 320px; max-width: calc(100vw - 32px); padding: 10px; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px #0000001a; font-family: system-ui, sans-serif; }
@@ -148,14 +145,61 @@ hr { border: 0; border-top: 1px solid #e5e5e5; margin: 24px 0; }
   .app, .app[data-sidebar-open="false"] { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: fixed; inset: 0 auto 0 0; width: min(300px, 85vw); z-index: 3; }
   .sidebar-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; background: #0005; z-index: 2; }
-  .chat-header { padding: 10px 14px; gap: 8px; min-height: 60px; }
+  .chat-header { padding: 10px 14px; gap: 8px; min-height: 40px; height: 40px; }
   .transcript { padding: 24px 18px 20px; }
   .question { max-width: 92%; padding: 12px 16px; }
   .composer-region { padding: 6px 12px max(12px, env(safe-area-inset-bottom)); }
   .composer-help { font-size: .625rem; }
   .connection-banner { padding: 8px 14px; }
-  .queue { max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
 }
+.conversation:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--line); }
+.chat-title { display: flex; align-items: center; }
+.header-status { margin: 0; white-space: nowrap; }
+.session-row { position: relative; display: flex; align-items: center; }
+.session-button { min-width: 0; padding-right: 24px; gap: 5px; }
+.session-time { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.row-more { position: absolute; right: 0; width: 24px; height: 28px; border-radius: 5px; background: var(--sidebar); opacity: 0; font-size: 14px; }
+.session-row:hover .row-more, .session-row:focus-within .row-more { opacity: 1; }
+.rename-input { width: 100%; height: 30px; min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: var(--canvas); color: inherit; padding: 2px 5px; font-size: 12px; }
+.session-meta[data-status="running"], .spinner { display: inline-block; width: 10px; height: 10px; flex: none; background: transparent; border: 1px solid var(--line); border-top-color: currentColor; border-radius: 50%; animation: spin .9s linear infinite; }
+.session-meta[data-status="unread"] { background: currentColor; }
+.session-meta[data-status="failed"] { background: #ad642d; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.work-status { display: flex; align-items: center; gap: 8px; padding: 0 4px 8px; color: var(--muted); font-size: 12px; }
+.queue-details { font-size: 12px; margin: 0 4px 8px; }
+.queue-details summary { cursor: pointer; color: var(--muted); }
+#queue-items { max-height: 160px; overflow: auto; }
+#queue-items > div { border-bottom: 1px solid var(--line); padding: 4px; overflow-wrap: anywhere; }
+#queue-items textarea { width: 100%; }
+.tool { color: var(--muted); font-size: 12px; }
+.tool summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+.response[data-outcome="error"], .response[data-outcome="aborted"] { border-left: 2px solid #ad642d; padding-left: 12px; }
+.composer-actions { gap: 3px; }
+.composer-right { margin-left: auto; gap: 3px; min-width: 0; }
+.model-trigger { min-width: 0; }
+.usage-panel, .account-panel, .effort-panel { top: auto; bottom: calc(100% + 8px); right: 0; max-height: 55vh; overflow: auto; }
+.account-panel { width: 380px; left: 0; }
+.account-panel .model-option { white-space: pre-line; font-size: 12px; }
+.effort-panel { width: 160px; }
+.slash-picker { left: 0; bottom: calc(100% + 8px); width: 100%; max-width: 100%; max-height: min(320px, 40vh); overflow: auto; }
+.slash-option { display: block; width: 100%; text-align: left; padding: 7px; border-radius: 5px; background: transparent; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slash-option:hover, .slash-option[aria-selected="true"] { background: var(--sidebar); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
+@media (pointer: coarse) { .session-button { height: 40px; } .row-more { height: 40px; opacity: 1; } }
+@media (max-width: 520px) { .context-trigger { max-width: 40px; overflow: hidden; } .model-trigger { font-size: 11px; padding: 4px; } #model-button { max-width: 110px; } #account-button { max-width: 100px; } .composer-right { gap: 1px; } .chat-header { padding: 0 12px; } }
+@media (prefers-color-scheme: dark) {
+ :root { color: #ddd; background: #181818; --canvas: #181818; --sidebar: #202020; --line: #383838; --muted: #999; }
+ .composer, .popover, .latest-button, .list-error { background: var(--canvas); border-color: var(--line); color: inherit; }
+ .composer textarea, .search, input { color: inherit; }
+ .search:focus, .question, pre, :not(pre) > code { background: #252525; border-color: var(--line); }
+ .session-button:hover, .session-button[aria-current="true"], .quiet-button:hover:not(:disabled), .icon-button:hover:not(:disabled), .model-trigger:hover:not(:disabled), .model-option:hover:not(:disabled), .model-option[aria-pressed="true"] { background: #303030; }
+ .empty-state h2 { color: #ddd; }
+ .send-button { background: #ddd; color: #181818; }
+ .connection-banner { background: #392e1e; }
+ th, td, hr { border-color: var(--line); }
+ button:focus-visible, input:focus-visible, summary:focus-visible { outline-color: #aaa; }
+}
+
 `;
 
 
@@ -183,10 +227,9 @@ export function renderChatPage({ initialSessionId, csrfToken }: { initialSession
 <body data-initial-session-id="${escapeAttribute(initialSessionId)}" data-chat-token="${escapeAttribute(csrfToken)}">
 <div id="app" class="app" data-sidebar-open="true">
 <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" tabindex="-1" aria-label="Hide sidebar" hidden></button>
-<aside id="sidebar" class="sidebar" aria-label="Sessions and agents">
+<aside id="sidebar" class="sidebar" aria-label="Sessions">
   <div class="brand-row"><span class="brand">Prime Agent</span><button id="hide-sidebar" class="icon-button" type="button" aria-label="Hide sidebar" title="Hide sidebar">${icon('sidebar')}</button></div>
-  <div class="view-toggle" role="group" aria-label="Conversation type"><button id="view-sessions" type="button" aria-pressed="true">Chats</button><button id="view-agents" type="button" aria-pressed="false">Agents</button></div>
-  <label class="sr-only" for="session-search">Search sessions and agents</label><input id="session-search" class="search" type="search" placeholder="Search" autocomplete="off">
+  <label class="sr-only" for="session-search">Search sessions</label><input id="session-search" class="search" type="search" placeholder="Search" autocomplete="off">
   <h2 id="list-heading" class="list-heading">Recent chats</h2>
   <div id="list-error" class="list-error" role="status" hidden><p id="list-error-text"></p><button id="retry-list" type="button" class="quiet-button">Retry</button></div>
   <p id="list-notice" class="list-notice">Loading...</p><ul id="session-list" class="session-list" aria-labelledby="list-heading"></ul>
@@ -195,23 +238,30 @@ export function renderChatPage({ initialSessionId, csrfToken }: { initialSession
 <main class="chat">
   <header class="chat-header">
     <button id="sidebar-toggle" class="icon-button" type="button" aria-label="Show sidebar" title="Show sidebar" aria-controls="sidebar" aria-expanded="true">${icon('sidebar')}</button>
-    <div class="chat-title"><h1 id="session-title">Prime Agent</h1><p id="session-status" class="header-status" hidden></p></div>
-    <div class="header-actions"><span id="queue-count" class="queue" aria-live="polite" hidden></span><button id="usage-button" class="icon-button" type="button" aria-label="Session usage" title="Session usage" aria-expanded="false" aria-controls="usage-panel">${icon('usage')}</button></div>
-    <section id="usage-panel" class="popover usage-panel" role="dialog" aria-label="Session usage" hidden><div class="popover-header"><h2>Usage</h2><button id="usage-close" class="icon-button" type="button" aria-label="Close usage">${icon('close')}</button></div><div id="usage-content"></div></section>
+    <div class="chat-title"><h1 id="session-title">Prime Agent</h1></div><span id="session-status" class="header-status" hidden></span>
+    <div class="header-actions"><button id="commands-refresh" class="icon-button" type="button" title="Refresh native commands" aria-label="Refresh native commands">↻</button></div>
   </header>
   <div id="connection-banner" class="connection-banner" role="status" hidden><p id="connection-text"></p><button id="retry-session" class="quiet-button" type="button">Retry</button></div>
   <div id="conversation" class="conversation" tabindex="0" role="region" aria-label="Conversation"><div id="transcript" class="transcript"><div class="empty-state"><p>Loading...</p></div></div></div>
   <footer class="composer-region"><div class="composer-wrap"><div class="latest-row"><button id="latest" class="latest-button" type="button" aria-label="Go to latest message" hidden>↓</button></div>
+    <div id="work-status" class="work-status" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="work-label"></span></div>
+    <details id="queue-details" class="queue-details" hidden><summary id="queue-summary"></summary><div id="queue-items"></div></details>
     <form id="composer-form" class="composer">
+      <section id="slash-picker" class="popover slash-picker" role="listbox" aria-label="Native commands" hidden></section>
       <div id="attachment-previews" class="attachment-previews" aria-label="Attached images"></div>
       <label class="sr-only" for="message">Message the selected session</label>
-      <textarea id="message" rows="2" maxlength="32000" placeholder="Ask anything, or follow up" aria-describedby="composer-help composer-target" autocomplete="off" disabled></textarea>
+      <textarea id="message" rows="2" maxlength="32000" placeholder="Ask anything, or follow up" aria-describedby="composer-help composer-target" role="combobox" aria-autocomplete="list" aria-controls="slash-picker" aria-expanded="false" autocomplete="off" disabled></textarea>
       <div class="composer-actions">
         <button id="attach-button" class="icon-button" type="button" aria-label="Attach images" title="Attach images" disabled>${icon('plus')}</button>
         <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
         <span id="composer-target" class="sr-only">Choose a session</span>
-        <div class="composer-right"><button id="model-button" class="model-trigger" type="button" aria-label="Change model" aria-expanded="false" aria-controls="model-panel" disabled><span id="model-label">Model</span>${icon('down')}</button><button id="send" class="send-button" type="submit" aria-label="Send message" disabled>${icon('up')}</button></div>
+        <button id="account-button" class="model-trigger" type="button" aria-expanded="false" aria-controls="account-panel" disabled>Account</button>
+        <button id="usage-button" class="model-trigger context-trigger" type="button" aria-label="Session usage" title="Session usage" aria-expanded="false" aria-controls="usage-panel"><span id="context-label">Context</span></button>
+        <div class="composer-right"><button id="model-button" class="model-trigger" type="button" aria-label="Change model" aria-expanded="false" aria-controls="model-panel" disabled><span id="model-label">Model</span>${icon('down')}</button><button id="effort-button" class="model-trigger" type="button" aria-expanded="false" aria-controls="effort-panel" disabled>Effort</button><button id="stop-button" class="quiet-button" type="button" title="Abort the native turn and its child runs. Queued prompts pause until the next prompt." hidden>Stop</button><button id="send" class="send-button" type="submit" aria-label="Send message" disabled>${icon('up')}</button></div>
       </div>
+      <section id="account-panel" class="popover account-panel" role="dialog" aria-label="Session account" hidden></section>
+      <section id="effort-panel" class="popover effort-panel" role="dialog" aria-label="Native effort" hidden></section>
+    <section id="usage-panel" class="popover usage-panel" role="dialog" aria-label="Session usage" hidden><div class="popover-header"><h2>Usage</h2><button id="usage-close" class="icon-button" type="button" aria-label="Close usage">${icon('close')}</button></div><div id="usage-content"></div><button id="compact-button" type="button" class="quiet-button" disabled>Compact native session</button></section>
       <section id="model-panel" class="popover model-panel" role="dialog" aria-label="Choose a model" hidden>
         <div class="popover-header"><h2>Model</h2><button id="model-close" class="icon-button" type="button" aria-label="Close model menu">${icon('close')}</button></div>
         <label class="sr-only" for="model-search">Search models</label><input id="model-search" class="search" type="search" placeholder="Search models" autocomplete="off">

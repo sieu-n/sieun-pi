@@ -100,24 +100,34 @@ import { dirname } from 'node:path';
 const calls = ${JSON.stringify(input.calls)};
 const gate = ${JSON.stringify(input.gate)};
 function log(stage, message, details = {}) { appendFileSync(calls, JSON.stringify({ stage, message, pid: process.pid, ...details }) + '\\n'); }
-function waitForRelease(signal) {
+function waitForRelease(signal, gatePath = gate) {
   return new Promise((resolve, reject) => {
     const abort = () => { cleanup(); reject(new Error('Synthetic provider aborted')); };
-    const check = () => { if (existsSync(gate)) { cleanup(); resolve(); } };
-    const watcher = watch(dirname(gate), check);
-    const timer = setTimeout(() => { cleanup(); reject(new Error('Synthetic release gate timed out')); }, 45000);
+    const check = () => { if (existsSync(gatePath)) { cleanup(); resolve(); } };
+    const watcher = watch(dirname(gatePath), check);
+    const timer = setTimeout(() => { cleanup(); reject(new Error('Synthetic release gate timed out')); }, 180000);
     function cleanup() { watcher.close(); clearTimeout(timer); signal?.removeEventListener('abort', abort); }
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort(); else check();
   });
 }
 export default function(pi) {
+  pi.registerTool({
+    name: 'browser_proof_tool', label: 'Browser proof tool', description: 'Hold a native tool until its test releases it.',
+    parameters: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
+    async execute(toolCallId, params, signal, onUpdate) {
+      log('tool-held', params.message, { toolCallId });
+      onUpdate?.({ content: [{ type: 'text', text: 'Native tool is waiting for the test release.' }] });
+      await waitForRelease(signal, gate + '.tool');
+      return { content: [{ type: 'text', text: 'NATIVE_TOOL_RESULT ' + params.message }], details: { verified: true } };
+    }
+  });
   pi.registerProvider('chat-native-test', {
     baseUrl: 'http://127.0.0.1:1/never', apiKey: 'synthetic-not-a-secret', api: 'chat-native-test-api',
     models: [
-      { id: 'synthetic', name: 'Deterministic native chat fixture', reasoning: false, input: ['text'],
+      { id: 'synthetic', name: 'Deterministic native chat fixture', reasoning: true, input: ['text'],
         cost: { input: 10, output: 100, cacheRead: 1, cacheWrite: 10 }, contextWindow: 1000000, maxTokens: 1024 },
-      { id: 'synthetic-vision', name: 'Deterministic native vision fixture', reasoning: false, input: ['text', 'image'],
+      { id: 'synthetic-vision', name: 'Deterministic native vision fixture', reasoning: true, input: ['text', 'image'],
         cost: { input: 10, output: 100, cacheRead: 1, cacheWrite: 10 }, contextWindow: 2000000, maxTokens: 1024 },
     ],
     streamSimple(model, context, options) {
@@ -125,6 +135,7 @@ export default function(pi) {
       const user = context.messages.findLast(message => message.role === 'user');
       const text = typeof user?.content === 'string' ? user.content
         : (user?.content ?? []).filter(part => part.type === 'text').map(part => part.text).join('\\n');
+      const needsTool = text.includes('[tool]') && context.messages.at(-1)?.role !== 'toolResult';
       const output = { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id,
         usage: { input: 100, output: 25, cacheRead: 40, cacheWrite: 10, totalTokens: 175,
           cost: { input: 0.001, output: 0.0025, cacheRead: 0.00004, cacheWrite: 0.0001, total: 0.00364 } },
@@ -133,6 +144,13 @@ export default function(pi) {
         try {
           log('start', text, { provider: model.provider, model: model.id, content: user?.content });
           stream.push({ type: 'start', partial: output });
+          if (needsTool) {
+            output.content.push({ type: 'toolCall', id: 'browser-proof-' + Date.now(), name: 'browser_proof_tool', arguments: { message: text } });
+            output.stopReason = 'toolUse';
+            stream.push({ type: 'done', reason: 'toolUse', message: output });
+            stream.end();
+            return;
+          }
           const block = { type: 'text', text: '' };
           output.content.push(block);
           stream.push({ type: 'text_start', contentIndex: 0, partial: output });

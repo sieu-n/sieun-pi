@@ -94,6 +94,7 @@ class Element extends Events {
   disabled = false;
   value = '';
   type = '';
+  title = '';
   placeholder = '';
   innerHTML = '';
   scrollTop = 0;
@@ -111,7 +112,9 @@ class Element extends Events {
   append(...children: Element[]): void { this.children.push(...children); }
   replaceChildren(...children: Element[]): void { this.text = ''; this.innerHTML = ''; this.children = children; }
   contains(element: Element | null): boolean { return this === element || this.children.some(child => child.contains(element)); }
+  getBoundingClientRect(): { top: number; bottom: number } { return { top: 0, bottom: 300 }; }
   matches(selector: string): boolean {
+    if (selector === "[data-message-id]") return !!this.dataset.messageId;
     const [tag, className] = selector.split('.');
     return (!tag || this.tagName === tag) && (!className || this.className.split(' ').includes(className));
   }
@@ -119,6 +122,9 @@ class Element extends Events {
   querySelectorAll(selector: string): Element[] { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
   querySelector(selector: string): Element | null { return this.querySelectorAll(selector)[0] ?? null; }
   focus(): void { this.onFocus(this); }
+  select(): void {}
+  setSelectionRange(): void {}
+  scrollIntoView(): void {}
 }
 
 type PendingRequest = {
@@ -130,7 +136,7 @@ type PendingRequest = {
 function startClient({ abortRequests = true }: { abortRequests?: boolean } = {}) {
   const elements = new Map<string, Element>();
   const document = Object.assign(new Events(), {
-    body: new Element(), hidden: false, title: '', activeElement: null,
+    body: new Element(), hidden: false, title: '', activeElement: null, hasFocus: (): boolean => true,
     getElementById(id: string) { const value = elements.get(id); assert(value, id); return value; },
     createElement(tagName: string) { const element = new Element(); element.tagName = tagName; return element; },
   });
@@ -166,7 +172,7 @@ function startClient({ abortRequests = true }: { abortRequests?: boolean } = {})
     }
   }
   const context = createContext({
-    document, window, navigator, AbortController, Error, TypeError, DOMException, FileReader,
+    document, window, navigator, location: { hash: "" }, history: { replaceState() {} }, confirm: () => false, AbortController, Error, TypeError, DOMException, FileReader,
     crypto: { randomUUID: () => 'request-' + ++requestId },
     matchMedia: () => ({ matches: false }),
     setTimeout(callback: () => void, delay: number) { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
@@ -199,31 +205,32 @@ function startClient({ abortRequests = true }: { abortRequests?: boolean } = {})
 }
 const initialId = 'session/a?b';
 const secondId = 'other#session';
-const agentId = 'agent/<opaque>';
 const sessionPath = (id: string) => 'api/session?id=' + encodeURIComponent(id);
 const visionModel = { provider: 'native', id: 'vision', name: 'Native vision', contextWindow: 200000, input: ['text', 'image'] } satisfies ChatModel;
 const textModel = { provider: 'native', id: 'text', name: 'Native text', contextWindow: 100000, input: ['text'] } satisfies ChatModel;
 const otherModel = { ...visionModel, provider: 'unconfigured', id: 'other', name: 'Other model' } satisfies ChatModel;
 const usage = { kind: 'native-session', inputTokens: 1200, outputTokens: 450, cost: 0.045, context: { tokens: 3000, contextWindow: 200000, percent: 1.5 }, providerLimits: 'unavailable' } satisfies ChatView['usage'];
-const controls = { kind: 'live', currentModel: visionModel, canChangeModel: true } satisfies ChatView['controls'];
-const session = (id = initialId, extra = {}) => ({ id, name: id === initialId ? 'First conversation' : 'Second conversation', status: 'idle', writable: true, html: '<article class="pair">Saved transcript</article>', queueCount: 0, controls, usage, ...extra });
+const controls = { kind: 'live', currentModel: visionModel, canChangeModel: true, thinkingLevel: 'high', availableThinkingLevels: ['low', 'high'] } satisfies ChatView['controls'];
+const session = (id = initialId, extra = {}) => ({ id, name: id === initialId ? 'First conversation' : 'Second conversation', status: 'idle', writable: true, html: '<article class="pair">Saved transcript</article>', queueCount: 0, queue: { steering: [], followUp: [] }, work: null, controls, usage, ...extra });
 const modelsPath = (id: string) => 'api/models?id=' + encodeURIComponent(id);
 const catalog = (id = initialId) => ({ sessionId: id, models: [visionModel, textModel, otherModel], configuredProviders: ['native'] });
 const imageFile = (extra = {}) => ({ name: 'image.png', type: 'image/png', size: 512, ...extra });
 const sessionList = { sessions: [
-  { id: initialId, name: 'First conversation', kind: 'session', status: 'idle', writable: true },
-  { id: secondId, name: 'Second conversation', kind: 'session', status: 'busy', writable: true },
-  { id: agentId, name: 'Research agent', kind: 'agent', parentId: initialId, status: 'saved', writable: false },
+  { id: initialId, name: 'First conversation', status: 'idle', writable: true },
+  { id: secondId, name: 'Second conversation', status: 'busy', writable: true },
 ], initialSessionId: initialId };
 async function ready(client: ReturnType<typeof startClient>): Promise<void> {
   client.findRequest('api/sessions').resolve(sessionList);
   client.findRequest(sessionPath(initialId)).resolve(session());
+  client.findRequest('api/commands?id=' + encodeURIComponent(initialId)).resolve({ sessionId: initialId, commands: [] });
+  await client.flush();
+  client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve({ kind: 'none', sessionId: initialId, provider: 'native' });
   await client.flush();
 }
 
 test('selected transcript and list poll separately without overlapping requests', async () => {
   const client = startClient();
-  assert.equal(client.requests.length, 2);
+  assert.equal(client.requests.length, 3);
   assert.equal(client.el('message').disabled, true);
   await ready(client);
   assert.equal(client.el('message').disabled, false);
@@ -257,7 +264,7 @@ test('a stale fetch cannot replace a new selection; only the selected transcript
   const first = client.findRequest(sessionPath(initialId));
   client.select(secondId);
   assert.equal(first.options.signal.aborted, true);
-  assert.equal(client.requests.length, 2, 'replacement fetch waits for the old request to settle');
+  assert.equal(client.requests.length, 4, 'command fetch starts but replacement transcript waits for the old request');
   first.resolve(session(initialId, { html: 'STALE TRANSCRIPT' }));
   await client.flush();
   assert.equal(client.el('session-title').textContent, 'Second conversation');
@@ -304,7 +311,7 @@ test('drafts and pending sends keep their original target across session switche
   await client.flush();
   assert.equal(client.el('message').value, '');
   assert.equal(client.el('send-notice').hidden, true);
-  assert.equal(client.el('queue-count').textContent, '2 queued');
+  assert.equal(client.el('queue-summary').textContent, '2 queued');
 });
 
 test('Enter sends, Shift+Enter and IME do not; blank drafts never send', async () => {
@@ -347,19 +354,15 @@ test('failed sends retain drafts, disclose uncertainty, and never resend on reco
   assert.equal(client.el('message').value, 'Keep this draft');
 });
 
-test('read-only agent selection and list search do not enable sending', async () => {
+test('saved sessions stay read-only and session search remains available', async () => {
   const client = startClient();
   await ready(client);
-  client.el('view-agents').emit('click');
-  assert.equal(client.el('session-list').children.length, 1);
-  client.select(agentId);
-  await client.flush();
-  client.findRequest(sessionPath(agentId)).resolve(session(agentId, { name: 'Research agent', writable: false }));
+  client.select(secondId); await client.flush();
+  client.findRequest(sessionPath(secondId)).resolve(session(secondId, { writable: false, controls: { kind: 'saved', currentModel: null, canChangeModel: false } }));
   await client.flush();
   assert.equal(client.el('message').disabled, true);
   assert.match(client.el('session-status').textContent, /Read-only/);
-  client.el('session-search').value = 'nothing matches';
-  client.el('session-search').emit('input');
+  client.el('session-search').value = 'nothing matches'; client.el('session-search').emit('input');
   assert.equal(client.el('session-list').children.length, 0);
   assert.equal(client.el('list-notice').textContent, 'No matches.');
 });
@@ -715,7 +718,7 @@ test('model mutation results cannot replace another session model and busy or se
   client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'running', controls: { ...controls, canChangeModel: false } }));
   await client.flush();
   assert.equal(client.el('model-button').disabled, true);
-  assert.equal(client.el('session-status').textContent, 'Running');
+  assert.equal(client.el('work-status').hidden, false);
 });
 
 test('uncertain model changes read back before retry and never retry the mutation automatically', async () => {
@@ -750,7 +753,7 @@ test('usage popup shows only selected session totals and labels unavailable quot
   const usageText = client.el('usage-content').textContent;
   assert.deepEqual(client.el('usage-content').querySelectorAll('dt').map(item => item.textContent), ['Input', 'Output', 'Cost', 'Context']);
   assert.deepEqual(client.el('usage-content').querySelectorAll('dd').map(item => item.textContent), ['1,200', '450', '$0.0450', '3,000 / 200,000 (1.5%) · Estimate']);
-  assert.match(usageText, /Own session usage, including cache\. Account limits unavailable/);
+  assert.match(usageText, /Own session token usage, including cache\. Account capacity is in Account/);
   client.select(secondId);
   client.findRequest(sessionPath(secondId)).resolve(session(secondId, { usage: { kind: 'unavailable', reason: 'not-recorded', context: null, providerLimits: 'unavailable' } }));
   await client.flush();
@@ -888,7 +891,7 @@ test('paste and drop read local files only, and removed pending reads cannot ret
   client.imageReads[1]?.resolve();
   await client.flush();
   assert.equal(client.el('attachment-previews').querySelector('img')?.alt, 'dropped.png');
-  assert.equal(client.requests.length, 2, 'no image upload or external fetch occurs');
+  assert.equal(client.requests.length, 4, 'only native session, catalog, command and pool reads occur');
 });
 
 test('read-only and pending-send sessions reject upload, paste, and drop', async () => {
@@ -930,11 +933,11 @@ test('sent image buttons open validated data images, close with Escape, and reje
   assert.equal(client.el('image-viewer').hidden, true);
 });
 
-test('native idle status is visible and sidebar status is a labelled dot', async () => {
+test('checked idle sessions have no status label or dot', async () => {
   const client = startClient();
   await ready(client);
-  assert.equal(client.el('session-status').hidden, false);
-  assert.equal(client.el('session-status').textContent, 'Idle');
+  assert.equal(client.el('session-status').hidden, true);
+  assert.equal(client.el('session-status').textContent, '');
   const first = client.el('session-list').children[0]?.children[0];
   assert(first);
   const dot = first.children[1];
@@ -943,11 +946,9 @@ test('native idle status is visible and sidebar status is a labelled dot', async
   assert.equal(client.el('session-list').children[1]?.children[0]?.attributes.get('aria-label'), 'Second conversation, Running');
   assert.equal(dot?.attributes.get('aria-label'), undefined);
   assert.equal(dot?.attributes.get('aria-hidden'), 'true');
-  assert.equal(client.el('list-heading').textContent, 'Recent chats');
+  assert(rendered.includes('id="list-heading" class="list-heading">Recent chats</h2>'));
   assert.equal(dot?.attributes.get('title'), 'Idle');
-  assert.equal(dot?.dataset.status, 'idle');
-  client.el('view-agents').click();
-  assert.equal(client.el('session-list').children[0]?.children[0]?.attributes.get('aria-label'), 'Research agent, Read-only');
+  assert.equal(dot?.dataset.status, '');
 });
 
 
@@ -979,4 +980,162 @@ test('choosing a model after switching uses the new selection in the authenticat
   await client.flush();
   client.chooseModel(textModel.id);
   assert.deepEqual(JSON.parse(client.findRequest('api/model').options.body ?? ''), { sessionId: secondId, provider: textModel.provider, modelId: textModel.id });
+});
+
+
+test('slash picker shows every loaded skill and preserves native invocation with IME-safe selection', async () => {
+  const client = startClient(); await ready(client);
+  client.type('/');
+  const commands = Array.from({ length: 100 }, (_, index) => ({ name: 'skill:proof-' + index, source: 'skill', description: 'Native proof ' + index }));
+  client.findRequest('api/commands?id=' + encodeURIComponent(initialId)).resolve({ sessionId: initialId, commands });
+  await client.flush();
+  assert.equal(client.el('slash-picker').hidden, false);
+  assert.equal(client.el('slash-picker').children.length, 106);
+  client.type('/proof-99');
+  assert.equal(client.el('slash-picker').children.length, 1);
+  client.el('message').emit('keydown', { key: 'Enter', isComposing: true });
+  assert.equal(client.el('message').value, '/proof-99');
+  client.el('message').emit('keydown', { key: 'Tab' });
+  assert.equal(client.el('message').value, '/skill:proof-99 ');
+  assert.equal(client.el('slash-picker').hidden, true);
+  client.type('/skill:proof-99 actual user argument');
+  client.el('composer-form').emit('submit');
+  assert.equal(JSON.parse(client.findRequest('api/message').options.body ?? '').message, '/skill:proof-99 actual user argument');
+});
+
+test('unknown slash and interactive extensions keep the draft and never become prompts', async () => {
+  const client = startClient(); await ready(client);
+  client.type('/');
+  client.findRequest('api/commands?id=' + encodeURIComponent(initialId)).resolve({ sessionId: initialId,
+    commands: [{ name: 'terminal-only', source: 'extension', description: 'Native dialog' }] });
+  await client.flush();
+  for (const message of ['/unknown argument', '/terminal-only']) {
+    client.type(message); client.el('composer-form').emit('submit'); await client.flush();
+    assert.equal(client.el('message').value, message);
+    assert(!client.requests.some(request => request.path === 'api/message'));
+    assert.equal(client.el('connection-banner').hidden, false);
+  }
+});
+
+test('effort selection waits for native readback and uses only native choices', async () => {
+  const client = startClient(); await ready(client);
+  client.el('effort-button').click();
+  assert.deepEqual(client.el('effort-panel').children.map(child => child.textContent), ['low', 'high']);
+  client.el('effort-panel').children[0]?.click();
+  assert.equal(client.el('effort-button').textContent, 'high');
+  assert.equal(client.el('effort-button').disabled, true);
+  const mutation = client.findRequest('api/effort');
+  assert.deepEqual(JSON.parse(mutation.options.body ?? ''), { sessionId: initialId, level: 'low' });
+  mutation.resolve({ accepted: true }); await client.flush();
+  assert.equal(client.el('effort-button').textContent, 'high');
+  client.findRequest(sessionPath(initialId)).resolve(session(initialId, { controls: { ...controls, thinkingLevel: 'low' } }));
+  await client.flush();
+  assert.equal(client.el('effort-button').textContent, 'low');
+  assert.equal(client.el('effort-button').disabled, false);
+});
+
+test('native running work and elapsed start survive selecting away and returning', async () => {
+  const client = startClient(); await ready(client);
+  const work = { isStreaming: true, isCompacting: false, isBashRunning: false, retryAttempt: 0, startedAt: Date.now() - 120000, childCount: 0, label: 'Executing browser_proof_tool' };
+  client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'running', work })); await client.flush();
+  assert.match(client.el('work-label').textContent, /Executing browser_proof_tool.*2m/);
+  assert.equal(client.el('stop-button').hidden, false);
+  client.select(secondId); await client.flush(); client.findRequest(sessionPath(secondId)).resolve(session(secondId)); await client.flush();
+  client.select(initialId); await client.flush(); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'running', work })); await client.flush();
+  assert.match(client.el('work-label').textContent, /2m/);
+  client.el('stop-button').click();
+  assert.deepEqual(JSON.parse(client.findRequest('api/stop').options.body ?? ''), { sessionId: initialId });
+});
+
+test('scroll position returns with each draft and no Agents controls remain', async () => {
+  const client = startClient(); await ready(client);
+  client.el('conversation').scrollTop = 123; client.el('conversation').emit('scroll'); client.type('draft');
+  client.select(secondId); await client.flush(); client.findRequest(sessionPath(secondId)).resolve(session(secondId)); await client.flush();
+  client.select(initialId); await client.flush(); client.findRequest(sessionPath(initialId)).resolve(session()); await client.flush();
+  assert.equal(client.el('conversation').scrollTop, 123); assert.equal(client.el('message').value, 'draft');
+  assert(!rendered.includes('view-agents')); assert(!rendered.includes('view-sessions'));
+});
+
+
+test('read markers require foreground focus and the latest committed response visible', async () => {
+  const client = startClient(); await ready(client);
+  client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { unread: true, lastAssistant: { entryId: 'assistant-latest', timestamp: 1000 } }));
+  await client.flush();
+  assert(!client.requests.some(request => request.path === 'api/read'), 'missing native entry cannot be marked');
+  const entry = new Element(); entry.dataset.messageId = 'assistant-latest'; client.el('transcript').append(entry);
+  client.document.hidden = true; client.el('conversation').emit('scroll'); await client.flush();
+  assert(!client.requests.some(request => request.path === 'api/read'));
+  client.document.hidden = false; client.document.hasFocus = () => false;
+  client.el('conversation').emit('scroll'); await client.flush(); assert(!client.requests.some(request => request.path === 'api/read'));
+  client.document.hasFocus = () => true;
+  client.el('conversation').scrollTop = 100; client.el('conversation').emit('scroll'); await client.flush();
+  assert(!client.requests.some(request => request.path === 'api/read'));
+  client.el('conversation').scrollTop = 1000; client.el('conversation').emit('scroll'); await client.flush();
+  assert.deepEqual(JSON.parse(client.findRequest('api/read').options.body ?? ''), { sessionId: initialId, entryId: 'assistant-latest' });
+});
+
+
+test('account widget loads once per selected provider and shows pool plan and used percentages', async () => {
+  const client = startClient(); await ready(client);
+  assert.equal(client.el('account-button').textContent, 'No pool');
+  const before = client.requests.filter(request => request.path.startsWith('api/accounts')).length;
+  client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session()); await client.flush();
+  assert.equal(client.requests.filter(request => request.path.startsWith('api/accounts')).length, before);
+  client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { controls: { ...controls, currentModel: { ...visionModel, provider: 'anthropic' } } })); await client.flush();
+  const listing = { kind: 'pool', sessionId: initialId, provider: 'anthropic', checkedAt: new Date().toISOString(), rows: [{ id: 'one', email: 'reader@example.test', plan: 'Pro', usage: '6% / 42%', session_pct: 6, weekly_pct: 42, current: true, pinned: false, seat: true, usable: true }] };
+  client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve(listing); await client.flush();
+  assert.equal(client.el('account-button').textContent, 'Pool · Pro · 6%/42%');
+  assert.match(client.el('account-button').title, /reader@example.test/);
+  client.el('account-button').click();
+  client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve({ ...listing, rows: [{ ...listing.rows[0], session_pct: null, weekly_pct: null }] }); await client.flush();
+  assert.equal(client.el('account-button').textContent, 'Pool · Pro · ?/?');
+  assert.match(client.el('account-button').title, /unavailable/);
+});
+
+test('supported slash controls consume only their own draft after opening', async () => {
+  const client = startClient(); await ready(client);
+  client.type('/model'); client.el('composer-form').emit('submit');
+  assert.equal(client.el('model-panel').hidden, false); assert.equal(client.el('message').value, '');
+  client.type('New ordinary draft'); client.findRequest(modelsPath(initialId)).resolve(catalog()); await client.flush();
+  assert.equal(client.el('message').value, 'New ordinary draft');
+  client.el('model-close').click();
+  client.type('/account'); client.el('composer-form').emit('submit');
+  assert.equal(client.el('account-panel').hidden, false); assert.equal(client.el('message').value, '');
+  client.type('/unknown-command'); client.el('composer-form').emit('submit');
+  assert.equal(client.el('message').value, '/unknown-command');
+  assert(!client.requests.some(request => request.path === 'api/message'));
+});
+
+
+test('tool disclosure loads exact text on demand and refetches only a changed native revision', async () => {
+  const client = startClient(); await ready(client);
+  const tool = new Element(); tool.tagName = 'details'; tool.className = 'tool';
+  tool.dataset.toolId = 'call-1'; tool.dataset.toolRevision = 'r1'; tool.open = true;
+  const body = new Element(); body.className = 'tool-content'; tool.append(body); client.el('transcript').append(tool);
+  client.el('transcript').emit('toggle', { target: tool });
+  const path = 'api/tool?id=' + encodeURIComponent(initialId) + '&toolId=call-1';
+  client.findRequest(path).resolve({ sessionId: initialId, tool: { id: 'call-1', revision: 'r1', args: { text: '<script>unsafe</script>' }, output: 'full output\n'.repeat(1000) } });
+  await client.flush();
+  assert(body.textContent.includes('<script>unsafe</script>')); assert(body.textContent.includes('full output\n'.repeat(1000)));
+  assert.equal(body.innerHTML, '');
+  client.el('transcript').emit('toggle', { target: tool }); await client.flush();
+  assert.equal(client.requests.filter(request => request.path === path).length, 1);
+  tool.dataset.toolRevision = 'r2'; client.el('transcript').emit('toggle', { target: tool });
+  assert.equal(client.requests.filter(request => request.path === path).length, 2);
+});
+
+
+test('disconnected running sessions hide stale work indicators until native readback', async () => {
+  const client = startClient(); await ready(client);
+  const work = { isStreaming: true, isCompacting: false, isBashRunning: false, retryAttempt: 0, startedAt: Date.now() - 60000, childCount: 0, label: 'Executing proof' };
+  client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'running', work })); await client.flush();
+  assert.equal(client.el('work-status').hidden, false);
+  client.window.emit('offline');
+  assert.equal(client.el('work-status').hidden, true);
+  assert.equal(client.el('connection-banner').hidden, false);
+  client.window.emit('online');
+  assert.equal(client.el('work-status').hidden, true);
+  client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'running', work })); await client.flush();
+  assert.equal(client.el('work-status').hidden, false);
+  client.window.emit('pagehide'); assert.equal(client.el('work-status').hidden, true);
 });

@@ -15,9 +15,9 @@ class RequestError extends Error {
 
 function sessionItem(session: ChatSession) {
   return {
-    id: session.sessionId, name: session.name, kind: session.kind === "root" ? "session" : "agent",
-    status: session.status, writable: session.canSend,
-    ...(session.parentSessionId ? { parentId: session.parentSessionId } : {}),
+    id: session.sessionId, name: session.name, status: session.status, writable: session.canSend,
+    created: session.created, lastActivityAt: session.lastActivityAt, model: session.model,
+    nativeStatus: session.nativeStatus, lastAssistant: session.lastAssistant, unread: session.unread, readError: session.readError,
   };
 }
 
@@ -141,17 +141,26 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
         if (!id || id.length > 256) throw new RequestError(400, "A session ID is required.");
         touch();
         const view = await backend.read(id);
-        json(res, 200, { ...sessionItem(view.session), html: renderChatMessages(view.messages), queueCount: view.queueCount, controls: view.controls, usage: view.usage });
+        json(res, 200, { ...sessionItem(view.session), html: renderChatMessages(view.messages), queueCount: view.queueCount, queue: view.queue, work: view.work, controls: view.controls, usage: view.usage });
         return;
       }
-      if (req.method === "GET" && route === "api/models") {
+      if (req.method === "GET" && route === "api/tool") {
+        const id = url.searchParams.get("id"); const toolId = url.searchParams.get("toolId");
+        if (!id || id.length > 256 || !toolId || toolId.length > 512) throw new RequestError(400, "Choose a native tool call.");
+        touch();
+        const view = await backend.read(id);
+        const tool = view.messages.flatMap(message => message.tools ?? []).find(tool => tool.id === toolId);
+        if (!tool) throw new RequestError(404, "This tool call is not on the selected native branch.");
+        json(res, 200, { sessionId: id, tool }); return;
+      }
+      if (req.method === "GET" && ["api/models", "api/commands", "api/accounts"].includes(route)) {
         const id = url.searchParams.get("id");
         if (!id || id.length > 256) throw new RequestError(400, "A session ID is required.");
         touch();
-        json(res, 200, await backend.models(id));
+        json(res, 200, await (route === "api/models" ? backend.models(id) : route === "api/commands" ? backend.commands(id) : backend.accounts(id)));
         return;
       }
-      if (!["api/message", "api/model", "api/close"].includes(route)) throw new RequestError(404, "Not found.");
+      if (!["api/message", "api/model", "api/close", "api/rename", "api/effort", "api/account", "api/stop", "api/compact", "api/queue", "api/read"].includes(route)) throw new RequestError(404, "Not found.");
       if (req.method !== "POST") throw new RequestError(405, "Expected POST.");
       if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== `http://${host}`) {
         throw new RequestError(403, "Message authorization is missing. Reopen /what-did-i-say.");
@@ -162,6 +171,29 @@ export async function startChatServer({ backend, initialSessionId, idleMs = 30 *
         res.once("finish", () => { void close(); });
         json(res, 200, { closed: true });
         return;
+      }
+      if (["api/rename", "api/effort", "api/account", "api/stop", "api/compact", "api/queue", "api/read"].includes(route)) {
+        if (typeof body !== "object" || body === null || !("sessionId" in body) || typeof body.sessionId !== "string" || !body.sessionId || body.sessionId.length > 256) throw new RequestError(400, "Choose a session.");
+        const sessionId = body.sessionId;
+        if (route === "api/rename") {
+          if (!("name" in body) || typeof body.name !== "string" || !body.name.trim() || body.name.length > 200) throw new RequestError(400, "Use a name of 1 to 200 characters.");
+          await backend.rename({ sessionId, name: body.name });
+        } else if (route === "api/effort") {
+          if (!("level" in body) || typeof body.level !== "string" || body.level.length > 32) throw new RequestError(400, "Choose an effort level.");
+          await backend.setEffort({ sessionId, level: body.level });
+        } else if (route === "api/account") {
+          if (!("provider" in body) || typeof body.provider !== "string" || body.provider.length > 128 || !("target" in body) || typeof body.target !== "string" || body.target.length > 256 || !("force" in body) || typeof body.force !== "boolean") throw new RequestError(400, "Choose a pool account.");
+          json(res, 200, await backend.setAccount({ sessionId, provider: body.provider, target: body.target, force: body.force })); return;
+        } else if (route === "api/read") {
+          if (!("entryId" in body) || typeof body.entryId !== "string" || body.entryId.length > 256) throw new RequestError(400, "Choose an assistant entry.");
+          await backend.markRead({ sessionId, entryId: body.entryId });
+        } else if (route === "api/queue") {
+          if (!("lane" in body) || (body.lane !== "steering" && body.lane !== "followUp") || !("index" in body) || typeof body.index !== "number" || !Number.isSafeInteger(body.index) || body.index < 0 || !("expectedText" in body) || typeof body.expectedText !== "string" || body.expectedText.length > maxMessageLength || ("text" in body && (typeof body.text !== "string" || !body.text.trim() || body.text.length > maxMessageLength))) throw new RequestError(400, "Choose a queued message and its current text.");
+          const status = await backend.mutateQueue({ sessionId, lane: body.lane, index: body.index, expectedText: body.expectedText, ...("text" in body && typeof body.text === "string" ? { text: body.text } : {}) });
+          json(res, status === "applied" ? 200 : 409, { status, ...(status !== "applied" ? { error: "The native queue changed. Refresh before editing." } : {}) }); return;
+        } else if (route === "api/stop") await backend.stop(sessionId);
+        else await backend.compact(sessionId);
+        json(res, 200, { accepted: true }); return;
       }
       if (route === "api/model") {
         if (typeof body !== "object" || body === null ||

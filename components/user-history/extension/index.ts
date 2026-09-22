@@ -10,7 +10,7 @@ export default function historyExtension(pi: ExtensionAPI, asideExecutable = "/u
   });
   pi.on("session_shutdown", async () => { await chat?.close(); chat = undefined; });
   for (const command of ["what-did-i-say", "agent-chat"]) pi.registerCommand(command, {
-    description: "Message sessions and browse agents in Aside",
+    description: "Chat with native sessions in Aside",
     async handler(_args, ctx) {
       await chat?.close();
       chat = undefined;

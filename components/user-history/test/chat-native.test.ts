@@ -14,9 +14,9 @@ const primeRoot = resolve(dirname(fileURLToPath(import.meta.resolve("prime-agent
 const node = process.execPath;
 const cli = join(primeRoot, "dist/bundle/cli.js");
 const textModel = { provider: "chat-native-test", id: "synthetic", name: "Deterministic native chat fixture",
-  contextWindow: 1000000, input: ["text"] } satisfies ChatModel;
+  contextWindow: 1000000, input: ["text"], cost: { input: 10, output: 100, cacheRead: 1, cacheWrite: 10 } } satisfies ChatModel;
 const visionModel = { provider: "chat-native-test", id: "synthetic-vision", name: "Deterministic native vision fixture",
-  contextWindow: 2000000, input: ["text", "image"] } satisfies ChatModel;
+  contextWindow: 2000000, input: ["text", "image"], cost: { input: 10, output: 100, cacheRead: 1, cacheWrite: 10 } } satisfies ChatModel;
 const imageFixtures = [
   { type: "image", mimeType: "image/png",
     data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=" },
@@ -99,6 +99,10 @@ test("native chat targets sessions, changes models, reports usage, sends images,
     mcpServers: {}, packages: [], extensions: [], skills: [] }));
   const env = { HOME: home, PATH: `${dirname(node)}:/usr/bin:/bin`, TMPDIR: temporary, LANG: "en_US.UTF-8", TERM: "dumb",
     PRIME_AGENT_CODING_AGENT_DIR: config, PRIME_AGENT_SESSION_DIR: sessions, PRIME_AGENT_TELEMETRY: "0", PI_OFFLINE: "1" };
+  const skillDir = join(root, "skills", "browser-proof");
+  await mkdir(skillDir, { recursive: true });
+  const skillFile = join(skillDir, "SKILL.md");
+  await writeFile(skillFile, "---\nname: browser-proof\ndescription: Native browser skill verification\n---\nNATIVE_SKILL_PROOF. Keep the supplied argument.\n");
   const alpha = seedSession(cwd, sessions, `chat-alpha-${id}`);
   const beta = seedSession(cwd, sessions, `chat-beta-${id}`);
   const saved = seedSession(cwd, sessions, `chat-saved-${id}`);
@@ -140,7 +144,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     aiModule: fileURLToPath(import.meta.resolve("@earendil-works/pi-ai")) }));
   const native = startChatNativeCli({ node, cwd, env,
     args: [cli, "--mode", "rpc", "--daemon-socket", socket, "--agent-chat-socket", socket, "--cwd", cwd, "--no-extensions", "-e", extension,
-      "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-tools", "--no-themes",
+      "--no-skills", "--skill", skillFile, "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--tools", "browser_proof_tool", "--no-themes",
       "--provider", "chat-native-test", "--model", "synthetic", "--no-session"] });
   const daemon = new DaemonClient(socket);
   let backend: ChatBackend | undefined;
@@ -153,19 +157,19 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     for (const target of [alpha, beta]) {
       const created = await daemon.request({ type: "create", sessionPath: target.sessionFile, launchEnv: env,
         config: { cwd, agentDir: config, sessionDir: sessions, provider: "chat-native-test", model: "synthetic",
-          noExtensions: true, extensions: [extension], noSkills: true, noPromptTemplates: true, noContextFiles: true,
-          noTools: true, noThemes: true, telemetryDisabled: true,
+          noExtensions: true, extensions: [extension], noSkills: true, skills: [skillFile], noPromptTemplates: true, noContextFiles: true,
+          noBuiltinTools: true, tools: ["browser_proof_tool"], noThemes: true, telemetryDisabled: true,
           extensionFlagValues: { "agent-chat-socket": socket } } }, 30000);
       assert(created.success, JSON.stringify(created));
     }
-    backend = await createChatBackend({ socketPath: socket });
+    backend = await createChatBackend({ socketPath: socket, readStatePath: join(root, "browser-read-state.json") });
     const listed = await backend.list();
     await writeFile(join(root, "initial-catalog.json"), JSON.stringify(listed, null, 2));
     assert.deepEqual(listed.map(row => row.sessionId).sort(), [alpha.sessionId, beta.sessionId, saved.sessionId].sort(), "isolated catalog contains only owned sessions");
     for (const target of [alpha, beta]) {
       const row = listed.find(item => item.sessionId === target.sessionId);
       assert(row);
-      assert.equal(row.kind, "root");
+      assert(!("kind" in row), "the chat catalog exposes only root sessions");
       assert.equal(row.name, target.name);
       assert.equal(row.cwd, cwd);
       assert.equal(row.canSend, true);
@@ -179,6 +183,34 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     const betaBefore = await backend.read(beta.sessionId);
     assert.deepEqual(betaBefore.messages.map(message => message.text), [`SAVED QUESTION ${beta.name}`, `SAVED ANSWER ${beta.name}`]);
     const alphaBefore = await backend.read(alpha.sessionId);
+    assert(alphaBefore.controls.kind === "live");
+    const nativeEffort = { thinkingLevel: alphaBefore.controls.thinkingLevel,
+      availableThinkingLevels: alphaBefore.controls.availableThinkingLevels };
+    await backend.rename({ sessionId: alpha.sessionId, name: `Renamed ${alpha.name}` });
+    assert.equal((await backend.read(alpha.sessionId)).session.name, `Renamed ${alpha.name}`);
+    const namedState = await daemon.request({ type: "get_state", activeSessionId: alphaNative.activeSessionId });
+    assert(namedState.success && JSON.stringify(namedState.data).includes(`Renamed ${alpha.name}`), "browser rename uses native state");
+    await backend.rename({ sessionId: alpha.sessionId, name: alpha.name });
+    await writeFile(join(root, "controls-before-effort.json"), JSON.stringify({
+      view: await backend.read(alpha.sessionId),
+      catalog: await daemon.request({ type: "list", all: true }),
+      state: await daemon.request({ type: "get_state", activeSessionId: alphaNative.activeSessionId }),
+      queue: await daemon.request({ type: "get_queue", activeSessionId: alphaNative.activeSessionId }),
+    }, null, 2));
+    await assert.rejects(backend.setEffort({ sessionId: alpha.sessionId, level: "invented-effort" }), /effort|level/i);
+    for (const level of nativeEffort.availableThinkingLevels) {
+      await backend.setEffort({ sessionId: alpha.sessionId, level });
+      const view = await backend.read(alpha.sessionId);
+      assert(view.controls.kind === "live");
+      assert.equal(view.controls.thinkingLevel, level);
+    }
+    await backend.setEffort({ sessionId: alpha.sessionId, level: nativeEffort.thinkingLevel });
+    assert.equal((await backend.accounts(alpha.sessionId)).kind, "none", "a custom native provider has no pool");
+    await assert.rejects(backend.setAccount({ sessionId: alpha.sessionId, provider: "anthropic", target: "follow", force: false }), /provider changed/i);
+    const discovered = await backend.commands(alpha.sessionId);
+    assert(discovered.commands.some(command => command.name === "skill:browser-proof" && command.source === "skill"));
+    await assert.rejects(backend.send({ sessionId: alpha.sessionId, message: "/unknown-browser-command" }), /Unknown slash command/);
+    await assert.rejects(backend.send({ sessionId: alpha.sessionId, message: "/agent-chat" }), /terminal|extension/i);
     assert.deepEqual(alphaBefore.messages.map(message => message.text), [`SAVED QUESTION ${alpha.name}`, `SAVED ANSWER ${alpha.name}`]);
     assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages, "switching reads keeps targets independent");
     const savedView = await backend.read(saved.sessionId);
@@ -198,7 +230,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     assert.deepEqual(savedView.controls, { kind: "saved", currentModel: null, canChangeModel: false });
     assert.deepEqual(savedView.usage, { kind: "unavailable", reason: "not-recorded", context: null,
       providerLimits: "unavailable" });
-    assert.deepEqual(alphaBefore.controls, { kind: "live", currentModel: textModel, canChangeModel: true });
+    assert.deepEqual(alphaBefore.controls, { kind: "live", currentModel: textModel, canChangeModel: true, ...nativeEffort });
     assert.equal(alphaBefore.usage.kind, "unavailable", "missing native usage is not shown as zero");
     assert(!("inputTokens" in alphaBefore.usage));
     assert.equal(alphaBefore.usage.providerLimits, "unavailable");
@@ -235,7 +267,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     for (const model of [visionModel, textModel, visionModel]) {
       assert.deepEqual(await backend.setModel({ sessionId: alpha.sessionId, provider: model.provider, modelId: model.id }), model);
       const selected = await backend.read(alpha.sessionId);
-      assert.deepEqual(selected.controls, { kind: "live", currentModel: model, canChangeModel: true },
+      assert.deepEqual(selected.controls, { kind: "live", currentModel: model, canChangeModel: true, ...nativeEffort },
         "the latest completed native selection is visible");
       assert.equal(selected.session.model, `${model.provider}/${model.id}`);
       assert.deepEqual((await backend.read(beta.sessionId)).controls.currentModel, textModel,
@@ -255,7 +287,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     await waitForChatNativeFile(calls, text => text.includes('"stage":"held"'));
     const streaming = await backend.read(alpha.sessionId);
     assert.equal(streaming.session.status, "running");
-    assert.deepEqual(streaming.controls, { kind: "live", currentModel: visionModel, canChangeModel: false });
+    assert.deepEqual(streaming.controls, { kind: "live", currentModel: visionModel, canChangeModel: false, ...nativeEffort });
     await assert.rejects(backend.setModel({ sessionId: alpha.sessionId, provider: textModel.provider,
       modelId: textModel.id }), /finish|busy/i);
     assert.deepEqual((await backend.read(alpha.sessionId)).controls.currentModel, visionModel);
@@ -290,7 +322,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
       followUp, `SYNTHETIC REPLY: ${followUp}`,
     ]);
     assert(completed.messages.every(message => !message.streaming));
-    assert.deepEqual(completed.controls, { kind: "live", currentModel: visionModel, canChangeModel: true });
+    assert.deepEqual(completed.controls, { kind: "live", currentModel: visionModel, canChangeModel: true, ...nativeEffort });
     assertSessionUsage(completed, 2);
     assert.deepEqual(completed.messages.find(message => message.text === followUp)?.images, imageFixtures,
       "the renderer receives native user images after a queued text-and-image prompt");
@@ -359,6 +391,47 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     assert(commands.success, JSON.stringify(commands));
     assert.match(JSON.stringify(commands), /agent-chat/);
     assert.match(JSON.stringify(commands), /what-did-i-say/);
+    assert.match(JSON.stringify(commands), /skill:browser-proof/);
+    const skillArgument = `BROWSER SKILL ARGUMENT ${id}`;
+    await backend.send({ sessionId: alpha.sessionId, message: `/skill:browser-proof ${skillArgument}` });
+    await waitForChatNativeFile(calls, text => text.includes('"stage":"done"') && text.includes(skillArgument));
+    const skillIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
+    assert(skillIdle.success, JSON.stringify(skillIdle));
+    const skillView = await backend.read(alpha.sessionId);
+    const skillUser = skillView.messages.find(message => message.role === "user" && message.text.includes(skillArgument));
+    assert(skillUser?.text.includes('<skill name="browser-proof"'), "Pi expands the native skill invocation");
+    assert(skillUser?.text.includes("NATIVE_SKILL_PROOF"));
+    assert(skillView.messages.some(message => message.role === "assistant" && message.text.includes(skillArgument)));
+    assert.equal(providerStarts(await readFile(calls, "utf8")).length, 4);
+    const toolPrompt = `NATIVE LONG TOOL ${id} [tool]`;
+    await backend.send({ sessionId: alpha.sessionId, message: toolPrompt });
+    await waitForChatNativeFile(calls, text => text.includes('"stage":"tool-held"'));
+    const toolView = await backend.read(alpha.sessionId);
+    assert.equal(toolView.session.status, "running");
+    assert(toolView.work?.startedAt, "runtime derives from a native run starter");
+    assert(toolView.messages.some(message => message.tools?.some(tool => tool.name === "browser_proof_tool" && tool.status === "running")));
+    const reattached = await createChatBackend({ socketPath: socket, readStatePath: join(root, "browser-read-state.json") });
+    try {
+      const restoredTool = await reattached.read(alpha.sessionId);
+      assert.equal(restoredTool.work?.startedAt, toolView.work?.startedAt, "reattaching does not reset the native runtime");
+      assert.equal(restoredTool.session.status, "running");
+    } finally { await reattached.close(); }
+    const aborted = await daemon.request({ type: "abort", activeSessionId: alphaNative.activeSessionId }, 30000);
+    assert(aborted.success, JSON.stringify(aborted));
+    const afterAbort = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
+    assert(afterAbort.success, JSON.stringify(afterAbort));
+    const abortedView = await backend.read(alpha.sessionId);
+    assert.equal(abortedView.session.status, "idle", "terminal-side abort clears the browser spinner");
+    assert(!abortedView.messages.some(message => message.tools?.some(tool => tool.status === "running")), "no tool stays running after native abort");
+    assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages, "tool abort never affects another session");
+    const resumePrompt = `AFTER ABORT ${id}`;
+    await backend.send({ sessionId: alpha.sessionId, message: resumePrompt });
+    await waitForChatNativeFile(calls, text => text.includes(JSON.stringify({ stage: "done", message: resumePrompt }).slice(0, -1)));
+    const resumedIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
+    assert(resumedIdle.success, JSON.stringify(resumedIdle));
+    assert((await backend.read(alpha.sessionId)).messages.some(message => message.role === "assistant" && message.text.includes(resumePrompt)));
+    const automatedModelCalls = providerStarts(await readFile(calls, "utf8")).length;
+    await writeFile(join(root, "native-tool-abort.json"), JSON.stringify({ running: toolView, aborted: abortedView, newPromptResumed: true }, null, 2));
     const openedCommand = await daemon.request({ type: "prompt", activeSessionId: alphaNative.activeSessionId,
       message: "/what-did-i-say", source: "interactive" });
     assert(openedCommand.success, JSON.stringify(openedCommand));
@@ -369,7 +442,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     await writeFile(join(root, "chat.html"), await page.text());
     if (process.env.CHAT_TEST_BROWSER === "1") {
       const browserDone = join(root, "browser-done");
-      await writeFile(join(root, "browser-ready.json"), JSON.stringify({ url: opened.url, browserDone, alpha, beta, saved }));
+      await writeFile(join(root, "browser-ready.json"), JSON.stringify({ url: opened.url, browserDone, alpha, beta, saved, socket, alphaNative, betaNative, gate }));
       process.stdout.write(`CHAT_TEST_BROWSER_READY ${JSON.stringify({ url: opened.url, browserDone, root })}\n`);
       await waitForChatNativeFile(browserDone, () => true, 300000);
     }
@@ -387,7 +460,7 @@ export default function(pi) { historyExtension(pi, ${JSON.stringify(aside)}); pr
     assert.deepEqual(await readFile(saved.sessionFile), savedBytes);
     const syntheticModelCalls = (await readFile(calls, "utf8")).split('"stage":"start"').length - 1;
     await writeFile(join(root, "result.json"), JSON.stringify({ passed: true, socket, supervisorPid,
-      cliPid: native.child.pid, workers: afterClose, syntheticModelCalls, automatedModelCalls: 3, realModelCalls: 0,
+      cliPid: native.child.pid, workers: afterClose, syntheticModelCalls, automatedModelCalls, realModelCalls: 0, nativeSkillExpanded: true, nativeToolAbortReflected: true,
       browserReview: process.env.CHAT_TEST_BROWSER === "1", savedBytesUnchanged: true,
       queueDidNotInterrupt: true, closePreservedWorkers: true, modelChangesTargeted: true,
       latestModelUsed: visionModel.id, nativeUsage: withImages.usage, imageBytesPreserved: true }, null, 2));
