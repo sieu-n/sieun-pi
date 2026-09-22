@@ -1397,8 +1397,9 @@ def session_key_for(session_arg, state):
     return None
 
 
-def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_id):
+def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_id, cooldown_reasons=None):
     """The rows /account renders. Pure: no I/O, no clock reads beyond `now`."""
+    cooldown_reasons = cooldown_reasons or {}
     rows = []
     for a in accounts:
         reason = format_reason(a, cooldowns, cfg, now)
@@ -1416,6 +1417,16 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_i
         }
         if a.plan:
             row["plan"] = a.plan
+        cooling = cooldowns.get(a.id, 0) > now
+        row.update({
+            "tier": a.tier or None,
+            "windows": usage_windows(a, now),
+            "usage_at": round(a.usage_at) if a.usage_at else None,
+            "usage_age_sec": max(0, round(now - a.usage_at)) if a.usage_at else None,
+            "sessions": in_use.get(a.id, 0),
+            "cooldown_until": round(cooldowns[a.id]) if cooling else None,
+            "cooldown_reason": cooldown_reasons.get(a.id) if cooling else None,
+        })
         rows.append(row)
     return rows
 
@@ -1463,21 +1474,39 @@ def fmt_ago(sec):
     return "just now" if sec < 60 else f"{fmt_dur(sec)} ago"
 
 
-def window_rows(p, a, now):
-    """(label, pct, reset) rows: the session and weekly windows, then every
-    named per-model cap (Fable, Sonnet, a codex additional limit)."""
-    rows = []
+def usage_windows(a, now):
+    """Every usage window of one account, in display order: the session window,
+    the weekly window, then each named per-model cap (Fable, Sonnet, a codex
+    additional limit). pct is the live figure, so a passed reset reads 0 with
+    no reset time."""
     session, weekly = session_window(dict(windows=a.windows)), weekly_window(dict(windows=a.windows))
-    if session:
-        rows.append((f"{round((session.get('windowSeconds') or 0) / 3600)}h", live_pct(session, now), reset_in(session, now)))
-    if weekly:
-        label = "week" if (weekly.get("windowSeconds") or 0) <= 8 * 86400 else f"{round(weekly['windowSeconds'] / 86400)}d"
-        rows.append((label, live_pct(weekly, now), reset_in(weekly, now)))
-    for w in a.windows:
-        if w.get("name") is not None:
-            rows.append((w["name"].lower()[:6], live_pct(w, now), reset_in(w, now)))
-    return [f"{NOTE_INDENT}{label:6s}{usage_bar(p, pct)}" + (p.dim(f"  {fmt_dur(reset)}") if reset and pct > 0 else "")
-            for label, pct, reset in rows]
+    picked = [("session", session)] if session else []
+    picked += [("weekly", weekly)] if weekly else []
+    picked += [("model", w) for w in a.windows if w.get("name") is not None]
+    out = []
+    for kind, w in picked:
+        secs = w.get("windowSeconds")
+        if kind == "session":
+            label = f"{round((secs or 0) / 3600)}h"
+        elif kind == "weekly":
+            label = "week" if (secs or 0) <= 8 * 86400 else f"{round(secs / 86400)}d"
+        else:
+            label = w["name"]
+        left = reset_in(w, now)
+        out.append({"kind": kind, "label": label, "name": w.get("name"), "pct": live_pct(w, now),
+                    "window_sec": secs, "resets_at": round(now + left) if left else None,
+                    "sampled_at": round((w.get("sampledAt") or 0) / 1000) or None})
+    return out
+
+
+def window_rows(p, a, now):
+    rows = []
+    for w in usage_windows(a, now):
+        label = w["label"].lower()[:6] if w["kind"] == "model" else w["label"]
+        reset = w["resets_at"] - now if w["resets_at"] else None
+        rows.append(f"{NOTE_INDENT}{label:6s}{usage_bar(p, w['pct'])}"
+                    + (p.dim(f"  {fmt_dur(reset)}") if reset and w["pct"] > 0 else ""))
+    return rows
 
 
 def account_card(p, a, ctx):
@@ -1793,6 +1822,60 @@ def cmd_use(rest):
         return 0
 
 
+TM_REPORTS = {"anthropic": "claude", "openai-codex": "codex"}
+REFRESH_TIMEOUT_SEC = 60
+
+
+def tokenmaxxing_exe():
+    own = os.path.join(TM, "bin", "tokenmaxxing")
+    return own if os.access(own, os.X_OK) else shutil.which("tokenmaxxing")
+
+
+def cmd_refresh(rest):
+    """Sample every account's usage now through `tokenmaxxing status --json`,
+    tokenmaxxing's own read of the usage endpoints. It writes only
+    tokenmaxxing's usage figures and moves no seat or pin. Prints the
+    outcome per account; never a credential."""
+    f = parse_flags(rest, provider_default=None)
+    providers = [f["provider"]] if f["provider"] else list(PROVIDERS)
+
+    def fail(msg):
+        print(json.dumps({"error": msg}) if f["json"] else msg)
+        return 1
+
+    exe = tokenmaxxing_exe()
+    if not exe:
+        return fail("tokenmaxxing is not installed")
+    try:
+        done = subprocess.run([exe, "status", "--json"], capture_output=True, text=True,
+                              timeout=REFRESH_TIMEOUT_SEC, env=dict(os.environ, TOKENMAXXING_HOME=TM))
+    except subprocess.TimeoutExpired:
+        return fail(f"tokenmaxxing status did not finish in {REFRESH_TIMEOUT_SEC}s")
+    try:
+        report = json.loads(done.stdout)
+    except ValueError:
+        return fail(f"tokenmaxxing status exited {done.returncode} without a report")
+    if not report.get("ok"):
+        return fail(str(report.get("error") or report.get("message") or "tokenmaxxing status failed")[:300])
+    out = {}
+    for provider in providers:
+        rows = []
+        for a in (report.get(TM_REPORTS[provider]) or {}).get("accounts") or []:
+            sample = a.get("sample") or {}
+            rows.append({"id": a.get("id"), "email": a.get("email") or a.get("label"),
+                         "ok": sample.get("ok") is True, "reason": sample.get("reason")})
+        out[provider] = rows
+    failed = [r["email"] for rows in out.values() for r in rows if not r["ok"]]
+    log("usage_refresh", providers=providers, failed=failed)
+    if f["json"]:
+        print(json.dumps({"providers": out}, indent=2))
+    else:
+        for provider, rows in out.items():
+            for r in rows:
+                print(f"{provider:14s} {r['email']}  {'ok' if r['ok'] else r['reason']}")
+    return 0
+
+
 def cmd_ls(rest):
     f = parse_flags(rest)
     provider = f["provider"]
@@ -1817,10 +1900,13 @@ def cmd_ls(rest):
         rec = state["sessions"].get(key.key) or {}
         current_id = ((rec.get("vends") or {}).get(provider) or {}).get("account_id")
     seat_id = (state["providers"][provider].get("seat") or {}).get("account_id")
-    rows = build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_id)
+    rows = build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_id,
+                      state["providers"][provider].get("cooldown_reasons"))
     seat_account = next((a for a in accounts if a.id == seat_id), None) if seat_id else None
+    pin_account = next((a for a in accounts if a.id == state["providers"][provider].get("pin")), None)
     out = {"provider": provider, "session": key.key if key else None,
            "seat": {"id": seat_account.id, "email": seat_account.email} if seat_account else None,
+           "pin": {"id": pin_account.id, "email": pin_account.email} if pin_account else None,
            "rows": rows}
     if f["json"]:
         print(json.dumps(out, indent=2))
@@ -1937,6 +2023,8 @@ USAGE = """usage: pi-pool [command]
                                   the rows /account renders
   who [--json] [--session <id>]  what this session resolves to now, per provider
   enable openai-codex            wire the openai-codex provider into models.json
+  refresh [--json] [--provider <p>]
+                                  sample every account's usage now (tokenmaxxing status)
   probe [--force]                check every anthropic account for an API refusal (no refresh);
                                   the extension runs it at session start, at most every 6h
   adopt-logins                   move a stored /login that would bypass the pool into
@@ -1953,7 +2041,7 @@ def cli(args):
         "status": cmd_status, "watch": cmd_watch, "pin": cmd_pin, "unpin": cmd_unpin,
         "switch": cmd_switch, "use": cmd_use, "ls": cmd_ls, "who": cmd_who,
         "config": cmd_config, "set": cmd_set, "log": cmd_log, "enable": cmd_enable,
-        "adopt-logins": cmd_adopt_logins, "probe": cmd_probe,
+        "adopt-logins": cmd_adopt_logins, "probe": cmd_probe, "refresh": cmd_refresh,
     }
     if cmd in handlers:
         return handlers[cmd](rest)

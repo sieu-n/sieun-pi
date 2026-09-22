@@ -7,7 +7,7 @@
   import Sidebar from "./Sidebar.svelte";
   import Thread from "./Thread.svelte";
   import NewChat from "./NewChat.svelte";
-  import AccountsDrawer from "./AccountsDrawer.svelte";
+  import Settings from "./Settings.svelte";
 
   const NARROW_BELOW = 900;
   let root: HTMLElement | undefined = $state();
@@ -51,7 +51,7 @@
       return;
     }
     if (event.key === "Escape") {
-      if (store.drawer) { store.drawer = null; return; }
+      if (store.drawer) return;
       if (narrow && store.sidebarOpen) { store.sidebarOpen = false; return; }
       const id = store.selectedId;
       const state = id ? store.thread(id)?.state : undefined;
@@ -86,8 +86,8 @@
         <NewChat {narrow} />
       {/if}
     </main>
-    {#if store.drawer === "accounts"}
-      <AccountsDrawer {narrow} />
+    {#if store.drawer}
+      <Settings section={store.drawer} />
     {/if}
   </div>
   {#if store.toasts.length}

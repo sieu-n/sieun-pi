@@ -1,7 +1,8 @@
 import { api } from "./api.ts";
-import type { AccountsView, PoolAccount, PoolProvider } from "../shared/types.ts";
+import type { AccountsView, PoolAccount, PoolProvider, PoolWindow } from "../shared/types.ts";
 
 const MAX_AGE_MS = 60_000;
+const STALE_USAGE_MS = 20 * 60_000;
 const cache = new Map<string, { at: number; view: AccountsView }>();
 const inflight = new Map<string, Promise<AccountsView>>();
 
@@ -23,30 +24,28 @@ export function rememberAccounts(id: string | null, view: AccountsView): void {
 
 export function forgetAccounts(): void { cache.clear(); }
 
-export const PROVIDER_LABEL: Record<PoolProvider["provider"], string> = { anthropic: "Anthropic", "openai-codex": "OpenAI Codex" };
+export const PROVIDER_LABEL: Record<PoolProvider["provider"], string> = { anthropic: "Claude", "openai-codex": "Codex" };
 
-export type AccountState = "seat" | "live" | "available" | "depleted" | "cooldown" | "needs-reauth" | "unavailable";
-export const STATE_LABEL: Record<AccountState, { label: string; tone: "accent" | "success" | "muted" | "warning" | "danger" }> = {
+export type Tone = "accent" | "success" | "muted" | "warning" | "danger";
+export type AccountState = "needs-login" | "refused" | "cooldown" | "depleted" | "pinned" | "seat" | "live";
+export const STATE_LABEL: Record<AccountState, { label: string; tone: Tone }> = {
+  "needs-login": { label: "Needs login", tone: "danger" },
+  refused: { label: "Refused", tone: "danger" },
+  cooldown: { label: "Cooldown", tone: "warning" },
+  depleted: { label: "Depleted", tone: "warning" },
+  pinned: { label: "Pinned", tone: "accent" },
   seat: { label: "Seat", tone: "accent" },
   live: { label: "Live", tone: "success" },
-  available: { label: "Available", tone: "muted" },
-  depleted: { label: "Depleted", tone: "warning" },
-  cooldown: { label: "Cooldown", tone: "warning" },
-  "needs-reauth": { label: "Needs reauth", tone: "danger" },
-  unavailable: { label: "Unavailable", tone: "muted" },
 };
 
-export function accountState(row: PoolAccount): AccountState {
-  if (row.reason === "needs-reauth") return "needs-reauth";
+/** The one badge a row shows: what stops it serving first, else its role in the pool. A ready account shows none. */
+export function accountState(row: PoolAccount): AccountState | null {
+  if (row.reason === "needs-reauth") return "needs-login";
+  if (row.reason?.startsWith("cooldown")) return row.cooldownReason ? "refused" : "cooldown";
   if (row.reason === "depleted") return "depleted";
-  if (row.reason?.startsWith("cooldown")) return "cooldown";
-  if (row.live || row.reason === "live-elsewhere") return "live";
+  if (row.pinned) return "pinned";
   if (row.seat) return "seat";
-  return row.usable ? "available" : "unavailable";
-}
-
-export function stateDetail(row: PoolAccount): string | null {
-  if (row.reason?.startsWith("cooldown")) return row.reason;
+  if (row.live || row.reason === "live-elsewhere") return "live";
   return null;
 }
 
@@ -62,14 +61,11 @@ export function resolvedAccount(provider: PoolProvider): PoolAccount | undefined
 }
 
 const REASON_TEXT: Record<string, string> = {
-  seat: "it holds the pool seat",
-  session_pin: "it is pinned for this thread",
-  session: "it is pinned for this thread",
-  force: "it was forced for this thread",
-  forced: "it was forced for this thread",
-  pin: "it is pinned for all sessions",
-  pinned: "it is pinned for all sessions",
-  follow: "the thread follows the pool",
+  session_pin: "pinned for this thread",
+  pool_pin: "pinned for all sessions",
+  seat: "pool seat",
+  seat_upgrade: "higher plan than the seat",
+  seat_move: "best available account",
 };
 
 export function reasonText(reason: string | null): string | null {
@@ -77,14 +73,47 @@ export function reasonText(reason: string | null): string | null {
   return REASON_TEXT[reason] ?? reason.replaceAll("_", " ");
 }
 
-/** One sentence for the drawer header: what this thread resolves to and why. */
+/** "This thread uses X (reason)" for the Accounts header. */
 export function resolutionSentence(provider: PoolProvider): string {
   const label = PROVIDER_LABEL[provider.provider];
   const resolution = provider.resolution;
-  if (!resolution) return provider.error ? provider.error : `Pool resolution for ${label} is unavailable.`;
+  if (!resolution) return provider.error ?? `The ${label} pool did not say which account this thread uses.`;
   if (resolution.email) {
     const why = reasonText(resolution.reason);
-    return `This thread uses ${resolution.email}` + (why ? ` because ${why}.` : ".");
+    return `This thread uses ${resolution.email}` + (why ? ` (${why}).` : ".");
   }
-  return resolution.pinned ? `The pinned ${label} account is unavailable, so no account resolves for this thread right now.` : `No ${label} account resolves for this thread right now.`;
+  return resolution.pinned ? `The pinned ${label} account cannot serve, and no other ${label} account can.` : `No ${label} account can serve this thread right now.`;
 }
+
+/** "3h 46m", "2d 5h", "12m", "<1m". */
+export function span(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "<1m";
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  if (days) return hours ? `${days}d ${hours}h` : `${days}d`;
+  if (hours) return `${hours}h ${minutes % 60}m`;
+  return `${minutes}m`;
+}
+
+export const resetText = (window: PoolWindow, now = Date.now()): string | null =>
+  window.resetsAt && window.resetsAt > now ? "resets in " + span(window.resetsAt - now) : null;
+
+/** "5h", "Week", "30d", "Fable": the header a window gets in the account table and the chip. */
+export const windowLabel = (window: PoolWindow): string => window.label === "week" ? "Week" : window.label;
+
+/** Column keys for one provider's table: every window any account has, session first, then weekly, then per model. */
+export function windowColumns(rows: PoolAccount[]): string[] {
+  const order: Record<PoolWindow["kind"], number> = { session: 0, weekly: 1, model: 2 };
+  const seen = new Map<string, PoolWindow["kind"]>();
+  for (const row of rows) for (const window of row.windows) if (!seen.has(windowLabel(window))) seen.set(windowLabel(window), window.kind);
+  return [...seen].sort((a, b) => order[a[1]] - order[b[1]]).map(([label]) => label);
+}
+
+/** Usage older than pi-pool's own stale mark, as "Usage from 4d ago", else null. */
+export function staleText(row: PoolAccount, now = Date.now()): string | null {
+  if (!row.usageAt) return row.windows.length ? null : "Usage never read";
+  return now - row.usageAt > STALE_USAGE_MS ? `Usage from ${span(now - row.usageAt)} ago` : null;
+}
+
+export const meterTone = (pct: number): "low" | "mid" | "high" => pct >= 90 ? "high" : pct >= 70 ? "mid" : "low";

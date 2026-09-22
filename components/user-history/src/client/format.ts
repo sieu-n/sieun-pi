@@ -65,10 +65,6 @@ export function clockTime(value: number): string {
   return new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-export function initial(email: string): string {
-  return (email.trim()[0] ?? "?").toUpperCase();
-}
-
 export function shortPath(cwd: string): string {
   const home = cwd.replace(/^\/Users\/[^/]+/, "~");
   const parts = home.split("/").filter(Boolean);

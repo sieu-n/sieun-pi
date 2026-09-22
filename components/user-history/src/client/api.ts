@@ -1,4 +1,4 @@
-import type { AccountAction, AccountsView, Command, ImageInput, ModelCatalog, PoolEvent, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountsView, Command, ImageInput, ModelCatalog, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -52,8 +52,7 @@ export const api = {
     "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),
   part: (id: string, message: number, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?message=${message}&part=${part}`),
   accounts: (id: string | null) => get<AccountsView>("api/accounts" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
-  accountsLog: () => get<{ events: PoolEvent[] }>("api/accounts/log", 30000).then(body => body.events),
-  accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action),
+  accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000),
   createThread: (input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: string; message: string; images: ImageInput[]; requestId: string }) =>
     post<{ id: string }>("api/threads", input, 120000),
   warm: (id: string) => post<{ ok: true }>("api/warm", { id }),

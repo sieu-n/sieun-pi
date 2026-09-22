@@ -4,7 +4,7 @@ import { createGzip, type Gzip } from "node:zlib";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
-import { listAccounts, poolLog, runAccountAction } from "./chat-pool.ts";
+import { listAccounts, runAccountAction } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
 import type { AccountAction, SendMode, ThinkingLevel } from "./shared/types.ts";
 
@@ -94,6 +94,8 @@ function parseAccountAction(body: Record<string, unknown>): AccountAction {
     case "pin": if (!account) throw new RequestError(400, "Choose an account."); return { action: "pin", provider, account };
     case "unpin": return { action: "unpin", provider };
     case "switch": return { action: "switch", provider };
+    case "refresh": return { action: "refresh", provider };
+    case "recheck": return { action: "recheck", provider };
     default: throw new RequestError(400, "Unknown account action.");
   }
 }
@@ -225,7 +227,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const id = url.searchParams.get("id");
           json(res, 200, await listAccounts(id ? threadId(id) : null)); return;
         }
-        if (route === "api/accounts/log") { json(res, 200, { events: await poolLog(30) }); return; }
         const image = /^api\/images\/([a-f0-9]{64})$/.exec(route);
         if (image) {
           const entry = backend.threads.images.get(image[1]!);
@@ -294,8 +295,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
       if (route === "api/accounts") {
         const action = parseAccountAction(body);
-        await runAccountAction(action);
-        json(res, 200, await listAccounts("id" in action ? action.id : null)); return;
+        const notice = await runAccountAction(action);
+        json(res, 200, { ...await listAccounts("id" in action ? action.id : null), ...(notice ? { notice } : {}) }); return;
       }
       const thread = /^api\/threads\/([^/]+)\/([a-z-]+)$/.exec(route);
       if (!thread) throw new RequestError(404, "Not found.");

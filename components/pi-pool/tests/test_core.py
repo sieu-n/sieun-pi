@@ -3,7 +3,7 @@ index parsing, JWT claim decoding, ls row building, and use idempotence.
 
 Run: python3 -m unittest discover -s tests   (from the pool directory)
 """
-import base64, contextlib, importlib.util, io, json, os, shutil, sys, tempfile, unittest, unittest.mock
+import base64, contextlib, dataclasses, importlib.util, io, json, os, shutil, sys, tempfile, unittest, unittest.mock
 
 from fixture_isolation import isolate_test_module
 
@@ -490,6 +490,98 @@ class LsRowBuilding(unittest.TestCase):
                                cfg=CFG, now=NOW, current_id=None, seat_id=None)
         by_id = {r["id"]: r for r in rows}
         self.assertEqual(by_id["b"]["pinned"], True)
+
+
+class LsUsageWindows(unittest.TestCase):
+    """`ls --json` carries every usage window with its reset time, the tier,
+    the age of the usage data and the cooldown reason, for the browser chat."""
+
+    @staticmethod
+    def windowed(windows, usage_at=NOW - 90, **kw):
+        return dataclasses.replace(account("w", "w@x", **kw), tier="max 20x", windows=tuple(windows), usage_at=usage_at)
+
+    def test_windows_come_in_display_order_with_live_reset_times(self):
+        win = IndexV2Windows.win
+        a = self.windowed([win(100, 604800, 3600, name="Fable"), win(61, 604800, 7200), win(7, 18000, 600)])
+        row = vend.build_rows([a], vend.Intent(), {}, {}, CFG, NOW, None, None)[0]
+        self.assertEqual([(w["kind"], w["label"], w["pct"], w["resets_at"]) for w in row["windows"]],
+                         [("session", "5h", 7, NOW + 600), ("weekly", "week", 61, NOW + 7200), ("model", "Fable", 100, NOW + 3600)])
+        self.assertEqual((row["tier"], row["usage_at"], row["usage_age_sec"]), ("max 20x", NOW - 90, 90))
+
+    def test_a_passed_reset_reads_zero_with_no_reset_time(self):
+        a = self.windowed([IndexV2Windows.win(87, 18000, -60)])
+        self.assertEqual(vend.build_rows([a], vend.Intent(), {}, {}, CFG, NOW, None, None)[0]["windows"][0]["resets_at"], None)
+
+    def test_a_thirty_day_codex_window_is_labelled_by_days(self):
+        a = dataclasses.replace(codex_account("c", "c@x", "free"), windows=(IndexV2Windows.win(100, 2592000, 86400),))
+        row = vend.build_rows([a], vend.Intent(), {}, {}, CFG, NOW, None, None)[0]
+        self.assertEqual([w["label"] for w in row["windows"]], ["30d"])
+        self.assertEqual(row["plan"], "free")
+
+    def test_a_cooldown_carries_its_end_and_the_refusal(self):
+        a = self.windowed([])
+        rows = vend.build_rows([a], vend.Intent(), {}, {"w": NOW + 300, "gone": NOW - 1}, CFG, NOW, None, None,
+                               {"w": "oauth not allowed for organization"})
+        self.assertEqual((rows[0]["cooldown_until"], rows[0]["cooldown_reason"]), (NOW + 300, "oauth not allowed for organization"))
+
+    def test_an_account_never_sampled_has_no_age(self):
+        row = vend.build_rows([self.windowed([], usage_at=0)], vend.Intent(), {}, {}, CFG, NOW, None, None)[0]
+        self.assertEqual((row["windows"], row["usage_at"], row["usage_age_sec"], row["cooldown_until"]), ([], None, None, None))
+
+
+class LsNamesThePoolPin(unittest.TestCase):
+    def test_ls_json_names_the_pool_pin_and_the_seat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "state.json")
+            state = state_v2(pool_pin="b", seat="a")
+            vend.save_json(path, state)
+            out = io.StringIO()
+            with unittest.mock.patch.object(vend, "STATE", path), unittest.mock.patch.object(vend, "session_key", lambda: None), \
+                 unittest.mock.patch.object(vend, "load_index", lambda provider: ALL), contextlib.redirect_stdout(out):
+                self.assertEqual(vend.cmd_ls(["--json"]), 0)
+            listing = json.loads(out.getvalue())
+            self.assertEqual((listing["pin"], listing["seat"]), ({"id": "b", "email": "b@x"}, {"id": "a", "email": "a@x"}))
+
+
+class RefreshUsage(unittest.TestCase):
+    """`refresh` runs tokenmaxxing's own sampling read and reports the outcome
+    per account. A fake tokenmaxxing stands in; no network, no keychain."""
+
+    def run_refresh(self, script, *args):
+        with tempfile.TemporaryDirectory() as tm:
+            os.makedirs(os.path.join(tm, "bin"))
+            exe = os.path.join(tm, "bin", "tokenmaxxing")
+            with open(exe, "w") as f:
+                f.write("#!/bin/sh\n" + script)
+            os.chmod(exe, 0o755)
+            out = io.StringIO()
+            with unittest.mock.patch.object(vend, "TM", tm), unittest.mock.patch.object(vend, "log", lambda *a, **k: None), \
+                 contextlib.redirect_stdout(out):
+                code = vend.cmd_refresh(["--json", *args])
+            return code, json.loads(out.getvalue())
+
+    def test_each_account_reports_its_sample_outcome(self):
+        report = {"ok": True, "claude": {"accounts": [
+            {"id": "a", "email": "a@x", "sample": {"ok": True, "source": "probe"}},
+            {"id": "b", "email": "b@x", "sample": {"ok": False, "reason": "usage read failed (see log)"}}]},
+            "codex": {"accounts": [{"id": "c", "label": "c@x", "sample": {"ok": True, "source": "probe"}}]}}
+        script = 'test "$1 $2" = "status --json" || exit 9\ncat <<EOF\n' + json.dumps(report) + "\nEOF\n"
+        code, out = self.run_refresh(script)
+        self.assertEqual(code, 0)
+        self.assertEqual(out["providers"]["anthropic"], [
+            {"id": "a", "email": "a@x", "ok": True, "reason": None},
+            {"id": "b", "email": "b@x", "ok": False, "reason": "usage read failed (see log)"}])
+        self.assertEqual(out["providers"]["openai-codex"], [{"id": "c", "email": "c@x", "ok": True, "reason": None}])
+
+    def test_one_provider_can_be_asked_for(self):
+        report = {"ok": True, "claude": {"accounts": []}, "codex": {"accounts": []}}
+        code, out = self.run_refresh("echo '" + json.dumps(report) + "'", "--provider", "openai-codex")
+        self.assertEqual((code, list(out["providers"])), (0, ["openai-codex"]))
+
+    def test_a_failed_status_is_an_error(self):
+        code, out = self.run_refresh("echo 'not json'; exit 3")
+        self.assertEqual(code, 1)
+        self.assertIn("exited 3", out["error"])
 
 
 class UseIdempotence(unittest.TestCase):

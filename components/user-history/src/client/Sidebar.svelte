@@ -89,6 +89,7 @@
   <div class="inner">
     <div class="top">
       <button class="new" onclick={() => store.select(null)}><Icon name="plus" size={16} /><span>New chat</span></button>
+      <button class="icon-button" aria-label="Settings" title="Settings" onclick={() => { store.drawer = "accounts"; }}><Icon name="settings" /></button>
       <button class="icon-button" aria-label="Hide sidebar" title="Hide sidebar (Cmd+B)" onclick={() => { store.sidebarOpen = false; }}><Icon name="sidebar" /></button>
     </div>
     <label class="search">

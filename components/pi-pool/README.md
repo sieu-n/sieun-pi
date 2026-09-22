@@ -117,11 +117,25 @@ until the session's next provider request runs the hook.
     pi-pool switch                drop the seat; the next request re-picks
     pi-pool enable openai-codex   wire the codex provider into models.json
     pi-pool adopt-logins          move a stored /login that would bypass the pool into fallback.json
+    pi-pool refresh [--json]      sample every account's usage now (runs `tokenmaxxing status --json`)
     pi-pool probe [--force]       check every Claude account for an API refusal (no token refresh)
     pi-pool log [n]               last n pool events
     pi-pool config / set <k> <v>
 
 `--session` takes a session uuid, a uuid prefix, or the short active id.
+
+`ls --json` names the pool `pin` next to the `seat`. Its rows also carry what `status` draws: `tier` (`max 20x`, `pro`), `windows`
+(one entry per usage window in display order, each with `kind` session, weekly or model,
+`label`, live `pct`, `resets_at` in epoch seconds or null, `window_sec`, `sampled_at`),
+`usage_at` and `usage_age_sec`, `sessions` (vends in the last hour), and `cooldown_until`
+and `cooldown_reason` for a refused account.
+
+`refresh` asks tokenmaxxing to read every account's usage now, the same read
+`tokenmaxxing status` does. It writes only tokenmaxxing's usage figures. It moves no seat
+or pin. tokenmaxxing may refresh an expiring Codex store under its own lock while it
+reads, as its `status` always does. Claude usage is also sampled every minute by
+tokenmaxxing's `check` timer; Codex usage only when tokenmaxxing samples it, so Codex
+figures can be hours old.
 
 ## Which account a request gets
 
