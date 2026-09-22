@@ -182,6 +182,35 @@ export default function(pi) { historyExtension(pi); provider(pi); }
       assert.equal(row.cwd, cwd);
       assert.equal(row.canSend, true);
     }
+    const metadataReadState = join(root, "metadata-read-state.json");
+    await writeFile(metadataReadState, JSON.stringify({ baseline: 0, sessions: {} }), { mode: 0o600 });
+    const metadataBackend = await createChatBackend({ socketPath: socket, readStatePath: metadataReadState });
+    let releaseMetadata: () => void = () => {};
+    const heldMetadata = new Promise<void>(resolve => { releaseMetadata = resolve; });
+    let metadataReads = 0;
+    metadataBackend.read = async () => { metadataReads++; await heldMetadata; throw new Error("Held metadata read failed"); };
+    let listDeadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const started = performance.now();
+      const immediateList = await Promise.race([metadataBackend.list(), new Promise<never>((_resolve, reject) => {
+        listDeadline = setTimeout(() => reject(new Error("Native catalog waited for held transcript metadata")), 3000);
+      })]);
+      clearTimeout(listDeadline);
+      assert.equal(immediateList.length, 3);
+      assert(immediateList.every(row => row.readError === "Response status pending"));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(metadataReads, 1, "only one bounded background batch begins");
+      for (let index = 0; index < 3; index++) assert.equal((await metadataBackend.list()).length, 3);
+      assert.equal(metadataReads, 1, "catalog polling cannot multiply blocked metadata work");
+      await writeFile(join(root, "catalog-liveness.json"), JSON.stringify({ elapsedMs: performance.now() - started, rows: immediateList.length, blockedMetadataReads: metadataReads }));
+      releaseMetadata();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert((await metadataBackend.list()).every(row => row.readError === "Response status unavailable"));
+    } finally {
+      clearTimeout(listDeadline);
+      releaseMetadata();
+      await metadataBackend.close();
+    }
     const before = await nativeRows(daemon);
     const alphaNative = before.find(row => row.sessionId === alpha.sessionId);
     const betaNative = before.find(row => row.sessionId === beta.sessionId);

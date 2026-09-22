@@ -12,6 +12,8 @@ export function startChatNativeCli(input: { node: string; args: string[]; cwd: s
   let stderr = "";
   let pending = "";
   let nextId = 0;
+  const notifications = new Set<string>();
+  const notificationWaiters = new Map<string, { resolve(): void; reject(error: Error): void }>();
   const responses = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
   child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
   child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
@@ -23,6 +25,12 @@ export function startChatNativeCli(input: { node: string; args: string[]; cwd: s
       pending = pending.slice(end + 1);
       let value: unknown;
       try { value = JSON.parse(line); } catch { continue; }
+      if (typeof value === "object" && value !== null && "type" in value && value.type === "extension_ui_request" &&
+        "method" in value && value.method === "notify" && "message" in value && typeof value.message === "string") {
+        notifications.add(value.message);
+        notificationWaiters.get(value.message)?.resolve();
+        notificationWaiters.delete(value.message);
+      }
       if (typeof value !== "object" || value === null || !("type" in value) || value.type !== "response" ||
         !("id" in value) || typeof value.id !== "string") continue;
       const waiter = responses.get(value.id);
@@ -36,10 +44,22 @@ export function startChatNativeCli(input: { node: string; args: string[]; cwd: s
   child.once("exit", () => {
     for (const waiter of responses.values()) waiter.reject(new Error(`Native CLI exited. ${stderr}`));
     responses.clear();
+    for (const waiter of notificationWaiters.values()) waiter.reject(new Error(`Native CLI exited before notifying its URL. ${stderr}`));
+    notificationWaiters.clear();
   });
   return {
     child,
     logs: () => ({ stdout, stderr }),
+    notification(message: string): Promise<void> {
+      if (notifications.delete(message)) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { notificationWaiters.delete(message); reject(new Error(`Native URL notification missing. ${stderr}\n${stdout}`)); }, 10000);
+        notificationWaiters.set(message, {
+          resolve() { clearTimeout(timer); notifications.delete(message); resolve(); },
+          reject(error) { clearTimeout(timer); reject(error); },
+        });
+      });
+    },
     rpc(type: string, message?: string): Promise<unknown> {
       const id = String(++nextId);
       return new Promise((resolve, reject) => {

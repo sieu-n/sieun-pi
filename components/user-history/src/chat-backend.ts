@@ -244,6 +244,8 @@ export async function createChatBackend(options: { socketPath?: string; readStat
   let clock = 0;
   const readState = new ChatReadState(options.readStatePath ?? join(getAgentDir(), "browser-chat", "read-state.json"));
   const observed = new Map<string, { revision: string; name?: string; lastAssistant?: ReadMarker }>();
+  const failedMetadata = new Map<string, string>();
+  let metadataRefresh: Promise<void> | undefined;
   const initialReadState = await readState.snapshot().catch(() => null);
   const responseBaseline = initialReadState?.baseline ?? Date.now();
 
@@ -339,6 +341,7 @@ export async function createChatBackend(options: { socketPath?: string; readStat
     const name = !row.hasName && firstUser ? previewTitle(firstUser.text) : row.session.name;
     if (!row.hasName) row.session.name = name;
     observed.set(row.session.sessionId, { revision: row.revision, name, ...(lastAssistant ? { lastAssistant } : {}) });
+    failedMetadata.delete(row.session.sessionId);
     if (lastAssistant) {
       const state = await readState.snapshot().catch(() => null);
       row.session.lastAssistant = lastAssistant;
@@ -368,23 +371,33 @@ export async function createChatBackend(options: { socketPath?: string; readStat
     async list() {
       const unique = new Map<string, CatalogRow>();
       for (const row of await catalog()) if (!unique.has(row.session.sessionId) || row.kind === "live") unique.set(row.session.sessionId, row);
-      let budget = 4;
       const markers = await readState.snapshot().catch(() => null);
+      const refresh: CatalogRow[] = [];
       const sessions: ChatSession[] = [];
       for (const row of unique.values()) {
         const session = row.session;
         if (!row.hasName) session.name = observed.get(session.sessionId)?.name ?? session.name;
         const changed = observed.get(session.sessionId)?.revision !== row.revision;
         const recent = Date.parse(session.lastActivityAt ?? "") > responseBaseline || (observed.has(session.sessionId) && changed);
-        if (changed && recent && budget > 0) {
-          budget--;
-          try { await backend.read(session.sessionId); } catch { session.readError = "Response status unavailable"; }
+        if (changed && recent) {
+          refresh.push(row);
+          session.readError = failedMetadata.get(session.sessionId) === row.revision ? "Response status unavailable" : "Response status pending";
         }
         const last = observed.get(session.sessionId)?.lastAssistant;
         if (last) { session.lastAssistant = last; if (markers) session.unread = last.timestamp > Math.max(markers.baseline, markers.sessions[session.sessionId]?.timestamp ?? 0); }
         if (!markers) session.readError = "Browser read markers unavailable";
-        if (changed && recent && !observed.has(session.sessionId)) session.readError ??= "Response status pending";
         sessions.push(session);
+      }
+      if (!metadataRefresh && refresh.length) {
+        const batch = refresh.sort((left, right) => Number(failedMetadata.get(left.session.sessionId) === left.revision) -
+          Number(failedMetadata.get(right.session.sessionId) === right.revision)).slice(0, 4);
+        metadataRefresh = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
+          for (const row of batch) {
+            if (closed) return;
+            try { await backend.read(row.session.sessionId); }
+            catch { failedMetadata.set(row.session.sessionId, row.revision); }
+          }
+        }).finally(() => { metadataRefresh = undefined; });
       }
       return sessions;
     },

@@ -65,7 +65,7 @@ Pi currently has no native browser read record. This component stores only a bas
 
 A tab marks read only when native work is idle, it has foreground focus and the latest committed assistant response is visible at the bottom. A click on a session while scrolled up does not clear its dot. Reading in the terminal does not change browser markers.
 
-The native catalog has no last-assistant field. The adapter caches observed entry metadata against catalog revisions. Each list refresh reads at most four changed recent sessions, rather than every saved history. Other pending response checks say unavailable until inspected. Native modification times invalidate the cache but never become assistant-response timestamps. Old sessions with no observed assistant entry show an unavailable reply date.
+The native catalog has no last-assistant field. The adapter caches observed entry metadata against catalog revisions. The list returns the native catalog and cached response metadata without waiting for transcripts. One background batch reads at most four changed recent sessions. Concurrent list polls do not add another batch. Stale metadata says pending; failed reads say unavailable and retry after unchecked sessions. Native modification times invalidate the cache but never become assistant-response timestamps. Old sessions with no observed assistant entry show an unavailable reply date.
 
 ## Images and saved sessions
 
