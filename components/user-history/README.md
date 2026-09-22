@@ -7,17 +7,21 @@ The browser reads native sessions and sends through `DaemonAgentConnection`. Pri
 ## Layout and controls
 
 ```text
-220px sidebar           40px header
-Search                  Session title                 Refresh commands
-Session title   2m      User and assistant messages
-Session title   1h      Collapsed native tool details
-                        Executing · 2m 12s
-                        Queued messages
-                        /skill:name User arguments
-                        + Account Context Model Effort Stop Send
+Resizable sidebar       40px header
+New thread              Title       Compact Detailed Questions   Agents
+Search / Archived       Latest user turn and assistant reply
+Session title   2m      Details / Load older messages
+Session title   1h      Native work and queued prompts
+                        + Account meters Context Model Effort Send now ▾
 ```
 
-The sidebar contains top-level sessions only. F2 or the row's ellipsis opens rename. Enter saves through the native live or saved-session rename API. Escape cancels. Hover or focus shows the title, creation date, known last assistant response and model. Skill-only previews display `Untitled session` rather than injected markup. Names do not require model calls or scans of every history.
+The sidebar contains native top-level sessions only. Archived roots stay hidden until Archived is checked or a search matches them. Names never decide lifecycle or parentage. Drag the sidebar edge or use its keyboard separator with Left/Right, Home and End. Width stays between 180 and 480 pixels and persists as a browser preference. F2 or the row's ellipsis opens rename. Enter saves through the native live or saved-session rename API. Escape cancels. Hover or focus shows the title, creation date, known last assistant response and model. Skill-only previews display `Untitled session` rather than injected markup. Names do not require model calls or scans of every history.
+
+New thread and Cmd+N create a separate native resident worker through the daemon's typed create command. They never replace the selected session or send a prompt. Creation keeps the selected root's workspace and live model. A saved root keeps its workspace and uses native model defaults. With no selection, native workspace and model defaults apply. New roots load their normal native resources and default effort. Repeated clicks during creation share one pending operation. An uncertain result requires checking the sidebar and explicit acknowledgement before another creation. Cmd+N works when the browser delivers it; the visible button always remains available.
+
+Compact is the default. It shows each displayed user prompt and its latest visible assistant reply, without requiring provider final markers. Details fetches that turn's other native messages. Detailed shows the loaded native events. Questions shows loaded user prompts and links back to their turns. The jump menu has lightweight labels for older questions. Load older fetches another five turns by native entry ID. Native errors and interrupted tool results remain visible in Compact. The current turn's spinner uses native runtime state in every mode.
+
+Agents opens a hideable display-only tree of the selected root's native child snapshots. Names, models, state, known duration and parent relationships come from Pi. It does not read each child's transcript or add lifecycle controls.
 
 Select a session to change only the browser view. The terminal keeps its own selection. The URL fragment restores the selected session after reload. Draft text, images, text selection, scroll position and open disclosures survive session switches within the tab. Reload discards drafts and attachments.
 
@@ -39,7 +43,7 @@ The catalog refreshes on session selection, browser reload, a new `/` picker ope
 
 ### Account, model, effort and context
 
-The account widget loads the sanitized pool listing when the selected session or provider changes. Its compact label shows the effective next-request account, plan and session/week percentages used. `who --json --session ...` resolves that account through pi-pool. The widget never chooses a usable row, last-used account or seat itself. If resolution is unavailable, the widget says Pool unresolved. Current, pinned and seat flags remain separate menu details. A question mark means unavailable usage. Opening the menu refreshes the listing.
+The account widget loads the sanitized pool listing when the selected session or provider changes. Its compact widget shows the effective next-request account, plan and labelled session/week usage meters. The expanded menu shows the same meters for every selected-provider account, with separate next-request, selected, seat, last-used and native health labels. `who --json --session ...` resolves that account through pi-pool. The widget never chooses a usable row, last-used account or seat itself. If resolution is unavailable, the widget says Pool unresolved. Current, pinned and seat flags remain separate menu details. Unknown means unavailable usage; missing quota never becomes zero. Opening the menu refreshes the listing.
 
 The model menu uses the native catalog, configured providers and current selection. Search and More models expose other native entries. It shows input support and native prices when supplied. `setModel()` also changes Prime Agent's default model; the menu states this. Model and effort changes require an idle native session, empty queue and no active children. Controls wait for native readback before displaying the new choice. Effort uses only `availableThinkingLevels`.
 
@@ -55,6 +59,8 @@ Stop calls native abort and cancels the current turn and its active child runs. 
 
 Compact calls the native compact API only while idle. The expandable queue lists native steering and follow-up messages. Edit and Remove use native expected-text checks. A changed queue rejects a stale edit rather than applying it to another message.
 
+Send now uses native `steer` at the next native boundary. Queue uses native `followUp` after the current turn. Either starts normally while idle. Neither aborts work. The selected mode participates in the request fingerprint.
+
 Message admission means Pi accepted the request. It does not establish task success. An uncertain send keeps its draft and never resends automatically. Repeating the unchanged request ID checks the same admission result.
 
 ### Read indicators
@@ -63,7 +69,7 @@ Running sessions show a spinner. An idle session with an unseen committed assist
 
 Pi currently has no native browser read record. This component stores only a baseline timestamp and last-read assistant entry per session at `getAgentDir()/browser-chat/read-state.json`. The first use treats older history as read. The file stays outside Git and native conversation history. Atomic rename and a process-owned lock protect concurrent listeners; markers never move backward in time. Reads do not rewrite the file. A damaged or locked read file does not prevent native chat.
 
-A tab marks read only when native work is idle, it has foreground focus and the latest committed assistant response is visible at the bottom. A click on a session while scrolled up does not clear its dot. Reading in the terminal does not change browser markers.
+A tab marks read only when native work is idle, it has foreground focus and the latest committed assistant response is visible at the bottom. A click on a session while scrolled up does not clear its dot. Questions mode never marks hidden assistant replies as read. Reading in the terminal does not change browser markers.
 
 The native catalog has no last-assistant field. The adapter caches observed entry metadata against catalog revisions. The list returns the native catalog and cached response metadata without waiting for transcripts. One background batch reads at most four changed recent sessions. Concurrent list polls do not add another batch. Stale metadata says pending; failed reads say unavailable and retry after unchecked sessions. Native modification times invalidate the cache but never become assistant-response timestamps. Old sessions with no observed assistant entry show an unavailable reply date.
 
@@ -71,7 +77,7 @@ The native catalog has no last-assistant field. The adapter caches observed entr
 
 Paste, drop or upload PNG, JPEG, GIF or WebP with an image-capable native model. Limits are four images, 3 MiB each and 8 MiB total before base64 encoding. Image-only messages work. Unsupported saved images leave a `[Saved image]` placeholder. Markdown URLs and images stay inert.
 
-Saved sessions are readable and renamable. Resume them in Prime Agent before sending or changing runtime controls. This slice adds no New, Resume, Archive or Fork flow.
+Saved sessions are readable and renamable. Resume them in Prime Agent before sending or changing runtime controls. There is no browser Resume, Archive, Delete or Fork mutation.
 
 ## Native boundary
 
@@ -88,7 +94,13 @@ flowchart LR
 
 `src/chat-service.ts` owns process startup, configuration and verified lifecycle commands. `src/chat-service-cli.mjs` loads TypeScript through the declared production `tsx` dependency. `src/chat-backend.ts` owns the thin native boundary. `src/chat-pool.ts` validates the CLI listing and selects through its CLI. `src/chat-read-state.ts` owns UI read markers. `src/chat-server.ts` validates loopback HTTP. `src/chat-client.ts` owns transient browser view state. `src/chat-page.ts` owns markup, styles and CSP hashes. `src/page.ts` renders inert Markdown, tool disclosures and images.
 
-The adapter caches the immutable native tree inside each viewer connection by session identity and native leaf ID. Branch changes invalidate that tree. Full native user text supplies unnamed-session previews once the branch is already loaded.
+The adapter coalesces concurrent snapshot and tree reads within each viewer connection. Metadata enrichment and multiple tabs share one in-flight native read. It caches the immutable native tree by session identity and native leaf ID. Branch changes invalidate that tree. Full native user text supplies unnamed-session previews once the branch is already loaded.
+
+The composer accepts draft text before history loads. A separate direct daemon state/header read validates native identity before Send becomes available. Model and attachment controls wait for their native state. Every mutation still validates the selected native identity again.
+
+Initial history renders only the last user-turn group. Compact omits older assistant bodies until Details opens. Questions also loads a bounded window. Later polls patch only the latest turn, keeping loaded older DOM and images in place. Unchanged HTML returns only its revision and fresh native metadata. An active text selection defers DOM replacement. Explicit history or view navigation can reload the displayed window.
+
+Pi 0.9.4 exposes no bounded canonical-history API. The first history read still needs a native attach and full canonical tree. The browser response, Markdown work and image projection are bounded after that native read; no provisional message IDs or second history store are added.
 
 The selected transcript polls every two seconds and the catalog every ten seconds while visible. The adapter keeps at most four native viewer connections. Those connections subscribe to native tool output but never own worker lifetime. Native snapshot reads rebuild the current run after disconnects. Saved reads use `SessionManager.inMemory()` to avoid migrating or repairing files on disk.
 
@@ -96,13 +108,13 @@ The native API has no atomic expected-session-ID or idle precondition for mutati
 
 ## HTTP contract and security
 
-All paths are below a stable random capability URL stored in the private profile. `GET /` returns 404 and never reveals that URL. Reads use `GET api/sessions`, `api/session?id=...`, `api/models?id=...`, `api/commands?id=...`, `api/accounts?id=...` and `api/tool?id=...&toolId=...`. Tool reads return exact native arguments and output only for calls on the selected branch.
+All paths are below a stable random capability URL stored in the private profile. `GET /` returns 404 and never reveals that URL. Reads use `GET api/sessions`, `api/target?id=...`, `api/session?id=...`, `api/models?id=...`, `api/commands?id=...`, `api/accounts?id=...` and `api/tool?id=...&toolId=...`. Tool reads return exact native arguments and output only for calls on the selected branch.
 
-Writes use `POST api/message`, `api/model`, `api/effort`, `api/rename`, `api/account`, `api/stop`, `api/compact`, `api/queue`, `api/read`. All require JSON, the page's write token, and exact loopback Host and Origin. Session paths and executable arguments never come from the browser.
+Writes use `POST api/create`, `api/message`, `api/model`, `api/effort`, `api/rename`, `api/account`, `api/stop`, `api/compact`, `api/queue`, `api/read`. All require JSON, the page's write token, and exact loopback Host and Origin. Session paths and executable arguments never come from the browser.
 
 The listener binds to `127.0.0.1`. A fixed-hash CSP allows no external resources or inline handlers. Transcript HTML stays escaped. Responses use `Cache-Control: no-store`. Do not share the capability URL. Other processes running as the same OS user are outside this protection.
 
-Text is limited to 32,000 characters and request bodies to 12 MiB. The process remembers each admitted send ID and its settled outcome, including uncertain failures. Restart clears this admission cache. After a restart, inspect the native transcript before manually resubmitting an uncertain message. The browser never automatically replays writes.
+Text is limited to 32,000 characters and request bodies to 12 MiB. The process remembers each admitted creation and send ID and its settled outcome, including uncertain failures. Restart clears this admission cache. After a restart, inspect the native transcript before manually resubmitting an uncertain message. The browser never automatically replays writes.
 
 ## Server lifecycle
 

@@ -62,8 +62,9 @@ test('page has labelled controls, disabled initial composer, and no unrelated se
 
 type InputFile = { name: string; type: string; size: number };
 type Event = {
-  key?: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number; persisted?: boolean;
+  key?: string; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean; isComposing?: boolean; keyCode?: number; persisted?: boolean;
   target?: Element;
+  composedPath: () => unknown[];
   clipboardData?: { items: { kind: string; getAsFile: () => InputFile | null }[] };
   dataTransfer?: { types?: string[]; files?: InputFile[] };
   preventDefault: () => void;
@@ -75,13 +76,14 @@ class Events {
   }
   emit(name: string, fields: Omit<Partial<Event>, 'preventDefault'> = {}): boolean {
     let prevented = false;
-    const event: Event = { ...(this instanceof Element ? { target: this } : {}), ...fields, preventDefault: () => { prevented = true; } };
+    const event: Event = { ...(this instanceof Element ? { target: this } : {}), composedPath: () => fields.target ? [fields.target] : [this], ...fields, preventDefault: () => { prevented = true; } };
     for (const callback of this.listeners.get(name) ?? []) callback(event);
     return prevented;
   }
 }
 class Element extends Events {
   dataset: Record<string, string> = {};
+  style = { setProperty: (_name: string, _value: string) => {} };
   attributes = new Map<string, string>();
   children: Element[] = [];
   className = '';
@@ -111,6 +113,7 @@ class Element extends Events {
   append(...children: Element[]): void { this.children.push(...children); }
   replaceChildren(...children: Element[]): void { this.text = ''; this.innerHTML = ''; this.children = children; }
   contains(element: Element | null): boolean { return this === element || this.children.some(child => child.contains(element)); }
+  getClientRects(): object[] { return [{}]; }
   getBoundingClientRect(): { top: number; bottom: number } { return { top: 0, bottom: 300 }; }
   matches(selector: string): boolean {
     if (selector === "[data-message-id]") return !!this.dataset.messageId;
@@ -134,9 +137,11 @@ type PendingRequest = {
 };
 function startClient({ abortRequests = true }: { abortRequests?: boolean } = {}) {
   const elements = new Map<string, Element>();
+  const allElements: Element[] = [];
   const document = Object.assign(new Events(), {
     body: new Element(), hidden: false, title: '', activeElement: null, hasFocus: (): boolean => true,
     getElementById(id: string) { const value = elements.get(id); assert(value, id); return value; },
+    querySelectorAll(selector: string) { return allElements.filter(element => selector === '[data-send-mode]' ? !!element.dataset.sendMode : selector === '[data-view-mode]' ? !!element.dataset.viewMode : element.matches(selector)); },
     createElement(tagName: string) { const element = new Element(); element.tagName = tagName; return element; },
   });
   const documentState: { activeElement: Element | null } = document;
@@ -152,9 +157,11 @@ function startClient({ abortRequests = true }: { abortRequests?: boolean } = {})
       if (attr.name === 'disabled') element.disabled = true;
       if (attr.name === 'hidden') element.hidden = true;
     }
+    allElements.push(element);
     if (id) elements.set(id, element);
   }
-  const window = new Events();
+  const preferences = new Map<string, string>();
+  const window = Object.assign(new Events(), { getSelection: () => null });
   const navigator = { onLine: true };
   const timers = new Map<number, { callback: () => void; delay: number }>();
   const requests: PendingRequest[] = [];
@@ -171,7 +178,9 @@ function startClient({ abortRequests = true }: { abortRequests?: boolean } = {})
     }
   }
   const context = createContext({
-    document, window, navigator, location: { hash: "#" + encodeURIComponent(initialId) }, history: { replaceState() {} }, confirm: () => false, AbortController, Error, TypeError, DOMException, FileReader,
+    localStorage: { getItem: (key: string) => preferences.get(key) ?? null, setItem: (key: string, value: string) => preferences.set(key, value) },
+    Option: class extends Element { constructor(text: string, value: string) { super(); this.textContent = text; this.value = value; } },
+    document, window, navigator, location: { hash: "#" + encodeURIComponent(initialId) }, history: { replaceState() {} }, confirm: () => false, URLSearchParams, AbortController, Error, TypeError, DOMException, FileReader,
     crypto: { randomUUID: () => 'request-' + ++requestId },
     matchMedia: () => ({ matches: false }),
     setTimeout(callback: () => void, delay: number) { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
@@ -186,7 +195,7 @@ function startClient({ abortRequests = true }: { abortRequests?: boolean } = {})
   new Script(inlineScript(rendered)).runInContext(context);
   const el = (id: string) => { const element = elements.get(id); assert(element, id); return element; };
   const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
-  const findRequest = (path: string) => { const req = requests.findLast(item => item.path === path); assert(req, path); return req; };
+  const findRequest = (path: string) => { const req = requests.findLast(item => item.path === path || path.startsWith('api/session?id=') && item.path.startsWith(path + '&')); assert(req, path); return req; };
   const select = (id: string) => {
     const button = el('session-list').children.flatMap(li => li.children).find(item => item.dataset.sessionId === id);
     assert(button, id); button.emit('click');
@@ -200,7 +209,7 @@ function startClient({ abortRequests = true }: { abortRequests?: boolean } = {})
     const button = el('model-options').children.find(item => item.dataset.modelId === id);
     assert(button, id); button.click();
   };
-  return { el, document, window, navigator, requests, flush, findRequest, select, type, advance, timers, imageReads, upload, chooseModel };
+  return { el, document, window, navigator, requests, flush, findRequest, select, type, advance, timers, imageReads, upload, chooseModel, allElements, preferences };
 }
 const initialId = 'session/a?b';
 const secondId = 'other#session';
@@ -229,8 +238,8 @@ async function ready(client: ReturnType<typeof startClient>): Promise<void> {
 
 test('selected transcript and list poll separately without overlapping requests', async () => {
   const client = startClient();
-  assert.equal(client.requests.length, 3);
-  assert.equal(client.el('message').disabled, true);
+  assert.equal(client.requests.length, 4);
+  assert.equal(client.el('message').disabled, false, 'draft editing starts before history loads');
   await ready(client);
   assert.equal(client.el('message').disabled, false);
   assert.equal(client.el('send').disabled, true);
@@ -239,7 +248,7 @@ test('selected transcript and list poll separately without overlapping requests'
   client.advance(2000);
   client.advance(2000);
   client.el('retry-session').emit('click');
-  assert.equal(client.requests.filter(r => r.path === sessionPath(initialId)).length, 2);
+  assert.equal(client.requests.filter(r => r.path.startsWith(sessionPath(initialId) + '&')).length, 2);
   assert.equal(client.requests.filter(r => r.path === 'api/sessions').length, 1);
   client.findRequest(sessionPath(initialId)).resolve(session());
   await client.flush();
@@ -263,7 +272,7 @@ test('a stale fetch cannot replace a new selection; only the selected transcript
   const first = client.findRequest(sessionPath(initialId));
   client.select(secondId);
   assert.equal(first.options.signal.aborted, true);
-  assert.equal(client.requests.length, 4, 'command fetch starts but replacement transcript waits for the old request');
+  assert.equal(client.requests.length, 6, 'target and command fetch start but replacement transcript waits for the old request');
   first.resolve(session(initialId, { html: 'STALE TRANSCRIPT' }));
   await client.flush();
   assert.equal(client.el('session-title').textContent, 'Second conversation');
@@ -271,8 +280,8 @@ test('a stale fetch cannot replace a new selection; only the selected transcript
   client.findRequest(sessionPath(secondId)).resolve(session(secondId));
   await client.flush();
   client.advance(2000);
-  assert.equal(client.requests.filter(r => r.path === sessionPath(initialId)).length, 1);
-  assert.equal(client.requests.filter(r => r.path === sessionPath(secondId)).length, 2);
+  assert.equal(client.requests.filter(r => r.path.startsWith(sessionPath(initialId) + '&')).length, 1);
+  assert.equal(client.requests.filter(r => r.path.startsWith(sessionPath(secondId) + '&')).length, 2);
 });
 
 test('drafts and pending sends keep their original target across session switches', async () => {
@@ -294,7 +303,7 @@ test('drafts and pending sends keep their original target across session switche
   const post = client.findRequest('api/message');
   assert.equal(post.options.method, 'POST');
   assert.equal(post.options.headers?.['X-Chat-Token'], 'test-token');
-  assert.deepEqual(JSON.parse(post.options.body ?? ''), { sessionId: initialId, message: 'First draft', requestId: 'request-1' });
+  assert.deepEqual(JSON.parse(post.options.body ?? ''), { sessionId: initialId, message: 'First draft', requestId: 'request-1', mode: 'steer' });
   assert.equal(client.el('send').disabled, true);
   client.select(secondId);
   await client.flush();
@@ -309,7 +318,8 @@ test('drafts and pending sends keep their original target across session switche
   client.findRequest(sessionPath(initialId)).resolve(session(initialId, { queueCount: 2 }));
   await client.flush();
   assert.equal(client.el('message').value, '');
-  assert.equal(client.el('send-notice').hidden, true);
+  assert.equal(client.el('send-notice').hidden, false);
+  assert.match(client.el('send-notice').textContent, /Accepted by Pi/);
   assert.equal(client.el('queue-summary').textContent, '2 queued');
 });
 
@@ -349,7 +359,7 @@ test('failed sends retain drafts, disclose uncertainty, and never resend on reco
   assert.equal(client.el('send').disabled, false);
   assert.equal(client.requests.filter(r => r.path === 'api/message').length, 1);
   client.window.emit('offline');
-  assert.equal(client.el('message').disabled, true);
+  assert.equal(client.el('send').disabled, true);
   assert.equal(client.el('message').value, 'Keep this draft');
 });
 
@@ -390,7 +400,7 @@ test('invalid or mismatched server sessions never reach the transcript', async (
   client.findRequest('api/sessions').resolve(sessionList);
   client.findRequest(sessionPath(initialId)).resolve(session(secondId, { html: 'WRONG SESSION' }));
   await client.flush();
-  assert.equal(client.el('message').disabled, true);
+  assert.equal(client.el('send').disabled, true);
   assert.notEqual(client.el('transcript').innerHTML, 'WRONG SESSION');
   assert.match(client.el('connection-text').textContent, /different session/);
   client.el('retry-session').emit('click');
@@ -445,7 +455,7 @@ test('a timed-out send keeps its draft without replay and GET failures can retry
   client.findRequest(sessionPath(initialId)).resolve({ error: 'Session unavailable' }, 503);
   await client.flush();
   assert.match(client.el('connection-text').textContent, /Session unavailable/);
-  assert.equal(client.el('message').disabled, true);
+  assert.equal(client.el('send').disabled, true);
   client.el('retry-session').emit('click');
   client.findRequest(sessionPath(initialId)).resolve(session());
   await client.flush();
@@ -542,7 +552,7 @@ test('BFCache suspension aborts reads without closing and restoration reconnects
   assert.equal(client.timers.size, 0, 'aborted read finalizers do not schedule polling while suspended');
   client.window.emit('pageshow', { persisted: true });
   assert.equal(client.requests.length, suspendedCount + 2);
-  assert.equal(client.el('message').disabled, true, 'restoration requires a fresh session read');
+  assert.equal(client.el('send').disabled, true, 'restoration requires a fresh session read');
   client.findRequest(sessionPath(initialId)).resolve(session());
   client.findRequest('api/sessions').resolve(sessionList);
   await client.flush();
@@ -794,7 +804,7 @@ test('file reads stay with their original draft across session switches', async 
   assert.equal(client.el('send').disabled, false);
 });
 
-test('image-only messages send native image content and acceptance removes previews without permanent notices', async () => {
+test('image-only messages send native image content and acceptance removes previews with native admission notice', async () => {
   const client = startClient();
   await ready(client);
   client.upload([imageFile()]);
@@ -803,13 +813,14 @@ test('image-only messages send native image content and acceptance removes previ
   assert.equal(client.el('send').disabled, false);
   client.el('composer-form').emit('submit');
   const send = client.findRequest('api/message');
-  assert.deepEqual(JSON.parse(send.options.body ?? ''), { sessionId: initialId, message: '', requestId: 'request-1', images: [{ type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' }] });
+  assert.deepEqual(JSON.parse(send.options.body ?? ''), { sessionId: initialId, message: '', requestId: 'request-1', mode: 'steer', images: [{ type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' }] });
   assert.equal(client.el('attach-button').disabled, true);
   assert.equal(client.el('attachment-previews').querySelector('button')?.disabled, true);
   send.resolve({ accepted: true });
   await client.flush();
   assert.equal(client.el('attachment-previews').children.length, 0);
-  assert.equal(client.el('send-notice').hidden, true);
+  assert.equal(client.el('send-notice').hidden, false);
+  assert.match(client.el('send-notice').textContent, /Accepted by Pi/);
 });
 
 test('nonvision models reject image paste and preserve existing images until a vision model is chosen or images removed', async () => {
@@ -898,7 +909,7 @@ test('paste and drop read local files only, and removed pending reads cannot ret
   client.imageReads[1]?.resolve();
   await client.flush();
   assert.equal(client.el('attachment-previews').querySelector('img')?.alt, 'dropped.png');
-  assert.equal(client.requests.length, 4, 'only native session, catalog, command and pool reads occur');
+  assert.equal(client.requests.length, 5, 'only native target, session, catalog, command and pool reads occur');
 });
 
 test('read-only and pending-send sessions reject upload, paste, and drop', async () => {
@@ -972,7 +983,7 @@ test('model controls reject malformed data and never offer a catalog from a diff
   client.findRequest(sessionPath(initialId)).resolve(session(initialId, { controls: { kind: 'live', currentModel: {}, canChangeModel: true } }));
   await client.flush();
   assert.equal(client.el('model-button').disabled, true);
-  assert.equal(client.el('message').disabled, true);
+  assert.equal(client.el('send').disabled, true);
   assert.match(client.el('connection-text').textContent, /invalid session controls/);
 });
 
@@ -1054,7 +1065,7 @@ test('native running work and elapsed start survive selecting away and returning
   assert.deepEqual(JSON.parse(client.findRequest('api/stop').options.body ?? ''), { sessionId: initialId });
 });
 
-test('scroll position returns with each draft and no Agents controls remain', async () => {
+test('scroll position returns with each draft and no separate Agents view remains', async () => {
   const client = startClient(); await ready(client);
   client.el('conversation').scrollTop = 123; client.el('conversation').emit('scroll'); client.type('draft');
   client.select(secondId); await client.flush(); client.findRequest(sessionPath(secondId)).resolve(session(secondId)); await client.flush();
@@ -1091,11 +1102,11 @@ test('account widget loads once per selected provider and shows pool plan and us
   client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { controls: { ...controls, currentModel: { ...visionModel, provider: 'anthropic' } } })); await client.flush();
   const listing = { kind: 'pool', sessionId: initialId, provider: 'anthropic', checkedAt: new Date().toISOString(), resolution: { kind: 'resolved', accountId: 'one', source: 'seat', pinned: false }, rows: [{ id: 'one', email: 'reader@example.test', plan: 'Pro', usage: '6% / 42%', session_pct: 6, weekly_pct: 42, current: true, pinned: false, seat: true, usable: true }] };
   client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve(listing); await client.flush();
-  assert.equal(client.el('account-button').textContent, 'reader · Pro · 6%/42%');
+  assert.equal(client.el('account-button').textContent, 'reader · ProSession6%Week42%');
   assert.match(client.el('account-button').title, /reader@example.test/);
   client.el('account-button').click();
   client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve({ ...listing, rows: [{ ...listing.rows[0], session_pct: null, weekly_pct: null }] }); await client.flush();
-  assert.equal(client.el('account-button').textContent, 'reader · Pro · ?/?');
+  assert.equal(client.el('account-button').textContent, 'reader · ProSessionUnknownWeekUnknown');
   assert.match(client.el('account-button').title, /unavailable/);
 });
 
@@ -1157,7 +1168,7 @@ test('account widget follows pi-pool resolution rather than stale seat or locall
       { id: 'next', email: 'effective@example.test', plan: 'Pro', usage: '20% / 30%', session_pct: 20, weekly_pct: 30, current: false, pinned: false, seat: false, usable: true },
     ] };
   client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve(listing); await client.flush();
-  assert.equal(client.el('account-button').textContent, 'effective · Pro · 20%/30%');
+  assert.equal(client.el('account-button').textContent, 'effective · ProSession20%Week30%');
   assert.match(client.el('account-button').title, /seat_move/);
   client.el('account-button').click();
   client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve({ ...listing, resolution: { kind: 'unavailable' } }); await client.flush();
@@ -1175,4 +1186,113 @@ test('visible committed tool-call entries stay unread while native work is runni
   assert(!client.requests.some(request => request.path === 'api/read'));
   client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { status: 'idle', unread: true, lastAssistant: latest })); await client.flush();
   assert.deepEqual(JSON.parse(client.findRequest('api/read').options.body ?? ''), { sessionId: initialId, entryId: latest.entryId });
+});
+
+
+test('new thread and delivered Cmd+N share one admission and never prompt automatically', async () => {
+  const client = startClient(); await ready(client);
+  client.el('new-thread').click();
+  client.document.emit('keydown', { key: 'n', metaKey: true });
+  assert.equal(client.requests.filter(request => request.path === 'api/create').length, 1);
+  assert.equal(client.requests.filter(request => request.path === 'api/message').length, 0);
+  client.findRequest('api/create').resolve({ session: { id: 'new-root', name: 'Untitled session', status: 'idle', writable: true } });
+  await client.flush();
+  assert.equal(client.el('new-thread').disabled, false);
+  assert(client.requests.some(request => request.path.startsWith('api/target?id=new-root')));
+});
+
+test('uncertain creation requires explicit acknowledgement and never retries on polling', async () => {
+  const client = startClient(); await ready(client); client.el('new-thread').click();
+  client.findRequest('api/create').reject(new TypeError('Network failed')); await client.flush();
+  assert.equal(client.el('new-thread').disabled, true);
+  client.advance(2000); client.document.emit('keydown', { key: 'n', metaKey: true });
+  assert.equal(client.requests.filter(request => request.path === 'api/create').length, 1);
+  assert.match(client.el('create-notice').textContent, /may have succeeded/);
+});
+
+test('draft edits begin immediately but send waits for independently validated native target', async () => {
+  const client = startClient();
+  assert.equal(client.el('message').disabled, false);
+  client.type('draft before history'); assert.equal(client.el('send').disabled, true);
+  client.findRequest('api/target?id=' + encodeURIComponent(initialId)).resolve({ id: initialId, writable: true });
+  await client.flush(); assert.equal(client.el('send').disabled, false);
+  assert.equal(client.el('message').value, 'draft before history');
+  assert.equal(client.el('model-button').disabled, true);
+});
+
+test('sidebar keyboard resize persists bounds and unchanged catalog keeps row identity', async () => {
+  const client = startClient(); await ready(client);
+  const first = client.el('session-list').children[0];
+  client.advance(10000); client.findRequest('api/sessions').resolve(sessionList); await client.flush();
+  assert.equal(client.el('session-list').children[0], first);
+  client.el('sidebar-resize').emit('keydown', { key: 'End' });
+  assert.equal(client.preferences.get('pi-chat-sidebar-width'), '480');
+  client.el('sidebar-resize').emit('keydown', { key: 'ArrowRight' });
+  assert.equal(client.el('sidebar-resize').getAttribute('aria-valuenow'), '480');
+  client.el('sidebar-resize').emit('keydown', { key: 'Home' });
+  assert.equal(client.preferences.get('pi-chat-sidebar-width'), '180');
+});
+
+test('send dropdown uses followUp and changing mode changes uncertain admission ID', async () => {
+  const client = startClient(); await ready(client); client.type('Queue this');
+  const queue = client.allElements.find(element => element.dataset.sendMode === 'followUp'); assert(queue); queue.click();
+  client.el('composer-form').emit('submit');
+  const first = client.findRequest('api/message'); const input = JSON.parse(first.options.body ?? '{}'); assert.equal(input.mode, 'followUp');
+  first.reject(new TypeError('Unknown')); await client.flush(); client.el('retry-session').click();
+  client.findRequest(sessionPath(initialId)).resolve(session()); await client.flush();
+  const steer = client.allElements.find(element => element.dataset.sendMode === 'steer'); assert(steer); steer.click();
+  client.el('composer-form').emit('submit');
+  const second = JSON.parse(client.findRequest('api/message').options.body ?? '{}');
+  assert.equal(second.mode, 'steer'); assert.notEqual(second.requestId, input.requestId);
+});
+
+
+test('archived roots stay hidden by default and remain searchable without name guesses', async () => {
+  const client = startClient();
+  client.findRequest('api/sessions').resolve({ sessions: [
+    { id: initialId, name: 'thread-audit-4', status: 'idle', writable: true, lifecycle: 'live' },
+    { id: secondId, name: 'Real old discussion', status: 'saved', writable: false, lifecycle: 'archived' },
+  ] });
+  await client.flush();
+  assert.equal(client.el('session-list').children.length, 1);
+  assert.match(client.el('session-list').textContent, /thread-audit-4/);
+  client.el('session-search').value = 'old discussion'; client.el('session-search').emit('input');
+  assert.equal(client.el('session-list').children.length, 1);
+  assert.match(client.el('session-list').textContent, /Real old discussion/);
+});
+
+test('Questions mode never acknowledges hidden assistant replies and changing views sends no native command', async () => {
+  const client = startClient(); await ready(client);
+  const questionView = client.allElements.find(element => element.dataset.viewMode === 'questions'); assert(questionView); questionView.click();
+  await client.flush();
+  assert.equal(client.el('transcript').dataset.view, 'questions');
+  assert(!client.requests.some(request => request.options.method === 'POST'));
+  assert(client.requests.some(request => request.path.includes('view=questions')));
+});
+
+
+test('child widget changes from loading to live empty state without invented saved status', async () => {
+  const client = startClient(); assert.match(client.el('children-tree').textContent, /Loading/);
+  await ready(client); assert.equal(client.el('children-tree').textContent, 'No native subagents in this thread.');
+});
+
+
+test('account menu stays open when clicking a nested widget label replaced during refresh', async () => {
+  const client = startClient(); await ready(client);
+  client.advance(2000); client.findRequest(sessionPath(initialId)).resolve(session(initialId, { controls: { ...controls, currentModel: { ...visionModel, provider: 'anthropic' } } })); await client.flush();
+  const listing = { kind: 'pool', sessionId: initialId, provider: 'anthropic', checkedAt: new Date().toISOString(),
+    resolution: { kind: 'resolved', accountId: 'one', source: 'seat', pinned: false },
+    rows: [{ id: 'one', email: 'reader@example.test', plan: 'Pro', usage: '6% / 42%', session_pct: 6, weekly_pct: 42,
+      current: true, pinned: false, seat: true, usable: true, force: false, live: true, reason: null }] };
+  client.findRequest('api/accounts?id=' + encodeURIComponent(initialId)).resolve(listing); await client.flush();
+  const button = client.el('account-button'); const label = button.children[0]; assert(label);
+  const path = [label, button, client.document];
+  button.emit('click', { target: label, composedPath: () => path });
+  assert.equal(button.contains(label), false, 'opening refresh replaced the original event target');
+  client.document.emit('click', { target: label, composedPath: () => path });
+  assert.equal(client.el('account-panel').hidden, false);
+  assert.equal(button.getAttribute('aria-expanded'), 'true');
+  const outside = client.el('session-title');
+  client.document.emit('click', { target: outside, composedPath: () => [outside, client.document] });
+  assert.equal(client.el('account-panel').hidden, true);
 });

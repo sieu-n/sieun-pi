@@ -50,6 +50,7 @@ export const chatClientScript = String.raw`
   let suspended = false;
   let followingBottom = true;
   let lastHtml = null;
+  let lastRevision = null;
   let listLoaded = false;
   let composing = false;
   let modelCatalog = null;
@@ -58,6 +59,19 @@ export const chatClientScript = String.raw`
   let modelMutation = null;
   let modelEpoch = 0;
   let imageFocus = null;
+  let sendMode = 'steer';
+  let creation = { kind: 'idle' };
+  let lastListKey = '';
+  let viewMode = 'compact';
+  let viewEpoch = 0;
+  let historyStart = null;
+  let olderTurns = 0;
+  let targetSession = null;
+  let targetRequest = null;
+  let historyLoading = false;
+  let windowRequested = true;
+  let pendingQuestion = null;
+  const expandedTurns = new Map();
   const imageTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
   const drafts = new Map();
   const deliveries = new Map();
@@ -77,7 +91,7 @@ export const chatClientScript = String.raw`
     return isObject(value) && (value.kind === 'saved' ? value.currentModel === null && value.canChangeModel === false : value.kind === 'live' && (value.currentModel === null || isModel(value.currentModel)) && typeof value.canChangeModel === 'boolean');
   }
   function parseSession(value) {
-    if (!isObject(value) || typeof value.id !== 'string' || !value.id || typeof value.name !== 'string' || typeof value.status !== 'string' || typeof value.writable !== 'boolean' || typeof value.html !== 'string' || !Number.isSafeInteger(value.queueCount) || value.queueCount < 0) throw new Error('The chat server returned an invalid session.');
+    if (!isObject(value) || typeof value.id !== 'string' || !value.id || typeof value.name !== 'string' || typeof value.status !== 'string' || typeof value.writable !== 'boolean' || !(typeof value.html === 'string' || value.html === null && typeof value.revision === 'string') || !Number.isSafeInteger(value.queueCount) || value.queueCount < 0) throw new Error('The chat server returned an invalid session.');
     if (!isControls(value.controls) || !isUsage(value.usage)) throw new Error('The chat server returned invalid session controls.');
     return value;
   }
@@ -128,7 +142,8 @@ export const chatClientScript = String.raw`
     transcript.replaceChildren(box);
   }
   function writable() {
-    return selected !== null && selected.id === selectedId && selected.writable && !sessions.some(item => item.id === selectedId && !item.writable);
+    const target = selected || targetSession;
+    return target !== null && target.id === selectedId && target.writable && !sessions.some(item => item.id === selectedId && !item.writable);
   }
   function draftFor(id) {
     if (!drafts.has(id)) drafts.set(id, { message: '', attachments: [], error: '' });
@@ -144,24 +159,28 @@ export const chatClientScript = String.raw`
   function updateComposer() {
     const delivery = deliveries.get(selectedId);
     const pending = delivery?.kind === 'pending';
-    const ready = !closed && !suspended && loaded && connected && navigator.onLine && writable();
+    const ready = !closed && !suspended && (loaded && connected || targetSession?.id === selectedId) && navigator.onLine && writable();
     const attachments = drafts.get(selectedId)?.attachments || [];
-    composer.disabled = !ready || pending || modelMutation !== null || controlPending;
-    send.disabled = composer.disabled || attachments.some(item => item.kind === 'reading') || (attachments.length > 0 && !supportsImages()) || (!composer.value.trim() && !attachments.length);
-    attachButton.disabled = composer.disabled || !supportsImages() || attachments.length >= 4;
+    composer.disabled = closed || suspended || !selectedId || loaded && !writable() || pending || modelMutation !== null || controlPending;
+    send.disabled = composer.disabled || !ready || attachments.some(item => item.kind === 'reading') || (attachments.length > 0 && !supportsImages()) || (!composer.value.trim() && !attachments.length);
+    attachButton.disabled = composer.disabled || !ready || !supportsImages() || attachments.length >= 4;
     imageInput.disabled = attachButton.disabled;
     for (const button of previews.querySelectorAll('button')) button.disabled = composer.disabled;
     closeButton.disabled = closed || suspended || hasPendingSend() || modelMutation?.phase === 'pending' || controlPending;
     $('composer-target').textContent = closed ? 'View closed' : selected ? 'To ' + (selected.name || 'Untitled session') : 'Choose a session';
-    composer.placeholder = closed ? 'This chat is closed' : !selectedId ? 'Choose a session' : !loaded ? 'Loading...' : !writable() ? 'Resume this session in Prime Agent to reply' : !connected || !navigator.onLine ? 'Reconnect to send a message' : pending ? 'Sending...' : 'Ask anything, or follow up';
-    send.setAttribute('aria-label', pending ? 'Sending message' : 'Send message');
+    composer.placeholder = closed ? 'This chat is closed' : !selectedId ? 'Choose a session' : !loaded ? 'Write a message while history loads…' : !writable() ? 'Resume this session in Prime Agent to reply' : !connected || !navigator.onLine ? 'Reconnect to send a message' : pending ? 'Sending...' : 'Ask anything, or follow up';
+    const sendLabel = sendMode === 'steer' ? 'Send now' : 'Queue';
+    send.textContent = pending ? 'Sending…' : sendLabel;
+    send.setAttribute('aria-label', pending ? 'Sending message' : sendLabel);
+    $('send-options').disabled = pending || closed || suspended;
+    $('new-thread').disabled = closed || suspended || creation.kind === 'pending' || creation.kind === 'uncertain';
     sendNotice.hidden = !delivery;
     sendNotice.textContent = delivery ? delivery.text : '';
     sendNotice.dataset.kind = delivery ? delivery.kind : '';
     const imageError = drafts.get(selectedId)?.error || (attachments.length && loaded && !supportsImages() ? 'Choose a model that accepts images, or remove the images.' : '');
     attachmentError.hidden = !imageError;
     attachmentError.textContent = imageError;
-    modelButton.disabled = !ready || !selected.controls.canChangeModel || hasPendingSend() || modelMutation !== null || controlPending;
+    modelButton.disabled = !ready || !selected?.controls.canChangeModel || hasPendingSend() || modelMutation !== null || controlPending;
     $('model-label').textContent = selected?.controls.currentModel?.name || 'Model';
     modelButton.title = selected?.controls.currentModel ? selected.controls.currentModel.provider + '/' + selected.controls.currentModel.id : 'Choose a model';
     for (const button of modelOptions.querySelectorAll('button')) {
@@ -171,7 +190,7 @@ export const chatClientScript = String.raw`
     usageButton.disabled = !loaded || closed || suspended;
     $('effort-button').disabled = modelButton.disabled;
     $('effort-button').textContent = selected?.controls.kind === 'live' ? selected.controls.thinkingLevel : 'Effort';
-    $('account-button').disabled = !ready || controlPending;
+    $('account-button').disabled = !ready || !loaded || controlPending;
     renderAccountWidget();
     $('stop-button').hidden = selected?.status !== 'running';
     $('stop-button').disabled = !ready;
@@ -183,10 +202,13 @@ export const chatClientScript = String.raw`
   }
   function renderList() {
     const query = search.value.trim().toLocaleLowerCase();
-    const items = sessions.filter(item => !query || (item.name + ' ' + item.status).toLocaleLowerCase().includes(query));
+    const items = sessions.filter(item => (query || $('show-archived').checked || item.lifecycle !== 'archived') && (!query || (item.name + ' ' + item.status).toLocaleLowerCase().includes(query)));
+    const listKey = JSON.stringify([items.map(item => [item.id, item.name, item.status, item.writable, item.nativeStatus, item.unread, item.readError, metadata(item), relativeTime(item.lastAssistant?.timestamp || item.lastActivityAt || item.created)]), selectedId, closed, query, listLoaded]);
+    if (listKey === lastListKey) return;
     if (list.querySelector('input')) return;
     const focusedId = list.contains(document.activeElement) ? document.activeElement.dataset.sessionId : null;
     list.replaceChildren();
+    lastListKey = listKey;
 
     for (const item of items) {
       const li = document.createElement('li');
@@ -235,11 +257,14 @@ export const chatClientScript = String.raw`
     closeExtraPanels();
     accountEpoch++; accountRequest?.abort(); accountRequest = null; accountKey = ''; poolListing = null; accountError = '';
     generation++;
-    selected = null;
+    selected = null; targetSession = null;
+    historyStart = null; olderTurns = 0; windowRequested = true; viewEpoch++;
+    void refreshTarget(id);
+    renderChildren();
     loaded = false;
     connected = false;
     followingBottom = draftFor(id).followingBottom ?? true;
-    lastHtml = null;
+    lastHtml = null; lastRevision = null;
     composing = false;
     composer.value = drafts.get(id)?.message || '';
     composer.setSelectionRange(draftFor(id).selectionStart ?? composer.value.length, draftFor(id).selectionEnd ?? composer.value.length);
@@ -266,16 +291,30 @@ export const chatClientScript = String.raw`
     followingBottom = true;
     latest.hidden = true;
   }
-  function renderTranscript(html) {
+  function renderTranscript(html, replaceWindow = false) {
     if (html === lastHtml) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && transcript.contains(selection.anchorNode)) return;
     const toBottom = followingBottom;
     const scrollTop = loaded ? scroller.scrollTop : draftFor(selectedId).scrollTop || 0;
+    const anchor = Array.from(transcript.querySelectorAll('[data-message-id]')).find(item => item.getBoundingClientRect().bottom >= scroller.getBoundingClientRect().top);
+    const anchorId = anchor?.dataset.messageId;
+    const anchorTop = anchor?.getBoundingClientRect().top;
     const openDetails = loaded ? disclosureState() : draftFor(selectedId).disclosures || [];
     const toolBodies = new Map(Array.from(transcript.querySelectorAll('details.tool')).flatMap(item => {
       const body = item.querySelector('.tool-content');
       return body && item.dataset.loadedRevision === item.dataset.toolRevision ? [[item.dataset.toolId, { revision: item.dataset.toolRevision, body }]] : [];
     }));
-    if (html.trim()) transcript.innerHTML = html;
+    if (html.trim()) {
+      const incoming = document.createElement('div'); incoming.innerHTML = html;
+      const turns = Array.from(incoming.querySelectorAll(':scope > .turn'));
+      if (!loaded || replaceWindow || !turns.length || !transcript.querySelector(':scope > .turn')) transcript.innerHTML = html;
+      else for (const turn of turns) {
+        const existing = Array.from(transcript.querySelectorAll(':scope > .turn')).find(item => item.dataset.turnId === turn.dataset.turnId);
+        if (existing) { if (existing.outerHTML !== turn.outerHTML) existing.replaceWith(turn); }
+        else transcript.append(turn);
+      }
+    }
     else emptyTranscript('No messages yet', selected && selected.writable ? 'Send a message to this session below.' : 'This session has no saved messages.');
     for (const item of transcript.querySelectorAll('details')) {
       item.open = openDetails.includes(disclosureKey(item));
@@ -286,21 +325,36 @@ export const chatClientScript = String.raw`
       if (item.open && item.dataset.toolId) void loadToolDetail(item);
     }
     lastHtml = html;
+    applyView();
     if (toBottom) scrollBottom();
-    else { scroller.scrollTop = scrollTop; latest.hidden = atBottom(); }
+    else {
+      scroller.scrollTop = scrollTop;
+      const restored = anchorId && Array.from(transcript.querySelectorAll('[data-message-id]')).find(item => item.dataset.messageId === anchorId);
+      if (restored && anchorTop !== undefined) scroller.scrollTop += restored.getBoundingClientRect().top - anchorTop;
+      latest.hidden = atBottom();
+    }
   }
   async function refreshSession() {
     clearTimeout(sessionTimer);
     if (closed || suspended || controlPending || sessionRequest || !selectedId) return;
     if (document.hidden || !navigator.onLine) { sessionTimer = setTimeout(refreshSession, 2000); return; }
-    const current = { id: selectedId, generation, modelEpoch, controller: new AbortController() };
+    const current = { id: selectedId, generation, modelEpoch, viewEpoch, replaceWindow: windowRequested, controller: new AbortController() };
+    historyLoading = true; $('load-older').disabled = true;
     sessionRequest = current;
     try {
-      const result = parseSession(await request('api/session?id=' + encodeURIComponent(current.id), {}, current.controller));
+      const query = new URLSearchParams({ id: current.id, view: viewMode, turns: '1' });
+      if (lastRevision) query.set('since', lastRevision);
+      if (current.replaceWindow && historyStart) query.set('startId', historyStart);
+      if (current.replaceWindow && olderTurns) query.set('older', String(olderTurns));
+      for (const id of expandedTurns.get(current.id) || []) query.append('expanded', id);
+      const result = parseSession(await request('api/session?' + query, {}, current.controller));
       if (closed || suspended || current.generation !== generation || current.id !== selectedId) return;
-      if (current.modelEpoch !== modelEpoch) return;
+      if (current.modelEpoch !== modelEpoch || current.viewEpoch !== viewEpoch) return;
       if (result.id !== current.id) throw new Error('The chat server returned a different session.');
       selected = result;
+      if (olderTurns && result.history?.startId) historyStart = result.history.startId;
+      olderTurns = 0;
+      $('load-older').hidden = !result.history || result.history.shownTurns >= result.history.totalTurns;
       connected = true;
       title.textContent = result.name || 'Untitled session';
       title.title = metadata(result);
@@ -309,6 +363,7 @@ export const chatClientScript = String.raw`
       if (item) Object.assign(item, { ...result, html: undefined });
       renderList();
       renderQueue();
+      renderChildren();
       document.title = title.textContent + ' · Prime Agent';
       if (modelMutation?.phase === 'readback') {
         if (modelMutation.id === selectedId && modelMutation.generation === generation) {
@@ -317,7 +372,16 @@ export const chatClientScript = String.raw`
         }
         modelMutation = null;
       }
-      renderTranscript(result.html);
+      if (result.html === null && (result.revision !== lastRevision || lastHtml === null)) throw new Error('Conversation revision changed. Reload the selected thread.');
+      if (typeof result.html === 'string') {
+        renderTranscript(result.html, current.replaceWindow);
+        if (lastHtml === result.html) { lastRevision = result.revision || null; windowRequested = false; }
+      }
+      applyView();
+      if (pendingQuestion) {
+        const questionId = pendingQuestion; pendingQuestion = null;
+        void jumpToQuestion(questionId);
+      }
       loaded = true;
       const poolKey = result.controls.kind === 'live' ? result.id + '/' + (result.controls.currentModel?.provider || '') : '';
       if (poolKey && poolKey !== accountKey) void loadAccounts();
@@ -325,16 +389,16 @@ export const chatClientScript = String.raw`
       updateComposer();
       void markVisibleRead();
     } catch (error) {
-      if (closed || suspended || current.generation !== generation || current.id !== selectedId || current.modelEpoch !== modelEpoch) return;
-      connected = false;
+      if (closed || suspended || current.generation !== generation || current.id !== selectedId || current.modelEpoch !== modelEpoch || current.viewEpoch !== viewEpoch) return;
+      connected = false; targetSession = null;
       status.textContent = 'Disconnected';
       showBanner(errorText(error) + ' Sending is paused.', true);
       if (!loaded) emptyTranscript('Conversation unavailable', 'Retry to load this session. Your draft is kept in this tab.');
       updateComposer();
     } finally {
-      sessionRequest = null;
+      sessionRequest = null; historyLoading = false; $('load-older').disabled = false;
       if (!closed && !suspended) {
-        if (current.generation !== generation || current.modelEpoch !== modelEpoch) void refreshSession();
+        if (current.generation !== generation || current.modelEpoch !== modelEpoch || current.viewEpoch !== viewEpoch) void refreshSession();
         else sessionTimer = setTimeout(refreshSession, 2000);
       }
     }
@@ -561,7 +625,7 @@ export const chatClientScript = String.raw`
   }
   function addImages(files) {
     updateComposer();
-    if (composer.disabled) return;
+    if (composer.disabled || !writable() || !connected) return;
     const id = selectedId;
     const draft = draftFor(id);
     draft.error = '';
@@ -602,28 +666,29 @@ export const chatClientScript = String.raw`
     if (send.disabled || composing) return;
     const id = selectedId;
     const message = composer.value;
+    const mode = sendMode;
     if (handleSlash(message)) return;
     const previous = deliveries.get(id);
     const draft = draftFor(id);
     draft.message = message;
     const images = draft.attachments.map(item => item.image);
-    const requestId = previous?.kind === 'error' && previous.message === message && sameImages(previous.images, images) ? previous.requestId : crypto.randomUUID();
-    deliveries.set(id, { kind: 'pending', requestId, message, images, text: 'Sending...' });
+    const requestId = previous?.kind === 'error' && previous.message === message && previous.mode === mode && sameImages(previous.images, images) ? previous.requestId : crypto.randomUUID();
+    deliveries.set(id, { kind: 'pending', requestId, message, images, mode, text: 'Sending...' });
     updateComposer();
     const controller = new AbortController();
     try {
-      const result = await request('api/message', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Chat-Token': csrfToken }, body: JSON.stringify({ sessionId: id, message, requestId, ...(images.length ? { images } : {}) }) }, controller);
+      const result = await request('api/message', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Chat-Token': csrfToken }, body: JSON.stringify({ sessionId: id, message, requestId, mode, ...(images.length ? { images } : {}) }) }, controller);
       if (!isObject(result) || result.accepted !== true) throw new Error('The chat server did not confirm acceptance.');
-      deliveries.delete(id);
+      deliveries.set(id, { kind: 'accepted', text: mode === 'steer' ? 'Accepted by Pi. Send now applies at the next native boundary.' : 'Accepted by Pi. Queue follows the current turn.' });
       if (drafts.get(id) === draft && draft.message === message && sameImages(draft.attachments.map(item => item.image), images)) {
         drafts.delete(id);
         if (selectedId === id) { composer.value = ''; renderAttachments(); }
       }
       if (!closed && selectedId === id) void refreshSession();
     } catch (error) {
-      deliveries.set(id, { kind: 'error', requestId, message, images, text: errorText(error) + ' Acceptance is not confirmed. Retry unchanged to check the same submission. Check the transcript before changing the draft.' });
+      deliveries.set(id, { kind: 'error', requestId, message, images, mode, text: errorText(error) + ' Acceptance is not confirmed. Retry unchanged to check the same submission. Check the transcript before changing the draft.' });
       if (selectedId === id) {
-        connected = false;
+        connected = false; targetSession = null;
         showBanner('Send failed or its result is unknown. Reconnect before sending again.', true);
       }
     } finally {
@@ -634,6 +699,7 @@ export const chatClientScript = String.raw`
   function stopPolling() {
     clearTimeout(sessionTimer);
     clearTimeout(listTimer);
+    targetRequest?.abort(); targetRequest = null;
     commandRequest?.abort(); commandRequest = null;
     accountRequest?.abort(); accountRequest = null;
     if (!poolListing) accountKey = '';
@@ -874,10 +940,24 @@ export const chatClientScript = String.raw`
     if (resolution.accountId === null) { button.textContent = 'No usable account'; button.title = 'pi-pool resolved no usable account for the next request'; return; }
     const choice = poolListing.rows.find(row => row.id === resolution.accountId);
     if (!choice) { button.textContent = 'Pool unresolved'; button.title = 'pi-pool resolution changed after the listing. Open Account to refresh.'; return; }
-    const used = value => typeof value === 'number' ? value + '%' : '?';
-    const identity = choice.email.split('@')[0] + (choice.plan ? ' · ' + choice.plan : '');
-    button.textContent = identity + ' · ' + used(choice.session_pct) + '/' + used(choice.weekly_pct);
-    button.title = choice.email + ' · Next request · ' + (resolution.source || 'pi-pool') + '\n' + choice.usage + '\nSession/week used; ? means unavailable' + (choice.reason ? '\n' + choice.reason : '');
+    const identity = document.createElement('span'); identity.className = 'account-name';
+    identity.textContent = choice.email.split('@')[0] + (choice.plan ? ' · ' + choice.plan : '');
+    button.replaceChildren(identity, usageBar('Session', choice.session_pct), usageBar('Week', choice.weekly_pct));
+    button.title = choice.email + ' · Next request · ' + (resolution.source || 'pi-pool') + (choice.session_pct === null || choice.weekly_pct === null ? '\nSome usage limits are unavailable' : '') + (choice.reason ? '\n' + choice.reason : '');
+  }
+  function usageBar(label, value) {
+    const row = document.createElement('span'); row.className = 'usage-bar';
+    const name = document.createElement('span'); name.textContent = label;
+    const amount = document.createElement('span');
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      const meter = document.createElement('meter'); meter.min = 0; meter.max = 100; meter.value = Math.min(100, value);
+      meter.setAttribute('aria-label', label + ' usage'); meter.setAttribute('aria-valuetext', value + '% used');
+      amount.textContent = value + '%'; row.append(name, meter, amount);
+    } else {
+      const unknown = document.createElement('span'); unknown.textContent = 'Unknown';
+      row.append(name, unknown);
+    }
+    return row;
   }
   function addAccountRefresh() { const refresh = document.createElement('button'); refresh.type = 'button'; refresh.className = 'quiet-button'; refresh.textContent = 'Refresh'; refresh.addEventListener('click', openAccounts); $('account-panel').append(refresh); }
   function renderAccounts() {
@@ -891,6 +971,14 @@ export const chatClientScript = String.raw`
     const option = (label, target, row) => {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'model-option'; button.textContent = label;
       button.setAttribute('aria-pressed', String(row ? row.pinned : !poolListing.rows.some(row => row.pinned)));
+      if (row) {
+        button.textContent = '';
+        const identity = document.createElement('div'); identity.className = 'account-name'; identity.textContent = label;
+        const health = document.createElement('div'); health.className = 'account-tags';
+        health.textContent = [row.id === resolved?.id && 'Next request', row.pinned && 'Selected', row.force && 'Forced',
+          row.seat && 'Seat', row.current && 'Last used', row.live && 'Live', row.reason || (row.usable ? 'Usable' : 'Unavailable')].filter(Boolean).join(' · ');
+        button.append(identity, health, usageBar('Session', row.session_pct), usageBar('Week', row.weekly_pct));
+      }
       button.addEventListener('click', async () => {
         const force = !!row && !row.usable;
         if (force && !confirm('Force this account for the next request? ' + row.email + ': ' + (row.reason || 'Unavailable') + '. This may fail.')) return;
@@ -903,19 +991,23 @@ export const chatClientScript = String.raw`
     };
     option('Follow the pool', 'follow');
     for (const row of poolListing.rows) {
-      const tags = [row.current && 'current', row.pinned && 'pinned', row.force && 'forced', row.seat && 'seat', row.live && 'live', row.reason].filter(Boolean);
-      const percentages = row.session_pct === null || row.weekly_pct === null ? 'Usage unavailable' : 'Session ' + row.session_pct + '% · Week ' + row.weekly_pct + '% used';
-      option(row.email + (row.plan ? ' · ' + row.plan : '') + '\n' + row.usage + ' · ' + percentages + '\n' + tags.join(' · '), row.id, row);
+      option(row.email + (row.plan ? ' · ' + row.plan : ''), row.id, row);
     }
     addAccountRefresh();
   }
   function renderWork() {
     const work = selected?.work; const line = $('work-status');
+    for (const progress of transcript.querySelectorAll('.turn-progress')) progress.hidden = true;
     line.hidden = !loaded || !connected || !navigator.onLine || closed || suspended || selected?.status !== 'running';
     if (line.hidden) return;
     const elapsed = typeof work?.startedAt === 'number' ? Math.max(0, Math.floor((Date.now() - work.startedAt) / 1000)) : null;
     $('work-label').textContent = (work?.label || selected.nativeStatus || 'Native work') + (elapsed === null ? '' : ' · ' + (elapsed < 60 ? elapsed + 's' : Math.floor(elapsed / 60) + 'm ' + elapsed % 60 + 's'));
     line.title = work?.recap || 'Native session is active';
+    const progress = transcript.querySelector('.turn:last-child .turn-progress');
+    if (progress && viewMode === 'compact') {
+      progress.hidden = false; progress.lastElementChild.textContent = $('work-label').textContent;
+      progress.title = line.title; line.hidden = true;
+    }
   }
   function renderQueue() {
     const details = $('queue-details'); details.hidden = !selected?.queueCount;
@@ -945,7 +1037,7 @@ export const chatClientScript = String.raw`
     const last = selected?.lastAssistant;
     if (!last || selected.status === 'running' || !selected.unread || document.hidden || !document.hasFocus() || !loaded || !connected || !atBottom() || readRequests.has(last.entryId)) return;
     const entry = Array.from(transcript.querySelectorAll('[data-message-id]')).find(element => element.dataset.messageId === last.entryId);
-    if (!entry) return;
+    if (!entry || viewMode === 'questions' || !entry.getClientRects().length) return;
     const rect = entry.getBoundingClientRect(); const viewport = scroller.getBoundingClientRect();
     if (rect.bottom > viewport.bottom + 2 || rect.bottom < viewport.top) return;
     const id = selectedId; readRequests.add(last.entryId);
@@ -955,6 +1047,187 @@ export const chatClientScript = String.raw`
     } catch (error) { if (id === selectedId) showBanner('Read marker unavailable. ' + errorText(error), true); }
     finally { readRequests.delete(last.entryId); }
   }
+
+  async function refreshTarget(id) {
+    targetRequest?.abort();
+    const controller = new AbortController(); targetRequest = controller;
+    try {
+      const result = await request('api/target?id=' + encodeURIComponent(id), {}, controller);
+      if (selectedId !== id || controller.signal.aborted || closed) return;
+      if (!isObject(result) || result.id !== id || typeof result.writable !== 'boolean') throw new Error('Invalid native target.');
+      targetSession = result; updateComposer();
+    } catch (error) {
+      if (selectedId === id && !controller.signal.aborted) { targetSession = null; showBanner(errorText(error), true); updateComposer(); }
+    } finally { if (targetRequest === controller) targetRequest = null; }
+  }
+  function refreshWindow() {
+    if (!historyStart && loaded) historyStart = transcript.querySelector('.turn')?.dataset.turnId || null;
+    windowRequested = true; lastRevision = null; viewEpoch++;
+    if (sessionRequest) sessionRequest.controller.abort();
+    else void refreshSession();
+  }
+  $('load-older').addEventListener('click', () => {
+    if (historyLoading || !selected?.history?.startId) return;
+    historyStart = transcript.querySelector('.turn')?.dataset.turnId || selected.history.startId; olderTurns = 5; followingBottom = false; refreshWindow();
+  });
+
+  async function createThread() {
+    if (closed || suspended || creation.kind !== 'idle') return;
+    creation = { kind: 'pending', requestId: crypto.randomUUID() };
+    const notice = $('create-notice'); notice.hidden = false; notice.textContent = 'Creating native thread…';
+    updateComposer();
+    try {
+      const result = await post('create', { requestId: creation.requestId, ...(selectedId ? { sourceSessionId: selectedId } : {}) });
+      if (!isObject(result?.session) || typeof result.session.id !== 'string') throw new Error('Native creation was not confirmed.');
+      sessions.unshift(result.session); creation = { kind: 'idle' };
+      notice.textContent = 'Thread ready. No prompt sent.';
+      selectSession(result.session.id); void refreshList();
+    } catch (error) {
+      creation = { kind: 'uncertain' };
+      notice.textContent = errorText(error) + ' Creation may have succeeded. Check the sidebar before creating another.';
+      const acknowledge = document.createElement('button'); acknowledge.type = 'button'; acknowledge.className = 'quiet-button';
+      acknowledge.textContent = 'I checked the threads';
+      acknowledge.addEventListener('click', () => { creation = { kind: 'idle' }; notice.hidden = true; updateComposer(); });
+      notice.append(acknowledge); void refreshList();
+    } finally { updateComposer(); }
+  }
+  function applyView() {
+    transcript.dataset.view = viewMode;
+    for (const button of document.querySelectorAll('[data-view-mode]')) button.setAttribute('aria-pressed', String(button.dataset.viewMode === viewMode));
+    const expanded = expandedTurns.get(selectedId) || new Set();
+    for (const turn of transcript.querySelectorAll('.turn')) {
+      const open = expanded.has(turn.dataset.turnId);
+      turn.dataset.expanded = String(open);
+      const button = turn.querySelector('.reply-details');
+      if (button) { button.setAttribute('aria-expanded', String(open)); button.textContent = open ? 'Hide details' : 'Details'; }
+    }
+    const nav = $('question-nav');
+    const questions = selected?.history?.questions || Array.from(transcript.querySelectorAll('.question')).map(question => ({ id: question.dataset.messageId, text: question.textContent }));
+    const navKey = JSON.stringify(questions);
+    if (nav.dataset.key !== navKey) {
+      const options = $('question-options'); options.replaceChildren();
+      questions.forEach((question, index) => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'quiet-button';
+        button.textContent = (index + 1) + '. ' + question.text.trim().slice(0, 100);
+        button.addEventListener('click', () => { $('question-panel').hidden = true; nav.setAttribute('aria-expanded', 'false'); void jumpToQuestion(question.id); });
+        options.append(button);
+      });
+      nav.dataset.key = navKey;
+    }
+    nav.hidden = viewMode === 'compact' || questions.length === 0;
+    $('load-older').hidden = !selected?.history || transcript.querySelectorAll('.turn').length >= selected.history.totalTurns;
+    renderWork();
+  }
+  async function jumpToQuestion(id) {
+    let question = Array.from(transcript.querySelectorAll('.question')).find(item => item.dataset.messageId === id);
+    if (!question && selected?.history?.questions.some(item => item.id === id)) {
+      historyStart = id; olderTurns = 0; followingBottom = false; pendingQuestion = id;
+      refreshWindow(); return;
+    }
+    if (!question) return;
+    followingBottom = false;
+    question.scrollIntoView({ block: 'start' });
+    question.tabIndex = -1; question.focus({ preventScroll: true });
+    latest.hidden = atBottom();
+  }
+  function renderChildren() {
+    const tree = $('children-tree');
+    const children = selected?.children || [];
+    const key = JSON.stringify([selectedId, selected?.writable ?? null, children]);
+    if (tree.dataset.key === key) return;
+    tree.dataset.key = key; tree.replaceChildren();
+    $('children-toggle').textContent = children.length ? 'Agents ' + children.length : 'Agents';
+    if (!children.length) { tree.textContent = !selected ? 'Loading native subagents…' : selected.writable ? 'No native subagents in this thread.' : 'Subagent status unavailable for saved threads.'; return; }
+    const ids = new Set(children.map(child => child.id));
+    const visited = new Set();
+    const append = (rows, target) => {
+      const ul = document.createElement('ul'); target.append(ul);
+      for (const child of rows) {
+        if (visited.has(child.id)) continue;
+        visited.add(child.id);
+        const li = document.createElement('li'); const name = document.createElement('div');
+        name.textContent = child.sessionName || child.label || child.id;
+        const meta = document.createElement('div'); meta.className = 'child-meta';
+        meta.textContent = [child.status, child.model, typeof child.durationMs === 'number' ? (child.durationMs / 1000).toFixed(1) + 's' : ''].filter(Boolean).join(' · ');
+        li.append(name, meta); ul.append(li);
+        if (child.recap || child.error) { const note = document.createElement('div'); note.className = 'child-meta'; note.textContent = child.error || child.recap; li.append(note); }
+        const descendants = children.filter(row => row.parentId === child.id);
+        if (descendants.length) append(descendants, li);
+      }
+    };
+    append(children.filter(child => !child.parentId || !ids.has(child.parentId)), tree);
+    const remaining = children.filter(child => !visited.has(child.id));
+    if (remaining.length) append(remaining, tree);
+  }
+  function setChildrenOpen(open) {
+    $('children-panel').hidden = !open; $('children-toggle').setAttribute('aria-expanded', String(open));
+  }
+  const separator = $('sidebar-resize');
+  let sidebarWidth = 220;
+  function resizeSidebar(value) {
+    sidebarWidth = Math.max(180, Math.min(480, Math.round(value)));
+    app.style.setProperty('--sidebar-width', sidebarWidth + 'px');
+    separator.setAttribute('aria-valuenow', String(sidebarWidth));
+    try { localStorage.setItem('pi-chat-sidebar-width', String(sidebarWidth)); } catch {}
+  }
+  try { const saved = Number(localStorage.getItem('pi-chat-sidebar-width')); if (saved >= 180 && saved <= 480) resizeSidebar(saved); } catch {}
+  separator.addEventListener('pointerdown', event => { if (event.button !== 0) return; event.preventDefault(); separator.setPointerCapture(event.pointerId); });
+  separator.addEventListener('pointermove', event => { if (separator.hasPointerCapture(event.pointerId)) resizeSidebar(event.clientX - app.getBoundingClientRect().left); });
+  separator.addEventListener('pointerup', event => { if (separator.hasPointerCapture(event.pointerId)) separator.releasePointerCapture(event.pointerId); });
+  separator.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault(); resizeSidebar(event.key === 'Home' ? 180 : event.key === 'End' ? 480 : sidebarWidth + (event.key === 'ArrowLeft' ? -10 : 10));
+  });
+  $('new-thread').addEventListener('click', createThread);
+  document.addEventListener('keydown', event => {
+    if (event.metaKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'n') { event.preventDefault(); void createThread(); }
+    if (event.key === 'Escape') { $('question-panel').hidden = true; $('question-nav').setAttribute('aria-expanded', 'false'); setChildrenOpen(false); $('send-menu').hidden = true; $('send-options').setAttribute('aria-expanded', 'false'); }
+  });
+  $('show-archived').addEventListener('change', renderList);
+  $('children-toggle').addEventListener('click', () => setChildrenOpen($('children-panel').hidden));
+  $('children-close').addEventListener('click', () => { setChildrenOpen(false); $('children-toggle').focus(); });
+  const viewButtons = Array.from(document.querySelectorAll('[data-view-mode]'));
+  for (const button of viewButtons) {
+    button.addEventListener('click', () => {
+      const top = scroller.scrollTop; viewMode = button.dataset.viewMode;
+      $('question-panel').hidden = true; $('question-nav').setAttribute('aria-expanded', 'false');
+      applyView(); scroller.scrollTop = top; followingBottom = atBottom(); refreshWindow();
+    });
+    button.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      event.preventDefault(); const next = viewButtons[(viewButtons.indexOf(button) + (event.key === 'ArrowLeft' ? 2 : 1)) % 3];
+      next.focus(); next.click();
+    });
+  }
+  $('question-nav').addEventListener('click', () => {
+    $('question-panel').hidden = !$('question-panel').hidden;
+    $('question-nav').setAttribute('aria-expanded', String(!$('question-panel').hidden));
+    if (!$('question-panel').hidden) $('question-options').querySelector('button')?.focus();
+  });
+  document.addEventListener('click', event => {
+    if (!$('question-panel').contains(event.target) && !$('question-nav').contains(event.target)) {
+      $('question-panel').hidden = true; $('question-nav').setAttribute('aria-expanded', 'false');
+    }
+  });
+  transcript.addEventListener('click', event => {
+    const button = event.target.closest('.reply-details, .question-jump');
+    if (!button) return;
+    const turn = button.closest('.turn');
+    if (button.classList.contains('question-jump')) { viewMode = 'compact'; historyStart = turn.querySelector('.question')?.dataset.messageId || null; applyView(); refreshWindow(); jumpToQuestion(historyStart); return; }
+    if (!expandedTurns.has(selectedId)) expandedTurns.set(selectedId, new Set());
+    const expanded = expandedTurns.get(selectedId);
+    if (expanded.has(turn.dataset.turnId)) expanded.delete(turn.dataset.turnId); else expanded.add(turn.dataset.turnId);
+    const top = scroller.scrollTop; applyView(); scroller.scrollTop = top; refreshWindow();
+  });
+  $('send-options').addEventListener('click', () => {
+    $('send-menu').hidden = !$('send-menu').hidden;
+    $('send-options').setAttribute('aria-expanded', String(!$('send-menu').hidden));
+  });
+  for (const option of document.querySelectorAll('[data-send-mode]')) option.addEventListener('click', () => {
+    sendMode = option.dataset.sendMode; $('send-menu').hidden = true; $('send-options').setAttribute('aria-expanded', 'false'); updateComposer(); composer.focus();
+  });
+  document.addEventListener('click', event => { if (!$('send-menu').contains(event.target) && !$('send-options').contains(event.target)) { $('send-menu').hidden = true; $('send-options').setAttribute('aria-expanded', 'false'); } });
+
   $('account-button').addEventListener('click', openAccounts);
   $('effort-button').addEventListener('click', openEffort);
   $('stop-button').addEventListener('click', () => nativeControl('stop'));
@@ -964,7 +1237,8 @@ export const chatClientScript = String.raw`
   window.addEventListener('focus', markVisibleRead);
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeExtraPanels(); });
   document.addEventListener('click', event => {
-    for (const name of ['account', 'effort']) if (!$(name + '-panel').hidden && !$(name + '-panel').contains(event.target) && !$(name + '-button').contains(event.target)) { $(name + '-panel').hidden = true; $(name + '-button').setAttribute('aria-expanded', 'false'); }
+    const path = event.composedPath();
+    for (const name of ['account', 'effort']) if (!$(name + '-panel').hidden && !path.includes($(name + '-panel')) && !path.includes($(name + '-button'))) { $(name + '-panel').hidden = true; $(name + '-button').setAttribute('aria-expanded', 'false'); }
   });
   modelButton.addEventListener('click', openModelPanel);
   modelSearch.addEventListener('input', renderModels);
@@ -1034,7 +1308,7 @@ export const chatClientScript = String.raw`
   window.addEventListener('pageshow', event => {
     if (!event.persisted || closed) return;
     suspended = false;
-    connected = false;
+    connected = false; targetSession = null;
     showBanner('Reconnecting to the local chat server...', false);
     updateComposer();
     void refreshSession();

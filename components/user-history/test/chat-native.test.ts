@@ -3,11 +3,11 @@ import { execFile } from "node:child_process";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { mkdir, readFile, writeFile, access } from "node:fs/promises";
+import { mkdir, readFile, writeFile, access, symlink, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
-import { DaemonClient, SessionManager } from "prime-agent";
+import { DaemonAgentConnection, DaemonClient, SessionManager } from "prime-agent";
 import { createChatBackend, type ChatBackend, type ChatModel, type ChatView } from "../src/chat-backend.ts";
 import { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES, type ChatImage } from "../src/chat-images.ts";
 import { chatNativeProviderSource, startChatNativeCli, stopChatNativeDaemon, waitForChatNativeFile } from "./chat-native-fixture.ts";
@@ -87,7 +87,7 @@ function seedSession(cwd: string, sessions: string, name: string) {
   return { sessionId: manager.getSessionId(), sessionFile, name };
 }
 
-test("native chat targets sessions, changes models, reports usage, sends images, and preserves workers", { timeout: process.env.CHAT_TEST_BROWSER === "1" ? 480000 : 120000 }, async context => {
+test("native chat targets sessions, changes models, reports usage, sends images, and preserves workers", { timeout: process.env.CHAT_TEST_BROWSER === "1" ? 1080000 : 120000 }, async context => {
   const id = randomBytes(6).toString("hex");
   const root = join(process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(packageRoot, ".test-artifacts"), `chat-native-${id}`);
   const home = join(root, "home");
@@ -96,7 +96,10 @@ test("native chat targets sessions, changes models, reports usage, sends images,
   const sessions = join(root, "sessions");
   const socket = `/tmp/wc-${id}.sock`;
   const temporary = `/tmp/wct-${id}`;
-  await Promise.all([home, config, cwd, sessions, temporary].map(path => mkdir(path, { recursive: true })));
+  const nativeTemp = join(root, "native-temp");
+  await Promise.all([home, config, cwd, sessions, nativeTemp].map(path => mkdir(path, { recursive: true })));
+  await symlink(nativeTemp, temporary);
+  context.after(async () => { await unlink(temporary); });
   await writeFile(join(config, "settings.json"), JSON.stringify({ onboardingShown: true, onboardingCompleted: true,
     telemetry: { enabled: false, noticeShown: true }, compaction: { enabled: false }, retry: { enabled: false },
     mcpServers: {}, packages: [], extensions: [], skills: [] }));
@@ -147,6 +150,9 @@ export default function(pi) { historyExtension(pi); provider(pi); }
   await writeFile(calls, "");
   await writeFile(provider, chatNativeProviderSource({ calls, gate,
     aiModule: fileURLToPath(import.meta.resolve("@earendil-works/pi-ai")) }));
+  await writeFile(join(config, "settings.json"), JSON.stringify({ onboardingShown: true, onboardingCompleted: true,
+    telemetry: { enabled: false, noticeShown: true }, compaction: { enabled: false }, retry: { enabled: false },
+    defaultProvider: "chat-native-test", defaultModel: "synthetic", mcpServers: {}, packages: [], extensions: [provider], skills: [] }));
   const nativeArgs = [cli, "--mode", "rpc", "--daemon-socket", socket, "--agent-chat-socket", socket, "--agent-chat-port", String(chatPort), "--agent-chat-data-dir", chatData, "--cwd", cwd, "--no-extensions", "-e", extension,
       "--no-skills", "--skill", skillFile, "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--tools", "browser_proof_tool", "--no-themes",
       "--provider", "chat-native-test", "--model", "synthetic", "--no-session"];
@@ -211,6 +217,19 @@ export default function(pi) { historyExtension(pi); provider(pi); }
       releaseMetadata();
       await metadataBackend.close();
     }
+    const rootsBeforeCreate = await nativeRows(daemon);
+    const callsBeforeCreate = await readFile(calls, "utf8");
+    const newRoot = await backend.create({ sourceSessionId: alpha.sessionId });
+    assert(!rootsBeforeCreate.some(row => row.sessionId === newRoot.sessionId));
+    assert.equal(newRoot.cwd, cwd);
+    const rootsAfterCreate = await nativeRows(daemon);
+    assert.deepEqual(rootsAfterCreate.filter(row => row.sessionId !== newRoot.sessionId), rootsBeforeCreate,
+      "creating a root preserves every old identity and worker");
+    const createdView = await backend.read(newRoot.sessionId);
+    assert.deepEqual(createdView.controls.currentModel, textModel);
+    assert.deepEqual(createdView.messages, [], "new thread has no fabricated or automatic prompt");
+    assert.equal(await readFile(calls, "utf8"), callsBeforeCreate, "new thread makes no provider calls");
+    await writeFile(join(root, "new-thread-proof.json"), JSON.stringify({ newRoot, before: rootsBeforeCreate, after: rootsAfterCreate, createdView }, null, 2));
     const before = await nativeRows(daemon);
     const alphaNative = before.find(row => row.sessionId === alpha.sessionId);
     const betaNative = before.find(row => row.sessionId === beta.sessionId);
@@ -467,6 +486,75 @@ export default function(pi) { historyExtension(pi); provider(pi); }
     const resumedIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
     assert(resumedIdle.success, JSON.stringify(resumedIdle));
     assert((await backend.read(alpha.sessionId)).messages.some(message => message.role === "assistant" && message.text.includes(resumePrompt)));
+    const newNative = (await nativeRows(daemon)).find(row => row.sessionId === newRoot.sessionId);
+    assert(newNative?.activeSessionId && newNative.workerPid);
+    const alphaBeforeNewPrompt = (await backend.read(alpha.sessionId)).messages;
+    const newPrompt = `ONLY NEW ROOT ${id}`;
+    await backend.send({ sessionId: newRoot.sessionId, message: newPrompt, mode: "steer" });
+    await waitForChatNativeFile(calls, text => text.includes(JSON.stringify({ stage: "done", message: newPrompt }).slice(0, -1)));
+    const newIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: newNative.activeSessionId }, 30000);
+    assert(newIdle.success, JSON.stringify(newIdle));
+    assert.deepEqual((await backend.read(alpha.sessionId)).messages, alphaBeforeNewPrompt);
+    assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages);
+    assert.equal(providerStarts(await readFile(calls, "utf8")).find(call => call.message === newPrompt)?.pid, newNative.workerPid);
+    const boundaryPrompt = `SEND MODE TOOL ${id} [tool]`;
+    const steerPrompt = `STEER AT BOUNDARY ${id}`;
+    const queuedPrompt = `AFTER TURN ${id}`;
+    await backend.send({ sessionId: newRoot.sessionId, message: boundaryPrompt, mode: "steer" });
+    await waitForChatNativeFile(calls, text => text.includes('"stage":"tool-held","message":' + JSON.stringify(boundaryPrompt)));
+    await backend.send({ sessionId: newRoot.sessionId, message: queuedPrompt, mode: "followUp" });
+    await backend.send({ sessionId: newRoot.sessionId, message: steerPrompt, mode: "steer" });
+    const modeView = await backend.read(newRoot.sessionId);
+    assert.deepEqual(modeView.queue.steering, [steerPrompt]);
+    assert.deepEqual(modeView.queue.followUp, [queuedPrompt]);
+    assert.equal(modeView.session.status, "running");
+    assert(!providerStarts(await readFile(calls, "utf8")).some(call => call.message === steerPrompt || call.message === queuedPrompt));
+    await writeFile(gate + ".tool", "release");
+    await waitForChatNativeFile(calls, text => text.includes(JSON.stringify({ stage: "done", message: queuedPrompt }).slice(0, -1)));
+    const boundaryIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: newNative.activeSessionId }, 30000);
+    assert(boundaryIdle.success, JSON.stringify(boundaryIdle));
+    const modeCalls = providerStarts(await readFile(calls, "utf8")).filter(call => call.pid === newNative.workerPid);
+    assert.deepEqual(modeCalls.map(call => call.message), [newPrompt, boundaryPrompt, steerPrompt, queuedPrompt]);
+    const modeAfter = await backend.read(newRoot.sessionId);
+    assert.equal(modeAfter.queueCount, 0);
+    assert.deepEqual((await nativeRows(daemon)).filter(row => row.sessionId !== replacement.sessionId), before);
+    await writeFile(join(root, "send-modes-proof.json"), JSON.stringify({ duringTool: modeView, after: modeAfter, modeCalls, noHiddenAbort: true }, null, 2));
+    const coalesced = await createChatBackend({ socketPath: socket, readStatePath: join(root, "coalesced-read-state.json") });
+    const snapshotRead = DaemonAgentConnection.prototype.getInitialSnapshot;
+    const treeRead = DaemonAgentConnection.prototype.getSessionTree;
+    const nativeReadCounts = { snapshots: 0, trees: 0 };
+    DaemonAgentConnection.prototype.getInitialSnapshot = function (...args) { nativeReadCounts.snapshots++; return snapshotRead.apply(this, args); };
+    DaemonAgentConnection.prototype.getSessionTree = function (...args) { nativeReadCounts.trees++; return treeRead.apply(this, args); };
+    try {
+      const simultaneous = await Promise.all(Array.from({ length: 4 }, () => coalesced.read(alpha.sessionId, { turns: 1, mode: "compact", expanded: [] })));
+      assert(simultaneous.every(view => view.session.sessionId === alpha.sessionId));
+      assert.deepEqual(nativeReadCounts, { snapshots: 1, trees: 1 }, "concurrent real native reads share one snapshot and canonical tree");
+      await writeFile(join(root, "coalesced-native-proof.json"), JSON.stringify({ readers: simultaneous.length, nativeReadCounts }));
+    } finally {
+      DaemonAgentConnection.prototype.getInitialSnapshot = snapshotRead;
+      DaemonAgentConnection.prototype.getSessionTree = treeRead;
+      await coalesced.close();
+    }
+    const targetStarted = performance.now();
+    assert.equal((await backend.target(alpha.sessionId)).sessionId, alpha.sessionId);
+    const targetMs = performance.now() - targetStarted;
+    const recent = await backend.read(alpha.sessionId, { turns: 1, mode: "compact", expanded: [] });
+    assert(recent.history && recent.history.totalTurns > 1 && recent.history.shownTurns === 1);
+    assert.equal(recent.messages.filter(message => message.role === "user").length, 1);
+    const olderWindow = await backend.read(alpha.sessionId, { turns: 1, mode: "detailed", expanded: [], startId: recent.history.startId!, older: 5 });
+    assert(olderWindow.history && olderWindow.history.shownTurns > 1);
+    const questionWindow = await backend.read(alpha.sessionId, { turns: 1, mode: "questions", expanded: [] });
+    assert(questionWindow.messages.every(message => message.role === "user"));
+    assert.equal(questionWindow.messages.length, 1);
+    assert((questionWindow.history?.questions.length ?? 0) > 1, "question index keeps older navigation without older bodies");
+    const capturedHtml = await (await fetch(chatUrl)).text();
+    const token = capturedHtml.match(/data-chat-token="([a-f0-9]+)"/)?.[1]; assert(token);
+    const initialWindow = await (await fetch(chatUrl + "api/session?id=" + alpha.sessionId)).json();
+    assert.equal(initialWindow.history.shownTurns, 1);
+    const unchangedWindow = await (await fetch(chatUrl + "api/session?id=" + alpha.sessionId + "&since=" + initialWindow.revision)).json();
+    assert.equal(unchangedWindow.html, null);
+    await writeFile(join(root, "window-proof.json"), JSON.stringify({ targetMs, recent, olderWindow, questionWindow,
+      initialBytes: JSON.stringify(initialWindow).length, unchangedBytes: JSON.stringify(unchangedWindow).length }, null, 2));
     const automatedModelCalls = providerStarts(await readFile(calls, "utf8")).length;
     await writeFile(join(root, "native-tool-abort.json"), JSON.stringify({ running: toolView, aborted: abortedView, newPromptResumed: true }, null, 2));
     const openedCommand = await daemon.request({ type: "prompt", activeSessionId: alphaNative.activeSessionId,
@@ -483,13 +571,16 @@ export default function(pi) { historyExtension(pi); provider(pi); }
       const browserDone = join(root, "browser-done");
       await writeFile(join(root, "browser-ready.json"), JSON.stringify({ url: opened.url, browserDone, alpha, beta, saved, socket, alphaNative, betaNative, gate }));
       process.stdout.write(`CHAT_TEST_BROWSER_READY ${JSON.stringify({ url: opened.url, browserDone, root })}\n`);
-      await waitForChatNativeFile(browserDone, () => true, 300000);
+      await waitForChatNativeFile(browserDone, () => true, 900000);
     }
     await backend.close();
     await backend.close();
     await chatCli("stop");
     const afterClose = await nativeRows(daemon);
-    assert.deepEqual(afterClose.filter(row => row.sessionId !== replacement.sessionId), before,
+    const browserCreated: string[] = process.env.CHAT_TEST_BROWSER === "1"
+      ? JSON.parse(await readFile(join(root, "browser-created.json"), "utf8").catch(() => "[]")) : [];
+    assert(browserCreated.every(id => typeof id === "string" && afterClose.some(row => row.sessionId === id)));
+    assert.deepEqual(afterClose.filter(row => row.sessionId !== replacement.sessionId && !browserCreated.includes(row.sessionId)), before,
       "closing a viewer never kills or changes worker identities");
     for (const row of [alphaNative, betaNative]) {
       assert(row.workerPid && row.activeSessionId);

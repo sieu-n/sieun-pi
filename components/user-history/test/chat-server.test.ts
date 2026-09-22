@@ -16,11 +16,14 @@ assert(testImage);
 async function fixture(send: ChatBackend["send"] = async () => {}) {
   let closes = 0;
   let modelChanges = 0;
+  let creations = 0;
   const backend: ChatBackend = {
+    async target() { return session; },
+    async create() { creations++; return { ...session, sessionId: "new-session" }; },
     async list() { return [session]; },
     async read(id) {
       assert.equal(id, session.sessionId);
-      return { session, queueCount: 0, queue: { steering: [], followUp: [] }, work: null, controls: { kind: "live", currentModel: testModel, canChangeModel: true, thinkingLevel: "high", availableThinkingLevels: ["low", "high"] },
+      return { session, queueCount: 0, queue: { steering: [], followUp: [] }, work: null, children: [], controls: { kind: "live", currentModel: testModel, canChangeModel: true, thinkingLevel: "high", availableThinkingLevels: ["low", "high"] },
         usage: { kind: "native-session", inputTokens: 100, outputTokens: 25, cost: .01, context: null, providerLimits: "unavailable" },
         messages: [
           { id: "u1", role: "user", text: "Hello <script>bad()</script>", streaming: false, images: [] },
@@ -45,7 +48,7 @@ async function fixture(send: ChatBackend["send"] = async () => {}) {
   const token = html.match(/[a-f0-9]{64}/)?.[0];
   assert(token, "page carries its per-server write authorization");
   const headers = { "Content-Type": "application/json", "Origin": new URL(server.url).origin, "X-Chat-Token": token };
-  return { ...server, html, headers, closes: () => closes, modelChanges: () => modelChanges };
+  return { ...server, html, headers, closes: () => closes, modelChanges: () => modelChanges, creations: () => creations };
 }
 
 function message(requestId = "request_1234567890") {
@@ -233,5 +236,49 @@ test('collapsed transcript omits full tool payloads and the read-only tool endpo
     assert.equal((await fetch(app.url + 'api/tool?id=test-session&toolId=missing')).status, 404);
     assert.equal((await fetch(app.url + 'api/tool?id=test-session')).status, 400);
     assert.equal((await fetch(app.url + 'api/tool?id=test-session&toolId=call-1', { headers: { Origin: 'https://evil.example' } })).status, 403);
+  } finally { await app.close(); }
+});
+
+
+test("new roots require write auth and duplicate admission never creates another root", async () => {
+  const app = await fixture();
+  try {
+    const body = JSON.stringify({ requestId: "creation_123456789", sourceSessionId: session.sessionId });
+    assert.equal((await fetch(app.url + "api/create", { method: "POST", body, headers: { "Content-Type": "application/json" } })).status, 403);
+    const replies = await Promise.all([1, 2].map(() => fetch(app.url + "api/create", { method: "POST", body, headers: app.headers })));
+    assert(replies.every(response => response.status === 200));
+    assert.equal(app.creations(), 1);
+    assert.equal((await replies[0]!.json()).session.id, "new-session");
+    assert.equal((await fetch(app.url + "api/create", { method: "POST", headers: app.headers,
+      body: JSON.stringify({ requestId: "creation_123456789", sourceSessionId: "other" }) })).status, 409);
+    assert.equal(app.creations(), 1);
+    assert.equal((await fetch(app.url + "api/target?id=" + session.sessionId)).status, 200);
+  } finally { await app.close(); }
+});
+
+test("send mode participates in admission identity and rejects unknown modes", async () => {
+  const modes: string[] = [];
+  const app = await fixture(async input => { modes.push(input.mode ?? "missing"); });
+  try {
+    const input = { sessionId: session.sessionId, message: "Boundary", requestId: "send_mode_12345678", mode: "steer" };
+    for (const mode of ["steer", "steer", "followUp", "invalid"]) {
+      const response = await fetch(app.url + "api/message", { method: "POST", headers: app.headers, body: JSON.stringify({ ...input, mode }) });
+      assert.equal(response.status, mode === "steer" ? 200 : mode === "followUp" ? 409 : 400);
+    }
+    assert.deepEqual(modes, ["steer"]);
+  } finally { await app.close(); }
+});
+
+test("unchanged projection omits HTML and rejects invalid history windows", async () => {
+  const app = await fixture();
+  try {
+    const url = app.url + "api/session?id=" + session.sessionId;
+    const initial = await (await fetch(url)).json();
+    assert.equal(typeof initial.html, "string");
+    const unchanged = await (await fetch(url + "&since=" + initial.revision)).json();
+    assert.equal(unchanged.html, null);
+    assert.equal(unchanged.revision, initial.revision);
+    for (const query of ["&turns=-1", "&turns=1.2", "&view=invalid", "&older=999"])
+      assert.equal((await fetch(url + query)).status, 400);
   } finally { await app.close(); }
 });

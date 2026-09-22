@@ -9,6 +9,7 @@ export interface ChatSession {
   name: string;
   cwd: string;
   status: "running" | "idle" | "saved";
+  lifecycle?: SessionSummary["lifecycle"];
   model?: string;
   canSend: boolean;
   created?: string;
@@ -52,24 +53,33 @@ export type ChatUsage =
   | (NativeUsageSummary & { kind: "native-session"; context: ChatContextUsage; providerLimits: "unavailable" })
   | { kind: "unavailable"; reason: "not-recorded"; context: ChatContextUsage; providerLimits: "unavailable" };
 
+export interface ChatWindow { turns: number; startId?: string; older?: number; mode: "compact" | "detailed" | "questions"; expanded: string[] }
+export interface ChatHistory { totalTurns: number; shownTurns: number; startId?: string; questions: { id: string; text: string; turn: number }[] }
 export interface ChatView {
   session: ChatSession;
   messages: ChatMessage[];
+  history?: ChatHistory;
   queueCount: number;
   queue: NativeQueue;
   work: ChatWork | null;
+  children: ChatChild[];
   controls:
     | { kind: "live"; currentModel: ChatModel | null; canChangeModel: boolean; thinkingLevel: NativeState["thinkingLevel"]; availableThinkingLevels: NativeState["availableThinkingLevels"] }
     | { kind: "saved"; currentModel: null; canChangeModel: false };
   usage: ChatUsage;
 }
 
+export type ChatChild = Pick<NonNullable<NativeSnapshot["children"]>[number], "id" | "parentId" | "sessionName" | "model" | "label" | "status" | "durationMs" | "recap" | "error">;
+export type SendMode = "steer" | "followUp";
+
 export interface ChatBackend {
+  create(input: { sourceSessionId?: string | undefined }): Promise<ChatSession>;
   list(): Promise<ChatSession[]>;
-  read(sessionId: string): Promise<ChatView>;
+  read(sessionId: string, window?: ChatWindow): Promise<ChatView>;
+  target(sessionId: string): Promise<ChatSession>;
   models(sessionId: string): Promise<ChatModelCatalog>;
   setModel(input: { sessionId: string; provider: string; modelId: string }): Promise<ChatModel>;
-  send(input: { sessionId: string; message: string; images?: ChatImage[] }): Promise<void>;
+  send(input: { sessionId: string; message: string; mode?: SendMode; images?: ChatImage[] }): Promise<void>;
   commands(sessionId: string): Promise<{ sessionId: string; commands: ChatCommand[] }>;
   rename(input: { sessionId: string; name: string }): Promise<void>;
   setEffort(input: { sessionId: string; level: string }): Promise<void>;
@@ -94,6 +104,7 @@ type CachedConnection = {
   users: number;
   touched: number;
   tree?: { sessionId: string; value: NativeTree };
+  read?: Promise<{ snapshot: NativeSnapshot; queue: NativeQueue; branch: NativeEntry[] }>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -136,6 +147,7 @@ function catalogRows(value: unknown): CatalogRow[] {
       sessionId: row.sessionId,
       name: typeof row.sessionName === "string" && row.sessionName.trim() ? row.sessionName : previewTitle(row.firstMessage),
       cwd: row.cwd,
+      ...(row.lifecycle === "archived" || row.lifecycle === "live" || row.lifecycle === "draft" ? { lifecycle: row.lifecycle } : {}),
       status: activeSessionId === undefined ? "saved" : row.isStreaming === true || row.isCompacting === true || row.isBashRunning === true || row.hasRunningRlmChildren === true || row.isRunningTools === true || (isRecord(row.sessionActions) && (Boolean(row.sessionActions.active) || typeof row.sessionActions.queuedCount === "number" && row.sessionActions.queuedCount > 0)) ? "running" : "idle",
       canSend,
       ...(typeof row.created === "string" ? { created: row.created } : {}),
@@ -174,20 +186,21 @@ function chatMessage(id: string, message: NativeMessage, streaming = false): Cha
   return text.trim() || images.length || tools.length ? [{ id, role: message.role, text, streaming, images, timestamp: message.timestamp,
     ...(outcome ? { outcome } : {}), ...(tools.length ? { tools } : {}) }] : [];
 }
-export function transcriptMessages(branch: NativeEntry[], snapshot?: NativeSnapshot): ChatMessage[] {
+export function transcriptMessages(branch: NativeEntry[], snapshot?: NativeSnapshot, includeToolOutput = true): ChatMessage[] {
   const messages = branch.flatMap(entry => entry.type === "message" ? chatMessage(entry.id, entry.message) : []);
   const streaming = snapshot?.streamingMessage;
   if (streaming && !branch.some(entry => entry.type === "message" && entry.message.role === streaming.role &&
     "timestamp" in entry.message && "timestamp" in streaming && entry.message.timestamp === streaming.timestamp)) {
     messages.push(...chatMessage("streaming:" + snapshot.state.sessionId, streaming, true));
   }
-  const results = branch.flatMap(entry => entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : []);
+  const results = new Map(branch.flatMap(entry => entry.type === "message" && entry.message.role === "toolResult" ? [[entry.message.toolCallId, entry.message] as const] : []));
   for (const message of messages) for (const tool of message.tools ?? []) {
-    const result = results.find(result => result.toolCallId === tool.id);
+    const result = results.get(tool.id);
     if (result) {
-      tool.output = result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+      tool.output = includeToolOutput ? result.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") : "";
       tool.status = result.isError ? "error" : "complete";
-      tool.summary = tool.output.trim().split("\n")[0]?.slice(0, 160) || (result.isError ? "Tool failed" : "Completed");
+      const firstText = result.content.find(part => part.type === "text" && part.text.trim());
+      tool.summary = firstText?.type === "text" ? firstText.text.trimStart().split("\n", 1)[0]?.slice(0, 160) || "Completed" : result.isError ? "Tool failed" : "Completed";
       if (isRecord(result.details) && typeof result.details.durationMs === "number") tool.durationMs = result.details.durationMs;
     } else if (snapshot?.state.isStreaming && !message.streaming && message === messages.at(-1)) {
       tool.status = "running"; tool.summary = "Running";
@@ -233,6 +246,40 @@ function branchFromTree({ tree, leafId }: NativeTree): NativeEntry[] {
     id = entry.parentId;
   }
   return branch.reverse();
+}
+
+function messageText(message: NativeMessage): string {
+  if (!("content" in message)) return "";
+  return typeof message.content === "string" ? message.content : Array.isArray(message.content)
+    ? message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") : "";
+}
+
+function historyWindow(branch: NativeEntry[], window: ChatWindow, snapshot?: NativeSnapshot): { branch: NativeEntry[]; history: ChatHistory } {
+  const groups: NativeEntry[][] = [];
+  for (const entry of branch) {
+    if (entry.type === "message" && entry.message.role === "user" || groups.length === 0) groups.push([]);
+    groups[groups.length - 1]?.push(entry);
+  }
+  const visibleGroups = groups.filter(group => group.some(entry => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant")));
+  const questions = visibleGroups.flatMap((group, turn) => group.flatMap(entry => entry.type === "message" && entry.message.role === "user"
+    ? [{ id: entry.id, text: previewTitle(messageText(entry.message)), turn }] : []));
+  const anchorIndex = window.startId ? visibleGroups.findIndex(group => group.some(entry => entry.id === window.startId)) : -1;
+  const start = anchorIndex >= 0 ? Math.max(0, anchorIndex - (window.older ?? 0)) : Math.max(0, visibleGroups.length - window.turns);
+  const shown = visibleGroups.slice(start);
+  const selected = shown.flatMap(group => {
+    if (window.mode === "questions") return group.filter(entry => entry.type === "message" && entry.message.role === "user");
+    const first = group.find(entry => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"));
+    if (window.mode === "detailed" || first && window.expanded.includes(first.id)) return group;
+    const assistant = group.findLast(entry => entry.type === "message" && entry.message.role === "assistant" &&
+      (messageText(entry.message).trim() || entry.message.stopReason === "error" || entry.message.stopReason === "aborted")) ??
+      group.findLast(entry => entry.type === "message" && entry.message.role === "assistant");
+    const lastAssistant = group.findLast(entry => entry.type === "message" && entry.message.role === "assistant");
+    const hasStreamingText = group === groups.at(-1) && snapshot?.streamingMessage?.role === "assistant" && messageText(snapshot.streamingMessage).trim();
+    return group.filter(entry => entry.type === "message" && (entry.message.role === "user" ||
+      entry.message.role === "toolResult" || entry === assistant && !hasStreamingText || entry === lastAssistant && entry.message.role === "assistant" && entry.message.content.some(part => part.type === "toolCall")));
+  });
+  const startId = shown[0]?.find(entry => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"))?.id;
+  return { branch: selected, history: { totalTurns: visibleGroups.length, shownTurns: shown.length, ...(startId ? { startId } : {}), questions } };
 }
 
 export async function createChatBackend(options: { socketPath?: string; readStatePath?: string } = {}): Promise<ChatBackend> {
@@ -334,13 +381,15 @@ export async function createChatBackend(options: { socketPath?: string; readStat
     }
   }
 
-  async function observe(row: CatalogRow, messages: ChatMessage[]) {
-    const last = messages.findLast(message => message.role === "assistant" && !message.streaming);
+  async function observe(row: CatalogRow, messages: ChatMessage[], branch?: NativeEntry[]) {
+    const nativeLast = branch?.findLast(entry => entry.type === "message" && entry.message.role === "assistant");
+    const last = nativeLast?.type === "message" ? { id: nativeLast.id, timestamp: nativeLast.message.timestamp } : messages.findLast(message => message.role === "assistant" && !message.streaming);
     const lastAssistant = last?.timestamp ? { entryId: last.id, timestamp: last.timestamp } : undefined;
     const firstUser = messages.find(message => message.role === "user");
     const name = !row.hasName && firstUser ? previewTitle(firstUser.text) : row.session.name;
     if (!row.hasName) row.session.name = name;
-    observed.set(row.session.sessionId, { revision: row.revision, name, ...(lastAssistant ? { lastAssistant } : {}) });
+    const retained = lastAssistant ?? observed.get(row.session.sessionId)?.lastAssistant;
+    observed.set(row.session.sessionId, { revision: row.revision, name, ...(retained ? { lastAssistant: retained } : {}) });
     failedMetadata.delete(row.session.sessionId);
     if (lastAssistant) {
       const state = await readState.snapshot().catch(() => null);
@@ -368,6 +417,18 @@ export async function createChatBackend(options: { socketPath?: string; readStat
     return result;
   }
   const backend: ChatBackend = {
+    async create({ sourceSessionId }) {
+      const source = sourceSessionId ? await resolve(sourceSessionId) : null;
+      const model = source?.kind === "live" ? await withConnection(source, async connection => (await connection.getState()).model) : null;
+      await catalog();
+      const response = await catalogClient.request({ type: "create", lifecycle: "resident",
+        config: { ...(source ? { cwd: source.session.cwd } : {}),
+          ...(model ? { provider: model.provider, model: model.id } : {}) } }, 30000, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+      const created = catalogRows({ sessions: [response.data] })[0];
+      if (!created) throw new Error("Native creation returned no root session. Check the sidebar before creating another.");
+      return created.session;
+    },
     async list() {
       const unique = new Map<string, CatalogRow>();
       for (const row of await catalog()) if (!unique.has(row.session.sessionId) || row.kind === "live") unique.set(row.session.sessionId, row);
@@ -394,43 +455,72 @@ export async function createChatBackend(options: { socketPath?: string; readStat
         metadataRefresh = new Promise<void>(resolve => setImmediate(resolve)).then(async () => {
           for (const row of batch) {
             if (closed) return;
-            try { await backend.read(row.session.sessionId); }
+            try { await backend.read(row.session.sessionId, { turns: 1, mode: "compact", expanded: [] }); }
             catch { failedMetadata.set(row.session.sessionId, row.revision); }
           }
         }).finally(() => { metadataRefresh = undefined; });
       }
       return sessions;
     },
-    async read(sessionId) {
+    async target(sessionId) {
+      const row = await resolve(sessionId);
+      if (row.kind === "saved") return row.session;
+      const [state, header] = await Promise.all([
+        catalogClient.request({ type: "get_connection_state", activeSessionId: row.activeSessionId }, 10000, { recoverable: false }),
+        catalogClient.request({ type: "get_session_header", activeSessionId: row.activeSessionId }, 10000, { recoverable: false }),
+      ]);
+      if (!state.success) throw new Error(state.error);
+      if (!header.success) throw new Error(header.error);
+      if (!isRecord(state.data) || state.data.sessionId !== sessionId || !isRecord(header.data) ||
+        !isRecord(header.data.header) || header.data.header.id !== sessionId) throw new Error("The native target changed. Refresh before sending.");
+      return row.session;
+    },
+    async read(sessionId, window) {
       const row = await resolve(sessionId);
       if (row.kind === "saved") {
         if (!row.sessionFile) throw new Error("This saved session has no history file");
         const manager = SessionManager.inMemory(row.session.cwd);
         manager.setSessionFile(row.sessionFile);
         if (manager.getSessionId() !== sessionId) throw new Error("The saved session is missing or has changed");
-        const messages = transcriptMessages(manager.getBranch());
-        await observe(row, messages);
-        return { session: row.session, queueCount: 0, queue: { steering: [], followUp: [] }, work: null,
+        const branch = manager.getBranch();
+        const projected = window ? historyWindow(branch, window) : null;
+        const messages = transcriptMessages(projected?.branch ?? branch, undefined, !window);
+        const firstUser = branch.find(entry => entry.type === "message" && entry.message.role === "user");
+        if (!row.hasName && firstUser?.type === "message") { row.session.name = previewTitle(messageText(firstUser.message)); row.hasName = true; }
+        await observe(row, messages, branch);
+        return { session: row.session, queueCount: 0, queue: { steering: [], followUp: [] }, work: null, children: [],
           controls: { kind: "saved", currentModel: null, canChangeModel: false }, usage: chatUsage(row.usage, null),
-          messages };
+          messages, ...(projected ? { history: projected.history } : {}) };
       }
       return withConnection(row, async (connection, cached) => {
-        const [snapshot, queue] = await Promise.all([connection.getInitialSnapshot(), connection.getQueue()]);
-        const tree = cached.tree?.sessionId === sessionId && cached.tree.value.leafId === snapshot.state.leafId
-          ? cached.tree.value : await connection.getSessionTree();
-        cached.tree = { sessionId, value: tree };
-        const header = await connection.getSessionHeader();
-        if (snapshot.state.sessionId !== sessionId || header?.id !== sessionId) {
-          throw new Error("The live session changed. Refresh the session list.");
-        }
-        const branch = branchFromTree(tree);
-        const messages = transcriptMessages(branch, snapshot);
+        const pending = cached.read ??= (async () => {
+          const [initialSnapshot, queue, children] = await Promise.all([connection.getInitialSnapshot(), connection.getQueue(), connection.getRlmChildSnapshots()]);
+          const snapshot = { ...initialSnapshot, children };
+          const tree = cached.tree?.sessionId === sessionId && cached.tree.value.leafId === snapshot.state.leafId
+            ? cached.tree.value : await connection.getSessionTree();
+          const header = await connection.getSessionHeader();
+          if (snapshot.state.sessionId !== sessionId || header?.id !== sessionId) {
+            throw new Error("The live session changed. Refresh the session list.");
+          }
+          cached.tree = { sessionId, value: tree };
+          return { snapshot, queue, branch: branchFromTree(tree) };
+        })();
+        let native;
+        try { native = await pending; }
+        finally { if (cached.read === pending) delete cached.read; }
+        const { snapshot, queue, branch } = native;
+        const projected = window ? historyWindow(branch, window, snapshot) : null;
+        const messages = transcriptMessages(projected?.branch ?? branch, window?.mode === "questions" ? undefined : snapshot, !window);
+        const firstUser = branch.find(entry => entry.type === "message" && entry.message.role === "user");
+        if (!row.hasName && firstUser?.type === "message") { row.session.name = previewTitle(messageText(firstUser.message)); row.hasName = true; }
         for (const message of messages) for (const tool of message.tools ?? []) {
           const update = toolUpdates.get(tool.id);
           if (update && tool.status === "running") { tool.output = update.output; tool.summary = update.output.trim().split("\n")[0]?.slice(0, 160) || "Running"; }
         }
-        await observe(row, messages);
-        const work = nativeWork(snapshot, messages);
+        await observe(row, messages, branch);
+        const lastAssistantIndex = branch.findLastIndex(entry => entry.type === "message" && entry.message.role === "assistant");
+        const activityMessages = transcriptMessages(lastAssistantIndex >= 0 ? branch.slice(lastAssistantIndex) : [], snapshot, false);
+        const work = nativeWork(snapshot, activityMessages);
         const currentModel = snapshot.state.model ? chatModel(snapshot.state.model) : null;
         const busy = isBusy(snapshot.state, queue) || work.childCount > 0;
         return { session: { ...row.session, name: snapshot.state.sessionName?.trim() ? snapshot.state.sessionName : row.session.name,
@@ -438,7 +528,11 @@ export async function createChatBackend(options: { socketPath?: string; readStat
           status: busy ? "running" : "idle" },
           controls: { kind: "live", currentModel, canChangeModel: row.session.canSend && !busy, thinkingLevel: snapshot.state.thinkingLevel, availableThinkingLevels: snapshot.state.availableThinkingLevels },
           usage: chatUsage(row.usage, snapshot.state.contextUsage ?? null),
-          messages, work, queue, queueCount: queue.steering.length + queue.followUp.length };
+          children: (snapshot.children ?? []).map(({ id, parentId, sessionName, model, label, status, durationMs, recap, error }) =>
+            ({ id, label, status, ...(parentId !== undefined ? { parentId } : {}), ...(sessionName !== undefined ? { sessionName } : {}),
+              ...(model !== undefined ? { model } : {}), ...(durationMs !== undefined ? { durationMs } : {}),
+              ...(recap !== undefined ? { recap } : {}), ...(error !== undefined ? { error } : {}) })),
+          messages, ...(projected ? { history: projected.history } : {}), work, queue, queueCount: queue.steering.length + queue.followUp.length };
       });
     },
     async models(sessionId) {
@@ -464,7 +558,7 @@ export async function createChatBackend(options: { socketPath?: string; readStat
         return chatModel(await connection.setModel(provider, modelId));
       });
     },
-    async send({ sessionId, message, images: inputImages }) {
+    async send({ sessionId, message, mode = "followUp", images: inputImages }) {
       const images = parseChatImages(inputImages);
       if (!message.trim() && !images.length) throw new Error("Add a message or image");
       const row = await resolve(sessionId);
@@ -484,7 +578,7 @@ export async function createChatBackend(options: { socketPath?: string; readStat
           if (command.source === "extension") throw new Error("Use this extension command in the Prime Agent terminal. Browser dialogs are unavailable.");
         }
         await connection.prompt(message, {
-          source: "interactive", streamingBehavior: "followUp", queueIfBusy: true, ...(images.length ? { images } : {}),
+          source: "interactive", streamingBehavior: mode, queueIfBusy: true, ...(images.length ? { images } : {}),
         });
       });
     },

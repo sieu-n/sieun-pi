@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { ChatBackend, ChatSession } from "./chat-backend.ts";
+import type { ChatBackend, ChatSession, SendMode, ChatWindow } from "./chat-backend.ts";
 import { chatContentSecurityPolicy, renderChatPage } from "./chat-page.ts";
 import { renderChatMessages } from "./page.ts";
 import { parseChatImages } from "./chat-images.ts";
@@ -16,7 +16,7 @@ function sessionItem(session: ChatSession) {
   return {
     id: session.sessionId, name: session.name, status: session.status, writable: session.canSend,
     created: session.created, lastActivityAt: session.lastActivityAt, model: session.model,
-    nativeStatus: session.nativeStatus, lastAssistant: session.lastAssistant, unread: session.unread, readError: session.readError,
+    lifecycle: session.lifecycle, nativeStatus: session.nativeStatus, lastAssistant: session.lastAssistant, unread: session.unread, readError: session.readError,
   };
 }
 
@@ -58,7 +58,7 @@ async function jsonBody(request: IncomingMessage): Promise<unknown> {
   catch { throw new RequestError(400, "Invalid JSON."); }
 }
 
-function parseMessage(value: unknown) {
+function parseMessage(value: unknown): { sessionId: string; message: string; images: ReturnType<typeof parseChatImages>; mode: SendMode; requestId: string } {
   if (typeof value !== "object" || value === null ||
     !("sessionId" in value) || typeof value.sessionId !== "string" || !value.sessionId || value.sessionId.length > 256 ||
     !("message" in value) || typeof value.message !== "string" || value.message.length > maxMessageLength ||
@@ -69,7 +69,9 @@ function parseMessage(value: unknown) {
   try { images = parseChatImages("images" in value ? value.images : undefined); }
   catch (error) { throw new RequestError(400, error instanceof Error ? error.message : "Invalid images."); }
   if (!value.message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
-  return { sessionId: value.sessionId, message: value.message, images, requestId: value.requestId };
+  const mode = "mode" in value ? value.mode : "followUp";
+  if (mode !== "steer" && mode !== "followUp") throw new RequestError(400, "Choose Send now or Queue.");
+  return { sessionId: value.sessionId, message: value.message, images, mode, requestId: value.requestId };
 }
 
 export async function startChatServer({ backend, port, capability, csrfToken, identity, stopToken, onStop, identityReady = Promise.resolve() }: {
@@ -80,6 +82,7 @@ export async function startChatServer({ backend, port, capability, csrfToken, id
   const base = "/" + capability + "/";
   const page = renderChatPage({ csrfToken });
   const sends = new Map<string, { fingerprint: string; result: Promise<void> }>();
+  const creations = new Map<string, { sourceSessionId: string | undefined; result: Promise<ChatSession> }>();
   let host = "";
   let closing: Promise<void> | undefined;
 
@@ -145,11 +148,26 @@ export async function startChatServer({ backend, port, capability, csrfToken, id
         json(res, 200, { sessions: (await backend.list()).map(sessionItem) });
         return;
       }
+      if (req.method === "GET" && route === "api/target") {
+        const id = url.searchParams.get("id");
+        if (!id || id.length > 256) throw new RequestError(400, "A session ID is required.");
+        json(res, 200, sessionItem(await backend.target(id))); return;
+      }
       if (req.method === "GET" && route === "api/session") {
         const id = url.searchParams.get("id");
         if (!id || id.length > 256) throw new RequestError(400, "A session ID is required.");
-        const view = await backend.read(id);
-        json(res, 200, { ...sessionItem(view.session), html: renderChatMessages(view.messages), queueCount: view.queueCount, queue: view.queue, work: view.work, controls: view.controls, usage: view.usage });
+        const mode = url.searchParams.get("view") ?? "compact";
+        const turns = Number(url.searchParams.get("turns") ?? 1);
+        const expanded = url.searchParams.getAll("expanded");
+        if ((mode !== "compact" && mode !== "detailed" && mode !== "questions") || !Number.isSafeInteger(turns) || turns < 1 || turns > 10000 || expanded.length > 100 || expanded.some(id => id.length > 256)) throw new RequestError(400, "Invalid conversation window.");
+        const startId = url.searchParams.get("startId");
+        const older = Number(url.searchParams.get("older") ?? 0);
+        if (startId && startId.length > 256 || !Number.isSafeInteger(older) || older < 0 || older > 100) throw new RequestError(400, "Invalid history cursor.");
+        const window: ChatWindow = { mode, turns, expanded, ...(startId ? { startId } : {}), older };
+        const view = await backend.read(id, window);
+        const html = renderChatMessages(view.messages);
+        const revision = createHash("sha256").update(html).digest("hex");
+        json(res, 200, { ...sessionItem(view.session), history: view.history, revision, html: url.searchParams.get("since") === revision ? null : html, queueCount: view.queueCount, queue: view.queue, work: view.work, children: view.children, controls: view.controls, usage: view.usage });
         return;
       }
       if (req.method === "GET" && route === "api/tool") {
@@ -166,12 +184,27 @@ export async function startChatServer({ backend, port, capability, csrfToken, id
         json(res, 200, await (route === "api/models" ? backend.models(id) : route === "api/commands" ? backend.commands(id) : backend.accounts(id)));
         return;
       }
-      if (!["api/message", "api/model", "api/rename", "api/effort", "api/account", "api/stop", "api/compact", "api/queue", "api/read"].includes(route)) throw new RequestError(404, "Not found.");
+      if (!["api/create", "api/message", "api/model", "api/rename", "api/effort", "api/account", "api/stop", "api/compact", "api/queue", "api/read"].includes(route)) throw new RequestError(404, "Not found.");
       if (req.method !== "POST") throw new RequestError(405, "Expected POST.");
       if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== `http://${host}`) {
         throw new RequestError(403, "Message authorization is missing. Reopen /what-did-i-say.");
       }
       const body = await jsonBody(req);
+      if (route === "api/create") {
+        if (typeof body !== "object" || body === null || !("requestId" in body) || typeof body.requestId !== "string" ||
+          !/^[a-zA-Z0-9_-]{16,100}$/.test(body.requestId) || ("sourceSessionId" in body &&
+          (typeof body.sourceSessionId !== "string" || !body.sourceSessionId || body.sourceSessionId.length > 256))) {
+          throw new RequestError(400, "Expected a creation request ID and optional source session.");
+        }
+        const sourceSessionId = "sourceSessionId" in body && typeof body.sourceSessionId === "string" ? body.sourceSessionId : undefined;
+        let creation = creations.get(body.requestId);
+        if (creation && creation.sourceSessionId !== sourceSessionId) throw new RequestError(409, "This request ID belongs to another creation.");
+        if (!creation) {
+          creation = { sourceSessionId, result: backend.create({ sourceSessionId }) };
+          creations.set(body.requestId, creation);
+        }
+        json(res, 200, { session: sessionItem(await creation.result) }); return;
+      }
       if (["api/rename", "api/effort", "api/account", "api/stop", "api/compact", "api/queue", "api/read"].includes(route)) {
         if (typeof body !== "object" || body === null || !("sessionId" in body) || typeof body.sessionId !== "string" || !body.sessionId || body.sessionId.length > 256) throw new RequestError(400, "Choose a session.");
         const sessionId = body.sessionId;
@@ -206,13 +239,13 @@ export async function startChatServer({ backend, port, capability, csrfToken, id
         return;
       }
       const input = parseMessage(body);
-      const fingerprint = createHash("sha256").update(JSON.stringify([input.sessionId, input.message, input.images])).digest("hex");
+      const fingerprint = createHash("sha256").update(JSON.stringify([input.sessionId, input.message, input.images, input.mode])).digest("hex");
       let pending = sends.get(input.requestId);
       if (pending && pending.fingerprint !== fingerprint) {
         throw new RequestError(409, "This request ID belongs to a different message.");
       }
       if (!pending) {
-        pending = { fingerprint, result: backend.send({ sessionId: input.sessionId, message: input.message, images: input.images }) };
+        pending = { fingerprint, result: backend.send({ sessionId: input.sessionId, message: input.message, images: input.images, mode: input.mode }) };
         sends.set(input.requestId, pending);
       }
       try { await pending.result; }

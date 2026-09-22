@@ -11,7 +11,7 @@ button { cursor: pointer; color: inherit; }
 button:disabled { cursor: default; opacity: .45; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #555; outline-offset: 3px; }
 button { border: 0; }
-.app { display: grid; grid-template-columns: 220px minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
+.app { display: grid; grid-template-columns: var(--sidebar-width, 220px) minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
 .app[data-sidebar-open="false"] { grid-template-columns: 0 minmax(0, 1fr); }
 .app[data-sidebar-open="true"] #sidebar-toggle { display: none; }
 .sidebar { display: flex; flex-direction: column; min-height: 0; padding: 14px 10px 12px; background: var(--sidebar); border-right: 1px solid var(--line); }
@@ -191,6 +191,76 @@ hr { border: 0; border-top: 1px solid #e5e5e5; margin: 24px 0; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; } }
 @media (pointer: coarse) { .session-button { height: 40px; } .row-more { height: 40px; opacity: 1; } }
 @media (max-width: 520px) { .context-trigger { max-width: 40px; overflow: hidden; } .model-trigger { font-size: 11px; padding: 4px; } #model-button { max-width: 110px; } #account-button { max-width: 100px; } .composer-right { gap: 1px; } .chat-header { padding: 0 12px; } }
+
+.sidebar { position: relative; }
+#sidebar-resize { position: absolute; z-index: 4; right: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; touch-action: none; }
+#sidebar-resize:hover, #sidebar-resize:focus-visible { background: var(--line); outline: 1px solid var(--muted); }
+.new-thread { text-align: left; margin-bottom: 3px; }
+.list-controls { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin: 12px 6px 6px; }
+.list-controls .list-heading { margin: 0; }
+.archive-filter { display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: 10px; }
+.archive-filter input { width: 12px; height: 12px; accent-color: var(--muted); }
+.session-row { width: 100%; }
+.session-button { flex: 1; }
+.row-more { background: transparent; }
+.header-actions { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.view-switcher { display: flex; gap: 1px; background: var(--sidebar); padding: 2px; border: 1px solid var(--line); border-radius: 6px; }
+.view-switcher button { padding: 2px 7px; border-radius: 4px; background: transparent; font-size: 11px; color: var(--muted); }
+.view-switcher button[aria-pressed="true"] { color: inherit; background: var(--canvas); box-shadow: 0 1px 2px #0001; }
+#question-nav { font-size: 11px; }
+.question-panel { top: 36px; right: 10px; width: 340px; max-height: 55vh; overflow: auto; z-index: 5; }
+.question-panel button { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.children-panel { top: 36px; right: 10px; width: 340px; max-width: calc(100vw - 24px); max-height: 60vh; overflow: auto; z-index: 5; }
+.children-panel ul { list-style: none; padding-left: 12px; margin: 4px 0; }
+.children-panel li { border-left: 1px solid var(--line); padding: 5px 8px; font-size: 12px; overflow-wrap: anywhere; }
+.child-meta { color: var(--muted); font-size: 11px; }
+.history-controls { max-width: 800px; margin: auto; padding: 0 32px; }
+.turn { margin-bottom: 24px; }
+.turn .question { margin-top: 0; }
+.reply-details { color: var(--muted); font-size: 11px; padding: 3px 0; margin-top: 8px; }
+.question-jump { display: none; }
+.transcript[data-view="compact"] .turn:not([data-expanded="true"]) .response:not(.latest-reply):not(.has-tool-outcome),
+.transcript[data-view="compact"] .turn:not([data-expanded="true"]) .response > .tool { display: none; }
+.transcript[data-view="detailed"] .reply-details { display: none; }
+.transcript[data-view="questions"] .response, .transcript[data-view="questions"] .reply-details,
+.transcript[data-view="questions"] .turn-progress { display: none; }
+.transcript[data-view="questions"] .question-jump { display: block; float: right; font-size: 11px; color: var(--muted); }
+.transcript[data-view="questions"] .turn:not(:has(.question)) { display: none; }
+.turn-progress { margin-top: 12px; padding: 0; }
+.split-send { display: flex; align-items: stretch; flex: none; border-radius: 7px; overflow: hidden; background: #171717; color: #fff; }
+.split-send .send-button { width: auto; height: 30px; border-radius: 0; padding: 0 9px; font-size: 12px; background: transparent; color: inherit; }
+.send-options { width: 24px; background: transparent; color: inherit; border-left: 1px solid #ffffff33; display: grid; place-items: center; }
+.send-options svg { width: 14px; height: 14px; }
+.send-menu { bottom: calc(100% + 8px); right: 0; width: 230px; }
+.send-menu button { display: block; text-align: left; width: 100%; background: transparent; padding: 7px; border-radius: 5px; font-size: 12px; }
+.send-menu button:hover { background: var(--sidebar); }
+.send-menu span { display: block; color: var(--muted); font-size: 11px; }
+#account-button { display: flex; flex-direction: column; align-items: stretch; gap: 1px; max-width: 165px; padding: 3px 6px; }
+.account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.usage-bar { display: grid; grid-template-columns: 48px minmax(30px, 1fr) 32px; align-items: center; gap: 6px; font-size: 10px; line-height: 1.3; color: var(--muted); font-variant-numeric: tabular-nums; }
+.usage-bar meter { width: 100%; height: 7px; appearance: none; border: 0; background: var(--line); border-radius: 3px; overflow: hidden; }
+.usage-bar meter::-webkit-meter-bar { background: var(--line); border: 0; height: 7px; }
+.usage-bar meter::-webkit-meter-optimum-value { background: var(--muted); }
+.usage-bar meter::-moz-meter-bar { background: var(--muted); }
+.account-panel .model-option { display: block; padding: 8px; border-bottom: 1px solid var(--line); border-radius: 4px; }
+.account-panel .account-name { font-size: 12px; }
+.account-tags { color: var(--muted); font-size: 11px; margin: 3px 0 4px; }
+.account-panel .usage-bar { margin-top: 3px; }
+.composer { border-radius: 14px; padding: 12px; }
+.model-panel { max-height: min(500px, 65vh); overflow: auto; }
+.model-option { overflow-wrap: anywhere; }
+@media (prefers-color-scheme: dark) { .split-send { background: #ddd; color: #181818; } .send-options { border-color: #18181833; } }
+@media (max-width: 760px) { #sidebar-resize { display: none; } .chat-title { flex: 1; } .header-actions { gap: 2px; } }
+@media (max-width: 520px) {
+ .composer-actions { flex-wrap: wrap; gap: 4px; }
+ .composer-right { flex-wrap: wrap; justify-content: flex-end; }
+ #account-button { max-width: 145px; }
+ .view-switcher button { padding: 2px 4px; font-size: 10px; }
+ #question-nav { max-width: 54px; overflow: hidden; text-overflow: ellipsis; }
+ #commands-refresh { display: none; }
+ .chat-header { gap: 4px; }
+}
+
 @media (prefers-color-scheme: dark) {
  :root { color: #ddd; background: #181818; --canvas: #181818; --sidebar: #202020; --line: #383838; --muted: #999; }
  .composer, .popover, .latest-button, .list-error { background: var(--canvas); border-color: var(--line); color: inherit; }
@@ -232,9 +302,12 @@ export function renderChatPage({ csrfToken }: { csrfToken: string }): string {
 <div id="app" class="app" data-sidebar-open="true">
 <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" tabindex="-1" aria-label="Hide sidebar" hidden></button>
 <aside id="sidebar" class="sidebar" aria-label="Sessions">
+  <div id="sidebar-resize" role="separator" tabindex="0" aria-label="Sidebar width" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="480" aria-valuenow="220" aria-controls="sidebar"></div>
   <div class="brand-row"><span class="brand">Prime Agent</span><button id="hide-sidebar" class="icon-button" type="button" aria-label="Hide sidebar" title="Hide sidebar">${icon('sidebar')}</button></div>
+  <button id="new-thread" class="quiet-button new-thread" type="button" title="New thread (Cmd+N)">+ New thread</button>
+  <p id="create-notice" class="panel-note" role="status" hidden></p>
   <label class="sr-only" for="session-search">Search sessions</label><input id="session-search" class="search" type="search" placeholder="Search" autocomplete="off">
-  <h2 id="list-heading" class="list-heading">Recent chats</h2>
+  <div class="list-controls"><h2 id="list-heading" class="list-heading">Recent chats</h2><label class="archive-filter"><input id="show-archived" type="checkbox"> Archived</label></div>
   <div id="list-error" class="list-error" role="status" hidden><p id="list-error-text"></p><button id="retry-list" type="button" class="quiet-button">Retry</button></div>
   <p id="list-notice" class="list-notice">Loading...</p><ul id="session-list" class="session-list" aria-labelledby="list-heading"></ul>
   <div class="sidebar-footer"><details class="sidebar-menu"><summary aria-label="Chat options">···</summary><button id="close-chat" class="quiet-button" type="button" title="Close this view without stopping agents">Close view</button></details></div>
@@ -243,10 +316,12 @@ export function renderChatPage({ csrfToken }: { csrfToken: string }): string {
   <header class="chat-header">
     <button id="sidebar-toggle" class="icon-button" type="button" aria-label="Show sidebar" title="Show sidebar" aria-controls="sidebar" aria-expanded="true">${icon('sidebar')}</button>
     <div class="chat-title"><h1 id="session-title">Prime Agent</h1></div><span id="session-status" class="header-status" hidden></span>
-    <div class="header-actions"><button id="commands-refresh" class="icon-button" type="button" title="Refresh native commands" aria-label="Refresh native commands">↻</button></div>
+    <div class="header-actions"><div id="view-mode" class="view-switcher" role="group" aria-label="Conversation view"><button type="button" data-view-mode="compact" aria-pressed="true">Compact</button><button type="button" data-view-mode="detailed" aria-pressed="false">Detailed</button><button type="button" data-view-mode="questions" aria-pressed="false">Questions</button></div><button id="question-nav" class="quiet-button" type="button" aria-expanded="false" aria-controls="question-panel" hidden>Jump to question</button><button id="children-toggle" class="quiet-button" type="button" aria-expanded="false" aria-controls="children-panel">Agents</button><button id="commands-refresh" class="icon-button" type="button" title="Refresh native commands" aria-label="Refresh native commands">↻</button></div>
+  <section id="question-panel" class="popover question-panel" aria-label="Jump to question" hidden><div id="question-options"></div></section>
+  <section id="children-panel" class="popover children-panel" aria-label="Current thread subagents" hidden><div class="popover-header"><h2>Subagents</h2><button id="children-close" class="quiet-button" type="button">Hide</button></div><div id="children-tree"></div></section>
   </header>
   <div id="connection-banner" class="connection-banner" role="status" hidden><p id="connection-text"></p><button id="retry-session" class="quiet-button" type="button">Retry</button></div>
-  <div id="conversation" class="conversation" tabindex="0" role="region" aria-label="Conversation"><div id="transcript" class="transcript"><div class="empty-state"><p>Loading...</p></div></div></div>
+  <div id="conversation" class="conversation" tabindex="0" role="region" aria-label="Conversation"><div class="history-controls"><button id="load-older" class="quiet-button" type="button" hidden>Load older messages</button></div><div id="transcript" class="transcript" data-view="compact"><div class="empty-state"><p>Loading...</p></div></div></div>
   <footer class="composer-region"><div class="composer-wrap"><div class="latest-row"><button id="latest" class="latest-button" type="button" aria-label="Go to latest message" hidden>↓</button></div>
     <div id="work-status" class="work-status" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="work-label"></span></div>
     <details id="queue-details" class="queue-details" hidden><summary id="queue-summary"></summary><div id="queue-items"></div></details>
@@ -261,8 +336,9 @@ export function renderChatPage({ csrfToken }: { csrfToken: string }): string {
         <span id="composer-target" class="sr-only">Choose a session</span>
         <button id="account-button" class="model-trigger" type="button" aria-expanded="false" aria-controls="account-panel" disabled>Account</button>
         <button id="usage-button" class="model-trigger context-trigger" type="button" aria-label="Session usage" title="Session usage" aria-expanded="false" aria-controls="usage-panel"><span id="context-label">Context</span></button>
-        <div class="composer-right"><button id="model-button" class="model-trigger" type="button" aria-label="Change model" aria-expanded="false" aria-controls="model-panel" disabled><span id="model-label">Model</span>${icon('down')}</button><button id="effort-button" class="model-trigger" type="button" aria-expanded="false" aria-controls="effort-panel" disabled>Effort</button><button id="stop-button" class="quiet-button" type="button" title="Abort the native turn and its child runs. Queued prompts pause until the next prompt." hidden>Stop</button><button id="send" class="send-button" type="submit" aria-label="Send message" disabled>${icon('up')}</button></div>
+        <div class="composer-right"><button id="model-button" class="model-trigger" type="button" aria-label="Change model" aria-expanded="false" aria-controls="model-panel" disabled><span id="model-label">Model</span>${icon('down')}</button><button id="effort-button" class="model-trigger" type="button" aria-expanded="false" aria-controls="effort-panel" disabled>Effort</button><button id="stop-button" class="quiet-button" type="button" title="Abort the native turn and its child runs. Queued prompts pause until the next prompt." hidden>Stop</button><div class="split-send"><button id="send" class="send-button" type="submit" aria-label="Send now" disabled>Send now</button><button id="send-options" class="send-options" type="button" aria-label="Send options" aria-controls="send-menu" aria-expanded="false">${icon('down')}</button></div></div>
       </div>
+      <section id="send-menu" class="popover send-menu" aria-label="Send options" hidden><button type="button" data-send-mode="steer">Send now<span>At the next native boundary</span></button><button type="button" data-send-mode="followUp">Queue<span>After the current turn</span></button></section>
       <section id="account-panel" class="popover account-panel" role="dialog" aria-label="Session account" hidden></section>
       <section id="effort-panel" class="popover effort-panel" role="dialog" aria-label="Native effort" hidden></section>
     <section id="usage-panel" class="popover usage-panel" role="dialog" aria-label="Session usage" hidden><div class="popover-header"><h2>Usage</h2><button id="usage-close" class="icon-button" type="button" aria-label="Close usage">${icon('close')}</button></div><div id="usage-content"></div><button id="compact-button" type="button" class="quiet-button" disabled>Compact native session</button></section>
