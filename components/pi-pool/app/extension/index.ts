@@ -1,39 +1,40 @@
 /**
- * pi-pool /account, a thin picker over the pool CLI.
+ * pi-pool inside Prime Agent: the /account picker, the footer status that
+ * names the account this session's requests use, and adoption of a stored
+ * /login that would otherwise bypass the pool.
  *
- * This file draws nothing. The account row on the tray, the splash, and the
- * agents view comes from the bundle patch (`pi-pool patch`); an extension
- * cannot hold that row (ext-impl/virev/README.md section 4, auto-sns-agent).
- *
- * Every judgement lives in `pi-pool-token --cli`. This file parses one JSON
- * shape and formats strings, so the precedence rules and the usage math exist
- * once, in Python.
+ * Every judgement lives in `pi-pool-token --cli`. This file parses JSON and
+ * formats strings, so the precedence rules and the usage math exist once, in
+ * Python. Everything here goes through the public extension API, so it keeps
+ * working across Prime Agent updates with nothing to re-apply.
  */
-import type { ExtensionAPI, ExtensionCommandContext } from "prime-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "prime-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// `pi-pool patch` installs this directory as a symlink under <agent dir>/extensions,
-// so the loader's own path points at the link, not at the pool.
+// The root installer links this directory into <agent dir>/extensions, so the
+// loader's own path points at the link, not at the pool.
 const HERE = realpathSync(dirname(fileURLToPath(import.meta.url)));
 const POOL_BIN = join(dirname(dirname(HERE)), "bin", "pi-pool-token");
 const SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID";
 const POOLED_PROVIDERS = new Set(["anthropic", "openai-codex"]);
 const FOLLOW = "follow";
+const WIDGET_KEY = "pi-pool";
+const STATUS_REFRESH_MS = 60_000;
 
 /** One row of `pi-pool-token --cli ls --json`. The CLI owns every judgement in it. */
 interface AccountRow {
-	id: string; email: string; usage: string; session_pct: number; weekly_pct: number;
+	id: string; email: string; usage: string; session_pct: number; weekly_pct: number; gated_pct: number;
 	usable: boolean; reason: string | null; current: boolean; pinned: boolean;
 	force: boolean; live: boolean; seat: boolean; score: number | null;
 	/** openai-codex only: free | plus | pro | team. The pool sends no plan for anthropic. */
 	plan?: string;
 }
 interface CliListing {
-	provider: string; session: string | null; patched: boolean;
+	provider: string; session: string | null;
 	seat: { id: string; email: string } | null; rows: AccountRow[];
 }
 /** Every CLI verb answers with a listing or with `{"error": "..."}`. */
@@ -56,7 +57,7 @@ function pool(args: string[]): Promise<{ ok: boolean; out: string }> {
 	});
 }
 
-function sessionId(ctx: ExtensionCommandContext): string | undefined {
+function sessionId(ctx: ExtensionContext): string | undefined {
 	try {
 		const id = ctx.sessionManager?.getSessionId?.();
 		if (typeof id === "string" && id.length > 0) return id;
@@ -67,10 +68,17 @@ function sessionId(ctx: ExtensionCommandContext): string | undefined {
 	return typeof fromEnv === "string" && fromEnv.length > 0 ? fromEnv : undefined;
 }
 
-function rowLabel(row: AccountRow): string {
-	const tags = [row.seat && "seat", row.pinned && "pinned", row.current && "current", row.reason, row.live && "live"]
+function rowLabel(row: AccountRow, provider: string): string {
+	const tags = [row.current && "current", row.seat && "seat", row.pinned && (row.force ? "pinned+force" : "pinned"), row.reason, row.live && "supervised"]
 		.filter((tag): tag is string => Boolean(tag));
-	return `${row.email}  ${row.plan ? `${row.plan}  ` : ""}${row.usage}  [${tags.join("|")}]`;
+	const usage = [`5h ${pct(row.session_pct)}`, `week ${pct(row.weekly_pct)}`];
+	if (provider === "anthropic") usage.push(`fable ${pct(row.gated_pct)}`);
+	return `${row.email}${row.plan ? ` ${row.plan}` : ""}  ${usage.join(" · ")}${tags.length ? `  ${tags.join(", ")}` : ""}`;
+}
+
+/** Usable accounts first, then the rest; the picker reads top down. */
+function pickerRows(rows: AccountRow[]): AccountRow[] {
+	return [...rows].sort((a, b) => Number(b.usable) - Number(a.usable) || (a.score ?? 1e9) - (b.score ?? 1e9) || a.email.localeCompare(b.email));
 }
 
 type Listed = { ok: true; out: string; data: CliListing } | { ok: false; out: string };
@@ -95,9 +103,82 @@ async function applyChoice(ctx: ExtensionCommandContext, provider: string, sid: 
 	if (force) args.push("--force");
 	const res = await pool(args);
 	ctx.ui.notify(res.out || (res.ok ? "done" : "pi-pool use failed"), res.ok ? "info" : "error");
+	await refreshStatus(ctx);
+}
+
+/** One provider of `pi-pool-token --cli who --json`. */
+interface WhoProvider {
+	error?: string;
+	current: { email: string; session_pct: number; weekly_pct: number; gated_pct: number; next: string | false } | null;
+}
+
+function pct(n: number): string {
+	return `${Math.round(n)}%`;
+}
+
+/** One line by the editor. Prime 0.9.5 stores setStatus text but its footer never draws it, so a widget carries the line. */
+function showLine(ctx: ExtensionContext, text: string): void {
+	ctx.ui.setWidget(WIDGET_KEY, [text], { placement: "belowEditor" });
+}
+
+/** The account this session's requests use, and that account's usage. */
+async function refreshStatus(ctx: ExtensionContext): Promise<void> {
+	try {
+		const provider = ctx.model?.provider;
+		if (!provider || !POOLED_PROVIDERS.has(provider)) {
+			ctx.ui.setWidget(WIDGET_KEY, undefined);
+			return;
+		}
+		const res = await pool(["who", "--json"]);
+		const who = JSON.parse(res.out) as { providers?: Record<string, WhoProvider> };
+		const info = who.providers?.[provider];
+		const theme = ctx.ui.theme;
+		if (!info || info.error || !info.current) {
+			showLine(ctx, theme.fg("warning", info?.error ? "pool unavailable" : "no pooled account"));
+			return;
+		}
+		const cur = info.current;
+		const usage = [`5h ${pct(cur.session_pct)}`, `week ${pct(cur.weekly_pct)}`];
+		if (provider === "anthropic") usage.push(`fable ${pct(cur.gated_pct)}`);
+		const hot = Math.max(cur.session_pct, cur.weekly_pct, cur.gated_pct);
+		const color = hot >= 95 ? "error" : hot >= 75 ? "warning" : "dim";
+		const next = cur.next ? theme.fg("accent", ` → ${cur.next}`) : "";
+		showLine(ctx, `${theme.fg("dim", `account ${cur.email}`)} ${theme.fg(color, usage.join(" · "))}${next}`);
+	} catch {
+		// A status line must never break the session. Leave the last text in place.
+	}
+}
+
+/** Moves a stored /login for a pooled provider into the pool's fallback, so it cannot shadow the pool. */
+async function adoptLogins(ctx: ExtensionContext): Promise<void> {
+	const res = await pool(["adopt-logins"]);
+	if (res.ok && res.out) ctx.ui.notify(`pi-pool: ${res.out}`, "info");
+	else if (!res.ok) ctx.ui.notify(`pi-pool: ${res.out}`, "warning");
 }
 
 export default function (pi: ExtensionAPI): void {
+	// One set of timers per loaded extension instance. Plain timers rather than
+	// ctx.setInterval, which the locked 0.9.4 types lack; session_shutdown clears
+	// them so a replaced session's ctx is never used again.
+	let timers: ReturnType<typeof setTimeout>[] = [];
+	const clearTimers = (): void => {
+		for (const timer of timers) clearTimeout(timer);
+		timers = [];
+	};
+	pi.on("session_start", async (_event, ctx) => {
+		clearTimers();
+		await adoptLogins(ctx);
+		await refreshStatus(ctx);
+		// Refusal check across the pool; the CLI rate-limits itself to once per 6h.
+		void pool(["probe"]);
+		// A widget set while the TUI client is still attaching can be dropped; set it again once attached.
+		timers.push(setTimeout(() => void refreshStatus(ctx), 3000));
+		timers.push(setInterval(() => void refreshStatus(ctx), STATUS_REFRESH_MS));
+	});
+	pi.on("session_shutdown", async () => clearTimers());
+	pi.on("model_select", async (_event, ctx) => refreshStatus(ctx));
+	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
+
 	pi.registerCommand("account", {
 		description: "Switch the pooled account for this session",
 		getArgumentCompletions: async (): Promise<AutocompleteItem[]> => {
@@ -130,9 +211,10 @@ export default function (pi: ExtensionAPI): void {
 				if (trimmed) {
 					target = trimmed === FOLLOW ? FOLLOW : trimmed;
 				} else {
-					const choice = await ctx.ui.select(`Account for this session (${provider})`, [...data.rows.map(rowLabel), followLabel]);
+					const rows = pickerRows(data.rows);
+					const choice = await ctx.ui.select(`Account for this session (${provider})`, [followLabel, ...rows.map((row) => rowLabel(row, provider))]);
 					if (choice === undefined) return;
-					target = choice === followLabel ? FOLLOW : (data.rows.find((row) => rowLabel(row) === choice)?.email ?? choice);
+					target = choice === followLabel ? FOLLOW : (rows.find((row) => rowLabel(row, provider) === choice)?.email ?? choice);
 				}
 				if (target !== FOLLOW) {
 					const row = data.rows.find((candidate) => candidate.email === target);

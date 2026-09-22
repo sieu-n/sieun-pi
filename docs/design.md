@@ -17,26 +17,12 @@ Keep candidate B's duplicate-load check and ordinary settings files.
 Keep manifest executable modes and explicit external dependency checks.
 New profiles receive a settings template. Existing settings remain byte-for-byte unchanged.
 Prime's native kernel bootstrap installs linked Python skills editable.
-Bundle patching stays a separate explicit command with the pool patcher's own checks and backups.
-
 Keep source links for skills, extensions and CLI code.
-Use one generated copy for the launchd updater. Live verification changed this part of the original decision.
-After the source moved under Documents, launchd's Python process returned `[Errno 1] Operation not permitted` and exited 2.
-Interactive patching still worked. The service could not follow the source link into Documents.
 
-```mermaid
-flowchart LR
-    Source[Pool source in sieun-pi] -->|generator --write| Runtime[Two files under HOME/.local/share/sieun-pi/pool-patch/app]
-    Launchd[LaunchAgent] -->|apply --bundle-only| Runtime
-    Runtime --> Bundle[Installed Prime bundle]
-    Source -->|source link| Extension[Account extension]
-```
-
-The generator copies only `patch_prime_agent.py` and `pi-pool-status.js`.
-The service skips extension reads and writes. It cannot retarget `/account` to the generated copy.
-Stop the updater before refreshing these files, then load its generated plist.
-Refresh the copy after patcher or helper edits. Agent source links still need no copy step.
-This exception does not make settings, bundle patching, service activation or loaded processes atomic.
+The pool no longer patches Prime's bundle. Prime Agent 0.9.5 ships as one compiled
+binary, so the old patcher and its launchd updater were removed on 2026-09-23. The
+account line, `/account` and login adoption now live in the pool extension, which uses
+only the public extension API and needs nothing re-applied after a Prime update.
 Do not move the standalone Claude skill-observability hook. It is not a Virev dependency.
 The source-link investigator corrected that initial recommendation after checking its caller.
 

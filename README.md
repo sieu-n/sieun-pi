@@ -124,31 +124,10 @@ Install its own locked npm dependencies and configure accounts only when you cho
 Read [the daily recap guide](components/daily-recap/README.md) before loading its service or running a report.
 Source-link rollback does not restore that separate runtime or service.
 
-## Install or refresh the automatic updater
+## Automatic updates
 
-The LaunchAgent uses a generated copy outside Documents because macOS blocks its access to that source folder.
-The copy contains only the patcher and its JavaScript helper. Skills, extensions and the CLI keep their source links.
+Nothing needs re-applying after an update.
 
-Review the generated plist first. Run these commands from the source path printed by `sieun-pi source`.
-Replace the Prime path with the installed host package directory, not this package's SDK dependency.
+- Prime Agent: the pool's `/account` command, account line and login adoption are an extension that uses only the public extension API. A new session loads the current source.
+- tokenmaxxing: its periodic check (`com.tokenmaxxing.check`, every 60 seconds) installs the newest npm release once a day. pi-pool reads tokenmaxxing's index schema version 2 and fails with the schema version in the error if a later release changes it.
 
-```sh
-/usr/bin/python3 -B components/pi-pool/app/install_patch_agent.py --prime-root /path/to/installed/prime-agent
-```
-
-If the updater is loaded, stop it before writing its runtime files.
-
-```sh
-launchctl bootout "gui/$(id -u)/com.sieun.pi-pool-patch"
-```
-
-Generate the files and load the service.
-
-```sh
-/usr/bin/python3 -B components/pi-pool/app/install_patch_agent.py --prime-root /path/to/installed/prime-agent --write
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.sieun.pi-pool-patch.plist"
-```
-
-After its normal 20-second delay, check `launchctl print "gui/$(id -u)/com.sieun.pi-pool-patch"` for exit 0.
-Repeat this step after changing the patcher or helper. Source-link apply does not refresh the service copy.
-This does not restart Prime sessions. Keep the old plist and runtime separately if you need service rollback.

@@ -6,16 +6,15 @@ different account while it runs, with no `/login` and no restart.
 
 ## Source and runtime state
 
-This directory is the maintained pi-pool source for Prime Agent 0.9.4.
+This directory is the maintained pi-pool source, verified live on Prime Agent 0.9.5.
 Python uses the macOS `/usr/bin/python3` standard library. The extension uses
 Prime Agent's public types and its `@earendil-works/pi-tui` dependency.
-Node from the Prime Agent installation runs the patch syntax checks and native tests.
 No account store or credential is included here.
 
 ```text
 checkout/components/pi-pool/
   vend.py                  code root from realpath(__file__)
-  app/                     patcher, UI helper, /account extension
+  app/extension/           /account command, account line, login adoption
   bin/                     executable, relocatable Python wrappers
 
 PI_POOL_DIR or ~/.config/pi-pool/
@@ -25,7 +24,7 @@ PI_POOL_DIR or ~/.config/pi-pool/
 ```
 
 `PI_POOL_DIR` selects state only. It never selects Python modules or executables.
-The wrappers and patcher resolve symlinks before they locate source files.
+The wrappers resolve symlinks before they locate source files.
 Both wrappers use `-B`, so normal commands do not write Python bytecode into source.
 
 The root installer owns these links. It retains the state directory itself and
@@ -42,15 +41,10 @@ These links preserve existing `!command` paths under `~/.config/pi-pool`.
 New `enable` entries point to the source wrapper and quote paths with spaces.
 For a custom state directory, pass the same `PI_POOL_DIR` to the CLI and Prime Agent.
 The installer must create that directory before commands that write configuration.
-The CLI rejects state roots and patch targets inside this source directory.
+The CLI rejects state roots inside this source directory.
 
-The patcher logs to the state directory. Bundle backups (`*.bak-pi-pool`) and
-staged JavaScript stay beside the target Prime Agent bundle, outside this checkout.
-It scans only top-level bundle `.js` files, not backup suffixes or state directories.
-The extension link points to source. The copied UI helper reads runtime state, not
-its own directory. `patch --check` compares the helper with source, and `patch`
-refreshes a stale helper even when every bundle replacement is already current.
-Running processes still need a restart to load changed JavaScript.
+The extension link points to source. A new session loads the current extension; a
+running session keeps the code it loaded until it is rebuilt.
 
 ## External credential dependencies
 
@@ -77,7 +71,8 @@ on that account in tokenmaxxing's index, so `tokenmaxxing auth --all` offers it.
 On a seat move or a fresh rotation, pi-pool also sends one free
 `/v1/messages/count_tokens` request. A 401 or a 403 such as
 `oauth_not_allowed_for_organization` puts the account on a
-`refused_cooldown_sec` cooldown (6 hours by default).
+`refused_cooldown_sec` cooldown (24 hours by default) and sets tokenmaxxing's own
+`enforcedUntil` on the account.
 
 Refresh requests use `https://platform.claude.com/v1/oauth/token` and
 `https://auth.openai.com/oauth/token`. They require network access and valid grants.
@@ -111,9 +106,9 @@ until the session's next provider request runs the hook.
 
 ## Commands
 
-    pi-pool                       pool status, scores, and which session is on what
+    pi-pool                       one card per account: usage bars, seat, sessions, next pick
     pi-pool status --provider openai-codex
-    pi-pool watch [sec]           repaint status every sec seconds
+    pi-pool watch [sec]           the same cards full screen, redrawn every sec seconds (default 5)
     pi-pool use <email|id> [--force] [--follow] [--provider p] [--session id]
     pi-pool who [--json] [--session id]
     pi-pool ls [--json] [--provider p] [--session id]
@@ -121,8 +116,8 @@ until the session's next provider request runs the hook.
     pi-pool unpin
     pi-pool switch                drop the seat; the next request re-picks
     pi-pool enable openai-codex   wire the codex provider into models.json
-    pi-pool patch [--check]       put the pool into the TUI; 0 patched, 1 not, 2 anchors missing
-    pi-pool unpatch
+    pi-pool adopt-logins          move a stored /login that would bypass the pool into fallback.json
+    pi-pool probe [--force]       check every Claude account for an API refusal (no token refresh)
     pi-pool log [n]               last n pool events
     pi-pool config / set <k> <v>
 
@@ -150,9 +145,10 @@ the paid window resets, and the API refuses several models on a free plan with a
 (reason `seat_upgrade`) and touches no pin. Anthropic accounts carry no plan, so the
 step never fires there.
 
-Score, lowest wins: `max(5h%, 7d%) + 8 per session already on it + 15 if another tool
-is live on it`. Excluded: needs-reauth, depleted (>=95% 5h or >=98% 7d), and accounts
-in cooldown after a failure.
+Score, lowest wins: `max(5h%, 7d%) + 8 per session that vended from it in the last
+hour + 15 if a tokenmaxxing-supervised session runs on it`. Excluded: needs-reauth,
+depleted (>=95% 5h or >=98% 7d or the Fable cap), and accounts in cooldown. A cooldown
+comes from a refusal probe (see the dependency section) and also overrides a `--force` pin.
 
 ## A pin covers the whole session tree
 
@@ -169,15 +165,14 @@ lookups, never as the key.
 
     pi-pool enable openai-codex
 
-writes the provider entry into `~/.prime/agent/models.json`. It leaves `auth.json`
-and any legacy `fallback.json` unchanged. Prime keeps ownership of the native login.
-The entry needs `baseUrl`. A provider entry with only `apiKey` fails `validateConfig`
-and takes every model down, not just codex.
+writes the provider entry into `~/.prime/agent/models.json`. The entry needs `baseUrl`.
+A provider entry with only `apiKey` fails `validateConfig` and takes every model down,
+not just codex.
 
-Codex credentials live in `~/.config/tokenmaxxing/codex-creds/`. A rotation takes
-tokenmaxxing's `codex-lock` and is journalled before the write. The account
-`~/.codex/auth.json` names is read but never refreshed here, and an account with a live
-codex session is skipped: the codex CLI owns those rotations.
+Codex credentials live in `~/.config/tokenmaxxing/codex-stores/<uuid8>/auth.json`. A
+rotation takes tokenmaxxing's `codex-lock` and is journalled before the write. A store
+that a supervised codex session runs on is never refreshed here: the codex CLI owns
+that rotation.
 
 ## Why the pool vends access tokens, never refresh tokens
 
@@ -199,117 +194,50 @@ every provider request, uncached, while an `auth.json` `!command` is cached for 
 process and only re-runs after a 401. Per-request resolution is what lets a switch land
 on the next request.
 
-## What `pi-pool patch` changes
+## Inside Prime Agent: the /account extension
 
-Three bundle files and one extension symlink:
+`app/extension` is a Prime Agent extension, linked into `~/.prime/agent/extensions/pi-pool`
+by the root installer. It uses only the public extension API, so a Prime Agent update
+needs nothing re-applied. Earlier versions also patched Prime's bundled JavaScript for
+the tray line. Prime 0.9.5 ships as one compiled binary, so that patch is gone.
 
-| target | file | what it does |
-|---|---|---|
-| recovery | `dist/bundle/chunk-*.js` | native request-auth retries and fresh compaction credentials |
-| tui | `dist/bundle/chunk-*.js` | pool display, 65% Session column, command-first auth, and request-auth stream adaptation |
-| codex-websocket | `dist/bundle/openai-codex-responses-*.js` | a separate socket cache entry for each session and account |
-| extension | `~/.prime/agent/extensions/pi-pool` -> `app/extension` | the `/account` command |
+| part | what it does |
+|---|---|
+| `/account` | pick this session's account, or follow the pool. Usable accounts are listed first |
+| account line | one widget line by the editor: `account <email> 5h 25% · week 7% · fable 12%`, plus `→ <email>` when the next request switches. Refreshed at session start, on model change, after every turn, and every 60 seconds |
+| login adoption | at session start it runs `pi-pool adopt-logins` (next section) and tells you if it moved a login |
+| refusal probe | at session start it runs `pi-pool probe`, which sends one free `count_tokens` request per account with a valid token, at most every 6 hours. A refused account gets a 24h cooldown in the pool and `enforcedUntil` in tokenmaxxing's index, so supervised `claude` sessions avoid it too |
 
-The Agents view reserves 65% of the table width for session names. Model and Activity
-use the remaining space after Cost and Age. On narrow terminals, names stop growing
-when the reserved Cost and Age columns need the space.
+Prime 0.9.5 keeps `setStatus` text but its footer never draws it, which is why the account
+line is a widget.
 
-The patcher locates readable esbuild output by function anchors. Every edit carries a
-`/* pi-pool */` marker. It validates all anchors, original backups, and staged syntax
-before replacing a bundle. It installs exports before imports and removes imports first.
-Interrupted apply or unpatch can run again. Unknown changes or mismatched backups stop
-without replacing a bundle. `--check` reports 0 for patched, 1 for pending, and 2 for an
-unsupported shape or backup.
+## A stored /login would bypass the pool
 
-`prime-agent update` replaces the package. The existing `com.sieun.pi-pool-patch`
-LaunchAgent reapplies the maintained patch. Applying a patch does not restart a daemon.
-Running processes retain their loaded code.
+Prime resolves a provider's key from `auth.json` first and runs the models.json
+`!command` only when `auth.json` has nothing for that provider. A `/login` for
+`anthropic` or `openai-codex` therefore silently takes every request away from the pool.
 
-A usable command credential skips native fallback lookup and refresh. Command failures
-use the existing native retry budget. Known-stale credentials require `/login`.
-Compaction rereads the key and headers on every attempt. It preserves each summary's
-request identity and stops uncompressed continuation after auth exhaustion.
+`pi-pool adopt-logins` moves such a login out of `auth.json` into `fallback.json`, under
+Prime's own `auth.json.lock`. It only touches providers whose models.json `apiKey` is the
+pool hook. The login still serves as the fallback: when no pooled account can serve, the
+hook refreshes and returns it (both providers). The extension runs this at every session
+start, so a new `/login` is adopted the next time a session starts. A worker that already
+holds the login in memory keeps using it until its session is rebuilt.
 
-Request credential commands run asynchronously with the existing 10-second timeout and
-1 MiB output limit. User abort does not kill an in-flight credential owner. The owner
-can finish persisting a rotated grant, but its result cannot trigger fallback or a
-provider request after abort. This does not guarantee that all descendants exit in 10 seconds.
-Generic configuration and header commands retain their native behavior.
+## Codex WebSocket reuse after a switch
 
-Run isolated native regressions as described in [tests/native/README.md](tests/native/README.md).
-
-The display reads only local files, cached by mtime, at most one stat per second per file.
-
-## Patch updater LaunchAgent
-
-`app/install_patch_agent.py` prints the `com.sieun.pi-pool-patch` plist by default.
-`--prime-root` or `PI_POOL_PRIME_AGENT_ROOT` selects a package without PATH lookup.
-`--write` builds a generated service runtime and writes the plist under
-`~/Library/LaunchAgents`. It does not call `launchctl` or run the patcher.
-
-macOS can deny LaunchAgents access to source under `Documents`, even when the same
-command works in a terminal. The service runs generated files outside that directory.
-The repository remains the source of truth.
-
-```text
-repository/components/pi-pool/app/
-  patch_prime_agent.py + pi-pool-status.js
-                 |
-                 | install_patch_agent.py --write
-                 v
-~/.local/share/sieun-pi/pool-patch/app/
-  patch_prime_agent.py + pi-pool-status.js   generated code only
-
-~/.config/pi-pool/                          state and logs only
-```
-
-The generator copies only those two files. It does not copy the extension, credentials,
-state or backups. Repeated writes retain unchanged files and refresh changed source files.
-An unknown entry or symlink in the runtime `app` directory stops the write without deleting it.
-The generated code root and state root stay separate, so the source-write protections still apply.
-
-The service invokes the generated patcher with `apply --bundle-only`.
-This mode reads its helper from the generated runtime and never reads, installs, removes
-or retargets the `/account` extension. `check --bundle-only` checks only bundle patches
-and that helper. Normal source `patch`, `patch --check` and `unpatch` still manage the extension.
-Logs stay under the explicit `PI_POOL_DIR` in the generated environment.
-
-The plist preserves the updater schedule. It watches the package parent and `package.json`,
-waits 20 seconds before patching, runs at load and every 1800 seconds, and uses a
-30-second throttle. HOME, PATH, `PI_POOL_DIR`, `PI_POOL_PRIME_AGENT_ROOT` and
-`PRIME_AGENT_CODING_AGENT_DIR` are explicit in its environment.
-
-Only the coordinating root session installs or reloads this agent in the live HOME.
-From the repository root, inspect the dry run before writing the generated files.
-
-```text
-/usr/bin/python3 -B components/pi-pool/app/install_patch_agent.py
-/usr/bin/python3 -B components/pi-pool/app/install_patch_agent.py --write
-```
-
-For a new agent, bootstrap the generated plist manually.
-
-```sh
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.sieun.pi-pool-patch.plist"
-```
-
-For an already loaded agent, unload it before bootstrapping the new plist.
-
-```sh
-launchctl bootout "gui/$(id -u)/com.sieun.pi-pool-patch"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.sieun.pi-pool-patch.plist"
-```
-
-After changing the source patcher or helper, run the generator with `--write` again.
-Otherwise the service retains the previous generated code and helper.
-Changing the Node installation path also requires reloading the regenerated plist.
-The updater does not restart Prime Agent daemons after a patch.
+Prime caches one Codex WebSocket per session, keyed by session id only. After the pool
+moves a session to another Codex account, requests keep riding the open socket, which
+was authorized as the old account, until the socket closes (idle timeout or an error).
+If that matters, set `"transport": "sse"` in `~/.prime/agent/settings.json`: every
+request then carries the current token, at the cost of the WebSocket's cached context.
 
 ## Config
 
 `~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (vend.py): `refresh_skew_sec`,
 `five_hour_max_pct`, `seven_day_max_pct`, `cooldown_sec`, `session_penalty`,
-`active_account_penalty`, `allow_active_account`, `switch_models`, `pin_ttl_sec`.
+`active_account_penalty`, `allow_active_account`, `switch_models`, `pin_ttl_sec`,
+`active_session_sec`, `refused_cooldown_sec`, `probe_interval_sec`.
 v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode` are gone with the
 per-process mode and the per-session balancing they tuned.
 
@@ -321,23 +249,20 @@ per-process mode and the per-session balancing they tuned.
   healed on the next vend.
 - The pool flock is never held across a refresh, so `pi-pool use` never queues behind one.
 - Every wait is budgeted under pi's 10s hook timeout.
-- An anthropic failure degrades to `fallback.json` (your own login, a separate grant
-  family) rather than "No API key found".
+- A failure on either provider degrades to `fallback.json` (your own login, a separate
+  grant family) rather than "No API key found".
 
 ## Footguns
 
-- `/login` writes an entry back into `auth.json`. On a patched bundle the models.json
-  hook still wins; on an unpatched one the login silently disables the pool.
+- `/login` writes an entry back into `auth.json`, which outranks the pool hook until the
+  next session start adopts it (or run `pi-pool adopt-logins`).
 - `ANTHROPIC_API_KEY` / `ANTHROPIC_OAUTH_TOKEN` in the environment outrank the hook.
 - `pi-pool use` needs a session. Outside one, pass `--session <id>`.
 - Third-party harness usage meters against each account's own quota.
 
 ## Rollback
 
-    pi-pool unpatch
-
-This restores validated bundle backups and removes the pool helper and extension link.
-It does not change credentials or provider configuration. Restore the previous
-provider configuration from the installer's external backup if you want to stop
-using the pool hook. The deprecated `vend.py.v1` is not part of this source.
+Remove the extension link `~/.prime/agent/extensions/pi-pool` and restore the previous
+provider configuration from the installer's external backup to stop using the pool hook.
+`fallback.json` holds any adopted login; copy an entry back into `auth.json` to restore it.
 Do not copy files over the installed source symlinks.

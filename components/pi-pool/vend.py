@@ -18,7 +18,7 @@ Private rotation journals live under the pool state directory.
 
 stdout = the token, and nothing else. All diagnostics go to the log file.
 """
-import base64, collections, dataclasses, fcntl, hashlib, json, os, re, shlex, subprocess, sys, time, unicodedata, urllib.request, urllib.error
+import base64, collections, dataclasses, fcntl, hashlib, json, os, re, shlex, shutil, subprocess, sys, time, unicodedata, urllib.request, urllib.error
 
 HOME = os.path.expanduser("~")
 TM = os.environ.get("TOKENMAXXING_HOME") or os.path.join(HOME, ".config", "tokenmaxxing")
@@ -71,9 +71,14 @@ DEFAULTS = {
     "switch_models": ["fable"],
     # a session record with no vend and no fresh pin for this long is dropped
     "pin_ttl_sec": 7 * 24 * 3600,
+    # a session counts as running on an account if it vended within this window
+    "active_session_sec": 3600,
     # cooldown for an anthropic account whose organization refuses OAuth
     # (HTTP 403 oauth_not_allowed_for_organization) or rejects its token
-    "refused_cooldown_sec": 6 * 3600,
+    "refused_cooldown_sec": 24 * 3600,
+    # `pi-pool probe` (run by the extension at session start) checks every
+    # account for a refusal at most this often
+    "probe_interval_sec": 6 * 3600,
 }
 
 
@@ -313,23 +318,49 @@ def anthropic_refusal(access_token):
         return None
 
 
-def mark_needs_reauth(index_path, account_id):
-    """Flag a dead grant in tokenmaxxing's own index, so `tokenmaxxing auth
-    --all` offers it and no later request retries the dead refresh. Call under
-    that index's flock."""
+def update_tm_account(index_path, account_id, change):
+    """Apply `change(record)` to one account in tokenmaxxing's own index and
+    write it back atomically when it returns True. Call under that index's flock."""
     idx = load_json(index_path)
     if not idx or idx.get("version") != TM_INDEX_VERSION:
-        return
+        return False
     for rec in idx.get("accounts", []):
-        if rec.get("id") == account_id and not rec.get("needsReauth"):
-            rec["needsReauth"] = True
+        if rec.get("id") == account_id and change(rec):
             tmp = f"{index_path}.tmp.{os.getpid()}"
             with open(tmp, "w") as f:
                 f.write(json.dumps(idx, indent=2) + "\n")
             os.chmod(tmp, 0o600)
             os.replace(tmp, index_path)
-            log("marked_needs_reauth", account=rec.get("email"))
-            return
+            return True
+    return False
+
+
+def mark_needs_reauth(index_path, account_id):
+    """Flag a dead grant in tokenmaxxing's own index, so `tokenmaxxing auth
+    --all` offers it and no later request retries the dead refresh. Call under
+    that index's flock."""
+    def change(rec):
+        if rec.get("needsReauth"):
+            return False
+        rec["needsReauth"] = True
+        return True
+    if update_tm_account(index_path, account_id, change):
+        log("marked_needs_reauth", account_id=account_id)
+
+
+def mark_refused(account_id, until):
+    """Tell tokenmaxxing an account is refused until `until` (epoch seconds) via
+    its own enforcedUntil field, the one it sets when the server walls an
+    account. Its picker then keeps supervised `claude` sessions off it too."""
+    until_ms = int(until * 1000)
+
+    def change(rec):
+        if (rec.get("enforcedUntil") or 0) >= until_ms:
+            return False
+        rec["enforcedUntil"] = until_ms
+        return True
+    with Flock(TM_LOCK, timeout=TM_LOCK_TIMEOUT):
+        update_tm_account(TM_ACCOUNTS, account_id, change)
 
 
 def refresh_codex_token(refresh_token_value):
@@ -572,6 +603,9 @@ class Account:
     is_live: bool
     cred: object
     plan: str = ""
+    tier: str = ""
+    windows: tuple = ()
+    usage_at: float = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -712,6 +746,8 @@ def _load_index_anthropic():
             needs_reauth=bool(a.get("needsReauth")), session_pct=five, weekly_pct=seven,
             gated_pct=gated_pct(a, cfg, now), is_live=a["id"] in live,
             cred=Keychain(store_service(store), store),
+            tier=a.get("tier") or "", windows=tuple(a.get("windows") or ()),
+            usage_at=(a.get("lastUsageAt") or 0) / 1000,
         ))
     return out
 
@@ -727,7 +763,8 @@ def _load_index_codex():
             needs_reauth=bool(a.get("needsReauth")), session_pct=session_pct,
             weekly_pct=weekly_pct, gated_pct=0, is_live=a["id"] in live,
             cred=CredFile(os.path.join(TM_CODEX_STORES, a["id"][:8], "auth.json")),
-            plan=(a.get("tier") or "").lower(),
+            plan=(a.get("tier") or "").lower(), tier=a.get("tier") or "",
+            windows=tuple(a.get("windows") or ()), usage_at=(a.get("lastUsageAt") or 0) / 1000,
         ))
     return out
 
@@ -823,8 +860,7 @@ def format_reason(a, cooldowns, cfg, now):
     """unusable_reason with a cooldown countdown, for a human or JSON row."""
     reason = unusable_reason(a, cooldowns, cfg, now)
     if reason == "cooldown":
-        left = max(0.0, cooldowns.get(a.id, now) - now)
-        return f"cooldown {max(1, int(left // 60))}m"
+        return f"cooldown {fmt_dur(max(60.0, cooldowns.get(a.id, now) - now))}"
     return reason
 
 
@@ -874,7 +910,10 @@ def resolve(intent, accounts, in_use, cooldowns, cfg, now):
     if intent.session_pin:
         a = by_id.get(intent.session_pin)
         why = "missing" if a is None else unusable_reason(a, cooldowns, cfg, now)
-        if a is not None and (why is None or (intent.session_pin_force and not a.needs_reauth)):
+        # --force outranks usage, never a dead login or an account the API refused
+        # (the only thing that sets a cooldown), since both fail every request.
+        forced = intent.session_pin_force and not a.needs_reauth and cooldowns.get(a.id, 0) <= now if a else False
+        if a is not None and (why is None or forced):
             return Resolution(a, "session_pin", None)
         shadowed = (intent.session_pin, why)
 
@@ -896,12 +935,17 @@ def resolve(intent, accounts, in_use, cooldowns, cfg, now):
     return Resolution(pool[0], "seat_move", shadowed) if pool else None
 
 
-def in_use_counts(state, provider):
-    """Sessions currently vending each account, for the picker's smoothing."""
+def in_use_counts(state, provider, now=None, window_sec=None):
+    """Sessions currently vending each account, for the picker's smoothing.
+    Only a vend within `active_session_sec` counts: a session record lives for
+    pin_ttl_sec (a week) after its last request, and counting those idle
+    records charged an account for sessions that ended days ago."""
+    now = time.time() if now is None else now
+    window_sec = config()["active_session_sec"] if window_sec is None else window_sec
     counts = {}
     for rec in state["sessions"].values():
         vend = (rec.get("vends") or {}).get(provider)
-        if vend:
+        if vend and now - (vend.get("at") or 0) <= window_sec:
             counts[vend["account_id"]] = counts.get(vend["account_id"], 0) + 1
     return counts
 
@@ -930,8 +974,11 @@ class HookWriter:
     def move_seat(self, provider, account, now):
         self._state["providers"][provider]["seat"] = {"account_id": account.id, "since": now}
 
-    def set_cooldown(self, provider, account_id, until):
-        self._state["providers"][provider]["cooldowns"][account_id] = until
+    def set_cooldown(self, provider, account_id, until, reason=None):
+        prov = self._state["providers"][provider]
+        prov["cooldowns"][account_id] = until
+        if reason:
+            prov.setdefault("cooldown_reasons", {})[account_id] = reason
 
     def prune(self, cfg, now):
         """Drop expired cooldowns, and sessions that have not vended for
@@ -942,8 +989,12 @@ class HookWriter:
         dropped = 0
         for provider in PROVIDERS:
             cd = self._state["providers"][provider]["cooldowns"]
+            reasons = self._state["providers"][provider].get("cooldown_reasons") or {}
             for account_id in [u for u, t in cd.items() if t <= now]:
                 del cd[account_id]
+                dropped += 1
+            for account_id in [u for u in reasons if u not in cd]:
+                del reasons[account_id]
                 dropped += 1
         ttl = cfg["pin_ttl_sec"]
         for key in list(self._state["sessions"]):
@@ -1071,27 +1122,170 @@ def credential_for(a, cfg):
     raise RuntimeError(f"unknown credential kind for {a.id}")
 
 
-def fallback_token(cfg):
-    """The user's own anthropic OAuth grant (independent family), used only
-    when no pooled account can serve. Codex has no equivalent: a codex vend
-    failure exits non-zero and the daemon falls back to the stored login."""
-    fb = load_json(FALLBACK)
-    if not fb:
-        return None
-    if "anthropic" not in fb:
-        fb = {"anthropic": fb}
-    creds = fb["anthropic"]
-    if creds.get("type") != "oauth":
-        return None
-    if (creds["expires"] - time.time() * 1000) / 1000 > cfg["refresh_skew_sec"]:
+def agent_dir():
+    return os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or os.path.join(HOME, ".prime", "agent")
+
+
+def load_fallback():
+    fb = load_json(FALLBACK) or {}
+    # The first fallback.json held one bare anthropic credential.
+    return {"anthropic": fb} if fb and "type" in fb else fb
+
+
+def fallback_token(provider, cfg):
+    """The user's own OAuth login for `provider`, adopted out of Prime's
+    auth.json (see adopt-logins). Used only when no pooled account can serve.
+    It is an independent grant family, so refreshing it never touches a store."""
+    with Flock(os.path.join(POOL, "fallback.lock"), timeout=TM_LOCK_TIMEOUT):
+        fb = load_fallback()
+        creds = fb.get(provider)
+        if not creds or creds.get("type") != "oauth":
+            return None
+        if (creds["expires"] - time.time() * 1000) / 1000 > cfg["refresh_skew_sec"]:
+            return creds["access"]
+        if provider == "anthropic":
+            fresh = refresh_token({"refreshToken": creds["refresh"], "scopes": creds.get("scopes")})
+            creds = dict(creds, access=fresh["accessToken"], refresh=fresh["refreshToken"],
+                         expires=fresh["expiresAt"])
+        else:
+            fresh = refresh_codex_token(creds["refresh"])
+            creds = dict(creds, access=fresh["access_token"],
+                         refresh=fresh.get("refresh_token") or creds["refresh"],
+                         expires=jwt_claims(fresh["access_token"])["exp"] * 1000)
+        fb[provider] = creds
+        save_json(FALLBACK, fb)
+        log("fallback_refreshed", provider=provider)
         return creds["access"]
-    fresh = refresh_token({"refreshToken": creds["refresh"], "scopes": creds.get("scopes")})
-    creds = {"type": "oauth", "access": fresh["accessToken"],
-             "refresh": fresh["refreshToken"], "expires": fresh["expiresAt"]}
-    fb["anthropic"] = creds
-    save_json(FALLBACK, fb)
-    log("fallback_refreshed")
-    return creds["access"]
+
+
+class AuthJsonLock:
+    """Prime's own lock on auth.json: proper-lockfile's `<file>.lock` directory,
+    stale after 30s, the lock AuthStorage.withLockAsync takes before a write."""
+
+    STALE_SEC = 30.0
+
+    def __init__(self, path, timeout=5.0):
+        self.dir, self.timeout = path + ".lock", timeout
+
+    def __enter__(self):
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                os.mkdir(self.dir)
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - os.stat(self.dir).st_mtime > self.STALE_SEC:
+                        os.rmdir(self.dir)
+                        continue
+                except OSError:
+                    continue
+            if time.time() >= deadline:
+                raise TimeoutError(f"{self.dir} is held")
+            time.sleep(0.1)
+
+    def __exit__(self, *exc):
+        try:
+            os.rmdir(self.dir)
+        except OSError:
+            pass
+        return False
+
+
+def pooled_providers():
+    """Providers whose models.json apiKey is this pool's hook."""
+    providers = (load_json(os.path.join(agent_dir(), "models.json"), {}) or {}).get("providers") or {}
+    return [p for p in PROVIDERS
+            if isinstance((providers.get(p) or {}).get("apiKey"), str)
+            and providers[p]["apiKey"].startswith("!") and "pi-pool" in providers[p]["apiKey"]]
+
+
+def cmd_adopt_logins(rest=()):
+    """Prime reads auth.json before the models.json hook, so a stored /login for a
+    pooled provider silently bypasses the pool. Move each such login into
+    fallback.json, where it still serves when the whole pool cannot."""
+    auth_path = os.path.join(agent_dir(), "auth.json")
+    wanted = pooled_providers()
+    if not wanted or not os.path.exists(auth_path):
+        return 0
+    moved = []
+    with AuthJsonLock(auth_path):
+        auth = load_json(auth_path)
+        if not isinstance(auth, dict):
+            return 0
+        hits = [p for p in wanted if p in auth]
+        if not hits:
+            return 0
+        with Flock(os.path.join(POOL, "fallback.lock"), timeout=TM_LOCK_TIMEOUT):
+            fb = load_fallback()
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            os.makedirs(os.path.join(POOL, "backups"), mode=0o700, exist_ok=True)
+            for p in hits:
+                if fb.get(p):
+                    save_json(os.path.join(POOL, "backups", f"fallback.{p}.{stamp}.json"), fb[p])
+                fb[p] = auth.pop(p)
+                moved.append(p)
+            save_json(FALLBACK, fb)
+        save_json(auth_path, auth)
+    log("adopted_logins", providers=moved)
+    print(f"moved the stored {', '.join(moved)} login into the pool fallback; the pool now serves "
+          f"{'these providers' if len(moved) > 1 else 'this provider'}")
+    return 0
+
+
+def apply_refusal(account, refusal, cfg, now):
+    """Cool an API-refused anthropic account down in the pool and in tokenmaxxing."""
+    until = now + cfg["refused_cooldown_sec"]
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        HookWriter(state).set_cooldown("anthropic", account.id, until, refusal)
+        save_json(STATE, state)
+    try:
+        mark_refused(account.id, until)
+    except Exception as e:
+        log("mark_refused_failed", account=account.email, error=str(e))
+
+
+def cmd_probe(rest=()):
+    """Probe every anthropic account with a still-valid access token for an
+    API refusal, at most once per probe_interval_sec unless --force. Never
+    refreshes a token, so it rotates nothing. The extension runs this at session
+    start, which is how a refusal is found before any request lands on it."""
+    cfg, now = config(), time.time()
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        prov = state["providers"]["anthropic"]
+        if "--force" not in rest and now - (prov.get("last_probe") or 0) < cfg["probe_interval_sec"]:
+            return 0
+        prov["last_probe"] = now
+        save_json(STATE, state)
+    reasons = prov.get("cooldown_reasons") or {}
+    lines = []
+    for a in load_index("anthropic"):
+        if a.needs_reauth:
+            continue
+        try:
+            creds = KeychainAdapter(a.cred.service).read()
+        except Exception:
+            continue
+        if not creds or (creds.get("expiresAt") or 0) / 1000 - now < 60:
+            continue
+        refusal = anthropic_refusal(creds["accessToken"])
+        if refusal:
+            apply_refusal(a, refusal, cfg, now)
+            lines.append(f"{a.email}: {refusal}")
+        elif a.id in reasons:
+            with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+                state = load_state()
+                p = state["providers"]["anthropic"]
+                p["cooldowns"].pop(a.id, None)
+                (p.get("cooldown_reasons") or {}).pop(a.id, None)
+                save_json(STATE, state)
+            lines.append(f"{a.email}: accepted again")
+    log("probe", results=lines)
+    if lines:
+        print("; ".join(lines))
+    return 0
 
 
 # ---------------------------------------------------------------------- vend
@@ -1141,10 +1335,7 @@ def vend(provider):
             if refusal:
                 errors.append(f"{account.email}: {refusal}")
                 log("account_refused", provider=provider, account=account.email, error=refusal)
-                with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
-                    state = load_state()
-                    HookWriter(state).set_cooldown(provider, account.id, now + cfg["refused_cooldown_sec"])
-                    save_json(STATE, state)
+                apply_refusal(account, refusal, cfg, now)
                 cooldowns[account.id] = now + cfg["refused_cooldown_sec"]
                 continue
         with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
@@ -1217,7 +1408,7 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_i
         row = {
             "id": a.id, "email": a.email,
             "usage": f"{a.session_pct}%/{a.weekly_pct}%",
-            "session_pct": a.session_pct, "weekly_pct": a.weekly_pct,
+            "session_pct": a.session_pct, "weekly_pct": a.weekly_pct, "gated_pct": a.gated_pct,
             "usable": usable, "reason": reason,
             "current": a.id == current_id, "pinned": pinned, "force": force,
             "live": a.is_live, "seat": a.id == seat_id,
@@ -1229,88 +1420,235 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_i
     return rows
 
 
-def _bundle_patched():
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "patch_prime_agent", os.path.join(CODE_ROOT, "app", "patch_prime_agent.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod.check(quiet=True) == 0
-    except (Exception, SystemExit):
-        # package_root()/locate() answer a missing or binary-release prime-agent
-        # with SystemExit, which is a BaseException; letting it escape killed
-        # every `ls` (and with it /account) instead of degrading to unpatched.
-        return False
+# ------------------------------------------------------------------ rendering
+# `status` and `watch` draw one card per account in a grid, the same layout as
+# `tokenmaxxing status`, plus what only the pool knows: the seat, pins, the
+# sessions on each account, cooldowns, and which account the pool picks next.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+CARD_GAP = 3
+NOTE_INDENT = "    "
+BAR_WIDTH = 16
+STALE_USAGE_SEC = 20 * 60
+PROVIDER_TITLES = {"anthropic": "claude", "openai-codex": "codex"}
 
 
-def _run_patch_module(argv):
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "patch_prime_agent", os.path.join(CODE_ROOT, "app", "patch_prime_agent.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.main(argv)
+class Paint:
+    def __init__(self, enabled):
+        self.enabled = enabled
+
+    def _wrap(self, code, s):
+        return f"\x1b[{code}m{s}\x1b[0m" if self.enabled else s
+
+    def dim(self, s): return self._wrap("2", s)
+    def bold(self, s): return self._wrap("1", s)
+    def green(self, s): return self._wrap("32", s)
+    def yellow(self, s): return self._wrap("33", s)
+    def red(self, s): return self._wrap("31", s)
+    def cyan(self, s): return self._wrap("36", s)
+
+
+def visible_len(s):
+    return len(ANSI_RE.sub("", s))
+
+
+def usage_bar(p, pct):
+    pct = max(0, min(100, pct))
+    filled = round(pct / 100 * BAR_WIDTH)
+    body = "\u2588" * filled + "\u2591" * (BAR_WIDTH - filled)
+    paint = p.red if pct >= 95 else p.yellow if pct >= 75 else p.green
+    return f"{paint(body)} {pct:3.0f}%"
+
+
+def fmt_ago(sec):
+    return "just now" if sec < 60 else f"{fmt_dur(sec)} ago"
+
+
+def window_rows(p, a, now):
+    """(label, pct, reset) rows: the session and weekly windows, then every
+    named per-model cap (Fable, Sonnet, a codex additional limit)."""
+    rows = []
+    session, weekly = session_window(dict(windows=a.windows)), weekly_window(dict(windows=a.windows))
+    if session:
+        rows.append((f"{round((session.get('windowSeconds') or 0) / 3600)}h", live_pct(session, now), reset_in(session, now)))
+    if weekly:
+        label = "week" if (weekly.get("windowSeconds") or 0) <= 8 * 86400 else f"{round(weekly['windowSeconds'] / 86400)}d"
+        rows.append((label, live_pct(weekly, now), reset_in(weekly, now)))
+    for w in a.windows:
+        if w.get("name") is not None:
+            rows.append((w["name"].lower()[:6], live_pct(w, now), reset_in(w, now)))
+    return [f"{NOTE_INDENT}{label:6s}{usage_bar(p, pct)}" + (p.dim(f"  {fmt_dur(reset)}") if reset and pct > 0 else "")
+            for label, pct, reset in rows]
+
+
+def account_card(p, a, ctx):
+    """(lines, notes) for one account. Notes wrap to the cell width later."""
+    now, reason = ctx["now"], ctx["reasons"].get(a.id)
+    seat, sessions = ctx["seat_id"] == a.id, ctx["in_use"].get(a.id, 0)
+    marker = p.green("\u25cf") if seat else p.dim("\u25cb")
+    badges = []
+    if seat:
+        badges.append(p.green("seat"))
+    if ctx["pool_pin"] == a.id:
+        badges.append(p.cyan("pool pin"))
+    if a.id == ctx["next_id"]:
+        badges.append(p.cyan("next"))
+    if sessions:
+        badges.append(p.green(f"{sessions} session{'s' if sessions != 1 else ''}"))
+    if a.is_live:
+        badges.append(p.cyan("supervised"))
+    if reason == "needs-reauth":
+        badges.append(p.red("needs-reauth"))
+    elif reason == "depleted":
+        badges.append(p.yellow("exhausted"))
+    elif reason and reason.startswith("cooldown"):
+        badges.append(p.yellow(reason))
+    tier = f" {p.dim(a.tier)}" if a.tier else ""
+    lines = [f"{marker} {p.bold(a.email)}{tier}" + (f" {' '.join(badges)}" if badges else "")]
+    lines += window_rows(p, a, now) if a.windows else [f"{NOTE_INDENT}{p.dim('never sampled')}"]
+    notes = []
+    if reason == "needs-reauth":
+        flag = " --codex" if a.provider == "openai-codex" else ""
+        notes.append((p.red, f"login is dead: tokenmaxxing auth{flag} {a.email}"))
+    elif reason and reason.startswith("cooldown"):
+        why = ctx["cooldown_reasons"].get(a.id)
+        notes.append((p.yellow, f"refused: {why}" if why else "cooling down after a failure"))
+    if a.windows and reason != "needs-reauth" and now - a.usage_at > STALE_USAGE_SEC:
+        notes.append((p.dim, f"usage from {fmt_ago(now - a.usage_at)}"))
+    return lines, notes
+
+
+def wrap_words(text, width):
+    out, line = [], ""
+    for word in text.split(" "):
+        while len(word) > width:
+            if line:
+                out.append(line)
+                line = ""
+            out.append(word[:width])
+            word = word[width:]
+        if line and len(line) + 1 + len(word) > width:
+            out.append(line)
+            line = word
+        else:
+            line = f"{line} {word}" if line else word
+    if line:
+        out.append(line)
+    return out
+
+
+def render_grid(cards, term_width):
+    """Lay cards out left to right, as many columns as the terminal fits."""
+    if not cards:
+        return []
+    body = max(visible_len(l) for lines, _ in cards for l in lines)
+    columns = max(1, min(len(cards), (term_width + CARD_GAP) // (body + CARD_GAP)))
+    cell = term_width if columns == 1 else (term_width + CARD_GAP) // columns - CARD_GAP
+    blocks = []
+    for lines, notes in cards:
+        block = list(lines)
+        for paint, text in notes:
+            block += [NOTE_INDENT + paint(l) for l in wrap_words(text, max(10, cell - len(NOTE_INDENT)))]
+        blocks.append(block)
+    width = max(visible_len(l) for b in blocks for l in b)
+    out = []
+    for start in range(0, len(blocks), columns):
+        row = blocks[start:start + columns]
+        for i in range(max(len(b) for b in row)):
+            cells = [b[i] if i < len(b) else "" for b in row]
+            out.append("".join(c + " " * (width + CARD_GAP - visible_len(c)) if k < len(cells) - 1 else c
+                               for k, c in enumerate(cells)).rstrip())
+        out.append("")
+    return out
+
+
+def card_order(a, ctx):
+    reason = ctx["reasons"].get(a.id)
+    rank = 0 if ctx["seat_id"] == a.id else 1 if reason is None else 3 if reason == "needs-reauth" else 2
+    return (rank, ctx["scores"].get(a.id, 1e9), a.email)
+
+
+def status_lines(providers, p, term_width, now=None):
+    now = time.time() if now is None else now
+    cfg, state = config(), load_state()
+    out = [p.dim(f"pool limits 5h {cfg['five_hour_max_pct']}%  week {cfg['seven_day_max_pct']}%"
+                 f"  {'/'.join(cfg['switch_models'])} {cfg['seven_day_max_pct']}%"), ""]
+    for provider in providers:
+        title = PROVIDER_TITLES.get(provider, provider)
+        try:
+            accounts = load_index(provider)
+        except Exception as e:
+            out += [p.red(f"{title}: {e}"), ""]
+            continue
+        prov = state["providers"][provider]
+        in_use = in_use_counts(state, provider, now)
+        cooldowns = prov["cooldowns"]
+        seat_id = (prov.get("seat") or {}).get("account_id")
+        ranked = rank(accounts, in_use, cooldowns, cfg, now)
+        reasons = {a.id: format_reason(a, cooldowns, cfg, now) for a in accounts}
+        ctx = {"now": now, "in_use": in_use, "seat_id": seat_id, "pool_pin": prov.get("pin"),
+               "next_id": next((a.id for a in ranked if a.id != seat_id), None),
+               "reasons": reasons, "cooldown_reasons": prov.get("cooldown_reasons") or {},
+               "scores": {a.id: account_score(a, in_use, cfg) for a in ranked}}
+        seat = next((a for a in accounts if a.id == seat_id), None)
+        head = [f"{title}  ({len(accounts)} accounts)"]
+        if prov.get("pin"):
+            pinned = next((a.email for a in accounts if a.id == prov["pin"]), prov["pin"])
+            head.append(f"pool pinned to {pinned}")
+        elif seat:
+            head.append(f"seat {seat.email} for {fmt_dur(now - (prov['seat'].get('since') or now))}")
+        else:
+            head.append("no seat yet")
+        fallback = (load_fallback().get(provider) or {}).get("type") == "oauth"
+        if ranked:
+            head.append(f"{len(ranked)} usable")
+        else:
+            head.append(p.yellow("0 usable, requests use your own login (fallback.json)" if fallback
+                                 else "0 usable, requests will fail"))
+        head.append(f"{sum(in_use.values())} active sessions")
+        out += [p.dim("  \u00b7  ".join(head)), ""]
+        cards = [account_card(p, a, ctx) for a in sorted(accounts, key=lambda a: card_order(a, ctx))]
+        out += render_grid(cards, term_width)
+    return out
 
 
 def cmd_status(rest=()):
     f = parse_flags(rest, provider_default=None)
-    cfg, now = config(), time.time()
-    state = load_state()
-    for provider in ([f["provider"]] if f["provider"] else list(PROVIDERS)):
-        try:
-            accounts = load_index(provider)
-        except Exception as e:
-            print(f"=== {provider} ===\n{e}\n")
-            continue
-        in_use = in_use_counts(state, provider)
-        cooldowns = state["providers"][provider]["cooldowns"]
-        pool_pin = state["providers"][provider].get("pin")
-        seat = state["providers"][provider].get("seat")
-        by_id = {a.id: a for a in accounts}
-        print(f"=== {provider} ===")
-        if pool_pin:
-            hit = by_id.get(pool_pin)
-            print(f"pool pin: {hit.email if hit else pool_pin}")
-        elif seat:
-            hit = by_id.get(seat["account_id"])
-            print(f"seat: {hit.email if hit else seat['account_id']}, "
-                  f"held {fmt_dur(now - seat.get('since', now))}")
-        else:
-            print("seat: unset (first vend picks)")
-        print(f"{'account':30s} {'usage':>10} {'sessions':>9} {'score':>6}  state")
-        for a in sorted(accounts, key=lambda a: a.email):
-            reason = format_reason(a, cooldowns, cfg, now)
-            n = in_use.get(a.id, 0)
-            sc = f"{account_score(a, in_use, cfg):6.0f}" if reason is None else "     -"
-            flags = []
-            if seat and seat.get("account_id") == a.id:
-                flags.append("seat")
-            if pool_pin == a.id:
-                flags.append("pinned")
-            if a.is_live:
-                flags.append("live")
-            if reason:
-                flags.append(reason)
-            usage = f"{a.session_pct}%/{a.weekly_pct}%"
-            print(f"{a.email:30s} {usage:>9} {n:9d} {sc}  {' '.join(flags) or 'available'}")
-        active = sum(1 for rec in state["sessions"].values() if (rec.get("vends") or {}).get(provider))
-        print(f"active sessions: {active}\n")
+    providers = [f["provider"]] if f["provider"] else list(PROVIDERS)
+    p = Paint(sys.stdout.isatty() and not os.environ.get("NO_COLOR"))
+    width = shutil.get_terminal_size((120, 40)).columns
+    print("\n".join(status_lines(providers, p, width)).rstrip())
     return 0
 
 
 def cmd_watch(rest):
-    interval, passthrough = 30, []
+    """Full-screen `status`, redrawn in place every `sec` seconds (default 5)."""
+    interval, passthrough = 5, []
     for tok in rest:
         if tok.isdigit():
-            interval = int(tok)
+            interval = max(1, int(tok))
         else:
             passthrough.append(tok)
-    while True:
-        sys.stdout.write("\x1b[2J\x1b[H")
-        print(time.strftime("%H:%M:%S"), f"(every {interval}s, ctrl-c to quit)")
-        cmd_status(passthrough)
-        time.sleep(interval)
+    f = parse_flags(passthrough, provider_default=None)
+    providers = [f["provider"]] if f["provider"] else list(PROVIDERS)
+    p = Paint(not os.environ.get("NO_COLOR"))
+    sys.stdout.write("\x1b[?1049h\x1b[?25l")
+    try:
+        while True:
+            size = shutil.get_terminal_size((120, 40))
+            try:
+                lines = status_lines(providers, p, size.columns)
+            except Exception as e:
+                lines = [p.red(f"pi-pool status failed: {type(e).__name__}: {e}")]
+            header = p.dim(f"pi-pool watch  {time.strftime('%H:%M:%S')}  every {interval}s  ctrl-c to quit")
+            frame = [header, ""] + lines
+            sys.stdout.write("\x1b[H" + "".join(l + "\x1b[K\n" for l in frame[:size.lines - 1]) + "\x1b[J")
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
 
 
 def cmd_pin(rest):
@@ -1481,13 +1819,13 @@ def cmd_ls(rest):
     seat_id = (state["providers"][provider].get("seat") or {}).get("account_id")
     rows = build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_id)
     seat_account = next((a for a in accounts if a.id == seat_id), None) if seat_id else None
-    out = {"provider": provider, "session": key.key if key else None, "patched": _bundle_patched(),
+    out = {"provider": provider, "session": key.key if key else None,
            "seat": {"id": seat_account.id, "email": seat_account.email} if seat_account else None,
            "rows": rows}
     if f["json"]:
         print(json.dumps(out, indent=2))
         return 0
-    print(f"{provider}  session {out['session'] or '-'}  patched {out['patched']}")
+    print(f"{provider}  session {out['session'] or '-'}")
     if out["seat"]:
         print(f"seat: {out['seat']['email']}")
     width = max([len("account")] + [len(r["email"]) for r in rows])
@@ -1530,6 +1868,8 @@ def cmd_who(rest):
         res = resolve(intent, accounts, in_use, cooldowns, cfg, now)
         rec = state["sessions"].get(key.key) if key else None
         vend_rec = ((rec or {}).get("vends") or {}).get(provider) or {}
+        by_id = {a.id: a for a in accounts}
+        current = by_id.get(vend_rec.get("account_id")) or (res.account if res else None)
         providers_out[provider] = {
             "account": res.account.id if res else None,
             "email": res.account.email if res else None,
@@ -1537,6 +1877,13 @@ def cmd_who(rest):
             "pinned": bool(intent.session_pin),
             "shadowed": list(res.shadowed) if res and res.shadowed else None,
             "at": vend_rec.get("at"),
+            # What the session's requests actually use: its last vend, else what the
+            # next vend resolves to. The extension's footer status shows this.
+            "current": {"email": current.email, "session_pct": current.session_pct,
+                        "weekly_pct": current.weekly_pct, "gated_pct": current.gated_pct,
+                        "next": vend_rec.get("account_id") is not None and res is not None
+                                and res.account.id != vend_rec.get("account_id") and res.account.email}
+                       if current else None,
         }
     out = {"session": key.key if key else None, "providers": providers_out}
     if f["json"]:
@@ -1560,8 +1907,7 @@ def cmd_who(rest):
 def cmd_enable(rest):
     if rest != ["openai-codex"]:
         raise SystemExit("usage: pi-pool enable openai-codex")
-    agent_dir = os.environ.get("PRIME_AGENT_CODING_AGENT_DIR") or os.path.join(HOME, ".prime", "agent")
-    models_path = os.path.join(agent_dir, "models.json")
+    models_path = os.path.join(agent_dir(), "models.json")
 
     models = load_json(models_path, {}) or {}
     providers = models.setdefault("providers", {})
@@ -1573,15 +1919,15 @@ def cmd_enable(rest):
         providers["openai-codex"] = entry
         save_json(models_path, models)
 
-    log("enable", provider="openai-codex", agent_dir=agent_dir, changed=changed)
+    log("enable", provider="openai-codex", agent_dir=agent_dir(), changed=changed)
     status = "enabled" if changed else "already enabled"
     print(f"openai-codex {status} in {models_path}. The native login remains managed by Prime.")
     return 0
 
 
 USAGE = """usage: pi-pool [command]
-  status [--provider <p>]        pool, seat, scores, per provider (default: both)
-  watch [sec] [--provider <p>]   repaint status every sec seconds (default 30)
+  status [--provider <p>]        one card per account: usage bars, seat, sessions, next pick
+  watch [sec] [--provider <p>]   full-screen status, redrawn every sec seconds (default 5)
   pin <email> [--provider <p>]   force EVERY request onto one account until unpin
   unpin [--provider <p>]         release the pool pin (seat rules take over again)
   switch [--provider <p>]        drop the seat; the next request re-picks the best account
@@ -1591,13 +1937,14 @@ USAGE = """usage: pi-pool [command]
                                   the rows /account renders
   who [--json] [--session <id>]  what this session resolves to now, per provider
   enable openai-codex            wire the openai-codex provider into models.json
+  probe [--force]                check every anthropic account for an API refusal (no refresh);
+                                  the extension runs it at session start, at most every 6h
+  adopt-logins                   move a stored /login that would bypass the pool into
+                                  fallback.json (the /account extension runs this per session)
   config                         print the merged config
   set <key> <value>              persist a config override
   log [n]                        last n pool events (default 20)
-  patch [--check]                put the pool into the Prime Agent TUI (tray, splash, agents
-                                  view) and make the models.json hook win over a stored /login;
-                                  re-run after prime-agent update
-  unpatch                        restore the unpatched prime-agent bundle"""
+"""
 
 
 def cli(args):
@@ -1606,11 +1953,10 @@ def cli(args):
         "status": cmd_status, "watch": cmd_watch, "pin": cmd_pin, "unpin": cmd_unpin,
         "switch": cmd_switch, "use": cmd_use, "ls": cmd_ls, "who": cmd_who,
         "config": cmd_config, "set": cmd_set, "log": cmd_log, "enable": cmd_enable,
+        "adopt-logins": cmd_adopt_logins, "probe": cmd_probe,
     }
     if cmd in handlers:
         return handlers[cmd](rest)
-    if cmd in ("patch", "unpatch"):
-        return _run_patch_module(["unpatch"] if cmd == "unpatch" else (rest or ["apply"]))
     raise SystemExit(USAGE)
 
 
@@ -1629,15 +1975,17 @@ def main():
         raise
     except Exception as e:
         # This hook IS the credential path for every request on this provider: a
-        # crash here would surface as "No API key found". anthropic degrades to the
-        # user's own grant; codex has none, so it exits non-zero and the daemon
-        # falls through to the stored /login on a patched bundle.
+        # crash here would surface as "No API key found". Both providers degrade
+        # to the user's own login that adopt-logins moved into fallback.json.
         log("vend_error", error=f"{type(e).__name__}: {e}", provider=provider)
-        if provider == "anthropic":
-            token = fallback_token(config())
-            if token:
-                sys.stdout.write(token)
-                return
+        try:
+            token = fallback_token(provider, config())
+        except Exception as fe:
+            log("fallback_error", error=f"{type(fe).__name__}: {fe}", provider=provider)
+            token = None
+        if token:
+            sys.stdout.write(token)
+            return
         raise
 
 

@@ -384,6 +384,19 @@ class AnthropicRefusal(unittest.TestCase):
                 self.assertIsNone(vend.anthropic_refusal("t"))
 
 
+class MarkRefused(unittest.TestCase):
+    def test_sets_enforced_until_and_never_shortens_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "accounts.json")
+            vend.save_json(path, {"version": 2, "accounts": [{"id": "a", "windows": [], "enforcedUntil": 5000}]})
+            with unittest.mock.patch.object(vend, "TM_ACCOUNTS", path), \
+                 unittest.mock.patch.object(vend, "TM_LOCK", os.path.join(d, "lock")):
+                vend.mark_refused("a", 10)
+                self.assertEqual(vend.load_json(path)["accounts"][0]["enforcedUntil"], 10000)
+                vend.mark_refused("a", 3)
+                self.assertEqual(vend.load_json(path)["accounts"][0]["enforcedUntil"], 10000)
+
+
 class ClaudeRefreshLockDirs(unittest.TestCase):
     def test_takes_and_releases_both_lock_dirs(self):
         with tempfile.TemporaryDirectory() as d:
@@ -561,7 +574,7 @@ class FallbackKeepsSiblingProviders(unittest.TestCase):
         fresh = {"accessToken": "new", "refreshToken": "r2", "expiresAt": 9e12}
         with unittest.mock.patch.object(vend, "FALLBACK", fb_path), \
              unittest.mock.patch.object(vend, "refresh_token", lambda creds: fresh):
-            self.assertEqual(vend.fallback_token(CFG), "new")
+            self.assertEqual(vend.fallback_token("anthropic", CFG), "new")
         after = vend.load_json(fb_path)
         self.assertEqual(after["anthropic"]["access"], "new")
         self.assertEqual(after["openai-codex"]["access"], "c")
@@ -572,8 +585,60 @@ class FallbackKeepsSiblingProviders(unittest.TestCase):
         fresh = {"accessToken": "new", "refreshToken": "r2", "expiresAt": 9e12}
         with unittest.mock.patch.object(vend, "FALLBACK", fb_path), \
              unittest.mock.patch.object(vend, "refresh_token", lambda creds: fresh):
-            self.assertEqual(vend.fallback_token(CFG), "new")
+            self.assertEqual(vend.fallback_token("anthropic", CFG), "new")
         self.assertEqual(vend.load_json(fb_path)["anthropic"]["access"], "new")
+
+    def test_codex_fallback_refreshes_and_keeps_its_account_id(self):
+        fb_path = os.path.join(os.environ["PI_POOL_DIR"], "fallback-codex.json")
+        vend.save_json(fb_path, {"openai-codex": {"type": "oauth", "access": "old", "refresh": "cr",
+                                                  "expires": 0, "accountId": "acc"}})
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": 2000000000}).encode()).rstrip(b"=").decode()
+        fresh = {"access_token": f"h.{payload}.s", "refresh_token": "cr2"}
+        with unittest.mock.patch.object(vend, "FALLBACK", fb_path), \
+             unittest.mock.patch.object(vend, "refresh_codex_token", lambda r: fresh):
+            self.assertEqual(vend.fallback_token("openai-codex", CFG), fresh["access_token"])
+        after = vend.load_json(fb_path)["openai-codex"]
+        self.assertEqual((after["refresh"], after["expires"], after["accountId"]), ("cr2", 2000000000000, "acc"))
+
+
+class AdoptLogins(unittest.TestCase):
+    def test_a_login_for_a_pooled_provider_moves_to_the_fallback(self):
+        with tempfile.TemporaryDirectory() as agent:
+            vend.save_json(os.path.join(agent, "models.json"), {"providers": {
+                "anthropic": {"apiKey": "!/x/pi-pool-token"},
+                "openai-codex": {"apiKey": "!/x/pi-pool-token --provider openai-codex"}}})
+            login = {"type": "oauth", "access": "a", "refresh": "r", "expires": 1, "accountId": "acc"}
+            vend.save_json(os.path.join(agent, "auth.json"), {"openai-codex": login, "virev": {"type": "api_key"}})
+            fb_path = os.path.join(agent, "fallback.json")
+            with unittest.mock.patch.dict(os.environ, {"PRIME_AGENT_CODING_AGENT_DIR": agent}), \
+                 unittest.mock.patch.object(vend, "FALLBACK", fb_path), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                vend.cmd_adopt_logins()
+            self.assertEqual(vend.load_json(os.path.join(agent, "auth.json")), {"virev": {"type": "api_key"}})
+            self.assertEqual(vend.load_json(fb_path)["openai-codex"], login)
+            self.assertFalse(os.path.exists(os.path.join(agent, "auth.json.lock")))
+
+    def test_a_provider_outside_the_pool_keeps_its_login(self):
+        with tempfile.TemporaryDirectory() as agent:
+            vend.save_json(os.path.join(agent, "models.json"), {"providers": {"anthropic": {"apiKey": "sk-x"}}})
+            vend.save_json(os.path.join(agent, "auth.json"), {"anthropic": {"type": "oauth"}})
+            with unittest.mock.patch.dict(os.environ, {"PRIME_AGENT_CODING_AGENT_DIR": agent}):
+                vend.cmd_adopt_logins()
+            self.assertIn("anthropic", vend.load_json(os.path.join(agent, "auth.json")))
+
+
+class RefusedAccountsBreakForcePins(unittest.TestCase):
+    def test_a_force_pin_yields_to_a_refusal_cooldown(self):
+        intent = vend.Intent(session_pin="a", session_pin_force=True, seat="b")
+        res = vend.resolve(intent, [A, B], {}, {"a": NOW + 100}, CFG, NOW)
+        self.assertEqual((res.account.id, res.reason), ("b", "seat"))
+
+
+class InUseCountsOnlyRecentVends(unittest.TestCase):
+    def test_an_idle_session_record_does_not_count(self):
+        state = {"sessions": {"s1": {"vends": {"anthropic": {"account_id": "a", "at": NOW - 10}}},
+                              "s2": {"vends": {"anthropic": {"account_id": "a", "at": NOW - 7200}}}}}
+        self.assertEqual(vend.in_use_counts(state, "anthropic", NOW, 3600), {"a": 1})
 
 if __name__ == "__main__":
     unittest.main()

@@ -812,16 +812,6 @@
       "sha256": "6ea4b70539d9bb64d43095dc120941b7d9e620bba58f20a80b676320ef4cc4b8"
     },
     {
-      "path": "components/pi-pool/app/patch_prime_agent.py",
-      "origin": "~/.config/pi-pool/app/patch_prime_agent.py",
-      "sha256": "337da0d76a7ecbc42f190a48f6a2d80a970a3214b0774c3d7a507f3d19becd54"
-    },
-    {
-      "path": "components/pi-pool/app/pi-pool-status.js",
-      "origin": "~/.config/pi-pool/app/pi-pool-status.js",
-      "sha256": "3504f653da8966ee0a6640181c51e8cda5a85796820b48ec5b45a920665f7956"
-    },
-    {
       "path": "components/pi-pool/bin/pi-pool-token",
       "origin": "~/.config/pi-pool/bin/pi-pool-token",
       "sha256": "22d5cd0f1a4d370e441f76ac8ae52e560cb385eedbe2cc0c927cee38ae61bde2"
@@ -885,11 +875,6 @@
       "path": "components/pi-pool/tests/test_enable_recovery.py",
       "origin": "~/.config/pi-pool/tests/test_enable_recovery.py",
       "sha256": "45129c2d50cbe5fa19b40aae360f4d9ab6d5a0b84363b5dcf53b098fbbac7362"
-    },
-    {
-      "path": "components/pi-pool/tests/test_patch.py",
-      "origin": "~/.config/pi-pool/tests/test_patch.py",
-      "sha256": "69bac21468dea48693294422d261a44fbc2ba5a98ce23a379480c8940a4c15d1"
     },
     {
       "path": "components/pi-pool/vend.py",

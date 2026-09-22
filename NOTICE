@@ -21,8 +21,8 @@ Prime Agent and Pi
   Copyright (c) 2026 Prime Intellect
   License: MIT, reproduced in LICENSES/prime-agent-MIT.txt.
   Source: https://github.com/PrimeIntellect-ai/prime-agent/tree/v0.9.4
-  Scope: upstream bundle excerpts and adapted replacement strings in
-  components/pi-pool/app/patch_prime_agent.py and its patch fixtures/tests.
+  Scope: the pool extension's use of the public extension types and the
+  native regression tests in components/pi-pool/tests/native.
   Prime Agent and its bundled dependencies are separate installations.
 
 Tokenmaxxing

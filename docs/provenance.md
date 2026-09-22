@@ -60,8 +60,8 @@ Its derivative guidance informs Virev's linter and the ticket writing checks; th
 
 ## Prime Agent and Pi excerpts
 
-`components/pi-pool/app/patch_prime_agent.py` embeds upstream bundle excerpts as patch anchors and replacement strings.
-Its patch tests contain related fixtures.
+The bundle patcher that embedded upstream bundle excerpts was removed on 2026-09-23.
+The pool extension uses Prime Agent's public extension types only. The native regression tests under `components/pi-pool/tests/native/` drive an installed Prime Agent copy.
 Prime Agent's [v0.9.4 license](https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.4/LICENSE) is MIT and names both copyright holders:
 
 - Copyright (c) 2025 Mario Zechner.

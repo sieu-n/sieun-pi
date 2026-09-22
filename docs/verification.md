@@ -121,13 +121,10 @@ Their guards are test sentinels, not an operating-system sandbox.
 
 1. Use a fresh Prime session or `/reload` to load command changes. The installer does not restart running sessions.
 2. For another machine, install external tools and configure credentials separately. Run the isolated proof before live apply.
-3. Recheck dependencies when Prime changes. Run the tests and `pi-pool patch --check` before updating the live host.
+3. Recheck dependencies when Prime changes. Run the tests before updating the live host. Since 2026-09-23 the pool applies no bundle patch.
 
 Receipts and original-source backups stay under `~/.local/state/sieun-pi/receipts/`.
-The updater runs the generated patcher under `~/.local/share/sieun-pi/pool-patch/app`.
-The source-owned generator copies only the patcher and helper. It does not load the service automatically.
-Root reloaded only this updater and verified its first completed run.
-Older permission-error stderr remains in the log history. Its timestamp did not change during the successful run.
+The launchd updater and its generated patcher runtime were removed on 2026-09-23 with the bundle patcher.
 The final source plan reported zero changes.
 
 
