@@ -49,3 +49,7 @@ The migration does not fix the native terminal session-replacement race. See the
 The canonical repository now owns a shared fixed-port server and CLI lifecycle. The extension prints a session-targeted URL without a browser opener. The production package declares `tsx` to load its TypeScript sources in installed `node_modules` paths. Existing native session, model, skill and pi-pool projections retain their source lineage.
 
 The native fixture now reads the CLI URL and uses an isolated standalone service. It no longer injects a test browser executable. Current checks belong in the coordinating session's evidence folder. Historical check counts above describe the imported revisions.
+
+## Native client rewrite (2026-09-23)
+
+The browser client and server were rewritten as a thin client of native Prime Agent sessions. The string client (`src/chat-client.ts`), string page and CSS (`src/chat-page.ts`), server-rendered transcript HTML (`src/page.ts`) and the polling backend were deleted. The new client is Svelte 5 under `src/client/`, bundled in memory by esbuild at service start. The server attaches with `DaemonAgentConnection`, streams native events over SSE and follows the terminal Agents view for create, resume and roster updates. The imported lineage above describes earlier revisions only.

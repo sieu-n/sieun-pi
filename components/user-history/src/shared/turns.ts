@@ -1,0 +1,98 @@
+import type { AssistantMessage, BashExecutionMessage, BranchSummaryMessage, CompactionSummaryMessage, CustomMessage, ThinkingPart, ThreadMessage, ToolCallPart, ToolResultMessage, ToolRun, UserMessage } from "./types.ts";
+
+export type WorkItem =
+  | { kind: "thinking"; part: ThinkingPart; messageIndex: number; partIndex: number }
+  | { kind: "tool"; call: ToolCallPart; result: ToolResultMessage | null; run: ToolRun | null; messageIndex: number; partIndex: number }
+  | { kind: "note"; text: string; messageIndex: number };
+export type SystemNote = { message: BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage | CustomMessage; index: number };
+export interface Turn {
+  key: string;
+  prompt: { message: UserMessage | CustomMessage; index: number } | null;
+  work: WorkItem[];
+  reply: { message: AssistantMessage; index: number; live: boolean } | null;
+  notes: SystemNote[];
+  startedAt: number;
+  endedAt: number;
+  live: boolean;
+}
+
+export function messageText(message: { content: string | { type: string; text?: string }[] }): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content.flatMap(part => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n\n");
+}
+
+export function isPromptCustom(message: CustomMessage): boolean {
+  return message.customType === "agent_message" || message.customType === "heartbeat_prompt" || message.customType === "async_bash_completion";
+}
+
+export function toolDurationMs(item: Extract<WorkItem, { kind: "tool" }>, now: number): number | null {
+  if (item.result?.durationMs !== undefined) return item.result.durationMs;
+  if (item.run) return Math.max(0, now - item.run.startedAt);
+  return null;
+}
+
+function addAssistant(turn: Turn, message: AssistantMessage, index: number, results: ReadonlyMap<string, ToolResultMessage>, live: boolean): void {
+  const previousReply = turn.reply;
+  if (previousReply && !previousReply.live) {
+    const previousText = messageText(previousReply.message).trim();
+    if (previousText) turn.work.push({ kind: "note", text: previousText, messageIndex: previousReply.index });
+    turn.reply = null;
+  }
+  const failed = message.stopReason === "error" || message.stopReason === "aborted";
+  const textIsNote = message.stopReason === "toolUse" && !failed && !live;
+  message.content.forEach((part, partIndex) => {
+    if (part.type === "thinking") { if (part.thinking.trim()) turn.work.push({ kind: "thinking", part, messageIndex: index, partIndex }); }
+    else if (part.type === "toolCall") turn.work.push({ kind: "tool", call: part, result: results.get(part.id) ?? null, run: null, messageIndex: index, partIndex });
+    else if (textIsNote && part.text.trim()) turn.work.push({ kind: "note", text: part.text.trim(), messageIndex: index });
+  });
+  const text = messageText(message).trim();
+  if (!textIsNote && (text || failed || live)) turn.reply = { message, index, live };
+  turn.endedAt = Math.max(turn.endedAt, message.timestamp);
+}
+
+function openTurn(index: number, timestamp: number): Turn {
+  return { key: "turn-" + index, prompt: null, work: [], reply: null, notes: [], startedAt: timestamp, endedAt: timestamp, live: false };
+}
+
+export function toolResults(messages: readonly ThreadMessage[]): Map<string, ToolResultMessage> {
+  const results = new Map<string, ToolResultMessage>();
+  for (const message of messages) if (message.role === "toolResult") results.set(message.toolCallId, message);
+  return results;
+}
+
+/** Committed turns only. Recompute when `messages` changes; overlay the live tail with `liveTurn`. */
+export function buildTurns(messages: readonly ThreadMessage[]): Turn[] {
+  const results = toolResults(messages);
+  const turns: Turn[] = [];
+  let current: Turn | undefined;
+  messages.forEach((message, index) => {
+    if (message.role === "user" || (message.role === "custom" && isPromptCustom(message))) {
+      current = openTurn(index, message.timestamp);
+      current.prompt = { message, index };
+      turns.push(current);
+      return;
+    }
+    if (!current) { current = openTurn(index, message.timestamp); turns.push(current); }
+    if (message.role === "assistant") addAssistant(current, message, index, results, false);
+    else if (message.role === "toolResult") current.endedAt = Math.max(current.endedAt, message.timestamp);
+    else current.notes.push({ message, index });
+  });
+  return turns;
+}
+
+/** The last turn with the streaming message and running tools folded in. Returns null when nothing is live. */
+export function liveTurn(last: Turn | undefined, streaming: AssistantMessage | null, tools: readonly ToolRun[], messageCount: number): Turn | null {
+  const running = tools.some(run => run.status === "running");
+  if (!streaming && !running) return null;
+  const base = last ?? openTurn(messageCount, streaming?.timestamp ?? Date.now());
+  const turn: Turn = { ...base, work: base.work.map(item => item.kind === "tool" ? { ...item, run: tools.find(run => run.toolCallId === item.call.id) ?? null } : item), live: true };
+  if (streaming) addAssistant(turn, streaming, messageCount, new Map(), true);
+  return turn;
+}
+
+export function allTurns(messages: readonly ThreadMessage[], streaming: AssistantMessage | null = null, tools: readonly ToolRun[] = []): Turn[] {
+  const turns = buildTurns(messages);
+  const live = liveTurn(turns.at(-1), streaming, tools, messages.length);
+  if (!live) return turns;
+  return turns.length && turns.at(-1)!.key === live.key ? [...turns.slice(0, -1), live] : [...turns, live];
+}

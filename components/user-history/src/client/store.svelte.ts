@@ -1,0 +1,124 @@
+import { api, ApiError, requestId } from "./api.ts";
+import { applyThreadEvent, isThreadBusy } from "../shared/thread-state.ts";
+import type { ImageInput, SendMode, SessionRow, ThreadState } from "../shared/types.ts";
+
+export interface Toast { id: number; text: string; kind: "error" | "info" }
+export interface PendingChat { cwd: string; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; startedAt: number }
+
+type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number };
+
+class Store {
+  sessions = $state<SessionRow[]>([]);
+  daemon = $state<"up" | "down" | "unknown">("unknown");
+  daemonError = $state<string | null>(null);
+  selectedId = $state<string | null>(null);
+  threads = $state.raw<Record<string, ThreadEntry>>({});
+  pending = $state<PendingChat | null>(null);
+  toasts = $state<Toast[]>([]);
+  sidebarOpen = $state(window.innerWidth >= 900);
+  drawer = $state<"accounts" | null>(null);
+  private toastId = 0;
+  private sessionsStop: (() => void) | null = null;
+
+  start(): void {
+    this.selectedId = decodeURIComponent(location.hash.slice(1)) || null;
+    window.addEventListener("hashchange", () => { this.selectedId = decodeURIComponent(location.hash.slice(1)) || null; });
+    this.sessionsStop = api.sessionsStream(event => {
+      this.sessions = event.sessions;
+      this.daemon = event.daemon;
+      this.daemonError = event.error ?? null;
+    }, () => { if (this.daemon === "unknown") this.daemon = "down"; });
+  }
+
+  retry(): void {
+    this.sessionsStop?.();
+    this.start();
+  }
+
+  select(id: string | null): void {
+    const next = id ? "#" + encodeURIComponent(id) : "";
+    if (location.hash !== next) history.pushState(null, "", location.pathname + location.search + next);
+    this.selectedId = id;
+  }
+
+  session(id: string | null): SessionRow | undefined {
+    return id ? this.sessions.find(row => row.id === id) : undefined;
+  }
+
+  thread(id: string): ThreadEntry | undefined { return this.threads[id]; }
+
+  private patch(id: string, change: Partial<ThreadEntry>): void {
+    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0 };
+    this.threads = { ...this.threads, [id]: { ...current, ...change } };
+  }
+
+  open(id: string): void {
+    const entry = this.threads[id];
+    if (entry?.close) return;
+    this.patch(id, { loading: true, error: null });
+    performance.mark("thread-open:" + id);
+    const close = api.threadStream(id, event => {
+      const current = this.threads[id];
+      if (!current) return;
+      if (event.type === "snapshot") {
+        performance.measure("thread-snapshot:" + id, "thread-open:" + id);
+        this.patch(id, { state: applyThreadEvent({ ...event.snapshot, connection: "connected" }, event), loading: false, error: null });
+      }
+      else if (event.type === "status" && event.connection === "closed" && event.error) this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
+      else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event) });
+    }, () => {
+      const current = this.threads[id];
+      if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
+    });
+    this.patch(id, { close });
+  }
+
+  release(id: string): void {
+    const entry = this.threads[id];
+    if (!entry?.close) return;
+    entry.close();
+    this.patch(id, { close: null });
+  }
+
+  warm(id: string): void {
+    if (this.threads[id]?.state) return;
+    void api.warm(id).catch(() => {});
+  }
+
+  markRead(id: string): void {
+    const entry = this.threads[id];
+    if (!entry?.state || isThreadBusy(entry.state) || document.visibilityState !== "visible") return;
+    const row = this.session(id);
+    if (!row?.unread && entry.lastReadAt > 0) return;
+    this.patch(id, { lastReadAt: Date.now() });
+    void api.read(id).catch(() => {});
+  }
+
+  toast(text: string, kind: Toast["kind"] = "error"): void {
+    const id = ++this.toastId;
+    this.toasts = [...this.toasts, { id, text, kind }];
+    setTimeout(() => { this.toasts = this.toasts.filter(toast => toast.id !== id); }, kind === "error" ? 7000 : 3500);
+  }
+
+  async run<T>(work: Promise<T>): Promise<T | undefined> {
+    try { return await work; }
+    catch (error) { this.toast(error instanceof ApiError || error instanceof Error ? error.message : String(error)); return undefined; }
+  }
+
+  async send(id: string, message: string, images: ImageInput[], mode: SendMode): Promise<boolean> {
+    const result = await this.run(api.prompt(id, { message, images, mode, requestId: requestId() }));
+    return result !== undefined;
+  }
+
+  async createChat(input: Omit<PendingChat, "startedAt">): Promise<boolean> {
+    this.pending = { ...input, startedAt: Date.now() };
+    const result = await this.run(api.createThread({ ...input, requestId: requestId() }));
+    if (!result) { this.pending = null; return false; }
+    this.open(result.id);
+    this.select(result.id);
+    this.pending = null;
+    return true;
+  }
+}
+
+export const store = new Store();

@@ -1,93 +1,108 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createServer } from "node:net";
-import { promisify } from "node:util";
-import { test } from "node:test";
-import { mkdir, readFile, writeFile, access, symlink, unlink } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
-import { DaemonAgentConnection, DaemonClient, SessionManager } from "prime-agent";
-import { createChatBackend, type ChatBackend, type ChatModel, type ChatView } from "../src/chat-backend.ts";
-import { MAX_CHAT_IMAGE_BYTES, MAX_CHAT_IMAGES, type ChatImage } from "../src/chat-images.ts";
+import { mkdir, readFile, rename, writeFile, access, symlink, unlink } from "node:fs/promises";
+import { request } from "node:http";
+import { createServer } from "node:net";
+import { dirname, join, resolve } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { createGunzip } from "node:zlib";
+import { DaemonClient, SessionManager } from "prime-agent";
+import type { SessionsEvent, ThreadEvent, ThreadState } from "../src/shared/types.ts";
+import { applyThreadEvent } from "../src/shared/thread-state.ts";
+import { messageText } from "../src/shared/turns.ts";
 import { chatNativeProviderSource, startChatNativeCli, stopChatNativeDaemon, waitForChatNativeFile } from "./chat-native-fixture.ts";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const primeRoot = resolve(dirname(fileURLToPath(import.meta.resolve("prime-agent"))), "..");
 const node = process.execPath;
 const cli = join(primeRoot, "dist/bundle/cli.js");
-const textModel = { provider: "chat-native-test", id: "synthetic", name: "Deterministic native chat fixture",
-  contextWindow: 1000000, input: ["text"], cost: { input: 10, output: 100, cacheRead: 1, cacheWrite: 10 } } satisfies ChatModel;
-const visionModel = { provider: "chat-native-test", id: "synthetic-vision", name: "Deterministic native vision fixture",
-  contextWindow: 2000000, input: ["text", "image"], cost: { input: 10, output: 100, cacheRead: 1, cacheWrite: 10 } } satisfies ChatModel;
-const imageFixtures = [
-  { type: "image", mimeType: "image/png",
-    data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=" },
-  { type: "image", mimeType: "image/gif", data: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" },
-] satisfies ChatImage[];
+const png = { type: "image", mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=" };
+const requestId = () => randomBytes(12).toString("hex");
 
-function assertSessionUsage(view: ChatView, calls: number): void {
-  assert.equal(view.usage.kind, "native-session");
-  assert(view.usage.kind === "native-session");
-  assert.equal(view.usage.inputTokens, calls * 150, "native input total includes cache reads and writes");
-  assert.equal(view.usage.outputTokens, calls * 25);
-  assert(Math.abs(view.usage.cost - calls * 0.00364) < 1e-12);
-  assert.equal(view.usage.providerLimits, "unavailable", "session usage is not provider quota");
-  assert(view.usage.context);
-  assert.equal(view.usage.context.contextWindow, visionModel.contextWindow);
-  assert(typeof view.usage.context.tokens === "number" && view.usage.context.tokens > 0);
-  assert.equal(view.usage.context.percent, view.usage.context.tokens / visionModel.contextWindow * 100);
-}
-
-function providerStarts(text: string) {
-  return text.trim().split("\n").flatMap(line => {
-    const value: unknown = JSON.parse(line);
-    assert(typeof value === "object" && value !== null && "stage" in value);
-    if (value.stage !== "start") return [];
-    assert("message" in value && typeof value.message === "string");
-    assert("model" in value && typeof value.model === "string");
-    assert("provider" in value && typeof value.provider === "string");
-    assert("pid" in value && typeof value.pid === "number");
-    assert("content" in value);
-    return [{ message: value.message, model: value.model, provider: value.provider, pid: value.pid, content: value.content }];
+type Frame<T> = { event: string; data: T };
+function openStream<T>(url: string) {
+  const frames: Frame<T>[] = [];
+  const waiters: { predicate: (frame: Frame<T>) => boolean; resolve(frame: Frame<T>): void }[] = [];
+  let text = "";
+  let error: Error | undefined;
+  const req = request(url, { headers: { "Accept-Encoding": "gzip" } });
+  req.on("response", res => {
+    const decoded = res.headers["content-encoding"] === "gzip" ? res.pipe(createGunzip()) : res;
+    decoded.on("data", (chunk: Buffer) => {
+      text += chunk.toString("utf8");
+      let match: RegExpExecArray | null;
+      while ((match = /event: (\w+)\ndata: (.*)\n\n/.exec(text))) {
+        text = text.slice(match.index + match[0].length);
+        const frame = { event: match[1]!, data: JSON.parse(match[2]!) as T };
+        frames.push(frame);
+        for (const waiter of [...waiters]) if (waiter.predicate(frame)) { waiters.splice(waiters.indexOf(waiter), 1); waiter.resolve(frame); }
+      }
+    });
+    decoded.on("error", failure => { error = failure; });
   });
+  req.on("error", failure => { error = failure; });
+  req.end();
+  return {
+    frames,
+    waitFor(predicate: (frame: Frame<T>) => boolean, timeout = 30000, label = "frame"): Promise<Frame<T>> {
+      const existing = frames.find(predicate);
+      if (existing) return Promise.resolve(existing);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { waiters.splice(waiters.findIndex(waiter => waiter.resolve === done), 1); reject(new Error(`Timed out waiting for ${label}. ${error?.message ?? ""}\n${JSON.stringify(frames.slice(-5)).slice(0, 2000)}`)); }, timeout);
+        const done = (frame: Frame<T>) => { clearTimeout(timer); resolve(frame); };
+        waiters.push({ predicate, resolve: done });
+      });
+    },
+    close() { req.destroy(); },
+  };
 }
 
-type NativeRow = { sessionId: string; activeSessionId?: string; workerPid?: number; workerState?: string };
-async function nativeRows(daemon: DaemonClient): Promise<NativeRow[]> {
-  const response = await daemon.request({ type: "list", all: true, includeClientOwned: true }, 30000);
-  assert(response.success, JSON.stringify(response));
-  const data = response.data;
-  assert(typeof data === "object" && data !== null && "sessions" in data && Array.isArray(data.sessions));
-  return data.sessions.map((row: unknown): NativeRow => {
-    assert(typeof row === "object" && row !== null && "sessionId" in row && typeof row.sessionId === "string");
-    return { sessionId: row.sessionId,
-      ...("activeSessionId" in row && typeof row.activeSessionId === "string" ? { activeSessionId: row.activeSessionId } : {}),
-      ...("workerPid" in row && typeof row.workerPid === "number" ? { workerPid: row.workerPid } : {}),
-      ...("workerState" in row && typeof row.workerState === "string" ? { workerState: row.workerState } : {}) };
-  }).sort((left, right) => left.sessionId.localeCompare(right.sessionId));
+function threadWatcher(url: string) {
+  const stream = openStream<ThreadEvent>(url);
+  let state: ThreadState | undefined;
+  const events: ThreadEvent[] = [];
+  const reduced = new Promise<void>(resolve => { resolve(); });
+  void reduced;
+  const apply = (frame: Frame<ThreadEvent>) => {
+    events.push(frame.data);
+    if (frame.data.type === "snapshot") state = applyThreadEvent({ ...frame.data.snapshot, connection: "connected" }, frame.data);
+    else if (state) state = applyThreadEvent(state, frame.data);
+  };
+  const original = stream.waitFor;
+  let applied = 0;
+  const sync = () => { while (applied < stream.frames.length) apply(stream.frames[applied++]!); };
+  return {
+    ...stream,
+    events,
+    get state() { sync(); return state; },
+    waitFor: async (predicate: (event: ThreadEvent) => boolean, timeout = 30000, label = "thread event") => {
+      const frame = await original(frame => predicate(frame.data), timeout, label);
+      sync();
+      return frame.data;
+    },
+  };
 }
 
 function seedSession(cwd: string, sessions: string, name: string) {
   const previousDepth = process.env.RLM_DEPTH;
   process.env.RLM_DEPTH = "0";
   const manager = SessionManager.create(cwd, sessions);
-  if (previousDepth === undefined) delete process.env.RLM_DEPTH;
-  else process.env.RLM_DEPTH = previousDepth;
+  if (previousDepth === undefined) delete process.env.RLM_DEPTH; else process.env.RLM_DEPTH = previousDepth;
   manager.appendSessionInfo(name);
   manager.appendModelChange("chat-native-test", "synthetic");
   manager.appendMessage({ role: "user", content: `SAVED QUESTION ${name}`, timestamp: 1000 });
-  manager.appendMessage({ role: "assistant", content: [{ type: "text", text: `SAVED ANSWER ${name}` }],
-    api: "chat-native-test-api", provider: "chat-native-test", model: "synthetic", stopReason: "stop", timestamp: 1001,
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
+  manager.appendMessage({ role: "assistant", content: [{ type: "text", text: `SAVED ANSWER ${name}` }], api: "chat-native-test-api", provider: "chat-native-test", model: "synthetic",
+    stopReason: "stop", timestamp: 1001, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
   manager.flushNow();
   const sessionFile = manager.getSessionFile();
   assert(sessionFile);
   return { sessionId: manager.getSessionId(), sessionFile, name };
 }
 
-test("native chat targets sessions, changes models, reports usage, sends images, and preserves workers", { timeout: process.env.CHAT_TEST_BROWSER === "1" ? 1080000 : 120000 }, async context => {
+test("browser chat drives native sessions: create, stream, follow up, resume, stop, model, tools, sessions list", { timeout: 180000 }, async context => {
   const id = randomBytes(6).toString("hex");
   const root = join(process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(packageRoot, ".test-artifacts"), `chat-native-${id}`);
   const home = join(root, "home");
@@ -100,40 +115,23 @@ test("native chat targets sessions, changes models, reports usage, sends images,
   await Promise.all([home, config, cwd, sessions, nativeTemp].map(path => mkdir(path, { recursive: true })));
   await symlink(nativeTemp, temporary);
   context.after(async () => { await unlink(temporary); });
-  await writeFile(join(config, "settings.json"), JSON.stringify({ onboardingShown: true, onboardingCompleted: true,
-    telemetry: { enabled: false, noticeShown: true }, compaction: { enabled: false }, retry: { enabled: false },
-    mcpServers: {}, packages: [], extensions: [], skills: [] }));
   const env = { HOME: home, PATH: `${dirname(node)}:/usr/bin:/bin`, TMPDIR: temporary, LANG: "en_US.UTF-8", TERM: "dumb",
     PRIME_AGENT_CODING_AGENT_DIR: config, PRIME_AGENT_SESSION_DIR: sessions, PRIME_AGENT_TELEMETRY: "0", PI_OFFLINE: "1" };
-  const skillDir = join(root, "skills", "browser-proof");
-  await mkdir(skillDir, { recursive: true });
-  const skillFile = join(skillDir, "SKILL.md");
-  await writeFile(skillFile, "---\nname: browser-proof\ndescription: Native browser skill verification\n---\nNATIVE_SKILL_PROOF. Keep the supplied argument.\n");
-  const alpha = seedSession(cwd, sessions, `chat-alpha-${id}`);
-  const beta = seedSession(cwd, sessions, `chat-beta-${id}`);
-  const saved = seedSession(cwd, sessions, `chat-saved-${id}`);
-  const savedManager = SessionManager.open(saved.sessionFile, sessions);
-  const png = imageFixtures[0];
-  assert(png);
-  const oversizedBytes = Buffer.alloc(MAX_CHAT_IMAGE_BYTES + 1);
-  Buffer.from(png.data, "base64").copy(oversizedBytes);
-  const omittedImageIds = [
-    { ...png, mimeType: "image/svg+xml", data: Buffer.from("<svg/>").toString("base64") },
-    { ...png, data: "invalid-base64" },
-    { ...png, data: oversizedBytes.toString("base64") },
-  ].map(image => savedManager.appendMessage({ role: "user", content: [image], timestamp: 1002 }));
-  const partlyOmittedImageId = savedManager.appendMessage({ role: "user", timestamp: 1003,
-    content: Array.from({ length: MAX_CHAT_IMAGES + 1 }, () => png) });
-  savedManager.flushNow();
-  const savedBytes = await readFile(saved.sessionFile);
   const calls = join(root, "provider-calls.jsonl");
   const gate = join(root, "release-provider");
   const provider = join(root, "provider.mjs");
   const extension = join(root, "extension.ts");
-  await writeFile(extension, `import historyExtension from ${JSON.stringify(join(packageRoot, "extension/index.ts"))};
-import provider from ${JSON.stringify(provider)};
-export default function(pi) { historyExtension(pi); provider(pi); }
-`);
+  await writeFile(calls, "");
+  await writeFile(provider, chatNativeProviderSource({ calls, gate, aiModule: fileURLToPath(import.meta.resolve("@earendil-works/pi-ai")) }));
+  await writeFile(extension, `import historyExtension from ${JSON.stringify(join(packageRoot, "extension/index.ts"))};\nimport provider from ${JSON.stringify(provider)};\nexport default function(pi) { historyExtension(pi); provider(pi); }\n`);
+  await writeFile(join(config, "settings.json"), JSON.stringify({ onboardingShown: true, onboardingCompleted: true, telemetry: { enabled: false, noticeShown: true },
+    compaction: { enabled: false }, retry: { enabled: false }, defaultProvider: "chat-native-test", defaultModel: "synthetic", mcpServers: {}, packages: [], extensions: [provider], skills: [] }));
+  const skillDir = join(config, "skills", "browser-proof");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(join(skillDir, "SKILL.md"), "---\nname: browser-proof\ndescription: Native browser skill verification\n---\nNATIVE_SKILL_PROOF. Keep the supplied argument.\n");
+  const saved = seedSession(cwd, sessions, `chat-saved-${id}`);
+  const moved = seedSession(cwd, sessions, `chat-moved-${id}`);
+  const savedBytes = await readFile(saved.sessionFile);
   const probe = createServer();
   await new Promise<void>(resolve => probe.listen(0, "127.0.0.1", resolve));
   const address = probe.address(); assert(address && typeof address !== "string");
@@ -141,485 +139,188 @@ export default function(pi) { historyExtension(pi); provider(pi); }
   await new Promise<void>(resolve => probe.close(() => resolve()));
   const chatData = join(config, "browser-chat");
   const chatCli = async (command: string) => (await promisify(execFile)(node,
-    [join(packageRoot, "../../scripts/cli.mjs"), "chat", command, "--port", String(chatPort), "--socket", socket, "--data-dir", chatData],
-    { env, timeout: 25000 })).stdout.trim();
-  context.after(async () => { await chatCli("stop"); });
+    [join(packageRoot, "../../scripts/cli.mjs"), "chat", command, "--port", String(chatPort), "--socket", socket, "--data-dir", chatData], { env, timeout: 40000 })).stdout.trim();
+  context.after(async () => { await chatCli("stop").catch(() => {}); });
   const chatUrl = await chatCli("start");
-  assert.equal((await fetch(chatUrl)).status, 200);
-  assert.equal((await fetch(chatUrl + "api/sessions")).status, 502, "service starts before the native daemon");
-  await writeFile(calls, "");
-  await writeFile(provider, chatNativeProviderSource({ calls, gate,
-    aiModule: fileURLToPath(import.meta.resolve("@earendil-works/pi-ai")) }));
-  await writeFile(join(config, "settings.json"), JSON.stringify({ onboardingShown: true, onboardingCompleted: true,
-    telemetry: { enabled: false, noticeShown: true }, compaction: { enabled: false }, retry: { enabled: false },
-    defaultProvider: "chat-native-test", defaultModel: "synthetic", mcpServers: {}, packages: [], extensions: [provider], skills: [] }));
-  const nativeArgs = [cli, "--mode", "rpc", "--daemon-socket", socket, "--agent-chat-socket", socket, "--agent-chat-port", String(chatPort), "--agent-chat-data-dir", chatData, "--cwd", cwd, "--no-extensions", "-e", extension,
-      "--no-skills", "--skill", skillFile, "--no-prompt-templates", "--no-context-files", "--no-builtin-tools", "--tools", "browser_proof_tool", "--no-themes",
-      "--provider", "chat-native-test", "--model", "synthetic", "--no-session"];
+  const shell = await fetch(chatUrl);
+  assert.equal(shell.status, 200);
+  const html = await shell.text();
+  const token = html.match(/data-chat-token="([a-f0-9]{64})"/)?.[1]; assert(token, "shell carries the write token");
+  assert.match(html, /app\.js/);
+  assert.equal((await fetch(chatUrl + "app.js")).status, 200);
+  assert.match(shell.headers.get("content-security-policy") ?? "", /script-src 'self'/);
+  const beforeDaemon = openStream<SessionsEvent>(chatUrl + "api/sessions/stream");
+  const down = await beforeDaemon.waitFor(frame => frame.event === "sessions", 15000, "daemon-down sessions frame");
+  assert.equal(down.data.daemon, "down", "the sessions stream reports the daemon as down before it starts");
+  beforeDaemon.close();
+  const headers = { "Content-Type": "application/json", Origin: new URL(chatUrl).origin, "X-Chat-Token": token };
+  const post = async (route: string, body: unknown) => {
+    const response = await fetch(chatUrl + route, { method: "POST", headers, body: JSON.stringify(body) });
+    const value: unknown = await response.json();
+    return { status: response.status, body: value as Record<string, unknown> };
+  };
+  const nativeArgs = [cli, "--mode", "rpc", "--daemon-socket", socket, "--agent-chat-socket", socket, "--agent-chat-port", String(chatPort), "--agent-chat-data-dir", chatData,
+    "--cwd", cwd, "--no-extensions", "-e", extension, "--no-skills", "--skill", join(skillDir, "SKILL.md"), "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
+    "--tools", "browser_proof_tool", "--no-themes", "--provider", "chat-native-test", "--model", "synthetic", "--no-session"];
   const native = startChatNativeCli({ node, cwd, env, args: nativeArgs });
-  let recoveredNative: ReturnType<typeof startChatNativeCli> | undefined;
   const daemon = new DaemonClient(socket);
-  let backend: ChatBackend | undefined;
-  let supervisorPid: number | undefined;
+  const watchers: { events: ThreadEvent[] }[] = [];
   try {
-    const nativeState = await native.rpc("get_state");
-    assert(typeof nativeState === "object" && nativeState !== null && "data" in nativeState && typeof nativeState.data === "object" && nativeState.data !== null && "sessionId" in nativeState.data && typeof nativeState.data.sessionId === "string");
-    const expectedNotification = chatUrl + "#" + encodeURIComponent(nativeState.data.sessionId);
+    await native.rpc("get_state");
     await daemon.connect();
-    supervisorPid = (await daemon.waitForHello()).supervisorPid;
-    assert(supervisorPid && supervisorPid !== native.child.pid);
-    for (const target of [alpha, beta]) {
-      const created = await daemon.request({ type: "create", sessionPath: target.sessionFile, launchEnv: env,
-        config: { cwd, agentDir: config, sessionDir: sessions, provider: "chat-native-test", model: "synthetic",
-          noExtensions: true, extensions: [extension], noSkills: true, skills: [skillFile], noPromptTemplates: true, noContextFiles: true,
-          noBuiltinTools: true, tools: ["browser_proof_tool"], noThemes: true, telemetryDisabled: true,
-          extensionFlagValues: { "agent-chat-socket": socket, "agent-chat-port": String(chatPort), "agent-chat-data-dir": chatData } } }, 30000);
-      assert(created.success, JSON.stringify(created));
-    }
-    backend = await createChatBackend({ socketPath: socket, readStatePath: join(root, "browser-read-state.json") });
-    const listed = await backend.list();
-    await writeFile(join(root, "initial-catalog.json"), JSON.stringify(listed, null, 2));
-    assert.deepEqual(listed.map(row => row.sessionId).sort(), [alpha.sessionId, beta.sessionId, saved.sessionId].sort(), "isolated catalog contains only owned sessions");
-    for (const target of [alpha, beta]) {
-      const row = listed.find(item => item.sessionId === target.sessionId);
-      assert(row);
-      assert(!("kind" in row), "the chat catalog exposes only root sessions");
-      assert.equal(row.name, target.name);
-      assert.equal(row.cwd, cwd);
-      assert.equal(row.canSend, true);
-    }
-    const metadataReadState = join(root, "metadata-read-state.json");
-    await writeFile(metadataReadState, JSON.stringify({ baseline: 0, sessions: {} }), { mode: 0o600 });
-    const metadataBackend = await createChatBackend({ socketPath: socket, readStatePath: metadataReadState });
-    let releaseMetadata: () => void = () => {};
-    const heldMetadata = new Promise<void>(resolve => { releaseMetadata = resolve; });
-    let metadataReads = 0;
-    metadataBackend.read = async () => { metadataReads++; await heldMetadata; throw new Error("Held metadata read failed"); };
-    let listDeadline: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const started = performance.now();
-      const immediateList = await Promise.race([metadataBackend.list(), new Promise<never>((_resolve, reject) => {
-        listDeadline = setTimeout(() => reject(new Error("Native catalog waited for held transcript metadata")), 3000);
-      })]);
-      clearTimeout(listDeadline);
-      assert.equal(immediateList.length, 3);
-      assert(immediateList.every(row => row.readError === "Response status pending"));
-      await new Promise<void>(resolve => setImmediate(resolve));
-      assert.equal(metadataReads, 1, "only one bounded background batch begins");
-      for (let index = 0; index < 3; index++) assert.equal((await metadataBackend.list()).length, 3);
-      assert.equal(metadataReads, 1, "catalog polling cannot multiply blocked metadata work");
-      await writeFile(join(root, "catalog-liveness.json"), JSON.stringify({ elapsedMs: performance.now() - started, rows: immediateList.length, blockedMetadataReads: metadataReads }));
-      releaseMetadata();
-      await new Promise<void>(resolve => setImmediate(resolve));
-      assert((await metadataBackend.list()).every(row => row.readError === "Response status unavailable"));
-    } finally {
-      clearTimeout(listDeadline);
-      releaseMetadata();
-      await metadataBackend.close();
-    }
-    const rootsBeforeCreate = await nativeRows(daemon);
-    const callsBeforeCreate = await readFile(calls, "utf8");
-    const newRoot = await backend.create({ sourceSessionId: alpha.sessionId });
-    assert(!rootsBeforeCreate.some(row => row.sessionId === newRoot.sessionId));
-    assert.equal(newRoot.cwd, cwd);
-    const rootsAfterCreate = await nativeRows(daemon);
-    assert.deepEqual(rootsAfterCreate.filter(row => row.sessionId !== newRoot.sessionId), rootsBeforeCreate,
-      "creating a root preserves every old identity and worker");
-    const createdView = await backend.read(newRoot.sessionId);
-    assert.deepEqual(createdView.controls.currentModel, textModel);
-    assert.deepEqual(createdView.messages, [], "new thread has no fabricated or automatic prompt");
-    assert.equal(await readFile(calls, "utf8"), callsBeforeCreate, "new thread makes no provider calls");
-    await writeFile(join(root, "new-thread-proof.json"), JSON.stringify({ newRoot, before: rootsBeforeCreate, after: rootsAfterCreate, createdView }, null, 2));
-    const before = await nativeRows(daemon);
-    const alphaNative = before.find(row => row.sessionId === alpha.sessionId);
-    const betaNative = before.find(row => row.sessionId === beta.sessionId);
-    assert(alphaNative?.activeSessionId && alphaNative.workerPid);
-    assert(betaNative?.activeSessionId && betaNative.workerPid);
-    assert.notEqual(alphaNative.workerPid, betaNative.workerPid);
-    const betaBefore = await backend.read(beta.sessionId);
-    assert.deepEqual(betaBefore.messages.map(message => message.text), [`SAVED QUESTION ${beta.name}`, `SAVED ANSWER ${beta.name}`]);
-    const alphaBefore = await backend.read(alpha.sessionId);
-    assert(alphaBefore.controls.kind === "live");
-    const nativeEffort = { thinkingLevel: alphaBefore.controls.thinkingLevel,
-      availableThinkingLevels: alphaBefore.controls.availableThinkingLevels };
-    await backend.rename({ sessionId: alpha.sessionId, name: `Renamed ${alpha.name}` });
-    assert.equal((await backend.read(alpha.sessionId)).session.name, `Renamed ${alpha.name}`);
-    const namedState = await daemon.request({ type: "get_state", activeSessionId: alphaNative.activeSessionId });
-    assert(namedState.success && JSON.stringify(namedState.data).includes(`Renamed ${alpha.name}`), "browser rename uses native state");
-    await backend.rename({ sessionId: alpha.sessionId, name: alpha.name });
-    await writeFile(join(root, "controls-before-effort.json"), JSON.stringify({
-      view: await backend.read(alpha.sessionId),
-      catalog: await daemon.request({ type: "list", all: true }),
-      state: await daemon.request({ type: "get_state", activeSessionId: alphaNative.activeSessionId }),
-      queue: await daemon.request({ type: "get_queue", activeSessionId: alphaNative.activeSessionId }),
-    }, null, 2));
-    await assert.rejects(backend.setEffort({ sessionId: alpha.sessionId, level: "invented-effort" }), /effort|level/i);
-    for (const level of nativeEffort.availableThinkingLevels) {
-      await backend.setEffort({ sessionId: alpha.sessionId, level });
-      const view = await backend.read(alpha.sessionId);
-      assert(view.controls.kind === "live");
-      assert.equal(view.controls.thinkingLevel, level);
-    }
-    await backend.setEffort({ sessionId: alpha.sessionId, level: nativeEffort.thinkingLevel });
-    assert.equal((await backend.accounts(alpha.sessionId)).kind, "none", "a custom native provider has no pool");
-    await assert.rejects(backend.setAccount({ sessionId: alpha.sessionId, provider: "anthropic", target: "follow", force: false }), /provider changed/i);
-    const discovered = await backend.commands(alpha.sessionId);
-    assert(discovered.commands.some(command => command.name === "skill:browser-proof" && command.source === "skill"));
-    await assert.rejects(backend.send({ sessionId: alpha.sessionId, message: "/unknown-browser-command" }), /Unknown slash command/);
-    await assert.rejects(backend.send({ sessionId: alpha.sessionId, message: "/agent-chat" }), /terminal|extension/i);
-    assert.deepEqual(alphaBefore.messages.map(message => message.text), [`SAVED QUESTION ${alpha.name}`, `SAVED ANSWER ${alpha.name}`]);
-    assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages, "switching reads keeps targets independent");
-    const savedView = await backend.read(saved.sessionId);
-    assert.equal(savedView.session.status, "saved");
-    assert.equal(savedView.session.canSend, false);
-    for (const entryId of omittedImageIds) {
-      const message = savedView.messages.find(item => item.id === entryId);
-      assert(message, "an image-only saved user entry remains visible when its image cannot be previewed");
-      assert.equal(message.text, "[Saved image]");
-      assert.deepEqual(message.images, []);
-    }
-    const partlyOmitted = savedView.messages.find(item => item.id === partlyOmittedImageId);
-    assert(partlyOmitted);
-    assert.equal(partlyOmitted.text, "[Saved image]", "images over the preview count keep a placeholder");
-    assert.equal(partlyOmitted.images.length, MAX_CHAT_IMAGES, "the preview limit is unchanged");
-    assert.equal(savedView.messages.length, 2 + omittedImageIds.length + 1);
-    assert.deepEqual(savedView.controls, { kind: "saved", currentModel: null, canChangeModel: false });
-    assert.deepEqual(savedView.usage, { kind: "unavailable", reason: "not-recorded", context: null,
-      providerLimits: "unavailable" });
-    assert.deepEqual(alphaBefore.controls, { kind: "live", currentModel: textModel, canChangeModel: true, ...nativeEffort });
-    assert.equal(alphaBefore.usage.kind, "unavailable", "missing native usage is not shown as zero");
-    assert(!("inputTokens" in alphaBefore.usage));
-    assert.equal(alphaBefore.usage.providerLimits, "unavailable");
-    assert.deepEqual(await readFile(saved.sessionFile), savedBytes, "saved read preserves exact file bytes");
-    assert.deepEqual(await nativeRows(daemon), before, "saved read creates or wakes no worker");
-    await assert.rejects(backend.read(`unknown-${id}`), /catalog/);
-    await assert.rejects(backend.send({ sessionId: `unknown-${id}`, message: "must not route" }), /catalog/);
-    await assert.rejects(backend.send({ sessionId: saved.sessionId, message: "must not wake" }), /Resume/);
-    await assert.rejects(backend.send({ sessionId: alpha.sessionId, message: "  " }), /message/);
-    await assert.rejects(backend.models(`unknown-${id}`), /catalog/);
-    await assert.rejects(backend.models(saved.sessionId), /Resume/);
-    await assert.rejects(backend.setModel({ sessionId: saved.sessionId, provider: visionModel.provider,
-      modelId: visionModel.id }), /Resume/);
-    await assert.rejects(backend.setModel({ sessionId: `unknown-${id}`, provider: visionModel.provider,
-      modelId: visionModel.id }), /catalog/);
-    await assert.rejects(backend.setModel({ sessionId: alpha.sessionId, provider: " ", modelId: visionModel.id }), /provider|model/i);
-    await assert.rejects(backend.setModel({ sessionId: alpha.sessionId, provider: visionModel.provider, modelId: " " }), /provider|model/i);
-    const modelCatalog = await backend.models(alpha.sessionId);
-    assert.equal(modelCatalog.sessionId, alpha.sessionId);
-    assert(modelCatalog.configuredProviders.includes(textModel.provider));
-    assert.deepEqual(modelCatalog.models.filter(model => model.provider === textModel.provider), [textModel, visionModel]);
-    assert.deepEqual((await backend.models(beta.sessionId)).models, modelCatalog.models);
-    const unconfigured = modelCatalog.models.find(model => !modelCatalog.configuredProviders.includes(model.provider));
-    assert(unconfigured, "isolated native catalog includes a provider with no credentials");
-    await assert.rejects(backend.setModel({ sessionId: alpha.sessionId, provider: textModel.provider,
-      modelId: `missing-${id}` }), /Model not found/);
-    await assert.rejects(backend.setModel({ sessionId: alpha.sessionId, provider: unconfigured.provider,
-      modelId: unconfigured.id }), /Model not found|No API key|not available/);
-    assert.deepEqual((await backend.read(alpha.sessionId)).controls.currentModel, textModel,
-      "invalid and unconfigured selections leave the current model unchanged");
-    const alphaBeforeImageRejection = await readFile(alpha.sessionFile);
-    await assert.rejects(backend.send({ sessionId: alpha.sessionId, message: "", images: imageFixtures }), /image|vision/i);
-    assert.deepEqual(await readFile(alpha.sessionFile), alphaBeforeImageRejection, "text-only rejection persists no user prompt");
-    for (const model of [visionModel, textModel, visionModel]) {
-      assert.deepEqual(await backend.setModel({ sessionId: alpha.sessionId, provider: model.provider, modelId: model.id }), model);
-      const selected = await backend.read(alpha.sessionId);
-      assert.deepEqual(selected.controls, { kind: "live", currentModel: model, canChangeModel: true, ...nativeEffort },
-        "the latest completed native selection is visible");
-      assert.equal(selected.session.model, `${model.provider}/${model.id}`);
-      assert.deepEqual((await backend.read(beta.sessionId)).controls.currentModel, textModel,
-        "model changes affect only the selected live session");
-    }
-    const modelEntries = SessionManager.open(alpha.sessionFile, sessions).getEntries().filter(entry => entry.type === "model_change");
-    assert.deepEqual(modelEntries.slice(-3).map(entry => ({ provider: entry.provider, modelId: entry.modelId })),
-      [visionModel, textModel, visionModel].map(model => ({ provider: model.provider, modelId: model.id })),
-      "the native session persists model selection order");
-    assert.deepEqual(await readFile(saved.sessionFile), savedBytes, "saved model methods preserve exact file bytes");
-    assert.deepEqual(await nativeRows(daemon), before, "model methods create or replace no workers");
-    assert.equal(await readFile(calls, "utf8"), "", "read/list/model/rejection paths make no model calls");
+    await daemon.waitForHello();
+    const sessionsStream = openStream<SessionsEvent>(chatUrl + "api/sessions/stream");
+    const initial = await sessionsStream.waitFor(frame => frame.event === "sessions" && frame.data.daemon === "up", 20000, "sessions with daemon up");
+    assert.deepEqual(initial.data.sessions.map(row => row.id).sort(), [saved.sessionId, moved.sessionId].sort(), "the isolated catalog lists the seeded saved threads only");
+    assert.equal(initial.data.sessions.find(row => row.id === saved.sessionId)?.kind, "saved");
+    assert.equal(initial.data.sessions.find(row => row.id === saved.sessionId)?.name, saved.name);
+    await rename(moved.sessionFile, moved.sessionFile + ".away");
+    const gone = openStream<ThreadEvent>(chatUrl + `api/threads/${moved.sessionId}/stream`);
+    const goneStatus = await gone.waitFor(frame => frame.data.type === "status", 20000, "moved-file status");
+    assert(goneStatus.data.type === "status" && goneStatus.data.connection === "closed");
+    assert.match(goneStatus.data.error ?? "", /moved or deleted/, "a saved thread whose file moved says so instead of claiming the file changed");
+    gone.close();
+    await sessionsStream.waitFor(frame => frame.data.sessions.every(row => row.id !== moved.sessionId), 20000, "moved row leaves the list");
+    assert.equal((await fetch(chatUrl + "api/workspaces").then(response => response.json()) as { workspaces: { cwd: string }[] }).workspaces[0]?.cwd, cwd);
+    const rejected = await post("api/threads", { cwd, message: "no request id" });
+    assert.equal(rejected.status, 400);
+    const forbidden = await fetch(chatUrl + "api/threads", { method: "POST", headers: { "Content-Type": "application/json", Origin: headers.Origin }, body: "{}" });
+    assert.equal(forbidden.status, 403, "writes need the page token");
 
-    const prompt = `ONLY ALPHA ${id} [hold]`;
-    const followUp = `QUEUED FOLLOW UP ${id}`;
-    await backend.send({ sessionId: alpha.sessionId, message: prompt });
+    const firstPrompt = `FIRST ${id} [hold]`;
+    const creation = requestId();
+    const created = await post("api/threads", { cwd, message: firstPrompt, requestId: creation });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const threadId = created.body.id;
+    assert(typeof threadId === "string" && threadId);
+    assert.deepEqual((await post("api/threads", { cwd, message: firstPrompt, requestId: creation })).body, { id: threadId }, "creation is idempotent per request ID");
+    const thread = threadWatcher(chatUrl + `api/threads/${threadId}/stream`);
+    watchers.push(thread);
+    const snapshot = await thread.waitFor(event => event.type === "snapshot", 20000, "first snapshot");
+    assert(snapshot.type === "snapshot");
+    assert.equal(snapshot.snapshot.kind, "live");
+    assert.equal(snapshot.snapshot.info.cwd, cwd);
+    assert.equal(snapshot.snapshot.info.model?.id, "synthetic");
     await waitForChatNativeFile(calls, text => text.includes('"stage":"held"'));
-    const streaming = await backend.read(alpha.sessionId);
-    assert.equal(streaming.session.status, "running");
-    assert.deepEqual(streaming.controls, { kind: "live", currentModel: visionModel, canChangeModel: false, ...nativeEffort });
-    await assert.rejects(backend.setModel({ sessionId: alpha.sessionId, provider: textModel.provider,
-      modelId: textModel.id }), /finish|busy/i);
-    assert.deepEqual((await backend.read(alpha.sessionId)).controls.currentModel, visionModel);
-    assert(streaming.messages.some(message => message.role === "user" && message.text === prompt));
-    assert(streaming.messages.some(message => message.role === "assistant" && message.streaming && message.text === "SYNTHETIC REPLY: "));
-    await backend.send({ sessionId: alpha.sessionId, message: followUp, images: imageFixtures });
-    const queued = await backend.read(alpha.sessionId);
-    assert.equal(queued.queueCount, 1, "busy input is admitted to the follow-up queue");
-    assert.equal(queued.session.status, "running");
-    assert.equal(queued.controls.canChangeModel, false);
-    await assert.rejects(backend.setModel({ sessionId: alpha.sessionId, provider: textModel.provider,
-      modelId: textModel.id }), /finish|busy/i);
-    const nativeQueue = await daemon.request({ type: "get_queue", activeSessionId: alphaNative.activeSessionId });
-    assert(nativeQueue.success, JSON.stringify(nativeQueue));
-    await writeFile(join(root, "queued-state.json"), JSON.stringify({ view: queued, native: nativeQueue }, null, 2));
-    const queue = nativeQueue.data;
-    assert(typeof queue === "object" && queue !== null && "steering" in queue && "followUp" in queue);
-    assert.deepEqual(queue.steering, [], "busy send is not steering");
-    assert.deepEqual(queue.followUp, [followUp]);
-    assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages, "other live session receives nothing");
-    const heldCalls = await readFile(calls, "utf8");
-    assert.doesNotMatch(heldCalls, /"stage":"(?:aborted|error|done)"/);
-    assert.equal(heldCalls.split('"stage":"start"').length - 1, 1, "queued prompt has not interrupted or started a second call");
+    await thread.waitFor(event => event.type === "event" && event.event.type === "message_update", 20000, "streaming update");
+    const streaming = thread.state; assert(streaming);
+    await writeFile(join(root, "events-early.json"), JSON.stringify(thread.events, null, 1));
+    assert(streaming.messages.some(message => message.role === "user" && messageText(message) === firstPrompt), "the first user message is in the snapshot or events");
+    assert.equal(streaming.info.isStreaming, true);
+    assert.equal(streaming.streaming?.role, "assistant");
+    assert.match(JSON.stringify(streaming.streaming?.content), /SYNTHETIC REPLY: /);
+    const running = await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.status === "running"), 20000, "sessions row running");
+    assert.equal(running.data.sessions.find(row => row.id === threadId)?.kind, "live");
+    const secondPrompt = `SECOND ${id}`;
+    const queuedSend = await post(`api/threads/${threadId}/prompt`, { message: secondPrompt, requestId: requestId(), mode: "followUp" });
+    assert.equal(queuedSend.status, 200, JSON.stringify(queuedSend.body));
+    await thread.waitFor(event => event.type === "queue" && event.queue.followUp.includes(secondPrompt), 20000, "queue chip");
     await writeFile(gate, "release");
-    await waitForChatNativeFile(calls, text => text.includes(JSON.stringify({ stage: "done", message: followUp }).slice(0, -1)));
-    const idle = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
-    assert(idle.success, JSON.stringify(idle));
-    const completed = await backend.read(alpha.sessionId);
-    assert.equal(completed.queueCount, 0);
-    assert.deepEqual(completed.messages.map(message => message.text), [
-      `SAVED QUESTION ${alpha.name}`, `SAVED ANSWER ${alpha.name}`, prompt, `SYNTHETIC REPLY: ${prompt}`,
-      followUp, `SYNTHETIC REPLY: ${followUp}`,
-    ]);
-    assert(completed.messages.every(message => !message.streaming));
-    assert.deepEqual(completed.controls, { kind: "live", currentModel: visionModel, canChangeModel: true, ...nativeEffort });
-    assertSessionUsage(completed, 2);
-    assert.deepEqual(completed.messages.find(message => message.text === followUp)?.images, imageFixtures,
-      "the renderer receives native user images after a queued text-and-image prompt");
-    const entries = SessionManager.open(alpha.sessionFile, sessions).getEntries();
-    const persistedUsers = entries.flatMap(entry => entry.type === "message" && entry.message.role === "user"
-      ? [typeof entry.message.content === "string" ? entry.message.content
-        : entry.message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n")] : []);
-    assert(persistedUsers.includes(prompt), "send persists an ordinary user prompt");
-    assert(persistedUsers.includes(followUp));
-    assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages);
-    assert.deepEqual(await readFile(saved.sessionFile), savedBytes);
-    const queuedCalls = providerStarts(await readFile(calls, "utf8"));
-    assert.equal(queuedCalls.length, 2);
-    assert.deepEqual(queuedCalls[1]?.content, [{ type: "text", text: followUp }, ...imageFixtures],
-      "native queued provider payload preserves text first, then image order and bytes");
-    await backend.send({ sessionId: alpha.sessionId, message: "", images: imageFixtures });
-    await waitForChatNativeFile(calls, text => text.includes('"stage":"done","message":""'));
-    const imageIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
-    assert(imageIdle.success, JSON.stringify(imageIdle));
-    const withImages = await backend.read(alpha.sessionId);
-    assert.equal(withImages.messages.length, completed.messages.length + 2);
-    const imageOnlyUser = withImages.messages.at(-2);
-    assert(imageOnlyUser);
-    assert.equal(imageOnlyUser.role, "user");
-    assert.equal(imageOnlyUser.text, "", "an image-only prompt is not replaced with a saved-image label");
-    assert.deepEqual(imageOnlyUser.images, imageFixtures);
-    assert.equal(imageOnlyUser.streaming, false);
-    assert.equal(withImages.messages.at(-1)?.text, "SYNTHETIC REPLY: ");
-    assert.deepEqual(withImages.messages.at(-1)?.images, [], "assistant messages have no user image attachments");
-    assertSessionUsage(withImages, 3);
-    const nativeImageUsers = SessionManager.open(alpha.sessionFile, sessions).getEntries().flatMap(entry =>
-      entry.type === "message" && entry.message.role === "user" && Array.isArray(entry.message.content)
-        ? [entry.message.content] : []);
-    assert.deepEqual(nativeImageUsers.slice(-2), [
-      [{ type: "text", text: followUp }, ...imageFixtures], [{ type: "text", text: "" }, ...imageFixtures],
-    ], "image bytes persist in ordinary native user messages without attachment wrappers");
-    const finalCalls = await readFile(calls, "utf8");
-    assert.doesNotMatch(finalCalls, /"stage":"(?:aborted|error)"/);
-    const starts = providerStarts(finalCalls);
-    assert.equal(starts.length, 3);
-    assert.deepEqual(starts.map(call => call.message), [prompt, followUp, ""]);
-    assert.deepEqual(starts[2]?.content, [{ type: "text", text: "" }, ...imageFixtures]);
-    assert(starts.every(call => call.provider === visionModel.provider && call.model === visionModel.id && call.pid === alphaNative.workerPid),
-      "all prompts use only the selected native worker and its latest model");
-    assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages);
-    assert.equal((await backend.read(beta.sessionId)).usage.kind, "unavailable", "other live usage remains unchanged");
-    const replacement = seedSession(cwd, sessions, `chat-replacement-${id}`);
-    const switched = await daemon.request({ type: "switch_session", activeSessionId: betaNative.activeSessionId,
-      sessionPath: replacement.sessionFile }, 30000);
-    assert(switched.success, JSON.stringify(switched));
-    await assert.rejects(backend.send({ sessionId: beta.sessionId, message: "STALE BROWSER TARGET" }), /Resume|changed|catalog/);
-    await assert.rejects(backend.models(beta.sessionId), /Resume|changed|catalog/);
-    await assert.rejects(backend.setModel({ sessionId: beta.sessionId, provider: visionModel.provider,
-      modelId: visionModel.id }), /Resume|changed|catalog/);
-    const replacementView = await backend.read(replacement.sessionId);
-    assert.deepEqual(replacementView.messages.map(message => message.text), [
-      `SAVED QUESTION ${replacement.name}`, `SAVED ANSWER ${replacement.name}`,
-    ], "a completed terminal switch never redirects a stale browser prompt to the replacement");
-    assert.equal(await readFile(calls, "utf8"), finalCalls);
-    const replacementNative = (await nativeRows(daemon)).find(row => row.sessionId === replacement.sessionId);
-    assert(replacementNative?.activeSessionId);
-    const restored = await daemon.request({ type: "switch_session", activeSessionId: replacementNative.activeSessionId,
-      sessionPath: beta.sessionFile }, 30000);
-    assert(restored.success, JSON.stringify(restored));
-    const commands = await daemon.request({ type: "get_commands", activeSessionId: alphaNative.activeSessionId });
-    assert(commands.success, JSON.stringify(commands));
-    assert.match(JSON.stringify(commands), /agent-chat/);
-    assert.match(JSON.stringify(commands), /what-did-i-say/);
-    assert.match(JSON.stringify(commands), /skill:browser-proof/);
-    const skillArgument = `BROWSER SKILL ARGUMENT ${id}`;
-    await backend.send({ sessionId: alpha.sessionId, message: `/skill:browser-proof ${skillArgument}` });
-    await waitForChatNativeFile(calls, text => text.includes('"stage":"done"') && text.includes(skillArgument));
-    const skillIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
-    assert(skillIdle.success, JSON.stringify(skillIdle));
-    const skillView = await backend.read(alpha.sessionId);
-    const skillUser = skillView.messages.find(message => message.role === "user" && message.text.includes(skillArgument));
-    assert(skillUser?.text.includes('<skill name="browser-proof"'), "Pi expands the native skill invocation");
-    assert(skillUser?.text.includes("NATIVE_SKILL_PROOF"));
-    assert(skillView.messages.some(message => message.role === "assistant" && message.text.includes(skillArgument)));
-    assert.equal(providerStarts(await readFile(calls, "utf8")).length, 4);
-    const toolPrompt = `NATIVE LONG TOOL ${id} [tool]`;
-    await backend.send({ sessionId: alpha.sessionId, message: toolPrompt });
-    await waitForChatNativeFile(calls, text => text.includes('"stage":"tool-held"'));
-    const toolView = await backend.read(alpha.sessionId);
-    assert.equal(toolView.session.status, "running");
-    assert(toolView.work?.startedAt, "runtime derives from a native run starter");
-    assert(toolView.messages.some(message => message.tools?.some(tool => tool.name === "browser_proof_tool" && tool.status === "running")));
-    const reattached = await createChatBackend({ socketPath: socket, readStatePath: join(root, "browser-read-state.json") });
-    try {
-      const restoredTool = await reattached.read(alpha.sessionId);
-      assert.equal(restoredTool.work?.startedAt, toolView.work?.startedAt, "reattaching does not reset the native runtime");
-      assert.equal(restoredTool.session.status, "running");
-    } finally { await reattached.close(); }
-    const aborted = await daemon.request({ type: "abort", activeSessionId: alphaNative.activeSessionId }, 30000);
-    assert(aborted.success, JSON.stringify(aborted));
-    const afterAbort = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
-    assert(afterAbort.success, JSON.stringify(afterAbort));
-    const abortedView = await backend.read(alpha.sessionId);
-    assert.equal(abortedView.session.status, "idle", "terminal-side abort clears the browser spinner");
-    assert(!abortedView.messages.some(message => message.tools?.some(tool => tool.status === "running")), "no tool stays running after native abort");
-    assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages, "tool abort never affects another session");
-    const resumePrompt = `AFTER ABORT ${id}`;
-    await backend.send({ sessionId: alpha.sessionId, message: resumePrompt });
-    await waitForChatNativeFile(calls, text => text.includes(JSON.stringify({ stage: "done", message: resumePrompt }).slice(0, -1)));
-    const resumedIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: alphaNative.activeSessionId }, 30000);
-    assert(resumedIdle.success, JSON.stringify(resumedIdle));
-    assert((await backend.read(alpha.sessionId)).messages.some(message => message.role === "assistant" && message.text.includes(resumePrompt)));
-    const newNative = (await nativeRows(daemon)).find(row => row.sessionId === newRoot.sessionId);
-    assert(newNative?.activeSessionId && newNative.workerPid);
-    const alphaBeforeNewPrompt = (await backend.read(alpha.sessionId)).messages;
-    const newPrompt = `ONLY NEW ROOT ${id}`;
-    await backend.send({ sessionId: newRoot.sessionId, message: newPrompt, mode: "steer" });
-    await waitForChatNativeFile(calls, text => text.includes(JSON.stringify({ stage: "done", message: newPrompt }).slice(0, -1)));
-    const newIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: newNative.activeSessionId }, 30000);
-    assert(newIdle.success, JSON.stringify(newIdle));
-    assert.deepEqual((await backend.read(alpha.sessionId)).messages, alphaBeforeNewPrompt);
-    assert.deepEqual((await backend.read(beta.sessionId)).messages, betaBefore.messages);
-    assert.equal(providerStarts(await readFile(calls, "utf8")).find(call => call.message === newPrompt)?.pid, newNative.workerPid);
-    const boundaryPrompt = `SEND MODE TOOL ${id} [tool]`;
-    const steerPrompt = `STEER AT BOUNDARY ${id}`;
-    const queuedPrompt = `AFTER TURN ${id}`;
-    await backend.send({ sessionId: newRoot.sessionId, message: boundaryPrompt, mode: "steer" });
-    await waitForChatNativeFile(calls, text => text.includes('"stage":"tool-held","message":' + JSON.stringify(boundaryPrompt)));
-    await backend.send({ sessionId: newRoot.sessionId, message: queuedPrompt, mode: "followUp" });
-    await backend.send({ sessionId: newRoot.sessionId, message: steerPrompt, mode: "steer" });
-    const modeView = await backend.read(newRoot.sessionId);
-    assert.deepEqual(modeView.queue.steering, [steerPrompt]);
-    assert.deepEqual(modeView.queue.followUp, [queuedPrompt]);
-    assert.equal(modeView.session.status, "running");
-    assert(!providerStarts(await readFile(calls, "utf8")).some(call => call.message === steerPrompt || call.message === queuedPrompt));
-    await writeFile(gate + ".tool", "release");
-    await waitForChatNativeFile(calls, text => text.includes(JSON.stringify({ stage: "done", message: queuedPrompt }).slice(0, -1)));
-    const boundaryIdle = await daemon.request({ type: "wait_for_idle", activeSessionId: newNative.activeSessionId }, 30000);
-    assert(boundaryIdle.success, JSON.stringify(boundaryIdle));
-    const modeCalls = providerStarts(await readFile(calls, "utf8")).filter(call => call.pid === newNative.workerPid);
-    assert.deepEqual(modeCalls.map(call => call.message), [newPrompt, boundaryPrompt, steerPrompt, queuedPrompt]);
-    const modeAfter = await backend.read(newRoot.sessionId);
-    assert.equal(modeAfter.queueCount, 0);
-    assert.deepEqual((await nativeRows(daemon)).filter(row => row.sessionId !== replacement.sessionId), before);
-    await writeFile(join(root, "send-modes-proof.json"), JSON.stringify({ duringTool: modeView, after: modeAfter, modeCalls, noHiddenAbort: true }, null, 2));
-    const coalesced = await createChatBackend({ socketPath: socket, readStatePath: join(root, "coalesced-read-state.json") });
-    const snapshotRead = DaemonAgentConnection.prototype.getInitialSnapshot;
-    const treeRead = DaemonAgentConnection.prototype.getSessionTree;
-    const nativeReadCounts = { snapshots: 0, trees: 0 };
-    DaemonAgentConnection.prototype.getInitialSnapshot = function (...args) { nativeReadCounts.snapshots++; return snapshotRead.apply(this, args); };
-    DaemonAgentConnection.prototype.getSessionTree = function (...args) { nativeReadCounts.trees++; return treeRead.apply(this, args); };
-    try {
-      const simultaneous = await Promise.all(Array.from({ length: 4 }, () => coalesced.read(alpha.sessionId, { turns: 1, mode: "compact", expanded: [] })));
-      assert(simultaneous.every(view => view.session.sessionId === alpha.sessionId));
-      assert.deepEqual(nativeReadCounts, { snapshots: 1, trees: 1 }, "concurrent real native reads share one snapshot and canonical tree");
-      await writeFile(join(root, "coalesced-native-proof.json"), JSON.stringify({ readers: simultaneous.length, nativeReadCounts }));
-    } finally {
-      DaemonAgentConnection.prototype.getInitialSnapshot = snapshotRead;
-      DaemonAgentConnection.prototype.getSessionTree = treeRead;
-      await coalesced.close();
-    }
-    const targetStarted = performance.now();
-    assert.equal((await backend.target(alpha.sessionId)).sessionId, alpha.sessionId);
-    const targetMs = performance.now() - targetStarted;
-    const recent = await backend.read(alpha.sessionId, { turns: 1, mode: "compact", expanded: [] });
-    assert(recent.history && recent.history.totalTurns > 1 && recent.history.shownTurns === 1);
-    assert.equal(recent.messages.filter(message => message.role === "user").length, 1);
-    const olderWindow = await backend.read(alpha.sessionId, { turns: 1, mode: "detailed", expanded: [], startId: recent.history.startId!, older: 5 });
-    assert(olderWindow.history && olderWindow.history.shownTurns > 1);
-    const questionWindow = await backend.read(alpha.sessionId, { turns: 1, mode: "questions", expanded: [] });
-    assert(questionWindow.messages.every(message => message.role === "user"));
-    assert.equal(questionWindow.messages.length, 1);
-    assert((questionWindow.history?.questions.length ?? 0) > 1, "question index keeps older navigation without older bodies");
-    const capturedHtml = await (await fetch(chatUrl)).text();
-    const token = capturedHtml.match(/data-chat-token="([a-f0-9]+)"/)?.[1]; assert(token);
-    const initialWindow = await (await fetch(chatUrl + "api/session?id=" + alpha.sessionId)).json();
-    assert.equal(initialWindow.history.shownTurns, 1);
-    const unchangedWindow = await (await fetch(chatUrl + "api/session?id=" + alpha.sessionId + "&since=" + initialWindow.revision)).json();
-    assert.equal(unchangedWindow.html, null);
-    await writeFile(join(root, "window-proof.json"), JSON.stringify({ targetMs, recent, olderWindow, questionWindow,
-      initialBytes: JSON.stringify(initialWindow).length, unchangedBytes: JSON.stringify(unchangedWindow).length }, null, 2));
-    const automatedModelCalls = providerStarts(await readFile(calls, "utf8")).length;
-    await writeFile(join(root, "native-tool-abort.json"), JSON.stringify({ running: toolView, aborted: abortedView, newPromptResumed: true }, null, 2));
-    const openedCommand = await daemon.request({ type: "prompt", activeSessionId: alphaNative.activeSessionId,
-      message: "/what-did-i-say", source: "interactive" });
-    assert(openedCommand.success, JSON.stringify(openedCommand));
-    const opened = { url: await chatCli("url") };
-    assert.equal(opened.url, chatUrl);
-    assert.equal((await fetch(opened.url + "api/sessions")).status, 200, "native reads recover after daemon startup");
-    assert.match(native.logs().stdout, /response/);
-    const page = await fetch(opened.url);
-    assert.equal(page.status, 200);
-    await writeFile(join(root, "chat.html"), await page.text());
-    if (process.env.CHAT_TEST_BROWSER === "1") {
-      const browserDone = join(root, "browser-done");
-      await writeFile(join(root, "browser-ready.json"), JSON.stringify({ url: opened.url, browserDone, alpha, beta, saved, socket, alphaNative, betaNative, gate }));
-      process.stdout.write(`CHAT_TEST_BROWSER_READY ${JSON.stringify({ url: opened.url, browserDone, root })}\n`);
-      await waitForChatNativeFile(browserDone, () => true, 900000);
-    }
-    await backend.close();
-    await backend.close();
-    await chatCli("stop");
-    const afterClose = await nativeRows(daemon);
-    const browserCreated: string[] = process.env.CHAT_TEST_BROWSER === "1"
-      ? JSON.parse(await readFile(join(root, "browser-created.json"), "utf8").catch(() => "[]")) : [];
-    assert(browserCreated.every(id => typeof id === "string" && afterClose.some(row => row.sessionId === id)));
-    assert.deepEqual(afterClose.filter(row => row.sessionId !== replacement.sessionId && !browserCreated.includes(row.sessionId)), before,
-      "closing a viewer never kills or changes worker identities");
-    for (const row of [alphaNative, betaNative]) {
-      assert(row.workerPid && row.activeSessionId);
-      process.kill(row.workerPid, 0);
-      const state = await daemon.request({ type: "get_state", activeSessionId: row.activeSessionId });
-      assert(state.success, JSON.stringify(state));
-    }
-    assert.deepEqual(await readFile(saved.sessionFile), savedBytes);
-    const syntheticModelCalls = (await readFile(calls, "utf8")).split('"stage":"start"').length - 1;
-    await chatCli("start");
-    for (const command of ["/agent-chat", "/what-did-i-say"]) {
-      await native.rpc("prompt", command);
-      await native.notification(expectedNotification);
-    }
-    await writeFile(join(root, "url-notification.json"), JSON.stringify({ url: expectedNotification, commands: ["/agent-chat", "/what-did-i-say"] }));
-    const identityBeforeDaemonRestart = await (await fetch(chatUrl + "api/identity")).json();
-    assert.equal((await fetch(chatUrl + "api/sessions")).status, 200);
-    await native.close();
-    await stopChatNativeDaemon(daemon, socket);
-    assert.equal((await fetch(chatUrl + "api/sessions")).status, 502, "native disconnect does not replace the HTTP server");
-    assert.equal((await fetch(chatUrl)).status, 200);
-    recoveredNative = startChatNativeCli({ node, cwd, env, args: nativeArgs });
-    await recoveredNative.rpc("get_state");
-    assert.equal((await fetch(chatUrl + "api/sessions")).status, 200, "later reads reconnect to the returned native daemon");
-    assert.deepEqual(await (await fetch(chatUrl + "api/identity")).json(), identityBeforeDaemonRestart);
+    await thread.waitFor(event => event.type === "event" && event.event.type === "message_end" && event.event.message.role === "assistant" && JSON.stringify(event.event.message.content).includes(secondPrompt), 30000, "second reply");
+    await thread.waitFor(event => event.type === "info" && !event.info.isStreaming, 20000, "idle info");
+    await thread.waitFor(event => event.type === "queue" && event.queue.followUp.length === 0, 20000, "queue drained");
+    const afterTwo = thread.state; assert(afterTwo);
+    const texts = afterTwo.messages.map(message => message.role === "user" || message.role === "assistant" ? messageText(message) : message.role);
+    assert.deepEqual(texts, [firstPrompt, `SYNTHETIC REPLY: ${firstPrompt}`, secondPrompt, `SYNTHETIC REPLY: ${secondPrompt}`]);
+    assert.equal(afterTwo.streaming, null);
+    assert.deepEqual(afterTwo.queue, { steering: [], followUp: [] });
+    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.status === "idle" && row.messageCount >= 4), 20000, "sessions row idle");
 
-    await writeFile(join(root, "result.json"), JSON.stringify({ passed: true, socket, supervisorPid,
-      cliPid: native.child.pid, workers: afterClose, syntheticModelCalls, automatedModelCalls, realModelCalls: 0, nativeSkillExpanded: true, nativeToolAbortReflected: true,
-      browserReview: process.env.CHAT_TEST_BROWSER === "1", savedBytesUnchanged: true,
-      queueDidNotInterrupt: true, closePreservedWorkers: true, modelChangesTargeted: true,
-      nativeDaemonReconnected: true, urlNotificationVerified: true, latestModelUsed: visionModel.id, nativeUsage: withImages.usage, imageBytesPreserved: true }, null, 2));
+    await unlink(gate);
+    const stopPrompt = `STOP ME ${id} [hold]`;
+    await post(`api/threads/${threadId}/prompt`, { message: stopPrompt, requestId: requestId(), mode: "followUp" });
+    await waitForChatNativeFile(calls, text => text.split('"stage":"held"').length - 1 >= 2);
+    await thread.waitFor(event => event.type === "event" && event.event.type === "message_update" && JSON.stringify(event.event.message.content).includes("SYNTHETIC REPLY: ") && event.event.message.timestamp > afterTwo.messages.at(-1)!.timestamp, 20000, "held reply streaming");
+    assert.equal((await post(`api/threads/${threadId}/abort`, {})).status, 200);
+    const aborted = await thread.waitFor(event => event.type === "event" && event.event.type === "message_end" && event.event.message.role === "assistant" && event.event.message.stopReason === "aborted", 30000, "aborted reply");
+    assert(aborted.type === "event" && aborted.event.type === "message_end" && aborted.event.message.role === "assistant");
+    await thread.waitFor(event => event.type === "info" && !event.info.isStreaming, 20000, "idle after abort");
+    assert.equal(thread.state?.streaming, null);
+
+    const models = await fetch(chatUrl + `api/models?id=${threadId}`).then(response => response.json()) as { current: { id: string } | null; models: { provider: string; id: string }[]; availableThinkingLevels: string[] };
+    assert.equal(models.current?.id, "synthetic");
+    assert(models.models.some(model => model.provider === "chat-native-test" && model.id === "synthetic-vision"));
+    assert.equal((await post(`api/threads/${threadId}/model`, { provider: "chat-native-test", modelId: "synthetic-vision" })).status, 200);
+    await thread.waitFor(event => event.type === "info" && event.info.model?.id === "synthetic-vision", 20000, "model info");
+    const level = models.availableThinkingLevels.find(candidate => candidate !== thread.state?.info.thinkingLevel);
+    if (level) {
+      assert.equal((await post(`api/threads/${threadId}/thinking`, { level })).status, 200);
+      await thread.waitFor(event => event.type === "info" && event.info.thinkingLevel === level, 20000, "thinking info");
+    }
+    assert.equal((await post(`api/threads/${threadId}/thinking`, { level: "invented" })).status, 400);
+    assert.equal((await post(`api/threads/${threadId}/rename`, { name: `Renamed ${id}` })).status, 200);
+    await thread.waitFor(event => event.type === "info" && event.info.name === `Renamed ${id}`, 20000, "rename info");
+    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.name === `Renamed ${id}`), 20000, "renamed row");
+    const imagePrompt = `WITH IMAGE ${id}`;
+    assert.equal((await post(`api/threads/${threadId}/prompt`, { message: imagePrompt, images: [png], requestId: requestId(), mode: "followUp" })).status, 200);
+    const imageUser = await thread.waitFor(event => event.type === "event" && event.event.type === "message_end" && event.event.message.role === "user" && JSON.stringify(event.event.message.content).includes(imagePrompt), 20000, "image user message");
+    assert(imageUser.type === "event" && imageUser.event.type === "message_end" && imageUser.event.message.role === "user" && Array.isArray(imageUser.event.message.content));
+    const imagePart = imageUser.event.message.content.find(part => part.type === "image");
+    assert(imagePart && imagePart.type === "image" && /^api\/images\/[a-f0-9]{64}$/.test(imagePart.url), "images are served by hash, not inlined");
+    const image = await fetch(chatUrl + imagePart.url);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get("content-type"), "image/png");
+    assert.equal(Buffer.from(await image.arrayBuffer()).toString("base64"), png.data);
+    await thread.waitFor(event => event.type === "info" && !event.info.isStreaming && event.info.messageCount >= 8, 30000, "idle after image");
+
+    const toolPrompt = `TOOL ${id} [tool]`;
+    assert.equal((await post(`api/threads/${threadId}/prompt`, { message: toolPrompt, requestId: requestId(), mode: "followUp" })).status, 200);
+    await thread.waitFor(event => event.type === "event" && event.event.type === "tool_execution_start", 30000, "tool start");
+    await waitForChatNativeFile(calls, text => text.includes('"stage":"tool-held"'));
+    await thread.waitFor(event => event.type === "event" && event.event.type === "tool_execution_update", 20000, "tool update");
+    const duringTool = thread.state; assert(duringTool);
+    assert.equal(duringTool.tools[0]?.toolName, "browser_proof_tool");
+    assert.equal(duringTool.tools[0]?.status, "running");
+    assert.match(duringTool.tools[0]?.partial ?? "", /waiting for the test release/);
+    const commands = await fetch(chatUrl + `api/threads/${threadId}/commands`).then(response => response.json()) as { commands: { name: string; source: string }[] };
+    assert(commands.commands.some(command => command.name === "skill:browser-proof" && command.source === "skill"));
+    await writeFile(gate + ".tool", "release");
+    await writeFile(gate, "release");
+    const toolEnd = await thread.waitFor(event => event.type === "event" && event.event.type === "message_end" && event.event.message.role === "toolResult", 30000, "tool result");
+    assert(toolEnd.type === "event" && toolEnd.event.type === "message_end" && toolEnd.event.message.role === "toolResult");
+    const toolCallId = toolEnd.event.message.toolCallId;
+    const output = await fetch(chatUrl + `api/threads/${threadId}/tool-output?toolCallId=${encodeURIComponent(toolCallId)}`).then(response => response.json()) as { output: string; toolName: string; isError: boolean | null };
+    assert.equal(output.toolName, "browser_proof_tool");
+    assert.match(output.output, /NATIVE_TOOL_RESULT/);
+    assert.equal(output.isError, false);
+    await thread.waitFor(event => event.type === "info" && !event.info.isStreaming && event.info.messageCount >= 11, 30000, "idle after tool");
+    assert.deepEqual(thread.state?.tools, [], "tool runs clear when the run ends");
+    assert.equal((await post(`api/threads/${threadId}/prompt`, { message: "/unknown-command", requestId: requestId() })).status, 400);
+    assert.equal((await post(`api/threads/${threadId}/read`, {})).status, 200);
+    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.unread === false), 20000, "read marker");
+
+    const savedThread = threadWatcher(chatUrl + `api/threads/${saved.sessionId}/stream`);
+    watchers.push(savedThread);
+    const savedSnapshot = await savedThread.waitFor(event => event.type === "snapshot", 20000, "saved snapshot");
+    assert(savedSnapshot.type === "snapshot");
+    assert.equal(savedSnapshot.snapshot.kind, "saved");
+    assert.equal(savedSnapshot.snapshot.messages.length, 2);
+    assert.equal(savedSnapshot.snapshot.info.name, saved.name);
+    assert.deepEqual(await readFile(saved.sessionFile), savedBytes, "reading a saved thread does not touch its file");
+    const resumePrompt = `RESUME ${id}`;
+    const resumed = await post(`api/threads/${saved.sessionId}/prompt`, { message: resumePrompt, requestId: requestId(), mode: "followUp" });
+    assert.equal(resumed.status, 200, JSON.stringify(resumed.body));
+    const liveSnapshot = await savedThread.waitFor(event => event.type === "snapshot" && event.snapshot.kind === "live", 30000, "resumed live snapshot");
+    assert(liveSnapshot.type === "snapshot");
+    assert.equal(liveSnapshot.snapshot.info.sessionId, saved.sessionId);
+    await savedThread.waitFor(event => event.type === "event" && event.event.type === "message_end" && event.event.message.role === "assistant" && JSON.stringify(event.event.message.content).includes(resumePrompt), 30000, "resumed reply");
+    await savedThread.waitFor(event => event.type === "info" && !event.info.isStreaming, 20000, "resumed idle");
+    const resumedTexts = savedThread.state?.messages.map(message => message.role === "user" || message.role === "assistant" ? messageText(message) : message.role);
+    assert.deepEqual(resumedTexts, [`SAVED QUESTION ${saved.name}`, `SAVED ANSWER ${saved.name}`, resumePrompt, `SYNTHETIC REPLY: ${resumePrompt}`]);
+    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === saved.sessionId && row.kind === "live" && row.status === "idle"), 20000, "saved row is live now");
+    const entries = SessionManager.open(saved.sessionFile, sessions).getEntries();
+    assert(entries.some(entry => entry.type === "message" && entry.message.role === "user" && messageText(entry.message) === resumePrompt), "the resumed reply persists in the native file");
+
+    const starts = (await readFile(calls, "utf8")).split('"stage":"start"').length - 1;
+    assert.equal(starts, 7, "seven provider calls: first, second, stopped, image, tool (two legs), resume");
+    thread.close();
+    savedThread.close();
+    sessionsStream.close();
+    await writeFile(join(root, "result.json"), JSON.stringify({ passed: true, threadId, savedId: saved.sessionId, providerStarts: starts, events: thread.events.length }, null, 2));
   } finally {
-    await backend?.close();
-    await chatCli("start");
+    await writeFile(join(root, "thread-events.json"), JSON.stringify(watchers.map(watcher => watcher.events), null, 1)).catch(() => {});
+    await chatCli("stop").catch(() => {});
     await native.close();
-    await recoveredNative?.close();
-    assert.equal((await fetch(chatUrl)).status, 200, "native session shutdown leaves the standalone service running");
-    await chatCli("stop");
-    await assert.rejects(fetch(chatUrl));
     try { await stopChatNativeDaemon(daemon, socket); }
     finally {
       daemon.close();

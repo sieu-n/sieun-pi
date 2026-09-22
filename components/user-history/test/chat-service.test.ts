@@ -41,9 +41,11 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.deepEqual(await (await fetch(url + "api/identity")).json(), first);
     assert.equal((await fetch(new URL("/", url), { redirect: "manual" })).status, 404);
     assert.equal((await fetch(url)).status, 200, "page renders without native daemon");
-    const unavailable = await fetch(url + "api/sessions");
-    assert.equal(unavailable.status, 502);
-    assert.match((await unavailable.json()).error, /Native daemon disconnected/);
+    assert.equal((await fetch(url + "api/sessions")).status, 404, "the polling list route is gone; the list is a stream");
+    assert.equal((await fetch(url + "app.js")).status, 200, "the bundle is served without native daemon");
+    const unavailable = await fetch(url + "api/models");
+    assert.equal(unavailable.status, 502, "routes that need the daemon report it as unreachable");
+    assert.match((await unavailable.json()).error, /daemon is not reachable/);
     for (const file of ["configuration.json", "instance.json", "service.log"]) assert.equal((await stat(join(data, file))).mode & 0o777, 0o600);
     const configuration = JSON.parse(await readFile(join(data, "configuration.json"), "utf8"));
     const headers = { "Content-Type": "application/json", Origin: new URL(url).origin };

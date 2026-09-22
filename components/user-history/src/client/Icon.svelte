@@ -1,0 +1,35 @@
+<script module lang="ts">
+  const PATHS = {
+    plus: "M12 5v14M5 12h14",
+    search: "M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM20 20l-4-4",
+    sidebar: "M4 5h16v14H4zM9 5v14",
+    pencil: "M4 20h4l10-10-4-4L4 16zM13 7l4 4",
+    x: "M6 6l12 12M18 6L6 18",
+    check: "M5 12l5 5L20 7",
+    chevronDown: "M6 9l6 6 6-6",
+    chevronRight: "M9 6l6 6-6 6",
+    send: "M5 12h14M13 6l6 6-6 6",
+    stop: "M7 7h10v10H7z",
+    image: "M4 5h16v14H4zM4 15l5-5 4 4 3-3 4 4M15 9h.01",
+    copy: "M9 9h11v11H9zM5 15V4h11",
+    more: "M5 12h.01M12 12h.01M19 12h.01",
+    refresh: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
+    users: "M16 19v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M9.5 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8zM21 19v-2a4 4 0 0 0-3-3.9M15 3.1a4 4 0 0 1 0 7.8",
+    arrowDown: "M12 5v14M5 12l7 7 7-7",
+    alert: "M12 3l10 18H2zM12 10v5M12 18h.01",
+    folder: "M3 6h6l2 2h10v11H3z",
+    menu: "M4 7h16M4 12h16M4 17h16",
+    steer: "M4 12h10M4 6h16M4 18h6M18 15l3 3-3 3",
+    sparkle: "M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z",
+    account: "M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8zM4 20a8 8 0 0 1 16 0",
+  } as const;
+  export type IconName = keyof typeof PATHS;
+</script>
+
+<script lang="ts">
+  let { name, size = 18 }: { name: IconName; size?: number } = $props();
+</script>
+
+<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d={PATHS[name]} />
+</svg>

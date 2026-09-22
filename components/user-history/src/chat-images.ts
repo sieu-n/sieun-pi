@@ -4,9 +4,8 @@ type NativeImage = NonNullable<NonNullable<Parameters<DaemonAgentConnection["pro
 type ImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 export type ChatImage = NativeImage & { mimeType: ImageMimeType };
 
-export const MAX_CHAT_IMAGES = 4;
-export const MAX_CHAT_IMAGE_BYTES = 3 * 1024 * 1024;
-export const MAX_CHAT_TOTAL_IMAGE_BYTES = 8 * 1024 * 1024;
+import { MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES } from "./shared/limits.ts";
+export { MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES };
 const MAX_ENCODED_IMAGE_BYTES = Math.ceil(MAX_CHAT_IMAGE_BYTES / 3) * 4;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -5,8 +5,6 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { defaultDaemonSocketPath, getAgentDir } from "prime-agent";
-import { createChatBackend } from "./chat-backend.ts";
-import { startChatServer } from "./chat-server.ts";
 
 type Options = { port?: number; socketPath?: string; dataDir?: string };
 type Configuration = { port: number; socketPath: string; capability: string; csrfToken: string; stopToken: string };
@@ -120,6 +118,9 @@ async function serve(options: Options): Promise<void> {
   if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
   const instancePath = join(service.directory, "instance.json");
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
+  const [{ buildClientBundle }, { createChatBackend }, { startChatServer }] = await Promise.all([
+    import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts")]);
+  const bundle = await buildClientBundle();
   const backend = await createChatBackend({ socketPath: service.config.socketPath, readStatePath: join(service.directory, "read-state.json") });
   let stopped: () => void = () => {};
   const done = new Promise<void>(resolve => { stopped = resolve; });
@@ -136,7 +137,7 @@ async function serve(options: Options): Promise<void> {
   const stop = () => { void close().catch(error => { process.stderr.write(String(error) + "\n"); process.exitCode = 1; }); };
   let publishIdentity: () => void = () => {};
   const identityReady = new Promise<void>(resolve => { publishIdentity = resolve; });
-  const server = await startChatServer({ backend, port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken,
+  const server = await startChatServer({ backend, bundle, port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken,
     identity, identityReady, stopToken: service.config.stopToken, onStop: close }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
       throw error;

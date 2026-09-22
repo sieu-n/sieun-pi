@@ -1,0 +1,69 @@
+import type { AccountAction, AccountsView, Command, ImageInput, ModelCatalog, PoolEvent, SendMode, SessionsEvent, ThreadEvent, Workspace } from "../shared/types.ts";
+
+const token = document.body.dataset.chatToken ?? "";
+
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
+async function parse<T>(response: Response): Promise<T> {
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = typeof body === "object" && body !== null && "error" in body && typeof body.error === "string" ? body.error : `HTTP ${response.status}`;
+    throw new ApiError(response.status, message);
+  }
+  return body as T;
+}
+
+export async function get<T>(route: string, timeoutMs = 20000): Promise<T> {
+  return parse<T>(await fetch(route, { signal: AbortSignal.timeout(timeoutMs) }));
+}
+
+export async function post<T>(route: string, body: unknown, timeoutMs = 60000): Promise<T> {
+  return parse<T>(await fetch(route, { method: "POST", headers: { "Content-Type": "application/json", "X-Chat-Token": token }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) }));
+}
+
+export function requestId(): string {
+  return crypto.randomUUID().replaceAll("-", "") + Date.now().toString(36);
+}
+
+export const api = {
+  sessionsStream(onEvent: (event: SessionsEvent) => void, onError: () => void): () => void {
+    const source = new EventSource("api/sessions/stream");
+    source.addEventListener("sessions", event => onEvent(JSON.parse((event as MessageEvent<string>).data) as SessionsEvent));
+    source.onerror = () => onError();
+    return () => source.close();
+  },
+  threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void): () => void {
+    const source = new EventSource("api/threads/" + encodeURIComponent(id) + "/stream");
+    source.addEventListener("thread", event => {
+      const parsed = JSON.parse((event as MessageEvent<string>).data) as ThreadEvent;
+      if (parsed.type === "status" && parsed.connection === "closed" && parsed.error) source.close();
+      onEvent(parsed);
+    });
+    source.onerror = () => onError();
+    return () => source.close();
+  },
+  workspaces: () => get<{ workspaces: Workspace[] }>("api/workspaces").then(body => body.workspaces),
+  models: (id: string | null) => get<ModelCatalog>("api/models" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
+  commands: (id: string) => get<{ commands: Command[] }>("api/threads/" + encodeURIComponent(id) + "/commands").then(body => body.commands),
+  toolOutput: (id: string, toolCallId: string) => get<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }>(
+    "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),
+  part: (id: string, message: number, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?message=${message}&part=${part}`),
+  accounts: (id: string | null) => get<AccountsView>("api/accounts" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
+  accountsLog: () => get<{ events: PoolEvent[] }>("api/accounts/log", 30000).then(body => body.events),
+  accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action),
+  createThread: (input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: string; message: string; images: ImageInput[]; requestId: string }) =>
+    post<{ id: string }>("api/threads", input, 120000),
+  warm: (id: string) => post<{ ok: true }>("api/warm", { id }),
+  prompt: (id: string, input: { message: string; images: ImageInput[]; mode: SendMode; requestId: string }) =>
+    post<{ accepted: true }>("api/threads/" + encodeURIComponent(id) + "/prompt", input, 120000),
+  abort: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/abort", {}),
+  compact: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/compact", {}, 180000),
+  rename: (id: string, name: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/rename", { name }),
+  setModel: (id: string, provider: string, modelId: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/model", { provider, modelId }),
+  setThinking: (id: string, level: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/thinking", { level }),
+  queue: (id: string, input: { lane: "steering" | "followUp"; index: number; expectedText: string; text?: string }) =>
+    post<{ status: string; error?: string }>("api/threads/" + encodeURIComponent(id) + "/queue", input),
+  read: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/read", {}),
+};

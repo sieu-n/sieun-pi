@@ -1,153 +1,72 @@
-# Native session chat
+# Browser chat for Prime Agent
 
-`/what-did-i-say` and `/agent-chat` start or reuse the shared server and print its URL. They never open a browser. Run `/reload` in the terminal after updating the extension.
+A thin browser front end for native Prime Agent sessions. `/what-did-i-say` and `/agent-chat` in the terminal start or reuse the shared server and print its URL. Nothing opens a browser for you. Run `/reload` in the terminal after updating the extension.
 
-The browser reads native sessions and sends through `DaemonAgentConnection`. Prime Agent owns each run, queue, saved name, model and skill expansion. Closing or refreshing a browser never stops a worker.
+Prime Agent owns every run, queue, name, model, skill and worker. The browser attaches to the daemon the same way the terminal's agents view does. Closing or refreshing a tab never stops a worker.
 
-## Layout and controls
+## What you see
+
+- Sidebar: threads grouped by Today, Yesterday, Previous 7 days and Older. A spinner marks a running thread, a dot marks one that finished since you last had it open. Hover a row to rename it. Archived threads sit behind a toggle. The footer shows the account this thread resolves to.
+- New chat: the default screen. A greeting, the composer, and pickers for workspace, model and effort. The first send creates a resident native session, attaches, and streams the reply.
+- Thread: the whole transcript, opened at the bottom. User prompts are bubbles on the right. Each assistant turn folds its thinking and tool calls into one "Worked 2m 14s" row that expands into per-tool rows with arguments and output. Replies render as markdown with copy buttons. Errors and stopped replies stay visible.
+- Composer: Enter sends, Shift+Enter adds a line, "/" opens the native command and skill menu, images paste or drop in. While the agent works, the button becomes Stop, Enter queues a follow-up and Cmd+Enter steers. Queued messages show as chips you can edit or remove.
+- Saved threads open read-only in a few hundred milliseconds. Sending a reply resumes them natively.
+- Accounts: the chip opens a drawer with both pool providers, one card per account with 5 hour and weekly meters, and actions: use for this thread, follow the pool, pin, unpin, drop seat. Global actions ask for confirmation.
+
+Keyboard: Cmd+N new chat, Cmd+K search, Cmd+B sidebar, F2 rename, Esc closes menus or stops a busy thread when the composer has focus.
+
+Light and dark follow the OS. Below 900 px the sidebar becomes an overlay.
+
+## How it works
 
 ```text
-Resizable sidebar       40px header
-New thread              Title       Compact Detailed Questions   Agents
-Search / Archived       Latest user turn and assistant reply
-Session title   2m      Details / Load older messages
-Session title   1h      Native work and queued prompts
-                        + Account meters Context Model Effort Send now ▾
+browser  <- SSE api/sessions/stream ---- Catalog: one DaemonClient, roster_subscribe, list all
+browser  <- SSE api/threads/:id/stream - ThreadHub: one DaemonAgentConnection per open thread
+browser  -> POST api/threads/:id/prompt  ThreadHub.prompt -> connection.prompt(...)
 ```
 
-The sidebar contains native top-level sessions only. Archived roots stay hidden until Archived is checked or a search matches them. Names never decide lifecycle or parentage. Drag the sidebar edge or use its keyboard separator with Left/Right, Home and End. Width stays between 180 and 480 pixels and persists as a browser preference. F2 or the row's ellipsis opens rename. Enter saves through the native live or saved-session rename API. Escape cancels. Hover or focus shows the title, creation date, known last assistant response and model. Skill-only previews display `Untitled session` rather than injected markup. Names do not require model calls or scans of every history.
+- `src/chat-catalog.ts` keeps the session list. It subscribes to `roster_update`, refreshes `list all` after a short debounce, and pushes the projected rows to every open browser.
+- `src/chat-threads.ts` keeps an attached connection per thread (up to 8 live, idle ones close after 3 minutes). On subscribe it sends one snapshot, then forwards native events. `message_update` is coalesced to one per 40 ms.
+- `src/chat-projection.ts` trims payloads without renaming anything: tool output over 600 characters and long tool arguments get `truncated: true` and a fetch endpoint, thinking is cut to 240 characters, image bytes become `api/images/<hash>` URLs from a bounded memory store.
+- `src/shared/thread-state.ts` is the reducer. The server and the browser apply the same events to the same `ThreadState`, so there is no polling and no DOM diffing.
+- `src/shared/turns.ts` groups messages into turns for display.
+- `src/client/` is the Svelte 5 app. `chat-assets.ts` bundles it in memory with esbuild when the service starts and serves it with an ETag.
+- `src/chat-pool.ts` wraps `components/pi-pool/bin/pi-pool` with argument arrays. It never runs `pi-pool-token`.
 
-New thread and Cmd+N create a separate native resident worker through the daemon's typed create command. They never replace the selected session or send a prompt. Creation keeps the selected root's workspace and live model. A saved root keeps its workspace and uses native model defaults. With no selection, native workspace and model defaults apply. New roots load their normal native resources and default effort. Repeated clicks during creation share one pending operation. An uncertain result requires checking the sidebar and explicit acknowledgement before another creation. Cmd+N works when the browser delivers it; the visible button always remains available.
+## HTTP API
 
-Compact is the default. It shows each displayed user prompt and its latest visible assistant reply, without requiring provider final markers. Details fetches that turn's other native messages. Detailed shows the loaded native events. Questions shows loaded user prompts and links back to their turns. The jump menu has lightweight labels for older questions. Load older fetches another five turns by native entry ID. Native errors and interrupted tool results remain visible in Compact. The current turn's spinner uses native runtime state in every mode.
+All routes sit under the capability URL. Writes need JSON, the page token in `X-Chat-Token`, and the exact loopback `Origin`.
 
-Agents opens a hideable display-only tree of the selected root's native child snapshots. Names, models, state, known duration and parent relationships come from Pi. It does not read each child's transcript or add lifecycle controls.
+| Route | Purpose |
+| --- | --- |
+| `GET api/sessions/stream` | SSE list of top-level sessions |
+| `GET api/threads/:id/stream` | SSE snapshot, then native events |
+| `GET api/threads/:id/tool-output?toolCallId=` | full tool result text |
+| `GET api/threads/:id/part?message=&part=` | full text of a truncated part |
+| `GET api/threads/:id/commands` | native commands and skills |
+| `GET api/models?id=` | model catalog and current model |
+| `GET api/workspaces` | recent working directories |
+| `GET api/accounts?id=`, `GET api/accounts/log` | pool state and recent pool events |
+| `GET api/images/:hash` | an image from the transcript |
+| `POST api/threads` | create a thread and send the first message |
+| `POST api/threads/:id/prompt` | send, queue or steer |
+| `POST api/threads/:id/abort`, `compact`, `rename`, `model`, `thinking`, `queue`, `read` | thread controls |
+| `POST api/warm` | attach ahead of a click |
+| `POST api/accounts` | pool actions |
 
-Select a session to change only the browser view. The terminal keeps its own selection. The URL fragment restores the selected session after reload. Draft text, images, text selection, scroll position and open disclosures survive session switches within the tab. Reload discards drafts and attachments.
-
-The header has no permanent Idle line. Native work appears beside a compact spinner above the composer. Its elapsed time comes from native run-start messages, using the same backward scan as Pi's TUI. A reattach does not create a new start time. Compaction, retries, bash and child work keep their native distinctions. Missing start times have no timer.
-
-Tools start collapsed. Tool-only assistant messages use compact 24-pixel summary rows without empty reply blocks. Each row shows its native name, status and short output summary. Expand to load exact arguments and output through the read-only tool endpoint. Collapsed transcript polls contain only summaries. Expanded live details reload when the native tool revision changes. Native tool events update partial output. Tool duration appears only when the native result supplies it. Reattached tools with no recorded duration do not get an invented timer. Thinking content stays hidden. Error-only and aborted assistant messages remain visible.
-
-### Slash commands
-
-Typing `/` opens the selected session's native command and resource catalogs. Search matches names and descriptions. Up/Down moves, Enter or Tab selects, and Escape dismisses. IME composition does not select or submit.
-
-A skill inserts its real `/skill:name` prefix. The browser sends that invocation and its arguments unchanged, with attached images. Native Pi expands and stores the skill. The browser has no separate skill loader and does not claim multi-skill chip support.
-
-`/model`, `/account`, `/effort`, `/rename`, `/stop` and `/compact` open or call the corresponding controls. Native extension entries keep their source label, but interactive extension commands require the terminal. Unknown slash commands retain the draft and never become model prompts. Native prompt templates can be sent.
-
-Supported control invocations clear their own draft after the control opens or executes. Unknown and unsupported commands keep their draft.
-
-The catalog refreshes on session selection, browser reload, a new `/` picker opening, or the header refresh button. Use refresh after terminal resource reloads while a picker remains open.
-
-### Account, model, effort and context
-
-The account widget loads the sanitized pool listing when the selected session or provider changes. Its compact widget shows the effective next-request account, plan and labelled session/week usage meters. The expanded menu shows the same meters for every selected-provider account, with separate next-request, selected, seat, last-used and native health labels. `who --json --session ...` resolves that account through pi-pool. The widget never chooses a usable row, last-used account or seat itself. If resolution is unavailable, the widget says Pool unresolved. Current, pinned and seat flags remain separate menu details. Unknown means unavailable usage; missing quota never becomes zero. Opening the menu refreshes the listing.
-
-The model menu uses the native catalog, configured providers and current selection. Search and More models expose other native entries. It shows input support and native prices when supplied. `setModel()` also changes Prime Agent's default model; the menu states this. Model and effort changes require an idle native session, empty queue and no active children. Controls wait for native readback before displaying the new choice. Effort uses only `availableThinkingLevels`.
-
-Account reads and selections call the existing `components/pi-pool/bin/pi-pool-token` with `execFile` argument arrays. `ls --json --provider ... --session ...` owns account usage and eligibility. `use ... --provider ... --session ...` sets only the selected session tree, followed by a fresh listing. There is no global pin or browser credential access.
-
-A pin affects the next provider request. Follow the pool clears that pin. Unusable accounts require explicit force confirmation. The menu shows CLI status, plan, current/pinned/seat/live flags and percentages labelled used. Missing percentages remain unavailable. The CLI's `patched` field is not a host authentication-health verdict and is not displayed. Providers without a pool show No account pool. Account failures do not block chat.
-
-Context is separate from account capacity. It shows native context estimates, session token totals and recorded cost. Missing data stays unavailable. Session usage covers the whole native saved file, including inactive branches and compaction, excluding attributed child usage.
-
-### Stop, compact and queued prompts
-
-Stop calls native abort and cancels the current turn and its active child runs. It also aborts active retry, bash or compaction. It does not kill a worker. Native queued input stays paused until the next normal prompt. Terminal aborts appear through native readback.
-
-Compact calls the native compact API only while idle. The expandable queue lists native steering and follow-up messages. Edit and Remove use native expected-text checks. A changed queue rejects a stale edit rather than applying it to another message.
-
-Send now uses native `steer` at the next native boundary. Queue uses native `followUp` after the current turn. Either starts normally while idle. Neither aborts work. The selected mode participates in the request fingerprint.
-
-Message admission means Pi accepted the request. It does not establish task success. An uncertain send keeps its draft and never resends automatically. Repeating the unchanged request ID checks the same admission result.
-
-### Read indicators
-
-Running sessions show a spinner. An idle session with an unseen committed assistant entry shows a dot. A checked session shows neither. Failed workers, connection errors and unavailable read metadata remain explicit.
-
-Pi currently has no native browser read record. This component stores only a baseline timestamp and last-read assistant entry per session at `getAgentDir()/browser-chat/read-state.json`. The first use treats older history as read. The file stays outside Git and native conversation history. Atomic rename and a process-owned lock protect concurrent listeners; markers never move backward in time. Reads do not rewrite the file. A damaged or locked read file does not prevent native chat.
-
-A tab marks read only when native work is idle, it has foreground focus and the latest committed assistant response is visible at the bottom. A click on a session while scrolled up does not clear its dot. Questions mode never marks hidden assistant replies as read. Reading in the terminal does not change browser markers.
-
-The native catalog has no last-assistant field. The adapter caches observed entry metadata against catalog revisions. The list returns the native catalog and cached response metadata without waiting for transcripts. One background batch reads at most four changed recent sessions. Concurrent list polls do not add another batch. Stale metadata says pending; failed reads say unavailable and retry after unchecked sessions. Native modification times invalidate the cache but never become assistant-response timestamps. Old sessions with no observed assistant entry show an unavailable reply date.
-
-## Images and saved sessions
-
-Paste, drop or upload PNG, JPEG, GIF or WebP with an image-capable native model. Limits are four images, 3 MiB each and 8 MiB total before base64 encoding. Image-only messages work. Unsupported saved images leave a `[Saved image]` placeholder. Markdown URLs and images stay inert.
-
-Saved sessions are readable and renamable. Resume them in Prime Agent before sending or changing runtime controls. There is no browser Resume, Archive, Delete or Fork mutation.
-
-## Native boundary
-
-```mermaid
-flowchart LR
-    Browser[Browser tab] --> HTTP[Standalone loopback server]
-    HTTP --> Native[DaemonAgentConnection]
-    Native --> Worker[Native session, tools and queue]
-    HTTP --> Catalog[Native session catalog]
-    HTTP --> Saved[In-memory native saved reader]
-    HTTP --> Pool[pi-pool CLI]
-    HTTP --> UI[Private browser read markers]
-```
-
-`src/chat-service.ts` owns process startup, configuration and verified lifecycle commands. `src/chat-service-cli.mjs` loads TypeScript through the declared production `tsx` dependency. `src/chat-backend.ts` owns the thin native boundary. `src/chat-pool.ts` validates the CLI listing and selects through its CLI. `src/chat-read-state.ts` owns UI read markers. `src/chat-server.ts` validates loopback HTTP. `src/chat-client.ts` owns transient browser view state. `src/chat-page.ts` owns markup, styles and CSP hashes. `src/page.ts` renders inert Markdown, tool disclosures and images.
-
-The adapter coalesces concurrent snapshot and tree reads within each viewer connection. Metadata enrichment and multiple tabs share one in-flight native read. It caches the immutable native tree by session identity and native leaf ID. Branch changes invalidate that tree. Full native user text supplies unnamed-session previews once the branch is already loaded.
-
-The composer accepts draft text before history loads. A separate direct daemon state/header read validates native identity before Send becomes available. Model and attachment controls wait for their native state. Every mutation still validates the selected native identity again.
-
-Initial history renders only the last user-turn group. Compact omits older assistant bodies until Details opens. Questions also loads a bounded window. Later polls patch only the latest turn, keeping loaded older DOM and images in place. Unchanged HTML returns only its revision and fresh native metadata. An active text selection defers DOM replacement. Explicit history or view navigation can reload the displayed window.
-
-Pi 0.9.4 exposes no bounded canonical-history API. The first history read still needs a native attach and full canonical tree. The browser response, Markdown work and image projection are bounded after that native read; no provisional message IDs or second history store are added.
-
-The selected transcript polls every two seconds and the catalog every ten seconds while visible. The adapter keeps at most four native viewer connections. Those connections subscribe to native tool output but never own worker lifetime. Native snapshot reads rebuild the current run after disconnects. Saved reads use `SessionManager.inMemory()` to avoid migrating or repairing files on disk.
-
-The native API has no atomic expected-session-ID or idle precondition for mutations. The adapter checks native identity and busy state before calls. A terminal session replacement or new turn between the check and call can still race. Avoid replacing that terminal worker's selected session while sending browser mutations.
-
-## HTTP contract and security
-
-All paths are below a stable random capability URL stored in the private profile. `GET /` returns 404 and never reveals that URL. Reads use `GET api/sessions`, `api/target?id=...`, `api/session?id=...`, `api/models?id=...`, `api/commands?id=...`, `api/accounts?id=...` and `api/tool?id=...&toolId=...`. Tool reads return exact native arguments and output only for calls on the selected branch.
-
-Writes use `POST api/create`, `api/message`, `api/model`, `api/effort`, `api/rename`, `api/account`, `api/stop`, `api/compact`, `api/queue`, `api/read`. All require JSON, the page's write token, and exact loopback Host and Origin. Session paths and executable arguments never come from the browser.
-
-The listener binds to `127.0.0.1`. A fixed-hash CSP allows no external resources or inline handlers. Transcript HTML stays escaped. Responses use `Cache-Control: no-store`. Do not share the capability URL. Other processes running as the same OS user are outside this protection.
-
-Text is limited to 32,000 characters and request bodies to 12 MiB. The process remembers each admitted creation and send ID and its settled outcome, including uncertain failures. Restart clears this admission cache. After a restart, inspect the native transcript before manually resubmitting an uncertain message. The browser never automatically replays writes.
-
-## Server lifecycle
+## Commands
 
 ```sh
-sieun-pi chat start
-sieun-pi chat status
-sieun-pi chat url
-sieun-pi chat stop
-sieun-pi chat serve --port 5182
+node src/chat-service-cli.mjs start|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH]
+npm run typecheck      # tsc and svelte-check
+npm test               # unit and service tests
+npm run test:native    # isolated daemon, deterministic provider, real HTTP and SSE
 ```
 
-`start` detaches a reusable Node process and prints the full URL. `serve` runs in the foreground. Both default to `127.0.0.1:5182`; the service never chooses another port automatically or kills a port occupant. `url` prints the stable configured URL even while stopped. `stop` sends an authenticated request to the verified service instance. It never signals a stored PID or stops native workers.
+The service keeps its configuration, instance record and read markers under `~/.prime/agent/browser-chat` by default. Use `--data-dir` for a second instance.
 
-For a separate profile or custom daemon, pass `--data-dir PATH`, `--socket PATH` and an explicit `--port NUMBER`. The first start fixes that directory's port and socket. Later conflicting options fail. Use matching settings, or stop the old service and choose a separate data directory. The extension accepts `--agent-chat-data-dir`, `--agent-chat-socket` and `--agent-chat-port`.
+## Limits
 
-The default directory is `getAgentDir()/browser-chat`. `configuration.json` stores the port, socket and random capability/write/stop tokens. `instance.json` stores the live PID, instance ID and URL. Both files and `service.log` use mode 0600. The directory uses mode 0700. Read markers remain separate in `read-state.json`. Atomic configuration publication and the exclusive TCP bind handle simultaneous starts. Reuse and stop require a capability endpoint response matching the private instance record.
-
-The service survives Pi session shutdown, closed tabs and idle periods. Close view stops polling in that tab only. Reload reconnects it. A missing native daemon leaves the page available with a disconnected message and retry controls. Later reads reconnect through the native client. The service never starts or repairs a daemon.
-
-`GET api/identity` verifies service identity. `POST api/service-stop` requires a separate private stop token, an exact Origin and the expected instance ID. The page never receives the stop token. The capability URL allows local read access, including the page's write token. This is not a remote sharing feature.
-
-pi-pool remains a separate CLI and token hook. Its existing account wrappers remain unchanged.
-
-## Setup and checks
-
-This component targets the pinned Prime Agent 0.9.4 SDK. The repository installer owns live registration. Workers must not apply or patch the live installation.
-
-```sh
-npm run typecheck --prefix components/user-history
-npm test --prefix components/user-history
-npm run test:native --prefix components/user-history
-```
-
-Set `HISTORY_TEST_ARTIFACTS_DIR` to the current session evidence directory. Native tests use an isolated HOME, daemon socket, skills and deterministic provider. They make no production model calls or pool writes.
-
-For Aside checks, run `CHAT_TEST_BROWSER=1 node --import tsx --test test/chat-native.test.ts` from the component directory. The fixture writes `browser-ready.json`. The host opens that URL with Aside and records rendered desktop, narrow, dark-mode and keyboard checks. Unit tests alone do not establish browser verification.
+- Message text up to 32,000 characters. Up to 4 images per message, 3 MiB each, 8 MiB total, PNG, JPEG, GIF or WebP.
+- Extension commands that need terminal dialogs are refused with a message. Prompt and skill commands work.
+- The image store is in memory and bounded, so an image URL can expire after a restart. Reopen the thread to refresh it.
