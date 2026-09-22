@@ -4,7 +4,7 @@
   import { dateGroup, relativeTime, type DateGroup } from "./format.ts";
   import type { SessionRow } from "../shared/types.ts";
   import Icon from "./Icon.svelte";
-  import AccountChip from "./AccountChip.svelte";
+  import { ui, SIDEBAR_MAX, SIDEBAR_MIN } from "./ui.svelte.ts";
 
   let { narrow }: { narrow: boolean } = $props();
   let query = $state("");
@@ -54,9 +54,38 @@
     else if (event.key === "Escape") { event.stopPropagation(); renaming = null; }
   }
   function focusAndSelect(node: HTMLInputElement): void { node.focus(); node.select(); }
+
+  let aside: HTMLElement | undefined = $state();
+  let resizing = $state(false);
+  function startResize(event: PointerEvent): void {
+    if (event.button !== 0 || !aside) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLElement;
+    const left = aside.getBoundingClientRect().left;
+    handle.setPointerCapture(event.pointerId);
+    resizing = true;
+    const move = (next: PointerEvent) => ui.setSidebarWidth(next.clientX - left, false);
+    const end = () => {
+      resizing = false;
+      ui.setSidebarWidth(ui.sidebarWidth, true);
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  }
+  function resizeKey(event: KeyboardEvent): void {
+    const next = event.key === "ArrowLeft" ? ui.sidebarWidth - 16 : event.key === "ArrowRight" ? ui.sidebarWidth + 16
+      : event.key === "Home" ? SIDEBAR_MIN : event.key === "End" ? SIDEBAR_MAX : null;
+    if (next === null) return;
+    event.preventDefault();
+    ui.setSidebarWidth(next, true);
+  }
 </script>
 
-<aside class="sidebar" class:open={store.sidebarOpen} class:narrow aria-label="Threads">
+<aside class="sidebar" class:open={store.sidebarOpen} class:narrow class:resizing aria-label="Threads" bind:this={aside}>
   <div class="inner">
     <div class="top">
       <button class="new" onclick={() => store.select(null)}><Icon name="plus" size={16} /><span>New chat</span></button>
@@ -94,14 +123,20 @@
         <button class="archived-toggle" onclick={() => { showArchived = !showArchived; }}>{showArchived ? "Hide archived" : `Show ${archivedCount} archived`}</button>
       {/if}
     </div>
-    <div class="footer">
-      <AccountChip threadId={store.selectedId} />
-    </div>
   </div>
+  {#if !narrow && store.sidebarOpen}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div class="resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"
+      aria-valuemin={SIDEBAR_MIN} aria-valuemax={SIDEBAR_MAX} aria-valuenow={ui.sidebarWidth}
+      onpointerdown={startResize} onkeydown={resizeKey} ondblclick={() => ui.setSidebarWidth(260, true)}></div>
+  {/if}
 </aside>
 
 <style>
-  .sidebar { flex: none; width: 0; overflow: hidden; background: var(--bg-sunken); border-right: 1px solid transparent; transition: width 0.18s ease; }
+  .sidebar { position: relative; flex: none; width: 0; overflow: hidden; background: var(--bg-sunken); border-right: 1px solid transparent; transition: width 0.18s ease; }
+  .sidebar.resizing { transition: none; user-select: none; }
+  .resize { position: absolute; top: 0; right: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 2; }
+  .resize:hover, .resize:focus-visible, .resizing .resize { background: linear-gradient(to right, transparent 4px, var(--accent) 4px); outline: none; }
   .sidebar.open { width: var(--sidebar); border-right-color: var(--border); }
   .sidebar.narrow { position: fixed; top: 0; bottom: 0; left: 0; z-index: 50; width: min(var(--sidebar), 86vw); transform: translateX(-100%); transition: transform 0.2s ease; border-right-color: var(--border); box-shadow: none; }
   .sidebar.narrow.open { transform: none; box-shadow: var(--shadow); }
@@ -132,5 +167,4 @@
   .empty { padding: 24px 8px; color: var(--text-faint); font-size: 13px; text-align: center; }
   .archived-toggle { display: block; width: 100%; padding: 8px; margin-top: 8px; font-size: 12px; color: var(--text-faint); border-radius: var(--radius-small); }
   .archived-toggle:hover { background: var(--bg-hover); color: var(--text-muted); }
-  .footer { padding: 8px 12px 12px; border-top: 1px solid var(--border); }
 </style>

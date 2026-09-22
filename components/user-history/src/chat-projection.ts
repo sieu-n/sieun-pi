@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { DaemonAgentConnection, SessionSummary } from "prime-agent";
+import { parseSkillBlock, type DaemonAgentConnection, type SessionSummary } from "prime-agent";
 import type { AssistantMessage, ChildAgent, ImagePart, ModelInfo, ProjectedSessionEvent, TextPart, ThinkingPart, ThreadInfo, ThreadMessage, ToolCallPart, ToolResultMessage } from "./shared/types.ts";
 
 export const TEXT_LIMIT = 600;
@@ -56,6 +56,17 @@ export class Projector {
   private image(part: { mimeType: string; data: string }): ImagePart {
     return { type: "image", mimeType: part.mimeType, url: "api/images/" + this.images.put(part.mimeType, part.data) };
   }
+  /** A skill invocation is stored expanded; show what the user typed plus the skill name, like the TUI. */
+  private user(content: unknown, timestamp: number): ThreadMessage {
+    const raw = typeof content === "string" ? content : Array.isArray(content)
+      ? content.flatMap((part: unknown) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n") : "";
+    const skill = raw.trimStart().startsWith("<skill") ? parseSkillBlock(raw) : null;
+    const projected = this.userContent(content, USER_TEXT_LIMIT);
+    if (!skill) return { role: "user", content: projected, timestamp };
+    const images = typeof projected === "string" ? [] : projected.filter((part): part is ImagePart => part.type === "image");
+    const typed = skill.userMessage?.trim() ?? "";
+    return { role: "user", content: [...(typed ? [textPart(typed, USER_TEXT_LIMIT)] : []), ...images], timestamp, skill: skill.name };
+  }
   private userContent(content: unknown, limit: number): string | (TextPart | ImagePart)[] {
     if (typeof content === "string") return clip(content, limit).text;
     if (!Array.isArray(content)) return "";
@@ -100,7 +111,7 @@ export class Projector {
   }
   message(message: AgentMessage): ThreadMessage | null {
     switch (message.role) {
-      case "user": return { role: "user", content: this.userContent(message.content, USER_TEXT_LIMIT), timestamp: message.timestamp };
+      case "user": return this.user(message.content, message.timestamp);
       case "assistant": return this.assistant(message);
       case "toolResult": return this.toolResult(message);
       case "custom": return message.display ? { role: "custom", customType: message.customType, content: this.userContent(message.content, NOTE_LIMIT), timestamp: message.timestamp } : null;

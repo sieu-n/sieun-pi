@@ -4,10 +4,10 @@
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { buildTurns, liveTurn } from "../shared/turns.ts";
+  import { buildTurns, liveTurn, messageText } from "../shared/turns.ts";
   import type { ModelCatalog, ModelInfo, ThreadMessage } from "../shared/types.ts";
   import ModelMenu from "./ModelMenu.svelte";
-  import { duration, shortPath } from "./format.ts";
+  import { clockTime, duration, shortPath } from "./format.ts";
   import Turn from "./Turn.svelte";
   import Composer from "./Composer.svelte";
   import QueueChips from "./QueueChips.svelte";
@@ -34,6 +34,22 @@
     const last = turns.at(-1);
     return last && last.key === live.key ? [...turns.slice(0, -1), live] : [...turns, live];
   });
+  const questions = $derived(turns.flatMap(turn => {
+    if (!turn.prompt) return [];
+    const content = turn.prompt.message.content;
+    return [{ key: turn.key, text: messageText(turn.prompt.message).trim(), skill: turn.prompt.message.skill ?? null,
+      images: typeof content === "string" ? 0 : content.filter(part => part.type === "image").length, at: clockTime(turn.prompt.message.timestamp) }];
+  }));
+  async function jumpTo(key: string): Promise<void> {
+    ui.setViewMode("default");
+    pinned = false;
+    await tick();
+    const target = document.getElementById(key);
+    target?.scrollIntoView({ block: "start" });
+    requestAnimationFrame(() => target?.scrollIntoView({ block: "start" }));
+    target?.classList.add("flash");
+    setTimeout(() => target?.classList.remove("flash"), 1200);
+  }
   const context = $derived(thread?.info.context ?? null);
   const contextPercent = $derived(context ? Math.max(0, Math.min(100, Math.round(context.percent))) : 0);
   const RING = 2 * Math.PI * 8;
@@ -163,32 +179,18 @@
       {:else}
         <button class="title" title="Rename (F2)" onclick={startRename}>{title}</button>
       {/if}
+      {#if cwd}<span class="cwd" title={cwd}>{shortPath(cwd)}</span>{/if}
     </div>
     <div class="controls">
-      <Popover open={popover === "model"} onclose={closePopover} align="end" width="260px">
-        {#snippet trigger()}
-          <button class="chip" disabled={busy || saved || !thread} title={saved ? "Reply first to resume this thread, then change the model" : "Model"} onclick={() => openPopover("model")}>
-            <span class="chip-text">{thread?.info.model?.name ?? row?.model ?? "Model"}</span><Icon name="chevronDown" size={12} />
-          </button>
-        {/snippet}
-        <ModelMenu {catalog} error={catalogError} current={thread?.info.model ?? null} onchoose={model => void chooseModel(model)} />
-      </Popover>
-      <Popover open={popover === "effort"} onclose={closePopover} align="end" width="160px">
-        {#snippet trigger()}
-          <button class="chip" disabled={busy || saved || !thread} title="Effort" onclick={() => openPopover("effort")}>
-            <Icon name="sparkle" size={13} /><span class="chip-text">{thread?.info.thinkingLevel ?? row?.thinkingLevel ?? "effort"}</span><Icon name="chevronDown" size={12} />
-          </button>
-        {/snippet}
-        {#each thread?.info.availableThinkingLevels ?? [] as level (level)}
-          <button class="menu-item" class:current={thread?.info.thinkingLevel === level} onclick={() => void chooseEffort(level)}>{level}</button>
-        {/each}
-      </Popover>
-      {#if cwd}<span class="chip cwd" title={cwd}><Icon name="folder" size={13} /><span class="chip-text">{shortPath(cwd)}</span></span>{/if}
+      <div class="segmented" role="radiogroup" aria-label="View">
+        <button role="radio" aria-checked={ui.viewMode === "default"} class:on={ui.viewMode === "default"} onclick={() => ui.setViewMode("default")}>Default</button>
+        <button role="radio" aria-checked={ui.viewMode === "questions"} class:on={ui.viewMode === "questions"} onclick={() => ui.setViewMode("questions")}>Questions</button>
+      </div>
       {#if thread?.children.length}
         <Popover open={popover === "agents"} onclose={closePopover} align="end" width="320px">
           {#snippet trigger()}
-            <button class="chip" class:active={runningChildren > 0} title="Agents" onclick={() => openPopover("agents")}>
-              <Icon name="users" size={13} /><span class="chip-text">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
+            <button class="bar-button" class:active-agents={runningChildren > 0} title="Agents" onclick={() => openPopover("agents")}>
+              <Icon name="users" size={14} /><span>{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
             </button>
           {/snippet}
           <div class="menu-heading">Agents</div>
@@ -206,16 +208,6 @@
             </div>
           {/each}
         </Popover>
-      {/if}
-      {#if context}
-        <span class="ring" title="Context: {contextPercent}% ({context.tokens.toLocaleString()} of {context.contextWindow.toLocaleString()} tokens)" aria-label="Context {contextPercent}% used" role="img">
-          <svg width="22" height="22" viewBox="0 0 22 22">
-            <circle cx="11" cy="11" r="8" fill="none" stroke="var(--border-strong)" stroke-width="2.5" />
-            <circle cx="11" cy="11" r="8" fill="none" stroke={contextPercent >= 85 ? "var(--danger)" : contextPercent >= 65 ? "var(--warning)" : "var(--accent)"} stroke-width="2.5"
-              stroke-linecap="round" stroke-dasharray="{RING * contextPercent / 100} {RING}" transform="rotate(-90 11 11)" />
-          </svg>
-          <span class="ring-text">{contextPercent}%</span>
-        </span>
       {/if}
       <Popover open={popover === "more"} onclose={closePopover} align="end" width="200px">
         {#snippet trigger()}
@@ -250,10 +242,21 @@
   {:else}
     <div class="scroller" bind:this={scroller} onscroll={onScroll}>
       <div class="column" bind:this={column}>
-        {#each shown as turn (turn.key)}
-          <Turn {turn} threadId={id} />
-        {/each}
-        {#if !shown.length}<div class="empty muted">No messages yet.</div>{/if}
+        {#if ui.viewMode === "questions"}
+          {#each questions as question (question.key)}
+            <button class="question" onclick={() => void jumpTo(question.key)} title="Show this turn">
+              {#if question.skill}<span class="question-skill">{question.skill}</span>{/if}
+              <span class="question-text">{question.text || (question.images ? "Image" : "(empty)")}</span>
+              <span class="question-meta">{question.images ? `${question.images} image${question.images === 1 ? "" : "s"} · ` : ""}{question.at}</span>
+            </button>
+          {/each}
+          {#if !questions.length}<div class="empty muted">No questions in this thread yet.</div>{/if}
+        {:else}
+          {#each shown as turn (turn.key)}
+            <Turn {turn} threadId={id} />
+          {/each}
+          {#if !shown.length}<div class="empty muted">No messages yet.</div>{/if}
+        {/if}
       </div>
     </div>
     {#if !pinned}
@@ -262,12 +265,44 @@
     <div class="foot">
       <div class="column">
         <QueueChips threadId={id} queue={thread.queue} />
-        <Composer draftKey={id} threadId={id} {busy} placeholder={saved ? "Reply to resume this thread" : "Message Prime Agent"}
-          acceptsImages={thread.info.model?.input.includes("image") ?? true} focusOnMount={!narrow} {send} {stop} />
+        <Composer draftKey={id} threadId={id} {busy} placeholder={saved ? "Reply to resume this thread" : "Ask for follow-up changes"}
+          acceptsImages={thread.info.model?.input.includes("image") ?? true} focusOnMount={!narrow} {send} {stop}>
+          {#snippet left()}
+            <AccountChip threadId={id} />
+            {#if context}
+              <span class="context" title="Context: {contextPercent}% ({context.tokens.toLocaleString()} of {context.contextWindow.toLocaleString()} tokens)" role="img" aria-label="Context {contextPercent}% used">
+                <svg width="16" height="16" viewBox="0 0 22 22">
+                  <circle cx="11" cy="11" r="8" fill="none" stroke="var(--border-strong)" stroke-width="3" />
+                  <circle cx="11" cy="11" r="8" fill="none" stroke={contextPercent >= 85 ? "var(--danger)" : contextPercent >= 65 ? "var(--warning)" : "var(--text-muted)"} stroke-width="3"
+                    stroke-linecap="round" stroke-dasharray="{RING * contextPercent / 100} {RING}" transform="rotate(-90 11 11)" />
+                </svg>
+                <span>Context {contextPercent}%</span>
+              </span>
+            {/if}
+          {/snippet}
+          {#snippet right()}
+            <Popover open={popover === "model"} onclose={closePopover} align="end" side="above" width="260px">
+              {#snippet trigger()}
+                <button class="bar-button" disabled={busy || saved || !thread} title={saved ? "Reply first to resume this thread, then change the model" : busy ? "Wait for the agent to finish" : "Model"} onclick={() => openPopover("model")}>
+                  <span class="label">{thread?.info.model?.name ?? row?.model ?? "Model"}</span><Icon name="chevronDown" size={12} />
+                </button>
+              {/snippet}
+              <ModelMenu {catalog} error={catalogError} current={thread?.info.model ?? null} onchoose={model => void chooseModel(model)} />
+            </Popover>
+            <Popover open={popover === "effort"} onclose={closePopover} align="end" side="above" width="160px">
+              {#snippet trigger()}
+                <button class="bar-button" disabled={busy || saved || !thread} title="Effort" onclick={() => openPopover("effort")}>
+                  <span class="label">{thread?.info.thinkingLevel ?? row?.thinkingLevel ?? "Effort"}</span><Icon name="chevronDown" size={12} />
+                </button>
+              {/snippet}
+              {#each thread?.info.availableThinkingLevels ?? [] as level (level)}
+                <button class="menu-item" class:current={thread?.info.thinkingLevel === level} onclick={() => void chooseEffort(level)}>{level}</button>
+              {/each}
+            </Popover>
+          {/snippet}
+        </Composer>
         <div class="status-line">
           {#if busy}<span class="spinner tiny"></span><span class="status-text" title={statusText}>{statusText}</span>{:else if saved}<span class="status-text">Saved thread. A reply resumes it.</span>{/if}
-          <span class="spacer"></span>
-          <span class="status-chip"><AccountChip threadId={id} compact /></span>
         </div>
       </div>
     </div>
@@ -277,13 +312,26 @@
 <style>
   .thread { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-height: 52px; border-bottom: 1px solid var(--border); background: var(--bg); flex-wrap: wrap; }
-  .title-wrap { flex: 1; min-width: 120px; }
+  .title-wrap { flex: 1; min-width: 120px; display: flex; align-items: baseline; gap: 8px; }
+  .cwd { flex: none; font-size: 12px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
+  .segmented { display: inline-flex; padding: 2px; border-radius: var(--radius-small); background: var(--bg-hover); }
+  .segmented button { height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12px; color: var(--text-muted); }
+  .segmented button:hover { color: var(--text); }
+  .segmented button.on { background: var(--bg-elevated); color: var(--text); box-shadow: 0 1px 2px var(--shadow-near); }
+  .active-agents { color: var(--accent); }
+  .context { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .context svg { display: block; }
+  .question { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: var(--radius-small); text-align: left; }
+  .question:hover { background: var(--bg-hover); }
+  .question-skill { flex: none; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-family: var(--mono); }
+  .question-text { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .question-meta { flex: none; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .column :global(.turn.flash) { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
   .title { max-width: 100%; padding: 4px 8px; border-radius: var(--radius-small); font-weight: 600; font-size: 15px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title:hover { background: var(--bg-hover); }
   .title-input { font-weight: 600; font-size: 15px; max-width: 480px; }
   .controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .chip-text { overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
-  .cwd { color: var(--text-faint); }
   .spinner.tiny { width: 11px; height: 11px; border-width: 1.5px; }
   .agent { padding: 6px 10px; font-size: 13px; }
   .agent + .agent { border-top: 1px solid var(--border); }
@@ -291,8 +339,6 @@
   .agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   .agent-label, .agent-recap { color: var(--text-muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
   .danger { color: var(--danger); }
-  .ring { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-  .ring svg { display: block; }
   .thin-bar { padding: 3px 12px; font-size: 12px; text-align: center; color: var(--accent); background: var(--accent-soft); }
   .error-bar { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px 12px; font-size: 13px; color: var(--danger); background: var(--danger-soft); }
   .center { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px; }
@@ -305,9 +351,7 @@
   .foot { flex: none; background: var(--bg); }
   .foot .column { padding: 4px 20px 8px; }
   .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-muted); }
-  .spacer { flex: 1; }
   .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .status-chip { flex: none; }
   @container app (max-width: 899px) {
     .head { padding: 6px 8px; }
     .cwd { display: none; }

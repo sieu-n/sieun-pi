@@ -6,12 +6,12 @@ Prime Agent owns every run, queue, name, model, skill and worker. The browser at
 
 ## What you see
 
-- Sidebar: threads grouped by Today, Yesterday, Previous 7 days and Older. A spinner marks a running thread, a dot marks one that finished since you last had it open. Hover a row to rename it. Archived threads sit behind a toggle. The footer shows the account this thread resolves to.
-- New chat: the default screen. A greeting, the composer, and pickers for workspace, model and effort. The first send creates a resident native session, attaches, and streams the reply.
-- Thread: the whole transcript, opened at the bottom. User prompts are bubbles on the right. Each assistant turn folds its thinking and tool calls into one "Worked 2m 14s" row that expands into per-tool rows with arguments and output. Replies render as markdown with copy buttons. Errors and stopped replies stay visible.
+- Sidebar: threads grouped by Today, Yesterday, Previous 7 days and Older. A spinner marks a running thread, a dot marks one that finished since you last had it open. Hover a row to rename it. Archived threads sit behind a toggle. Drag the right edge (or focus it and use Left/Right, Home/End) to set a width from 180 to 480 px; the width is saved in the browser.
+- New chat: the default screen. A greeting and the composer. The bar under the input holds the workspace and account on the left and the model and effort on the right. The first send creates a resident native session, attaches, and streams the reply.
+- Thread: the whole transcript, opened at the bottom. Only what the user typed is a bubble on the right; a skill invocation shows the typed text with a skill tag. Agent messages, heartbeats and background command completions show as one muted line that expands. The header toggle switches between Default and Questions; Questions lists every prompt, and a click jumps back to that turn in Default. The bar under the input holds attach, the account with Session and Week meters, and context on the left, and model, effort and Send or Stop on the right. Each assistant turn folds its thinking and tool calls into one "Worked 2m 14s" row that expands into per-tool rows with arguments and output. Replies render as markdown with copy buttons. Errors and stopped replies stay visible.
 - Composer: Enter sends, Shift+Enter adds a line, "/" opens the native command and skill menu, images paste or drop in. While the agent works, the button becomes Stop, Enter queues a follow-up and Cmd+Enter steers. Queued messages show as chips you can edit or remove.
 - Saved threads open read-only in a few hundred milliseconds. Sending a reply resumes them natively.
-- Accounts: the chip opens a drawer with both pool providers, one card per account with 5 hour and weekly meters, and actions: use for this thread, follow the pool, pin, unpin, drop seat. Global actions ask for confirmation.
+- Accounts: the account in the composer bar opens a drawer with both pool providers, one card per account with 5 hour and weekly meters, and actions: use for this thread, follow the pool, pin, unpin, drop seat. Global actions ask for confirmation.
 
 Keyboard: Cmd+N new chat, Cmd+K search, Cmd+B sidebar, F2 rename, Esc closes menus or stops a busy thread when the composer has focus.
 

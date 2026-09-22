@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { clockTime } from "./format.ts";
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
-  import { messageText, type Turn } from "../shared/turns.ts";
+  import { messageText, triggerSummary, type Turn } from "../shared/turns.ts";
   import type { ImagePart } from "../shared/types.ts";
   import WorkRow from "./WorkRow.svelte";
   import Icon from "./Icon.svelte";
@@ -13,8 +13,8 @@
   const prompt = $derived(turn.prompt);
   const promptText = $derived(prompt ? messageText(prompt.message) : "");
   const promptImages = $derived(prompt && typeof prompt.message.content !== "string" ? prompt.message.content.filter((part): part is ImagePart => part.type === "image") : []);
-  const promptLabel = $derived(prompt?.message.role === "custom" ? prompt.message.customType.replaceAll("_", " ") : null);
   const promptAt = $derived(prompt ? clockTime(prompt.message.timestamp) : "");
+  const trigger = $derived(turn.trigger ? triggerSummary(turn.trigger.message) : null);
 
   const reply = $derived(turn.reply);
   const replyLive = $derived(reply?.live ?? false);
@@ -45,11 +45,17 @@
   }
 </script>
 
-<article class="turn">
+<article class="turn" id={turn.key}>
+  {#if trigger}
+    <details class="trigger">
+      <summary><Icon name="bolt" size={13} /><span class="trigger-label">{trigger.label}</span>{#if trigger.detail}<span class="trigger-detail">{trigger.detail}</span>{/if}{#if !trigger.body.includes("\n") && trigger.body.length < 120}<span class="trigger-inline">{trigger.body}</span>{/if}</summary>
+      {#if trigger.body}<div class="trigger-body">{trigger.body}</div>{/if}
+    </details>
+  {/if}
   {#if prompt}
     <div class="prompt-row">
-      <div class="bubble" class:custom={promptLabel !== null}>
-        {#if promptLabel}<div class="custom-label">{promptLabel}</div>{/if}
+      {#if prompt.message.skill}<div class="skill-tag"><Icon name="sparkle" size={12} />{prompt.message.skill}</div>{/if}
+      <div class="bubble">
         {#if promptImages.length}
           <div class="images">
             {#each promptImages as image, index (image.url + index)}
@@ -109,8 +115,15 @@
   .turn { content-visibility: auto; contain-intrinsic-size: auto 200px; padding: 10px 0; }
   .prompt-row { display: flex; flex-direction: column; align-items: flex-end; margin: 8px 0 14px; }
   .bubble { max-width: min(85%, 640px); padding: 10px 16px; border-radius: 18px 18px 6px 18px; background: var(--user-bubble); }
-  .bubble.custom { background: var(--accent-soft); border-radius: var(--radius); font-size: 14px; }
-  .custom-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); margin-bottom: 2px; }
+  .skill-tag { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 4px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-family: var(--mono); }
+  .trigger { margin: 6px 0 10px; font-size: 13px; color: var(--text-muted); }
+  .trigger summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; min-width: 0; padding: 2px 0; }
+  .trigger summary::-webkit-details-marker { display: none; }
+  .trigger summary:hover { color: var(--text); }
+  .trigger-label { font-weight: 500; flex: none; }
+  .trigger-detail { color: var(--text-faint); flex: none; }
+  .trigger-inline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
+  .trigger-body { margin: 4px 0 0 19px; padding: 8px 12px; border-left: 2px solid var(--border); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; max-height: 360px; overflow: auto; }
   .prompt-text { white-space: pre-wrap; overflow-wrap: anywhere; }
   .images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
   .images img { max-width: 240px; max-height: 240px; border-radius: var(--radius-small); display: block; }

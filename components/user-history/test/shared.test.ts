@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applyThreadEvent, isThreadBusy, threadStateFromSnapshot } from "../src/shared/thread-state.ts";
-import { allTurns, buildTurns, liveTurn, toolDurationMs } from "../src/shared/turns.ts";
-import type { AssistantMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
+import { allTurns, buildTurns, liveTurn, toolDurationMs, triggerSummary } from "../src/shared/turns.ts";
+import type { AssistantMessage, CustomMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
 import { ImageStore, Projector, TEXT_LIMIT, THINKING_LIMIT } from "../src/chat-projection.ts";
 import { isListed, previewTitle, projectRow } from "../src/chat-catalog.ts";
 import { duration } from "../src/client/format.ts";
@@ -137,4 +137,24 @@ test("durations never show 0s for a timed call", () => {
   assert.equal(duration(1031), "1s");
   assert.equal(duration(134000), "2m 14s");
   assert.equal(duration(3_600_000), "1h 0m");
+});
+
+test("agent messages and background completions start a turn as a trigger, never as the user's prompt", () => {
+  const agent: CustomMessage = { role: "custom", customType: "agent_message", content: "[agent-message from child:worker]\n\nDone. See the report.", timestamp: 1 };
+  const bash: CustomMessage = { role: "custom", customType: "async_bash_completion", content: '[bash-done pid:42 exit:0]\n\nCommand: "npm test"', timestamp: 3 };
+  const user: UserMessage = { role: "user", content: "real question", timestamp: 5 };
+  const turns = buildTurns([agent, bash, user]);
+  assert.deepEqual(turns.map(turn => [turn.prompt?.index ?? null, turn.trigger?.index ?? null]), [[null, 0], [null, 1], [2, null]]);
+  assert.deepEqual(triggerSummary(agent), { label: "Message", detail: "from child:worker", body: "Done. See the report." });
+  assert.deepEqual(triggerSummary(bash), { label: "Background command finished", detail: "exit 0", body: "npm test" });
+});
+
+test("a skill invocation projects to what the user typed plus the skill name", () => {
+  const projector = new Projector(new ImageStore(1024 * 1024));
+  const [message] = projector.messages([
+    { role: "user", content: [{ type: "text", text: '<skill name="poteto-mode" location="/x/SKILL.md">\n' + "rules ".repeat(5000) + "\n</skill>\n\nfix the sidebar" }], timestamp: 1 },
+  ] as never);
+  assert(message?.role === "user");
+  assert.equal(message.skill, "poteto-mode");
+  assert.deepEqual(message.content, [{ type: "text", text: "fix the sidebar" }]);
 });

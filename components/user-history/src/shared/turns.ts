@@ -7,7 +7,10 @@ export type WorkItem =
 export type SystemNote = { message: BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage | CustomMessage; index: number };
 export interface Turn {
   key: string;
-  prompt: { message: UserMessage | CustomMessage; index: number } | null;
+  /** What the user typed. */
+  prompt: { message: UserMessage; index: number } | null;
+  /** A native custom message that started work (agent message, heartbeat, background command); never shown as a user prompt. */
+  trigger: { message: CustomMessage; index: number } | null;
   work: WorkItem[];
   reply: { message: AssistantMessage; index: number; live: boolean } | null;
   notes: SystemNote[];
@@ -23,6 +26,25 @@ export function messageText(message: { content: string | { type: string; text?: 
 
 export function isPromptCustom(message: CustomMessage): boolean {
   return message.customType === "agent_message" || message.customType === "heartbeat_prompt" || message.customType === "async_bash_completion";
+}
+
+/** One-line label and body for a trigger, from the native "[kind detail]" header line. */
+export function triggerSummary(message: CustomMessage): { label: string; detail: string; body: string } {
+  const text = messageText(message).trim();
+  const match = /^\[([^\]\n]+)\]\s*/.exec(text);
+  const header = match?.[1] ?? "";
+  const body = (match ? text.slice(match[0].length) : text).trim();
+  if (message.customType === "agent_message") {
+    const from = /^agent-message from\s+(.+)$/i.exec(header)?.[1] ?? "";
+    return { label: "Message", detail: from ? "from " + from : "", body };
+  }
+  if (message.customType === "async_bash_completion") {
+    const exit = /exit:(\S+)/.exec(header)?.[1];
+    const command = /^Command:\s*"?([\s\S]*?)"?\s*$/.exec(body)?.[1] ?? body;
+    return { label: "Background command finished", detail: exit !== undefined ? "exit " + exit : "", body: command };
+  }
+  if (message.customType === "heartbeat_prompt") return { label: "Heartbeat", detail: header, body };
+  return { label: message.customType.replaceAll("_", " "), detail: header, body };
 }
 
 export function toolDurationMs(item: Extract<WorkItem, { kind: "tool" }>, now: number): number | null {
@@ -51,7 +73,7 @@ function addAssistant(turn: Turn, message: AssistantMessage, index: number, resu
 }
 
 function openTurn(index: number, timestamp: number): Turn {
-  return { key: "turn-" + index, prompt: null, work: [], reply: null, notes: [], startedAt: timestamp, endedAt: timestamp, live: false };
+  return { key: "turn-" + index, prompt: null, trigger: null, work: [], reply: null, notes: [], startedAt: timestamp, endedAt: timestamp, live: false };
 }
 
 export function toolResults(messages: readonly ThreadMessage[]): Map<string, ToolResultMessage> {
@@ -68,7 +90,8 @@ export function buildTurns(messages: readonly ThreadMessage[]): Turn[] {
   messages.forEach((message, index) => {
     if (message.role === "user" || (message.role === "custom" && isPromptCustom(message))) {
       current = openTurn(index, message.timestamp);
-      current.prompt = { message, index };
+      if (message.role === "user") current.prompt = { message, index };
+      else current.trigger = { message, index };
       turns.push(current);
       return;
     }

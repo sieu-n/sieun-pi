@@ -8,6 +8,7 @@
   import Composer from "./Composer.svelte";
   import Popover from "./Popover.svelte";
   import Icon from "./Icon.svelte";
+  import AccountChip from "./AccountChip.svelte";
 
   let { narrow }: { narrow: boolean } = $props();
   let workspaces = $state<Workspace[]>([]);
@@ -71,46 +72,50 @@
       {:else}
         <h1 class="greeting">{greeting}</h1>
         <p class="sub">What are we working on?</p>
-        <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} />
-        <div class="pickers">
-          <Popover open={popover === "workspace"} onclose={closePopover} width="320px">
-            {#snippet trigger()}
-              <button class="chip" onclick={() => { popover = popover === "workspace" ? null : "workspace"; }} title={cwd || "Workspace"}>
-                <Icon name="folder" size={13} /><span class="chip-text">{cwd ? shortPath(cwd) : "Workspace"}</span><Icon name="chevronDown" size={12} />
-              </button>
-            {/snippet}
-            {#each workspaces as workspace (workspace.cwd)}
-              <button class="menu-item" class:current={workspace.cwd === cwd} onclick={() => chooseWorkspace(workspace.cwd)}>
-                <span class="path">{workspace.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
-                <span class="hint">{workspace.count}{workspace.lastUsedAt ? " · " + relativeTime(workspace.lastUsedAt) : ""}</span>
-              </button>
-            {/each}
-            <div class="menu-separator"></div>
-            <form class="custom" onsubmit={event => { event.preventDefault(); chooseWorkspace(customCwd); }}>
-              <input class="field" placeholder="/absolute/path" aria-label="Other workspace path" bind:value={customCwd} />
-              <button class="button small" type="submit" disabled={!customCwd.trim()}>Use</button>
-            </form>
-          </Popover>
-          <Popover open={popover === "model"} onclose={closePopover} width="260px">
-            {#snippet trigger()}
-              <button class="chip" onclick={() => { popover = popover === "model" ? null : "model"; }} title="Model">
-                <span class="chip-text">{modelLabel}</span><Icon name="chevronDown" size={12} />
-              </button>
-            {/snippet}
-            <ModelMenu {catalog} error={catalogError} current={model} defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; closePopover(); }} onchoose={entry => { model = entry; closePopover(); }} />
-          </Popover>
-          <Popover open={popover === "effort"} onclose={closePopover} width="160px">
-            {#snippet trigger()}
-              <button class="chip" disabled={!effortLevels.length} onclick={() => { popover = popover === "effort" ? null : "effort"; }} title="Effort">
-                <Icon name="sparkle" size={13} /><span class="chip-text">{effort ?? "Default effort"}</span><Icon name="chevronDown" size={12} />
-              </button>
-            {/snippet}
-            <button class="menu-item" class:current={effort === null} onclick={() => { effort = null; closePopover(); }}>Default</button>
-            {#each effortLevels as level (level)}
-              <button class="menu-item" class:current={effort === level} onclick={() => { effort = level; closePopover(); }}>{level}</button>
-            {/each}
-          </Popover>
-        </div>
+        <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder="Ask Prime Agent anything">
+          {#snippet left()}
+            <Popover open={popover === "workspace"} onclose={closePopover} width="320px">
+              {#snippet trigger()}
+                <button class="bar-button" onclick={() => { popover = popover === "workspace" ? null : "workspace"; }} title={cwd || "Workspace"}>
+                  <Icon name="folder" size={14} /><span class="label">{cwd ? shortPath(cwd) : "Workspace"}</span><Icon name="chevronDown" size={12} />
+                </button>
+              {/snippet}
+              {#each workspaces as workspace (workspace.cwd)}
+                <button class="menu-item" class:current={workspace.cwd === cwd} onclick={() => chooseWorkspace(workspace.cwd)}>
+                  <span class="path">{workspace.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
+                  <span class="hint">{workspace.count}{workspace.lastUsedAt ? " · " + relativeTime(workspace.lastUsedAt) : ""}</span>
+                </button>
+              {/each}
+              <div class="menu-separator"></div>
+              <form class="custom" onsubmit={event => { event.preventDefault(); chooseWorkspace(customCwd); }}>
+                <input class="field" placeholder="/absolute/path" aria-label="Other workspace path" bind:value={customCwd} />
+                <button class="button small" type="submit" disabled={!customCwd.trim()}>Use</button>
+              </form>
+            </Popover>
+            <AccountChip threadId={null} provider={(model ?? catalog?.current)?.provider} />
+          {/snippet}
+          {#snippet right()}
+            <Popover open={popover === "model"} onclose={closePopover} align="end" width="260px">
+              {#snippet trigger()}
+                <button class="bar-button" onclick={() => { popover = popover === "model" ? null : "model"; }} title="Model">
+                  <span class="label">{modelLabel}</span><Icon name="chevronDown" size={12} />
+                </button>
+              {/snippet}
+              <ModelMenu {catalog} error={catalogError} current={model} defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; closePopover(); }} onchoose={entry => { model = entry; closePopover(); }} />
+            </Popover>
+            <Popover open={popover === "effort"} onclose={closePopover} align="end" width="160px">
+              {#snippet trigger()}
+                <button class="bar-button" disabled={!effortLevels.length} onclick={() => { popover = popover === "effort" ? null : "effort"; }} title="Effort">
+                  <span class="label">{effort ?? "Default effort"}</span><Icon name="chevronDown" size={12} />
+                </button>
+              {/snippet}
+              <button class="menu-item" class:current={effort === null} onclick={() => { effort = null; closePopover(); }}>Default</button>
+              {#each effortLevels as level (level)}
+                <button class="menu-item" class:current={effort === level} onclick={() => { effort = level; closePopover(); }}>{level}</button>
+              {/each}
+            </Popover>
+          {/snippet}
+        </Composer>
       {/if}
     </div>
   </div>
@@ -123,8 +128,6 @@
   .column { width: 100%; max-width: var(--column); }
   .greeting { margin: 0 0 4px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
   .sub { margin: 0 0 20px; color: var(--text-muted); font-size: 16px; }
-  .pickers { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-  .chip-text { overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); font-size: 12px; }
   .custom { display: flex; gap: 6px; padding: 6px 4px 2px; }
   .pending { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; }

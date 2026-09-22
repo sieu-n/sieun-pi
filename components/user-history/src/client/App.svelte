@@ -65,7 +65,7 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<div class="app" class:narrow bind:this={root}>
+<div class="app" class:narrow bind:this={root} style:--sidebar="{ui.sidebarWidth}px">
   {#if store.daemon === "down"}
     <div class="banner" role="alert">
       <span>The Prime Agent daemon is not reachable{store.daemonError ? ". " + store.daemonError : "."}</span>

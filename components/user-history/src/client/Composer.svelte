@@ -27,16 +27,17 @@
 </script>
 
 <script lang="ts">
-  import { tick, untrack } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import { store } from "./store.svelte.ts";
   import { bytes } from "./format.ts";
   import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES, MAX_MESSAGE_LENGTH } from "../shared/limits.ts";
   import type { ImageInput, SendMode } from "../shared/types.ts";
   import Icon from "./Icon.svelte";
 
-  let { draftKey, threadId = null, busy = false, placeholder = "Message Prime Agent", acceptsImages = true, focusOnMount = false, send, stop }: {
+  let { draftKey, threadId = null, busy = false, placeholder = "Message Prime Agent", acceptsImages = true, focusOnMount = false, send, stop, left, right }: {
     draftKey: string; threadId?: string | null; busy?: boolean; placeholder?: string; acceptsImages?: boolean; focusOnMount?: boolean;
     send: (text: string, images: ImageInput[], mode: SendMode) => Promise<boolean>; stop?: () => void;
+    left?: Snippet; right?: Snippet;
   } = $props();
 
   const restored = drafts.get(untrack(() => draftKey));
@@ -179,13 +180,14 @@
       {/each}
     </div>
   {/if}
-  <div class="row">
-    {#if acceptsImages}
-      <button class="icon-button" aria-label="Attach image" title="Attach image" onclick={() => fileInput?.click()}><Icon name="image" /></button>
-      <input bind:this={fileInput} type="file" accept={IMAGE_MIME_TYPES.join(",")} multiple hidden onchange={onFilePick} />
-    {/if}
-    <textarea data-composer bind:this={textarea} bind:value={text} {placeholder} rows="1" aria-label={placeholder}
-      oninput={onInput} onkeydown={onKeydown} onpaste={onPaste}></textarea>
+  <textarea data-composer bind:this={textarea} bind:value={text} {placeholder} rows="1" aria-label={placeholder}
+    oninput={onInput} onkeydown={onKeydown} onpaste={onPaste}></textarea>
+  <div class="bar">
+    <button class="icon-button attach" aria-label="Attach image" title={acceptsImages ? "Attach image" : "This model does not accept images"} disabled={!acceptsImages} onclick={() => fileInput?.click()}><Icon name="plus" size={18} /></button>
+    <input bind:this={fileInput} type="file" accept={IMAGE_MIME_TYPES.join(",")} multiple hidden onchange={onFilePick} />
+    {#if left}<div class="slot left">{@render left()}</div>{/if}
+    <span class="spacer"></span>
+    {#if right}<div class="slot right">{@render right()}</div>{/if}
     {#if busy}
       <button class="chip steer-toggle" class:active={steer} aria-pressed={steer} title="Steer: interrupt the current step with this message" onclick={() => { steer = !steer; }}>
         <Icon name="steer" size={14} /><span>Steer</span>
@@ -208,15 +210,19 @@
   .composer { position: relative; border: 1px solid var(--border); border-radius: 18px; background: var(--bg-elevated); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04); transition: border-color 0.15s ease, box-shadow 0.15s ease; }
   .composer:focus-within { border-color: var(--border-strong); box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06); }
   .composer.dragging { border-color: var(--accent); background: var(--accent-soft); }
-  .row { display: flex; align-items: flex-end; gap: 6px; padding: 8px 8px 8px 10px; }
-  textarea { flex: 1; min-width: 0; resize: none; border: 0; background: none; outline: none; padding: 5px 4px; line-height: 1.5; max-height: 40vh; font-size: 15px; }
+  textarea { display: block; width: 100%; resize: none; border: 0; background: none; outline: none; padding: 14px 16px 4px; line-height: 1.5; max-height: 40vh; font-size: 15px; }
+  .bar { display: flex; align-items: center; gap: 4px; padding: 4px 8px 8px; min-width: 0; }
+  .slot { display: flex; align-items: center; gap: 2px; min-width: 0; }
+  .slot.right { flex: none; }
+  .spacer { flex: 1; min-width: 4px; }
+  .attach { width: 28px; height: 28px; }
   textarea::placeholder { color: var(--text-faint); }
   .send { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: var(--accent-text); flex: none; transition: transform 0.12s ease; }
   .send:hover:not(:disabled) { transform: scale(1.05); }
   .send:disabled { background: var(--bg-active); color: var(--text-faint); opacity: 1; }
   .send.stop { background: var(--text); color: var(--bg); }
   .spinner.light { border-color: rgba(255, 255, 255, 0.4); border-top-color: #fff; }
-  .steer-toggle { height: 28px; margin-bottom: 2px; }
+  .steer-toggle { height: 28px; }
   .thumbs { display: flex; gap: 8px; padding: 10px 12px 0; flex-wrap: wrap; }
   .thumb { position: relative; width: 64px; height: 64px; border-radius: var(--radius-small); overflow: hidden; border: 1px solid var(--border); }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }

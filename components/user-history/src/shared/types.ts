@@ -6,7 +6,7 @@ export interface ThinkingPart { type: "thinking"; thinking: string; truncated?: 
 export interface ImagePart { type: "image"; mimeType: string; url: string }
 export interface ToolCallPart { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown>; truncated?: true }
 
-export interface UserMessage { role: "user"; content: string | (TextPart | ImagePart)[]; timestamp: number }
+export interface UserMessage { role: "user"; content: string | (TextPart | ImagePart)[]; timestamp: number; skill?: string }
 export interface AssistantMessage {
   role: "assistant"; content: (TextPart | ThinkingPart | ToolCallPart)[]; provider: string; model: string;
   stopReason: StopReason; errorMessage?: string; timestamp: number;

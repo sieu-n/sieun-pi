@@ -89,6 +89,9 @@ a { color: var(--accent); }
 .icon-button svg { width: 18px; height: 18px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elevated); font-size: 13px; color: var(--text-muted); white-space: nowrap; max-width: 100%; }
 .chip:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+.bar-button { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 8px; border-radius: var(--radius-small); color: var(--text-muted); font-size: 13px; white-space: nowrap; min-width: 0; }
+.bar-button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.bar-button .label { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 .chip.active { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border-radius: var(--radius-small); text-align: left; font-size: 14px; line-height: 1.35; }
 .menu-item:hover:not(:disabled), .menu-item.selected { background: var(--bg-hover); }
