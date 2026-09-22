@@ -1,10 +1,13 @@
 import type { AssistantMessage, BashExecutionMessage, BranchSummaryMessage, CompactionSummaryMessage, CustomMessage, ThinkingPart, ThreadMessage, ToolCallPart, ToolResultMessage, ToolRun, UserMessage } from "./types.ts";
 
+export type SystemMessage = BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage | CustomMessage;
+/** Everything in a turn except its prompt, trigger and final reply. The Default view folds all of it into one row. */
 export type WorkItem =
   | { kind: "thinking"; part: ThinkingPart; messageIndex: number; partIndex: number }
   | { kind: "tool"; call: ToolCallPart; result: ToolResultMessage | null; run: ToolRun | null; messageIndex: number; partIndex: number }
-  | { kind: "note"; text: string; messageIndex: number };
-export type SystemNote = { message: BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage | CustomMessage; index: number };
+  | { kind: "note"; text: string; messageIndex: number }
+  | { kind: "system"; message: SystemMessage; messageIndex: number }
+  | { kind: "trigger"; message: CustomMessage; messageIndex: number };
 export interface Turn {
   key: string;
   /** What the user typed. */
@@ -13,7 +16,6 @@ export interface Turn {
   trigger: { message: CustomMessage; index: number } | null;
   work: WorkItem[];
   reply: { message: AssistantMessage; index: number; live: boolean } | null;
-  notes: SystemNote[];
   startedAt: number;
   endedAt: number;
   live: boolean;
@@ -73,7 +75,7 @@ function addAssistant(turn: Turn, message: AssistantMessage, index: number, resu
 }
 
 function openTurn(index: number, timestamp: number): Turn {
-  return { key: "turn-" + index, prompt: null, trigger: null, work: [], reply: null, notes: [], startedAt: timestamp, endedAt: timestamp, live: false };
+  return { key: "turn-" + index, prompt: null, trigger: null, work: [], reply: null, startedAt: timestamp, endedAt: timestamp, live: false };
 }
 
 export function toolResults(messages: readonly ThreadMessage[]): Map<string, ToolResultMessage> {
@@ -82,40 +84,59 @@ export function toolResults(messages: readonly ThreadMessage[]): Map<string, Too
   return results;
 }
 
-/** Committed turns only. Recompute when `messages` changes; overlay the live tail with `liveTurn`. */
+/**
+ * Committed turns only. Recompute when `messages` changes; overlay the live tail with `liveTurn`.
+ * A user message always starts a turn. An agent message or background completion starts one only when the
+ * previous run has settled; one that lands mid-run is part of that run's work.
+ */
 export function buildTurns(messages: readonly ThreadMessage[]): Turn[] {
   const results = toolResults(messages);
   const turns: Turn[] = [];
   let current: Turn | undefined;
+  let settled = true;
   messages.forEach((message, index) => {
-    if (message.role === "user" || (message.role === "custom" && isPromptCustom(message))) {
+    const trigger = message.role === "custom" && isPromptCustom(message);
+    if (message.role === "user" || (trigger && settled)) {
       current = openTurn(index, message.timestamp);
       if (message.role === "user") current.prompt = { message, index };
-      else current.trigger = { message, index };
+      else if (message.role === "custom") current.trigger = { message, index };
       turns.push(current);
+      settled = false;
       return;
     }
     if (!current) { current = openTurn(index, message.timestamp); turns.push(current); }
-    if (message.role === "assistant") addAssistant(current, message, index, results, false);
+    if (message.role === "assistant") { addAssistant(current, message, index, results, false); settled = message.stopReason !== "toolUse"; }
     else if (message.role === "toolResult") current.endedAt = Math.max(current.endedAt, message.timestamp);
-    else current.notes.push({ message, index });
+    else if (message.role === "custom" && trigger) current.work.push({ kind: "trigger", message, messageIndex: index });
+    else current.work.push({ kind: "system", message, messageIndex: index });
   });
   return turns;
 }
 
-/** The last turn with the streaming message and running tools folded in. Returns null when nothing is live. */
-export function liveTurn(last: Turn | undefined, streaming: AssistantMessage | null, tools: readonly ToolRun[], messageCount: number): Turn | null {
-  const running = tools.some(run => run.status === "running");
-  if (!streaming && !running) return null;
+/** The last turn with the streaming message and running tools folded in. `running` keeps it live between model calls. Returns null when nothing is live. */
+export function liveTurn(last: Turn | undefined, streaming: AssistantMessage | null, tools: readonly ToolRun[], messageCount: number, running = false): Turn | null {
+  const toolRunning = tools.some(run => run.status === "running");
+  if (!streaming && !toolRunning && !running) return null;
   const base = last ?? openTurn(messageCount, streaming?.timestamp ?? Date.now());
   const turn: Turn = { ...base, work: base.work.map(item => item.kind === "tool" ? { ...item, run: tools.find(run => run.toolCallId === item.call.id) ?? null } : item), live: true };
   if (streaming) addAssistant(turn, streaming, messageCount, new Map(), true);
   return turn;
 }
 
-export function allTurns(messages: readonly ThreadMessage[], streaming: AssistantMessage | null = null, tools: readonly ToolRun[] = []): Turn[] {
+/** Counts for the folded row: tool calls, and notes (interim messages, system notes, messages that arrived mid-run). */
+export function workCounts(work: readonly WorkItem[]): { tools: number; notes: number } {
+  let tools = 0;
+  let notes = 0;
+  for (const item of work) {
+    if (item.kind === "tool") tools++;
+    else if (item.kind !== "thinking") notes++;
+  }
+  return { tools, notes };
+}
+
+export function allTurns(messages: readonly ThreadMessage[], streaming: AssistantMessage | null = null, tools: readonly ToolRun[] = [], running = false): Turn[] {
   const turns = buildTurns(messages);
-  const live = liveTurn(turns.at(-1), streaming, tools, messages.length);
+  const live = liveTurn(turns.at(-1), streaming, tools, messages.length, running);
   if (!live) return turns;
   return turns.length && turns.at(-1)!.key === live.key ? [...turns.slice(0, -1), live] : [...turns, live];
 }

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applyThreadEvent, isThreadBusy, threadStateFromSnapshot } from "../src/shared/thread-state.ts";
-import { allTurns, buildTurns, liveTurn, toolDurationMs, triggerSummary } from "../src/shared/turns.ts";
-import type { AssistantMessage, CustomMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
+import { allTurns, buildTurns, liveTurn, toolDurationMs, triggerSummary, workCounts } from "../src/shared/turns.ts";
+import { CACHE_COLD_GAP_MS, cacheHealth } from "../src/shared/cache-health.ts";
+import { matchCommands } from "../src/client/command-match.ts";
+import type { AssistantMessage, Command, CustomMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
 import { ImageStore, Projector, TEXT_LIMIT, THINKING_LIMIT } from "../src/chat-projection.ts";
 import { isListed, previewTitle, projectRow } from "../src/chat-catalog.ts";
 import { duration } from "../src/client/format.ts";
@@ -96,13 +98,15 @@ test("projection trims payloads, keeps native names, and marks truncation", () =
   const projected = projector.messages([
     { role: "user", content: [{ type: "text", text: "hi" }, { type: "image", mimeType: "image/png", data: "aGVsbG8=" }], timestamp: 1 },
     { role: "assistant", content: [{ type: "thinking", thinking: "t".repeat(THINKING_LIMIT + 5), thinkingSignature: "sig" }, { type: "toolCall", id: "c1", name: "ipython", arguments: { code: big } }],
-      api: "a", provider: "p", model: "m", stopReason: "toolUse", timestamp: 2, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } },
+      api: "a", provider: "p", model: "m", stopReason: "toolUse", timestamp: 2, usage: { input: 3, output: 40, cacheRead: 9000, cacheWrite: 120, totalTokens: 9163, cost: { input: 0, output: 0.001, cacheRead: 0.002, cacheWrite: 0.0005, total: 0.0035 } } },
     { role: "toolResult", toolCallId: "c1", toolName: "ipython", content: [{ type: "text", text: big }], isError: false, timestamp: 3, details: { durationMs: 12 } },
     { role: "custom", customType: "harness_digest", content: "hidden", display: false, timestamp: 4 },
     { role: "custom", customType: "agent_message", content: "shown", display: true, timestamp: 5 },
   ] as never);
   assert.equal(projected.length, 4, "non-display custom messages are dropped");
   const [userMessage, assistantMessage, toolMessage] = projected;
+  assert(assistantMessage?.role === "assistant");
+  assert.deepEqual(assistantMessage.usage, { input: 3, output: 40, cacheRead: 9000, cacheWrite: 120, totalTokens: 9163, cost: 0.0035 }, "native per-call usage keeps its names, cost is cost.total");
   assert(userMessage?.role === "user" && Array.isArray(userMessage.content));
   const image = userMessage.content[1];
   assert(image?.type === "image" && /^api\/images\/[a-f0-9]{64}$/.test(image.url), "image bytes leave the payload");
@@ -143,10 +147,68 @@ test("agent messages and background completions start a turn as a trigger, never
   const agent: CustomMessage = { role: "custom", customType: "agent_message", content: "[agent-message from child:worker]\n\nDone. See the report.", timestamp: 1 };
   const bash: CustomMessage = { role: "custom", customType: "async_bash_completion", content: '[bash-done pid:42 exit:0]\n\nCommand: "npm test"', timestamp: 3 };
   const user: UserMessage = { role: "user", content: "real question", timestamp: 5 };
-  const turns = buildTurns([agent, bash, user]);
-  assert.deepEqual(turns.map(turn => [turn.prompt?.index ?? null, turn.trigger?.index ?? null]), [[null, 0], [null, 1], [2, null]]);
+  const turns = buildTurns([agent, assistant([{ type: "text", text: "Noted." }], 2), bash, assistant([{ type: "text", text: "Tests pass." }], 4), user]);
+  assert.deepEqual(turns.map(turn => [turn.prompt?.index ?? null, turn.trigger?.index ?? null]), [[null, 0], [null, 2], [4, null]]);
   assert.deepEqual(triggerSummary(agent), { label: "Message", detail: "from child:worker", body: "Done. See the report." });
   assert.deepEqual(triggerSummary(bash), { label: "Background command finished", detail: "exit 0", body: "npm test" });
+});
+
+test("Default view keeps one final reply per turn and folds everything else into its work", () => {
+  const midRun: CustomMessage = { role: "custom", customType: "agent_message", content: "[agent-message from child:a]\n\nhalf done", timestamp: 4 };
+  const outcome: CustomMessage = { role: "custom", customType: "refinement_outcome", content: "saved a memory", timestamp: 9 };
+  const messages = [
+    user("Do it", 1),
+    assistant([{ type: "text", text: "Starting." }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }], 2, "toolUse"),
+    result("c1", "a", 3),
+    midRun,
+    assistant([{ type: "text", text: "Interim." }], 5, "toolUse"),
+    assistant([{ type: "text", text: "Final answer." }], 8),
+    outcome,
+  ];
+  const [turn, ...rest] = buildTurns(messages);
+  assert(turn);
+  assert.equal(rest.length, 0, "a message that lands mid-run and a later system note do not open turns");
+  assert.equal(turn.reply?.message.timestamp, 8);
+  assert.deepEqual(turn.work.map(item => item.kind), ["note", "tool", "trigger", "note", "system"]);
+  assert.deepEqual(workCounts(turn.work), { tools: 1, notes: 4 });
+  assert.equal(turn.endedAt, 8, "a note after the reply does not stretch the duration");
+  const idle = liveTurn(turn, null, [], messages.length);
+  assert.equal(idle, null);
+  const between = liveTurn(turn, null, [], messages.length, true);
+  assert.equal(between?.live, true, "a running thread keeps its last turn live between model calls");
+});
+
+test("cache health flags a warm call that reads nothing from the cache and ignores cold starts", () => {
+  const call = (timestamp: number, usage: { input: number; cacheRead: number; cacheWrite: number }, model = "m"): AssistantMessage =>
+    ({ ...assistant([{ type: "text", text: "x" }], timestamp, "toolUse"), model, usage: { ...usage, output: 10, totalTokens: 0, cost: 0.01 } });
+  const healthy = [call(0, { input: 50_000, cacheRead: 0, cacheWrite: 0 }), call(1000, { input: 200, cacheRead: 50_000, cacheWrite: 300 })];
+  assert.equal(cacheHealth(healthy).level, "ok", "the first call is a cold start");
+  const afterIdle = [...healthy, call(1000 + CACHE_COLD_GAP_MS + 1, { input: 51_000, cacheRead: 0, cacheWrite: 0 })];
+  assert.equal(cacheHealth(afterIdle).level, "ok", "a call after five idle minutes is a cold start");
+  assert.equal(cacheHealth(afterIdle).last?.warm, false);
+  const broken = [...healthy, call(2000, { input: 2, cacheRead: 0, cacheWrite: 51_000 })];
+  const health = cacheHealth(broken);
+  assert.equal(health.level, "bad");
+  assert.match(health.reasons[0] ?? "", /read nothing from the cache/);
+  const low = [...healthy, call(2000, { input: 200, cacheRead: 40_000, cacheWrite: 11_000 })];
+  assert.equal(cacheHealth(low).level, "warn", "a 78% hit and a 21% cache write are unusual");
+  assert.deepEqual(cacheHealth(low).totals, { input: 50_400, output: 30, cacheRead: 90_000, cacheWrite: 11_300, cost: 0.03 });
+  assert.equal(cacheHealth([...healthy, call(2000, { input: 60_000, cacheRead: 0, cacheWrite: 0 }, "other")]).level, "ok", "a model switch starts a new cache");
+});
+
+test("slash menu matches skills without the skill: prefix and by description", () => {
+  const commands: Command[] = [
+    { name: "compact", source: "session", description: "Compact the session context" },
+    { name: "skill:poteto-mode", source: "skill", description: "poteto's agent style" },
+    { name: "skill:how", source: "skill", description: "Explain how a subsystem works" },
+    { name: "skill:swarm", source: "skill", description: "parallel fan-out" },
+  ];
+  assert.deepEqual(matchCommands(commands, "poteto").map(command => command.name), ["skill:poteto-mode"]);
+  assert.deepEqual(matchCommands(commands, "skill:p").map(command => command.name), ["skill:poteto-mode"]);
+  assert.deepEqual(matchCommands(commands, "how").map(command => command.name), ["skill:how"]);
+  assert.deepEqual(matchCommands(commands, "fan-out").map(command => command.name), ["skill:swarm"], "description matches come last");
+  assert.deepEqual(matchCommands(commands, "co").map(command => command.name), ["compact"]);
+  assert.equal(matchCommands(commands, "").length, 4);
 });
 
 test("a skill invocation projects to what the user typed plus the skill name", () => {

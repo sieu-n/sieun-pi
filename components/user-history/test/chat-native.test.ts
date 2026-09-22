@@ -313,6 +313,15 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
 
     const starts = (await readFile(calls, "utf8")).split('"stage":"start"').length - 1;
     assert.equal(starts, 7, "seven provider calls: first, second, stopped, image, tool (two legs), resume");
+
+    const newChatCommands = await fetch(chatUrl + "api/commands").then(response => response.json()) as { commands: { name: string; source: string }[] };
+    assert(newChatCommands.commands.some(command => command.name === "skill:browser-proof"), "the new-chat screen loads native commands");
+    assert(newChatCommands.commands.some(command => command.name === "compact" && command.source === "session"), "session commands are listed");
+    const stats = await fetch(chatUrl + `api/threads/${threadId}/stats`).then(response => response.json()) as { tokens: { cacheRead: number; cacheWrite: number }; cost: number };
+    assert(stats.tokens.cacheRead >= 40 && stats.tokens.cacheWrite >= 10 && stats.cost > 0, "native session stats carry cache totals and cost");
+    assert(thread.state?.messages.some(message => message.role === "assistant" && message.usage?.cacheRead === 40 && message.usage.cost === 0.00364), "per-call usage reaches the browser");
+    assert.equal((await post(`api/threads/${threadId}/prompt`, { message: "/compact", requestId: requestId(), mode: "followUp" })).status, 200, "/compact runs through the prompt path");
+    await thread.waitFor(event => event.type === "event" && event.event.type === "compaction_end" && !event.event.aborted, 60000, "compaction from /compact");
     thread.close();
     savedThread.close();
     sessionsStream.close();

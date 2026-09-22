@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { parseSkillBlock, type DaemonAgentConnection, type SessionSummary } from "prime-agent";
 import type { AssistantMessage, ChildAgent, ImagePart, ModelInfo, ProjectedSessionEvent, TextPart, ThinkingPart, ThreadInfo, ThreadMessage, ToolCallPart, ToolResultMessage } from "./shared/types.ts";
 
@@ -100,8 +101,10 @@ export class Projector {
     });
   }
   assistant(message: AgentMessage & { role: "assistant" }): AssistantMessage {
+    const usage = message.usage;
     return { role: "assistant", content: this.assistantContent(message.content), provider: message.provider, model: message.model,
-      stopReason: message.stopReason, ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}), timestamp: message.timestamp };
+      stopReason: message.stopReason, ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}), timestamp: message.timestamp,
+      ...(usage ? { usage: { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, totalTokens: usage.totalTokens, cost: usage.cost.total } } : {}) };
   }
   toolResult(message: AgentMessage & { role: "toolResult" }): ToolResultMessage {
     const content = this.userContent(message.content, TEXT_LIMIT);
@@ -159,7 +162,8 @@ export class Projector {
 }
 
 export function projectModel(model: NativeModel): ModelInfo {
-  return { provider: model.provider, id: model.id, name: model.name, input: [...model.input], contextWindow: model.contextWindow, reasoning: model.reasoning };
+  return { provider: model.provider, id: model.id, name: model.name, input: [...model.input], contextWindow: model.contextWindow, reasoning: model.reasoning,
+    thinkingLevels: getSupportedThinkingLevels(model) };
 }
 
 export function projectChild(child: NativeChild): ChildAgent {

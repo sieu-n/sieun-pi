@@ -4,7 +4,7 @@
   import { store } from "./store.svelte.ts";
   import type { ImageInput, ModelCatalog, ModelInfo, SendMode, ThinkingLevel, Workspace } from "../shared/types.ts";
   import { relativeTime, shortPath } from "./format.ts";
-  import ModelMenu from "./ModelMenu.svelte";
+  import ModelPicker from "./ModelPicker.svelte";
   import Composer from "./Composer.svelte";
   import Popover from "./Popover.svelte";
   import Icon from "./Icon.svelte";
@@ -18,14 +18,14 @@
   let catalogError = $state<string | null>(null);
   let model = $state<ModelInfo | null>(null);
   let effort = $state<ThinkingLevel | null>(null);
-  type PopoverName = "workspace" | "model" | "effort";
-  let popover = $state<PopoverName | null>(null);
-  const closePopover = () => { popover = null; };
+  let workspaceOpen = $state(false);
+  const closePopover = () => { workspaceOpen = false; };
 
   const hour = new Date().getHours();
   const greeting = hour < 5 ? "Still up?" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const modelLabel = $derived(model?.name ?? catalog?.current?.name ?? "Default model");
-  const effortLevels = $derived(catalog?.availableThinkingLevels ?? []);
+  const modelLabel = $derived((model?.name ?? catalog?.current?.name ?? "Default model") + (effort ? " · " + effort : ""));
+  const effortLevels = $derived((model ?? catalog?.current)?.thinkingLevels ?? catalog?.availableThinkingLevels ?? []);
+  $effect(() => { if (effort && !effortLevels.includes(effort)) effort = null; });
   const acceptsImages = $derived((model ?? catalog?.current)?.input.includes("image") ?? true);
 
   onMount(() => {
@@ -74,9 +74,9 @@
         <p class="sub">What are we working on?</p>
         <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder="Ask Prime Agent anything">
           {#snippet left()}
-            <Popover open={popover === "workspace"} onclose={closePopover} width="320px">
+            <Popover open={workspaceOpen} onclose={closePopover} width="320px">
               {#snippet trigger()}
-                <button class="bar-button" onclick={() => { popover = popover === "workspace" ? null : "workspace"; }} title={cwd || "Workspace"}>
+                <button class="bar-button" onclick={() => { workspaceOpen = !workspaceOpen; }} title={cwd || "Workspace"}>
                   <Icon name="folder" size={14} /><span class="label">{cwd ? shortPath(cwd) : "Workspace"}</span><Icon name="chevronDown" size={12} />
                 </button>
               {/snippet}
@@ -95,25 +95,8 @@
             <AccountChip threadId={null} provider={(model ?? catalog?.current)?.provider} />
           {/snippet}
           {#snippet right()}
-            <Popover open={popover === "model"} onclose={closePopover} align="end" width="260px">
-              {#snippet trigger()}
-                <button class="bar-button" onclick={() => { popover = popover === "model" ? null : "model"; }} title="Model">
-                  <span class="label">{modelLabel}</span><Icon name="chevronDown" size={12} />
-                </button>
-              {/snippet}
-              <ModelMenu {catalog} error={catalogError} current={model} defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; closePopover(); }} onchoose={entry => { model = entry; closePopover(); }} />
-            </Popover>
-            <Popover open={popover === "effort"} onclose={closePopover} align="end" width="160px">
-              {#snippet trigger()}
-                <button class="bar-button" disabled={!effortLevels.length} onclick={() => { popover = popover === "effort" ? null : "effort"; }} title="Effort">
-                  <span class="label">{effort ?? "Default effort"}</span><Icon name="chevronDown" size={12} />
-                </button>
-              {/snippet}
-              <button class="menu-item" class:current={effort === null} onclick={() => { effort = null; closePopover(); }}>Default</button>
-              {#each effortLevels as level (level)}
-                <button class="menu-item" class:current={effort === level} onclick={() => { effort = level; closePopover(); }}>{level}</button>
-              {/each}
-            </Popover>
+            <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort
+              defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
           {/snippet}
         </Composer>
       {/if}
@@ -123,7 +106,7 @@
 
 <style>
   .new-chat { display: flex; flex-direction: column; height: 100%; }
-  .top { display: flex; align-items: center; padding: 8px 12px; min-height: 52px; }
+  .top { display: flex; align-items: center; padding: 0 8px; height: 40px; }
   .center { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 20px 10vh; overflow-y: auto; }
   .column { width: 100%; max-width: var(--column); }
   .greeting { margin: 0 0 4px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }

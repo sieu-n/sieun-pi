@@ -220,6 +220,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const id = url.searchParams.get("id");
           json(res, 200, await backend.threads.models(id ? threadId(id) : null)); return;
         }
+        if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
         if (route === "api/accounts") {
           const id = url.searchParams.get("id");
           json(res, 200, await listAccounts(id ? threadId(id) : null)); return;
@@ -260,6 +261,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             json(res, 200, await backend.threads.part(id, message, part)); return;
           }
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
+          if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
         }
         throw new RequestError(404, "Not found.");
       }
@@ -313,7 +315,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, { accepted: true }); return;
         }
         case "abort": await backend.threads.abort(id); break;
-        case "compact": await backend.threads.compact(id); break;
         case "rename": {
           const name = text(body.name, "name", 200).trim();
           if (!name) throw new RequestError(400, "Use a name of 1 to 200 characters.");

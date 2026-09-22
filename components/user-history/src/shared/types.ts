@@ -7,9 +7,11 @@ export interface ImagePart { type: "image"; mimeType: string; url: string }
 export interface ToolCallPart { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown>; truncated?: true }
 
 export interface UserMessage { role: "user"; content: string | (TextPart | ImagePart)[]; timestamp: number; skill?: string }
+/** Native per-call `usage` of an assistant message; `cost` is the native `cost.total`. */
+export interface MessageUsage { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: number }
 export interface AssistantMessage {
   role: "assistant"; content: (TextPart | ThinkingPart | ToolCallPart)[]; provider: string; model: string;
-  stopReason: StopReason; errorMessage?: string; timestamp: number;
+  stopReason: StopReason; errorMessage?: string; timestamp: number; usage?: MessageUsage;
 }
 export interface ToolResultMessage {
   role: "toolResult"; toolCallId: string; toolName: string; content: (TextPart | ImagePart)[]; isError: boolean; timestamp: number;
@@ -23,9 +25,11 @@ export interface BranchSummaryMessage { role: "branchSummary"; summary: string; 
 export interface CompactionSummaryMessage { role: "compactionSummary"; summary: string; tokensBefore: number; timestamp: number }
 export type ThreadMessage = UserMessage | AssistantMessage | ToolResultMessage | CustomMessage | BashExecutionMessage | BranchSummaryMessage | CompactionSummaryMessage;
 
-export interface ModelInfo { provider: string; id: string; name: string; input: ("text" | "image")[]; contextWindow: number; reasoning: boolean }
+export interface ModelInfo { provider: string; id: string; name: string; input: ("text" | "image")[]; contextWindow: number; reasoning: boolean; thinkingLevels?: ThinkingLevel[] }
 export interface ContextUsage { tokens: number; contextWindow: number; percent: number }
 export interface SessionUsage { inputTokens: number; outputTokens: number; cost: number }
+/** Native `getSessionStats()` totals for a live thread. */
+export interface ThreadStats { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }; cost: number }
 export interface SessionAction { label: string }
 export interface ThreadInfo {
   sessionId: string;
@@ -126,7 +130,7 @@ export interface SessionRow {
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; daemon: "up" | "down"; error?: string }
 
 export interface ModelCatalog { models: ModelInfo[]; configuredProviders: string[]; current: ModelInfo | null; thinkingLevel: ThinkingLevel | null; availableThinkingLevels: ThinkingLevel[] }
-export interface Command { name: string; description?: string; argumentHint?: string; source: "extension" | "prompt" | "skill" }
+export interface Command { name: string; description?: string; argumentHint?: string; source: "extension" | "prompt" | "skill" | "session" }
 export interface Workspace { cwd: string; lastUsedAt?: string; count: number }
 export interface ImageInput { type: "image"; mimeType: string; data: string }
 export type SendMode = "steer" | "followUp";

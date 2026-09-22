@@ -18,6 +18,7 @@
     "test:native": "node --import tsx --test test/chat-native.test.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-ai-0.9.4.tgz",
     "esbuild": "0.28.2",
     "esbuild-svelte": "0.9.5",
     "marked": "18.0.12",
@@ -26,7 +27,6 @@
     "tsx": "4.23.13"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/prime-agent-ai-0.9.4.tgz",
     "@types/node": "25.3.0",
     "parse5": "8.0.1",
     "svelte-check": "4.7.6",

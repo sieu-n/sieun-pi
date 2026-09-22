@@ -4,7 +4,7 @@
   import { store } from "./store.svelte.ts";
   import { duration } from "./format.ts";
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
-  import { toolDurationMs, type Turn, type WorkItem } from "../shared/turns.ts";
+  import { messageText, toolDurationMs, triggerSummary, workCounts, type SystemMessage, type Turn, type WorkItem } from "../shared/turns.ts";
   import Icon from "./Icon.svelte";
 
   type ToolItem = Extract<WorkItem, { kind: "tool" }>;
@@ -13,13 +13,23 @@
   let { turn, threadId }: { turn: Turn; threadId: string } = $props();
 
   const live = $derived(turn.live);
+  const trigger = $derived(turn.trigger ? triggerSummary(turn.trigger.message) : null);
+  const counts = $derived(workCounts(turn.work));
+  const worked = $derived(turn.work.some(item => item.kind === "tool" || item.kind === "thinking"));
   const tools = $derived(turn.work.filter((item): item is ToolItem => item.kind === "tool"));
-  const toolNames = $derived([...new Set(tools.map(item => item.call.name))]);
-  const latest = $derived(tools.find(item => item.run?.status === "running") ?? (live ? tools.at(-1) : undefined));
-  const lastThinking = $derived.by(() => {
-    const item = turn.work.at(-1);
-    return live && item?.kind === "thinking" ? item.part.thinking.slice(-240).trimStart() : "";
+  const runningTool = $derived(tools.find(item => item.run?.status === "running"));
+  const step = $derived.by(() => {
+    if (!live) return "";
+    if (runningTool) return runningTool.call.name + " " + summary(runningTool);
+    if (turn.reply?.live) return "Writing the reply";
+    if (turn.work.at(-1)?.kind === "thinking") return "Thinking";
+    return "";
   });
+  const firstSystem = $derived(turn.work.find((item): item is Extract<WorkItem, { kind: "system" }> => item.kind === "system"));
+  const countText = $derived([
+    counts.tools ? `${counts.tools} tool ${counts.tools === 1 ? "call" : "calls"}` : "",
+    counts.notes ? `${counts.notes} ${counts.notes === 1 ? "note" : "notes"}` : "",
+  ].filter(Boolean).join(" · "));
 
   let now = $state(Date.now());
   $effect(() => {
@@ -28,10 +38,9 @@
     return () => clearInterval(timer);
   });
   const elapsedMs = $derived(live ? Math.max(0, now - turn.startedAt) : Math.max(0, turn.endedAt - turn.startedAt));
+  const label = $derived(live ? "Working " + duration(elapsedMs) : worked ? "Worked " + duration(elapsedMs) : firstSystem ? systemTitle(firstSystem.message) : "");
 
-  let userToggled = $state<boolean | null>(null);
-  $effect(() => { if (!live) userToggled = null; });
-  const open = $derived(userToggled ?? live);
+  let open = $state(false);
 
   const expanded = new SvelteSet<string>();
   const outputs = new SvelteMap<string, Output>();
@@ -86,23 +95,30 @@
   }
 
   function json(value: unknown): string { return JSON.stringify(value, null, 2); }
+  function systemTitle(message: SystemMessage): string {
+    if (message.role === "compactionSummary") return "Context compacted";
+    if (message.role === "branchSummary") return "Branch summary";
+    if (message.role === "bashExecution") return "$ " + message.command;
+    return message.customType.replaceAll("_", " ");
+  }
 </script>
 
-<div class="work" class:live class:open>
-  <button class="head" aria-expanded={open} onclick={() => { userToggled = !open; }}>
+<div class="work" class:live class:open class:trigger-row={trigger !== null}>
+  <button class="head" aria-expanded={open} onclick={() => { open = !open; }}>
     <span class="chevron" class:down={open}><Icon name="chevronRight" size={14} /></span>
-    {#if live}<span class="spinner"></span>{/if}
-    <span class="label">{live ? "Working" : "Worked"} {duration(elapsedMs)}</span>
-    {#if tools.length}<span class="count">{tools.length} tool {tools.length === 1 ? "call" : "calls"}</span>{/if}
-    {#if toolNames.length}<span class="names">{toolNames.join(", ")}</span>{/if}
+    {#if trigger}
+      <Icon name="bolt" size={13} />
+      <span class="trigger-label">{trigger.label}</span>
+      {#if trigger.detail}<span class="trigger-detail">{trigger.detail}</span>{/if}
+      {#if !live && !worked && trigger.body}<span class="trigger-inline">{trigger.body.split("\n", 1)[0]}</span>{/if}
+    {/if}
+    {#if live}<span class="spinner tiny"></span>{/if}
+    {#if label}<span class="label" class:sep={trigger !== null}>{label}</span>{/if}
+    {#if live && step}<span class="step">{step}</span>{:else if countText}<span class="count" class:sep={label !== "" || trigger !== null}>{countText}</span>{/if}
   </button>
-  {#if live && !open}
-    <div class="peek">
-      {#if latest}<span class="peek-tool"><span class="status-dot running"></span>{latest.call.name} <span class="faint">{summary(latest)}</span></span>{/if}
-    </div>
-  {/if}
   {#if open}
     <div class="items">
+      {#if trigger?.body}<div class="item trigger-body">{trigger.body}</div>{/if}
       {#each turn.work as item, itemIndex (item.kind === "tool" ? item.call.id : item.kind + ":" + item.messageIndex + ":" + ("partIndex" in item ? item.partIndex : itemIndex))}
         {#if item.kind === "thinking"}
           <div class="item thinking">
@@ -115,6 +131,31 @@
         {:else if item.kind === "note"}
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
           <div class="item note prose" onclick={copyFromClick}>{@html renderMarkdown(item.text)}</div>
+        {:else if item.kind === "trigger"}
+          {@const inner = triggerSummary(item.message)}
+          <details class="item system">
+            <summary><Icon name="bolt" size={12} /> <span class="system-title">{inner.label}</span> <span class="faint">{inner.detail}</span></summary>
+            {#if inner.body}<pre>{inner.body}</pre>{/if}
+          </details>
+        {:else if item.kind === "system"}
+          {@const message = item.message}
+          <details class="item system">
+            <summary>
+              <span class="system-title" class:mono={message.role === "bashExecution"}>{systemTitle(message)}</span>
+              {#if message.role === "bashExecution" && message.exitCode !== undefined && message.exitCode !== 0} <span class="danger">exit {message.exitCode}</span>{/if}
+              {#if message.role === "bashExecution" && message.cancelled} <span class="danger">cancelled</span>{/if}
+              {#if message.role === "compactionSummary"} <span class="faint">{message.tokensBefore.toLocaleString()} tokens before</span>{/if}
+            </summary>
+            {#if message.role === "bashExecution"}
+              <pre>{message.output || "(no output)"}{#if message.truncated}
+(truncated){/if}</pre>
+            {:else if message.role === "compactionSummary" || message.role === "branchSummary"}
+              <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+              <div class="prose summary" onclick={copyFromClick}>{@html renderMarkdown(message.summary)}</div>
+            {:else}
+              <pre>{messageText(message)}</pre>
+            {/if}
+          </details>
         {:else}
           {@const toolState = status(item)}
           {@const ms = toolDurationMs(item, now)}
@@ -143,26 +184,32 @@
           </div>
         {/if}
       {/each}
-      {#if live && lastThinking && turn.work.at(-1)?.kind !== "thinking"}
-        <div class="item thinking"><div class="prose thinking-text">{@html renderMarkdown(lastThinking)}<span class="caret"></span></div></div>
-      {/if}
     </div>
   {/if}
 </div>
 
 <style>
-  .work { margin: 6px 0 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); overflow: hidden; }
-  .work.live { border-color: var(--accent-soft); }
-  .head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; font-size: 13px; color: var(--text-muted); text-align: left; }
-  .head:hover { background: var(--bg-hover); }
-  .chevron { display: inline-flex; transition: transform 0.15s ease; color: var(--text-faint); }
+  .work { margin: 2px 0 8px; border: 1px solid transparent; border-radius: var(--radius); overflow: hidden; }
+  .work.open { border-color: var(--border); background: var(--bg-elevated); margin-bottom: 12px; }
+  .head { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 4px 8px; border-radius: var(--radius-small); font-size: 13px; color: var(--text-muted); text-align: left; }
+  .head:hover { color: var(--text); background: var(--bg-hover); }
+  .work.open .head { border-radius: 0; padding: 7px 10px; }
+  .chevron { display: inline-flex; flex: none; transition: transform 0.15s ease; color: var(--text-faint); }
   .chevron.down { transform: rotate(90deg); }
-  .label { font-weight: 500; color: var(--text); white-space: nowrap; }
-  .count { white-space: nowrap; }
-  .count::before { content: "·"; margin-right: 8px; color: var(--text-faint); }
-  .names { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
-  .peek { padding: 0 12px 10px 34px; font-size: 13px; color: var(--text-muted); }
-  .peek-tool { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .label { white-space: nowrap; flex: none; }
+  .sep::before { content: "·"; margin-right: 6px; color: var(--text-faint); }
+  .count { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; color: var(--text-faint); }
+  .step { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
+  .trigger-label { font-weight: 500; flex: none; }
+  .trigger-detail { color: var(--text-faint); flex: none; white-space: nowrap; }
+  .trigger-inline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
+  .trigger-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; color: var(--text-muted); }
+  .system summary { cursor: pointer; color: var(--text-muted); }
+  .system-title { font-weight: 500; text-transform: capitalize; }
+  .system-title.mono { font-family: var(--mono); text-transform: none; font-weight: 400; }
+  .system pre { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; max-height: 320px; overflow: auto; }
+  .summary { margin-top: 6px; }
+  .mono { font-family: var(--mono); }
   .items { border-top: 1px solid var(--border); padding: 4px 0; }
   .item { padding: 6px 12px 6px 14px; font-size: 13px; }
   .item + .item { border-top: 1px solid var(--border); }

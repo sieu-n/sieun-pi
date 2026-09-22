@@ -5,13 +5,15 @@
   interface Draft { text: string; images: Attachment[] }
   const drafts = new Map<string, Draft>();
   const commandCache = new Map<string, Promise<Command[]>>();
+  const NEW_CHAT = "";
   let attachmentId = 0;
 
-  function loadCommands(threadId: string): Promise<Command[]> {
-    let pending = commandCache.get(threadId);
+  function loadCommands(threadId: string | null): Promise<Command[]> {
+    const key = threadId ?? NEW_CHAT;
+    let pending = commandCache.get(key);
     if (!pending) {
-      pending = api.commands(threadId).catch(() => { commandCache.delete(threadId); return []; });
-      commandCache.set(threadId, pending);
+      pending = api.commands(threadId).catch(() => { commandCache.delete(key); return []; });
+      commandCache.set(key, pending);
     }
     return pending;
   }
@@ -30,6 +32,7 @@
   import { tick, untrack, type Snippet } from "svelte";
   import { store } from "./store.svelte.ts";
   import { bytes } from "./format.ts";
+  import { matchCommands } from "./command-match.ts";
   import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES, MAX_MESSAGE_LENGTH } from "../shared/limits.ts";
   import type { ImageInput, SendMode } from "../shared/types.ts";
   import Icon from "./Icon.svelte";
@@ -62,21 +65,19 @@
   });
   $effect(() => { if (focusOnMount) textarea?.focus(); });
 
-  const slashQuery = $derived.by(() => {
-    if (!threadId) return null;
-    const match = /^\/(\S*)$/.exec(text);
-    return match ? match[1]!.toLowerCase() : null;
-  });
+  const slashQuery = $derived(/^\/(\S*)$/.exec(text)?.[1] ?? null);
   $effect(() => {
     const id = threadId;
-    if (slashQuery === null || !id) return;
+    if (slashQuery === null) return;
     let cancelled = false;
     void loadCommands(id).then(list => { if (!cancelled) commands = list; });
     return () => { cancelled = true; };
   });
-  const filtered = $derived(slashQuery === null ? [] : commands.filter(command => command.name.toLowerCase().startsWith(slashQuery)).slice(0, 12));
+  const filtered = $derived(slashQuery === null ? [] : matchCommands(commands, slashQuery));
   const menuOpen = $derived(!menuDismissed && filtered.length > 0);
   $effect(() => { void filtered; menuIndex = 0; });
+  let menu: HTMLElement | undefined = $state();
+  $effect(() => { menu?.children[menuIndex]?.scrollIntoView({ block: "nearest" }); });
 
   const canSend = $derived((text.trim().length > 0 || images.length > 0) && !sending && text.length <= MAX_MESSAGE_LENGTH);
   const totalBytes = $derived(images.reduce((sum, image) => sum + image.size, 0));
@@ -169,7 +170,7 @@
     </div>
   {/if}
   {#if menuOpen}
-    <div class="slash-menu fade-in" role="listbox" aria-label="Commands">
+    <div class="slash-menu fade-in" role="listbox" aria-label="Commands" bind:this={menu}>
       {#each filtered as command, index (command.name)}
         <button class="menu-item" class:selected={index === menuIndex} role="option" aria-selected={index === menuIndex}
           onmouseenter={() => { menuIndex = index; }} onclick={() => insertCommand(command)}>

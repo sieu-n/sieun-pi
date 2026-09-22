@@ -5,9 +5,17 @@ import type { Catalog } from "./chat-catalog.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { Command, ModelCatalog, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { Command, ModelCatalog, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
+
+/** Native session-owned slash commands (prime-agent SESSION_SLASH_COMMAND_NAMES). The session runs them from prompt text; getCommands does not list them. */
+const SESSION_COMMANDS: Command[] = [
+  { name: "compact", description: "Compact the session context; optional instructions focus the summary", argumentHint: "[instructions]", source: "session" },
+  { name: "refine", description: "Refine continual harness prompt notes, skills, subagents, and memory", source: "session" },
+  { name: "goal", description: "Set or view a persistent goal; supports pause, resume, and clear", argumentHint: "[objective]", source: "session" },
+  { name: "autonomous", description: "Set or view autonomous mode", argumentHint: "[status|on|off]", source: "session" },
+];
 type NativeEvent = Parameters<Parameters<DaemonAgentConnection["subscribe"]>[0]>[0];
 type Live = { connection: DaemonAgentConnection; activeSessionId: string; unsubscribe: () => void };
 
@@ -330,11 +338,6 @@ export class ThreadHub {
     await live.connection.abort();
   }
 
-  async compact(id: string): Promise<void> {
-    const { live } = await this.requireLive(id);
-    await live.connection.compact();
-  }
-
   async rename(id: string, name: string): Promise<void> {
     const thread = await this.open(id);
     if (thread.live) { await thread.live.connection.setSessionName(name); await this.refreshInfo(thread); return; }
@@ -370,16 +373,18 @@ export class ThreadHub {
   }
 
   async models(id: string | null): Promise<ModelCatalog> {
+    return this.withConnection(id, (connection, thread) => this.catalogFrom(connection, thread));
+  }
+
+  /** The thread's own connection, or any live one so the new-chat screen and saved threads can read the catalog and commands. */
+  private async withConnection<T>(id: string | null, use: (connection: DaemonAgentConnection, thread: Thread | null) => Promise<T>): Promise<T> {
     const thread = id ? await this.open(id) : null;
     const live = thread?.live ?? [...this.threads.values()].find(candidate => candidate.live)?.live ?? null;
-    if (!live) {
-      const summaries = await this.liveSummaries();
-      const first = summaries[0];
-      if (!first?.activeSessionId) throw new ThreadError(409, "Open a live thread once so the model catalog can load.");
-      const connection = await this.attach(first.activeSessionId);
-      try { return await this.catalogFrom(connection, null); } finally { await connection.dispose().catch(() => {}); }
-    }
-    return this.catalogFrom(live.connection, thread?.live ? thread : null);
+    if (live) return use(live.connection, thread?.live ? thread : null);
+    const first = (await this.liveSummaries())[0];
+    if (!first?.activeSessionId) throw new ThreadError(409, "Open a live thread once so models and commands can load.");
+    const connection = await this.attach(first.activeSessionId);
+    try { return await use(connection, null); } finally { await connection.dispose().catch(() => {}); }
   }
 
   private async liveSummaries(): Promise<SessionSummary[]> {
@@ -396,14 +401,21 @@ export class ThreadHub {
       current: state.model ? projectModel(state.model) : null, thinkingLevel: thread ? state.thinkingLevel : null, availableThinkingLevels: [...state.availableThinkingLevels] };
   }
 
-  async commands(id: string): Promise<Command[]> {
+  async commands(id: string | null): Promise<Command[]> {
+    return this.withConnection(id, async connection => {
+      const [commands, resources] = await Promise.all([connection.getCommands(), connection.getResourceSnapshot()]);
+      const result: Command[] = [...SESSION_COMMANDS, ...commands.map(({ name, description, source, argumentHint }): Command => ({ name, source, ...(description ? { description } : {}), ...(argumentHint ? { argumentHint } : {}) }))];
+      for (const skill of resources.skills) if (!result.some(command => command.source === "skill" && command.name === "skill:" + skill.name)) {
+        result.push({ name: "skill:" + skill.name, ...(skill.description ? { description: skill.description } : {}), source: "skill" });
+      }
+      return result;
+    });
+  }
+
+  async stats(id: string): Promise<ThreadStats> {
     const { live } = await this.requireLive(id);
-    const [commands, resources] = await Promise.all([live.connection.getCommands(), live.connection.getResourceSnapshot()]);
-    const result: Command[] = commands.map(({ name, description, source, argumentHint }) => ({ name, source, ...(description ? { description } : {}), ...(argumentHint ? { argumentHint } : {}) }));
-    for (const skill of resources.skills) if (!result.some(command => command.source === "skill" && command.name === "skill:" + skill.name)) {
-      result.push({ name: "skill:" + skill.name, ...(skill.description ? { description: skill.description } : {}), source: "skill" });
-    }
-    return result;
+    const stats = await live.connection.getSessionStats();
+    return { tokens: { ...stats.tokens }, cost: stats.cost };
   }
 
   private async rawMessages(id: string): Promise<AgentMessage[]> {

@@ -5,8 +5,9 @@
   import { ui } from "./ui.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
   import { buildTurns, liveTurn, messageText } from "../shared/turns.ts";
-  import type { ModelCatalog, ModelInfo, ThreadMessage } from "../shared/types.ts";
-  import ModelMenu from "./ModelMenu.svelte";
+  import type { ModelCatalog, ModelInfo, ThinkingLevel, ThreadMessage } from "../shared/types.ts";
+  import ModelPicker from "./ModelPicker.svelte";
+  import ContextMeter from "./ContextMeter.svelte";
   import { clockTime, duration, shortPath } from "./format.ts";
   import Turn from "./Turn.svelte";
   import Composer from "./Composer.svelte";
@@ -28,7 +29,7 @@
   const EMPTY: ThreadMessage[] = [];
   const messages = $derived(thread?.messages ?? EMPTY);
   const turns = $derived(buildTurns(messages));
-  const live = $derived(thread ? liveTurn(turns.at(-1), thread.streaming, thread.tools, messages.length) : null);
+  const live = $derived(thread ? liveTurn(turns.at(-1), thread.streaming, thread.tools, messages.length, thread.info.isStreaming) : null);
   const shown = $derived.by(() => {
     if (!live) return turns;
     const last = turns.at(-1);
@@ -51,8 +52,6 @@
     setTimeout(() => target?.classList.remove("flash"), 1200);
   }
   const context = $derived(thread?.info.context ?? null);
-  const contextPercent = $derived(context ? Math.max(0, Math.min(100, Math.round(context.percent))) : 0);
-  const RING = 2 * Math.PI * 8;
   const runningChildren = $derived(thread?.children.filter(child => child.status === "running" || child.status === "queued").length ?? 0);
 
   let now = $state(Date.now());
@@ -75,25 +74,20 @@
     return parts.join(" · ");
   });
 
-  type PopoverName = "model" | "effort" | "agents" | "more";
-  let popover = $state<PopoverName | null>(null);
+  let agentsOpen = $state(false);
   let catalog = $state<ModelCatalog | null>(null);
   let catalogError = $state<string | null>(null);
-  function openPopover(name: PopoverName): void {
-    popover = popover === name ? null : name;
-    if (popover === "model" && !catalog) {
-      catalogError = null;
-      api.models(id).then(result => { catalog = result; }, error => { catalogError = error instanceof Error ? error.message : String(error); });
-    }
+  function loadCatalog(): void {
+    if (catalog) return;
+    catalogError = null;
+    api.models(id).then(result => { catalog = result; }, error => { catalogError = error instanceof Error ? error.message : String(error); });
   }
-  const closePopover = () => { popover = null; };
+  const modelLabel = $derived((thread?.info.model?.name ?? row?.model ?? "Model") + ((thread?.info.thinkingLevel ?? row?.thinkingLevel) ? " · " + (thread?.info.thinkingLevel ?? row?.thinkingLevel) : ""));
   async function chooseModel(model: ModelInfo): Promise<void> {
-    closePopover();
     await store.run(api.setModel(id, model.provider, model.id));
   }
-  async function chooseEffort(level: string): Promise<void> {
-    closePopover();
-    await store.run(api.setThinking(id, level));
+  async function chooseEffort(level: ThinkingLevel | null): Promise<void> {
+    if (level) await store.run(api.setThinking(id, level));
   }
 
   let editingTitle = $state<string | null>(null);
@@ -157,15 +151,6 @@
 
   const send = (text: string, images: Parameters<typeof store.send>[2], mode: Parameters<typeof store.send>[3]) => store.send(id, text, images, mode);
   const stop = () => { void store.run(api.abort(id)); };
-  async function compact(): Promise<void> {
-    closePopover();
-    const ok = await store.run(api.compact(id));
-    if (ok) store.toast("Compaction started.", "info");
-  }
-  function copyId(): void {
-    closePopover();
-    void navigator.clipboard.writeText(id).then(() => store.toast("Session id copied.", "info"));
-  }
 </script>
 
 <div class="thread">
@@ -177,7 +162,7 @@
       {#if editingTitle !== null}
         <input class="field title-input" bind:value={editingTitle} placeholder="Thread name" aria-label="Thread name" use:focusAndSelect onkeydown={onTitleKey} onblur={() => void commitRename()} />
       {:else}
-        <button class="title" title="Rename (F2)" onclick={startRename}>{title}</button>
+        <button class="title" title="{title}. Click or press F2 to rename. Session {id}" onclick={startRename}>{title}</button>
       {/if}
       {#if cwd}<span class="cwd" title={cwd}>{shortPath(cwd)}</span>{/if}
     </div>
@@ -187,9 +172,9 @@
         <button role="radio" aria-checked={ui.viewMode === "questions"} class:on={ui.viewMode === "questions"} onclick={() => ui.setViewMode("questions")}>Questions</button>
       </div>
       {#if thread?.children.length}
-        <Popover open={popover === "agents"} onclose={closePopover} align="end" width="320px">
+        <Popover open={agentsOpen} onclose={() => { agentsOpen = false; }} align="end" width="320px">
           {#snippet trigger()}
-            <button class="bar-button" class:active-agents={runningChildren > 0} title="Agents" onclick={() => openPopover("agents")}>
+            <button class="bar-button" class:active-agents={runningChildren > 0} title="Agents" onclick={() => { agentsOpen = !agentsOpen; }}>
               <Icon name="users" size={14} /><span>{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
             </button>
           {/snippet}
@@ -209,16 +194,6 @@
           {/each}
         </Popover>
       {/if}
-      <Popover open={popover === "more"} onclose={closePopover} align="end" width="200px">
-        {#snippet trigger()}
-          <button class="icon-button" aria-label="More" title="More" onclick={() => openPopover("more")}><Icon name="more" /></button>
-        {/snippet}
-        <button class="menu-item" disabled={busy || saved || !thread} onclick={() => void compact()}>Compact context</button>
-        <button class="menu-item" onclick={() => { closePopover(); startRename(); }}>Rename<span class="hint">F2</span></button>
-        <button class="menu-item" onclick={() => { closePopover(); store.drawer = "accounts"; }}>Accounts</button>
-        <div class="menu-separator"></div>
-        <button class="menu-item" onclick={copyId}>Copy session id</button>
-      </Popover>
     </div>
   </header>
 
@@ -269,36 +244,16 @@
           acceptsImages={thread.info.model?.input.includes("image") ?? true} focusOnMount={!narrow} {send} {stop}>
           {#snippet left()}
             <AccountChip threadId={id} />
-            {#if context}
-              <span class="context" title="Context: {contextPercent}% ({context.tokens.toLocaleString()} of {context.contextWindow.toLocaleString()} tokens)" role="img" aria-label="Context {contextPercent}% used">
-                <svg width="16" height="16" viewBox="0 0 22 22">
-                  <circle cx="11" cy="11" r="8" fill="none" stroke="var(--border-strong)" stroke-width="3" />
-                  <circle cx="11" cy="11" r="8" fill="none" stroke={contextPercent >= 85 ? "var(--danger)" : contextPercent >= 65 ? "var(--warning)" : "var(--text-muted)"} stroke-width="3"
-                    stroke-linecap="round" stroke-dasharray="{RING * contextPercent / 100} {RING}" transform="rotate(-90 11 11)" />
-                </svg>
-                <span>Context {contextPercent}%</span>
-              </span>
+            {#if context && thread}
+              <ContextMeter threadId={id} {context} usage={thread.info.usage} {messages} live={!saved} />
             {/if}
           {/snippet}
           {#snippet right()}
-            <Popover open={popover === "model"} onclose={closePopover} align="end" side="above" width="260px">
-              {#snippet trigger()}
-                <button class="bar-button" disabled={busy || saved || !thread} title={saved ? "Reply first to resume this thread, then change the model" : busy ? "Wait for the agent to finish" : "Model"} onclick={() => openPopover("model")}>
-                  <span class="label">{thread?.info.model?.name ?? row?.model ?? "Model"}</span><Icon name="chevronDown" size={12} />
-                </button>
-              {/snippet}
-              <ModelMenu {catalog} error={catalogError} current={thread?.info.model ?? null} onchoose={model => void chooseModel(model)} />
-            </Popover>
-            <Popover open={popover === "effort"} onclose={closePopover} align="end" side="above" width="160px">
-              {#snippet trigger()}
-                <button class="bar-button" disabled={busy || saved || !thread} title="Effort" onclick={() => openPopover("effort")}>
-                  <span class="label">{thread?.info.thinkingLevel ?? row?.thinkingLevel ?? "Effort"}</span><Icon name="chevronDown" size={12} />
-                </button>
-              {/snippet}
-              {#each thread?.info.availableThinkingLevels ?? [] as level (level)}
-                <button class="menu-item" class:current={thread?.info.thinkingLevel === level} onclick={() => void chooseEffort(level)}>{level}</button>
-              {/each}
-            </Popover>
+            <ModelPicker label={modelLabel} disabled={busy || saved || !thread}
+              title={saved ? "Reply first to resume this thread, then change the model" : busy ? "Wait for the agent to finish" : "Model and effort"}
+              {catalog} error={catalogError} current={thread?.info.model ?? null} onopen={loadCatalog} onchoose={model => void chooseModel(model)}
+              effort={thread?.info.thinkingLevel ?? null} levels={thread?.info.availableThinkingLevels ?? []} oneffort={level => void chooseEffort(level)}
+              note="Model and effort changes also become the default for new chats." />
           {/snippet}
         </Composer>
         <div class="status-line">
@@ -311,16 +266,15 @@
 
 <style>
   .thread { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-  .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; min-height: 52px; border-bottom: 1px solid var(--border); background: var(--bg); flex-wrap: wrap; }
-  .title-wrap { flex: 1; min-width: 120px; display: flex; align-items: baseline; gap: 8px; }
+  .head { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 40px; border-bottom: 1px solid var(--border); background: var(--bg); }
+  .head .icon-button { width: 28px; height: 28px; }
+  .title-wrap { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
   .cwd { flex: none; font-size: 12px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
   .segmented { display: inline-flex; padding: 2px; border-radius: var(--radius-small); background: var(--bg-hover); }
-  .segmented button { height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12px; color: var(--text-muted); }
+  .segmented button { height: 24px; padding: 0 10px; border-radius: 6px; font-size: 12px; color: var(--text-muted); }
   .segmented button:hover { color: var(--text); }
   .segmented button.on { background: var(--bg-elevated); color: var(--text); box-shadow: 0 1px 2px var(--shadow-near); }
   .active-agents { color: var(--accent); }
-  .context { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .context svg { display: block; }
   .question { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: var(--radius-small); text-align: left; }
   .question:hover { background: var(--bg-hover); }
   .question-skill { flex: none; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-family: var(--mono); }
@@ -328,10 +282,10 @@
   .question-meta { flex: none; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .column :global(.turn.flash) { animation: flash 1.2s ease-out; }
   @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
-  .title { max-width: 100%; padding: 4px 8px; border-radius: var(--radius-small); font-weight: 600; font-size: 15px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title { max-width: 100%; min-width: 0; padding: 3px 8px; border-radius: var(--radius-small); font-weight: 600; font-size: 14px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title:hover { background: var(--bg-hover); }
-  .title-input { font-weight: 600; font-size: 15px; max-width: 480px; }
-  .controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .title-input { font-weight: 600; font-size: 14px; height: 28px; max-width: 480px; }
+  .controls { display: flex; align-items: center; gap: 6px; flex: none; }
   .spinner.tiny { width: 11px; height: 11px; border-width: 1.5px; }
   .agent { padding: 6px 10px; font-size: 13px; }
   .agent + .agent { border-top: 1px solid var(--border); }
@@ -353,7 +307,6 @@
   .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-muted); }
   .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @container app (max-width: 899px) {
-    .head { padding: 6px 8px; }
     .cwd { display: none; }
     .column { padding: 8px 12px 16px; }
     .foot .column { padding: 4px 10px 8px; }
