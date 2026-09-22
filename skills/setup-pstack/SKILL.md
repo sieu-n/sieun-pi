@@ -9,9 +9,10 @@ Write `~/.prime/agent/pstack-models.json`, the per-role model config every pstac
 skill reads before it spawns a subagent. The skills fall back to their inline
 defaults when a role is absent, so this is an override layer, not a requirement.
 
-User rule (2026-09-08, `~/.prime/agent/AGENTS.md`): every role defaults to
-`anthropic/claude-fable-5-1`; Codex roles use GPT Astra when a selector is reachable.
-Never write Sonnet, Haiku, or gpt terra/luna into this file, whatever
+The model policy lives in this file's `policy` block: the default (`inherit-parent`,
+the child runs on the parent's model), the allowed models, per-task recommendations
+such as `frontend`, and the banned models. `~/.prime/agent/AGENTS.md` points here and
+holds no model rules of its own. Never write a banned model into `roles`, whatever
 `rlm.find_models` reports. Other models only when the user names them for a role.
 
 Prime Agent has no always-applied rules file, so nothing loads this config for
@@ -104,6 +105,10 @@ Overwrite the whole file so re-runs stay idempotent.
   }
 }
 ```
+
+Carry the `policy` block over unchanged unless the user changes the policy. It is
+the single source of truth for model choice; do not copy it into AGENTS.md or a
+skill.
 
 Keep the role labels exactly as poteto-mode and the workflow skills use them:
 `feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`,
