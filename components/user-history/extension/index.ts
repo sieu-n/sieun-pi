@@ -1,7 +1,13 @@
 import type { ExtensionAPI } from "prime-agent";
 import { ensureChatService } from "../src/chat-service.ts";
+import { ImageFitter } from "../src/context-images.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
+  const images = new ImageFitter();
+  pi.on("context", async event => {
+    const messages = await images.messages(event.messages);
+    return messages ? { messages } : undefined;
+  });
   pi.registerFlag("agent-chat-socket", {
     description: "Native daemon socket for browser chat",
     type: "string",
