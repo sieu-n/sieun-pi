@@ -7,6 +7,7 @@
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
   import { messageText, toolDurationMs, triggerSummary, workCounts, type SystemMessage, type Turn, type WorkItem } from "../shared/turns.ts";
   import Icon from "./Icon.svelte";
+  import { span, STALLED_AFTER_MS } from "../shared/pulse.ts";
 
   type ToolItem = Extract<WorkItem, { kind: "tool" }>;
   type Output = { text: string; isError: boolean | null; loading: boolean; error: string | null };
@@ -33,6 +34,15 @@
   ].filter(Boolean).join(" · "));
 
   const now = $derived(live ? clock.now : Date.now());
+  /** Last live event for this thread: this tab's own stream, else the daemon's last activity for the row. */
+  const lastEventAt = $derived.by(() => {
+    const own = store.thread(threadId)?.lastEventAt ?? 0;
+    const daemon = Date.parse(store.session(threadId)?.lastActivityAt ?? "");
+    return Math.max(own, Number.isFinite(daemon) ? daemon : 0);
+  });
+  const quietMs = $derived(live && lastEventAt ? Math.max(0, now - lastEventAt) : 0);
+  const toolMs = $derived(live && runningTool?.run ? Math.max(0, now - runningTool.run.startedAt) : null);
+  const stalled = $derived(quietMs >= STALLED_AFTER_MS);
   const elapsedMs = $derived(live ? Math.max(0, now - turn.startedAt) : Math.max(0, turn.endedAt - turn.startedAt));
   const label = $derived(live ? "Working " + duration(elapsedMs) : worked ? "Worked " + duration(elapsedMs) : firstSystem ? systemTitle(firstSystem.message) : "");
 
@@ -110,7 +120,13 @@
     {/if}
     {#if live}<span class="spinner tiny"></span>{/if}
     {#if label}<span class="label" class:sep={trigger !== null}>{label}</span>{/if}
-    {#if live && step}<span class="step">{step}</span>{:else if countText}<span class="count" class:sep={label !== "" || trigger !== null}>{countText}</span>{/if}
+    {#if live && step}<span class="step">{step}</span>{/if}
+    {#if live && (toolMs !== null || quietMs >= 10_000)}
+      <span class="pulse" class:stalled title={stalled ? "No event from this thread for " + span(quietMs) + ". The run may be stuck." : undefined}>
+        {toolMs !== null ? "tool " + duration(toolMs) : ""}{toolMs !== null && quietMs >= 10_000 ? " · " : ""}{quietMs >= 10_000 ? (stalled ? "no event for " : "last event ") + span(quietMs) + (stalled ? "" : " ago") : ""}
+      </span>
+    {/if}
+    {#if !(live && step) && countText}<span class="count" class:sep={label !== "" || trigger !== null}>{countText}</span>{/if}
   </button>
   {#if open}
     <div class="items">
@@ -198,6 +214,8 @@
   .count { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; color: var(--text-faint); }
   .step { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-family: var(--mono); font-size: 12px; }
   .trigger-label { font-weight: 500; flex: none; }
+  .pulse { flex: none; white-space: nowrap; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .pulse.stalled { color: var(--warning); font-weight: 500; }
   .trigger-detail { color: var(--text-faint); flex: none; white-space: nowrap; }
   .trigger-inline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
   .trigger-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; color: var(--text-muted); }

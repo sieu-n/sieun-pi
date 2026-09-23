@@ -2,10 +2,11 @@ import { api, ApiError, requestId } from "./api.ts";
 import { applyThreadEvent, isThreadBusy } from "../shared/thread-state.ts";
 import type { ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 
-export interface Toast { id: number; text: string; kind: "error" | "info" }
+export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
 export interface PendingChat { cwd: string; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
 
-type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number };
+/** `lastEventAt` is when this tab last got a live event from the thread stream (0 until the first one after the snapshot). */
+type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number };
 
 class Store {
   sessions = $state<SessionRow[]>([]);
@@ -50,7 +51,7 @@ class Store {
   thread(id: string): ThreadEntry | undefined { return this.threads[id]; }
 
   private patch(id: string, change: Partial<ThreadEntry>): void {
-    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0 };
+    const current = this.threads[id] ?? { state: null, error: null, loading: false, close: null, lastReadAt: 0, lastEventAt: 0 };
     this.threads = { ...this.threads, [id]: { ...current, ...change } };
   }
 
@@ -67,7 +68,7 @@ class Store {
         this.patch(id, { state: applyThreadEvent({ ...event.snapshot, connection: "connected" }, event), loading: false, error: null });
       }
       else if (event.type === "status" && event.connection === "closed" && event.error) this.patch(id, { loading: false, error: event.error, close: null, ...(current.state ? { state: applyThreadEvent(current.state, event) } : {}) });
-      else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event) });
+      else if (current.state) this.patch(id, { state: applyThreadEvent(current.state, event), ...(event.type === "event" ? { lastEventAt: Date.now() } : {}) });
     }, () => {
       const current = this.threads[id];
       if (current && !current.state) this.patch(id, { loading: false, error: current.error ?? "The thread stream is not reachable." });
@@ -96,11 +97,13 @@ class Store {
     void api.read(id).catch(() => {});
   }
 
-  toast(text: string, kind: Toast["kind"] = "error"): void {
+  toast(text: string, kind: Toast["kind"] = "error", action?: Toast["action"]): void {
     const id = ++this.toastId;
-    this.toasts = [...this.toasts, { id, text, kind }];
-    setTimeout(() => { this.toasts = this.toasts.filter(toast => toast.id !== id); }, kind === "error" ? 7000 : 3500);
+    this.toasts = [...this.toasts, { id, text, kind, ...(action ? { action } : {}) }];
+    setTimeout(() => this.dismiss(id), kind === "error" ? 7000 : action ? 6000 : 3500);
   }
+
+  dismiss(id: number): void { this.toasts = this.toasts.filter(toast => toast.id !== id); }
 
   async run<T>(work: Promise<T>): Promise<T | undefined> {
     try { return await work; }

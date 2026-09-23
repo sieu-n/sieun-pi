@@ -1,12 +1,13 @@
 import type { Priority, Progress, SessionRow, Tag } from "../shared/types.ts";
+import { readPulse, type PulseReading } from "../shared/pulse.ts";
 
 export type Bucket = "needs" | "working" | "other";
 export type Tab = "threads" | "heartbeats";
-export type RowStatus = "needs" | "working" | "idle" | "saved";
+export type RowStatus = "needs" | "working" | "stalled" | "idle" | "saved";
 
 export const BUCKETS: readonly Bucket[] = ["needs", "working", "other"];
 export const BUCKET_LABEL: Record<Bucket, string> = { needs: "Needs response", working: "Working", other: "Other threads" };
-export const STATUS_LABEL: Record<RowStatus, string> = { needs: "Needs response", working: "Working", idle: "Idle", saved: "Saved" };
+export const STATUS_LABEL: Record<RowStatus, string> = { needs: "Needs response", working: "Working", stalled: "Stalled", idle: "Idle", saved: "Saved" };
 export const PRIORITY_LABEL: Record<Priority, string> = { 0: "No priority", 1: "Low", 2: "Medium", 3: "High" };
 export const PROGRESS_LABEL: Record<Progress, string> = { none: "No progress", plan: "Plan", implementation: "Implementation", qa: "QA" };
 
@@ -30,7 +31,13 @@ export function money(cost: number | undefined): string {
 /** Needs response: not running, has messages, and its last activity came after the browser last opened it (the unread marker). */
 export const needsResponse = (row: SessionRow): boolean => row.status !== "running" && row.unread;
 export const bucketOf = (row: SessionRow): Bucket => row.status === "running" ? "working" : needsResponse(row) ? "needs" : "other";
-export const statusOf = (row: SessionRow): RowStatus => row.status === "running" ? "working" : needsResponse(row) ? "needs" : row.status === "idle" ? "idle" : "saved";
+/** Freshness of a running row, null when it is not running. */
+export const pulseOf = (row: SessionRow, now = Date.now()): PulseReading | null => row.status === "running" && row.pulse ? readPulse(row.pulse, now) : null;
+/** Stalled covers a running row that is stalled or failed. */
+export function statusOf(row: SessionRow, now = Date.now()): RowStatus {
+  if (row.status === "running") { const level = pulseOf(row, now)?.level; return level === "stalled" || level === "failed" ? "stalled" : "working"; }
+  return needsResponse(row) ? "needs" : row.status === "idle" ? "idle" : "saved";
+}
 export const tabOf = (row: SessionRow): Tab => row.schedule ? "heartbeats" : "threads";
 export const activityOf = (row: SessionRow): number => Date.parse(row.lastActivityAt ?? row.created ?? "") || 0;
 export const createdOf = (row: SessionRow): number => Date.parse(row.created ?? "") || 0;
@@ -101,8 +108,8 @@ export const emptyFilter = (): AgentFilter => ({ ...emptyRowFilter(), query: "",
 export const ROW_FILTER_KEYS = ["status", "tag", "priority", "progress", "cwd", "model"] as const satisfies readonly (keyof RowFilter)[];
 export const activeFilters = (filter: RowFilter): number => ROW_FILTER_KEYS.filter(key => filter[key] !== "any").length;
 
-export function matchesRowFilter(row: SessionRow, filter: RowFilter): boolean {
-  if (filter.status !== "any" && statusOf(row) !== filter.status) return false;
+export function matchesRowFilter(row: SessionRow, filter: RowFilter, now = Date.now()): boolean {
+  if (filter.status !== "any" && statusOf(row, now) !== filter.status) return false;
   if (filter.tag === "none" ? row.tags.length > 0 : filter.tag !== "any" && !row.tags.includes(filter.tag)) return false;
   if (filter.priority !== "any" && row.priority !== filter.priority) return false;
   if (filter.progress !== "any" && row.progress !== filter.progress) return false;
@@ -114,10 +121,10 @@ const PROGRESS_ORDER: Record<Progress, number> = { none: 0, plan: 1, implementat
 
 const dayStart = (value: string): number => { const ms = Date.parse(value + "T00:00:00"); return Number.isFinite(ms) ? ms : NaN; };
 
-export function matchesFilter(row: SessionRow, filter: AgentFilter, tags: ReadonlyMap<string, Tag>): boolean {
+export function matchesFilter(row: SessionRow, filter: AgentFilter, tags: ReadonlyMap<string, Tag>, now = Date.now()): boolean {
   if (!filter.archived && row.archived) return false;
   if (filter.kind !== "any" && tabOf(row) !== filter.kind) return false;
-  if (!matchesRowFilter(row, filter)) return false;
+  if (!matchesRowFilter(row, filter, now)) return false;
   const created = createdOf(row);
   const from = filter.from ? dayStart(filter.from) : NaN;
   const to = filter.to ? dayStart(filter.to) + 86_400_000 : NaN;

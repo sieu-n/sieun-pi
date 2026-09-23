@@ -3,9 +3,10 @@ import { mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { parseSchedules, projectRow } from "../src/chat-catalog.ts";
+import { parseSchedules, projectRow, runningByParent, sessionPulse } from "../src/chat-catalog.ts";
 import { applyLabelAction, ChatLabels, LabelError, type LabelsState } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
+import { readPulse } from "../src/shared/pulse.ts";
 import { activeFilters, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
 import type { SessionRow, Tag } from "../src/shared/types.ts";
 
@@ -153,4 +154,30 @@ test("sidebar: chronological sort is one unlabeled list by activity, created age
   assert.equal(matchesRowFilter(row("a", { priority: 2 }), filter), true);
   assert.equal(matchesRowFilter(row("b", { priority: 2, tags: ["t1"] }), filter), false);
   assert.equal(matchesRowFilter(row("c", { priority: 1 }), filter), false);
+});
+
+test("pulse: live under a minute, quiet to five, then stalled; a failing model loop while streaming is failed, a stale failure while waiting is not", () => {
+  const now = Date.parse("2026-09-23T12:00:00Z");
+  const at = (secondsAgo: number) => new Date(now - secondsAgo * 1000).toISOString();
+  const base = { streaming: true, tools: false, bash: false, children: false };
+  assert.equal(readPulse({ ...base, activityAt: at(20) }, now).level, "live");
+  assert.deepEqual(readPulse({ ...base, activityAt: at(180) }, now), { level: "quiet", quietMs: 180_000, text: "quiet 3m" });
+  assert.deepEqual(readPulse({ ...base, activityAt: at(41 * 60) }, now), { level: "stalled", quietMs: 41 * 60_000, text: "no activity 41m" });
+  const limit = "Model request failed: You have hit your ChatGPT usage limit (pro plan). Try again in ~9641 min.";
+  assert.equal(readPulse({ ...base, activityAt: at(5), summary: limit }, now).level, "failed", "a failing retry loop keeps activity fresh, the summary gives it away");
+  assert.equal(readPulse({ ...base, streaming: false, children: true, activityAt: at(5), summary: limit }, now).level, "live", "a parent waiting on subagents keeps an old failure line");
+  assert.equal(readPulse({ ...base, activityAt: at(5), silentSince: at(120) }, now).text, "worker silent 2m");
+  assert.equal(readPulse({ ...base, activityAt: at(5), failed: true }, now).level, "failed");
+});
+
+test("session pulse takes activity from running subagents below the thread and lists its direct ones", () => {
+  const summary = (extra: Record<string, unknown>) => ({ sessionId: "s", cwd: "/w", isStreaming: false, isCompacting: false, messageCount: 1, sessionActions: { active: null, queuedCount: 0 }, ...extra }) as unknown as SessionSummary;
+  const parent = summary({ sessionId: "p", hasRunningRlmChildren: true, lastActivityAt: "2026-09-23T10:00:00Z", summary: "Model request failed: 403" });
+  const child = summary({ sessionId: "c", parentSessionId: "p", rlmChildId: "sub-1", isStreaming: true, isRunningTools: true, lastActivityAt: "2026-09-23T10:05:00Z" });
+  const grandchild = summary({ sessionId: "g", parentSessionId: "c", rlmChildId: "sub-2", isStreaming: true, lastActivityAt: "2026-09-23T10:09:00Z" });
+  const idle = summary({ sessionId: "i", parentSessionId: "p", rlmChildId: "sub-3", lastActivityAt: "2026-09-23T11:00:00Z" });
+  const pulse = sessionPulse(parent, runningByParent([child, grandchild, idle]));
+  assert.equal(pulse.activityAt, "2026-09-23T10:09:00.000Z", "the freshest running descendant counts, finished ones do not");
+  assert.deepEqual(pulse.subagents.map(entry => [entry.rlmChildId, entry.tools, entry.activityAt]), [["sub-1", true, "2026-09-23T10:09:00.000Z"]]);
+  assert.equal(pulse.summary, "Model request failed: 403");
 });

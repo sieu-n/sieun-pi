@@ -23,6 +23,7 @@
   import { tooltip } from "./ui/tooltip.ts";
   import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
+  import { readPulse } from "../shared/pulse.ts";
 
   let { id, narrow }: { id: string; narrow: boolean } = $props();
 
@@ -61,7 +62,12 @@
   }
   const context = $derived(thread?.info.context ?? null);
   const runningChildren = $derived(thread?.children.filter(child => child.status === "running" || child.status === "queued").length ?? 0);
-  const agentsLabel = $derived(runningChildren ? `Subagents, ${runningChildren} of ${thread?.children.length ?? 0} running` : "Subagents");
+  const childAlert = $derived.by(() => {
+    const levels = (row?.pulse?.subagents ?? []).map(pulse => readPulse(pulse, Math.floor(clock.now / 5000) * 5000).level);
+    return levels.includes("failed") ? "failed" : levels.includes("stalled") ? "stalled" : null;
+  });
+  const agentsLabel = $derived((runningChildren ? `Subagents, ${runningChildren} of ${thread?.children.length ?? 0} running` : "Subagents") +
+    (childAlert === "failed" ? ", one is failing" : childAlert === "stalled" ? ", one has no activity" : ""));
 
   const now = $derived(busy ? clock.now : 0);
   const statusText = $derived.by(() => {
@@ -80,15 +86,9 @@
   let agentsOpen = $state(false);
   let tagButton: HTMLButtonElement | undefined = $state();
   let tagging = $state(false);
-  let confirmArchive = $state(false);
   const rowTags = $derived((row?.tags ?? []).flatMap(tagId => store.tags.filter(tag => tag.id === tagId)));
   const MODAL_CHILDREN = 40;
-  function archive(): void {
-    if (busy && !confirmArchive) { confirmArchive = true; return; }
-    confirmArchive = false;
-    store.select(null);
-    void labels.archive([id]);
-  }
+  function archive(): void { void labels.archive([id]); }
   let catalog = $state<ModelCatalog | null>(null);
   let catalogError = $state<string | null>(null);
   function loadCatalog(): void {
@@ -189,30 +189,26 @@
       {#if thread?.children.length}
         {#if thread.children.length > MODAL_CHILDREN}
           <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label={agentsLabel} use:tooltip={agentsLabel} onclick={() => { agentsOpen = true; }}>
-            {#if runningChildren}<span class="spinner tiny" aria-hidden="true"></span>{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
+            {#if runningChildren}<span class="spinner tiny" aria-hidden="true"></span>{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>{#if childAlert}<span class="child-alert {childAlert}" aria-hidden="true"></span>{/if}
           </button>
           {#if agentsOpen}
             <Modal title="Subagents" width="640px" onclose={() => { agentsOpen = false; }}>
-              <div class="modal-list"><SubagentList threadId={id} children={thread.children} height={Math.round(window.innerHeight * 0.6)} /></div>
+              <div class="modal-list"><SubagentList threadId={id} children={thread.children} pulses={row?.pulse?.subagents ?? []} height={Math.round(window.innerHeight * 0.6)} /></div>
             </Modal>
           {/if}
         {:else}
           <Popover open={agentsOpen} onclose={() => { agentsOpen = false; }} align="end" width={460} maxHeight={560} label="Subagents">
             {#snippet trigger()}
               <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label={agentsLabel} use:tooltip={agentsLabel} aria-haspopup="dialog" aria-expanded={agentsOpen} onclick={() => { agentsOpen = !agentsOpen; }}>
-                {#if runningChildren}<span class="spinner tiny" aria-hidden="true"></span>{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
+                {#if runningChildren}<span class="spinner tiny" aria-hidden="true"></span>{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>{#if childAlert}<span class="child-alert {childAlert}" aria-hidden="true"></span>{/if}
               </button>
             {/snippet}
-            <SubagentList threadId={id} children={thread.children} />
+            <SubagentList threadId={id} children={thread.children} pulses={row?.pulse?.subagents ?? []} />
           </Popover>
         {/if}
       {/if}
       {#if row && !row.archived}
-        {#if confirmArchive}
-          <button type="button" class="confirm" onclick={archive} onblur={() => { confirmArchive = false; }}>Stop and archive</button>
-        {:else}
-          <button type="button" class="icon-button" aria-label="Archive thread" use:tooltip={"Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
-        {/if}
+        <button type="button" class="icon-button" aria-label="Archive thread" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
       {/if}
     </div>
   </header>
@@ -292,6 +288,9 @@
   .title-wrap { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
   .cwd { flex: none; font-size: 12px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
   .active-agents { color: var(--accent-bold); }
+  .child-alert { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .child-alert.stalled { background: var(--warning); }
+  .child-alert.failed { background: var(--danger); }
   .tags { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
   .tag-button { position: relative; display: inline-flex; flex: none; border-radius: 4px; }
   .tag-button .x { position: absolute; right: -3px; top: -4px; display: none; width: 12px; height: 12px; border-radius: 50%; align-items: center; justify-content: center; background: var(--text); color: var(--bg); }
@@ -299,7 +298,6 @@
   .tag-button:hover :global(.tag) { text-decoration: line-through; }
   .add-tag { display: inline-flex; align-items: center; gap: 3px; flex: none; height: 20px; padding: 0 6px; border-radius: 4px; border: 1px dashed var(--border-strong); font-size: 11.5px; color: var(--text-faint); }
   .add-tag:hover, .add-tag[aria-expanded="true"] { color: var(--text); border-color: var(--text-faint); border-style: solid; }
-  .confirm { height: 26px; padding: 0 10px; border-radius: var(--radius-small); font-size: 12.5px; font-weight: 500; color: var(--danger); background: var(--danger-soft); }
   .modal-list { padding: 12px 14px; }
   .question { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: var(--radius-small); text-align: left; }
   .question:hover { background: var(--bg-hover); }

@@ -32,6 +32,8 @@ class Ui {
   sidebarFilter = $state<RowFilter>(storedFilter());
   sidebarSort = $state<SidebarSort>(stored("chat.sidebarSort") === "recent" ? "recent" : "grouped");
   agentsOpen = $state(false);
+  /** Thread ids in the order the sidebar shows them, so archiving the open thread can move to the next one. */
+  sidebarOrder = $state.raw<string[]>([]);
   setSidebarFilter(filter: RowFilter): void { this.sidebarFilter = filter; store("chat.sidebarFilter", JSON.stringify(filter)); }
   setSidebarSort(sort: SidebarSort): void { this.sidebarSort = sort; store("chat.sidebarSort", sort); }
   setViewMode(mode: ViewMode): void { this.viewMode = mode; store("chat.viewMode", mode); }

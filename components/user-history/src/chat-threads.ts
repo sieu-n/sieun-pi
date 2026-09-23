@@ -19,6 +19,9 @@ const SESSION_COMMANDS: Command[] = [
 type NativeEvent = Parameters<Parameters<DaemonAgentConnection["subscribe"]>[0]>[0];
 type Live = { connection: DaemonAgentConnection; activeSessionId: string; unsubscribe: () => void };
 
+/** The daemon's kill answer when the worker outlived the stop window; the supervisor still finishes the stop. */
+const STOP_PENDING = /^Session worker \S+ did not stop/;
+
 export class ThreadError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -338,22 +341,57 @@ export class ThreadHub {
     await live.connection.abort();
   }
 
-  /** Archive the way the terminal agents view deactivates an agent: kill the resident session, then record the native archived state in its session file. */
+  /**
+   * Archive the way the terminal agents view deactivates an agent (Ctrl+X): tell open tabs, drop this server's own attachment, kill the resident
+   * session ("Unknown active session" means it already ended), record the native archived state in its session file, and hide the row at once.
+   */
   async archive(id: string): Promise<void> {
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "Thread not found.");
+    this.threads.get(id)?.broadcast({ type: "status", connection: "closed", error: "This thread was archived." });
     await this.dispose(id);
     if (summary.activeSessionId) {
       await this.catalog.connect();
       const response = await this.catalog.client.request({ type: "kill", activeSessionId: summary.activeSessionId }, 30000, { recoverable: false });
-      if (!response.success && !response.error.startsWith("Unknown active session:")) throw new ThreadError(502, response.error);
+      if (!response.success && !response.error.startsWith("Unknown active session:")) {
+        if (!STOP_PENDING.test(response.error)) throw new ThreadError(502, response.error);
+        this.finishKill(id, summary.activeSessionId);
+      }
     }
-    if (summary.sessionFile && existsSync(summary.sessionFile)) {
-      const manager = SessionManager.open(summary.sessionFile);
-      if (manager.getSessionState()?.status !== "archived") manager.appendSessionState({ status: "archived" });
-    }
+    this.setSessionState(summary, "archived");
+    this.catalog.holdLifecycle(id, "archived");
     this.catalog.forget(id);
     await this.catalog.refresh();
+  }
+
+  /** The supervisor gave up waiting (its graceful window is 2 s) and keeps stopping the worker; if it is still listed a little later, ask once more. */
+  private finishKill(id: string, activeSessionId: string): void {
+    setTimeout(() => {
+      void (async () => {
+        await this.catalog.refresh().catch(() => {});
+        if ((await this.catalog.summary(id))?.activeSessionId !== activeSessionId) return;
+        await this.catalog.client.request({ type: "kill", activeSessionId }, 30000, { recoverable: false }).catch(() => {});
+        await this.catalog.refresh().catch(() => {});
+      })();
+    }, 5000).unref();
+  }
+
+  /** Undo an archive: the thread comes back as a saved thread that resumes on the next reply. */
+  async unarchive(id: string): Promise<void> {
+    const summary = await this.catalog.summary(id);
+    if (!summary) throw new ThreadError(404, "Thread not found.");
+    this.setSessionState(summary, "active");
+    this.catalog.holdLifecycle(id, "active");
+    this.catalog.forget(id);
+    await this.catalog.refresh();
+  }
+
+  /** Skips a file deleted since the listing: SessionManager.open would recreate a stub at the old path. */
+  private setSessionState(summary: SessionSummary, status: "archived" | "active"): void {
+    if (!summary.sessionFile || !existsSync(summary.sessionFile)) return;
+    const manager = SessionManager.open(summary.sessionFile);
+    const current = manager.getSessionState()?.status;
+    if (status === "archived" ? current !== "archived" : current === "archived") manager.appendSessionState({ status });
   }
 
   async rename(id: string, name: string): Promise<void> {

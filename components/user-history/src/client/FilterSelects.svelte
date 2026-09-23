@@ -8,14 +8,14 @@
   /** The label filters the Agents view and the sidebar Filter panel share, each option drawn with its real mark. */
   let { filter, onchange }: { filter: RowFilter; onchange: (patch: Partial<RowFilter>) => void } = $props();
 
-  const STATUSES: readonly RowStatus[] = ["needs", "working", "idle", "saved"];
+  const STATUSES: readonly RowStatus[] = ["needs", "working", "stalled", "idle", "saved"];
   const LEVELS: readonly Priority[] = [3, 2, 1, 0];
   const any = (label: string): SelectOption => ({ value: "any", label });
   const modelName = (model: string) => model.slice(model.indexOf("/") + 1);
 
   const workspaces = $derived([...new Set(store.sessions.map(row => row.cwd))].sort());
   const models = $derived([...new Set(store.sessions.flatMap(row => row.model ? [row.model] : []))].sort());
-  const statusOptions: SelectOption[] = [any("Any status"), ...STATUSES.map(status => ({ value: status, label: STATUS_LABEL[status], mark: { kind: "status", status } as const }))];
+  const statusOptions: SelectOption[] = [any("Any status"), ...STATUSES.map(status => ({ value: status, label: STATUS_LABEL[status], mark: status === "stalled" ? { kind: "status", status, level: "stalled" } as const : { kind: "status", status } as const }))];
   const priorityOptions: SelectOption[] = [any("Any priority"), ...LEVELS.map(level => ({ value: String(level), label: PRIORITY_LABEL[level], mark: { kind: "priority", level } as const }))];
   const progressOptions: SelectOption[] = [any("Any progress"), ...PROGRESS_STEPS.map(progress => ({ value: progress, label: PROGRESS_LABEL[progress], mark: { kind: "progress", progress } as const }))];
   const tagOptions = $derived<SelectOption[]>([any("Any tag"), { value: "none", label: "No tags" }, ...store.tags.map(tag => ({ value: tag.id, label: tag.name, mark: { kind: "tag", tag } as const }))]);

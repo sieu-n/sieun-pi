@@ -367,6 +367,29 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert.equal((await post(`api/threads/${saved.sessionId}/archive`, {})).status, 200);
     await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === saved.sessionId && row.archived && row.kind === "saved"), 20000, "archived row");
     assert.equal(SessionManager.open(saved.sessionFile, sessions).getSessionState()?.status, "archived", "archive records the native archived state");
+    await unlink(gate).catch(() => {});
+    const runningPrompt = `ARCHIVE RUNNING ${id} [hold]`;
+    const runningCreated = await post("api/threads", { cwd, message: runningPrompt, requestId: requestId(), provider: "chat-native-test", modelId: "synthetic" });
+    assert.equal(runningCreated.status, 200, JSON.stringify(runningCreated.body));
+    const runningId = runningCreated.body.id as string;
+    await waitForChatNativeFile(calls, text => text.split("\n").some(line => line.includes('"stage":"held"') && line.includes(runningPrompt)), 60000);
+    const runningWatch = threadWatcher(chatUrl + `api/threads/${runningId}/stream`);
+    watchers.push(runningWatch);
+    await runningWatch.waitFor(event => event.type === "snapshot", 20000, "running thread snapshot");
+    for (const [target, label] of [[runningId, "running"], [accountThread, "idle"]] as const) {
+      const archived = await post(`api/threads/${target}/archive`, {});
+      assert.equal(archived.status, 200, `archive ${label}: ${JSON.stringify(archived.body)}`);
+      await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === target && row.archived), 20000, `archived ${label} row`);
+    }
+    runningWatch.close();
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const after = sessionsStream.frames.at(-1)!.data.sessions;
+    for (const target of [runningId, accountThread]) {
+      const row = after.find(entry => entry.id === target);
+      assert(!row || (row.archived && row.kind === "saved" && row.status === "saved"), `an archived thread stays archived and stopped: ${JSON.stringify(row)}`);
+    }
+    assert.equal((await post(`api/threads/${accountThread}/unarchive`, {})).status, 200);
+    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === accountThread && !row.archived && row.kind === "saved"), 20000, "unarchived row");
     thread.close();
     savedThread.close();
     sessionsStream.close();

@@ -2,7 +2,8 @@
   import { store } from "./store.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
   import { shortPath, relativeTime } from "./format.ts";
-  import { activeFilters, emptyFilter, matchesFilter, modelShort, money, needsResponse, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type SortKey } from "./organize.ts";
+  import { clock } from "./clock.svelte.ts";
+  import { activeFilters, pulseOf, emptyFilter, matchesFilter, modelShort, money, needsResponse, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type SortKey } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Modal from "./Modal.svelte";
@@ -46,10 +47,11 @@
   let editing = $state<{ id: string; field: Field; anchor: HTMLElement } | null>(null);
   let search: HTMLInputElement | undefined = $state();
   let grid: HTMLElement | undefined = $state();
-  const now = Date.now();
+  const now = $derived(Math.floor(clock.now / 5000) * 5000);
 
   const tagMap = $derived(new Map(store.tags.map(tag => [tag.id, tag])));
-  const rows = $derived(sortBy(store.sessions.filter(row => matchesFilter(row, filter, tagMap)), sort.key, sort.descending, tagMap));
+  const rows = $derived(sortBy(store.sessions.filter(row => matchesFilter(row, filter, tagMap, now)), sort.key, sort.descending, tagMap));
+  const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
   const selectedIds = $derived(rows.filter(row => selected.has(row.id)).map(row => row.id));
   const allSelected = $derived(rows.length > 0 && selectedIds.length === rows.length);
   const filtered = $derived(activeFilters(filter) > 0 || filter.kind !== "any" || filter.from !== "" || filter.to !== "");
@@ -168,14 +170,15 @@
         </thead>
         <tbody>
           {#each rows as row, index (row.id)}
-            {@const status = statusOf(row)}
+            {@const status = statusOf(row, now)}
+            {@const pulse = pulseOf(row, now)}
             <tr id={"agent-row-" + index} data-index={index} class:active={index === active} class:picked={selected.has(row.id)} aria-selected={selected.has(row.id)}
               onclick={() => { active = index; }} ondblclick={() => open(row)} oncontextmenu={event => { event.preventDefault(); active = index; openMenu(event, selected.has(row.id) ? selectedIds : [row.id]); }}>
               <td class="pick"><Checkbox checked={selected.has(row.id)} label="Select {row.name}" tabindex={-1} onchange={() => toggle(row.id)} /></td>
               <td class="status">
-                <span class="state {status}">
-                  <StatusMark {status} />
-                  {row.status === "running" && row.statusLabel ? row.statusLabel : STATUS_LABEL[status]}
+                <span class="state {status} {pulse?.level ?? ''}" title={pulse?.text || undefined}>
+                  <StatusMark {status} level={pulse?.level ?? "live"} />
+                  {pulse?.level === "failed" ? "Failed" : pulse && pulse.level !== "live" ? sentence(pulse.text) : row.status === "running" && row.statusLabel ? row.statusLabel : STATUS_LABEL[status]}
                 </span>
               </td>
               <td class="name">
@@ -290,6 +293,8 @@
   tr:hover .set-hint, tr.active .set-hint, .cell-edit:focus-visible .set-hint { opacity: 1; }
   .state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }
   .state.needs { color: var(--accent-bold); font-weight: 500; }
+  .state.stalled { color: var(--warning); font-weight: 500; }
+  .state.failed { color: var(--danger); font-weight: 500; }
   .name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .open { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--text); font-size: 13px; }
   .open:hover { text-decoration: underline; text-decoration-color: var(--border-strong); }

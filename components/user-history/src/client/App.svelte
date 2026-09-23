@@ -103,7 +103,10 @@
   {#if store.toasts.length}
     <div class="toasts" aria-live="polite">
       {#each store.toasts as toast (toast.id)}
-        <div class="toast fade-in {toast.kind}">{toast.text}</div>
+        <div class="toast fade-in {toast.kind}" class:has-action={toast.action}>
+          <span>{toast.text}</span>
+          {#if toast.action}{@const action = toast.action}<button type="button" class="toast-action" onclick={() => { store.dismiss(toast.id); action.run(); }}>{action.label}</button>{/if}
+        </div>
       {/each}
     </div>
   {/if}
@@ -118,4 +121,7 @@
   .toasts { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
   .toast { padding: 10px 16px; border-radius: var(--radius); background: var(--text); color: var(--bg); font-size: 14px; box-shadow: var(--shadow); max-width: min(520px, 90vw); }
   .toast.error { background: var(--danger); color: #fff; }
+  .toast.has-action { display: flex; align-items: center; gap: 14px; padding-right: 8px; pointer-events: auto; }
+  .toast-action { padding: 3px 10px; border-radius: var(--radius-small); font-size: 13px; font-weight: 600; color: var(--primary); }
+  .toast-action:hover { background: color-mix(in srgb, var(--bg) 14%, transparent); }
 </style>

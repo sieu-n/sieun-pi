@@ -381,6 +381,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         }
         case "abort": await backend.threads.abort(id); break;
         case "archive": await backend.threads.archive(id); break;
+        case "unarchive": await backend.threads.unarchive(id); break;
         case "rename": {
           const name = text(body.name, "name", 200).trim();
           if (!name) throw new RequestError(400, "Use a name of 1 to 200 characters.");

@@ -3,14 +3,20 @@
   import { store } from "./store.svelte.ts";
   import { duration } from "./format.ts";
   import { modelShort, money } from "./organize.ts";
-  import type { ChildAgent, ChildStatus, ChildUsage } from "../shared/types.ts";
+  import { clock } from "./clock.svelte.ts";
+  import { readPulse } from "../shared/pulse.ts";
+  import type { ChildAgent, ChildPulse, ChildStatus, ChildUsage } from "../shared/types.ts";
+  import StatusMark from "./StatusMark.svelte";
 
   /**
    * Subagents grouped Running, Failed, Done, Cancelled. Each row says what the child is doing now (its native activity and latest recap) or how it
    * ended (answer preview or error line), with model, cost and run time. A row whose session the daemon lists opens that child's transcript.
    * Rows render in a window, so hundreds of children stay fast.
    */
-  let { threadId, children, height = 360 }: { threadId: string; children: readonly ChildAgent[]; height?: number } = $props();
+  let { threadId, children, pulses = [], height = 360 }: { threadId: string; children: readonly ChildAgent[]; pulses?: readonly ChildPulse[]; height?: number } = $props();
+  const now = $derived(Math.floor(clock.now / 5000) * 5000);
+  const pulseById = $derived(new Map(pulses.map(pulse => [pulse.rlmChildId, pulse])));
+  const readingOf = (child: ChildAgent) => { const pulse = child.status === "running" ? pulseById.get(child.id) : undefined; return pulse ? readPulse(pulse, now) : null; };
 
   const ROW = 44;
   const HEADER = 26;
@@ -53,11 +59,14 @@
     return activity.kind === "writing" ? "Writing" : "Thinking";
   }
   /** Line two: now (activity and recap) for a running child, the outcome for a finished one. */
-  function detailOf(child: ChildAgent): { lead: string; text: string } {
-    if (isActive(child)) return { lead: activityText(child), text: child.recap ? oneLine(child.recap) : "" };
-    if (child.status === "error") return { lead: "Failed", text: oneLine(child.error ?? "") };
-    if (child.status === "cancelled") return { lead: "Cancelled", text: oneLine(child.recap ?? "") };
-    return { lead: "", text: oneLine(child.answerPreview ?? child.recap ?? "Done") };
+  function detailOf(child: ChildAgent): { lead: string; text: string; tone: "" | "quiet" | "stalled" | "failed" } {
+    const reading = readingOf(child);
+    if (reading?.level === "failed") return { lead: "Failed", text: oneLine(reading.text), tone: "failed" };
+    if (reading && reading.level !== "live") return { lead: activityText(child) + ", " + reading.text, text: child.recap ? oneLine(child.recap) : "", tone: reading.level };
+    if (isActive(child)) return { lead: activityText(child), text: child.recap ? oneLine(child.recap) : "", tone: "" };
+    if (child.status === "error") return { lead: "Failed", text: oneLine(child.error ?? ""), tone: "failed" };
+    if (child.status === "cancelled") return { lead: "Cancelled", text: oneLine(child.recap ?? ""), tone: "" };
+    return { lead: "", text: oneLine(child.answerPreview ?? child.recap ?? "Done"), tone: "" };
   }
 
   const counts = $derived({ all: children.length, active: children.filter(isActive).length, inactive: children.filter(child => !isActive(child)).length });
@@ -109,14 +118,14 @@
               aria-label="{nameOf(child)}, {detail.lead || child.status}{entry ? ', open transcript' : ''}" onclick={() => { if (entry) store.select(entry.sessionId); }}>
               <span class="line">
                 <span class="state">
-                  {#if child.status === "running"}<span class="spinner tiny" aria-hidden="true"></span>{:else}<span class="mark {child.status}" aria-hidden="true"></span>{/if}
+                  {#if child.status === "running"}<StatusMark status="working" level={readingOf(child)?.level ?? "live"} />{:else}<span class="mark {child.status}" aria-hidden="true"></span>{/if}
                 </span>
                 <span class="name">{nameOf(child)}</span>
                 <span class="model">{modelShort(child.model)}</span>
                 <span class="cost" class:unknown={entry?.cost === undefined}>{money(entry?.cost)}</span>
                 <span class="time">{child.durationMs !== undefined ? duration(child.durationMs) : ""}</span>
               </span>
-              <span class="line detail">
+              <span class="line detail {detail.tone}">
                 {#if detail.lead}<span class="lead">{detail.lead}</span>{/if}
                 {#if detail.text}<span class="text">{detail.text}</span>{/if}
               </span>
@@ -162,7 +171,9 @@
   .detail { padding-left: 20px; gap: 6px; font-size: 11.5px; line-height: 16px; color: var(--text-faint); }
   .lead { flex: none; color: var(--text-muted); font-weight: 500; }
   .running .lead, .queued .lead { color: var(--accent-bold); }
-  .error .lead, .error .text { color: var(--danger); }
+  .error .lead, .error .text, .detail.failed .lead, .detail.failed .text { color: var(--danger); }
+  .detail.stalled .lead { color: var(--warning); }
+  .detail.quiet .lead { color: var(--text-muted); }
   .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .empty { padding: 6px 8px; font-size: 12.5px; color: var(--text-faint); }
   .foot { display: flex; justify-content: space-between; padding: 6px 8px 2px; border-top: 1px solid var(--border); margin-top: 4px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }

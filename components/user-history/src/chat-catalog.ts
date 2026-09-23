@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
-import type { ChildUsage, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -29,7 +29,42 @@ export function isBusySummary(row: SessionSummary): boolean {
     Boolean(row.sessionActions?.active) || (row.sessionActions?.queuedCount ?? 0) > 0;
 }
 
-export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; workingSince?: number }
+/** Running subagent summaries by the session id of their parent. */
+export function runningByParent(children: readonly SessionSummary[]): Map<string, SessionSummary[]> {
+  const map = new Map<string, SessionSummary[]>();
+  for (const row of children) {
+    if (!row.parentSessionId || !isBusySummary(row)) continue;
+    const list = map.get(row.parentSessionId) ?? [];
+    list.push(row);
+    map.set(row.parentSessionId, list);
+  }
+  return map;
+}
+
+/** Latest activity of a session or of any running subagent below it. */
+function latestActivity(row: SessionSummary, running: ReadonlyMap<string, SessionSummary[]>, seen = new Set<string>()): number {
+  if (seen.has(row.sessionId)) return 0;
+  seen.add(row.sessionId);
+  const own = Date.parse(row.lastActivityAt ?? row.modified ?? "");
+  return Math.max(Number.isFinite(own) ? own : 0, ...(running.get(row.sessionId) ?? []).map(child => latestActivity(child, running, seen)));
+}
+
+function pulseOf(row: SessionSummary, running: ReadonlyMap<string, SessionSummary[]>): Pulse {
+  const at = latestActivity(row, running);
+  return {
+    streaming: row.isStreaming, tools: row.isRunningTools === true, bash: row.isBashRunning === true, children: row.hasRunningRlmChildren === true,
+    ...(at > 0 ? { activityAt: new Date(at).toISOString() } : {}), ...(row.summary?.trim() ? { summary: row.summary.trim().slice(0, 400) } : {}),
+    ...(row.lastHeardFromAt ? { silentSince: row.lastHeardFromAt } : {}), ...(row.statusLabel === "failed" || row.workerState === "failed" ? { failed: true } : {}),
+  };
+}
+
+/** Freshness of a running thread and its running direct subagents, from the summaries the roster push already refreshed. */
+export function sessionPulse(row: SessionSummary, running: ReadonlyMap<string, SessionSummary[]>): SessionPulse {
+  const subagents: ChildPulse[] = (running.get(row.sessionId) ?? []).flatMap(child => child.rlmChildId ? [{ ...pulseOf(child, running), rlmChildId: child.rlmChildId, sessionId: child.sessionId }] : []);
+  return { ...pulseOf(row, running), subagents };
+}
+
+export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; workingSince?: number; pulse?: SessionPulse }
 
 export function projectRow(row: SessionSummary, readMarker: number | undefined, baseline: number, extras: RowExtras = {}): SessionRow {
   const live = row.activeSessionId !== undefined;
@@ -58,6 +93,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     progress: extras.labels?.progress ?? "none",
     ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}),
     ...(status === "running" && extras.workingSince !== undefined ? { workingSince: new Date(extras.workingSince).toISOString() } : {}),
+    ...(status === "running" && extras.pulse ? { pulse: extras.pulse } : {}),
     ...(extras.schedule ? { schedule: extras.schedule } : {}),
   };
 }
@@ -99,6 +135,7 @@ export class Catalog {
   private daemon: "up" | "down" = "down";
   private lastError: string | undefined;
   private subscribed = false;
+  private readonly heldLifecycle = new Map<string, "archived" | "active">();
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private connecting: Promise<void> | undefined;
@@ -194,14 +231,16 @@ export class Catalog {
     const [state, labels] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null)]);
     const now = Date.now();
     for (const id of this.workingSince.keys()) if (!this.summaries.has(id)) this.workingSince.delete(id);
+    const running = runningByParent(this.childSummaries);
     const rows = [...this.summaries.values()]
       .filter(row => isListed(row))
       .map(row => {
         const schedule = this.schedules.get(row.sessionId);
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
         const workingSince = this.trackWorking(row, now);
-        return projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
-          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), ...(workingSince === undefined ? {} : { workingSince }) });
+        return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
+          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), ...(workingSince === undefined ? {} : { workingSince }),
+          ...(isBusySummary(row) ? { pulse: sessionPulse(row, running) } : {}) }));
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
     return { rows, tags: labels?.tags ?? [] };
@@ -251,6 +290,22 @@ export class Catalog {
   }
 
   forget(sessionId: string): void { this.summaries.delete(sessionId); }
+
+  /**
+   * The row shows this lifecycle until the daemon list agrees (archived: listed as archived with no active session). The daemon scan can lag
+   * behind the session file, and the terminal agents view hides a deactivated row the same way until it does.
+   */
+  holdLifecycle(sessionId: string, lifecycle: "archived" | "active"): void { this.heldLifecycle.set(sessionId, lifecycle); }
+
+  private applyHeld(row: SessionSummary, projected: SessionRow): SessionRow {
+    const held = this.heldLifecycle.get(row.sessionId);
+    if (!held) return projected;
+    const agrees = held === "archived" ? row.lifecycle === "archived" && row.activeSessionId === undefined : row.lifecycle !== "archived";
+    if (agrees) { this.heldLifecycle.delete(row.sessionId); return projected; }
+    if (held === "active") return { ...projected, archived: false };
+    const { pulse: _pulse, workingSince: _since, ...rest } = projected;
+    return { ...rest, archived: true, kind: "saved", status: "saved", unread: false };
+  }
 
   async workspaces(): Promise<Workspace[]> {
     if (this.summaries.size === 0) await this.refresh().catch(() => {});

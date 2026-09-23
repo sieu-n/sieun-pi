@@ -68,6 +68,7 @@ export const api = {
   prompt: (id: string, input: { message: string; images: ImageInput[]; mode: SendMode; requestId: string }) =>
     post<{ accepted: true }>("api/threads/" + encodeURIComponent(id) + "/prompt", input, 120000),
   abort: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/abort", {}),
+  unarchive: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/unarchive", {}, 60000),
   archive: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/archive", {}, 60000),
   rename: (id: string, name: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/rename", { name }),
   setModel: (id: string, provider: string, modelId: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/model", { provider, modelId }),
