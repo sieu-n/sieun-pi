@@ -108,7 +108,7 @@ export async function runAccountAction(action: AccountAction): Promise<string | 
   switch (action.action) {
     case "use": {
       if (!action.account || action.account.startsWith("-") || !action.id) throw new Error("Choose an account and a thread.");
-      await run(["use", action.account, ...(action.force ? ["--force"] : []), ...provider, "--session", action.id]); return null;
+      await run(["use", action.account, ...(action.force ? ["--force"] : []), ...provider, "--session", action.id, ...(action.newSession ? ["--new-session"] : [])]); return null;
     }
     case "follow": {
       if (!action.id) throw new Error("Choose a thread.");

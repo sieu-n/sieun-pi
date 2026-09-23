@@ -109,7 +109,8 @@ until the session's next provider request runs the hook.
     pi-pool                       one card per account: usage bars, seat, sessions, next pick
     pi-pool status --provider openai-codex
     pi-pool watch [sec]           the same cards full screen, redrawn every sec seconds (default 5)
-    pi-pool use <email|id> [--force] [--follow] [--provider p] [--session id]
+    pi-pool use <email|id> [--force] [--follow] [--provider p] [--session id] [--new-session]
+                                  --new-session pins a session created a moment ago (full uuid) before its first request
     pi-pool who [--json] [--session id]
     pi-pool ls [--json] [--provider p] [--session id]
     pi-pool pin <email>           force EVERY session onto one account

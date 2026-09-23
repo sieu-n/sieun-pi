@@ -50,6 +50,7 @@ CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 PROVIDERS = ("anthropic", "openai-codex")
 SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID"
+SESSION_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 JOURNAL_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL"
 
 DEFAULTS = {
@@ -1393,7 +1394,7 @@ def vend(provider):
 
 # ------------------------------------------------------------------------ CLI
 def parse_flags(rest, provider_default="anthropic"):
-    provider, session, as_json, force, follow, positional = provider_default, None, False, False, False, []
+    provider, session, as_json, force, follow, new_session, positional = provider_default, None, False, False, False, False, []
     i = 0
     while i < len(rest):
         tok = rest[i]
@@ -1409,11 +1410,13 @@ def parse_flags(rest, provider_default="anthropic"):
             force = True
         elif tok == "--follow":
             follow = True
+        elif tok == "--new-session":
+            new_session = True
         else:
             positional.append(tok)
         i += 1
     return {"provider": provider, "session": session, "json": as_json,
-            "force": force, "follow": follow, "positional": positional}
+            "force": force, "follow": follow, "new_session": new_session, "positional": positional}
 
 
 def session_key_for(session_arg, state):
@@ -1820,6 +1823,11 @@ def cmd_use(rest):
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
         key = session_key_for(f["session"], state)
+        if key is None and f["new_session"] and SESSION_UUID_RE.fullmatch(f["session"] or ""):
+            # A session created a moment ago has no record until its first vend. The hook
+            # keys a tree by its root session uuid, so a pin under that uuid applies from
+            # the very first request. Only an explicit --new-session with a full uuid does this.
+            key = SessionKey(f["session"], f["session"], None)
         if key is None:
             if f["session"] is not None:
                 print(f"--session {f['session']} matches no known session")
@@ -1842,7 +1850,7 @@ def cmd_use(rest):
             return 0
 
         if not positional:
-            raise SystemExit("usage: pi-pool use <email|id> [--force] [--follow]")
+            raise SystemExit("usage: pi-pool use <email|id> [--force] [--follow] [--new-session]")
         try:
             accounts = load_index(provider)
         except Exception as e:
@@ -2389,7 +2397,7 @@ USAGE = """usage: pi-pool [command]
   pin <email> [--provider <p>]   force EVERY request onto one account until unpin
   unpin [--provider <p>]         release the pool pin (seat rules take over again)
   switch [--provider <p>]        drop the seat; the next request re-picks the best account
-  use <email|id> [--force] [--follow] [--provider <p>] [--session <id>]
+  use <email|id> [--force] [--follow] [--provider <p>] [--session <id>] [--new-session]
                                   pin (or, with --follow, unpin) this session tree
   ls [--json] [--provider <p>] [--session <id>]
                                   the rows /account renders

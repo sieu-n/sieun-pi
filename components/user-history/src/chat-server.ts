@@ -332,7 +332,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             const thread = await backend.threads.create({ cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) });
             if (account) {
               // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
-              try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, force: account.force }); }
+              try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, force: account.force, newSession: true }); }
               catch (error) {
                 await backend.threads.archive(thread.id).catch(() => {});
                 throw new RequestError(502, error instanceof Error ? error.message : String(error));

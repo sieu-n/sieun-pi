@@ -295,3 +295,25 @@ class Login(PoolFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UseNewSession(PoolFixture):
+    NEW = "01a0cc8e-07c6-718d-9108-26f3983e1e1f"
+
+    def test_an_unknown_session_is_still_refused_without_the_flag(self):
+        code, out = self.cli("use", "a@x", "--session", self.NEW)
+        self.assertEqual((code, out), (2, f"--session {self.NEW} matches no known session"))
+
+    def test_new_session_pins_a_fresh_uuid_before_its_first_request(self):
+        code, out = self.cli("use", "a@x", "--session", self.NEW, "--new-session")
+        self.assertEqual(code, 0, out)
+        rec = self.state()["sessions"][self.NEW]
+        self.assertEqual((rec["uuid"], rec["pins"]["anthropic"]["account_id"]), (self.NEW, A))
+        code, out = self.cli("who", "--json", "--session", self.NEW)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["providers"]["anthropic"]["email"], "a@x")
+
+    def test_new_session_needs_a_full_uuid(self):
+        code, out = self.cli("use", "a@x", "--session", "01a0cc8e", "--new-session")
+        self.assertEqual(code, 2)
+        self.assertFalse(os.path.exists(os.path.join(self.pool, "state.json")), "a refused pin writes nothing")

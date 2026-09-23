@@ -119,7 +119,9 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
   const fakePool = join(root, "pi-pool");
   await writeFile(fakePool, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\n` +
     `appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ stage: "pi-pool", args }) + "\\n");\n` +
-    `if (args[1] === "refused@x") { process.stderr.write("account refused@x cannot serve"); process.exit(1); }\nprocess.stdout.write("{}");\n`, { mode: 0o755 });
+    `if (args[1] === "refused@x") { process.stderr.write("account refused@x cannot serve"); process.exit(1); }\n` +
+    `if (args[0] === "use" && args.includes("--session") && !args.includes("--new-session")) { process.stdout.write("--session " + args[args.indexOf("--session") + 1] + " matches no known session"); process.exit(2); }\n` +
+    `process.stdout.write("{}");\n`, { mode: 0o755 });
   const env = { HOME: home, PATH: `${dirname(node)}:/usr/bin:/bin`, TMPDIR: temporary, LANG: "en_US.UTF-8", TERM: "dumb",
     PRIME_AGENT_CODING_AGENT_DIR: config, PRIME_AGENT_SESSION_DIR: sessions, PRIME_AGENT_TELEMETRY: "0", PI_OFFLINE: "1", PI_POOL_BIN: fakePool };
   const gate = join(root, "release-provider");
@@ -351,7 +353,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     const accountThread = withAccount.body.id as string;
     await waitForChatNativeFile(calls, text => text.includes(accountPrompt));
     const log = (await readFile(calls, "utf8")).trim().split("\n").map(line => JSON.parse(line) as { stage: string; args?: string[]; message?: string });
-    const useAt = log.findIndex(entry => entry.stage === "pi-pool" && entry.args?.join(" ") === `use picked@x --provider anthropic --session ${accountThread}`);
+    const useAt = log.findIndex(entry => entry.stage === "pi-pool" && entry.args?.join(" ") === `use picked@x --provider anthropic --session ${accountThread} --new-session`);
     const firstCallAt = log.findIndex(entry => entry.stage !== "pi-pool" && JSON.stringify(entry).includes(accountPrompt));
     assert(useAt >= 0, "the new session gets the chosen account through pi-pool use --session");
     assert(firstCallAt > useAt, "pi-pool use runs before the first provider call of the new session");

@@ -178,7 +178,7 @@ export interface PoolAccount {
 export interface PoolResolution { account: string | null; email: string | null; reason: string | null; pinned: boolean }
 export interface PoolProvider { provider: "anthropic" | "openai-codex"; rows: PoolAccount[]; resolution: PoolResolution | null; poolPin?: string | null; error?: string }
 export interface AccountsView { sessionId: string | null; checkedAt: string; providers: PoolProvider[]; notice?: string }
-export type AccountAction = { action: "use"; provider: string; account: string; id: string; force: boolean } | { action: "follow"; provider: string; id: string }
+export type AccountAction = { action: "use"; provider: string; account: string; id: string; force: boolean; newSession?: boolean } | { action: "follow"; provider: string; id: string }
   | { action: "pin"; provider: string; account: string } | { action: "unpin"; provider: string } | { action: "switch"; provider: string }
   | { action: "refresh"; provider: string } | { action: "recheck"; provider: string }
   | { action: "disable"; provider: string; account: string } | { action: "enable"; provider: string; account: string } | { action: "remove"; provider: string; account: string };
