@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { basename, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import { isInsideRepo } from '../../repo-hooks/project.mjs';
 import { lex, effective, parseGit } from './agent-git-guard.mjs';
 
@@ -31,7 +32,7 @@ export const CHECKS_RUN_IN_CI =
   '3. Read the run: gh run list --workflow verify-dev.yml --branch sieun/dev --limit 3\n' +
   '   then: gh run view <run-id> --log-failed\n' +
   'Never run svelte-check, vitest, tsc, turbo run lint|check|test, pnpm check|test|lint, ' +
-  'pnpm ci:guards, pnpm verify, or local-ci on this machine.\n' +
+  'pnpm ci:guards, pnpm ci:secrets, betterleaks, pnpm verify, or local-ci on this machine.\n' +
   'The Python rung is the same: no pytest, no ruff check, no ruff format --check, no ty, ' +
   'no mypy or basedpyright, with or without `uv run`. Formatting your own files ' +
   '(`uv run ruff format <files>`) is fine.\n' +
@@ -63,7 +64,11 @@ const LOCAL_CHECK_DENIALS = [
   { pattern: /^(?:\S*\/)?vitest(?:\s|$)/, message: CHECKS_RUN_IN_CI },
   { pattern: /^(?:\S*\/)?tsc(?:\s|$)/, message: CHECKS_RUN_IN_CI },
   { pattern: /^(?:\S*\/)?turbo\s.*\brun\b.*\b(?:lint|check|test)\b/, message: CHECKS_RUN_IN_CI },
-  { pattern: /^pnpm (?:check|test|verify|ci:guards)(?::\S+)?$/, message: CHECKS_RUN_IN_CI },
+  { pattern: /^pnpm (?:check|test|verify|ci:guards|ci:secrets)(?::\S+)?$/, message: CHECKS_RUN_IN_CI },
+  // Secret scans: a whole-tree betterleaks run held 1-2 cores for ~4 min on the owner's Mac
+  // (2026-09-24). auto-sns-agent verify-dev.yml runs `pnpm ci:secrets` with -v instead.
+  { pattern: /^(?:\S*\/)?(?:betterleaks|gitleaks)\s+(?:dir|detect|git|protect)(?:\s|$)(?!(?:.*\s)?(?:-h|--help)(?:\s|$))/, message: CHECKS_RUN_IN_CI },
+  { pattern: /^(?:\S*\/)?xargs\s.*\b(?:betterleaks|gitleaks)\s/, message: CHECKS_RUN_IN_CI },
   { pattern: /^pnpm lint$/, message: CHECKS_RUN_IN_CI },
   { pattern: /^(?:node\s+)?\S*scripts\/repo\/agent\/(?:verify|local-ci|check-delta)\.mjs(?:\s|$)/, message: CHECKS_RUN_IN_CI },
   { pattern: /^(?:\S*\/)?pytest(?:\s|$)/, message: CHECKS_RUN_IN_CI },
@@ -116,6 +121,38 @@ function liveConvexWatchers() {
   } catch {
     return 0;
   }
+}
+
+// Owner-granted exception, same read as auto-sns-agent/.claude/hooks/agent-guards.mjs:
+// while an entry in <repo>/ops/health/requests.yaml carries `LOCAL CHECKS ALLOWED`
+// and is still open (status not fixed / cannot-reproduce), the local-check table is
+// not enforced. The repo root comes from the project (`opts.repoRoot`, else `opts.cwd`
+// walked up to a `.git`); a missing ledger denies as before.
+export function localChecksAllowed(opts = {}) {
+  let txt = opts.healthLedger;
+  if (txt === undefined) {
+    const root = opts.repoRoot || findRepoRoot(opts.cwd || process.cwd());
+    if (!root) return false;
+    try { txt = readFileSync(resolve(root, 'ops/health/requests.yaml'), 'utf8'); } catch { return false; }
+  }
+  for (const block of txt.split(/\n  - id: /).slice(1)) {
+    if (!block.includes('LOCAL CHECKS ALLOWED')) continue;
+    const m = block.match(/\n    status: *(\S+)/);
+    const status = m ? m[1] : '?';
+    if (status !== 'fixed' && status !== 'cannot-reproduce') return true;
+  }
+  return false;
+}
+
+function findRepoRoot(start) {
+  let dir = resolve(start);
+  for (let i = 0; i < 12; i++) {
+    if (existsSync(resolve(dir, '.git'))) return dir;
+    const up = dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+  return null;
 }
 
 export function judge(command, opts) {
@@ -189,7 +226,7 @@ export function judge(command, opts) {
       w.startsWith('--dry=') || w.startsWith('--graph='));
     if (!readOnlyTurbo) {
       const row = LOCAL_CHECK_DENIALS.find((d) => d.pattern.test(cmd));
-      if (row) return { deny: row.message };
+      if (row && !localChecksAllowed(opts)) return { deny: row.message };
     }
 
   }
