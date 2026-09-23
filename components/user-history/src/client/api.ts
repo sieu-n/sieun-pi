@@ -1,4 +1,4 @@
-import type { AccountAction, AccountsView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -54,6 +54,14 @@ export const api = {
   part: (id: string, message: number, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?message=${message}&part=${part}`),
   accounts: (id: string | null) => get<AccountsView>("api/accounts" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
   accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000),
+  loginStream(onLogin: (login: AccountLogin | null) => void): () => void {
+    const source = new EventSource("api/accounts/login/stream");
+    source.addEventListener("login", event => onLogin(JSON.parse((event as MessageEvent<string>).data) as AccountLogin | null));
+    return () => source.close();
+  },
+  startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),
+  pasteLogin: (id: string, code: string) => post<AccountLogin>("api/accounts/login/paste", { id, code }),
+  cancelLogin: (id: string) => post<AccountLogin>("api/accounts/login/cancel", { id }),
   createThread: (input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: string; message: string; images: ImageInput[]; requestId: string }) =>
     post<{ id: string }>("api/threads", input, 120000),
   warm: (id: string) => post<{ ok: true }>("api/warm", { id }),

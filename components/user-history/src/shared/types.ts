@@ -162,11 +162,18 @@ export interface PoolWindow { kind: "session" | "weekly" | "model"; label: strin
 export interface PoolAccount {
   id: string; email: string; plan?: string; usage: string; session_pct: number | null; weekly_pct: number | null;
   usable: boolean; reason: string | null; current: boolean; pinned: boolean; force: boolean; live: boolean; seat: boolean; score: number | null;
-  tier: string | null; windows: PoolWindow[]; usageAt: number | null; cooldownUntil: number | null; cooldownReason: string | null;
+  tier: string | null; windows: PoolWindow[]; usageAt: number | null; cooldownUntil: number | null; cooldownReason: string | null; disabled: boolean;
 }
 export interface PoolResolution { account: string | null; email: string | null; reason: string | null; pinned: boolean }
 export interface PoolProvider { provider: "anthropic" | "openai-codex"; rows: PoolAccount[]; resolution: PoolResolution | null; poolPin?: string | null; error?: string }
 export interface AccountsView { sessionId: string | null; checkedAt: string; providers: PoolProvider[]; notice?: string }
 export type AccountAction = { action: "use"; provider: string; account: string; id: string; force: boolean } | { action: "follow"; provider: string; id: string }
   | { action: "pin"; provider: string; account: string } | { action: "unpin"; provider: string } | { action: "switch"; provider: string }
-  | { action: "refresh"; provider: string } | { action: "recheck"; provider: string };
+  | { action: "refresh"; provider: string } | { action: "recheck"; provider: string }
+  | { action: "disable"; provider: string; account: string } | { action: "enable"; provider: string; account: string } | { action: "remove"; provider: string; account: string };
+/** One browser-driven `pi-pool login`: add an account, or sign one in again when `account` is set. */
+export interface AccountLogin {
+  id: string; provider: "anthropic" | "openai-codex"; account: string | null;
+  status: "starting" | "waiting" | "finishing" | "done" | "failed" | "cancelled";
+  url: string | null; manualUrl: string | null; code: string | null; paste: boolean; message: string | null;
+}

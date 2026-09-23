@@ -18,7 +18,7 @@ Prime Agent owns every run, queue, name, model, skill and worker. The browser at
 - Context: hover or focus the ring to see context tokens, session cost, input, output, cache read and cache write totals from native `getSessionStats`, and the last call's cache hit rate from its native `usage`. A dot flags a cache problem: red when a warm call (same model, under 5 minutes after the previous call, prompt of 10k tokens or more) reads under 50% from the cache; amber when it reads under 90%, or 10 points under the thread's median, when it writes more than 20% of its prompt to the cache, or when 2 of the last 20 warm calls missed. The thresholds come from 13,583 warm calls in 40 recent threads (median hit 99.5%, p5 93.9%).
 - Saved threads open read-only in a few hundred milliseconds. Sending a reply resumes them natively.
 - Account: the composer bar shows the thread's account by full email, with a small meter for each of its usage windows (Claude: 5h, week and the Fable weekly cap; Codex: the windows its plan has). Hover shows the reset times. A click opens Settings.
-- Settings: a dialog opened from the account or the gear in the sidebar. Accounts is the first section. It has a tab per provider, the sentence "This thread uses X (reason)", and one row per account: email, plan, one state badge (seat, live, pinned, depleted, cooldown, refused, needs login) and every usage window with its percent and "resets in 3h 46m". Refused, logged-out and stale accounts carry a one-line note. Use and Follow the pool act on the thread at once. Pin for all sessions, Unpin, Drop seat and Check again (re-probe refused Claude accounts) ask first. Refresh usage asks tokenmaxxing to read every account's usage now.
+- Settings: a dialog opened from the account or the gear in the sidebar. Accounts is the first section. It has a tab per provider, an "Add Claude account" or "Add Codex account" button, the sentence "This thread uses X (reason)", and one row per account: email, plan, one state badge (off, seat, live, pinned, depleted, cooldown, refused, needs login) and every usage window with its percent and "resets in 3h 46m". A click on a row uses that account for the open thread; an account that cannot serve asks first, and an account that is off is never picked. Off rows are dimmed and show Turn on. Needs-login rows show Sign in again. The row menu holds Use for this thread, Pin or Unpin for all sessions, Drop seat, Check again (re-probe refused Claude accounts), Sign in again, Turn off or Turn on, and Remove, which asks you to type the email. Add account and Sign in again run `pi-pool login`: the page opens the sign-in page in a new tab, shows the Codex device code with a copy button or a paste box for the Claude code, and streams the status until it is done, failed or cancelled. One sign-in runs at a time and the service stops it after 10 minutes. The refresh button asks tokenmaxxing to read every account's usage now.
 
 Keyboard: Cmd+N new chat, Cmd+K search, Cmd+B sidebar, Esc closes menus or stops a busy thread when the composer has focus, arrows and Enter move and pick in lists and menus. Use `/compact` in the composer to compact context.
 
@@ -39,7 +39,7 @@ browser  -> POST api/threads/:id/prompt  ThreadHub.prompt -> connection.prompt(.
 - `src/shared/turns.ts` groups messages into turns for display. A user message always starts a turn; an agent message or background completion starts one only after the previous run settled.
 - `src/shared/cache-health.ts` reads native per-call `usage` and flags broken caching.
 - `src/client/` is the Svelte 5 app. `src/client/ui/` holds the shared controls: `Floating` (top-layer anchored panel), `Select`, `DateRange`, `Checkbox`, `TagPicker` and the `tooltip` action. `chat-assets.ts` bundles it in memory with esbuild when the service starts and serves it with an ETag.
-- `src/chat-pool.ts` wraps `components/pi-pool/bin/pi-pool` with argument arrays. It never runs `pi-pool-token`. It drops the calling session's variables, so pi-pool resolves only the thread named with `--session`.
+- `src/chat-pool.ts` wraps `components/pi-pool/bin/pi-pool` with argument arrays. `poolCommand` holds the exact command lines for off, on, rm and login. `AccountLogins` runs one `pi-pool login` child at a time: stdout JSON lines become the login state, a pasted code goes to its stdin, cancel closes stdin, then SIGTERM and SIGKILL follow; its own deadline backs up `--timeout 600`. It never runs `pi-pool-token`. It drops the calling session's variables, so pi-pool resolves only the thread named with `--session`.
 
 ## HTTP API
 
@@ -63,7 +63,9 @@ All routes sit under the capability URL. Writes need JSON, the page token in `X-
 | `POST api/threads/:id/prompt` | send, queue or steer |
 | `POST api/threads/:id/abort`, `rename`, `model`, `thinking`, `queue`, `read`, `archive` | thread controls |
 | `POST api/warm` | attach ahead of a click |
-| `POST api/accounts` | pool actions |
+| `POST api/accounts` | pool actions: use, follow, pin, unpin, switch, refresh, recheck, disable, enable, remove |
+| `GET api/accounts/login/stream` | SSE state of the current or last sign-in |
+| `POST api/accounts/login`, `login/paste`, `login/cancel` | start a sign-in (add, or again with `account`), send a pasted code, cancel |
 | `POST api/labels` | `create`, `rename`, `delete` a tag; `tag` threads on or off; set `priority` 0 to 3; set `progress` |
 
 ## Commands

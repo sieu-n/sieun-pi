@@ -3,12 +3,15 @@
   import { store } from "./store.svelte.ts";
   import { accountState, forgetAccounts, loadAccounts, meterTone, PROVIDER_LABEL, rememberAccounts, resetText, resolutionSentence, span, staleText, STATE_LABEL, threadProvider, windowColumns, windowLabel,
     type AccountState } from "./accounts.ts";
-  import type { AccountAction, AccountsView, PoolAccount, PoolProvider } from "../shared/types.ts";
+  import type { AccountAction, AccountLogin as Login, AccountsView, PoolAccount, PoolProvider } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
+  import Floating from "./ui/Floating.svelte";
+  import AccountLogin from "./AccountLogin.svelte";
+  import { tooltip } from "./ui/tooltip.ts";
 
   type Provider = PoolProvider["provider"];
-  type Confirm = { title: string; body: string; label: string; action: AccountAction };
+  type Confirm = { title: string; body: string; label: string; action: AccountAction; danger?: boolean; typed?: string };
 
   const threadId = $derived(store.selectedId);
   const modelProvider = $derived(threadId ? store.thread(threadId)?.state?.info.model?.provider : undefined);
@@ -18,23 +21,49 @@
   let tab = $state<Provider | null>(null);
   let acting = $state<string | null>(null);
   let confirm = $state<Confirm | null>(null);
-  let expanded = $state<string | null>(null);
+  let typed = $state("");
+  let menu = $state<{ row: PoolAccount; anchor: HTMLElement } | null>(null);
   let notice = $state<string | null>(null);
   let now = $state(Date.now());
+  let login = $state<Login | null>(null);
+  /** The login this page started or saw running. An ended login from an earlier visit stays hidden. */
+  let watched = $state<string | null>(null);
+  /** A tab opened on the click that started a login, so the sign-in page lands in it without a popup block. */
+  let signInTab: Window | null = null;
 
   $effect(() => {
     const timer = setInterval(() => { now = Date.now(); }, 30_000);
     return () => clearInterval(timer);
   });
 
+  const running = (entry: Login | null): boolean => entry !== null && (entry.status === "starting" || entry.status === "waiting" || entry.status === "finishing");
+  const shownLogin = $derived(login && (running(login) || login.id === watched) ? login : null);
+
+  $effect(() => api.loginStream(next => {
+    const previous = login;
+    login = next;
+    if (!next) return;
+    if (running(next)) watched = next.id;
+    if (next.url && signInTab) {
+      if (!signInTab.closed) signInTab.location.replace(next.url);
+      signInTab = null;
+    }
+    if (!running(next)) { signInTab?.close(); signInTab = null; }
+    if (next.id === watched && previous?.status !== "done" && next.status === "done") {
+      tab = next.provider;
+      forgetAccounts();
+      void load(true);
+    }
+  }));
+
   const current = $derived(view ? (view.providers.find(entry => entry.provider === tab) ?? threadProvider(view, modelProvider)) : undefined);
   const resolution = $derived(current?.resolution ?? null);
   const columns = $derived(current ? windowColumns(current.rows) : []);
-  const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, cooldown: 4, refused: 4, "needs-login": 5 };
+  const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, cooldown: 4, refused: 4, "needs-login": 5, off: 6 };
   const rows = $derived([...(current?.rows ?? [])].sort((a, b) => rank(a) - rank(b) || a.email.localeCompare(b.email)));
 
   function rank(row: PoolAccount): number {
-    return row.id === resolution?.account ? 0 : RANK[accountState(row) ?? "ready"];
+    return row.id === resolution?.account && !row.disabled ? 0 : RANK[accountState(row) ?? "ready"];
   }
 
   async function load(fresh = false): Promise<void> {
@@ -51,6 +80,7 @@
 
   async function run(action: AccountAction, key: string): Promise<void> {
     confirm = null;
+    menu = null;
     acting = key;
     try {
       const result = await api.accountAction(action);
@@ -62,15 +92,35 @@
     finally { acting = null; }
   }
 
+  async function startLogin(provider: Provider, account: string | null): Promise<void> {
+    menu = null;
+    signInTab = window.open("about:blank", "_blank");
+    if (signInTab) {
+      signInTab.opener = null;
+      signInTab.document.title = "Starting sign-in";
+      signInTab.document.body.textContent = "Starting the sign-in. This tab opens the sign-in page in a few seconds.";
+    }
+    try {
+      const started = await api.startLogin(provider, account);
+      watched = started.id;
+      login = started;
+    } catch (caught) {
+      signInTab?.close();
+      signInTab = null;
+      store.toast(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
   const planText = (row: PoolAccount): string | null => {
     const plan = row.plan ?? row.tier;
     return plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : null;
   };
 
-  function notes(provider: Provider, row: PoolAccount): string[] {
-    const out: string[] = [];
+  function notes(row: PoolAccount): string[] {
     const state = accountState(row);
-    if (state === "needs-login") out.push(`Login expired. Run tokenmaxxing auth${provider === "openai-codex" ? " --codex" : ""} ${row.email} in a terminal.`);
+    if (state === "off") return ["Off. The pool never picks it."];
+    const out: string[] = [];
+    if (state === "needs-login") out.push("The sign-in expired.");
     else if (state === "refused" || state === "cooldown") {
       const left = row.cooldownUntil && row.cooldownUntil > now ? ` The pool tries it again in ${span(row.cooldownUntil - now)}.` : "";
       out.push((row.cooldownReason ? `Refused: ${row.cooldownReason}.` : "Cooling down after a failure.") + left);
@@ -80,25 +130,32 @@
     return out;
   }
 
+  /** A row click uses the account for this thread. An account that cannot serve asks first; an account that is off or already in use does nothing. */
+  const pickable = (row: PoolAccount): boolean => threadId !== null && !row.disabled && row.id !== resolution?.account && acting === null;
+
   function useForThread(provider: Provider, row: PoolAccount): void {
-    if (!threadId) return;
+    menu = null;
+    if (!threadId || !pickable(row)) return;
     if (row.usable) { void run({ action: "use", provider, account: row.id, id: threadId, force: false }, row.id); return; }
     confirm = { title: `Use ${row.email} anyway?`, body: `${row.email} cannot serve right now (${row.reason ?? "not usable"}). This thread keeps it until you follow the pool again.`, label: "Use anyway",
       action: { action: "use", provider, account: row.id, id: threadId, force: true } };
   }
-  function askPin(provider: Provider, row: PoolAccount): void {
-    confirm = { title: `Pin ${row.email} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session uses this account until you unpin it.`, label: "Pin", action: { action: "pin", provider, account: row.id } };
+  function rowClick(event: MouseEvent, provider: Provider, row: PoolAccount): void {
+    if (event.target instanceof Element && event.target.closest(".actions, a")) return;
+    useForThread(provider, row);
   }
-  function askUnpin(provider: Provider): void {
-    confirm = { title: `Unpin ${PROVIDER_LABEL[provider]}?`, body: "Sessions go back to the pool's own choice.", label: "Unpin", action: { action: "unpin", provider } };
-  }
-  function askDropSeat(provider: Provider, row: PoolAccount): void {
-    confirm = { title: `Drop the seat on ${row.email}?`, body: "The next request moves the seat to the best account. Running sessions keep their connection.", label: "Drop seat", action: { action: "switch", provider } };
-  }
-  function askRecheck(provider: Provider): void {
-    confirm = { title: "Check refused accounts again?", body: "The pool sends one free request per Claude account. An account the API accepts again returns to the pool. One it refuses cools down for 24 hours.", label: "Check again",
-      action: { action: "recheck", provider } };
-  }
+  function ask(next: Confirm): void { menu = null; typed = ""; confirm = next; }
+  const askPin = (provider: Provider, row: PoolAccount) => ask({ title: `Pin ${row.email} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session uses this account until you unpin it.`, label: "Pin",
+    action: { action: "pin", provider, account: row.id } });
+  const askUnpin = (provider: Provider) => ask({ title: `Unpin ${PROVIDER_LABEL[provider]}?`, body: "Sessions go back to the pool's own choice.", label: "Unpin", action: { action: "unpin", provider } });
+  const askDropSeat = (provider: Provider, row: PoolAccount) => ask({ title: `Drop the seat on ${row.email}?`, body: "The next request moves the seat to the best account. Running sessions keep their connection.",
+    label: "Drop seat", action: { action: "switch", provider } });
+  const askRecheck = (provider: Provider) => ask({ title: "Check refused accounts again?",
+    body: "The pool sends one free request per Claude account. An account the API accepts again returns to the pool. One it refuses cools down for 24 hours.", label: "Check again",
+    action: { action: "recheck", provider } });
+  const askRemove = (provider: Provider, row: PoolAccount) => ask({ title: `Remove ${row.email}?`,
+    body: "This deletes its sign-in and drops its pins and seat. To use it again, add it again.", label: "Remove", danger: true, typed: row.email,
+    action: { action: "remove", provider, account: row.id } });
   const actionKey = (action: AccountAction): string => "account" in action ? action.account : action.action;
 </script>
 
@@ -107,18 +164,27 @@
     {#if view}
       <div class="tabs" role="tablist">
         {#each view.providers as provider (provider.provider)}
-          <button class="tab" role="tab" aria-selected={current?.provider === provider.provider} onclick={() => { tab = provider.provider; expanded = null; }}>
+          <button class="tab" role="tab" aria-selected={current?.provider === provider.provider} onclick={() => { tab = provider.provider; menu = null; }}>
             {PROVIDER_LABEL[provider.provider]} <span class="count">{provider.rows.length}</span>
           </button>
         {/each}
       </div>
     {/if}
     <span class="spacer"></span>
-    <button class="button small" disabled={acting !== null || !current} title="Read every account's usage from the providers now. Takes up to a minute."
+    {#if current}
+      <button class="button small" disabled={running(login)} onclick={() => void startLogin(current.provider, null)}>
+        <Icon name="plus" size={14} /> Add {PROVIDER_LABEL[current.provider]} account
+      </button>
+    {/if}
+    <button class="icon-button small" disabled={acting !== null || !current} aria-label="Refresh usage" use:tooltip={acting === "refresh" ? "Reading usage" : "Refresh usage"}
       onclick={() => current && void run({ action: "refresh", provider: current.provider }, "refresh")}>
-      {#if acting === "refresh"}<span class="spinner tiny"></span> Reading usage{:else}<Icon name="refresh" size={14} /> Refresh usage{/if}
+      {#if acting === "refresh"}<span class="spinner tiny"></span>{:else}<Icon name="refresh" size={14} />{/if}
     </button>
   </header>
+
+  {#if shownLogin}
+    <AccountLogin login={shownLogin} onclose={() => { watched = null; }} onretry={() => shownLogin && void startLogin(shownLogin.provider, shownLogin.account)} />
+  {/if}
 
   {#if error && !view}
     <div class="empty">
@@ -129,19 +195,19 @@
     <div class="empty muted"><span class="spinner"></span> Loading accounts</div>
   {:else}
     <div class="uses">
-      <span class:warning={threadId && !resolution?.email}>{threadId ? resolutionSentence(current) : "No thread is open. Each thread draws from the pool."}</span>
+      <span class:warning={threadId && !resolution?.email}>{threadId ? resolutionSentence(current) : "No thread is open. Open a thread to choose its account."}</span>
       {#if threadId && resolution?.pinned}
         <button class="button small" disabled={acting !== null} onclick={() => threadId && void run({ action: "follow", provider: current.provider, id: threadId }, "follow")}>Follow the pool</button>
       {/if}
     </div>
     {#if notice}
-      <div class="notice"><span>{notice}</span><button class="icon-button" aria-label="Dismiss" onclick={() => { notice = null; }}><Icon name="x" size={14} /></button></div>
+      <div class="notice"><span>{notice}</span><button class="icon-button small" aria-label="Dismiss" onclick={() => { notice = null; }}><Icon name="x" size={14} /></button></div>
     {/if}
     {#if error}<div class="inline-error">{error}</div>{/if}
     {#if current.error && !current.rows.length}
       <div class="inline-error">{current.error}</div>
     {:else if !current.rows.length}
-      <div class="empty muted">No pooled {PROVIDER_LABEL[current.provider]} accounts.</div>
+      <div class="empty muted">No {PROVIDER_LABEL[current.provider]} accounts yet.</div>
     {:else}
       <div class="table" role="table" style:--windows={columns.length} class:busy={loading}>
         <div class="row head" role="row">
@@ -151,11 +217,18 @@
         </div>
         {#each rows as row (row.id)}
           {@const state = accountState(row)}
-          {@const inUse = row.id === resolution?.account}
-          {@const rowNotes = notes(current.provider, row)}
-          <div class="row" role="row" class:this={inUse} class:dead={state === "needs-login"} class:busy={acting === row.id}>
+          {@const inUse = row.id === resolution?.account && !row.disabled}
+          {@const rowNotes = notes(row)}
+          {@const canPick = pickable(row)}
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
+          <div class="row" role="row" class:this={inUse} class:off={row.disabled} class:dead={state === "needs-login"} class:pick={canPick} class:busy={acting === row.id}
+            onclick={event => rowClick(event, current.provider, row)}>
             <div class="who" role="cell">
-              <div class="email" title={row.email}>{row.email}</div>
+              {#if canPick}
+                <button type="button" class="email" aria-label="Use {row.email} for this thread">{row.email}</button>
+              {:else}
+                <div class="email">{row.email}</div>
+              {/if}
               <div class="sub">
                 {#if planText(row)}<span>{planText(row)}</span>{/if}
                 {#if state}<span class="badge {STATE_LABEL[state].tone}">{STATE_LABEL[state].label}</span>{/if}
@@ -173,27 +246,18 @@
               </div>
             {/each}
             <div class="actions" role="cell">
-              {#if acting === row.id}<span class="spinner tiny"></span>{/if}
-              {#if threadId && !inUse}
-                <button class="button small" disabled={acting !== null} title="Use {row.email} for this thread" onclick={() => useForThread(current.provider, row)}>Use</button>
+              {#if acting === row.id}<span class="spinner tiny"></span>
+              {:else if canPick}<span class="hint">Use</span>{/if}
+              {#if row.disabled}
+                <button class="button small" disabled={acting !== null} onclick={() => void run({ action: "enable", provider: current.provider, account: row.id }, row.id)}>Turn on</button>
+              {:else if state === "needs-login"}
+                <button class="button small" disabled={running(login)} onclick={() => void startLogin(current.provider, row.email)}>Sign in again</button>
               {/if}
-              <button class="icon-button" aria-label="More actions for {row.email}" aria-expanded={expanded === row.id} onclick={() => { expanded = expanded === row.id ? null : row.id; }}><Icon name="more" size={16} /></button>
+              <button class="icon-button small" aria-label="More actions for {row.email}" aria-haspopup="menu" aria-expanded={menu?.row.id === row.id}
+                onclick={event => { menu = menu?.row.id === row.id ? null : { row, anchor: event.currentTarget }; }}><Icon name="more" size={16} /></button>
             </div>
             {#if rowNotes.length}
               <div class="notes">{#each rowNotes as note (note)}<span>{note}</span>{/each}</div>
-            {/if}
-            {#if expanded === row.id}
-              <div class="more fade-in">
-                {#if current.poolPin === row.id}
-                  <button class="button small" disabled={acting !== null} onclick={() => askUnpin(current.provider)}>Unpin for all sessions</button>
-                {:else}
-                  <button class="button small" disabled={acting !== null} onclick={() => askPin(current.provider, row)}>Pin for all sessions</button>
-                {/if}
-                {#if row.seat}<button class="button small" disabled={acting !== null} onclick={() => askDropSeat(current.provider, row)}>Drop seat</button>{/if}
-                {#if current.provider === "anthropic" && (state === "refused" || state === "cooldown")}
-                  <button class="button small" disabled={acting !== null} onclick={() => askRecheck(current.provider)}>Check again</button>
-                {/if}
-              </div>
             {/if}
           </div>
         {/each}
@@ -202,45 +266,86 @@
   {/if}
 </section>
 
+{#if menu && current}
+  {@const row = menu.row}
+  {@const provider = current.provider}
+  {@const state = accountState(row)}
+  <Floating anchor={menu.anchor} width={220} align="end" role="menu" label="Actions for {row.email}" onclose={() => { menu = null; }}>
+    {#if pickable(row)}
+      <button type="button" class="menu-item" role="menuitem" onclick={() => useForThread(provider, row)}>Use for this thread</button>
+    {/if}
+    {#if !row.disabled}
+      {#if current.poolPin === row.id}
+        <button type="button" class="menu-item" role="menuitem" onclick={() => askUnpin(provider)}>Unpin for all sessions</button>
+      {:else}
+        <button type="button" class="menu-item" role="menuitem" onclick={() => askPin(provider, row)}>Pin for all sessions</button>
+      {/if}
+      {#if row.seat}<button type="button" class="menu-item" role="menuitem" onclick={() => askDropSeat(provider, row)}>Drop seat</button>{/if}
+      {#if provider === "anthropic" && (state === "refused" || state === "cooldown")}
+        <button type="button" class="menu-item" role="menuitem" onclick={() => askRecheck(provider)}>Check again</button>
+      {/if}
+    {/if}
+    <button type="button" class="menu-item" role="menuitem" disabled={running(login)} onclick={() => void startLogin(provider, row.email)}>Sign in again</button>
+    {#if row.disabled}
+      <button type="button" class="menu-item" role="menuitem" onclick={() => void run({ action: "enable", provider, account: row.id }, row.id)}>Turn on</button>
+    {:else}
+      <button type="button" class="menu-item" role="menuitem" onclick={() => void run({ action: "disable", provider, account: row.id }, row.id)}>Turn off</button>
+    {/if}
+    <div class="menu-separator"></div>
+    <button type="button" class="menu-item danger" role="menuitem" onclick={() => askRemove(provider, row)}><Icon name="trash" size={14} />Remove</button>
+  </Floating>
+{/if}
+
 {#if confirm}
   <Modal title={confirm.title} width="420px" onclose={() => { confirm = null; }}>
-    <div class="confirm">
+    <form class="confirm" onsubmit={event => { event.preventDefault(); if (confirm && (!confirm.typed || typed.trim() === confirm.typed)) void run(confirm.action, actionKey(confirm.action)); }}>
       <p>{confirm.body}</p>
+      {#if confirm.typed}
+        <label class="typed">
+          <span>Type <strong>{confirm.typed}</strong> to confirm.</span>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input class="field" bind:value={typed} autocomplete="off" spellcheck="false" autofocus />
+        </label>
+      {/if}
       <div class="confirm-actions">
-        <button class="button" onclick={() => { confirm = null; }}>Cancel</button>
-        <button class="button primary" onclick={() => confirm && void run(confirm.action, actionKey(confirm.action))}>{confirm.label}</button>
+        <button type="button" class="button" onclick={() => { confirm = null; }}>Cancel</button>
+        <button type="submit" class="button {confirm.danger ? 'danger' : 'primary'}" disabled={confirm.typed !== undefined && typed.trim() !== confirm.typed}>{confirm.label}</button>
       </div>
-    </div>
+    </form>
   </Modal>
 {/if}
 
 <style>
   .accounts { display: flex; flex-direction: column; gap: 12px; padding: 12px 18px 18px; font-size: 13px; }
-  .bar { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); margin: 0 -18px; padding: 0 18px; }
-  .tabs { display: flex; gap: 4px; }
-  .tab { padding: 6px 10px 9px; color: var(--text-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .bar { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border); margin: 0 -18px; padding: 0 18px 6px; }
+  .tabs { display: flex; gap: 4px; align-self: stretch; margin-bottom: -7px; }
+  .tab { padding: 6px 10px 9px; color: var(--text-muted); border-bottom: 2px solid transparent; }
+  .tab:hover { color: var(--text); }
   .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
   .count { color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .spacer { flex: 1; }
-  .bar .button { margin-bottom: 6px; display: inline-flex; align-items: center; gap: 6px; }
   .uses { display: flex; align-items: center; gap: 10px; line-height: 1.4; }
   .uses span { flex: 1; }
   .warning { color: var(--warning); }
-  .notice { display: flex; align-items: flex-start; gap: 8px; padding: 8px 8px 8px 12px; border-radius: var(--radius-small); background: var(--bg-sunken); color: var(--text-muted); line-height: 1.4; }
-  .notice span { flex: 1; overflow-wrap: anywhere; }
+  .notice { display: flex; align-items: flex-start; gap: 8px; padding: 6px 6px 6px 12px; border-radius: var(--radius-small); background: var(--bg-sunken); color: var(--text-muted); line-height: 1.4; }
+  .notice span { flex: 1; overflow-wrap: anywhere; padding-top: 3px; }
   .inline-error { padding: 8px 10px; border-radius: var(--radius-small); background: var(--danger-soft); color: var(--danger); }
   .empty { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 32px 0; }
   .error { display: flex; align-items: center; gap: 8px; color: var(--danger); }
   .table { display: grid; grid-template-columns: minmax(200px, 1.5fr) repeat(var(--windows), minmax(96px, 1fr)) auto; }
   .table.busy { opacity: 0.7; }
-  .row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; column-gap: 14px; padding: 8px 6px; border-top: 1px solid var(--border); border-radius: var(--radius-small); }
+  .row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; column-gap: 14px; padding: 8px 6px; border-top: 1px solid var(--border); border-radius: var(--radius-small); transition: background-color 0.12s; }
   .row.head { border-top: none; padding-top: 0; padding-bottom: 6px; font-size: 11px; color: var(--text-faint); }
+  .row.pick { cursor: pointer; }
+  .row.pick:hover { background: var(--row-hover); border-top-color: transparent; }
+  .row.pick:hover + .row { border-top-color: transparent; }
   .row.this { background: var(--accent-soft); border-top-color: transparent; }
   .row.this + .row { border-top-color: transparent; }
-  .row.dead .who, .row.dead .cell { opacity: 0.55; }
+  .row.off .who, .row.off .cell, .row.dead .who, .row.dead .cell { opacity: 0.5; }
   .row.busy { opacity: 0.7; }
   .who { min-width: 0; }
-  .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .email { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; text-align: left; }
+  button.email:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
   .sub { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 12px; color: var(--text-muted); }
   .badge { padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 17px; font-weight: 500; background: var(--bg-active); color: var(--text-muted); }
   .badge.accent { background: var(--accent-soft); color: var(--accent); }
@@ -256,11 +361,13 @@
   .high .fill { background: var(--danger); }
   .reset { font-size: 11px; color: var(--text-faint); white-space: nowrap; min-height: 13px; }
   .actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+  .hint { padding: 0 6px; font-size: 12px; font-weight: 500; color: var(--accent-bold); opacity: 0; transition: opacity 0.12s; }
+  .row.pick:hover .hint { opacity: 1; }
   .notes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: 12px; color: var(--text-muted); }
-  .more { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .spinner.tiny { width: 11px; height: 11px; border-width: 1.5px; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .confirm { display: flex; flex-direction: column; gap: 14px; padding: 14px 18px 16px; }
   .confirm p { margin: 0; color: var(--text-muted); line-height: 1.45; }
+  .typed { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--text-muted); }
+  .typed strong { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
   .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

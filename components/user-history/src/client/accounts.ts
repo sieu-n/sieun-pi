@@ -27,8 +27,9 @@ export function forgetAccounts(): void { cache.clear(); }
 export const PROVIDER_LABEL: Record<PoolProvider["provider"], string> = { anthropic: "Claude", "openai-codex": "Codex" };
 
 export type Tone = "accent" | "success" | "muted" | "warning" | "danger";
-export type AccountState = "needs-login" | "refused" | "cooldown" | "depleted" | "pinned" | "seat" | "live";
+export type AccountState = "off" | "needs-login" | "refused" | "cooldown" | "depleted" | "pinned" | "seat" | "live";
 export const STATE_LABEL: Record<AccountState, { label: string; tone: Tone }> = {
+  off: { label: "Off", tone: "muted" },
   "needs-login": { label: "Needs login", tone: "danger" },
   refused: { label: "Refused", tone: "danger" },
   cooldown: { label: "Cooldown", tone: "warning" },
@@ -40,6 +41,7 @@ export const STATE_LABEL: Record<AccountState, { label: string; tone: Tone }> = 
 
 /** The one badge a row shows: what stops it serving first, else its role in the pool. A ready account shows none. */
 export function accountState(row: PoolAccount): AccountState | null {
+  if (row.disabled) return "off";
   if (row.reason === "needs-reauth") return "needs-login";
   if (row.reason?.startsWith("cooldown")) return row.cooldownReason ? "refused" : "cooldown";
   if (row.reason === "depleted") return "depleted";

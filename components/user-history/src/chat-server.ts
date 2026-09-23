@@ -5,7 +5,7 @@ import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
-import { listAccounts, runAccountAction } from "./chat-pool.ts";
+import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
 import type { AccountAction, LabelAction, SendMode, ThinkingLevel } from "./shared/types.ts";
 
@@ -97,6 +97,7 @@ function parseAccountAction(body: Record<string, unknown>): AccountAction {
     case "switch": return { action: "switch", provider };
     case "refresh": return { action: "refresh", provider };
     case "recheck": return { action: "recheck", provider };
+    case "disable": case "enable": case "remove": if (!account) throw new RequestError(400, "Choose an account."); return { action: body.action, provider, account };
     default: throw new RequestError(400, "Unknown account action.");
   }
 }
@@ -162,10 +163,10 @@ class Bounded<V> {
   clear(): void { this.map.clear(); }
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, identity, stopToken, onStop, identityReady = Promise.resolve() }: {
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins() }: {
   backend: ChatBackend; bundle: ClientBundle; port: number; capability: string; csrfToken: string;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string;
-  onStop(): Promise<void>; identityReady?: Promise<void>;
+  onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins;
 }): Promise<{ url: string; close(): Promise<void> }> {
   const base = "/" + capability + "/";
   const shell = renderShell(csrfToken);
@@ -196,6 +197,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       for (const stream of streams) stream.close();
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
       sends.clear();
+      await logins.close();
       await backend.close();
     })();
     return closing;
@@ -251,6 +253,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, await backend.threads.models(id ? threadId(id) : null)); return;
         }
         if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
+        if (route === "api/accounts/login/stream") {
+          const stream = openStream(req, res);
+          const unsubscribe = logins.subscribe(login => stream.send("login", login));
+          res.once("close", unsubscribe);
+          return;
+        }
         if (route === "api/accounts") {
           const id = url.searchParams.get("id");
           json(res, 200, await listAccounts(id ? threadId(id) : null)); return;
@@ -331,6 +339,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const notice = await runAccountAction(action);
         json(res, 200, { ...await listAccounts("id" in action ? action.id : null), ...(notice ? { notice } : {}) }); return;
       }
+      if (route === "api/accounts/login") {
+        const account = body.account === undefined || body.account === null ? null : text(body.account, "account", 256);
+        json(res, 200, logins.start(text(body.provider, "provider", 64), account)); return;
+      }
+      if (route === "api/accounts/login/paste") { json(res, 200, logins.paste(text(body.id, "id", 64), text(body.code, "code", 4096))); return; }
+      if (route === "api/accounts/login/cancel") { json(res, 200, logins.cancel(text(body.id, "id", 64))); return; }
       const thread = /^api\/threads\/([^/]+)\/([a-z-]+)$/.exec(route);
       if (!thread) throw new RequestError(404, "Not found.");
       const id = threadId(decodeURIComponent(thread[1]!));
@@ -379,7 +393,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       }
       json(res, 200, { ok: true });
     } catch (error) {
-      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError || error instanceof PoolError ? error.status : 502;
       if (!res.headersSent && !res.destroyed) json(res, status, { error: error instanceof Error ? error.message : "Prime Agent is unavailable." });
     }
   }
