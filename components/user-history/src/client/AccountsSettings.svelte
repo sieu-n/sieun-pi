@@ -195,7 +195,7 @@
     <div class="empty muted"><span class="spinner"></span> Loading accounts</div>
   {:else}
     <div class="uses">
-      <span class:warning={threadId && !resolution?.email}>{threadId ? resolutionSentence(current) : "No thread is open. Open a thread to choose its account."}</span>
+      <span class:warning={threadId && !resolution?.email}>{threadId ? resolutionSentence(current) : "No thread is open. New chats start on the account marked Next request."}</span>
       {#if threadId && resolution?.pinned}
         <button class="button small" disabled={acting !== null} onclick={() => threadId && void run({ action: "follow", provider: current.provider, id: threadId }, "follow")}>Follow the pool</button>
       {/if}
@@ -232,7 +232,7 @@
               <div class="sub">
                 {#if planText(row)}<span>{planText(row)}</span>{/if}
                 {#if state}<span class="badge {STATE_LABEL[state].tone}">{STATE_LABEL[state].label}</span>{/if}
-                {#if inUse}<span class="badge accent">This thread</span>{/if}
+                {#if inUse}<span class="badge accent">{threadId ? "This thread" : "Next request"}</span>{/if}
               </div>
             </div>
             {#each columns as column (column)}
