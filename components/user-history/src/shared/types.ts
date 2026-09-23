@@ -55,6 +55,15 @@ export interface ChildAgent {
   durationMs?: number; recap?: string; error?: string; answerPreview?: string;
   activity?: { kind: "waiting" | "writing" | "executing"; toolName?: string };
 }
+/**
+ * What a running session is doing, from its native daemon summary. `activityAt` is its latest activity or that of any running subagent under it,
+ * so a thread that only waits on busy subagents still reads as live.
+ */
+export interface Pulse { streaming: boolean; tools: boolean; bash: boolean; children: boolean; activityAt?: string; summary?: string; silentSince?: string; failed?: boolean }
+/** The pool account a new chat starts on; `force` uses an account that cannot serve now, after the user confirmed. */
+export interface NewChatAccount { provider: string; id: string; force: boolean }
+export interface ChildPulse extends Pulse { rlmChildId: string; sessionId: string }
+export interface SessionPulse extends Pulse { subagents: ChildPulse[] }
 /** A subagent's native session id and cost, matched to a ChildAgent by `rlmChildId` (its id) or its session name. */
 export interface ChildUsage { sessionId: string; rlmChildId?: string; sessionName?: string; cost?: number }
 export interface QueueState { steering: string[]; followUp: string[] }
@@ -135,6 +144,8 @@ export interface SessionRow {
   progress: Progress;
   /** Native session usage cost in dollars from the daemon summary; absent when the daemon did not report usage. */
   cost?: number;
+  /** Present while running: freshness inputs for this thread and its running subagents. */
+  pulse?: SessionPulse;
 }
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
 

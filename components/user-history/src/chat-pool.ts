@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { AccountAction, AccountLogin, AccountsView, PoolAccount, PoolProvider, PoolResolution, PoolWindow } from "./shared/types.ts";
 
-const executable = fileURLToPath(new URL("../../pi-pool/bin/pi-pool", import.meta.url));
+/** The pi-pool CLI next to this component; PI_POOL_BIN names another one (the native test runs a recording fake). */
+const executable = process.env.PI_POOL_BIN ?? fileURLToPath(new URL("../../pi-pool/bin/pi-pool", import.meta.url));
 export const pooledProviders = ["anthropic", "openai-codex"] as const;
 type PooledProvider = typeof pooledProviders[number];
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);

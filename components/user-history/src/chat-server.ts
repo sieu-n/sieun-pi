@@ -85,6 +85,14 @@ function parseMode(value: unknown): SendMode {
   if (mode !== "steer" && mode !== "followUp") throw new RequestError(400, "Choose steer or followUp.");
   return mode;
 }
+/** The pool account a new chat starts on; absent means follow the pool. */
+function parseNewChatAccount(value: unknown): { provider: string; id: string; force: boolean } | undefined {
+  if (value === undefined || value === null) return undefined;
+  const account = record(value);
+  const id = text(account.id, "account.id", 256);
+  if (id.startsWith("-")) throw new RequestError(400, "Choose an account.");
+  return { provider: text(account.provider, "account.provider", 64), id, force: account.force === true };
+}
 function parseAccountAction(body: Record<string, unknown>): AccountAction {
   const provider = text(body.provider, "provider", 64);
   const account = typeof body.account === "string" ? text(body.account, "account", 256) : undefined;
@@ -315,12 +323,21 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const provider = typeof body.provider === "string" ? text(body.provider, "provider", 128) : undefined;
         const modelId = typeof body.modelId === "string" ? text(body.modelId, "modelId", 256) : undefined;
         const thinkingLevel = typeof body.thinkingLevel === "string" ? text(body.thinkingLevel, "thinkingLevel", 16) as ThinkingLevel : undefined;
-        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images])).digest("hex");
+        const account = parseNewChatAccount(body.account);
+        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
           creation = { fingerprint, result: (async () => {
             const thread = await backend.threads.create({ cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) });
+            if (account) {
+              // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
+              try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, force: account.force }); }
+              catch (error) {
+                await backend.threads.archive(thread.id).catch(() => {});
+                throw new RequestError(502, error instanceof Error ? error.message : String(error));
+              }
+            }
             await backend.threads.prompt(thread.id, { message, images, mode: "followUp" });
             return { id: thread.id };
           })() };

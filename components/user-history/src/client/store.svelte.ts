@@ -1,9 +1,9 @@
 import { api, ApiError, requestId } from "./api.ts";
 import { applyThreadEvent, isThreadBusy } from "../shared/thread-state.ts";
-import type { ImageInput, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
+import type { ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info" }
-export interface PendingChat { cwd: string; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; startedAt: number }
+export interface PendingChat { cwd: string; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
 
 type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number };
 

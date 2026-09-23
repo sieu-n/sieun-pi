@@ -115,9 +115,13 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
   await Promise.all([home, config, cwd, sessions, nativeTemp].map(path => mkdir(path, { recursive: true })));
   await symlink(nativeTemp, temporary);
   context.after(async () => { await unlink(temporary); });
-  const env = { HOME: home, PATH: `${dirname(node)}:/usr/bin:/bin`, TMPDIR: temporary, LANG: "en_US.UTF-8", TERM: "dumb",
-    PRIME_AGENT_CODING_AGENT_DIR: config, PRIME_AGENT_SESSION_DIR: sessions, PRIME_AGENT_TELEMETRY: "0", PI_OFFLINE: "1" };
   const calls = join(root, "provider-calls.jsonl");
+  const fakePool = join(root, "pi-pool");
+  await writeFile(fakePool, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\n` +
+    `appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ stage: "pi-pool", args }) + "\\n");\n` +
+    `if (args[1] === "refused@x") { process.stderr.write("account refused@x cannot serve"); process.exit(1); }\nprocess.stdout.write("{}");\n`, { mode: 0o755 });
+  const env = { HOME: home, PATH: `${dirname(node)}:/usr/bin:/bin`, TMPDIR: temporary, LANG: "en_US.UTF-8", TERM: "dumb",
+    PRIME_AGENT_CODING_AGENT_DIR: config, PRIME_AGENT_SESSION_DIR: sessions, PRIME_AGENT_TELEMETRY: "0", PI_OFFLINE: "1", PI_POOL_BIN: fakePool };
   const gate = join(root, "release-provider");
   const provider = join(root, "provider.mjs");
   const extension = join(root, "extension.ts");
@@ -340,6 +344,24 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     await thread.waitFor(event => event.type === "event" && event.event.type === "compaction_end" && !event.event.aborted, 60000, "compaction from /compact");
     const costed = await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && (row.cost ?? 0) > 0), 20000, "native usage cost on the row");
     assert(costed.data.sessions.find(row => row.id === threadId)!.cost! > 0);
+    const accountPrompt = `ACCOUNT ${id}`;
+    const withAccount = await post("api/threads", { cwd, message: accountPrompt, requestId: requestId(), provider: "chat-native-test", modelId: "synthetic",
+      account: { provider: "anthropic", id: "picked@x" } });
+    assert.equal(withAccount.status, 200, JSON.stringify(withAccount.body));
+    const accountThread = withAccount.body.id as string;
+    await waitForChatNativeFile(calls, text => text.includes(accountPrompt));
+    const log = (await readFile(calls, "utf8")).trim().split("\n").map(line => JSON.parse(line) as { stage: string; args?: string[]; message?: string });
+    const useAt = log.findIndex(entry => entry.stage === "pi-pool" && entry.args?.join(" ") === `use picked@x --provider anthropic --session ${accountThread}`);
+    const firstCallAt = log.findIndex(entry => entry.stage !== "pi-pool" && JSON.stringify(entry).includes(accountPrompt));
+    assert(useAt >= 0, "the new session gets the chosen account through pi-pool use --session");
+    assert(firstCallAt > useAt, "pi-pool use runs before the first provider call of the new session");
+    const refusedPrompt = `REFUSED ${id}`;
+    const refused = await post("api/threads", { cwd, message: refusedPrompt, requestId: requestId(), provider: "chat-native-test", modelId: "synthetic",
+      account: { provider: "anthropic", id: "refused@x" } });
+    assert.equal(refused.status, 502);
+    assert.match(String(refused.body.error), /cannot serve/, "a failed use returns the pool error");
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    assert(!(await readFile(calls, "utf8")).includes(refusedPrompt), "a failed use sends no prompt");
     const childUsage = await fetch(chatUrl + `api/threads/${threadId}/child-usage`).then(response => response.json()) as { children: unknown[] };
     assert.deepEqual(childUsage.children, [], "a thread without subagents has no child usage");
     assert.equal((await post(`api/threads/${saved.sessionId}/archive`, {})).status, 200);

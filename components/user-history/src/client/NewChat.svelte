@@ -4,7 +4,7 @@
   import { store } from "./store.svelte.ts";
   import { labels, type TagSelection } from "./labels.ts";
   import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
-  import type { ImageInput, ModelCatalog, ModelInfo, Priority, Progress, SendMode, ThinkingLevel, Workspace } from "../shared/types.ts";
+  import type { ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, Progress, SendMode, ThinkingLevel, Workspace } from "../shared/types.ts";
   import { relativeTime, shortPath } from "./format.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import Composer from "./Composer.svelte";
@@ -53,6 +53,10 @@
   const modelLabel = $derived((model?.name ?? catalog?.current?.name ?? "Default model") + (effort ? " · " + effort : ""));
   const effortLevels = $derived((model ?? catalog?.current)?.thinkingLevels ?? catalog?.availableThinkingLevels ?? []);
   $effect(() => { if (effort && !effortLevels.includes(effort)) effort = null; });
+  const activeModel = $derived(model ?? catalog?.current ?? null);
+  /** The pool account for the new chat; null follows the pool. A model from another provider resets it. */
+  let account = $state<NewChatAccount | null>(null);
+  $effect(() => { if (account && activeModel && activeModel.provider !== account.provider) account = null; });
   const acceptsImages = $derived((model ?? catalog?.current)?.input.includes("image") ?? true);
 
   onMount(() => {
@@ -73,7 +77,8 @@
     const tags = shownTags.map(tag => tag.id);
     const priority = draftPriority;
     const progress = draftProgress;
-    const id = await store.createChat({ cwd, message: text, images, ...(model ? { provider: model.provider, modelId: model.id } : {}), ...(effort ? { thinkingLevel: effort } : {}) });
+    const id = await store.createChat({ cwd, message: text, images, ...(model ? { provider: model.provider, modelId: model.id } : {}), ...(effort ? { thinkingLevel: effort } : {}),
+      ...(account ? { account } : {}) });
     if (!id) return false;
     draftTags = [];
     draftPriority = 0;
@@ -131,7 +136,8 @@
                 <button class="button small primary" type="submit" disabled={!customCwd.trim()}>Use</button>
               </form>
             </Popover>
-            <AccountChip threadId={null} provider={(model ?? catalog?.current)?.provider} model={[(model ?? catalog?.current)?.id, (model ?? catalog?.current)?.name].join(" ")} />
+            <AccountChip threadId={null} provider={activeModel?.provider} model={activeModel ? activeModel.id + " " + activeModel.name : undefined}
+              choice={account} onchoose={next => { account = next; }} />
           {/snippet}
           {#snippet right()}
             <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort

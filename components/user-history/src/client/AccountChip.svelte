@@ -1,22 +1,35 @@
 <script lang="ts">
   import { store } from "./store.svelte.ts";
-  import { loadAccounts, meterTone, PROVIDER_LABEL, reasonText, resetText, resolvedAccount, threadProvider, windowLabel } from "./accounts.ts";
-  import type { AccountsView } from "../shared/types.ts";
+  import { loadAccounts, PROVIDER_LABEL, reasonText, resetText, resolvedAccount, threadProvider, windowLabel } from "./accounts.ts";
+  import type { AccountsView, NewChatAccount } from "../shared/types.ts";
+  import UsageMeters from "./UsageMeters.svelte";
+  import AccountPicker from "./AccountPicker.svelte";
+  import Floating from "./ui/Floating.svelte";
+  import Icon from "./Icon.svelte";
 
-  /** `model` is the current model id and name; a per-model window (Fable) shows only when it names that model. */
-  let { threadId, provider: providerId, model }: { threadId: string | null; provider?: string | undefined; model?: string | undefined } = $props();
+  /**
+   * The account a thread draws on, with its usage meters. `model` is the current model id and name (for the per-model window). With `onchoose`
+   * (the new-chat screen) a click opens the account picker for the model's provider; otherwise it opens account settings.
+   */
+  let { threadId, provider: providerId, model, choice = null, onchoose }: {
+    threadId: string | null; provider?: string | undefined; model?: string | undefined; choice?: NewChatAccount | null; onchoose?: (account: NewChatAccount | null) => void;
+  } = $props();
   let view = $state<AccountsView | null>(null);
   let failed = $state(false);
+  let button: HTMLButtonElement | undefined = $state();
+  let picking = $state(false);
 
   const modelProvider = $derived(providerId ?? (threadId ? store.thread(threadId)?.state?.info.model?.provider : undefined));
   const provider = $derived(view ? threadProvider(view, modelProvider) : undefined);
-  const account = $derived(provider ? resolvedAccount(provider) : undefined);
+  const chosen = $derived(choice && provider?.provider === choice.provider ? provider.rows.find(row => row.id === choice.id) : undefined);
+  const account = $derived(chosen ?? (provider ? resolvedAccount(provider) : undefined));
   const email = $derived(account?.email ?? provider?.resolution?.email ?? null);
-  const why = $derived(provider ? reasonText(provider.resolution?.reason ?? null) : null);
+  const why = $derived(chosen ? "chosen for this chat" : provider ? reasonText(provider.resolution?.reason ?? null) : null);
   const label = $derived(failed ? "Accounts unavailable" : !view ? "Account" : email ?? (provider ? `No ${PROVIDER_LABEL[provider.provider]} account` : "No account pool"));
-  const windows = $derived((account?.windows ?? []).filter(window => window.kind !== "model" || (model ?? "").toLowerCase().includes(windowLabel(window).toLowerCase())));
+  const windows = $derived(account?.windows ?? []);
   const title = $derived([email ? `${email}${why ? " (" + why + ")" : ""}` : label,
-    ...windows.map(window => `${windowLabel(window)} ${Math.round(window.pct)}%${resetText(window) ? ", " + resetText(window) : ""}`), "Open account settings"].join("\n"));
+    ...windows.map(window => `${windowLabel(window)} ${Math.round(window.pct)}%${resetText(window) ? ", " + resetText(window) : ""}`),
+    onchoose ? "Choose the account for this chat" : "Open account settings"].join("\n"));
 
   $effect(() => {
     const id = threadId;
@@ -27,31 +40,23 @@
   });
 </script>
 
-<button class="account" class:warning={view !== null && !email} {title} onclick={() => { store.drawer = "accounts"; }}>
+<button bind:this={button} class="account" class:warning={view !== null && !email} {title} aria-haspopup={onchoose ? "dialog" : undefined} aria-expanded={onchoose ? picking : undefined}
+  onclick={() => { if (onchoose) picking = !picking; else store.drawer = "accounts"; }}>
+  {#if chosen}<Icon name="account" size={13} />{/if}
   <span class="email">{label}</span>
-  {#each windows as window (window.label)}
-    <span class="meter {meterTone(window.pct)}">
-      <span class="figure"><span class="meter-label">{windowLabel(window)}</span><span class="pct">{Math.round(window.pct)}%</span></span>
-      <span class="track"><span class="fill" style:width="{Math.max(0, Math.min(100, window.pct))}%"></span></span>
-    </span>
-  {/each}
+  <UsageMeters {windows} {model} />
+  {#if onchoose}<Icon name="chevronDown" size={12} />{/if}
 </button>
+{#if picking && button && onchoose && provider}
+  <Floating anchor={button} width={400} maxHeight={420} label="Account for the new chat" onclose={() => { picking = false; }}>
+    <AccountPicker {provider} {model} {choice} onchoose={next => { picking = false; onchoose(next); }} />
+  </Floating>
+{/if}
 
 <style>
-  .account { display: inline-flex; align-items: center; gap: 10px; height: 30px; padding: 0 8px; border-radius: var(--radius-small); color: var(--text-muted); font-size: 12px; min-width: 0; }
-  .account:hover { background: var(--bg-hover); color: var(--text); }
+  .account { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: var(--radius-small); color: var(--text-muted); font-size: 12px; min-width: 0; }
+  .account:hover, .account[aria-expanded="true"] { background: var(--bg-hover); color: var(--text); }
   .account.warning .email { color: var(--warning); }
-  .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
-  /* One meter recipe for every window (the Virev ProgressBar): label left, percent right, a fully rounded 4 px track, ink fill that turns warning at 70% and danger at 90%. */
-  .meter { display: inline-flex; flex-direction: column; gap: 3px; flex: none; width: 56px; font-size: 11px; font-weight: 500; line-height: 1; font-variant-numeric: tabular-nums; }
-  .figure { display: flex; justify-content: space-between; gap: 4px; }
-  .meter-label { color: var(--text-faint); }
-  .pct { color: var(--text-muted); }
-  .track { display: block; height: 4px; border-radius: 999px; background: var(--bg-active); overflow: hidden; }
-  .fill { display: block; height: 100%; border-radius: 999px; background: var(--text-muted); transition: width 0.3s ease-out; }
-  .mid .pct { color: var(--warning); }
-  .high .pct { color: var(--danger); }
-  .mid .fill { background: var(--warning); }
-  .high .fill { background: var(--danger); }
-  @container app (max-width: 720px) { .meter { display: none; } }
+  .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; margin-right: 2px; }
+  @container app (max-width: 720px) { .account :global(.meter) { display: none; } }
 </style>
