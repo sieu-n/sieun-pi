@@ -118,6 +118,14 @@ until the session's next provider request runs the hook.
     pi-pool enable openai-codex   wire the codex provider into models.json
     pi-pool adopt-logins          move a stored /login that would bypass the pool into fallback.json
     pi-pool refresh [--json]      sample every account's usage now (runs `tokenmaxxing status --json`)
+    pi-pool off <email|id> [--provider <p>]   keep an account pooled but never pick it (`ls --json` shows `disabled`)
+    pi-pool on <email|id> [--provider <p>]    let the pool pick it again
+    pi-pool rm <email|id> [--provider <p>]    `tokenmaxxing rm`, then drop its pins and seat here
+    pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>]
+                                  add an account (`tokenmaxxing add`) or sign one in again (`tokenmaxxing auth`)
+                                  for a browser: stdout is JSON lines ({"event":"url"} with the link and the
+                                  Codex device code, {"event":"retry"}, one {"event":"done","ok":...}); stdin takes
+                                  one pasted Claude code per line, and closing stdin cancels
     pi-pool probe [--force]       check every Claude account for an API refusal (no token refresh)
     pi-pool log [n]               last n pool events
     pi-pool config / set <k> <v>

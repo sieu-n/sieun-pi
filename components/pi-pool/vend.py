@@ -606,6 +606,7 @@ class Account:
     tier: str = ""
     windows: tuple = ()
     usage_at: float = 0
+    disabled: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -779,7 +780,14 @@ def find_account(accounts, email_or_id):
 
 # ---------------------------------------------------------------- state.json
 def empty_provider_state():
-    return {"pin": None, "seat": None, "cooldowns": {}}
+    return {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}}
+
+
+def with_disabled(accounts, state, provider):
+    """Mark the accounts `pi-pool off` took out of the pool. Disabled lives in
+    state.json, not in tokenmaxxing's index, so it is applied after both reads."""
+    off = state["providers"][provider].get("disabled") or {}
+    return [dataclasses.replace(a, disabled=True) if a.id in off else a for a in accounts]
 
 
 def migrate(raw, by_email, now):
@@ -843,6 +851,8 @@ def intent_for(state, key, provider):
 # ---------------------------------------------------------------- the pure core
 def unusable_reason(a, cooldowns, cfg, now):
     """None when the account can serve, else why it cannot."""
+    if a.disabled:
+        return "disabled"
     if a.needs_reauth:
         return "needs-reauth"
     if cooldowns.get(a.id, 0) > now:
@@ -912,14 +922,15 @@ def resolve(intent, accounts, in_use, cooldowns, cfg, now):
         why = "missing" if a is None else unusable_reason(a, cooldowns, cfg, now)
         # --force outranks usage, never a dead login or an account the API refused
         # (the only thing that sets a cooldown), since both fail every request.
-        forced = intent.session_pin_force and not a.needs_reauth and cooldowns.get(a.id, 0) <= now if a else False
+        forced = (intent.session_pin_force and not a.disabled and not a.needs_reauth
+                  and cooldowns.get(a.id, 0) <= now) if a else False
         if a is not None and (why is None or forced):
             return Resolution(a, "session_pin", None)
         shadowed = (intent.session_pin, why)
 
     if intent.pool_pin:
         a = by_id.get(intent.pool_pin)
-        if a is not None and not a.needs_reauth:
+        if a is not None and not a.needs_reauth and not a.disabled:
             return Resolution(a, "pool_pin", shadowed)
 
     if intent.seat:
@@ -1034,6 +1045,28 @@ class IntentWriter:
 
     def clear_seat(self, provider):
         self._state["providers"][provider]["seat"] = None
+
+    def set_disabled(self, provider, account_id, off, now):
+        disabled = self._state["providers"][provider].setdefault("disabled", {})
+        if off:
+            disabled.setdefault(account_id, now)
+        else:
+            disabled.pop(account_id, None)
+
+    def forget_account(self, provider, account_id):
+        """Drop every intent that names an account tokenmaxxing no longer has.
+        Vends are the hook's records and stay; the next request rewrites them."""
+        prov = self._state["providers"][provider]
+        if prov.get("pin") == account_id:
+            prov["pin"] = None
+        if (prov.get("seat") or {}).get("account_id") == account_id:
+            prov["seat"] = None
+        for key in ("disabled", "cooldowns", "cooldown_reasons"):
+            (prov.get(key) or {}).pop(account_id, None)
+        for rec in self._state["sessions"].values():
+            pins = rec.get("pins") or {}
+            if (pins.get(provider) or {}).get("account_id") == account_id:
+                del pins[provider]
 
 
 # ----------------------------------------------------------------- credentials
@@ -1308,6 +1341,7 @@ def vend(provider):
         now = time.time()
         if HookWriter(state).prune(cfg, now):
             save_json(STATE, state)
+        accounts = with_disabled(accounts, state, provider)
         intent = intent_for(state, key, provider)
         in_use = in_use_counts(state, provider)
         cooldowns = dict(state["providers"][provider]["cooldowns"])
@@ -1412,7 +1446,7 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_i
             "session_pct": a.session_pct, "weekly_pct": a.weekly_pct, "gated_pct": a.gated_pct,
             "usable": usable, "reason": reason,
             "current": a.id == current_id, "pinned": pinned, "force": force,
-            "live": a.is_live, "seat": a.id == seat_id,
+            "live": a.is_live, "seat": a.id == seat_id, "disabled": a.disabled,
             "score": round(account_score(a, in_use, cfg)) if usable else None,
         }
         if a.plan:
@@ -1525,7 +1559,9 @@ def account_card(p, a, ctx):
         badges.append(p.green(f"{sessions} session{'s' if sessions != 1 else ''}"))
     if a.is_live:
         badges.append(p.cyan("supervised"))
-    if reason == "needs-reauth":
+    if reason == "disabled":
+        badges.append(p.dim("disabled"))
+    elif reason == "needs-reauth":
         badges.append(p.red("needs-reauth"))
     elif reason == "depleted":
         badges.append(p.yellow("exhausted"))
@@ -1535,7 +1571,9 @@ def account_card(p, a, ctx):
     lines = [f"{marker} {p.bold(a.email)}{tier}" + (f" {' '.join(badges)}" if badges else "")]
     lines += window_rows(p, a, now) if a.windows else [f"{NOTE_INDENT}{p.dim('never sampled')}"]
     notes = []
-    if reason == "needs-reauth":
+    if reason == "disabled":
+        notes.append((p.dim, f"off: never picked until pi-pool on {a.email}"))
+    elif reason == "needs-reauth":
         flag = " --codex" if a.provider == "openai-codex" else ""
         notes.append((p.red, f"login is dead: tokenmaxxing auth{flag} {a.email}"))
     elif reason and reason.startswith("cooldown"):
@@ -1592,7 +1630,8 @@ def render_grid(cards, term_width):
 
 def card_order(a, ctx):
     reason = ctx["reasons"].get(a.id)
-    rank = 0 if ctx["seat_id"] == a.id else 1 if reason is None else 3 if reason == "needs-reauth" else 2
+    rank = (0 if ctx["seat_id"] == a.id else 1 if reason is None
+            else 4 if reason == "disabled" else 3 if reason == "needs-reauth" else 2)
     return (rank, ctx["scores"].get(a.id, 1e9), a.email)
 
 
@@ -1608,6 +1647,7 @@ def status_lines(providers, p, term_width, now=None):
         except Exception as e:
             out += [p.red(f"{title}: {e}"), ""]
             continue
+        accounts = with_disabled(accounts, state, provider)
         prov = state["providers"][provider]
         in_use = in_use_counts(state, provider, now)
         cooldowns = prov["cooldowns"]
@@ -1692,6 +1732,8 @@ def cmd_pin(rest):
         raise SystemExit(f"{positional[0]} is not in the {provider} pool ({known})")
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
+        if account.id in (state["providers"][provider].get("disabled") or {}):
+            raise SystemExit(f"{account.email} is off; turn it on first (pi-pool on {account.email} --provider {provider})")
         if state["providers"][provider].get("pin") == account.id:
             print(f"already pinned: {account.email}")
             return 0
@@ -1811,6 +1853,9 @@ def cmd_use(rest):
             known = ", ".join(a.email for a in accounts)
             print(f"{positional[0]} is not in the {provider} pool ({known})")
             return 2
+        if account.id in (state["providers"][provider].get("disabled") or {}):
+            print(f"{account.email} is off; turn it on first (pi-pool on {account.email} --provider {provider})")
+            return 2
         if prev_pin and prev_pin["account_id"] == account.id and bool(prev_pin.get("force")) == f["force"]:
             print(f"already on {account.email}")
             return 0
@@ -1887,6 +1932,7 @@ def cmd_ls(rest):
         print(json.dumps({"error": msg}) if f["json"] else msg)
         return 1
     state = load_state()
+    accounts = with_disabled(accounts, state, provider)
     key = session_key_for(f["session"], state)
     if f["session"] is not None and key is None:
         msg = f"--session {f['session']} matches no known session"
@@ -1944,7 +1990,7 @@ def cmd_who(rest):
     providers_out = {}
     for provider in PROVIDERS:
         try:
-            accounts = load_index(provider)
+            accounts = with_disabled(load_index(provider), state, provider)
         except Exception as e:
             providers_out[provider] = {"error": str(e)}
             continue
@@ -2011,6 +2057,332 @@ def cmd_enable(rest):
     return 0
 
 
+def cmd_toggle(rest, off):
+    """`pi-pool off` / `pi-pool on`: keep an account in tokenmaxxing's pool but
+    never pick it while off. Every pin on it yields, a forced one too."""
+    verb = "off" if off else "on"
+    f = parse_flags(rest)
+    provider, positional = f["provider"], f["positional"]
+    if len(positional) != 1:
+        raise SystemExit(f"usage: pi-pool {verb} <email|id> [--provider <p>]")
+    accounts = load_index(provider)
+    account = find_account(accounts, positional[0])
+    if account is None:
+        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.email for a in accounts)})")
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        was_off = account.id in (state["providers"][provider].get("disabled") or {})
+        if was_off == off:
+            print(f"{account.email} is already {verb}")
+            return 0
+        IntentWriter(state).set_disabled(provider, account.id, off, time.time())
+        save_json(STATE, state)
+    log("account_" + verb, provider=provider, account=account.email)
+    print(f"{account.email} is {verb}" + ("; the pool never picks it until pi-pool on" if off else "; the pool can pick it again"))
+    return 0
+
+
+def cmd_rm(rest):
+    """Remove an account the way tokenmaxxing does (`tokenmaxxing rm`, which
+    deletes its credential store), then drop every pin, seat and flag that
+    names it here."""
+    f = parse_flags(rest)
+    provider, positional = f["provider"], f["positional"]
+    if len(positional) != 1:
+        raise SystemExit("usage: pi-pool rm <email|id> [--provider <p>]")
+    accounts = load_index(provider)
+    account = find_account(accounts, positional[0])
+    if account is None:
+        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.email for a in accounts)})")
+    exe = tokenmaxxing_exe()
+    if not exe:
+        raise SystemExit("tokenmaxxing is not installed")
+    try:
+        done = subprocess.run([exe, "rm", *TM_FLAGS[provider], account.id], capture_output=True, text=True,
+                              timeout=60, env=dict(os.environ, TOKENMAXXING_HOME=TM))
+    except subprocess.TimeoutExpired:
+        raise SystemExit("tokenmaxxing rm did not finish in 60s")
+    if done.returncode != 0:
+        said = ANSI_ANY_RE.sub("", done.stderr or done.stdout).strip().splitlines()
+        raise SystemExit(said[-1] if said else f"tokenmaxxing rm exited {done.returncode}")
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        IntentWriter(state).forget_account(provider, account.id)
+        save_json(STATE, state)
+    log("account_removed", provider=provider, account=account.email)
+    print(f"removed {account.email} from the {provider} pool")
+    return 0
+
+
+TM_FLAGS = {"anthropic": [], "openai-codex": ["--codex"]}
+ANSI_ANY_RE = re.compile(r"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78]")
+LOGIN_TIMEOUT_SEC = 15 * 60
+LOGIN_SETTLE_SEC = 0.8
+LOGIN_BROWSER = os.path.join(CODE_ROOT, "app", "login-browser")
+# Screens the isolated `claude` shows before and after /login, and the key that
+# moves past each one. Matched with all whitespace removed: the TUI draws
+# spaces as cursor moves, so the plain text has none.
+CLAUDE_SCREENS = (("choosethetextstyle", "theme"), ("selectloginmethod", "method"),
+                  ("oautherror", "error"), ("loginsuccessful", "success"))
+CODEX_CODE_RE = re.compile(r"one-time code.*?\n\s*([A-Z0-9]{4,}-[A-Z0-9]{4,})", re.S)
+CODEX_URL_RE = re.compile(r"(https://auth\.openai\.com/\S+)")
+
+
+def squash(text):
+    return re.sub(r"\s+", "", text).lower()
+
+
+OSC8_OAUTH_RE = re.compile(r"\x1b\]8;[^;\x07\x1b]*;(https://[^\x07\x1b]*oauth/authorize\?[^\x07\x1b]*)(?:\x07|\x1b\\)")
+
+
+def manual_oauth_url(raw, text):
+    """The sign-in URL claude prints for a pasted code: the newest terminal
+    hyperlink to it, else the printed text, which wraps across lines and ends
+    at the paste prompt."""
+    links = [url for url in OSC8_OAUTH_RE.findall(raw) if "state=" in url and "code_challenge=" in url]
+    if links:
+        return links[-1]
+    start = text.rfind("https://")
+    while start != -1 and "oauth/authorize" not in squash(text[start:start + 200]):
+        start = text.rfind("https://", 0, start)
+    if start == -1:
+        return None
+    end = text.find("Paste", start)
+    if end == -1:
+        return None
+    url = re.sub(r"\s+", "", text[start:end])
+    return url if "state=" in url and "code_challenge=" in url else None
+
+
+class LoginDriver:
+    """Runs `tokenmaxxing add|auth` on a pseudo-terminal and reports each step
+    as one JSON line. The only input is a pasted sign-in code."""
+
+    def __init__(self, provider, argv, url_file, emit):
+        self.provider, self.argv, self.url_file, self.emit = provider, argv, url_file, emit
+        self.raw, self.mark, self.sent, self.retries = "", 0, set(), 0
+        self.announced = self.stale = None
+        self.quiet_since = time.time()
+
+    def feed(self, chunk, write):
+        if chunk:
+            self.raw += chunk
+            self.quiet_since = time.time()
+        if self.provider == "anthropic":
+            self.claude_step(write)
+        else:
+            self.codex_step()
+
+    @property
+    def text(self):
+        return ANSI_ANY_RE.sub("", self.raw)
+
+    def claude_step(self, write):
+        # The TUI drops keys it gets while still drawing a screen.
+        if time.time() - self.quiet_since < LOGIN_SETTLE_SEC:
+            return
+        text = self.text
+        tail = squash(text[self.mark:])
+        for marker, step in CLAUDE_SCREENS:
+            if marker in tail and (step == "error" or step not in self.sent):
+                self.sent.add(step)
+                self.mark = len(text)
+                if step == "error":
+                    self.retries += 1
+                    if self.retries > 3:
+                        raise LoginFailed("claude refused the sign-in code three times")
+                    self.stale = self.announced
+                    self.announced = None
+                    self.sent -= {"method", "success"}
+                    self.emit({"event": "retry", "message": "That code was not accepted. Open the new link and try again."})
+                write(b"\r")
+                return
+        manual = manual_oauth_url(self.raw, text)
+        callback = None
+        try:
+            with open(self.url_file) as f:
+                urls = [line.strip() for line in f if line.strip()]
+            callback = urls[-1] if urls else None
+        except FileNotFoundError:
+            pass
+        if self.stale and (manual == self.stale[0] or callback == self.stale[1]):
+            return
+        if manual and (manual, callback) != self.announced:
+            self.announced = (manual, callback)
+            self.emit({"event": "url", "url": callback or manual, "manual_url": manual, "code": None, "paste": True})
+
+    def codex_step(self):
+        text = self.text
+        url, code = CODEX_URL_RE.search(text), CODEX_CODE_RE.search(text)
+        if url and code and self.announced != (url.group(1), code.group(1)):
+            self.announced = (url.group(1), code.group(1))
+            self.emit({"event": "url", "url": url.group(1), "manual_url": None, "code": code.group(1), "paste": False})
+
+    def outcome(self, status):
+        lines = [line.strip(" \u2713\r") for line in self.text.splitlines() if line.strip()]
+        if status == 0:
+            said = next((line for line in reversed(lines) if line.startswith(("added ", "reauthed "))), None)
+            return {"event": "done", "ok": True, "message": said or "signed in"}
+        return {"event": "done", "ok": False, "message": (lines[-1] if lines else f"tokenmaxxing exited {status}")[:300]}
+
+
+class LoginFailed(Exception):
+    pass
+
+
+def stop_login(pid, fd):
+    """Ctrl-C twice, the way a person leaves claude, so tokenmaxxing runs its
+    own cleanup of the isolated login. After 5s the whole terminal's process
+    group gets a hangup, then a kill. Never waits without a deadline."""
+    import select, signal
+    for key in (b"\x03", b"\x03"):
+        try:
+            os.write(fd, key)
+        except OSError:
+            break
+        time.sleep(0.5)
+    for sig, grace in ((None, 5), (signal.SIGHUP, 2), (signal.SIGKILL, 2)):
+        if sig is not None:
+            try:
+                os.killpg(pid, sig)
+            except ProcessLookupError:
+                pass
+        deadline = time.time() + grace
+        while time.time() < deadline:
+            done, raw = os.waitpid(pid, os.WNOHANG)
+            if done:
+                return os.waitstatus_to_exitcode(raw)
+            if select.select([fd], [], [], 0.1)[0]:
+                try:
+                    os.read(fd, 65536)
+                except OSError:
+                    pass
+    return None
+
+
+def cmd_login(rest):
+    """`pi-pool login [<email|id>] [--provider p]`: add an account, or sign one
+    in again, through tokenmaxxing's own isolated login (`tokenmaxxing add` or
+    `tokenmaxxing auth`), driven for a browser.
+
+    stdout is JSON lines: {"event":"url"} with the sign-in link (and the codex
+    device code), {"event":"retry"}, then one {"event":"done","ok":...}.
+    stdin takes a pasted claude sign-in code per line; closing stdin cancels.
+    claude's own browser opener is replaced by app/login-browser, which
+    records the localhost-callback link instead of opening a tab."""
+    import pty, select, signal, struct, termios
+    rest, timeout = list(rest), LOGIN_TIMEOUT_SEC
+    if "--timeout" in rest:
+        at = rest.index("--timeout")
+        try:
+            timeout = float(rest[at + 1])
+        except (IndexError, ValueError):
+            raise SystemExit("--timeout takes seconds")
+        del rest[at:at + 2]
+    f = parse_flags(rest)
+    provider, positional = f["provider"], f["positional"]
+    if provider not in PROVIDERS or len(positional) > 1 or timeout <= 0:
+        raise SystemExit("usage: pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>]")
+    emit = lambda event: (sys.stdout.write(json.dumps(event) + "\n"), sys.stdout.flush())
+    exe = tokenmaxxing_exe()
+    if not exe:
+        emit({"event": "done", "ok": False, "message": "tokenmaxxing is not installed"})
+        return 1
+    if positional:
+        account = find_account(load_index(provider), positional[0])
+        if account is None:
+            emit({"event": "done", "ok": False, "message": f"{positional[0]} is not in the {provider} pool"})
+            return 1
+        argv = [exe, "auth", *TM_FLAGS[provider], account.id]
+    else:
+        argv = [exe, "add", *TM_FLAGS[provider]]
+    os.makedirs(POOL, exist_ok=True)
+    url_file = os.path.join(POOL, f"login-{os.getpid()}.urls")
+    env = dict(os.environ, TOKENMAXXING_HOME=TM, BROWSER=LOGIN_BROWSER, PI_POOL_LOGIN_URLS=url_file,
+               TERM="xterm-256color")
+    for name in (SESSION_ENV, JOURNAL_ENV):
+        env.pop(name, None)
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 400, 0, 0))
+            os.execve(argv[0], argv, env)
+        finally:
+            os._exit(127)
+    driver = LoginDriver(provider, argv, url_file, emit)
+    write = lambda data: os.write(fd, data)
+
+    def stopped(signum, frame):
+        raise LoginFailed("the sign-in was stopped")
+    signal.signal(signal.SIGTERM, stopped)
+    log("login_start", provider=provider, mode=argv[1])
+    deadline, status, cancelled, failure = time.time() + timeout, None, False, None
+    stdin, pasted = sys.stdin.fileno(), b""
+    inputs = [fd, stdin]
+    try:
+        while status is None:
+            if time.time() > deadline:
+                failure = f"the sign-in did not finish in {max(1, round(timeout / 60))} min"
+                break
+            ready, _, _ = select.select(inputs, [], [], 0.3)
+            if fd in ready:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    driver.feed(chunk.decode("utf-8", "replace"), write)
+                else:
+                    inputs.remove(fd)
+            elif driver.provider == "anthropic":
+                driver.feed("", write)
+            if stdin in ready:
+                # os.read, never readline: a pasted code without its newline
+                # must not block the terminal loop.
+                chunk = os.read(stdin, 4096)
+                if not chunk:
+                    cancelled = True
+                    break
+                pasted += chunk
+                while b"\n" in pasted:
+                    line, pasted = pasted.split(b"\n", 1)
+                    if line.strip():
+                        write(line.strip() + b"\r")
+            done, raw = os.waitpid(pid, os.WNOHANG)
+            if done:
+                status = os.waitstatus_to_exitcode(raw)
+    except LoginFailed as e:
+        failure = str(e)
+    finally:
+        if status is None:
+            status = stop_login(pid, fd)
+        drain_until = time.time() + 1
+        while time.time() < drain_until and select.select([fd], [], [], 0.1)[0]:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            driver.raw += chunk.decode("utf-8", "replace")
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        os.close(fd)
+        try:
+            os.unlink(url_file)
+        except FileNotFoundError:
+            pass
+    if cancelled or failure:
+        result = {"event": "done", "ok": False, "message": failure or "cancelled"}
+    else:
+        result = driver.outcome(status)
+    log("login_end", provider=provider, mode=argv[1], ok=result["ok"], message=result["message"])
+    emit(result)
+    return 0 if result["ok"] else 1
+
+
 USAGE = """usage: pi-pool [command]
   status [--provider <p>]        one card per account: usage bars, seat, sessions, next pick
   watch [sec] [--provider <p>]   full-screen status, redrawn every sec seconds (default 5)
@@ -2023,6 +2395,12 @@ USAGE = """usage: pi-pool [command]
                                   the rows /account renders
   who [--json] [--session <id>]  what this session resolves to now, per provider
   enable openai-codex            wire the openai-codex provider into models.json
+  off <email|id> [--provider <p>]
+                                  keep an account pooled but never pick it
+  on <email|id> [--provider <p>] let the pool pick it again
+  rm <email|id> [--provider <p>] tokenmaxxing rm, then drop its pins and seat here
+  login [<email|id>] [--provider <p>] [--timeout <sec>]
+                                  tokenmaxxing add (or auth <account>) driven as JSON lines
   refresh [--json] [--provider <p>]
                                   sample every account's usage now (tokenmaxxing status)
   probe [--force]                check every anthropic account for an API refusal (no refresh);
@@ -2042,6 +2420,8 @@ def cli(args):
         "switch": cmd_switch, "use": cmd_use, "ls": cmd_ls, "who": cmd_who,
         "config": cmd_config, "set": cmd_set, "log": cmd_log, "enable": cmd_enable,
         "adopt-logins": cmd_adopt_logins, "probe": cmd_probe, "refresh": cmd_refresh,
+        "off": lambda rest: cmd_toggle(rest, True), "on": lambda rest: cmd_toggle(rest, False),
+        "rm": cmd_rm, "login": cmd_login,
     }
     if cmd in handlers:
         return handlers[cmd](rest)

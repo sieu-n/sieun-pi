@@ -726,6 +726,22 @@ class RefusedAccountsBreakForcePins(unittest.TestCase):
         self.assertEqual((res.account.id, res.reason), ("b", "seat"))
 
 
+class DisabledAccountsNeverServe(unittest.TestCase):
+    OFF = dataclasses.replace(A, disabled=True)
+
+    def test_every_pin_yields_to_an_off_account(self):
+        for intent in (vend.Intent(session_pin="a", session_pin_force=True, seat="b"),
+                       vend.Intent(pool_pin="a", seat="b"), vend.Intent(seat="a")):
+            res = vend.resolve(intent, [self.OFF, B], {}, {}, CFG, NOW)
+            self.assertEqual(res.account.id, "b", intent)
+
+    def test_with_disabled_marks_only_the_named_accounts(self):
+        state = {"providers": {"anthropic": {"disabled": {"a": NOW}}}}
+        marked = vend.with_disabled([A, B], state, "anthropic")
+        self.assertEqual([a.disabled for a in marked], [True, False])
+        self.assertEqual(vend.unusable_reason(marked[0], {}, CFG, NOW), "disabled")
+
+
 class InUseCountsOnlyRecentVends(unittest.TestCase):
     def test_an_idle_session_record_does_not_count(self):
         state = {"sessions": {"s1": {"vends": {"anthropic": {"account_id": "a", "at": NOW - 10}}},

@@ -1,0 +1,8 @@
+#!/usr/bin/python3 -B
+"""claude's BROWSER during `pi-pool login`: record the sign-in link for the
+browser chat to show instead of opening a tab."""
+import os
+import sys
+
+with open(os.environ["PI_POOL_LOGIN_URLS"], "a") as out:
+    out.write(sys.argv[-1] + "\n")
