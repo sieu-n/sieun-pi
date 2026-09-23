@@ -88,7 +88,7 @@ class IsolatedTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = json.loads(result.stdout)
         self.assertEqual(plan["mode"], "dry-run")
-        self.assertEqual(plan["schedule"], {"hour": 21, "minute": 0, "timezone": "system local time"})
+        self.assertEqual(plan["schedule"], {"hour": 20, "minute": 0, "timezone": "system local time"})
         self.assertFalse(plan["services_loaded"])
         self.assertFalse(plan["dependencies_installed"])
         self.assertEqual(before, tree_bytes(self.root))

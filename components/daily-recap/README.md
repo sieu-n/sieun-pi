@@ -70,7 +70,7 @@ Sunsama uses only the explicit cookie database. Sign in to the desktop app yours
 
 ```mermaid
 flowchart TD
-    A[launchd at 21:00 system local time] --> B{Existing user tmux server?}
+    A[launchd at 20:00 system local time] --> B{Existing user tmux server?}
     B -->|Yes| C[Dispatch run.sh with quoted arguments]
     B -->|No or dispatch failed| D[Run directly with --no-repo]
     C --> E[Read private config]
@@ -89,12 +89,12 @@ flowchart TD
 | `run.sh --dry-run` | Prints a preview; does not post or write runtime files. Enabled inputs still run, including model calls. |
 | Same date already posted | Skips unless `--force` is set. |
 | Run before 06:00 | Uses the previous local date unless `--today` is set. |
-| Run from 06:00 through 20:29 | Skips unless `--force` or `--today` is set. |
+| Run from 06:00 through 19:29 | Skips unless `--force` or `--today` is set. |
 | A section fails | Includes its error in the parent/thread report; other sections continue. |
 | Slack post fails | Returns nonzero; does not advance the last-post marker. Section caches may already have changed. |
 | No existing tmux server | Runs without the repository section; never starts a tmux server or grants TCC permissions. |
 
-The launchd schedule uses the machine's local timezone, independent of `DAILY_RECAP_TZ`. The default remains 21:00. `RunAtLoad` stays false. The entry script reports successful dispatch, not completion of the detached tmux job. Read its run log for the final exit code. The fallback returns the actual job exit code.
+The launchd schedule uses the machine's local timezone, independent of `DAILY_RECAP_TZ`. The default is 20:00. `RunAtLoad` stays false. The entry script reports successful dispatch, not completion of the detached tmux job. Read its run log for the final exit code. The fallback returns the actual job exit code.
 
 ```bash
 bash "$HOME/.prime/agent/daily-recap/bin/run.sh" --help

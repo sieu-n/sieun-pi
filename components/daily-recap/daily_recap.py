@@ -845,7 +845,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 def run_recap(args: argparse.Namespace) -> int:
     started = now_local()
     # A run between midnight and 06:00 is a late run of the previous day (the machine slept through
-    # 21:00 and launchd fired on wake, 2026-09-07); the 21:00 schedule never runs in that window.
+    # the evening run and launchd fired on wake, 2026-09-07); the 20:00 schedule never runs in that window.
     today = args.today or (started.date() - dt.timedelta(days=1) if started.hour < 6 else started.date())
     for d in (STATE, REPORTS):
         d.mkdir(parents=True, exist_ok=True)
@@ -853,15 +853,15 @@ def run_recap(args: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     last_run = read_json(STATE / "last_run.json", {})
-    # Two triggers exist (launchd 21:00, the session heartbeat 21:05); whichever runs first posts.
+    # Two triggers exist (launchd 20:00, the session heartbeat 20:05); whichever runs first posts.
     if not args.dry_run and not args.force and last_run.get("date") == today.isoformat():
         print(json.dumps({"ok": True, "skipped": "already posted today", "ts": last_run.get("ts")}))
         return 0
     # A trigger replayed hours late (the heartbeat turn dropped by sleep on 2026-09-10 arrived at
-    # 12:25 the next day) must not post a half-day recap. Posting is allowed from 20:30 to 05:59 only.
-    daytime = 6 <= started.hour < 20 or (started.hour == 20 and started.minute < 30)
+    # 12:25 the next day) must not post a half-day recap. Posting is allowed from 19:30 to 05:59 only.
+    daytime = 6 <= started.hour < 19 or (started.hour == 19 and started.minute < 30)
     if not args.dry_run and not args.force and args.today is None and daytime:
-        print(json.dumps({"ok": True, "skipped": f"outside the posting window at {started:%H:%M}; next post at 21:00"}))
+        print(json.dumps({"ok": True, "skipped": f"outside the posting window at {started:%H:%M}; next post at 20:00"}))
         return 0
     if args.since:
         since = dt.datetime.fromisoformat(args.since)

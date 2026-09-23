@@ -41,7 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--write", action="store_true", help="write the reviewed runtime files and plist; never load launchd")
     parser.add_argument("--runtime", type=absolute, default=Path.home() / ".prime/agent/daily-recap")
     parser.add_argument("--plist", type=absolute, default=Path.home() / f"Library/LaunchAgents/{LABEL}.plist")
-    parser.add_argument("--hour", type=bounded_int(0, 23), default=21)
+    parser.add_argument("--hour", type=bounded_int(0, 23), default=20)
     parser.add_argument("--minute", type=bounded_int(0, 59), default=0)
     parser.add_argument("--node-bin-dir", type=absolute, help="Node/prime-agent directory to prepend to launchd PATH")
     return parser.parse_args(argv)
