@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
-import type { SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChildUsage, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -55,6 +55,8 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     ...(row.statusLabel ? { statusLabel: row.statusLabel } : {}),
     tags: extras.labels?.tags ?? [],
     priority: extras.labels?.priority ?? 0,
+    progress: extras.labels?.progress ?? "none",
+    ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}),
     ...(status === "running" && extras.workingSince !== undefined ? { workingSince: new Date(extras.workingSince).toISOString() } : {}),
     ...(extras.schedule ? { schedule: extras.schedule } : {}),
   };
@@ -88,6 +90,7 @@ export function parseSummaries(value: unknown): SessionSummary[] {
 export class Catalog {
   readonly client: DaemonClient;
   private summaries = new Map<string, SessionSummary>();
+  private childSummaries: SessionSummary[] = [];
   private schedules = new Map<string, ThreadSchedule>();
   private readonly workingSince = new Map<string, number>();
   /** The attached thread's native run start, when the browser has that thread open. */
@@ -165,12 +168,14 @@ export class Catalog {
       if (!response.success) throw new Error(response.error);
       if (jobs?.success) this.schedules = parseSchedules(jobs.data);
       const next = new Map<string, SessionSummary>();
+      const children: SessionSummary[] = [];
       for (const row of parseSummaries(response.data)) {
-        if (!isTopLevel(row)) continue;
+        if (!isTopLevel(row)) { children.push(row); continue; }
         const existing = next.get(row.sessionId);
         if (!existing || row.activeSessionId !== undefined) next.set(row.sessionId, row);
       }
       this.summaries = next;
+      this.childSummaries = children;
       await this.emit();
     })().finally(() => { this.refreshing = undefined; });
     return this.refreshing;
@@ -228,6 +233,13 @@ export class Catalog {
     if (cached) return cached;
     await this.refresh();
     return this.summaries.get(sessionId);
+  }
+
+  /** Native usage cost of each subagent under a parent session, from the daemon summaries of non-top-level sessions. */
+  childUsage(parentSessionId: string): ChildUsage[] {
+    return this.childSummaries.filter(row => row.parentSessionId === parentSessionId).map(row => ({
+      ...(row.rlmChildId ? { rlmChildId: row.rlmChildId } : {}), ...(row.sessionName ? { sessionName: row.sessionName } : {}),
+      ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}) }));
   }
 
   forget(sessionId: string): void { this.summaries.delete(sessionId); }

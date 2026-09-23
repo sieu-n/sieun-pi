@@ -3,6 +3,7 @@
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { duration } from "./format.ts";
+  import { clock } from "./clock.svelte.ts";
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
   import { messageText, toolDurationMs, triggerSummary, workCounts, type SystemMessage, type Turn, type WorkItem } from "../shared/turns.ts";
   import Icon from "./Icon.svelte";
@@ -31,12 +32,7 @@
     counts.notes ? `${counts.notes} ${counts.notes === 1 ? "note" : "notes"}` : "",
   ].filter(Boolean).join(" · "));
 
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!live) return;
-    const timer = setInterval(() => { now = Date.now(); }, 1000);
-    return () => clearInterval(timer);
-  });
+  const now = $derived(live ? clock.now : Date.now());
   const elapsedMs = $derived(live ? Math.max(0, now - turn.startedAt) : Math.max(0, turn.endedAt - turn.startedAt));
   const label = $derived(live ? "Working " + duration(elapsedMs) : worked ? "Worked " + duration(elapsedMs) : firstSystem ? systemTitle(firstSystem.message) : "");
 
@@ -225,10 +221,9 @@
   .tool-name { font-family: var(--mono); font-weight: 500; white-space: nowrap; }
   .tool-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-family: var(--mono); font-size: 12px; }
   .tool-time { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .spinner.tiny { width: 11px; height: 11px; border-width: 1.5px; }
   .tool-body { padding: 4px 12px 10px 34px; }
-  .section-label { display: flex; align-items: center; gap: 8px; margin: 6px 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); }
-  .danger { color: var(--danger); text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .section-label { display: flex; align-items: center; gap: 8px; margin: 6px 0 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
+  .danger { color: var(--danger); font-weight: 400; }
   .block { margin: 0; padding: 8px 10px; border-radius: var(--radius-small); background: var(--bg-sunken); font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
   .block.error { color: var(--danger); }
 </style>

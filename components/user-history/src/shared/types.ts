@@ -55,6 +55,8 @@ export interface ChildAgent {
   durationMs?: number; recap?: string; error?: string; answerPreview?: string;
   activity?: { kind: "waiting" | "writing" | "executing"; toolName?: string };
 }
+/** A subagent's native session cost, matched to a ChildAgent by `rlmChildId` (its id) or its session name. */
+export interface ChildUsage { rlmChildId?: string; sessionName?: string; cost?: number }
 export interface QueueState { steering: string[]; followUp: string[] }
 export type ThreadConnection = "connected" | "reconnecting" | "closed";
 
@@ -130,19 +132,25 @@ export interface SessionRow {
   priority: Priority;
   workingSince?: string;
   schedule?: ThreadSchedule;
+  progress: Progress;
+  /** Native session usage cost in dollars from the daemon summary; absent when the daemon did not report usage. */
+  cost?: number;
 }
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
 
 export type Priority = 0 | 1 | 2 | 3;
 export interface Tag { id: string; name: string; hue: number }
-export interface ThreadLabels { tags: string[]; priority: Priority }
+export type Progress = "none" | "plan" | "implementation" | "qa";
+export const PROGRESS_STEPS: readonly Progress[] = ["none", "plan", "implementation", "qa"];
+export interface ThreadLabels { tags: string[]; priority: Priority; progress: Progress }
 export interface ThreadSchedule { kind: "heartbeat" | "cron"; label?: string; status: "active" | "paused"; expression: string; nextRunAt?: string }
 export type LabelAction =
   | { op: "create"; name: string; ids: string[] }
   | { op: "rename"; tagId: string; name: string }
   | { op: "delete"; tagId: string }
   | { op: "tag"; tagId: string; ids: string[]; on: boolean }
-  | { op: "priority"; ids: string[]; priority: Priority };
+  | { op: "priority"; ids: string[]; priority: Priority }
+  | { op: "progress"; ids: string[]; progress: Progress };
 
 export interface ModelCatalog { models: ModelInfo[]; configuredProviders: string[]; current: ModelInfo | null; thinkingLevel: ThinkingLevel | null; availableThinkingLevels: ThinkingLevel[] }
 export interface Command { name: string; description?: string; argumentHint?: string; source: "extension" | "prompt" | "skill" | "session" }

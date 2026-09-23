@@ -4,7 +4,7 @@ import { createGzip, type Gzip } from "node:zlib";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
-import { isPriority, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
+import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { listAccounts, runAccountAction } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
 import type { AccountAction, LabelAction, SendMode, ThinkingLevel } from "./shared/types.ts";
@@ -118,6 +118,9 @@ function parseLabelAction(body: Record<string, unknown>): LabelAction {
     case "priority":
       if (!isPriority(body.priority)) throw new RequestError(400, "Choose a priority from 0 to 3.");
       return { op: "priority", ids: threadIds(body.ids), priority: body.priority };
+    case "progress":
+      if (!isProgress(body.progress)) throw new RequestError(400, "Choose none, plan, implementation or qa.");
+      return { op: "progress", ids: threadIds(body.ids), progress: body.progress };
     default: throw new RequestError(400, "Unknown label action.");
   }
 }
@@ -240,6 +243,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           return;
         }
         if (route === "api/labels") { json(res, 200, await backend.labels.snapshot()); return; }
+        const usage = /^api\/threads\/([^/]+)\/child-usage$/.exec(route);
+        if (usage) { json(res, 200, { children: backend.catalog.childUsage(threadId(decodeURIComponent(usage[1]!))) }); return; }
         if (route === "api/workspaces") { json(res, 200, { workspaces: await backend.catalog.workspaces() }); return; }
         if (route === "api/models") {
           const id = url.searchParams.get("id");
@@ -344,6 +349,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, { accepted: true }); return;
         }
         case "abort": await backend.threads.abort(id); break;
+        case "archive": await backend.threads.archive(id); break;
         case "rename": {
           const name = text(body.name, "name", 200).trim();
           if (!name) throw new RequestError(400, "Use a name of 1 to 200 characters.");

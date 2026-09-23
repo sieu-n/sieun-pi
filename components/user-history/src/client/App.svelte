@@ -3,6 +3,7 @@
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
+  import { syncSpinners } from "./clock.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
   import Sidebar from "./Sidebar.svelte";
   import Thread from "./Thread.svelte";
@@ -15,6 +16,7 @@
 
   onMount(() => {
     store.start();
+    const unsync = syncSpinners();
     const observer = new ResizeObserver(entries => {
       const width = entries[0]?.contentRect.width ?? window.innerWidth;
       const next = width < NARROW_BELOW;
@@ -22,7 +24,7 @@
       narrow = next;
     });
     if (root) observer.observe(root);
-    return () => observer.disconnect();
+    return () => { observer.disconnect(); unsync(); };
   });
 
   let previous: string | null = null;
@@ -59,7 +61,6 @@
       if (id && state && composerFocused && isThreadBusy(state)) void store.run(api.abort(id));
       return;
     }
-    if (event.key === "F2" && store.selectedId) { event.preventDefault(); ui.requestRename(); }
   }
 </script>
 

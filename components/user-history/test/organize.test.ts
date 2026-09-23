@@ -6,13 +6,13 @@ import type { SessionSummary } from "prime-agent";
 import { parseSchedules, projectRow } from "../src/chat-catalog.ts";
 import { applyLabelAction, ChatLabels, LabelError, type LabelsState } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
-import { compareRows, elapsed, emptyFilter, groupRows, matchesFilter, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
+import { compareRows, elapsed, emptyFilter, groupRows, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
 import type { SessionRow, Tag } from "../src/shared/types.ts";
 
 const artifacts = () => process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(import.meta.dirname, "../.test-artifacts");
 const fresh = (): LabelsState => ({ tags: [], threads: Object.create(null) });
 const row = (id: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name: id, named: true, cwd: "/w", kind: "live", status: "idle", archived: false, messageCount: 2,
-  unread: false, tags: [], priority: 0, created: "2026-09-10T10:00:00Z", lastActivityAt: "2026-09-20T10:00:00Z", ...extra });
+  unread: false, tags: [], priority: 0, progress: "none", created: "2026-09-10T10:00:00Z", lastActivityAt: "2026-09-20T10:00:00Z", ...extra });
 
 test("labels: create reuses a tag by name, rename refuses a clash, delete strips it from every thread, empty entries are pruned", () => {
   const state = fresh();
@@ -31,7 +31,11 @@ test("labels: create reuses a tag by name, rename refuses a clash, delete strips
   applyLabelAction(state, { op: "priority", ids: ["a", "z"], priority: 3 });
   assert.equal(state.threads.z?.priority, 3);
   applyLabelAction(state, { op: "delete", tagId: bug });
-  assert.deepEqual(state.threads.a, { tags: [infra], priority: 3 });
+  assert.deepEqual(state.threads.a, { tags: [infra], priority: 3, progress: "none" });
+  applyLabelAction(state, { op: "progress", ids: ["p"], progress: "qa" });
+  assert.equal(state.threads.p?.progress, "qa");
+  applyLabelAction(state, { op: "progress", ids: ["p"], progress: "none" });
+  assert.equal(state.threads.p, undefined, "progress none with no tags or priority prunes the entry");
   assert.equal(state.threads.b, undefined, "a thread with no tags and priority 0 has no entry");
   applyLabelAction(state, { op: "priority", ids: ["z"], priority: 0 });
   assert.equal(state.threads.z, undefined);
@@ -77,13 +81,14 @@ test("schedules come from active or paused jobs; heartbeat sources are heartbeat
 test("catalog rows carry labels, schedule, and a working start only while busy", () => {
   const base = { id: "a", lifecycle: "live", activity: "working", isSessionActive: true, sessionId: "a", activeSessionId: "live-a", cwd: "/tmp", isStreaming: true, isCompacting: false,
     attachedClients: 0, messageCount: 3, sessionActions: { queuedCount: 0, steering: [], followUps: [] } } as unknown as SessionSummary;
-  const busy = projectRow(base, undefined, 0, { labels: { tags: ["t1"], priority: 2 }, workingSince: Date.parse("2026-09-23T08:00:00Z"),
+  const busy = projectRow({ ...base, usage: { inputTokens: 10, outputTokens: 5, cost: 1.25 } } as SessionSummary, undefined, 0, { labels: { tags: ["t1"], priority: 2, progress: "plan" }, workingSince: Date.parse("2026-09-23T08:00:00Z"),
     schedule: { kind: "heartbeat", status: "active", expression: "every 5m" } });
   assert.equal(busy.status, "running");
   assert.deepEqual([busy.tags, busy.priority, busy.workingSince, busy.schedule?.kind], [["t1"], 2, "2026-09-23T08:00:00.000Z", "heartbeat"]);
   const idle = projectRow({ ...base, isStreaming: false }, undefined, 0, { workingSince: 1 });
   assert.equal(idle.workingSince, undefined);
-  assert.deepEqual([idle.tags, idle.priority], [[], 0]);
+  assert.deepEqual([idle.tags, idle.priority, idle.progress, idle.cost], [[], 0, "none", undefined], "no usage from the daemon means an unknown cost");
+  assert.deepEqual([busy.progress, busy.cost], ["plan", 1.25]);
 });
 
 test("sidebar order: needs response, then working, then the rest by priority and recency", () => {
@@ -120,4 +125,10 @@ test("agents filters combine and sort by any column", () => {
   assert.deepEqual(ids({ priority: 1, model: "anthropic/opus" }), ["a"]);
   assert.deepEqual(sortBy(rows, "created", true, tags).map(item => item.id), ["c", "a", "b"]);
   assert.deepEqual(sortBy(rows, "tags", false, tags).map(item => item.id)[2], "a");
+});
+
+test("row shorthand: model names and session cost", () => {
+  assert.deepEqual(["anthropic/claude-opus-5-5", "anthropic/claude-fable-5-1", "openai-codex/gpt-6-astra", "anthropic/claude-haiku-4-5-20251001", "openai-codex/gpt-5.4-mini", undefined].map(modelShort),
+    ["opus-5.5", "fable-5.1", "astra-6", "haiku-4.5", "gpt-5.4-mini", ""]);
+  assert.deepEqual([money(0), money(1.234), money(250.4), money(undefined)], ["$0.00", "$1.23", "$250", "–"]);
 });

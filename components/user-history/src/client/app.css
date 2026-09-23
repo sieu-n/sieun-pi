@@ -1,30 +1,46 @@
 :root {
   color-scheme: light dark;
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --bg: light-dark(#f7f7f8, #161618);
-  --bg-elevated: light-dark(#ffffff, #1f1f22);
-  --bg-sunken: light-dark(#efeff1, #0f0f10);
-  --bg-hover: light-dark(rgba(0, 0, 0, 0.045), rgba(255, 255, 255, 0.06));
-  --bg-active: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1));
-  --border: light-dark(rgba(0, 0, 0, 0.09), rgba(255, 255, 255, 0.09));
-  --border-strong: light-dark(rgba(0, 0, 0, 0.18), rgba(255, 255, 255, 0.2));
-  --text: light-dark(#1c1c1e, #ececee);
-  --text-muted: light-dark(#6e6e73, #9a9aa0);
-  --text-faint: light-dark(#a1a1a6, #6b6b70);
-  --accent: light-dark(#6c5ce7, #8f83ff);
-  --accent-soft: light-dark(rgba(108, 92, 231, 0.12), rgba(143, 131, 255, 0.18));
+  --font: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* Virev graphite planes: rail (sunken) < canvas (bg) < raised card. */
+  --bg: light-dark(#f8f9fb, #17181c);
+  --bg-elevated: light-dark(#fdfdfe, #1f2126);
+  --bg-sunken: light-dark(#eef0f3, #141519);
+  --bg-hover: light-dark(rgba(16, 18, 23, 0.05), rgba(255, 255, 255, 0.05));
+  --bg-active: light-dark(rgba(16, 18, 23, 0.09), rgba(255, 255, 255, 0.09));
+  /* Opaque row states on the rail, so overlay controls can sit on a row without the title bleeding through. */
+  --rail-hover: light-dark(#e3e5e8, #202125);
+  --rail-active: light-dark(#dadce0, #292a2e);
+  --row-hover: light-dark(#eaf1f8, #1a2430);
+  --row-selected: light-dark(#dbe7f3, #1f3145);
+  --border: light-dark(#e7e9ed, #26282f);
+  --border-strong: light-dark(#ccd1d8, #363943);
+  --text: light-dark(#23262b, #f0f1f4);
+  --text-muted: light-dark(#5e6570, #9aa2ae);
+  --text-faint: light-dark(#767e8b, #6a7180);
+  --accent: light-dark(#0077c0, #2e9fe6);
+  --accent-soft: light-dark(rgba(0, 119, 192, 0.08), rgba(46, 159, 230, 0.14));
+  --accent-bold: light-dark(#005a93, #6fc0f2);
   --accent-text: #ffffff;
-  --user-bubble: light-dark(#ececf1, #2a2a30);
-  --danger: light-dark(#d0453d, #ef6a63);
-  --danger-soft: light-dark(rgba(208, 69, 61, 0.12), rgba(239, 106, 99, 0.16));
-  --success: light-dark(#2f9e63, #4fc681);
-  --warning: light-dark(#c98a12, #e0a63a);
-  --shadow-near: light-dark(rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.4));
-  --shadow-far: light-dark(rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.5));
-  --shadow: 0 1px 2px var(--shadow-near), 0 10px 28px var(--shadow-far);
-  --radius: 12px;
-  --radius-small: 8px;
+  --accent-fill: #0077c0;
+  --primary: light-dark(#8ed0f5, #6fc0f2);
+  --primary-hover: light-dark(#74c4ef, #8ccffa);
+  --primary-active: light-dark(#5db4e4, #57ade2);
+  --primary-text: light-dark(#06344f, #0a2233);
+  --primary-edge: light-dark(rgba(6, 52, 79, 0.4), rgba(10, 34, 51, 0.28));
+  --user-bubble: light-dark(#eef0f3, #26282f);
+  --danger: light-dark(#dc2626, #f87171);
+  --danger-soft: light-dark(#fef2f2, rgba(220, 38, 38, 0.16));
+  --success: light-dark(#0f9d6e, #34d399);
+  --warning: light-dark(#d97706, #fbbf24);
+  --tooltip: light-dark(#23262b, #363943);
+  --tooltip-text: light-dark(#ffffff, #f0f1f4);
+  --shadow-near: light-dark(rgba(16, 18, 23, 0.05), rgba(0, 0, 0, 0.4));
+  --shadow-far: light-dark(rgba(16, 18, 23, 0.11), rgba(0, 0, 0, 0.45));
+  --shadow: 0 1px 2px var(--shadow-near), 0 8px 22px var(--shadow-far), 0 24px 48px light-dark(rgba(16, 18, 23, 0.13), rgba(0, 0, 0, 0.5));
+  --shadow-small: 0 1px 2px var(--shadow-near);
+  --radius: 10px;
+  --radius-small: 6px;
   --column: 760px;
   --sidebar: 280px;
 }
@@ -35,6 +51,7 @@ body {
   font-family: var(--font);
   font-size: 15px;
   line-height: 1.6;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -75,7 +92,8 @@ a { color: var(--accent); }
 .prose .inert-image { color: var(--text-muted); font-style: normal; }
 .prose .checkbox { font-family: var(--mono); color: var(--text-muted); }
 
-.spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; }
+.spinner { --size: 14px; display: inline-block; flex: none; box-sizing: border-box; width: var(--size); height: var(--size); min-width: var(--size); min-height: var(--size); aspect-ratio: 1; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; }
+.spinner.tiny { --size: 11px; border-width: 1.5px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .fade-in { animation: fade-in 0.18s ease-out; }
@@ -84,28 +102,33 @@ a { color: var(--accent); }
   .spinner { animation: none; border-top-color: var(--text-muted); }
 }
 
-.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: var(--radius-small); color: var(--text-muted); flex: none; }
+.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: var(--radius-small); color: var(--text-muted); flex: none; transition: background-color 0.12s, color 0.12s; }
 .icon-button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .icon-button svg { width: 18px; height: 18px; }
+.icon-button.small { width: 24px; height: 24px; }
+.icon-button.small svg { width: 14px; height: 14px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elevated); font-size: 13px; color: var(--text-muted); white-space: nowrap; max-width: 100%; }
 .chip:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
-.bar-button { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 8px; border-radius: var(--radius-small); color: var(--text-muted); font-size: 13px; white-space: nowrap; min-width: 0; }
-.bar-button:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.chip.active { background: var(--accent-soft); border-color: transparent; color: var(--accent-bold); }
+.bar-button { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 8px; border-radius: var(--radius-small); color: var(--text-muted); font-size: 13px; white-space: nowrap; min-width: 0; transition: background-color 0.12s, color 0.12s; }
+.bar-button:hover:not(:disabled), .bar-button[aria-expanded="true"] { background: var(--bg-hover); color: var(--text); }
 .bar-button .label { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
-.chip.active { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
-.menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border-radius: var(--radius-small); text-align: left; font-size: 14px; line-height: 1.35; }
-.menu-item:hover:not(:disabled), .menu-item.selected { background: var(--bg-hover); }
-.menu-item.current { color: var(--accent); }
-.menu-item .hint { margin-left: auto; color: var(--text-faint); font-size: 12px; white-space: nowrap; }
+/* Menus follow the Virev recipe: raised plane, strong hairline, float shadow, compact 13px rows. */
+.panel-surface { border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-elevated); color: var(--text); box-shadow: var(--shadow); }
+.menu-item { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 5px 10px; border-radius: var(--radius-small); text-align: left; font-size: 13px; line-height: 1.35; color: var(--text); transition: background-color 0.12s; }
+.menu-item:hover:not(:disabled), .menu-item.selected, .menu-item[data-active="true"] { background: var(--bg-hover); }
+.menu-item.current { color: var(--accent-bold); font-weight: 500; }
+.menu-item .hint { margin-left: auto; color: var(--text-faint); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .menu-item.danger { color: var(--danger); }
-.menu-heading { padding: 8px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); }
-.menu-separator { height: 1px; margin: 6px 4px; background: var(--border); }
-.button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: var(--radius-small); border: 1px solid var(--border); background: var(--bg-elevated); font-size: 14px; font-weight: 500; }
+.menu-heading { padding: 8px 10px 3px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
+.menu-separator { height: 1px; margin: 4px 2px; background: var(--border); }
+.button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: var(--radius-small); border: 1px solid var(--border-strong); background: var(--bg-elevated); font-size: 13px; font-weight: 500; transition: background-color 0.12s, border-color 0.12s; }
 .button:hover:not(:disabled) { background: var(--bg-hover); }
-.button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
-.button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+.button.primary { background: var(--primary); color: var(--primary-text); border-color: var(--primary-edge); font-weight: 600; }
+.button.primary:hover:not(:disabled) { background: var(--primary-hover); }
+.button.primary:active:not(:disabled) { background: var(--primary-active); }
 .button.danger { color: var(--danger); }
-.button.small { height: 26px; padding: 0 10px; font-size: 13px; }
+.button.small { height: 26px; padding: 0 10px; font-size: 12.5px; }
 .card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); padding: 14px 16px; }
 .muted { color: var(--text-muted); }
 .faint { color: var(--text-faint); }
@@ -116,5 +139,14 @@ a { color: var(--accent); }
 .status-dot.running { background: var(--accent); }
 .status-dot.done { background: var(--success); }
 .status-dot.error { background: var(--danger); }
-input.field, textarea.field { width: 100%; padding: 6px 10px; border-radius: var(--radius-small); border: 1px solid var(--border); background: var(--bg-elevated); outline: none; }
-input.field:focus, textarea.field:focus { border-color: var(--accent); }
+/* Mode switch: one quiet recessed track, ocean marks the choice, no inner plate. */
+.segmented { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border-radius: 8px; background: var(--bg-sunken); }
+.segmented > button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: var(--radius-small); font-size: 12px; font-weight: 500; color: var(--text-muted); white-space: nowrap; transition: background-color 0.15s, color 0.15s; }
+.segmented > button:hover:not(.on) { color: var(--text); background: var(--bg-hover); }
+.segmented > button.on { background: var(--accent-soft); color: var(--accent-bold); font-weight: 600; }
+input.field, textarea.field { width: 100%; padding: 5px 10px; border-radius: var(--radius-small); border: 1px solid var(--border-strong); background: var(--bg-elevated); outline: none; font-size: 13px; transition: border-color 0.12s, box-shadow 0.12s; }
+input.field:focus, textarea.field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input.field::placeholder { color: var(--text-faint); }
+.tabular { font-variant-numeric: tabular-nums; }
+.ui-tooltip { position: fixed; z-index: 200; width: max-content; max-width: 260px; padding: 5px 10px; background: var(--tooltip); color: var(--tooltip-text); font-size: 11.5px; line-height: 1.45; font-weight: 500; text-align: center; border-radius: 8px; box-shadow: 0 2px 10px var(--shadow-far); pointer-events: none; }
+.ui-tooltip-tail { position: absolute; width: 8px; height: 8px; background: inherit; transform: rotate(45deg); }

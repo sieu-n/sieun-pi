@@ -36,7 +36,7 @@
       stroke-linecap="round" stroke-dasharray="{RING * percent / 100} {RING}" transform="rotate(-90 11 11)" />
   </svg>
   <span>{percent}%</span>
-  {#if health.level !== "ok"}<span class="flag {health.level}" title="Cache problem"></span>{/if}
+  {#if health.level !== "ok"}<span class="flag {health.level}" role="img" aria-label="Cache problem"></span>{/if}
   {#if open}
     <div class="details fade-in" id="context-details" role="tooltip">
       <div class="line"><span>Context</span><span>{compactNumber(context.tokens)} of {compactNumber(context.contextWindow)}</span></div>
@@ -68,7 +68,7 @@
   .flag { width: 7px; height: 7px; border-radius: 50%; }
   .flag.warn { background: var(--warning); }
   .flag.bad { background: var(--danger); }
-  .details { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 30; width: 260px; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg-elevated); box-shadow: var(--shadow); color: var(--text); white-space: normal; }
+  .details { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 30; width: 260px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--bg-elevated); box-shadow: var(--shadow); color: var(--text); white-space: normal; }
   .line { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
   .line span:first-child { color: var(--text-muted); }
   .line.warn span { color: var(--warning); }

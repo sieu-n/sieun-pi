@@ -1,4 +1,4 @@
-import type { Priority, SessionRow, Tag } from "../shared/types.ts";
+import type { Priority, Progress, SessionRow, Tag } from "../shared/types.ts";
 
 export type Bucket = "needs" | "working" | "other";
 export type Tab = "threads" | "heartbeats";
@@ -8,6 +8,24 @@ export const BUCKETS: readonly Bucket[] = ["needs", "working", "other"];
 export const BUCKET_LABEL: Record<Bucket, string> = { needs: "Needs response", working: "Working", other: "Other threads" };
 export const STATUS_LABEL: Record<RowStatus, string> = { needs: "Needs response", working: "Working", idle: "Idle", saved: "Saved" };
 export const PRIORITY_LABEL: Record<Priority, string> = { 0: "No priority", 1: "Low", 2: "Medium", 3: "High" };
+export const PROGRESS_LABEL: Record<Progress, string> = { none: "No progress", plan: "Plan", implementation: "Implementation", qa: "QA" };
+
+/** A short model name for dense rows: "opus-5.5", "fable-5.1", "astra-6", else the model id without its vendor prefix. */
+export function modelShort(model: string | undefined): string {
+  if (!model) return "";
+  const id = model.slice(model.indexOf("/") + 1).toLowerCase();
+  const claude = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-|$)/.exec(id);
+  if (claude) return claude[1] + "-" + claude[2] + (claude[3] ? "." + claude[3] : "");
+  const gpt = /^gpt-([\d.]+)-([a-z]+)$/.exec(id);
+  if (gpt && !["mini", "nano", "codex", "pro", "max"].includes(gpt[2]!)) return gpt[2] + "-" + gpt[1];
+  return id.replace(/^claude-/, "");
+}
+
+/** Session cost for a row: two decimals under $100, whole dollars above, and a dash when the daemon reported no usage. */
+export function money(cost: number | undefined): string {
+  if (cost === undefined || !Number.isFinite(cost)) return "–";
+  return "$" + (cost < 100 ? cost.toFixed(2) : Math.round(cost).toLocaleString("en-US"));
+}
 
 /** Needs response: not running, has messages, and its last activity came after the browser last opened it (the unread marker). */
 export const needsResponse = (row: SessionRow): boolean => row.status !== "running" && row.unread;
@@ -57,12 +75,13 @@ export function nextRun(value: string | undefined, now = Date.now()): string {
   return ms <= now ? "due now" : "next in " + elapsed(ms - now);
 }
 
-export type SortKey = "status" | "name" | "priority" | "tags" | "cwd" | "model" | "created" | "activity";
+export type SortKey = "status" | "name" | "priority" | "progress" | "tags" | "cwd" | "model" | "cost" | "created" | "activity";
 export interface AgentFilter {
-  query: string; status: RowStatus | "any"; tag: string; priority: Priority | "any"; cwd: string; model: string;
+  query: string; status: RowStatus | "any"; tag: string; priority: Priority | "any"; progress: Progress | "any"; cwd: string; model: string;
   from: string; to: string; kind: Tab | "any"; archived: boolean;
 }
-export const emptyFilter = (): AgentFilter => ({ query: "", status: "any", tag: "any", priority: "any", cwd: "any", model: "any", from: "", to: "", kind: "any", archived: false });
+export const emptyFilter = (): AgentFilter => ({ query: "", status: "any", tag: "any", priority: "any", progress: "any", cwd: "any", model: "any", from: "", to: "", kind: "any", archived: false });
+const PROGRESS_ORDER: Record<Progress, number> = { none: 0, plan: 1, implementation: 2, qa: 3 };
 
 const dayStart = (value: string): number => { const ms = Date.parse(value + "T00:00:00"); return Number.isFinite(ms) ? ms : NaN; };
 
@@ -72,6 +91,7 @@ export function matchesFilter(row: SessionRow, filter: AgentFilter, tags: Readon
   if (filter.kind !== "any" && tabOf(row) !== filter.kind) return false;
   if (filter.tag === "none" ? row.tags.length > 0 : filter.tag !== "any" && !row.tags.includes(filter.tag)) return false;
   if (filter.priority !== "any" && row.priority !== filter.priority) return false;
+  if (filter.progress !== "any" && row.progress !== filter.progress) return false;
   if (filter.cwd !== "any" && row.cwd !== filter.cwd) return false;
   if (filter.model !== "any" && (row.model ?? "") !== filter.model) return false;
   const created = createdOf(row);
@@ -89,6 +109,8 @@ export function sortBy(rows: readonly SessionRow[], key: SortKey, descending: bo
     switch (key) {
       case "status": return compareRows(left, right);
       case "priority": return left.priority - right.priority || activityOf(left) - activityOf(right);
+      case "progress": return PROGRESS_ORDER[left.progress] - PROGRESS_ORDER[right.progress] || activityOf(left) - activityOf(right);
+      case "cost": return (left.cost ?? -1) - (right.cost ?? -1);
       case "created": return createdOf(left) - createdOf(right);
       case "activity": return activityOf(left) - activityOf(right);
       default: return text(left).localeCompare(text(right), undefined, { sensitivity: "base" }) || activityOf(right) - activityOf(left);

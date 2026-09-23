@@ -1,6 +1,6 @@
 import { api } from "./api.ts";
 import { store } from "./store.svelte.ts";
-import type { Priority, SessionRow, Tag } from "../shared/types.ts";
+import type { Priority, Progress, SessionRow, Tag } from "../shared/types.ts";
 
 function patchRows(ids: readonly string[], change: (row: SessionRow) => SessionRow): void {
   const selected = new Set(ids);
@@ -14,6 +14,17 @@ export const labels = {
     if (!ids.length) return;
     patchRows(ids, row => ({ ...row, priority }));
     await store.run(api.labels({ op: "priority", ids: [...ids], priority }));
+  },
+  async setProgress(ids: readonly string[], progress: Progress): Promise<void> {
+    if (!ids.length) return;
+    patchRows(ids, row => ({ ...row, progress }));
+    await store.run(api.labels({ op: "progress", ids: [...ids], progress }));
+  },
+  async archive(ids: readonly string[]): Promise<void> {
+    if (!ids.length) return;
+    patchRows(ids, row => ({ ...row, archived: true, kind: "saved", status: "saved" }));
+    for (const id of ids) await store.run(api.archive(id));
+    store.toast(ids.length === 1 ? "Archived" : `Archived ${ids.length} threads`, "info");
   },
   async setTag(ids: readonly string[], tagId: string, on: boolean): Promise<void> {
     if (!ids.length) return;

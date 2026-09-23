@@ -9,6 +9,7 @@
   import Popover from "./Popover.svelte";
   import Icon from "./Icon.svelte";
   import AccountChip from "./AccountChip.svelte";
+  import { tooltip } from "./ui/tooltip.ts";
 
   let { narrow }: { narrow: boolean } = $props();
   let workspaces = $state<Workspace[]>([]);
@@ -50,7 +51,7 @@
 <div class="new-chat">
   <div class="top">
     {#if !store.sidebarOpen || narrow}
-      <button class="icon-button" aria-label="Show sidebar" title="Show sidebar (Cmd+B)" onclick={() => { store.sidebarOpen = true; }}><Icon name={narrow ? "menu" : "sidebar"} /></button>
+      <button class="icon-button" aria-label="Show sidebar" use:tooltip={"Show sidebar ⌘B"} onclick={() => { store.sidebarOpen = true; }}><Icon name={narrow ? "menu" : "sidebar"} /></button>
     {/if}
   </div>
   <div class="center">
@@ -71,17 +72,16 @@
         </div>
       {:else}
         <h1 class="greeting">{greeting}</h1>
-        <p class="sub">What are we working on?</p>
         <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder="Ask Prime Agent anything">
           {#snippet left()}
-            <Popover open={workspaceOpen} onclose={closePopover} width="320px">
+            <Popover open={workspaceOpen} onclose={closePopover} width={340} label="Workspace">
               {#snippet trigger()}
-                <button class="bar-button" onclick={() => { workspaceOpen = !workspaceOpen; }} title={cwd || "Workspace"}>
+                <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={workspaceOpen} aria-label="Workspace: {cwd || 'none'}" onclick={() => { workspaceOpen = !workspaceOpen; }}>
                   <Icon name="folder" size={14} /><span class="label">{cwd ? shortPath(cwd) : "Workspace"}</span><Icon name="chevronDown" size={12} />
                 </button>
               {/snippet}
               {#each workspaces as workspace (workspace.cwd)}
-                <button class="menu-item" class:current={workspace.cwd === cwd} onclick={() => chooseWorkspace(workspace.cwd)}>
+                <button type="button" class="menu-item" class:current={workspace.cwd === cwd} onclick={() => chooseWorkspace(workspace.cwd)}>
                   <span class="path">{workspace.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
                   <span class="hint">{workspace.count}{workspace.lastUsedAt ? " · " + relativeTime(workspace.lastUsedAt) : ""}</span>
                 </button>
@@ -89,7 +89,7 @@
               <div class="menu-separator"></div>
               <form class="custom" onsubmit={event => { event.preventDefault(); chooseWorkspace(customCwd); }}>
                 <input class="field" placeholder="/absolute/path" aria-label="Other workspace path" bind:value={customCwd} />
-                <button class="button small" type="submit" disabled={!customCwd.trim()}>Use</button>
+                <button class="button small primary" type="submit" disabled={!customCwd.trim()}>Use</button>
               </form>
             </Popover>
             <AccountChip threadId={null} provider={(model ?? catalog?.current)?.provider} />
@@ -109,8 +109,7 @@
   .top { display: flex; align-items: center; padding: 0 8px; height: 40px; }
   .center { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 20px 10vh; overflow-y: auto; }
   .column { width: 100%; max-width: var(--column); }
-  .greeting { margin: 0 0 4px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
-  .sub { margin: 0 0 20px; color: var(--text-muted); font-size: 16px; }
+  .greeting { margin: 0 0 18px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); font-size: 12px; }
   .custom { display: flex; gap: 6px; padding: 6px 4px 2px; }
   .pending { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; }

@@ -1,4 +1,4 @@
-import type { AccountAction, AccountsView, Command, ImageInput, LabelAction, ModelCatalog, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountsView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -47,6 +47,7 @@ export const api = {
   workspaces: () => get<{ workspaces: Workspace[] }>("api/workspaces").then(body => body.workspaces),
   models: (id: string | null) => get<ModelCatalog>("api/models" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
   commands: (id: string | null) => get<{ commands: Command[] }>(id ? "api/threads/" + encodeURIComponent(id) + "/commands" : "api/commands", 30000).then(body => body.commands),
+  childUsage: (id: string) => get<{ children: ChildUsage[] }>("api/threads/" + encodeURIComponent(id) + "/child-usage").then(body => body.children),
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
   toolOutput: (id: string, toolCallId: string) => get<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }>(
     "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),
@@ -59,6 +60,7 @@ export const api = {
   prompt: (id: string, input: { message: string; images: ImageInput[]; mode: SendMode; requestId: string }) =>
     post<{ accepted: true }>("api/threads/" + encodeURIComponent(id) + "/prompt", input, 120000),
   abort: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/abort", {}),
+  archive: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/archive", {}, 60000),
   rename: (id: string, name: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/rename", { name }),
   setModel: (id: string, provider: string, modelId: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/model", { provider, modelId }),
   setThinking: (id: string, level: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/thinking", { level }),

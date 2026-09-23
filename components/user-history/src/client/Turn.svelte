@@ -7,6 +7,7 @@
   import type { ImagePart } from "../shared/types.ts";
   import WorkRow from "./WorkRow.svelte";
   import Icon from "./Icon.svelte";
+  import { tooltip } from "./ui/tooltip.ts";
 
   let { turn, threadId }: { turn: Turn; threadId: string } = $props();
 
@@ -69,7 +70,7 @@
       {/if}
       {#if !replyLive && shownText}
         <div class="reply-actions">
-          <button class="icon-button" aria-label="Copy reply" title={copied ? "Copied" : "Copy reply"} onclick={copyReply}><Icon name={copied ? "check" : "copy"} size={15} /></button>
+          <button type="button" class="icon-button" aria-label={copied ? "Copied" : "Copy reply"} use:tooltip={copied ? "Copied" : "Copy reply"} onclick={copyReply}><Icon name={copied ? "check" : "copy"} size={15} /></button>
           {#if reply.message.model}<span class="model faint">{reply.message.model}</span>{/if}
         </div>
       {/if}

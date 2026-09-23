@@ -37,9 +37,9 @@
           {#if editing?.lane === lane && editing.index === index}
             <input class="field edit" bind:value={editing.text} aria-label="Edit queued message" use:focusAndSelect onkeydown={onEditKey} onblur={() => void save()} />
           {:else}
-            <span class="text" title={text}>{text}</span>
-            <button class="icon-button small" aria-label="Edit queued message" onclick={() => { editing = { lane, index, text }; }}><Icon name="pencil" size={13} /></button>
-            <button class="icon-button small" aria-label="Remove queued message" onclick={() => void remove(lane, index, text)}><Icon name="x" size={13} /></button>
+            <span class="text">{text}</span>
+            <button type="button" class="icon-button small" aria-label="Edit queued message" onclick={() => { editing = { lane, index, text }; }}><Icon name="pencil" size={13} /></button>
+            <button type="button" class="icon-button small" aria-label="Remove queued message" onclick={() => void remove(lane, index, text)}><Icon name="x" size={13} /></button>
           {/if}
         </div>
       {/each}
@@ -51,9 +51,8 @@
   .queue { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
   .queued { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; border-radius: 999px; border: 1px dashed var(--border-strong); background: var(--bg-elevated); font-size: 13px; }
   .queued.steer { border-color: var(--accent); }
-  .lane { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); flex: none; }
+  .lane { font-size: 11.5px; font-weight: 600; color: var(--text-muted); flex: none; }
   .steer .lane { color: var(--accent); }
   .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .edit { flex: 1; padding: 2px 8px; font-size: 13px; border-radius: 999px; }
-  .icon-button.small { width: 24px; height: 24px; }
 </style>

@@ -338,6 +338,24 @@ export class ThreadHub {
     await live.connection.abort();
   }
 
+  /** Archive the way the terminal agents view deactivates an agent: kill the resident session, then record the native archived state in its session file. */
+  async archive(id: string): Promise<void> {
+    const summary = await this.catalog.summary(id);
+    if (!summary) throw new ThreadError(404, "Thread not found.");
+    await this.dispose(id);
+    if (summary.activeSessionId) {
+      await this.catalog.connect();
+      const response = await this.catalog.client.request({ type: "kill", activeSessionId: summary.activeSessionId }, 30000, { recoverable: false });
+      if (!response.success && !response.error.startsWith("Unknown active session:")) throw new ThreadError(502, response.error);
+    }
+    if (summary.sessionFile && existsSync(summary.sessionFile)) {
+      const manager = SessionManager.open(summary.sessionFile);
+      if (manager.getSessionState()?.status !== "archived") manager.appendSessionState({ status: "archived" });
+    }
+    this.catalog.forget(id);
+    await this.catalog.refresh();
+  }
+
   async rename(id: string, name: string): Promise<void> {
     const thread = await this.open(id);
     if (thread.live) { await thread.live.connection.setSessionName(name); await this.refreshInfo(thread); return; }

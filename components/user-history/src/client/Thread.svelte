@@ -14,7 +14,15 @@
   import QueueChips from "./QueueChips.svelte";
   import AccountChip from "./AccountChip.svelte";
   import Popover from "./Popover.svelte";
+  import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
+  import TagChip from "./TagChip.svelte";
+  import SubagentList from "./SubagentList.svelte";
+  import Floating from "./ui/Floating.svelte";
+  import TagPicker from "./ui/TagPicker.svelte";
+  import { tooltip } from "./ui/tooltip.ts";
+  import { labels } from "./labels.ts";
+  import { clock } from "./clock.svelte.ts";
 
   let { id, narrow }: { id: string; narrow: boolean } = $props();
 
@@ -54,12 +62,7 @@
   const context = $derived(thread?.info.context ?? null);
   const runningChildren = $derived(thread?.children.filter(child => child.status === "running" || child.status === "queued").length ?? 0);
 
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!busy) return;
-    const timer = setInterval(() => { now = Date.now(); }, 1000);
-    return () => clearInterval(timer);
-  });
+  const now = $derived(busy ? clock.now : 0);
   const statusText = $derived.by(() => {
     if (!thread || !busy) return "";
     const parts: string[] = [];
@@ -75,6 +78,17 @@
   });
 
   let agentsOpen = $state(false);
+  let tagButton: HTMLButtonElement | undefined = $state();
+  let tagging = $state(false);
+  let confirmArchive = $state(false);
+  const rowTags = $derived((row?.tags ?? []).flatMap(tagId => store.tags.filter(tag => tag.id === tagId)));
+  const MODAL_CHILDREN = 40;
+  function archive(): void {
+    if (busy && !confirmArchive) { confirmArchive = true; return; }
+    confirmArchive = false;
+    store.select(null);
+    void labels.archive([id]);
+  }
   let catalog = $state<ModelCatalog | null>(null);
   let catalogError = $state<string | null>(null);
   function loadCatalog(): void {
@@ -91,11 +105,6 @@
   }
 
   let editingTitle = $state<string | null>(null);
-  let seenRenameTick = ui.renameTick;
-  $effect(() => {
-    const current = ui.renameTick;
-    if (current !== seenRenameTick) { seenRenameTick = current; untrack(startRename); }
-  });
   function startRename(): void { if (editingTitle === null) editingTitle = row?.named || thread?.info.name ? title : ""; }
   async function commitRename(): Promise<void> {
     const draft = editingTitle;
@@ -156,46 +165,62 @@
 <div class="thread">
   <header class="head">
     {#if !store.sidebarOpen || narrow}
-      <button class="icon-button" aria-label="Show sidebar" title="Show sidebar (Cmd+B)" onclick={() => { store.sidebarOpen = true; }}><Icon name={narrow ? "menu" : "sidebar"} /></button>
+      <button type="button" class="icon-button" aria-label="Show sidebar" use:tooltip={"Show sidebar ⌘B"} onclick={() => { store.sidebarOpen = true; }}><Icon name={narrow ? "menu" : "sidebar"} /></button>
     {/if}
     <div class="title-wrap">
       {#if editingTitle !== null}
         <input class="field title-input" bind:value={editingTitle} placeholder="Thread name" aria-label="Thread name" use:focusAndSelect onkeydown={onTitleKey} onblur={() => void commitRename()} />
       {:else}
-        <button class="title" title="{title}. Click or press F2 to rename. Session {id}" onclick={startRename}>{title}</button>
+        <button type="button" class="title" aria-label="Rename thread {title}" onclick={startRename}>{title}</button>
       {/if}
-      {#if cwd}<span class="cwd" title={cwd}>{shortPath(cwd)}</span>{/if}
+      {#if cwd}<span class="cwd">{shortPath(cwd)}</span>{/if}
+      <span class="tags">
+        {#each rowTags as tag (tag.id)}
+          <button type="button" class="tag-button" aria-label="Remove tag {tag.name}" onclick={() => void labels.setTag([id], tag.id, false)}><TagChip {tag} /><span class="x" aria-hidden="true"><Icon name="x" size={10} /></span></button>
+        {/each}
+        <button type="button" class="add-tag" bind:this={tagButton} aria-haspopup="dialog" aria-expanded={tagging} onclick={() => { tagging = !tagging; }}>
+          <Icon name="plus" size={12} />{rowTags.length ? "" : "Tag"}
+        </button>
+      </span>
     </div>
     <div class="controls">
       <div class="segmented" role="radiogroup" aria-label="View">
-        <button role="radio" aria-checked={ui.viewMode === "default"} class:on={ui.viewMode === "default"} onclick={() => ui.setViewMode("default")}>Default</button>
-        <button role="radio" aria-checked={ui.viewMode === "questions"} class:on={ui.viewMode === "questions"} onclick={() => ui.setViewMode("questions")}>Questions</button>
+        <button type="button" role="radio" aria-checked={ui.viewMode === "default"} class:on={ui.viewMode === "default"} onclick={() => ui.setViewMode("default")}>Default</button>
+        <button type="button" role="radio" aria-checked={ui.viewMode === "questions"} class:on={ui.viewMode === "questions"} onclick={() => ui.setViewMode("questions")}>Questions</button>
       </div>
       {#if thread?.children.length}
-        <Popover open={agentsOpen} onclose={() => { agentsOpen = false; }} align="end" width="320px">
-          {#snippet trigger()}
-            <button class="bar-button" class:active-agents={runningChildren > 0} title="Agents" onclick={() => { agentsOpen = !agentsOpen; }}>
-              <Icon name="users" size={14} /><span>{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
-            </button>
-          {/snippet}
-          <div class="menu-heading">Agents</div>
-          {#each thread.children as child (child.id)}
-            <div class="agent">
-              <div class="agent-head">
-                <span class="status-dot" class:running={child.status === "running"} class:done={child.status === "done"} class:error={child.status === "error" || child.status === "cancelled"}></span>
-                <span class="agent-name">{child.sessionName ?? child.label}</span>
-                <span class="hint">{child.status}{child.durationMs !== undefined ? " · " + duration(child.durationMs) : ""}</span>
-              </div>
-              {#if child.sessionName && child.label !== child.sessionName}<div class="agent-label">{child.label}</div>{/if}
-              {#if child.activity}<div class="agent-recap">{child.activity.kind}{child.activity.toolName ? " " + child.activity.toolName : ""}</div>{/if}
-              {#if child.recap}<div class="agent-recap">{child.recap}</div>{/if}
-              {#if child.error}<div class="agent-recap danger">{child.error}</div>{/if}
-            </div>
-          {/each}
-        </Popover>
+        {#if thread.children.length > MODAL_CHILDREN}
+          <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label="Subagents" onclick={() => { agentsOpen = true; }}>
+            <Icon name="users" size={14} /><span>{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
+          </button>
+          {#if agentsOpen}
+            <Modal title="Subagents" width="640px" onclose={() => { agentsOpen = false; }}>
+              <div class="modal-list"><SubagentList threadId={id} children={thread.children} height={Math.round(window.innerHeight * 0.6)} /></div>
+            </Modal>
+          {/if}
+        {:else}
+          <Popover open={agentsOpen} onclose={() => { agentsOpen = false; }} align="end" width={420} label="Subagents">
+            {#snippet trigger()}
+              <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label="Subagents" aria-haspopup="dialog" aria-expanded={agentsOpen} onclick={() => { agentsOpen = !agentsOpen; }}>
+                <Icon name="users" size={14} /><span>{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
+              </button>
+            {/snippet}
+            <SubagentList threadId={id} children={thread.children} />
+          </Popover>
+        {/if}
+      {/if}
+      {#if row && !row.archived}
+        {#if confirmArchive}
+          <button type="button" class="confirm" onclick={archive} onblur={() => { confirmArchive = false; }}>Stop and archive</button>
+        {:else}
+          <button type="button" class="icon-button" aria-label="Archive thread" use:tooltip={"Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
+        {/if}
       {/if}
     </div>
   </header>
+  {#if tagging && tagButton}
+    <Floating anchor={tagButton} width={260} maxHeight={360} label="Tags" onclose={() => { tagging = false; }}><TagPicker ids={[id]} /></Floating>
+  {/if}
 
   {#if thread?.connection === "reconnecting" || (entry?.loading && thread)}
     <div class="thin-bar">{entry?.loading ? "Refreshing" : "Reconnecting"}</div>
@@ -219,7 +244,7 @@
       <div class="column" bind:this={column}>
         {#if ui.viewMode === "questions"}
           {#each questions as question (question.key)}
-            <button class="question" onclick={() => void jumpTo(question.key)} title="Show this turn">
+            <button type="button" class="question" onclick={() => void jumpTo(question.key)}>
               {#if question.skill}<span class="question-skill">{question.skill}</span>{/if}
               <span class="question-text">{question.text || (question.images ? "Image" : "(empty)")}</span>
               <span class="question-meta">{question.images ? `${question.images} image${question.images === 1 ? "" : "s"} · ` : ""}{question.at}</span>
@@ -235,7 +260,7 @@
       </div>
     </div>
     {#if !pinned}
-      <button class="jump fade-in" onclick={() => { pinned = true; scrollToBottom(); }}><Icon name="arrowDown" size={14} /> Jump to latest</button>
+      <button type="button" class="jump fade-in" onclick={() => { pinned = true; scrollToBottom(); }}><Icon name="arrowDown" size={14} /> Jump to latest</button>
     {/if}
     <div class="foot">
       <div class="column">
@@ -250,14 +275,12 @@
           {/snippet}
           {#snippet right()}
             <ModelPicker label={modelLabel} disabled={busy || saved || !thread}
-              title={saved ? "Reply first to resume this thread, then change the model" : busy ? "Wait for the agent to finish" : "Model and effort"}
               {catalog} error={catalogError} current={thread?.info.model ?? null} onopen={loadCatalog} onchoose={model => void chooseModel(model)}
-              effort={thread?.info.thinkingLevel ?? null} levels={thread?.info.availableThinkingLevels ?? []} oneffort={level => void chooseEffort(level)}
-              note="Model and effort changes also become the default for new chats." />
+              effort={thread?.info.thinkingLevel ?? null} levels={thread?.info.availableThinkingLevels ?? []} oneffort={level => void chooseEffort(level)} />
           {/snippet}
         </Composer>
         <div class="status-line">
-          {#if busy}<span class="spinner tiny"></span><span class="status-text" title={statusText}>{statusText}</span>{:else if saved}<span class="status-text">Saved thread. A reply resumes it.</span>{/if}
+          {#if busy}<span class="spinner tiny"></span><span class="status-text">{statusText}</span>{/if}
         </div>
       </div>
     </div>
@@ -268,13 +291,18 @@
   .thread { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .head { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 40px; border-bottom: 1px solid var(--border); background: var(--bg); }
   .head .icon-button { width: 28px; height: 28px; }
-  .title-wrap { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+  .title-wrap { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
   .cwd { flex: none; font-size: 12px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
-  .segmented { display: inline-flex; padding: 2px; border-radius: var(--radius-small); background: var(--bg-hover); }
-  .segmented button { height: 24px; padding: 0 10px; border-radius: 6px; font-size: 12px; color: var(--text-muted); }
-  .segmented button:hover { color: var(--text); }
-  .segmented button.on { background: var(--bg-elevated); color: var(--text); box-shadow: 0 1px 2px var(--shadow-near); }
-  .active-agents { color: var(--accent); }
+  .active-agents { color: var(--accent-bold); }
+  .tags { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+  .tag-button { position: relative; display: inline-flex; flex: none; border-radius: 4px; }
+  .tag-button .x { position: absolute; right: -3px; top: -4px; display: none; width: 12px; height: 12px; border-radius: 50%; align-items: center; justify-content: center; background: var(--text); color: var(--bg); }
+  .tag-button:hover .x, .tag-button:focus-visible .x { display: inline-flex; }
+  .tag-button:hover :global(.tag) { text-decoration: line-through; }
+  .add-tag { display: inline-flex; align-items: center; gap: 3px; flex: none; height: 20px; padding: 0 6px; border-radius: 4px; border: 1px dashed var(--border-strong); font-size: 11.5px; color: var(--text-faint); }
+  .add-tag:hover, .add-tag[aria-expanded="true"] { color: var(--text); border-color: var(--text-faint); border-style: solid; }
+  .confirm { height: 26px; padding: 0 10px; border-radius: var(--radius-small); font-size: 12.5px; font-weight: 500; color: var(--danger); background: var(--danger-soft); }
+  .modal-list { padding: 12px 14px; }
   .question { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: var(--radius-small); text-align: left; }
   .question:hover { background: var(--bg-hover); }
   .question-skill { flex: none; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-family: var(--mono); }
@@ -282,17 +310,10 @@
   .question-meta { flex: none; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .column :global(.turn.flash) { animation: flash 1.2s ease-out; }
   @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
-  .title { max-width: 100%; min-width: 0; padding: 3px 8px; border-radius: var(--radius-small); font-weight: 600; font-size: 14px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title { flex: 0 1 auto; max-width: 100%; min-width: 0; padding: 3px 8px; border-radius: var(--radius-small); font-weight: 600; font-size: 14px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title:hover { background: var(--bg-hover); }
   .title-input { font-weight: 600; font-size: 14px; height: 28px; max-width: 480px; }
   .controls { display: flex; align-items: center; gap: 6px; flex: none; }
-  .spinner.tiny { width: 11px; height: 11px; border-width: 1.5px; }
-  .agent { padding: 6px 10px; font-size: 13px; }
-  .agent + .agent { border-top: 1px solid var(--border); }
-  .agent-head { display: flex; align-items: center; gap: 8px; }
-  .agent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .agent-label, .agent-recap { color: var(--text-muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
-  .danger { color: var(--danger); }
   .thin-bar { padding: 3px 12px; font-size: 12px; text-align: center; color: var(--accent); background: var(--accent-soft); }
   .error-bar { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px 12px; font-size: 13px; color: var(--danger); background: var(--danger-soft); }
   .center { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px; }
