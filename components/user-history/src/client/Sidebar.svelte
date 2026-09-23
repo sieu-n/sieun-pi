@@ -1,9 +1,9 @@
 <script lang="ts">
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
-  import { labels } from "./labels.ts";
+  import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
-  import { BUCKET_LABEL, elapsed, groupRows, matchesQuery, modelShort, money, needsResponse, nextRun, shortDate, tabOf, type Tab } from "./organize.ts";
+  import { activeFilters, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, SIDEBAR_SORT_LABEL, tabOf, type SidebarSort, type Tab } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Icon from "./Icon.svelte";
@@ -11,7 +11,7 @@
   import ProgressSteps from "./ProgressSteps.svelte";
   import TagChip from "./TagChip.svelte";
   import ThreadMenu from "./ThreadMenu.svelte";
-  import AgentsDialog from "./AgentsDialog.svelte";
+  import FilterSelects from "./FilterSelects.svelte";
   import Floating from "./ui/Floating.svelte";
   import TagPicker from "./ui/TagPicker.svelte";
   import { tooltip } from "./ui/tooltip.ts";
@@ -25,7 +25,8 @@
   let menu = $state<{ id: string; at: Anchor } | null>(null);
   let tagging = $state<{ id: string; anchor: HTMLElement } | null>(null);
   let confirmArchive = $state<string | null>(null);
-  let agentsOpen = $state(false);
+  let filterButton: HTMLButtonElement | undefined = $state();
+  let filterOpen = $state(false);
   let list: HTMLElement | undefined = $state();
   let warmTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -37,7 +38,9 @@
     heartbeatsNeeding: visible.filter(row => tabOf(row) === "heartbeats" && needsResponse(row)).length,
   });
   const archivedCount = $derived(store.sessions.filter(row => row.archived && tabOf(row) === tab).length);
-  const groups = $derived(groupRows(visible.filter(row => tabOf(row) === tab && matchesQuery(row, query.trim(), tagMap))));
+  const filterCount = $derived(activeFilters(ui.sidebarFilter));
+  const groups = $derived(groupRows(visible.filter(row => tabOf(row) === tab && matchesRowFilter(row, ui.sidebarFilter) && matchesQuery(row, query.trim(), tagMap)), ui.sidebarSort));
+  const SORTS: readonly SidebarSort[] = ["grouped", "recent"];
   const minute = $derived(Math.floor(clock.now / 60_000));
 
   function warm(id: string): void {
@@ -92,7 +95,7 @@
   function workingLabel(row: SessionRow): string {
     if (row.statusLabel) return row.statusLabel;
     const since = Date.parse(row.workingSince ?? "");
-    return Number.isFinite(since) ? "working " + elapsed(Math.max(0, minute * 60_000 - since)) : "working";
+    return Number.isFinite(since) ? elapsed(Math.max(0, minute * 60_000 - since)) : "";
   }
 
   let aside: HTMLElement | undefined = $state();
@@ -151,16 +154,21 @@
 <aside class="sidebar" class:open={store.sidebarOpen} class:narrow class:resizing aria-label="Threads" bind:this={aside}>
   <div class="inner">
     <div class="top">
-      <button type="button" class="new" onclick={() => store.select(null)}><Icon name="plus" size={15} /><span>New chat</span></button>
-      <button type="button" class="icon-button" aria-label="Agents view" use:tooltip={"Agents view"} onclick={() => { agentsOpen = true; }}><Icon name="list" /></button>
+      <button type="button" class="new" use:tooltip={"New chat ⌘N"} onclick={() => store.select(null)}><Icon name="plus" size={15} /><span>New chat</span></button>
+      <button type="button" class="icon-button" aria-label="Agents view" use:tooltip={"Agents view ⌘K"} onclick={() => { ui.agentsOpen = true; }}><Icon name="list" /></button>
       <button type="button" class="icon-button" aria-label="Settings" use:tooltip={"Settings"} onclick={() => { store.drawer = "accounts"; }}><Icon name="settings" /></button>
       <button type="button" class="icon-button" aria-label="Hide sidebar" use:tooltip={"Hide sidebar ⌘B"} onclick={() => { store.sidebarOpen = false; }}><Icon name="sidebar" /></button>
     </div>
-    <label class="search">
-      <Icon name="search" size={14} />
-      <input data-search type="search" placeholder="Search threads or tags" aria-label="Search threads" bind:value={query} />
-      <span class="kbd" aria-hidden="true">⌘K</span>
-    </label>
+    <div class="find">
+      <label class="search">
+        <Icon name="search" size={14} />
+        <input type="search" placeholder="Search threads or tags" aria-label="Search threads" bind:value={query} />
+      </label>
+      <button type="button" class="filter-button" class:on={filterCount > 0} bind:this={filterButton} aria-haspopup="dialog" aria-expanded={filterOpen}
+        aria-label={filterCount ? `Filter, ${filterCount} active` : "Filter and sort"} use:tooltip={"Filter and sort"} onclick={() => { filterOpen = !filterOpen; }}>
+        <Icon name="filter" size={14} />{#if filterCount}<span class="filter-count">{filterCount}</span>{/if}
+      </button>
+    </div>
     <div class="segmented tabs" role="tablist" aria-label="Thread kind">
       <button type="button" role="tab" aria-selected={tab === "threads"} class:on={tab === "threads"} onclick={() => { tab = "threads"; }}>Threads <span class="count">{counts.threads}</span></button>
       <button type="button" role="tab" aria-selected={tab === "heartbeats"} class:on={tab === "heartbeats"} onclick={() => { tab = "heartbeats"; }}>
@@ -169,7 +177,7 @@
     </div>
     <div class="list" bind:this={list} role="tabpanel">
       {#each groups as group, index (group.bucket)}
-        {#if group.bucket !== "other" || index > 0}<div class="group-label">{BUCKET_LABEL[group.bucket]} <span class="count">{group.rows.length}</span></div>{/if}
+        {#if group.bucket && (group.bucket !== "other" || index > 0)}<div class="group-label">{BUCKET_LABEL[group.bucket]} <span class="count">{group.rows.length}</span></div>{/if}
         {#each group.rows as row (row.id)}
           <div class="row" class:selected={row.id === store.selectedId} class:archived={row.archived} class:held={menu?.id === row.id || tagging?.id === row.id || confirmArchive === row.id}
             onmouseenter={() => warm(row.id)} onmouseleave={() => { cancelWarm(); if (confirmArchive === row.id) confirmArchive = null; }} oncontextmenu={event => openMenu(row, event)} role="presentation">
@@ -185,10 +193,10 @@
                 <span class="line sub">
                   {#if row.schedule}
                     <span class="meta date">{row.schedule.label ?? row.schedule.kind}{row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, minute * 60_000) : ""}</span>
-                  {:else}
-                    <span class="meta date">{shortDate(row.created ?? row.lastActivityAt, minute * 60_000)}</span>
+                  {:else if createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}
+                    <span class="meta date">{createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}</span>
                   {/if}
-                  {#if row.status === "running"}<span class="meta working">{workingLabel(row)}</span>{/if}
+                  {#if row.status === "running" && workingLabel(row)}<span class="meta working">{workingLabel(row)}</span>{/if}
                   <span class="meta cost" class:unknown={row.cost === undefined}>{money(row.cost)}</span>
                   {#if row.model}<span class="meta model">{modelShort(row.model)}</span>{/if}
                   <span class="chips">
@@ -219,7 +227,7 @@
       {#if !groups.length}
         <div class="empty">
           {#if store.daemon === "unknown"}<span class="spinner tiny"></span>
-          {:else if query}No threads match.
+          {:else if query || filterCount}<span>No threads match.{#if filterCount}{" "}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear filters</button>{/if}</span>
           {:else if tab === "heartbeats"}No heartbeat threads.
           {:else}No threads yet.{/if}
         </div>
@@ -244,11 +252,26 @@
 {/if}
 {#if tagging}
   <Floating anchor={tagging.anchor} width={260} maxHeight={360} label="Tags" onclose={() => { if (tagging) focusRow(tagging.id); tagging = null; }}>
-    <TagPicker ids={[tagging.id]} />
+    <TagPicker selection={threadTags([tagging.id])} />
   </Floating>
 {/if}
-{#if agentsOpen}
-  <AgentsDialog onclose={() => { agentsOpen = false; }} />
+{#if filterOpen && filterButton}
+  <Floating anchor={filterButton} width={300} maxHeight={420} label="Filter and sort" onclose={() => { filterOpen = false; }}>
+    <div class="panel-head">
+      <span class="menu-heading">Filter</span>
+      {#if filterCount}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear</button>{/if}
+    </div>
+    <div class="filter-chips"><FilterSelects filter={ui.sidebarFilter} onchange={patch => ui.setSidebarFilter({ ...ui.sidebarFilter, ...patch })} /></div>
+    <div class="menu-separator"></div>
+    <div class="menu-heading" id="sidebar-sort">Sort</div>
+    <div role="radiogroup" aria-labelledby="sidebar-sort">
+      {#each SORTS as sort (sort)}
+        <button type="button" class="menu-item" role="radio" aria-checked={ui.sidebarSort === sort} onclick={() => ui.setSidebarSort(sort)}>
+          <span class="check">{#if ui.sidebarSort === sort}<Icon name="check" size={13} />{/if}</span>{SIDEBAR_SORT_LABEL[sort]}
+        </button>
+      {/each}
+    </div>
+  </Floating>
 {/if}
 
 <style>
@@ -270,11 +293,21 @@
   .new { display: inline-flex; align-items: center; gap: 7px; flex: 1; height: 32px; margin-right: 4px; padding: 0 10px; border-radius: var(--radius-small); background: var(--bg-elevated);
     border: 1px solid var(--border-strong); font-size: 13px; font-weight: 500; box-shadow: var(--shadow-small); transition: border-color 0.12s; }
   .new:hover { border-color: var(--text-faint); }
-  .search { display: flex; align-items: center; gap: 7px; margin: 2px 10px 8px; padding: 0 8px; height: 30px; border-radius: var(--radius-small); background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-faint); }
+  .find { display: flex; align-items: center; gap: 4px; margin: 2px 10px 8px; }
+  .search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0 8px; height: 30px; border-radius: var(--radius-small); background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-faint); }
   .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   .search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 13px; }
   .search input::-webkit-search-cancel-button { appearance: none; }
-  .kbd { flex: none; height: 18px; padding: 0 5px; border-radius: 5px; background: var(--bg-sunken); font-size: 10.5px; font-weight: 500; line-height: 18px; color: var(--text-muted); }
+  .filter-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none; min-width: 30px; height: 30px; padding: 0 7px; border-radius: var(--radius-small);
+    border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-muted); transition: border-color 0.12s, color 0.12s, background-color 0.12s; }
+  .filter-button:hover, .filter-button[aria-expanded="true"] { color: var(--text); border-color: var(--border-strong); }
+  .filter-button.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--accent-bold); }
+  .filter-count { font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; padding-right: 4px; }
+  .filter-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 8px; }
+  .check { display: inline-flex; width: 14px; flex: none; color: var(--accent-bold); }
+  .link-button { padding: 2px 6px; border-radius: var(--radius-small); font-size: 12px; color: var(--accent-bold); }
+  .link-button:hover { background: var(--accent-soft); }
   .tabs { display: flex; margin: 0 10px 4px; }
   .tabs > button { flex: 1; }
   .count { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; font-weight: 500; }
@@ -292,11 +325,11 @@
   .title.strong { font-weight: 600; }
   .sub { height: 16px; font-size: 11.5px; line-height: 16px; color: var(--text-faint); gap: 5px; }
   .meta { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .date { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
+  .date { flex: 0 1 auto; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; }
   .working { color: var(--accent-bold); }
   .cost { color: var(--text-muted); }
   .cost.unknown { color: var(--text-faint); }
-  .model { max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
+  .model { flex: 0 1 auto; min-width: 3ch; max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
   .chips { display: inline-flex; align-items: center; gap: 3px; flex: 1; min-width: 0; overflow: hidden; }
   .more-tags { flex: none; font-size: 11px; color: var(--text-faint); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }

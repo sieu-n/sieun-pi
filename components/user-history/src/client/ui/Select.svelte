@@ -1,11 +1,13 @@
 <script lang="ts" module>
-  export interface SelectOption { value: string; label: string; hint?: string }
+  import type { OptionMark as Mark } from "./OptionMark.svelte";
+  export interface SelectOption { value: string; label: string; hint?: string; mark?: Mark }
   let nextId = 0;
 </script>
 
 <script lang="ts">
   import Floating from "./Floating.svelte";
   import Icon from "../Icon.svelte";
+  import OptionMark from "./OptionMark.svelte";
 
   /** A filter chip that opens a listbox. It shows "Label" while at its reset value and "Label: Choice" once set. Long lists get a search box. */
   let { label, options, value, resetValue, onchange, width = 240 }: {
@@ -63,7 +65,11 @@
 
 <button bind:this={trigger} type="button" class="select" class:set aria-haspopup="listbox" aria-expanded={open} aria-label="{label}: {current?.label ?? value}"
   onclick={() => { if (open) open = false; else show(); }} onkeydown={onTriggerKey}>
-  <span class="text">{#if set}<span class="key">{label}</span>{" "}{current?.label ?? value}{:else}{label}{/if}</span>
+  {#if set}
+    <span class="key">{label}</span>
+    {#if current?.mark}<OptionMark mark={current.mark} />{/if}
+    {#if current?.mark?.kind !== "tag"}<span class="text">{current?.label ?? value}</span>{/if}
+  {:else}<span class="text">{label}</span>{/if}
   <Icon name="chevronDown" size={12} />
 </button>
 
@@ -81,7 +87,8 @@
         <div id="{id}-{index}" class="menu-item" role="option" tabindex="-1" aria-selected={option.value === value} data-active={index === active}
           onpointermove={() => { active = index; }} onclick={() => choose(option)}>
           <span class="check">{#if option.value === value}<Icon name="check" size={13} />{/if}</span>
-          <span class="name">{option.label}</span>
+          {#if option.mark}<OptionMark mark={option.mark} />{/if}
+          {#if option.mark?.kind !== "tag"}<span class="name">{option.label}</span>{/if}
           {#if option.hint}<span class="hint">{option.hint}</span>{/if}
         </div>
       {/each}
@@ -96,12 +103,13 @@
   .select:hover, .select[aria-expanded="true"] { color: var(--text); border-color: color-mix(in srgb, var(--border-strong) 50%, var(--text-faint)); }
   .select.set { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--accent-bold); }
   .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .key { color: var(--text-muted); }
+  .key { flex: none; color: var(--text-muted); }
   .set .key { color: color-mix(in srgb, var(--accent-bold) 70%, transparent); }
   .search { margin: 2px 0 4px; }
   .list { outline: none; }
   .menu-item { cursor: default; }
   .check { display: inline-flex; width: 14px; flex: none; color: var(--accent-bold); }
+  .menu-item :global(.tag) { max-width: 100%; }
   .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .none { padding: 10px; font-size: 12.5px; color: var(--text-faint); }
 </style>

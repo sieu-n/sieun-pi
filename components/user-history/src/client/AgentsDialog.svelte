@@ -1,9 +1,9 @@
 <script lang="ts">
   import { store } from "./store.svelte.ts";
-  import { labels } from "./labels.ts";
+  import { labels, threadTags } from "./labels.ts";
   import { shortPath, relativeTime } from "./format.ts";
-  import { emptyFilter, matchesFilter, modelShort, money, needsResponse, PRIORITY_LABEL, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type RowStatus, type SortKey } from "./organize.ts";
-  import { PROGRESS_STEPS, type Priority, type Progress, type SessionRow } from "../shared/types.ts";
+  import { activeFilters, emptyFilter, matchesFilter, modelShort, money, needsResponse, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type SortKey } from "./organize.ts";
+  import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
@@ -11,6 +11,10 @@
   import ProgressSteps from "./ProgressSteps.svelte";
   import TagChip from "./TagChip.svelte";
   import ThreadMenu from "./ThreadMenu.svelte";
+  import StatusMark from "./StatusMark.svelte";
+  import FilterSelects from "./FilterSelects.svelte";
+  import PriorityPicker from "./PriorityPicker.svelte";
+  import ProgressPicker from "./ProgressPicker.svelte";
   import Checkbox from "./ui/Checkbox.svelte";
   import Select from "./ui/Select.svelte";
   import DateRange from "./ui/DateRange.svelte";
@@ -31,8 +35,7 @@
     { key: "created", label: "Created", firstDescending: true },
     { key: "activity", label: "Activity", firstDescending: true },
   ];
-  const STATUSES: readonly RowStatus[] = ["needs", "working", "idle", "saved"];
-  const LEVELS: readonly Priority[] = [0, 1, 2, 3];
+  type Field = "tags" | "priority" | "progress";
 
   let filter = $state<AgentFilter>(emptyFilter());
   let sort = $state<{ key: SortKey; descending: boolean }>({ key: "status", descending: false });
@@ -40,30 +43,23 @@
   let active = $state(0);
   let menu = $state<{ ids: string[]; at: Anchor } | null>(null);
   let tagAnchor = $state<HTMLElement | null>(null);
+  let editing = $state<{ id: string; field: Field; anchor: HTMLElement } | null>(null);
   let search: HTMLInputElement | undefined = $state();
   let grid: HTMLElement | undefined = $state();
   const now = Date.now();
 
   const tagMap = $derived(new Map(store.tags.map(tag => [tag.id, tag])));
-  const workspaces = $derived([...new Set(store.sessions.map(row => row.cwd))].sort());
-  const models = $derived([...new Set(store.sessions.flatMap(row => row.model ? [row.model] : []))].sort());
   const rows = $derived(sortBy(store.sessions.filter(row => matchesFilter(row, filter, tagMap)), sort.key, sort.descending, tagMap));
   const selectedIds = $derived(rows.filter(row => selected.has(row.id)).map(row => row.id));
   const allSelected = $derived(rows.length > 0 && selectedIds.length === rows.length);
-  const filtered = $derived(JSON.stringify({ ...filter, query: "", archived: false }) !== JSON.stringify(emptyFilter()));
+  const filtered = $derived(activeFilters(filter) > 0 || filter.kind !== "any" || filter.from !== "" || filter.to !== "");
   const archivedCount = $derived(store.sessions.filter(row => row.archived).length);
   const bulkPriority = $derived(selectedIds.length && rows.filter(row => selected.has(row.id)).every(row => row.priority === rows.find(entry => selected.has(entry.id))!.priority)
     ? rows.find(row => selected.has(row.id))!.priority : null);
   const bulkProgress = $derived(selectedIds.length && rows.filter(row => selected.has(row.id)).every(row => row.progress === rows.find(entry => selected.has(entry.id))!.progress)
     ? rows.find(row => selected.has(row.id))!.progress : null);
-  const any = (label: string) => ({ value: "any", label });
-  const statusOptions = [any("Any status"), ...STATUSES.map(status => ({ value: status, label: STATUS_LABEL[status] }))];
-  const kindOptions = [any("Threads and heartbeats"), { value: "threads", label: "Threads" }, { value: "heartbeats", label: "Heartbeats" }];
-  const tagOptions = $derived([any("Any tag"), { value: "none", label: "No tags" }, ...store.tags.map(tag => ({ value: tag.id, label: tag.name }))]);
-  const priorityOptions = [any("Any priority"), ...LEVELS.map(level => ({ value: String(level), label: PRIORITY_LABEL[level] }))];
-  const progressOptions = [any("Any progress"), ...PROGRESS_STEPS.map(step => ({ value: step, label: PROGRESS_LABEL[step] }))];
-  const workspaceOptions = $derived([any("Any workspace"), ...workspaces.map(cwd => ({ value: cwd, label: shortPath(cwd) }))]);
-  const modelOptions = $derived([any("Any model"), ...models.map(model => ({ value: model, label: modelName(model), hint: modelShort(model) }))]);
+  const kindOptions = [{ value: "any", label: "Threads and heartbeats" }, { value: "threads", label: "Threads" }, { value: "heartbeats", label: "Heartbeats" }];
+  const editRow = $derived(editing ? store.session(editing.id) : undefined);
 
   $effect(() => { search?.focus(); });
   $effect(() => { if (active >= rows.length) active = Math.max(0, rows.length - 1); });
@@ -113,7 +109,12 @@
   function onSearchKey(event: KeyboardEvent): void {
     if (event.key === "ArrowDown" || (event.key === "Enter" && rows.length)) { event.preventDefault(); active = 0; grid?.focus(); scrollActive(); }
   }
-  function modelName(model: string | undefined): string { return model ? model.slice(model.indexOf("/") + 1) : ""; }
+  function edit(event: MouseEvent, row: SessionRow, field: Field): void {
+    event.stopPropagation();
+    active = rows.indexOf(row);
+    editing = { id: row.id, field, anchor: event.currentTarget as HTMLElement };
+  }
+  function closeEdit(): void { editing = null; requestAnimationFrame(() => grid?.focus()); }
   function archiveSelected(): void {
     const ids = [...selectedIds];
     selected = new Set();
@@ -125,19 +126,14 @@
   {#snippet header()}
     <label class="search">
       <Icon name="search" size={14} />
-      <input bind:this={search} type="search" placeholder="Search title, workspace, model or tag" aria-label="Search threads" bind:value={filter.query} onkeydown={onSearchKey} />
+      <input bind:this={search} data-agents-search type="search" placeholder="Search title, workspace, model or tag" aria-label="Search threads" bind:value={filter.query} onkeydown={onSearchKey} />
     </label>
     <span class="total">{rows.length} of {filter.archived ? store.sessions.length : store.sessions.length - archivedCount}</span>
   {/snippet}
   <div class="view">
     <div class="filters" role="group" aria-label="Filters">
-      <Select label="Status" options={statusOptions} value={filter.status} resetValue="any" onchange={value => { filter.status = value as RowStatus | "any"; }} />
       <Select label="Kind" options={kindOptions} value={filter.kind} resetValue="any" onchange={value => { filter.kind = value as AgentFilter["kind"]; }} />
-      <Select label="Tag" options={tagOptions} value={filter.tag} resetValue="any" onchange={value => { filter.tag = value; }} />
-      <Select label="Priority" options={priorityOptions} value={String(filter.priority)} resetValue="any" onchange={value => { filter.priority = value === "any" ? "any" : Number(value) as Priority; }} />
-      <Select label="Progress" options={progressOptions} value={filter.progress} resetValue="any" onchange={value => { filter.progress = value as Progress | "any"; }} />
-      <Select label="Workspace" options={workspaceOptions} value={filter.cwd} resetValue="any" width={300} onchange={value => { filter.cwd = value; }} />
-      <Select label="Model" options={modelOptions} value={filter.model} resetValue="any" width={280} onchange={value => { filter.model = value; }} />
+      <FilterSelects {filter} onchange={patch => { filter = { ...filter, ...patch }; }} />
       <DateRange label="Created" from={filter.from} to={filter.to} onchange={(from, to) => { filter.from = from; filter.to = to; }} />
       <button type="button" class="toggle-chip" class:on={filter.archived} aria-pressed={filter.archived} onclick={() => { filter.archived = !filter.archived; }}>
         <Icon name="archive" size={13} />{filter.archived ? "Archived shown" : "Show archived"}<span class="n">{archivedCount}</span>
@@ -148,18 +144,8 @@
       <div class="bulk fade-in" role="toolbar" aria-label="Selection">
         <span class="picked">{selectedIds.length} selected</span>
         <button type="button" class="button small" aria-haspopup="dialog" aria-expanded={tagAnchor !== null} onclick={event => { tagAnchor = event.currentTarget as HTMLElement; }}><Icon name="tag" size={13} />Tags</button>
-        <div class="segmented" role="radiogroup" aria-label="Priority">
-          {#each LEVELS as level (level)}
-            <button type="button" role="radio" aria-checked={bulkPriority === level} aria-label={PRIORITY_LABEL[level]} class:on={bulkPriority === level} onclick={() => void labels.setPriority(selectedIds, level)}>
-              {#if level === 0}None{:else}<PriorityBars {level} size={12} />{/if}
-            </button>
-          {/each}
-        </div>
-        <div class="segmented" role="radiogroup" aria-label="Progress">
-          {#each PROGRESS_STEPS as step (step)}
-            <button type="button" role="radio" aria-checked={bulkProgress === step} class:on={bulkProgress === step} onclick={() => void labels.setProgress(selectedIds, step)}>{step === "none" ? "None" : PROGRESS_LABEL[step]}</button>
-          {/each}
-        </div>
+        <span class="bulk-picker"><PriorityPicker value={bulkPriority} onchange={level => void labels.setPriority(selectedIds, level)} /></span>
+        <span class="bulk-picker"><ProgressPicker value={bulkProgress} onchange={step => void labels.setProgress(selectedIds, step)} /></span>
         <button type="button" class="button small" onclick={archiveSelected}><Icon name="archive" size={13} />Archive</button>
         <button type="button" class="clear" onclick={() => { selected = new Set(); }}>Clear selection</button>
       </div>
@@ -188,18 +174,36 @@
               <td class="pick"><Checkbox checked={selected.has(row.id)} label="Select {row.name}" tabindex={-1} onchange={() => toggle(row.id)} /></td>
               <td class="status">
                 <span class="state {status}">
-                  {#if status === "working"}<span class="spinner tiny"></span>{:else if status === "needs"}<span class="dot"></span>{:else}<span class="ring"></span>{/if}
+                  <StatusMark {status} />
                   {row.status === "running" && row.statusLabel ? row.statusLabel : STATUS_LABEL[status]}
                 </span>
               </td>
               <td class="name">
-                <button type="button" tabindex="-1" class="open" class:strong={needsResponse(row)} onclick={event => { event.stopPropagation(); open(row); }}>{row.name}</button>
-                {#if row.schedule}<span class="kind">{row.schedule.label ?? row.schedule.kind}</span>{/if}
-                {#if row.archived}<span class="kind">archived</span>{/if}
+                <span class="name-line">
+                  <button type="button" tabindex="-1" class="open" class:strong={needsResponse(row)} onclick={event => { event.stopPropagation(); open(row); }}>{row.name}</button>
+                  {#if row.schedule}<span class="kind">{row.schedule.label ?? row.schedule.kind}</span>{/if}
+                  {#if row.archived}<span class="kind">archived</span>{/if}
+                </span>
               </td>
-              <td class="tags">{#each row.tags as id (id)}{@const tag = tagMap.get(id)}{#if tag}<TagChip {tag} />{/if}{/each}</td>
-              <td class="priority">{#if row.priority > 0}<PriorityBars level={row.priority} />{/if}</td>
-              <td class="progress">{#if row.progress !== "none"}<span class="progress-cell"><ProgressSteps progress={row.progress} />{PROGRESS_LABEL[row.progress]}</span>{/if}</td>
+              <td class="tags">
+                <button type="button" class="cell-edit" tabindex="-1" aria-label="Tags for {row.name}" aria-haspopup="dialog" aria-expanded={editing?.id === row.id && editing.field === "tags"}
+                  onclick={event => edit(event, row, "tags")} ondblclick={event => event.stopPropagation()}>
+                  {#each row.tags as id (id)}{@const tag = tagMap.get(id)}{#if tag}<TagChip {tag} />{/if}{/each}
+                  {#if !row.tags.length}<span class="set-hint"><Icon name="plus" size={11} />Tag</span>{/if}
+                </button>
+              </td>
+              <td class="priority">
+                <button type="button" class="cell-edit" tabindex="-1" aria-label="Priority for {row.name}" aria-haspopup="dialog" aria-expanded={editing?.id === row.id && editing.field === "priority"}
+                  onclick={event => edit(event, row, "priority")} ondblclick={event => event.stopPropagation()}>
+                  {#if row.priority > 0}<PriorityBars level={row.priority} />{:else}<span class="set-hint">Set</span>{/if}
+                </button>
+              </td>
+              <td class="progress">
+                <button type="button" class="cell-edit" tabindex="-1" aria-label="Progress for {row.name}" aria-haspopup="dialog" aria-expanded={editing?.id === row.id && editing.field === "progress"}
+                  onclick={event => edit(event, row, "progress")} ondblclick={event => event.stopPropagation()}>
+                  {#if row.progress !== "none"}<ProgressSteps progress={row.progress} /><span class="progress-label">{PROGRESS_LABEL[row.progress]}</span>{:else}<span class="set-hint">Set</span>{/if}
+                </button>
+              </td>
               <td class="cwd">{shortPath(row.cwd)}</td>
               <td class="model">{modelShort(row.model)}</td>
               <td class="cost" class:unknown={row.cost === undefined}>{money(row.cost)}</td>
@@ -216,7 +220,23 @@
     <ThreadMenu ids={menu.ids} at={menu.at} onclose={closeMenu} />
   {/if}
   {#if tagAnchor}
-    <Floating anchor={tagAnchor} width={260} maxHeight={360} label="Tags for {selectedIds.length} threads" onclose={() => { tagAnchor = null; }}><TagPicker ids={selectedIds} /></Floating>
+    <Floating anchor={tagAnchor} width={260} maxHeight={360} label="Tags for {selectedIds.length} threads" onclose={() => { tagAnchor = null; }}><TagPicker selection={threadTags(selectedIds)} /></Floating>
+  {/if}
+  {#if editing && editRow}
+    {@const id = editing.id}
+    {#if editing.field === "tags"}
+      <Floating anchor={editing.anchor} width={260} maxHeight={360} label="Tags for {editRow.name}" onclose={closeEdit}><TagPicker selection={threadTags([id])} /></Floating>
+    {:else if editing.field === "priority"}
+      <Floating anchor={editing.anchor} width={210} maxHeight={120} label="Priority for {editRow.name}" onclose={closeEdit}>
+        <div class="menu-heading">Priority</div>
+        <PriorityPicker value={editRow.priority} autofocus onchange={level => { void labels.setPriority([id], level); closeEdit(); }} />
+      </Floating>
+    {:else}
+      <Floating anchor={editing.anchor} width={300} maxHeight={120} label="Progress for {editRow.name}" onclose={closeEdit}>
+        <div class="menu-heading">Progress</div>
+        <ProgressPicker value={editRow.progress} autofocus onchange={step => { void labels.setProgress([id], step); closeEdit(); }} />
+      </Floating>
+    {/if}
   {/if}
 </Modal>
 
@@ -235,7 +255,8 @@
   .clear:hover { background: var(--accent-soft); }
   .bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid var(--border); background: var(--row-selected); font-size: 12.5px; }
   .picked { font-weight: 600; margin-right: 4px; font-variant-numeric: tabular-nums; }
-  .bulk .segmented { background: var(--bg-elevated); }
+  .bulk-picker { display: inline-flex; }
+  .bulk-picker :global(.levels) { margin: 0; background: var(--bg-elevated); }
   .grid { flex: 1; min-height: 0; overflow: auto; outline: none; }
   .grid:focus-visible tr.active td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
@@ -251,24 +272,25 @@
   th.status, td.status { width: 132px; }
   th.tags, td.tags { width: 160px; }
   th.priority, td.priority { width: 70px; }
-  th.progress, td.progress { width: 128px; }
+  th.progress, td.progress { width: 150px; }
   th.cwd, td.cwd { width: 150px; }
   th.model, td.model { width: 96px; }
   th.cost, td.cost { width: 70px; text-align: right; }
   th.cost button { justify-content: flex-end; }
   th.created, td.created { width: 76px; }
   th.activity, td.activity { width: 70px; }
-  td.tags :global(.tag) { margin-right: 3px; }
   td.cwd, td.model, td.created, td.activity, td.cost { color: var(--text-muted); font-variant-numeric: tabular-nums; }
   td.cwd { font-family: var(--mono); font-size: 11.5px; }
   td.cost.unknown { color: var(--text-faint); }
-  .progress-cell { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }
+  td.tags, td.priority, td.progress { padding: 0 4px; }
+  .cell-edit { display: flex; align-items: center; gap: 3px; width: 100%; height: 26px; padding: 0 4px; overflow: hidden; border-radius: var(--radius-small); color: var(--text-muted); text-align: left; transition: background-color 0.12s, box-shadow 0.12s; }
+  .cell-edit:hover, .cell-edit[aria-expanded="true"] { background: var(--bg-elevated); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .progress-label { margin-left: 3px; overflow: hidden; text-overflow: ellipsis; }
+  .set-hint { display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; color: var(--text-faint); opacity: 0; transition: opacity 0.12s; }
+  tr:hover .set-hint, tr.active .set-hint, .cell-edit:focus-visible .set-hint { opacity: 1; }
   .state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }
   .state.needs { color: var(--accent-bold); font-weight: 500; }
-  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-  .ring { width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--border-strong); }
-  .state.saved .ring { border-style: dashed; }
-  .name { display: flex; align-items: center; gap: 6px; }
+  .name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .open { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--text); font-size: 13px; }
   .open:hover { text-decoration: underline; text-decoration-color: var(--border-strong); }
   .open.strong { font-weight: 600; }

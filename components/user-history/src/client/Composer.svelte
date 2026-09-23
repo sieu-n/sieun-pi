@@ -72,6 +72,7 @@
     node.style.height = Math.min(node.scrollHeight, window.innerHeight * 0.4) + "px";
   });
   $effect(() => { if (focusOnMount) textarea?.focus(); });
+  $effect(() => { if (!busy) modeOpen = false; });
 
   const slashQuery = $derived(/^\/(\S*)$/.exec(text)?.[1] ?? null);
   $effect(() => {
@@ -204,16 +205,18 @@
     {#if busy}
       <button type="button" class="round stop" aria-label="Stop" use:tooltip={"Stop (Esc)"} onclick={() => stop?.()}><Icon name="stop" size={14} /></button>
     {/if}
-    <div class="split" class:ready={canSend}>
+    <div class="split" class:ready={canSend} class:busy>
       <button type="button" class="send" aria-label={busy ? (busyMode === "steer" ? "Steer" : "Queue") : "Send"} use:tooltip={busy ? (busyMode === "steer" ? "Steer" : "Queue") : "Send"}
         disabled={!canSend} onclick={() => void submit(busy ? busyMode : "followUp")}>
         {#if sending}<span class="spinner tiny"></span>{:else}<Icon name={busy && busyMode === "steer" ? "steer" : "send"} size={16} />{/if}
       </button>
-      <button type="button" class="mode" bind:this={modeButton} aria-label="While the agent works: {busyMode === 'steer' ? 'Steer' : 'Queue'}" aria-haspopup="menu" aria-expanded={modeOpen}
-        use:tooltip={"While the agent works"} onclick={() => { modeOpen = !modeOpen; }}><Icon name="chevronDown" size={12} /></button>
+      {#if busy}
+        <button type="button" class="mode" bind:this={modeButton} aria-label="While the agent works: {busyMode === 'steer' ? 'Steer' : 'Queue'}" aria-haspopup="menu" aria-expanded={modeOpen}
+          use:tooltip={"While the agent works"} onclick={() => { modeOpen = !modeOpen; }}><Icon name="chevronDown" size={12} /></button>
+      {/if}
     </div>
   </div>
-  {#if modeOpen && modeButton}
+  {#if busy && modeOpen && modeButton}
     <Floating anchor={modeButton} width={272} align="end" role="menu" label="While the agent works" onclose={() => { modeOpen = false; }}>
       <div class="menu-heading">While the agent works</div>
       {#each MODES as entry, index (entry.mode)}
@@ -248,7 +251,8 @@
   .split { display: inline-flex; flex: none; height: 30px; border-radius: 8px; border: 1px solid transparent; background: var(--bg-active); color: var(--text-faint); transition: background-color 0.12s, color 0.12s; }
   .split.ready { background: var(--primary); color: var(--primary-text); border-color: var(--primary-edge); }
   .split > button { display: inline-flex; align-items: center; justify-content: center; height: 100%; color: inherit; }
-  .send { width: 32px; border-radius: 7px 0 0 7px; }
+  .send { width: 32px; border-radius: 7px; }
+  .split.busy .send { border-radius: 7px 0 0 7px; }
   .send:disabled { opacity: 1; }
   .mode { width: 20px; border-radius: 0 7px 7px 0; border-left: 1px solid color-mix(in srgb, currentColor 22%, transparent); }
   .split.ready > button:hover:not(:disabled) { background: var(--primary-hover); }

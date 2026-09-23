@@ -9,6 +9,7 @@
   import Thread from "./Thread.svelte";
   import NewChat from "./NewChat.svelte";
   import Settings from "./Settings.svelte";
+  import AgentsDialog from "./AgentsDialog.svelte";
 
   const NARROW_BELOW = 900;
   let root: HTMLElement | undefined = $state();
@@ -38,17 +39,22 @@
     });
   });
 
-  function focusSearch(): void {
-    store.sidebarOpen = true;
-    requestAnimationFrame(() => document.querySelector<HTMLInputElement>("[data-search]")?.focus());
+  function newChat(): void {
+    ui.agentsOpen = false;
+    store.select(null);
+    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-composer]")?.focus());
+  }
+  function openAgents(): void {
+    if (ui.agentsOpen) document.querySelector<HTMLInputElement>("[data-agents-search]")?.focus();
+    ui.agentsOpen = true;
   }
 
   function onKeydown(event: KeyboardEvent): void {
     const meta = event.metaKey || event.ctrlKey;
     if (meta && !event.shiftKey && !event.altKey) {
       const key = event.key.toLowerCase();
-      if (key === "n") { event.preventDefault(); store.select(null); }
-      else if (key === "k") { event.preventDefault(); focusSearch(); }
+      if (key === "n") { event.preventDefault(); newChat(); }
+      else if (key === "k") { event.preventDefault(); openAgents(); }
       else if (key === "b") { event.preventDefault(); store.sidebarOpen = !store.sidebarOpen; }
       return;
     }
@@ -89,6 +95,9 @@
     </main>
     {#if store.drawer}
       <Settings section={store.drawer} />
+    {/if}
+    {#if ui.agentsOpen}
+      <AgentsDialog onclose={() => { ui.agentsOpen = false; }} />
     {/if}
   </div>
   {#if store.toasts.length}

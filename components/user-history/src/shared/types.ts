@@ -55,8 +55,8 @@ export interface ChildAgent {
   durationMs?: number; recap?: string; error?: string; answerPreview?: string;
   activity?: { kind: "waiting" | "writing" | "executing"; toolName?: string };
 }
-/** A subagent's native session cost, matched to a ChildAgent by `rlmChildId` (its id) or its session name. */
-export interface ChildUsage { rlmChildId?: string; sessionName?: string; cost?: number }
+/** A subagent's native session id and cost, matched to a ChildAgent by `rlmChildId` (its id) or its session name. */
+export interface ChildUsage { sessionId: string; rlmChildId?: string; sessionName?: string; cost?: number }
 export interface QueueState { steering: string[]; followUp: string[] }
 export type ThreadConnection = "connected" | "reconnecting" | "closed";
 

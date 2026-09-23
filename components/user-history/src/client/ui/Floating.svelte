@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  /** Open panels, oldest first. A press or focus inside a panel opened later (a Select inside a filter panel) does not close the ones below it. */
+  const stack: HTMLElement[] = [];
+</script>
+
 <script lang="ts">
   import { untrack, type Snippet } from "svelte";
   import { place, placementStyle, type Anchor, type Placement } from "./floating.ts";
@@ -27,12 +32,15 @@
     const host = (anchor instanceof HTMLElement ? anchor.closest("dialog[open]") : null) ?? document.querySelector("dialog[open]") ?? document.body;
     host.appendChild(node);
     node.showPopover();
+    stack.push(node);
     position();
     const target = node.querySelector<HTMLElement>("[data-autofocus]") ?? node.querySelector<HTMLElement>("input:not(:disabled), button:not(:disabled), [tabindex='0']") ?? node;
     target.focus({ preventScroll: true });
-    const inAnchor = (target: EventTarget | null) => anchor instanceof HTMLElement && target instanceof Node && anchor.contains(target);
-    const onPointer = (event: PointerEvent) => { if (event.target instanceof Node && !node.contains(event.target) && !inAnchor(event.target)) onclose(); };
-    const onFocus = (event: FocusEvent) => { if (event.target instanceof Node && !node.contains(event.target) && !inAnchor(event.target)) onclose(); };
+    const inAnchor = (target: Node) => anchor instanceof HTMLElement && anchor.contains(target);
+    const inLater = (target: Node) => stack.slice(stack.indexOf(node) + 1).some(panel => panel.contains(target));
+    const outside = (target: EventTarget | null) => target instanceof Node && !node.contains(target) && !inAnchor(target) && !inLater(target);
+    const onPointer = (event: PointerEvent) => { if (outside(event.target)) onclose(); };
+    const onFocus = (event: FocusEvent) => { if (outside(event.target)) onclose(); };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
@@ -48,6 +56,7 @@
       document.removeEventListener("focusin", onFocus);
       node.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", position);
+      stack.splice(stack.indexOf(node), 1);
       const hadFocus = !document.activeElement || document.activeElement === document.body || node.contains(document.activeElement);
       if (node.matches(":popover-open")) node.hidePopover();
       node.remove();

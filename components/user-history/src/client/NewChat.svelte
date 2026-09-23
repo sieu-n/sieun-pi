@@ -2,7 +2,9 @@
   import { onMount } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
-  import type { ImageInput, ModelCatalog, ModelInfo, SendMode, ThinkingLevel, Workspace } from "../shared/types.ts";
+  import { labels, type TagSelection } from "./labels.ts";
+  import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
+  import type { ImageInput, ModelCatalog, ModelInfo, Priority, Progress, SendMode, ThinkingLevel, Workspace } from "../shared/types.ts";
   import { relativeTime, shortPath } from "./format.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import Composer from "./Composer.svelte";
@@ -10,6 +12,13 @@
   import Icon from "./Icon.svelte";
   import AccountChip from "./AccountChip.svelte";
   import { tooltip } from "./ui/tooltip.ts";
+  import Floating from "./ui/Floating.svelte";
+  import TagPicker from "./ui/TagPicker.svelte";
+  import TagChip from "./TagChip.svelte";
+  import PriorityBars from "./PriorityBars.svelte";
+  import ProgressSteps from "./ProgressSteps.svelte";
+  import PriorityPicker from "./PriorityPicker.svelte";
+  import ProgressPicker from "./ProgressPicker.svelte";
 
   let { narrow }: { narrow: boolean } = $props();
   let workspaces = $state<Workspace[]>([]);
@@ -21,6 +30,23 @@
   let effort = $state<ThinkingLevel | null>(null);
   let workspaceOpen = $state(false);
   const closePopover = () => { workspaceOpen = false; };
+
+  /** Labels for the thread this send creates; they are written to it right after the create returns its id. */
+  let draftTags = $state<string[]>([]);
+  let draftPriority = $state<Priority>(0);
+  let draftProgress = $state<Progress>("none");
+  let labelPicker = $state<{ field: "tags" | "priority" | "progress"; anchor: HTMLElement } | null>(null);
+  const shownTags = $derived(store.tags.filter(tag => draftTags.includes(tag.id)));
+  const draftSelection: TagSelection = {
+    label: "Tags for the new thread",
+    coverage: tag => draftTags.includes(tag.id) ? "all" : "none",
+    set: async (tagId, on) => { draftTags = on ? [...draftTags.filter(entry => entry !== tagId), tagId] : draftTags.filter(entry => entry !== tagId); },
+    create: async name => { const tagId = await labels.create(name, []); if (tagId && !draftTags.includes(tagId)) draftTags = [...draftTags, tagId]; },
+  };
+  function pick(event: MouseEvent, field: "tags" | "priority" | "progress"): void {
+    const anchor = event.currentTarget as HTMLElement;
+    labelPicker = labelPicker?.field === field ? null : { field, anchor };
+  }
 
   const hour = new Date().getHours();
   const greeting = hour < 5 ? "Still up?" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
@@ -44,7 +70,20 @@
 
   async function send(text: string, images: ImageInput[], _mode: SendMode): Promise<boolean> {
     if (!cwd) { store.toast("Choose a workspace first."); return false; }
-    return store.createChat({ cwd, message: text, images, ...(model ? { provider: model.provider, modelId: model.id } : {}), ...(effort ? { thinkingLevel: effort } : {}) });
+    const tags = shownTags.map(tag => tag.id);
+    const priority = draftPriority;
+    const progress = draftProgress;
+    const id = await store.createChat({ cwd, message: text, images, ...(model ? { provider: model.provider, modelId: model.id } : {}), ...(effort ? { thinkingLevel: effort } : {}) });
+    if (!id) return false;
+    draftTags = [];
+    draftPriority = 0;
+    draftProgress = "none";
+    await Promise.all([
+      ...tags.map(tagId => labels.setTag([id], tagId, true)),
+      priority ? labels.setPriority([id], priority) : null,
+      progress !== "none" ? labels.setProgress([id], progress) : null,
+    ]);
+    return true;
   }
 </script>
 
@@ -92,17 +131,45 @@
                 <button class="button small primary" type="submit" disabled={!customCwd.trim()}>Use</button>
               </form>
             </Popover>
-            <AccountChip threadId={null} provider={(model ?? catalog?.current)?.provider} />
+            <AccountChip threadId={null} provider={(model ?? catalog?.current)?.provider} model={[(model ?? catalog?.current)?.id, (model ?? catalog?.current)?.name].join(" ")} />
           {/snippet}
           {#snippet right()}
             <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort
               defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
           {/snippet}
         </Composer>
+        <div class="labels-row" role="group" aria-label="Labels for the new thread">
+          <button type="button" class="bar-button label-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "tags"} onclick={event => pick(event, "tags")}>
+            <Icon name="tag" size={13} />
+            {#if shownTags.length}{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}{:else}<span>Tags</span>{/if}
+          </button>
+          <button type="button" class="bar-button label-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "priority"} onclick={event => pick(event, "priority")}>
+            <PriorityBars level={draftPriority} /><span>{draftPriority ? PRIORITY_LABEL[draftPriority] : "Priority"}</span>
+          </button>
+          <button type="button" class="bar-button label-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "progress"} onclick={event => pick(event, "progress")}>
+            <ProgressSteps progress={draftProgress} /><span>{draftProgress !== "none" ? PROGRESS_LABEL[draftProgress] : "Progress"}</span>
+          </button>
+        </div>
       {/if}
     </div>
   </div>
 </div>
+
+{#if labelPicker}
+  {#if labelPicker.field === "tags"}
+    <Floating anchor={labelPicker.anchor} width={260} maxHeight={360} label="Tags for the new thread" onclose={() => { labelPicker = null; }}><TagPicker selection={draftSelection} /></Floating>
+  {:else if labelPicker.field === "priority"}
+    <Floating anchor={labelPicker.anchor} width={210} maxHeight={120} label="Priority for the new thread" onclose={() => { labelPicker = null; }}>
+      <div class="menu-heading">Priority</div>
+      <PriorityPicker value={draftPriority} autofocus onchange={level => { draftPriority = level; labelPicker = null; }} />
+    </Floating>
+  {:else}
+    <Floating anchor={labelPicker.anchor} width={300} maxHeight={120} label="Progress for the new thread" onclose={() => { labelPicker = null; }}>
+      <div class="menu-heading">Progress</div>
+      <ProgressPicker value={draftProgress} autofocus onchange={step => { draftProgress = step; labelPicker = null; }} />
+    </Floating>
+  {/if}
+{/if}
 
 <style>
   .new-chat { display: flex; flex-direction: column; height: 100%; }
@@ -110,6 +177,8 @@
   .center { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 20px 10vh; overflow-y: auto; }
   .column { width: 100%; max-width: var(--column); }
   .greeting { margin: 0 0 18px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+  .labels-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-top: 8px; padding: 0 4px; }
+  .label-button { height: 26px; gap: 6px; font-size: 12.5px; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); font-size: 12px; }
   .custom { display: flex; gap: 6px; padding: 6px 4px 2px; }
   .pending { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; }

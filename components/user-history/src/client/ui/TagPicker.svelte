@@ -4,7 +4,7 @@
 
 <script lang="ts">
   import { store } from "../store.svelte.ts";
-  import { labels } from "../labels.ts";
+  import { labels, type Coverage, type TagSelection } from "../labels.ts";
   import type { Tag } from "../../shared/types.ts";
   import Checkbox from "./Checkbox.svelte";
   import TagChip from "../TagChip.svelte";
@@ -15,7 +15,7 @@
    * One tag combobox for every place that tags threads. Type to filter; Enter creates the typed tag and assigns it in one step, or toggles the
    * highlighted tag. Assigned tags sit on top as chips; a click on a chip, or Backspace in the empty field, removes one.
    */
-  let { ids, autofocus = true }: { ids: readonly string[]; autofocus?: boolean } = $props();
+  let { selection, autofocus = true }: { selection: TagSelection; autofocus?: boolean } = $props();
 
   const id = "tags-" + ++nextId;
   let draft = $state("");
@@ -25,12 +25,8 @@
   let input: HTMLInputElement | undefined = $state();
   let list: HTMLElement | undefined = $state();
 
-  type Entry = { kind: "create"; name: string } | { kind: "tag"; tag: Tag; state: "all" | "some" | "none" };
-  const rows = $derived(store.sessions.filter(row => ids.includes(row.id)));
-  const coverage = (tag: Tag): "all" | "some" | "none" => {
-    const count = rows.filter(row => row.tags.includes(tag.id)).length;
-    return count === 0 ? "none" : count === rows.length ? "all" : "some";
-  };
+  type Entry = { kind: "create"; name: string } | { kind: "tag"; tag: Tag; state: Coverage };
+  const coverage = (tag: Tag): Coverage => selection.coverage(tag);
   const needle = $derived(draft.trim().toLowerCase());
   const assigned = $derived(store.tags.filter(tag => coverage(tag) === "all"));
   const entries = $derived.by((): Entry[] => {
@@ -49,15 +45,15 @@
     draft = "";
     if (entry.kind === "create") {
       const existing = store.tags.find(tag => tag.name.toLowerCase() === entry.name.toLowerCase());
-      if (existing) await labels.setTag(ids, existing.id, true);
-      else await labels.create(entry.name, ids);
+      if (existing) await selection.set(existing.id, true);
+      else await selection.create(entry.name);
     } else {
-      await labels.setTag(ids, entry.tag.id, entry.state !== "all");
+      await selection.set(entry.tag.id, entry.state !== "all");
     }
     input?.focus();
   }
   function remove(tag: Tag): void {
-    void labels.setTag(ids, tag.id, false);
+    void selection.set(tag.id, false);
     input?.focus();
   }
   function move(to: number): void {
@@ -95,7 +91,7 @@
       </button>
     {/each}
     <input bind:this={input} class="draft" data-autofocus={autofocus ? true : undefined} bind:value={draft} maxlength="40" placeholder={assigned.length ? "Add tag" : store.tags.length ? "Find or create a tag" : "Name a new tag"}
-      role="combobox" aria-expanded="true" aria-controls="{id}-list" aria-autocomplete="list" aria-label={ids.length > 1 ? `Tags for ${ids.length} threads` : "Tags"}
+      role="combobox" aria-expanded="true" aria-controls="{id}-list" aria-autocomplete="list" aria-label={selection.label}
       aria-activedescendant={entries[active] ? `${id}-${active}` : undefined} onkeydown={onKey} />
   </div>
   <div class="list" id="{id}-list" role="listbox" aria-multiselectable="true" aria-label="Tags" bind:this={list}>

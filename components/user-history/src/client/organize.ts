@@ -46,7 +46,12 @@ export function matchesQuery(row: SessionRow, needle: string, tags: ReadonlyMap<
   return words.every(word => haystack.includes(word));
 }
 
-export function groupRows(rows: readonly SessionRow[]): { bucket: Bucket; rows: SessionRow[] }[] {
+export type SidebarSort = "grouped" | "recent";
+export const SIDEBAR_SORT_LABEL: Record<SidebarSort, string> = { grouped: "Needs response, working, other", recent: "Chronological" };
+
+/** Sidebar sections. Grouped: Needs response, Working, then the rest. Recent: one unlabeled list, most recent activity first. */
+export function groupRows(rows: readonly SessionRow[], sort: SidebarSort = "grouped"): { bucket: Bucket | null; rows: SessionRow[] }[] {
+  if (sort === "recent") return rows.length ? [{ bucket: null, rows: [...rows].sort((left, right) => activityOf(right) - activityOf(left)) }] : [];
   const sorted = [...rows].sort(compareRows);
   return BUCKETS.flatMap(bucket => { const items = sorted.filter(row => bucketOf(row) === bucket); return items.length ? [{ bucket, rows: items }] : []; });
 }
@@ -69,6 +74,18 @@ export function shortDate(value: string | undefined, now = Date.now()): string {
   return date.toLocaleDateString("en-US", sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" });
 }
 
+/** Age by calendar day: "" for today, "1d ago", "12d ago", then "3mo ago" and "2y ago". */
+export function createdAge(value: string | undefined, now = Date.now()): string {
+  const ms = Date.parse(value ?? "");
+  if (!Number.isFinite(ms)) return "";
+  const day = (time: number) => { const date = new Date(time); return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000; };
+  const days = Math.max(0, Math.round(day(now) - day(ms)));
+  if (days === 0) return "";
+  if (days < 60) return days + "d ago";
+  if (days < 730) return Math.floor(days / 30) + "mo ago";
+  return Math.floor(days / 365) + "y ago";
+}
+
 export function nextRun(value: string | undefined, now = Date.now()): string {
   const ms = Date.parse(value ?? "");
   if (!Number.isFinite(ms)) return "";
@@ -76,24 +93,31 @@ export function nextRun(value: string | undefined, now = Date.now()): string {
 }
 
 export type SortKey = "status" | "name" | "priority" | "progress" | "tags" | "cwd" | "model" | "cost" | "created" | "activity";
-export interface AgentFilter {
-  query: string; status: RowStatus | "any"; tag: string; priority: Priority | "any"; progress: Progress | "any"; cwd: string; model: string;
-  from: string; to: string; kind: Tab | "any"; archived: boolean;
+/** The label filters the Agents view and the sidebar share. "any" means unset; tag also takes "none" for threads without tags. */
+export interface RowFilter { status: RowStatus | "any"; tag: string; priority: Priority | "any"; progress: Progress | "any"; cwd: string; model: string }
+export interface AgentFilter extends RowFilter { query: string; from: string; to: string; kind: Tab | "any"; archived: boolean }
+export const emptyRowFilter = (): RowFilter => ({ status: "any", tag: "any", priority: "any", progress: "any", cwd: "any", model: "any" });
+export const emptyFilter = (): AgentFilter => ({ ...emptyRowFilter(), query: "", from: "", to: "", kind: "any", archived: false });
+export const ROW_FILTER_KEYS = ["status", "tag", "priority", "progress", "cwd", "model"] as const satisfies readonly (keyof RowFilter)[];
+export const activeFilters = (filter: RowFilter): number => ROW_FILTER_KEYS.filter(key => filter[key] !== "any").length;
+
+export function matchesRowFilter(row: SessionRow, filter: RowFilter): boolean {
+  if (filter.status !== "any" && statusOf(row) !== filter.status) return false;
+  if (filter.tag === "none" ? row.tags.length > 0 : filter.tag !== "any" && !row.tags.includes(filter.tag)) return false;
+  if (filter.priority !== "any" && row.priority !== filter.priority) return false;
+  if (filter.progress !== "any" && row.progress !== filter.progress) return false;
+  if (filter.cwd !== "any" && row.cwd !== filter.cwd) return false;
+  if (filter.model !== "any" && (row.model ?? "") !== filter.model) return false;
+  return true;
 }
-export const emptyFilter = (): AgentFilter => ({ query: "", status: "any", tag: "any", priority: "any", progress: "any", cwd: "any", model: "any", from: "", to: "", kind: "any", archived: false });
 const PROGRESS_ORDER: Record<Progress, number> = { none: 0, plan: 1, implementation: 2, qa: 3 };
 
 const dayStart = (value: string): number => { const ms = Date.parse(value + "T00:00:00"); return Number.isFinite(ms) ? ms : NaN; };
 
 export function matchesFilter(row: SessionRow, filter: AgentFilter, tags: ReadonlyMap<string, Tag>): boolean {
   if (!filter.archived && row.archived) return false;
-  if (filter.status !== "any" && statusOf(row) !== filter.status) return false;
   if (filter.kind !== "any" && tabOf(row) !== filter.kind) return false;
-  if (filter.tag === "none" ? row.tags.length > 0 : filter.tag !== "any" && !row.tags.includes(filter.tag)) return false;
-  if (filter.priority !== "any" && row.priority !== filter.priority) return false;
-  if (filter.progress !== "any" && row.progress !== filter.progress) return false;
-  if (filter.cwd !== "any" && row.cwd !== filter.cwd) return false;
-  if (filter.model !== "any" && (row.model ?? "") !== filter.model) return false;
+  if (!matchesRowFilter(row, filter)) return false;
   const created = createdOf(row);
   const from = filter.from ? dayStart(filter.from) : NaN;
   const to = filter.to ? dayStart(filter.to) + 86_400_000 : NaN;

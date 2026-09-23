@@ -1,18 +1,25 @@
 <script lang="ts">
   import { api } from "./api.ts";
+  import { store } from "./store.svelte.ts";
   import { duration } from "./format.ts";
   import { modelShort, money } from "./organize.ts";
-  import type { ChildAgent, ChildUsage } from "../shared/types.ts";
+  import type { ChildAgent, ChildStatus, ChildUsage } from "../shared/types.ts";
 
   /**
-   * A compact subagent list that stays fast with hundreds of children: one 28 px row each (status, name, model, cost, time), a filter box,
-   * an All / Active / Inactive switch, and windowed rendering so only the rows in view exist in the DOM.
+   * Subagents grouped Running, Failed, Done, Cancelled. Each row says what the child is doing now (its native activity and latest recap) or how it
+   * ended (answer preview or error line), with model, cost and run time. A row whose session the daemon lists opens that child's transcript.
+   * Rows render in a window, so hundreds of children stay fast.
    */
-  let { threadId, children, height = 320 }: { threadId: string; children: readonly ChildAgent[]; height?: number } = $props();
+  let { threadId, children, height = 360 }: { threadId: string; children: readonly ChildAgent[]; height?: number } = $props();
 
-  const ROW = 28;
-  const OVERSCAN = 6;
+  const ROW = 44;
+  const HEADER = 26;
+  const OVERSCAN = 4;
   type Scope = "all" | "active" | "inactive";
+  type Group = "running" | "error" | "done" | "cancelled";
+  const GROUPS: readonly Group[] = ["running", "error", "done", "cancelled"];
+  const GROUP_LABEL: Record<Group, string> = { running: "Running", error: "Failed", done: "Done", cancelled: "Cancelled" };
+  const groupOf = (status: ChildStatus): Group => status === "queued" ? "running" : status;
   let query = $state("");
   let scope = $state<Scope>("all");
   let scrollTop = $state(0);
@@ -26,61 +33,102 @@
     api.childUsage(threadId).then(entries => { if (!cancelled) { usage = entries; usageError = false; } }, () => { if (!cancelled) usageError = true; });
     return () => { cancelled = true; };
   });
-  const costOf = $derived.by(() => {
-    const byId = new Map<string, number>();
-    const byName = new Map<string, number>();
+  const usageOf = $derived.by(() => {
+    const byId = new Map<string, ChildUsage>();
+    const byName = new Map<string, ChildUsage>();
     for (const entry of usage ?? []) {
-      if (entry.cost === undefined) continue;
-      if (entry.rlmChildId) byId.set(entry.rlmChildId, entry.cost);
-      if (entry.sessionName) byName.set(entry.sessionName, entry.cost);
+      if (entry.rlmChildId) byId.set(entry.rlmChildId, entry);
+      if (entry.sessionName) byName.set(entry.sessionName, entry);
     }
-    return (child: ChildAgent): number | undefined => byId.get(child.id) ?? (child.sessionName ? byName.get(child.sessionName) : undefined);
+    return (child: ChildAgent): ChildUsage | undefined => byId.get(child.id) ?? (child.sessionName ? byName.get(child.sessionName) : undefined);
   });
   const nameOf = (child: ChildAgent) => child.sessionName ?? child.label.split("\n", 1)[0]!.slice(0, 80);
+  const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
+  function activityText(child: ChildAgent): string {
+    if (child.status === "queued") return "Queued";
+    const activity = child.activity;
+    if (!activity) return "Starting";
+    if (activity.kind === "executing") return activity.toolName ? "Running " + activity.toolName : "Running a tool";
+    return activity.kind === "writing" ? "Writing" : "Thinking";
+  }
+  /** Line two: now (activity and recap) for a running child, the outcome for a finished one. */
+  function detailOf(child: ChildAgent): { lead: string; text: string } {
+    if (isActive(child)) return { lead: activityText(child), text: child.recap ? oneLine(child.recap) : "" };
+    if (child.status === "error") return { lead: "Failed", text: oneLine(child.error ?? "") };
+    if (child.status === "cancelled") return { lead: "Cancelled", text: oneLine(child.recap ?? "") };
+    return { lead: "", text: oneLine(child.answerPreview ?? child.recap ?? "Done") };
+  }
+
   const counts = $derived({ all: children.length, active: children.filter(isActive).length, inactive: children.filter(child => !isActive(child)).length });
-  const rows = $derived.by(() => {
+  const matched = $derived.by(() => {
     const needle = query.trim().toLowerCase();
     return children
       .filter(child => scope === "all" || (scope === "active") === isActive(child))
-      .filter(child => !needle || (nameOf(child) + " " + (child.model ?? "") + " " + child.label).toLowerCase().includes(needle))
-      .sort((left, right) => Number(isActive(right)) - Number(isActive(left)));
+      .filter(child => !needle || (nameOf(child) + " " + (child.model ?? "") + " " + child.label + " " + (child.recap ?? "")).toLowerCase().includes(needle));
   });
-  const total = $derived(rows.reduce((sum, child) => sum + (costOf(child) ?? 0), 0));
-  const start = $derived(Math.max(0, Math.floor(scrollTop / ROW) - OVERSCAN));
-  const end = $derived(Math.min(rows.length, Math.ceil((scrollTop + height) / ROW) + OVERSCAN));
+  type Item = { kind: "header"; group: Group; count: number; top: number } | { kind: "child"; child: ChildAgent; top: number };
+  const layout = $derived.by(() => {
+    const items: Item[] = [];
+    let top = 0;
+    for (const group of GROUPS) {
+      const members = matched.filter(child => groupOf(child.status) === group);
+      if (!members.length) continue;
+      items.push({ kind: "header", group, count: members.length, top });
+      top += HEADER;
+      for (const child of members) { items.push({ kind: "child", child, top }); top += ROW; }
+    }
+    return { items, total: top };
+  });
+  const visible = $derived(layout.items.filter(item => item.top + ROW >= scrollTop - OVERSCAN * ROW && item.top <= scrollTop + height + OVERSCAN * ROW));
+  const total = $derived(matched.reduce((sum, child) => sum + (usageOf(child)?.cost ?? 0), 0));
   $effect(() => { void query; void scope; scrollTop = 0; });
 </script>
 
 <div class="subagents">
   <div class="tools">
-    <input class="field" data-autofocus bind:value={query} placeholder="Filter by name or model" aria-label="Filter subagents" />
+    <input class="field" data-autofocus bind:value={query} placeholder="Filter by name, model or note" aria-label="Filter subagents" />
     <div class="segmented" role="radiogroup" aria-label="Show">
-      {#each [["all", "All"], ["active", "Active"], ["inactive", "Done"]] as [value, label] (value)}
+      {#each [["all", "All"], ["active", "Running"], ["inactive", "Finished"]] as [value, label] (value)}
         <button type="button" role="radio" aria-checked={scope === value} class:on={scope === value} onclick={() => { scope = value as Scope; }}>{label} <span class="n">{counts[value as Scope]}</span></button>
       {/each}
     </div>
   </div>
-  <div class="scroll" style:height="{Math.min(height, Math.max(rows.length, 1) * ROW)}px" onscroll={event => { scrollTop = (event.currentTarget as HTMLElement).scrollTop; }}
+  <div class="scroll" style:height="{Math.min(height, Math.max(layout.total, ROW))}px" onscroll={event => { scrollTop = (event.currentTarget as HTMLElement).scrollTop; }}
     role="list" aria-label="Subagents">
-    <div class="spacer" style:height="{rows.length * ROW}px">
-      {#each rows.slice(start, end) as child, offset (child.id)}
-        {@const cost = costOf(child)}
-        <div class="row" role="listitem" style:top="{(start + offset) * ROW}px">
-          <span class="state">
-            {#if child.status === "running"}<span class="spinner tiny" role="img" aria-label="Running"></span>
-            {:else}<span class="mark {child.status}" role="img" aria-label={child.status}></span>{/if}
-          </span>
-          <span class="name" class:inactive={!isActive(child)}>{nameOf(child)}</span>
-          <span class="model">{modelShort(child.model)}</span>
-          <span class="cost" class:unknown={cost === undefined}>{money(cost)}</span>
-          <span class="time">{child.durationMs !== undefined ? duration(child.durationMs) : ""}</span>
-        </div>
+    <div class="spacer" style:height="{layout.total}px">
+      {#each visible as item (item.kind === "header" ? "group:" + item.group : item.child.id)}
+        {#if item.kind === "header"}
+          <div class="group" style:top="{item.top}px">{GROUP_LABEL[item.group]} <span class="n">{item.count}</span></div>
+        {:else}
+          {@const child = item.child}
+          {@const entry = usageOf(child)}
+          {@const detail = detailOf(child)}
+          <div class="item" role="listitem" style:top="{item.top}px">
+            <button type="button" class="row {child.status}" disabled={!entry} title={[nameOf(child), detail.lead, detail.text].filter(Boolean).join("\n")}
+              aria-label="{nameOf(child)}, {detail.lead || child.status}{entry ? ', open transcript' : ''}" onclick={() => { if (entry) store.select(entry.sessionId); }}>
+              <span class="line">
+                <span class="state">
+                  {#if child.status === "running"}<span class="spinner tiny" aria-hidden="true"></span>{:else}<span class="mark {child.status}" aria-hidden="true"></span>{/if}
+                </span>
+                <span class="name">{nameOf(child)}</span>
+                <span class="model">{modelShort(child.model)}</span>
+                <span class="cost" class:unknown={entry?.cost === undefined}>{money(entry?.cost)}</span>
+                <span class="time">{child.durationMs !== undefined ? duration(child.durationMs) : ""}</span>
+              </span>
+              <span class="line detail">
+                {#if detail.lead}<span class="lead">{detail.lead}</span>{/if}
+                {#if detail.text}<span class="text">{detail.text}</span>{/if}
+              </span>
+            </button>
+          </div>
+        {/if}
       {/each}
     </div>
-    {#if !rows.length}<div class="empty">No subagents match.</div>{/if}
+    {#if !matched.length}<div class="empty">No subagents match.</div>{/if}
   </div>
   <div class="foot">
-    <span>{rows.length} shown</span>
+    <span>{matched.length} shown</span>
     <span class="sum">{usageError ? "Cost not available" : usage === null ? "" : "Total " + money(total)}</span>
   </div>
 </div>
@@ -90,23 +138,32 @@
   .tools { display: flex; flex-direction: column; gap: 6px; padding: 2px 2px 6px; }
   .tools .segmented { display: flex; }
   .tools .segmented > button { flex: 1; }
-  .n { font-size: 11px; opacity: 0.7; font-variant-numeric: tabular-nums; }
-  .scroll { position: relative; overflow-y: auto; overscroll-behavior: contain; min-height: 28px; }
+  .n { font-size: 11px; opacity: 0.7; font-variant-numeric: tabular-nums; font-weight: 500; }
+  .scroll { position: relative; overflow-y: auto; overscroll-behavior: contain; min-height: 44px; }
   .spacer { position: relative; }
-  .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: var(--radius-small); font-size: 12.5px; }
-  .row:hover { background: var(--bg-hover); }
+  .group, .item { position: absolute; left: 0; right: 0; }
+  .group { height: 26px; padding: 8px 8px 0; font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
+  .item { height: 44px; }
+  .row { display: flex; flex-direction: column; justify-content: center; gap: 1px; width: 100%; height: 42px; padding: 0 8px; border-radius: var(--radius-small); text-align: left; font-size: 12.5px; }
+  .row:disabled { opacity: 1; cursor: default; }
+  .row:hover:not(:disabled) { background: var(--bg-hover); }
+  .line { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .state { display: inline-flex; width: 12px; justify-content: center; flex: none; }
   .mark { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
   .mark.queued { background: transparent; border: 1.5px solid var(--accent); }
   .mark.error { background: var(--danger); }
   .mark.cancelled { background: var(--text-faint); }
   .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .name.inactive { font-weight: 400; color: var(--text-muted); }
   .model { flex: none; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11.5px; }
   .cost, .time { flex: none; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); font-size: 11.5px; }
   .cost { width: 48px; }
   .cost.unknown { color: var(--text-faint); }
   .time { width: 48px; color: var(--text-faint); }
+  .detail { padding-left: 20px; gap: 6px; font-size: 11.5px; line-height: 16px; color: var(--text-faint); }
+  .lead { flex: none; color: var(--text-muted); font-weight: 500; }
+  .running .lead, .queued .lead { color: var(--accent-bold); }
+  .error .lead, .error .text { color: var(--danger); }
+  .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .empty { padding: 6px 8px; font-size: 12.5px; color: var(--text-faint); }
   .foot { display: flex; justify-content: space-between; padding: 6px 8px 2px; border-top: 1px solid var(--border); margin-top: 4px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 </style>

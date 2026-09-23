@@ -6,7 +6,7 @@ import type { SessionSummary } from "prime-agent";
 import { parseSchedules, projectRow } from "../src/chat-catalog.ts";
 import { applyLabelAction, ChatLabels, LabelError, type LabelsState } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
-import { compareRows, elapsed, emptyFilter, groupRows, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
+import { activeFilters, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
 import type { SessionRow, Tag } from "../src/shared/types.ts";
 
 const artifacts = () => process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(import.meta.dirname, "../.test-artifacts");
@@ -131,4 +131,26 @@ test("row shorthand: model names and session cost", () => {
   assert.deepEqual(["anthropic/claude-opus-5-5", "anthropic/claude-fable-5-1", "openai-codex/gpt-6-astra", "anthropic/claude-haiku-4-5-20251001", "openai-codex/gpt-5.4-mini", undefined].map(modelShort),
     ["opus-5.5", "fable-5.1", "astra-6", "haiku-4.5", "gpt-5.4-mini", ""]);
   assert.deepEqual([money(0), money(1.234), money(250.4), money(undefined)], ["$0.00", "$1.23", "$250", "–"]);
+});
+
+test("sidebar: chronological sort is one unlabeled list by activity, created age counts calendar days, row filters count and match", () => {
+  const rows = [row("old", { lastActivityAt: "2026-09-20T10:00:00Z" }), row("needs", { unread: true, lastActivityAt: "2026-09-19T10:00:00Z" }), row("new", { lastActivityAt: "2026-09-21T10:00:00Z" })];
+  assert.deepEqual(groupRows(rows).map(group => group.bucket), ["needs", "other"]);
+  const recent = groupRows(rows, "recent");
+  assert.equal(recent.length, 1);
+  assert.equal(recent[0]!.bucket, null);
+  assert.deepEqual(recent[0]!.rows.map(entry => entry.id), ["new", "old", "needs"]);
+  assert.deepEqual(groupRows([], "recent"), []);
+  const now = new Date(2026, 8, 23, 15, 0).getTime();
+  assert.equal(createdAge(new Date(2026, 8, 23, 0, 5).toISOString(), now), "", "created today shows nothing");
+  assert.equal(createdAge(new Date(2026, 8, 22, 23, 50).toISOString(), now), "1d ago");
+  assert.equal(createdAge(new Date(2026, 8, 11, 12, 0).toISOString(), now), "12d ago");
+  assert.equal(createdAge(new Date(2026, 5, 1).toISOString(), now), "3mo ago");
+  assert.equal(createdAge(undefined, now), "");
+  const filter = { ...emptyRowFilter(), priority: 2 as const, tag: "none" };
+  assert.equal(activeFilters(filter), 2);
+  assert.equal(activeFilters(emptyFilter()), 0);
+  assert.equal(matchesRowFilter(row("a", { priority: 2 }), filter), true);
+  assert.equal(matchesRowFilter(row("b", { priority: 2, tags: ["t1"] }), filter), false);
+  assert.equal(matchesRowFilter(row("c", { priority: 1 }), filter), false);
 });

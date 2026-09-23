@@ -7,6 +7,10 @@ function patchRows(ids: readonly string[], change: (row: SessionRow) => SessionR
   store.sessions = store.sessions.map(row => selected.has(row.id) ? change(row) : row);
 }
 
+export type Coverage = "all" | "some" | "none";
+/** What a tag picker edits: the tags of some threads, or a draft list before a thread exists. */
+export interface TagSelection { label: string; coverage: (tag: Tag) => Coverage; set: (tagId: string, on: boolean) => Promise<void>; create: (name: string) => Promise<void> }
+
 /** Label writes go to the server; the sessions stream then carries the saved result to every tab. Priority and tag toggles also patch the local rows so keys feel instant. */
 export const labels = {
   tagMap(): Map<string, Tag> { return new Map(store.tags.map(tag => [tag.id, tag])); },
@@ -37,3 +41,16 @@ export const labels = {
   async rename(tagId: string, name: string): Promise<void> { await store.run(api.labels({ op: "rename", tagId, name })); },
   async remove(tagId: string): Promise<void> { await store.run(api.labels({ op: "delete", tagId })); },
 };
+
+export function threadTags(ids: readonly string[]): TagSelection {
+  return {
+    label: ids.length > 1 ? `Tags for ${ids.length} threads` : "Tags",
+    coverage(tag) {
+      const rows = store.sessions.filter(row => ids.includes(row.id));
+      const count = rows.filter(row => row.tags.includes(tag.id)).length;
+      return count === 0 ? "none" : count === rows.length ? "all" : "some";
+    },
+    set: (tagId, on) => labels.setTag(ids, tagId, on),
+    async create(name) { await labels.create(name, ids); },
+  };
+}

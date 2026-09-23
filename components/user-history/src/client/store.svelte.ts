@@ -89,7 +89,7 @@ class Store {
 
   markRead(id: string): void {
     const entry = this.threads[id];
-    if (!entry?.state || isThreadBusy(entry.state) || document.visibilityState !== "visible") return;
+    if (!entry?.state || isThreadBusy(entry.state)) return;
     const row = this.session(id);
     if (!row?.unread && entry.lastReadAt > 0) return;
     this.patch(id, { lastReadAt: Date.now() });
@@ -112,14 +112,15 @@ class Store {
     return result !== undefined;
   }
 
-  async createChat(input: Omit<PendingChat, "startedAt">): Promise<boolean> {
+  /** Creates the native session, opens it, and returns its id; null when the create failed (the error is a toast). */
+  async createChat(input: Omit<PendingChat, "startedAt">): Promise<string | null> {
     this.pending = { ...input, startedAt: Date.now() };
     const result = await this.run(api.createThread({ ...input, requestId: requestId() }));
-    if (!result) { this.pending = null; return false; }
+    if (!result) { this.pending = null; return null; }
     this.open(result.id);
     this.select(result.id);
     this.pending = null;
-    return true;
+    return result.id;
   }
 }
 

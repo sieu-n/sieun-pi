@@ -228,16 +228,24 @@ export class Catalog {
     return () => { this.listeners.delete(listener); };
   }
 
+  /** A top-level thread, else a subagent session, so a child transcript opens read the same way as its parent. */
   async summary(sessionId: string): Promise<SessionSummary | undefined> {
-    const cached = this.summaries.get(sessionId);
+    const cached = this.find(sessionId);
     if (cached) return cached;
     await this.refresh();
-    return this.summaries.get(sessionId);
+    return this.find(sessionId);
+  }
+
+  private find(sessionId: string): SessionSummary | undefined {
+    const top = this.summaries.get(sessionId);
+    if (top) return top;
+    const children = this.childSummaries.filter(row => row.sessionId === sessionId);
+    return children.find(row => row.activeSessionId !== undefined) ?? children[0];
   }
 
   /** Native usage cost of each subagent under a parent session, from the daemon summaries of non-top-level sessions. */
   childUsage(parentSessionId: string): ChildUsage[] {
-    return this.childSummaries.filter(row => row.parentSessionId === parentSessionId).map(row => ({
+    return this.childSummaries.filter(row => row.parentSessionId === parentSessionId).map(row => ({ sessionId: row.sessionId,
       ...(row.rlmChildId ? { rlmChildId: row.rlmChildId } : {}), ...(row.sessionName ? { sessionName: row.sessionName } : {}),
       ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}) }));
   }

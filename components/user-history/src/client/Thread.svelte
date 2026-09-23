@@ -21,7 +21,7 @@
   import Floating from "./ui/Floating.svelte";
   import TagPicker from "./ui/TagPicker.svelte";
   import { tooltip } from "./ui/tooltip.ts";
-  import { labels } from "./labels.ts";
+  import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
 
   let { id, narrow }: { id: string; narrow: boolean } = $props();
@@ -61,6 +61,7 @@
   }
   const context = $derived(thread?.info.context ?? null);
   const runningChildren = $derived(thread?.children.filter(child => child.status === "running" || child.status === "queued").length ?? 0);
+  const agentsLabel = $derived(runningChildren ? `Subagents, ${runningChildren} of ${thread?.children.length ?? 0} running` : "Subagents");
 
   const now = $derived(busy ? clock.now : 0);
   const statusText = $derived.by(() => {
@@ -70,7 +71,6 @@
     else if (thread.info.isCompacting) parts.push("Compacting context");
     else if (thread.retry) parts.push(`Retry ${thread.retry.attempt} of ${thread.retry.maxAttempts}${thread.retry.error ? ": " + thread.retry.error : ""}`);
     else if (thread.info.isBashRunning) parts.push("Running a shell command");
-    else if (runningChildren) parts.push(runningChildren === 1 ? "1 agent working" : `${runningChildren} agents working`);
     else parts.push("Working");
     if (thread.info.queuedActions) parts.push(`${thread.info.queuedActions} queued`);
     if (thread.runStartedAt) parts.push(duration(now - thread.runStartedAt));
@@ -149,13 +149,11 @@
     if (untrack(() => pinned)) void tick().then(scrollToBottom);
   });
 
+  /** An open thread keeps its Needs response place while you read it; leaving it (another thread, or the tab going hidden) marks it read. */
   $effect(() => {
-    if (thread && !busy) store.markRead(id);
-  });
-  $effect(() => {
-    const onVisible = () => { if (document.visibilityState === "visible") store.markRead(id); };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    const onHidden = () => { if (document.visibilityState === "hidden") store.markRead(id); };
+    document.addEventListener("visibilitychange", onHidden);
+    return () => { document.removeEventListener("visibilitychange", onHidden); store.markRead(id); };
   });
 
   const send = (text: string, images: Parameters<typeof store.send>[2], mode: Parameters<typeof store.send>[3]) => store.send(id, text, images, mode);
@@ -174,14 +172,14 @@
         <button type="button" class="title" aria-label="Rename thread {title}" onclick={startRename}>{title}</button>
       {/if}
       {#if cwd}<span class="cwd">{shortPath(cwd)}</span>{/if}
-      <span class="tags">
+      {#if row}<span class="tags">
         {#each rowTags as tag (tag.id)}
           <button type="button" class="tag-button" aria-label="Remove tag {tag.name}" onclick={() => void labels.setTag([id], tag.id, false)}><TagChip {tag} /><span class="x" aria-hidden="true"><Icon name="x" size={10} /></span></button>
         {/each}
         <button type="button" class="add-tag" bind:this={tagButton} aria-haspopup="dialog" aria-expanded={tagging} onclick={() => { tagging = !tagging; }}>
           <Icon name="plus" size={12} />{rowTags.length ? "" : "Tag"}
         </button>
-      </span>
+      </span>{/if}
     </div>
     <div class="controls">
       <div class="segmented" role="radiogroup" aria-label="View">
@@ -190,8 +188,8 @@
       </div>
       {#if thread?.children.length}
         {#if thread.children.length > MODAL_CHILDREN}
-          <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label="Subagents" onclick={() => { agentsOpen = true; }}>
-            <Icon name="users" size={14} /><span>{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
+          <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label={agentsLabel} use:tooltip={agentsLabel} onclick={() => { agentsOpen = true; }}>
+            {#if runningChildren}<span class="spinner tiny" aria-hidden="true"></span>{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
           </button>
           {#if agentsOpen}
             <Modal title="Subagents" width="640px" onclose={() => { agentsOpen = false; }}>
@@ -199,10 +197,10 @@
             </Modal>
           {/if}
         {:else}
-          <Popover open={agentsOpen} onclose={() => { agentsOpen = false; }} align="end" width={420} label="Subagents">
+          <Popover open={agentsOpen} onclose={() => { agentsOpen = false; }} align="end" width={460} maxHeight={560} label="Subagents">
             {#snippet trigger()}
-              <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label="Subagents" aria-haspopup="dialog" aria-expanded={agentsOpen} onclick={() => { agentsOpen = !agentsOpen; }}>
-                <Icon name="users" size={14} /><span>{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
+              <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label={agentsLabel} use:tooltip={agentsLabel} aria-haspopup="dialog" aria-expanded={agentsOpen} onclick={() => { agentsOpen = !agentsOpen; }}>
+                {#if runningChildren}<span class="spinner tiny" aria-hidden="true"></span>{:else}<Icon name="users" size={14} />{/if}<span class="tabular">{runningChildren ? `${runningChildren} of ${thread.children.length}` : thread.children.length}</span>
               </button>
             {/snippet}
             <SubagentList threadId={id} children={thread.children} />
@@ -219,7 +217,7 @@
     </div>
   </header>
   {#if tagging && tagButton}
-    <Floating anchor={tagButton} width={260} maxHeight={360} label="Tags" onclose={() => { tagging = false; }}><TagPicker ids={[id]} /></Floating>
+    <Floating anchor={tagButton} width={260} maxHeight={360} label="Tags" onclose={() => { tagging = false; }}><TagPicker selection={threadTags([id])} /></Floating>
   {/if}
 
   {#if thread?.connection === "reconnecting" || (entry?.loading && thread)}
@@ -268,7 +266,7 @@
         <Composer draftKey={id} threadId={id} {busy} placeholder={saved ? "Reply to resume this thread" : "Ask for follow-up changes"}
           acceptsImages={thread.info.model?.input.includes("image") ?? true} focusOnMount={!narrow} {send} {stop}>
           {#snippet left()}
-            <AccountChip threadId={id} />
+            <AccountChip threadId={id} model={thread.info.model ? thread.info.model.id + " " + thread.info.model.name : row?.model} />
             {#if context && thread}
               <ContextMeter threadId={id} {context} usage={thread.info.usage} {messages} live={!saved} />
             {/if}
