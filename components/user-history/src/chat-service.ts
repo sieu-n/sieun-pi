@@ -93,7 +93,7 @@ export async function ensureChatService(options: Options = {}): Promise<Instance
     "--port", String(service.config.port), "--socket", service.config.socketPath], { detached: true, stdio: ["ignore", log.fd, log.fd, "ipc"] });
   await log.close();
   const result = await new Promise<string | null>((accept, reject) => {
-    const timeout = setTimeout(() => { child.kill(); reject(new Error("Chat startup timed out. Inspect " + join(service.directory, "service.log"))); }, 15000);
+    const timeout = setTimeout(() => { child.kill(); reject(new Error("Chat startup timed out. Inspect " + join(service.directory, "service.log"))); }, 60000);
     const finish = (error: string | null) => { clearTimeout(timeout); if (child.connected) child.disconnect(); child.unref(); accept(error); };
     child.once("error", error => { clearTimeout(timeout); reject(error); });
     child.once("message", value => {
