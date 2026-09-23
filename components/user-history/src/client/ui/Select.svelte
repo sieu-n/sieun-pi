@@ -63,7 +63,7 @@
 
 <button bind:this={trigger} type="button" class="select" class:set aria-haspopup="listbox" aria-expanded={open} aria-label="{label}: {current?.label ?? value}"
   onclick={() => { if (open) open = false; else show(); }} onkeydown={onTriggerKey}>
-  <span class="text">{#if set}<span class="key">{label}</span> {current?.label ?? value}{:else}{label}{/if}</span>
+  <span class="text">{#if set}<span class="key">{label}</span>{" "}{current?.label ?? value}{:else}{label}{/if}</span>
   <Icon name="chevronDown" size={12} />
 </button>
 

@@ -48,16 +48,16 @@
       document.removeEventListener("focusin", onFocus);
       node.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", position);
-      const hadFocus = node.contains(document.activeElement);
+      const hadFocus = !document.activeElement || document.activeElement === document.body || node.contains(document.activeElement);
       if (node.matches(":popover-open")) node.hidePopover();
       node.remove();
-      if (hadFocus && anchor instanceof HTMLElement && anchor.isConnected) anchor.focus({ preventScroll: true });
+      if (hadFocus && anchor instanceof HTMLElement && anchor.isConnected) queueMicrotask(() => { if (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected) anchor.focus({ preventScroll: true }); });
     };
   }
 </script>
 
 <div bind:this={panel} class="floating panel-surface fade-in" popover="manual" role={role === "none" ? undefined : role} aria-label={label} tabindex="-1"
-  style={placement ? placementStyle(placement) + `;max-height:${placement.maxHeight}px` : "visibility:hidden"}>
+  style={placement ? placementStyle(placement) + `;max-height:${placement.maxHeight}px` : "opacity:0"}>
   {@render children()}
 </div>
 

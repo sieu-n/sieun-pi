@@ -87,7 +87,7 @@
 <button bind:this={trigger} type="button" class="select" class:set={Boolean(summary)} aria-haspopup="dialog" aria-expanded={open}
   onclick={() => { if (open) open = false; else show(); }}>
   <Icon name="calendar" size={13} />
-  <span class="text">{label}{#if summary} <span class="value">{summary}</span>{/if}</span>
+  <span class="text">{label}{#if summary}{" "}<span class="value">{summary}</span>{/if}</span>
   <Icon name="chevronDown" size={12} />
 </button>
 

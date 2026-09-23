@@ -214,7 +214,7 @@
     </div>
   </div>
   {#if modeOpen && modeButton}
-    <Floating anchor={modeButton} width={248} align="end" role="menu" label="While the agent works" onclose={() => { modeOpen = false; }}>
+    <Floating anchor={modeButton} width={272} align="end" role="menu" label="While the agent works" onclose={() => { modeOpen = false; }}>
       <div class="menu-heading">While the agent works</div>
       {#each MODES as entry, index (entry.mode)}
         <button type="button" class="menu-item mode-item" role="menuitemradio" aria-checked={busyMode === entry.mode} data-autofocus={busyMode === entry.mode ? true : undefined}
