@@ -88,6 +88,7 @@ flowchart TD
 | New public config | No service input, no Slack post. |
 | `run.sh --dry-run` | Prints a preview; does not post or write runtime files. Enabled inputs still run, including model calls. |
 | Same date already posted | Skips unless `--force` is set. |
+| Another run holds `state/run.lock` | Skips; the running trigger posts. |
 | Run before 06:00 | Uses the previous local date unless `--today` is set. |
 | Run from 06:00 through 19:29 | Skips unless `--force` or `--today` is set. |
 | A section fails | Includes its error in the parent/thread report; other sections continue. |

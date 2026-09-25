@@ -239,6 +239,22 @@ class IsolatedTests(unittest.TestCase):
             self.assertEqual(module.main(["--channel", "fixture"]), 0)
             self.assertIn("outside the posting window", output.getvalue())
 
+    def test_concurrent_trigger_skips_while_a_run_holds_the_lock(self):
+        self.stage()
+        module = self.recap()
+        module.STATE, module.REPORTS = self.runtime / "state", self.runtime / "reports"
+        module.STATE.mkdir(parents=True, exist_ok=True)
+        os.environ["SLACK_BOT_TOKEN"] = "fixture-token"
+        import fcntl
+        with open(module.STATE / "run.lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(module, "run_recap", side_effect=AssertionError("must not run while locked")), contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(module.main(["--channel", "fixture"]), 0)
+            self.assertIn("another run is in progress", output.getvalue())
+        with patch.object(module, "run_recap", return_value=0) as run:
+            self.assertEqual(module.main(["--channel", "fixture"]), 0)
+            self.assertEqual(run.call_count, 1)
+
     def test_shell_arguments_tmux_dispatch_and_direct_failure(self):
         self.stage()
         directory = self.root / "stubs"

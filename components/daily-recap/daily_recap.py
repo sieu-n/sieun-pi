@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import json
 import os
 import re
@@ -823,7 +824,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not os.environ.get("SLACK_BOT_TOKEN") or not args.channel:
             print("Posting disabled: set SLACK_BOT_TOKEN and SLACK_CHANNEL (or --channel).", file=sys.stderr)
             return 2
-        return run_recap(args)
+        # launchd and the session heartbeat both fire on wake when the machine slept through 20:00,
+        # seconds apart; each passed the same-day check and posted twice on 2026-09-25. The lock is
+        # held for the whole run, so the second trigger skips instead of racing.
+        STATE.mkdir(parents=True, exist_ok=True)
+        with open(STATE / "run.lock", "w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(json.dumps({"ok": True, "skipped": "another run is in progress"}))
+                return 0
+            return run_recap(args)
 
     import shutil
     import tempfile
