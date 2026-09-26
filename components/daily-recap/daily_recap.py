@@ -271,6 +271,22 @@ How to write:
 
 
 def run_llm(context_path: Path, instruction: str) -> str:
+    # The default model's provider refused the call on 2026-09-11 (429), 09-17 and 09-26 (403 OAuth
+    # not allowed) and 09-21 (usage limit), each time dropping the Product section. One retry on a
+    # model from another provider (LLM_FALLBACK_MODEL, unset by default) covers a single provider outage.
+    try:
+        return run_llm_once(context_path, instruction, None)
+    except (RuntimeError, subprocess.TimeoutExpired) as first:
+        fallback = os.environ.get("LLM_FALLBACK_MODEL", "")
+        if not fallback:
+            raise
+        try:
+            return run_llm_once(context_path, instruction, fallback)
+        except (RuntimeError, subprocess.TimeoutExpired) as second:
+            raise RuntimeError(f"{first}; fallback {fallback}: {second}") from second
+
+
+def run_llm_once(context_path: Path, instruction: str, model: Optional[str]) -> str:
     cmd = [
         "prime-agent",
         "-p",
@@ -283,6 +299,7 @@ def run_llm(context_path: Path, instruction: str) -> str:
         "--offline",
         "--thinking",
         os.environ.get("LLM_THINKING", "low"),
+        *(["--model", model] if model else []),
         f"@{context_path}",
         instruction,
     ]

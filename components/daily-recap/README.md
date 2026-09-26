@@ -54,7 +54,7 @@ The generated plist defaults to `~/Library/LaunchAgents/com.sieun.daily-recap.pl
 | Input | Keys that enable it | Other settings |
 | --- | --- | --- |
 | Slack posting | `SLACK_BOT_TOKEN` and `SLACK_CHANNEL`, or `--channel` | No default channel. Missing keys exit before gathering data. |
-| Product changes and model summary | `REPO_DIR` and `LLM_ENABLED=1` | `GITHUB_REPO`, `PRODUCT_CONTEXT`, `WIKI_PAGES_JSON`, `LLM_THINKING`, `LLM_TIMEOUT_S` |
+| Product changes and model summary | `REPO_DIR` and `LLM_ENABLED=1` | `GITHUB_REPO`, `PRODUCT_CONTEXT`, `WIKI_PAGES_JSON`, `LLM_THINKING`, `LLM_TIMEOUT_S`, `LLM_FALLBACK_MODEL` (one retry on this model when the default model call fails) |
 | Token usage | `TOKSCALE_GRAPH` | `TOKENS_URL` is an optional display link. |
 | Drifty | `DRIFTY_DB` and `DRIFTY_SLUG` | `FOCUS_URL` is an optional display link. |
 | Sunsama | `SUNSAMA_COOKIE_DB` | `SUNSAMA_URL` is an optional display link. |

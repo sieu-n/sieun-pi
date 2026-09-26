@@ -403,9 +403,21 @@ tls.connect = deny;
             self.assertIn("--offline", command)
             self.assertIn("@" + str(context), command)
             self.assertEqual(run.call_args.kwargs["cwd"], str(self.runtime))
-        with patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 12, "", "fixture model denied")):
-            with self.assertRaisesRegex(RuntimeError, "exit 12: fixture model denied"):
+        with patch.dict(os.environ, {"LLM_FALLBACK_MODEL": "openai-codex/gpt-6-astra"}), patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 12, "", "fixture model denied")) as run:
+            with self.assertRaisesRegex(RuntimeError, "exit 12: fixture model denied; fallback openai-codex/gpt-6-astra: prime-agent -p exit 12"):
                 module.run_llm(context, "fixture instruction")
+            self.assertEqual(run.call_count, 2)
+            self.assertNotIn("--model", run.call_args_list[0].args[0])
+            second = run.call_args_list[1].args[0]
+            self.assertEqual(second[second.index("--model") + 1], "openai-codex/gpt-6-astra")
+        outcomes = [subprocess.CompletedProcess([], 1, "", "fixture 403"), subprocess.CompletedProcess([], 0, '{"features":[]}', "")]
+        with patch.dict(os.environ, {"LLM_FALLBACK_MODEL": "openai-codex/gpt-6-astra"}), patch.object(module.subprocess, "run", side_effect=outcomes) as run:
+            self.assertEqual(module.run_llm(context, "fixture instruction"), '{"features":[]}')
+            self.assertEqual(run.call_count, 2)
+        with patch.dict(os.environ, {"LLM_FALLBACK_MODEL": ""}), patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 12, "", "fixture model denied")) as run:
+            with self.assertRaisesRegex(RuntimeError, "exit 12: fixture model denied$"):
+                module.run_llm(context, "fixture instruction")
+            self.assertEqual(run.call_count, 1)
 
     def test_network_retry_failure_is_reported_without_model_or_real_waits(self):
         self.stage()
