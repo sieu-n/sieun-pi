@@ -19,6 +19,7 @@
   import ProgressSteps from "./ProgressSteps.svelte";
   import PriorityPicker from "./PriorityPicker.svelte";
   import ProgressPicker from "./ProgressPicker.svelte";
+  import Lightbox from "./ui/Lightbox.svelte";
 
   let { narrow }: { narrow: boolean } = $props();
   let workspaces = $state<Workspace[]>([]);
@@ -30,6 +31,7 @@
   let effort = $state<ThinkingLevel | null>(null);
   let workspaceOpen = $state(false);
   const closePopover = () => { workspaceOpen = false; };
+  let lightbox = $state<number | null>(null);
 
   /** Labels for the thread this send creates; they are written to it right after the create returns its id. */
   let draftTags = $state<string[]>([]);
@@ -106,7 +108,7 @@
             {#if store.pending.images.length}
               <div class="images">
                 {#each store.pending.images as image, index (index)}
-                  <img src={"data:" + image.mimeType + ";base64," + image.data} alt="Attached" />
+                  <button type="button" class="view" aria-label="View image {index + 1}" onclick={() => { lightbox = index; }}><img src={"data:" + image.mimeType + ";base64," + image.data} alt="Attached" /></button>
                 {/each}
               </div>
             {/if}
@@ -116,8 +118,9 @@
         </div>
       {:else}
         <h1 class="greeting">{greeting}</h1>
-        <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder="Ask Prime Agent anything">
-          {#snippet left()}
+        <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder="Ask Prime Agent anything" />
+        <div class="options-row">
+          <div class="group" role="group" aria-label="Setup for the new thread">
             <Popover open={workspaceOpen} onclose={closePopover} width={340} label="Workspace">
               {#snippet trigger()}
                 <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={workspaceOpen} aria-label="Workspace: {cwd || 'none'}" onclick={() => { workspaceOpen = !workspaceOpen; }}>
@@ -138,29 +141,30 @@
             </Popover>
             <AccountChip threadId={null} provider={activeModel?.provider} model={activeModel ? activeModel.id + " " + activeModel.name : undefined}
               choice={account} onchoose={next => { account = next; }} />
-          {/snippet}
-          {#snippet right()}
             <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort
               defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
-          {/snippet}
-        </Composer>
-        <div class="labels-row" role="group" aria-label="Labels for the new thread">
-          <button type="button" class="bar-button label-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "tags"} onclick={event => pick(event, "tags")}>
-            <Icon name="tag" size={13} />
-            {#if shownTags.length}{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}{:else}<span>Tags</span>{/if}
-          </button>
-          <button type="button" class="bar-button label-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "priority"} onclick={event => pick(event, "priority")}>
-            <PriorityBars level={draftPriority} /><span>{draftPriority ? PRIORITY_LABEL[draftPriority] : "Priority"}</span>
-          </button>
-          <button type="button" class="bar-button label-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "progress"} onclick={event => pick(event, "progress")}>
-            <ProgressSteps progress={draftProgress} /><span>{draftProgress !== "none" ? PROGRESS_LABEL[draftProgress] : "Progress"}</span>
-          </button>
+          </div>
+          <div class="group" role="group" aria-label="Labels for the new thread">
+            <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "tags"} onclick={event => pick(event, "tags")}>
+              <Icon name="tag" size={13} />
+              {#if shownTags.length}{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}{:else}<span>Tags</span>{/if}
+            </button>
+            <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "priority"} onclick={event => pick(event, "priority")}>
+              <PriorityBars level={draftPriority} /><span>{draftPriority ? PRIORITY_LABEL[draftPriority] : "Priority"}</span>
+            </button>
+            <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "progress"} onclick={event => pick(event, "progress")}>
+              <ProgressSteps progress={draftProgress} /><span>{draftProgress !== "none" ? PROGRESS_LABEL[draftProgress] : "Progress"}</span>
+            </button>
+          </div>
         </div>
       {/if}
     </div>
   </div>
 </div>
 
+{#if lightbox !== null && store.pending}
+  <Lightbox images={store.pending.images.map((image, index) => ({ src: "data:" + image.mimeType + ";base64," + image.data, alt: `Image ${index + 1}` }))} index={lightbox} onclose={() => { lightbox = null; }} />
+{/if}
 {#if labelPicker}
   {#if labelPicker.field === "tags"}
     <Floating anchor={labelPicker.anchor} width={260} maxHeight={360} label="Tags for the new thread" onclose={() => { labelPicker = null; }}><TagPicker selection={draftSelection} /></Floating>
@@ -183,14 +187,17 @@
   .center { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 20px 10vh; overflow-y: auto; }
   .column { width: 100%; max-width: var(--column); }
   .greeting { margin: 0 0 18px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
-  .labels-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-top: 8px; padding: 0 4px; }
-  .label-button { height: 26px; gap: 6px; font-size: 12.5px; }
+  .options-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-top: 8px; padding: 0 4px; }
+  .group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
+  .group .bar-button { gap: 6px; }
+  .options-row :global(.bar-button), .options-row :global(.account) { height: 26px; font-size: 12.5px; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); font-size: 12px; }
   .custom { display: flex; gap: 6px; padding: 6px 4px 2px; }
   .pending { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; }
   .bubble { max-width: min(85%, 640px); padding: 10px 16px; border-radius: 18px 18px 6px 18px; background: var(--user-bubble); }
   .text { white-space: pre-wrap; overflow-wrap: anywhere; }
   .images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .view { display: block; cursor: zoom-in; border-radius: var(--radius-small); }
   .images img { max-width: 200px; max-height: 200px; border-radius: var(--radius-small); display: block; }
   .starting { align-self: flex-start; display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 14px; }
   @container app (max-width: 899px) { .greeting { font-size: 24px; } .center { padding-bottom: 4vh; } }

@@ -8,6 +8,7 @@
   import WorkRow from "./WorkRow.svelte";
   import Icon from "./Icon.svelte";
   import { tooltip } from "./ui/tooltip.ts";
+  import Lightbox from "./ui/Lightbox.svelte";
 
   let { turn, threadId }: { turn: Turn; threadId: string } = $props();
 
@@ -25,6 +26,7 @@
   const shownText = $derived(fullReply ?? replyText);
   const replyHtml = $derived(shownText ? renderMarkdown(shownText) : "");
   let copied = $state(false);
+  let lightbox = $state<number | null>(null);
 
   async function loadFullReply(): Promise<void> {
     if (!reply) return;
@@ -49,7 +51,7 @@
         {#if promptImages.length}
           <div class="images">
             {#each promptImages as image, index (image.url + index)}
-              <img src={image.url} alt="Attached" loading="lazy" />
+              <button type="button" class="view" aria-label="View image {index + 1}" onclick={() => { lightbox = index; }}><img src={image.url} alt="Attached" loading="lazy" /></button>
             {/each}
           </div>
         {/if}
@@ -76,6 +78,9 @@
       {/if}
     </div>
   {/if}
+  {#if lightbox !== null}
+    <Lightbox images={promptImages.map((image, index) => ({ src: image.url, alt: `Image ${index + 1}` }))} index={lightbox} onclose={() => { lightbox = null; }} />
+  {/if}
   {#if failed}
     <div class="failed" role="status">{failed.stopReason === "aborted" ? "Response stopped" : "Error: " + (failed.errorMessage || "the model returned an error")}</div>
   {/if}
@@ -89,6 +94,7 @@
   .skill-tag { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 4px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-family: var(--mono); }
   .prompt-text { white-space: pre-wrap; overflow-wrap: anywhere; }
   .images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .view { display: block; cursor: zoom-in; border-radius: var(--radius-small); }
   .images img { max-width: 240px; max-height: 240px; border-radius: var(--radius-small); display: block; }
   .stamp { margin-top: 4px; font-size: 11px; color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
   .prompt-row:hover .stamp { opacity: 1; }

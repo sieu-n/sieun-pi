@@ -18,3 +18,26 @@ export function matchCommands(commands: readonly Command[], query: string, limit
   });
   return ranked.sort((a, b) => a.rank - b.rank || a.order - b.order).slice(0, limit).map(entry => entry.command);
 }
+
+export interface SlashToken { start: number; end: number; query: string }
+
+/**
+ * The "/query" word at the caret: it starts the text or follows whitespace, so "http://a/b" and "a/b" never open the menu.
+ * `query` is the text typed between the slash and the caret; `start` to `end` is the whole word, so a pick replaces all of it.
+ */
+export function slashTokenAt(text: string, caret: number): SlashToken | null {
+  const at = Math.max(0, Math.min(caret, text.length));
+  let start = at;
+  while (start > 0 && !/\s/.test(text[start - 1]!)) start--;
+  if (at === start || text[start] !== "/") return null;
+  let end = at;
+  while (end < text.length && !/\s/.test(text[end]!)) end++;
+  return { start, end, query: text.slice(start + 1, at) };
+}
+
+/** `text` with the slash token replaced by "/name " and the caret placed after that space. */
+export function insertSlashCommand(text: string, token: SlashToken, name: string): { text: string; caret: number } {
+  const tail = text.slice(token.end);
+  const inserted = "/" + name + (tail.startsWith(" ") ? "" : " ");
+  return { text: text.slice(0, token.start) + inserted + tail, caret: token.start + name.length + 2 };
+}

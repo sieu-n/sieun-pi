@@ -37,11 +37,12 @@
   import { tick, untrack, type Snippet } from "svelte";
   import { store } from "./store.svelte.ts";
   import { bytes } from "./format.ts";
-  import { matchCommands } from "./command-match.ts";
+  import { insertSlashCommand, matchCommands, slashTokenAt } from "./command-match.ts";
   import { IMAGE_MIME_TYPES, MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES, MAX_CHAT_TOTAL_IMAGE_BYTES, MAX_MESSAGE_LENGTH } from "../shared/limits.ts";
   import type { ImageInput } from "../shared/types.ts";
   import Icon from "./Icon.svelte";
   import Floating from "./ui/Floating.svelte";
+  import Lightbox from "./ui/Lightbox.svelte";
   import { tooltip } from "./ui/tooltip.ts";
 
   let { draftKey, threadId = null, busy = false, placeholder = "Message Prime Agent", acceptsImages = true, focusOnMount = false, send, stop, left, right }: {
@@ -62,6 +63,8 @@
   let menuIndex = $state(0);
   let commands = $state<Command[]>([]);
   let textarea: HTMLTextAreaElement | undefined = $state();
+  let caret = $state(0);
+  let lightbox = $state<number | null>(null);
 
   $effect(() => { drafts.set(draftKey, { text, images }); });
   $effect(() => {
@@ -74,15 +77,15 @@
   $effect(() => { if (focusOnMount) textarea?.focus(); });
   $effect(() => { if (!busy) modeOpen = false; });
 
-  const slashQuery = $derived(/^\/(\S*)$/.exec(text)?.[1] ?? null);
+  const slashToken = $derived(slashTokenAt(text, caret));
   $effect(() => {
     const id = threadId;
-    if (slashQuery === null) return;
+    if (slashToken === null) return;
     let cancelled = false;
     void loadCommands(id).then(list => { if (!cancelled) commands = list; });
     return () => { cancelled = true; };
   });
-  const filtered = $derived(slashQuery === null ? [] : matchCommands(commands, slashQuery));
+  const filtered = $derived(slashToken === null ? [] : matchCommands(commands, slashToken.query));
   const menuOpen = $derived(!menuDismissed && filtered.length > 0);
   $effect(() => { void filtered; menuIndex = 0; });
   let menu: HTMLElement | undefined = $state();
@@ -92,12 +95,16 @@
   const totalBytes = $derived(images.reduce((sum, image) => sum + image.size, 0));
 
   function insertCommand(command: Command): void {
-    text = "/" + command.name + " ";
+    if (!slashToken) return;
+    const next = insertSlashCommand(text, slashToken, command.name);
+    text = next.text;
+    caret = next.caret;
     menuDismissed = true;
-    void tick().then(() => { textarea?.focus(); textarea?.setSelectionRange(text.length, text.length); });
+    void tick().then(() => { textarea?.focus(); textarea?.setSelectionRange(next.caret, next.caret); });
   }
 
-  function onInput(): void { menuDismissed = false; }
+  function syncCaret(): void { caret = textarea?.selectionStart ?? text.length; }
+  function onInput(): void { menuDismissed = false; syncCaret(); }
 
   function onKeydown(event: KeyboardEvent): void {
     if (event.isComposing || event.keyCode === 229) return;
@@ -124,6 +131,7 @@
     for (const image of images) URL.revokeObjectURL(image.url);
     drafts.delete(draftKey);
     text = "";
+    caret = 0;
     images = [];
     menuDismissed = false;
     await tick();
@@ -176,10 +184,10 @@
   ondragover={event => { event.preventDefault(); dragging = true; }} ondragleave={() => { dragging = false; }} ondrop={onDrop}>
   {#if images.length}
     <div class="thumbs">
-      {#each images as image (image.id)}
+      {#each images as image, index (image.id)}
         <div class="thumb fade-in">
-          <img src={image.url} alt={image.name} />
-          <button class="remove" aria-label="Remove {image.name}" onclick={() => removeImage(image.id)}><Icon name="x" size={12} /></button>
+          <button type="button" class="view" aria-label="View {image.name}" onclick={() => { lightbox = index; }}><img src={image.url} alt={image.name} /></button>
+          <button type="button" class="remove" aria-label="Remove {image.name}" onclick={() => removeImage(image.id)}><Icon name="x" size={12} /></button>
         </div>
       {/each}
     </div>
@@ -197,7 +205,7 @@
     </div>
   {/if}
   <textarea data-composer bind:this={textarea} bind:value={text} {placeholder} rows="1" aria-label={placeholder}
-    oninput={onInput} onkeydown={onKeydown} onpaste={onPaste}></textarea>
+    oninput={onInput} onkeydown={onKeydown} onkeyup={syncCaret} onclick={syncCaret} onpaste={onPaste}></textarea>
   <div class="bar">
     {#if left}<div class="slot left">{@render left()}</div>{/if}
     <span class="spacer"></span>
@@ -229,6 +237,9 @@
         </button>
       {/each}
     </Floating>
+  {/if}
+  {#if lightbox !== null}
+    <Lightbox images={images.map(image => ({ src: image.url, alt: image.name }))} index={lightbox} onclose={() => { lightbox = null; }} />
   {/if}
   {#if text.length > MAX_MESSAGE_LENGTH}
     <div class="hint-line danger">Message is {text.length.toLocaleString()} characters. The limit is {MAX_MESSAGE_LENGTH.toLocaleString()}.</div>
@@ -265,7 +276,8 @@
   .mode-item .hint { padding-top: 2px; }
   .thumbs { display: flex; gap: 8px; padding: 10px 12px 0; flex-wrap: wrap; }
   .thumb { position: relative; width: 64px; height: 64px; border-radius: var(--radius-small); overflow: hidden; border: 1px solid var(--border); }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .view { display: block; width: 100%; height: 100%; cursor: zoom-in; }
+  .view img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .remove { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border-radius: 50%; background: rgba(0, 0, 0, 0.6); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
   .slash-menu { position: absolute; left: 8px; right: 8px; bottom: calc(100% + 6px); z-index: 20; padding: 4px; max-height: 320px; overflow: auto; }
   .command-name { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
