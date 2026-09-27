@@ -17,6 +17,7 @@ Always, to any text a human will read. Named surfaces, because these are the one
 | landing and marketing copy | `apps/search` public routes |
 | blog posts and docs | any `.md` meant for a reader |
 | commits and PR bodies | `commit.mjs` messages, PR descriptions |
+| specs and tickets | `apps/llm-wiki/specs/**` (the `/specs` page), Linear issues |
 
 Published articles are the highest-stakes case. A slopped chat reply costs one reader a moment.
 A slopped SEO article or landing page ships the slop to every visitor and stays up.
@@ -203,6 +204,18 @@ carries all five, in this order.
 Never use a vague noun for the failing thing: "the gateway", "infra", "capacity", "transport".
 State what happened, not a rounded story. If one run failed and two later probes hung, say that.
 Do not compress it into "both attempts".
+
+## Specs and tickets
+
+A spec or ticket should read like the owner typed it in a minute. Model: auto-sns-agent SPEC-13.
+
+50. **Title says what works.** "Every link on the landing page opens."
+51. **Notes are 0 to 3 short lines,** only what the tester needs: account, target, known blocker. No
+    background story, dates, commit ids, decision codes, session links, or "planned checks" lists.
+52. **One criterion is one short line,** about 15 words, starting with `Local:`, `Staging:` or
+    `Production:`. It says what a person would see. No tool lists, no reasons, no "(60 today)".
+53. **Evidence goes elsewhere.** Put the audit, numbers and history in the session report and link it
+    once if needed.
 
 ## What was dropped from pstack unslop, and why
 
