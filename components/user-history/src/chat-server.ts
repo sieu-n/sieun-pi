@@ -21,7 +21,7 @@ class RequestError extends Error {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function escapeAttribute(text: string): string { return text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;"); }
 
-export function renderShell(csrfToken: string): string {
+export function renderShell(csrfToken: string, version: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -31,7 +31,7 @@ export function renderShell(csrfToken: string): string {
 <title>Prime Agent chat</title>
 <link rel="stylesheet" href="app.css">
 </head>
-<body data-chat-token="${escapeAttribute(csrfToken)}">
+<body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}">
 <div id="app"></div>
 <script type="module" src="app.js"></script>
 </body>
@@ -188,7 +188,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins;
 }): Promise<{ url: string; close(): Promise<void> }> {
   const base = "/" + capability + "/";
-  const shell = renderShell(csrfToken);
+  const shell = renderShell(csrfToken, bundle.version);
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
   const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string }> }>(200);
   const streams = new Set<EventStream>();
@@ -259,6 +259,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "app.css") { serveAsset(req, res, bundle.css); return; }
         if (route === "api/sessions/stream") {
           const stream = openStream(req, res);
+          stream.send("build", { version: bundle.version });
           const unsubscribe = backend.catalog.subscribe(event => stream.send("sessions", event));
           res.once("close", unsubscribe);
           return;

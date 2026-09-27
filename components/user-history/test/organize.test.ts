@@ -90,6 +90,11 @@ test("catalog rows carry labels, schedule, and a working start only while busy",
   assert.equal(idle.workingSince, undefined);
   assert.deepEqual([idle.tags, idle.priority, idle.progress, idle.cost], [[], 0, "none", undefined], "no usage from the daemon means an unknown cost");
   assert.deepEqual([busy.progress, busy.cost], ["plan", 1.25]);
+  const failedLine = "Model request failed: Provider rate limit exceeded (rate_limit_error, 429)";
+  const settled = projectRow({ ...base, isStreaming: false, summary: failedLine, taskState: "error" } as unknown as SessionSummary, undefined, 0);
+  assert.equal(settled.failure, failedLine, "an idle session whose last call failed shows the failure line");
+  assert.equal(projectRow({ ...base, isStreaming: false, summary: failedLine } as SessionSummary, undefined, 0).failure, undefined, "a line the daemon no longer judges current is stale");
+  assert.equal(projectRow({ ...base, summary: failedLine, taskState: "error" } as unknown as SessionSummary, undefined, 0).failure, undefined, "a running row uses its pulse");
 });
 
 test("sidebar order: needs response, then working, then the rest by priority and recency", () => {

@@ -64,7 +64,12 @@
 
   onMount(() => {
     api.workspaces().then(list => { workspaces = list; if (!cwd && list[0]) cwd = list[0].cwd; }, error => store.toast(error instanceof Error ? error.message : String(error)));
-    api.models(null).then(result => { catalog = result; }, error => { catalogError = error instanceof Error ? error.message : String(error); });
+  });
+  $effect(() => {
+    void store.defaultsRevision;
+    let cancelled = false;
+    api.models(null).then(result => { if (!cancelled) { catalog = result; catalogError = null; } }, error => { if (!cancelled) catalogError = error instanceof Error ? error.message : String(error); });
+    return () => { cancelled = true; };
   });
 
   function chooseWorkspace(path: string): void {
@@ -80,7 +85,8 @@
     const tags = shownTags.map(tag => tag.id);
     const priority = draftPriority;
     const progress = draftProgress;
-    const id = await store.createChat({ cwd, message: text, images, ...(model ? { provider: model.provider, modelId: model.id } : {}), ...(effort ? { thinkingLevel: effort } : {}),
+    const chosen = activeModel;
+    const id = await store.createChat({ cwd, message: text, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
     draftTags = [];
@@ -130,7 +136,7 @@
               {/snippet}
               {#each workspaces as workspace (workspace.cwd)}
                 <button type="button" class="menu-item" class:current={workspace.cwd === cwd} onclick={() => chooseWorkspace(workspace.cwd)}>
-                  <span class="path">{workspace.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
+                  <span class="path"><bdi>{workspace.cwd.replace(/^\/Users\/[^/]+/, "~")}</bdi></span>
                   <span class="hint">{workspace.count}{workspace.lastUsedAt ? " · " + relativeTime(workspace.lastUsedAt) : ""}</span>
                 </button>
               {/each}

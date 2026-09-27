@@ -65,6 +65,14 @@ export function sessionPulse(row: SessionSummary, running: ReadonlyMap<string, S
   return { ...pulseOf(row, running), subagents };
 }
 
+/**
+ * The daemon writes "Model request failed: ..." with task state "error" when a session settles idle on an assistant error, judged at its present
+ * message count; a later message replaces the state, so the pair means the last turn failed. The wire type (0.9.4) predates the "error" state.
+ */
+export function settledOnFailure(row: SessionSummary): boolean {
+  return (row.taskState as string | undefined) === "error" && Boolean(row.summary?.trim());
+}
+
 export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; workingSince?: number; pulse?: SessionPulse }
 
 export function projectRow(row: SessionSummary, readMarker: number | undefined, baseline: number, extras: RowExtras = {}): SessionRow {
@@ -89,6 +97,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     unread: status !== "running" && row.messageCount > 0 && finishedAt > Math.max(baseline, readMarker ?? 0),
     ...(row.workerState ? { workerState: row.workerState } : {}),
     ...(row.statusLabel ? { statusLabel: row.statusLabel } : {}),
+    ...(status !== "running" && settledOnFailure(row) ? { failure: row.summary!.trim().slice(0, 400) } : {}),
     tags: extras.labels?.tags ?? [],
     priority: extras.labels?.priority ?? 0,
     progress: extras.labels?.progress ?? "none",

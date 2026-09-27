@@ -121,7 +121,7 @@ test("login routes stream state and need the page token and origin", async () =>
   const logins = new AccountLogins({ executable, deadlineMs: 20_000, graceMs: 500 });
   const backend = { close: async () => {} } as unknown as ChatBackend;
   const asset = { body: Buffer.from(""), etag: '"x"', contentType: "text/plain" };
-  const server = await startChatServer({ backend, bundle: { js: asset, css: asset }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",
+  const server = await startChatServer({ backend, bundle: { js: asset, css: asset, version: "test" }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",
     identity: { pid: process.pid, instanceId: "i", socketPath: "/none" }, onStop: async () => {}, logins });
   const origin = new URL(server.url).origin;
   const post = (route: string, body: unknown, headers: Record<string, string> = { "X-Chat-Token": "token", Origin: origin }) =>

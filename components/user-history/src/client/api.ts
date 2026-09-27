@@ -28,8 +28,9 @@ export function requestId(): string {
 }
 
 export const api = {
-  sessionsStream(onEvent: (event: SessionsEvent) => void, onError: () => void): () => void {
+  sessionsStream(onEvent: (event: SessionsEvent) => void, onError: () => void, onBuild: (version: string) => void): () => void {
     const source = new EventSource("api/sessions/stream");
+    source.addEventListener("build", event => onBuild((JSON.parse((event as MessageEvent<string>).data) as { version: string }).version));
     source.addEventListener("sessions", event => onEvent(JSON.parse((event as MessageEvent<string>).data) as SessionsEvent));
     source.onerror = () => onError();
     return () => source.close();

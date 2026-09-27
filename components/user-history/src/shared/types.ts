@@ -142,6 +142,8 @@ export interface SessionRow {
   unread: boolean;
   workerState?: string;
   statusLabel?: string;
+  /** The daemon's failure line when the session settled on a failed model call and nothing came after it. Only on rows that are not running. */
+  failure?: string;
   tags: string[];
   priority: Priority;
   workingSince?: string;

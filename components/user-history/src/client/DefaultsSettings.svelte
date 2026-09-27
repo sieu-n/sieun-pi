@@ -42,7 +42,7 @@
   async function save(input: ChatDefaultsInput): Promise<void> {
     saving = true;
     const next = await store.run(api.setDefaults(input));
-    if (next) defaults = next;
+    if (next) { defaults = next; store.defaultsRevision++; }
     saving = false;
   }
   const choose = (next: ModelInfo) => save({ provider: next.provider, modelId: next.id, thinkingLevel: effort && next.thinkingLevels?.includes(effort) ? effort : null });

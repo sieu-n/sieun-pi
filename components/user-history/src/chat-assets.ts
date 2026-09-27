@@ -6,7 +6,8 @@ import esbuildSvelte from "esbuild-svelte";
 const sveltePlugin = typeof esbuildSvelte === "function" ? esbuildSvelte : esbuildSvelte.default;
 
 export interface Asset { body: Buffer; etag: string; contentType: string }
-export interface ClientBundle { js: Asset; css: Asset }
+/** `version` names this build; the page carries it and the sessions stream reports it, so an open tab sees a restart onto new code. */
+export interface ClientBundle { js: Asset; css: Asset; version: string }
 
 function asset(body: Uint8Array, contentType: string): Asset {
   const buffer = Buffer.from(body);
@@ -23,5 +24,8 @@ export async function buildClientBundle(): Promise<ClientBundle> {
   const js = result.outputFiles.find(file => file.path.endsWith(".js"));
   const css = result.outputFiles.find(file => file.path.endsWith(".css"));
   if (!js) throw new Error("Client bundle produced no app.js");
-  return { js: asset(js.contents, "text/javascript; charset=utf-8"), css: asset(css?.contents ?? new Uint8Array(), "text/css; charset=utf-8") };
+  const script = asset(js.contents, "text/javascript; charset=utf-8");
+  const style = asset(css?.contents ?? new Uint8Array(), "text/css; charset=utf-8");
+  const version = createHash("sha256").update(script.etag + style.etag).digest("hex").slice(0, 16);
+  return { js: script, css: style, version };
 }

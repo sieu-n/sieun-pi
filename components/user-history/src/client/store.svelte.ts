@@ -1,4 +1,5 @@
 import { api, ApiError, requestId } from "./api.ts";
+import { hasUnsentDrafts } from "./drafts.ts";
 import { applyThreadEvent, isThreadBusy } from "../shared/thread-state.ts";
 import type { ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 
@@ -19,6 +20,8 @@ class Store {
   toasts = $state<Toast[]>([]);
   sidebarOpen = $state(window.innerWidth >= 900);
   drawer = $state<"accounts" | "defaults" | null>(null);
+  /** Bumped when Settings saves new defaults, so the new-chat screen reads them again. */
+  defaultsRevision = $state(0);
   private toastId = 0;
   private sessionsStop: (() => void) | null = null;
 
@@ -30,7 +33,16 @@ class Store {
       this.tags = event.tags;
       this.daemon = event.daemon;
       this.daemonError = event.error ?? null;
-    }, () => { if (this.daemon === "unknown") this.daemon = "down"; });
+    }, () => { if (this.daemon === "unknown") this.daemon = "down"; }, version => this.onBuild(version));
+  }
+
+  private updateOffered = false;
+  /** A restarted service with new client code: reload at once unless that would drop an unsent draft or a starting chat, then offer it instead. */
+  private onBuild(version: string): void {
+    if (!version || version === document.body.dataset.build || this.updateOffered) return;
+    if (!this.pending && !hasUnsentDrafts()) { location.reload(); return; }
+    this.updateOffered = true;
+    this.toast("A new version of this page is ready.", "info", { label: "Reload", run: () => location.reload() }, null);
   }
 
   retry(): void {
@@ -97,10 +109,11 @@ class Store {
     void api.read(id).catch(() => {});
   }
 
-  toast(text: string, kind: Toast["kind"] = "error", action?: Toast["action"]): void {
+  /** `ttl` null keeps the toast until its action runs or it is dismissed. */
+  toast(text: string, kind: Toast["kind"] = "error", action?: Toast["action"], ttl: number | null = kind === "error" ? 7000 : action ? 6000 : 3500): void {
     const id = ++this.toastId;
     this.toasts = [...this.toasts, { id, text, kind, ...(action ? { action } : {}) }];
-    setTimeout(() => this.dismiss(id), kind === "error" ? 7000 : action ? 6000 : 3500);
+    if (ttl !== null) setTimeout(() => this.dismiss(id), ttl);
   }
 
   dismiss(id: number): void { this.toasts = this.toasts.filter(toast => toast.id !== id); }

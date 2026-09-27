@@ -1,9 +1,8 @@
 <script module lang="ts">
   import { api } from "./api.ts";
   import type { Command, SendMode } from "../shared/types.ts";
-  export interface Attachment { id: number; name: string; mimeType: string; size: number; data: string; url: string }
-  interface Draft { text: string; images: Attachment[] }
-  const drafts = new Map<string, Draft>();
+  import { drafts, type DraftAttachment } from "./drafts.ts";
+  export type Attachment = DraftAttachment;
   const commandCache = new Map<string, Promise<Command[]>>();
   const NEW_CHAT = "";
   const BUSY_MODE_KEY = "chat.busySendMode";

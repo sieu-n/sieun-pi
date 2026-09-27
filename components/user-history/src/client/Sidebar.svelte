@@ -53,7 +53,7 @@
   }
   function cancelWarm(): void { if (warmTimer) { clearTimeout(warmTimer); warmTimer = null; } }
 
-  function startRename(row: SessionRow): void { renaming = { id: row.id, name: row.named ? row.name : "" }; }
+  function startRename(row: SessionRow): void { renaming = { id: row.id, name: row.name }; }
   async function commitRename(): Promise<void> {
     const current = renaming;
     renaming = null;
@@ -192,10 +192,12 @@
                 <span class="line" title={pulse && pulse.level !== "live" ? pulse.text : undefined}>
                   <span class="title" class:strong={needsResponse(row)}>{row.name}</span>
                   {#if row.status === "running"}<span class="run" role="img" aria-label={pulse?.text ? "Working, " + pulse.text : "Working"}><StatusMark status="working" level={pulse?.level ?? "live"} /></span>
+                  {:else if row.failure}<span class="dot failed" role="img" aria-label="Last turn failed"></span>
                   {:else if needsResponse(row)}<span class="dot" role="img" aria-label="Needs response"></span>{/if}
                 </span>
-                {#if pulse?.level === "failed"}
-                <span class="line sub"><span class="meta failure" title={pulse.text}>{pulse.text}</span></span>
+                {#if pulse?.level === "failed" || (row.status !== "running" && row.failure)}
+                {@const failure = pulse?.level === "failed" ? pulse.text : row.failure}
+                <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
                 {:else}
                 <span class="line sub">
                   {#if row.schedule}
@@ -341,6 +343,7 @@
   .chips { display: inline-flex; align-items: center; gap: 3px; flex: 1; min-width: 0; overflow: hidden; }
   .more-tags { flex: none; font-size: 11px; color: var(--text-faint); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+  .dot.failed { background: var(--danger); }
   .dot.small { width: 6px; height: 6px; }
   .actions { position: absolute; right: 4px; top: 3px; display: none; align-items: center; gap: 0; padding-left: 14px; border-radius: var(--radius-small);
     background: linear-gradient(to right, transparent, var(--row-bg) 12px); }
