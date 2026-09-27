@@ -132,6 +132,9 @@
   let scroller: HTMLElement | undefined = $state();
   let column: HTMLElement | undefined = $state();
   let pinned = $state(true);
+  /** Closed by the user until the view is pinned to the bottom again. */
+  let jumpDismissed = $state(false);
+  $effect(() => { if (pinned) jumpDismissed = false; });
   function scrollToBottom(): void { if (scroller) scroller.scrollTop = scroller.scrollHeight; }
   function onScroll(): void {
     if (!scroller) return;
@@ -278,10 +281,13 @@
         {/if}
       </div>
     </div>
-    {#if !pinned}
-      <button type="button" class="jump fade-in" onclick={() => { pinned = true; scrollToBottom(); }}><Icon name="arrowDown" size={14} /> Jump to latest</button>
-    {/if}
     <div class="foot">
+      {#if !pinned && !jumpDismissed}
+        <div class="jump fade-in">
+          <button type="button" class="jump-go" onclick={() => { pinned = true; scrollToBottom(); }}><Icon name="arrowDown" size={14} /> Jump to latest</button>
+          <button type="button" class="jump-close" aria-label="Hide Jump to latest" onclick={() => { jumpDismissed = true; }}><Icon name="x" size={12} /></button>
+        </div>
+      {/if}
       <div class="column">
         <QueueChips threadId={id} queue={thread.queue} />
         <Composer draftKey={id} threadId={id} {busy} placeholder={saved ? "Reply to resume this thread" : "Ask for follow-up changes"}
@@ -346,8 +352,12 @@
   .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .column { width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 20px 24px; }
   .empty { padding: 48px 0; text-align: center; }
-  .jump { position: absolute; left: 50%; bottom: 132px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; }
-  .foot { flex: none; background: var(--bg); }
+  .jump { position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; }
+  .jump-go { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: 999px 0 0 999px; }
+  .jump-close { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-right: 3px; border-radius: 50%; color: var(--text-faint); }
+  .jump-go:hover, .jump-close:hover { color: var(--text); }
+  .jump-close:hover { background: var(--bg-hover); }
+  .foot { position: relative; flex: none; background: var(--bg); }
   .foot .column { padding: 4px 20px 8px; }
   .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-muted); }
   .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
