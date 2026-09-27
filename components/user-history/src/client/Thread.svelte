@@ -17,11 +17,16 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import TagChip from "./TagChip.svelte";
+  import PriorityBars from "./PriorityBars.svelte";
+  import ProgressSteps from "./ProgressSteps.svelte";
+  import PriorityPicker from "./PriorityPicker.svelte";
+  import ProgressPicker from "./ProgressPicker.svelte";
   import SubagentList from "./SubagentList.svelte";
   import Floating from "./ui/Floating.svelte";
   import TagPicker from "./ui/TagPicker.svelte";
   import { tooltip } from "./ui/tooltip.ts";
   import { labels, threadTags } from "./labels.ts";
+  import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
   import { clock } from "./clock.svelte.ts";
   import { readPulse } from "../shared/pulse.ts";
 
@@ -84,8 +89,12 @@
   });
 
   let agentsOpen = $state(false);
-  let tagButton: HTMLButtonElement | undefined = $state();
-  let tagging = $state(false);
+  let labelPicker = $state<{ field: "tags" | "priority" | "progress"; anchor: HTMLElement } | null>(null);
+  function pick(event: MouseEvent, field: "tags" | "priority" | "progress"): void {
+    const anchor = event.currentTarget as HTMLElement;
+    labelPicker = labelPicker?.field === field ? null : { field, anchor };
+  }
+  const closePicker = () => { labelPicker = null; };
   const rowTags = $derived((row?.tags ?? []).flatMap(tagId => store.tags.filter(tag => tag.id === tagId)));
   const MODAL_CHILDREN = 40;
   function archive(): void { void labels.archive([id]); }
@@ -105,7 +114,7 @@
   }
 
   let editingTitle = $state<string | null>(null);
-  function startRename(): void { if (editingTitle === null) editingTitle = row?.named || thread?.info.name ? title : ""; }
+  function startRename(): void { if (editingTitle === null) editingTitle = title; }
   async function commitRename(): Promise<void> {
     const draft = editingTitle;
     editingTitle = null;
@@ -176,10 +185,16 @@
         {#each rowTags as tag (tag.id)}
           <button type="button" class="tag-button" aria-label="Remove tag {tag.name}" onclick={() => void labels.setTag([id], tag.id, false)}><TagChip {tag} /><span class="x" aria-hidden="true"><Icon name="x" size={10} /></span></button>
         {/each}
-        <button type="button" class="add-tag" bind:this={tagButton} aria-haspopup="dialog" aria-expanded={tagging} onclick={() => { tagging = !tagging; }}>
+        <button type="button" class="add-tag" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "tags"} onclick={event => pick(event, "tags")}>
           <Icon name="plus" size={12} />{rowTags.length ? "" : "Tag"}
         </button>
-      </span>{/if}
+      </span>
+      <button type="button" class="label-button" class:set={row.priority > 0} aria-haspopup="dialog" aria-expanded={labelPicker?.field === "priority"} onclick={event => pick(event, "priority")}>
+        <PriorityBars level={row.priority} /><span class="label-text">{row.priority ? PRIORITY_LABEL[row.priority] : "Priority"}</span>
+      </button>
+      <button type="button" class="label-button" class:set={row.progress !== "none"} aria-haspopup="dialog" aria-expanded={labelPicker?.field === "progress"} onclick={event => pick(event, "progress")}>
+        <ProgressSteps progress={row.progress} /><span class="label-text">{row.progress !== "none" ? PROGRESS_LABEL[row.progress] : "Progress"}</span>
+      </button>{/if}
     </div>
     <div class="controls">
       <div class="segmented" role="radiogroup" aria-label="View">
@@ -212,8 +227,18 @@
       {/if}
     </div>
   </header>
-  {#if tagging && tagButton}
-    <Floating anchor={tagButton} width={260} maxHeight={360} label="Tags" onclose={() => { tagging = false; }}><TagPicker selection={threadTags([id])} /></Floating>
+  {#if labelPicker?.field === "tags"}
+    <Floating anchor={labelPicker.anchor} width={260} maxHeight={360} label="Tags" onclose={closePicker}><TagPicker selection={threadTags([id])} /></Floating>
+  {:else if labelPicker?.field === "priority" && row}
+    <Floating anchor={labelPicker.anchor} width={210} maxHeight={120} label="Priority" onclose={closePicker}>
+      <div class="menu-heading">Priority</div>
+      <PriorityPicker value={row.priority} autofocus onchange={level => { closePicker(); void labels.setPriority([id], level); }} />
+    </Floating>
+  {:else if labelPicker?.field === "progress" && row}
+    <Floating anchor={labelPicker.anchor} width={300} maxHeight={120} label="Progress" onclose={closePicker}>
+      <div class="menu-heading">Progress</div>
+      <ProgressPicker value={row.progress} autofocus onchange={step => { closePicker(); void labels.setProgress([id], step); }} />
+    </Floating>
   {/if}
 
   {#if thread?.connection === "reconnecting" || (entry?.loading && thread)}
@@ -298,6 +323,9 @@
   .tag-button:hover :global(.tag) { text-decoration: line-through; }
   .add-tag { display: inline-flex; align-items: center; gap: 3px; flex: none; height: 20px; padding: 0 6px; border-radius: 4px; border: 1px dashed var(--border-strong); font-size: 11.5px; color: var(--text-faint); }
   .add-tag:hover, .add-tag[aria-expanded="true"] { color: var(--text); border-color: var(--text-faint); border-style: solid; }
+  .label-button { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 22px; padding: 0 6px; border-radius: 4px; font-size: 11.5px; color: var(--text-faint); white-space: nowrap; transition: background-color 0.12s, color 0.12s; }
+  .label-button.set { color: var(--text-muted); }
+  .label-button:hover, .label-button[aria-expanded="true"] { background: var(--bg-hover); color: var(--text); }
   .modal-list { padding: 12px 14px; }
   .question { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: var(--radius-small); text-align: left; }
   .question:hover { background: var(--bg-hover); }
@@ -306,7 +334,7 @@
   .question-meta { flex: none; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .column :global(.turn.flash) { animation: flash 1.2s ease-out; }
   @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
-  .title { flex: 0 1 auto; max-width: 100%; min-width: 0; padding: 3px 8px; border-radius: var(--radius-small); font-weight: 600; font-size: 14px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .title { flex: 0 8 auto; max-width: 100%; min-width: 96px; padding: 3px 8px; border-radius: var(--radius-small); font-weight: 600; font-size: 14px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title:hover { background: var(--bg-hover); }
   .title-input { font-weight: 600; font-size: 14px; height: 28px; max-width: 480px; }
   .controls { display: flex; align-items: center; gap: 6px; flex: none; }
@@ -324,7 +352,7 @@
   .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-muted); }
   .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @container app (max-width: 899px) {
-    .cwd { display: none; }
+    .cwd, .label-text { display: none; }
     .column { padding: 8px 12px 16px; }
     .foot .column { padding: 4px 10px 8px; }
   }
