@@ -55,10 +55,9 @@ export function matchesQuery(row: SessionRow, needle: string, tags: ReadonlyMap<
 
 export type SidebarSort = "grouped" | "recent";
 export const SIDEBAR_SORT_LABEL: Record<SidebarSort, string> = { grouped: "Needs response, working, other", recent: "Chronological" };
-/** Current: every thread. Tags: only threads that carry a tag, in the same sections, order and rows. */
+/** How much a sidebar card shows under its title. Current: age, working time, cost, model, tags, progress and priority. Tags: only the tag chips. */
 export type SidebarView = "current" | "tags";
-export const SIDEBAR_VIEW_LABEL: Record<SidebarView, string> = { current: "All threads", tags: "Tagged threads only" };
-export const matchesView = (row: SessionRow, view: SidebarView, tags: ReadonlyMap<string, Tag>): boolean => view === "current" || row.tags.some(id => tags.has(id));
+export const SIDEBAR_VIEW_LABEL: Record<SidebarView, string> = { current: "Show details", tags: "Show tags only" };
 
 /** Sidebar sections. Grouped: Needs response, Working, then the rest. Recent: one unlabeled list, most recent activity first. */
 export function groupRows(rows: readonly SessionRow[], sort: SidebarSort = "grouped"): { bucket: Bucket | null; rows: SessionRow[] }[] {

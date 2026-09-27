@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
-  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, matchesQuery, matchesRowFilter, matchesView, modelShort, money, needsResponse, nextRun, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, type SidebarSort, type SidebarView, type Tab } from "./organize.ts";
+  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, type SidebarSort, type SidebarView, type Tab } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Icon from "./Icon.svelte";
@@ -39,7 +39,7 @@
   });
   const archivedCount = $derived(store.sessions.filter(row => row.archived && tabOf(row) === tab).length);
   const filterCount = $derived(activeFilters(ui.sidebarFilter));
-  const groups = $derived(groupRows(visible.filter(row => tabOf(row) === tab && matchesView(row, ui.sidebarView, tagMap) && matchesRowFilter(row, ui.sidebarFilter, tick) && matchesQuery(row, query.trim(), tagMap)), ui.sidebarSort));
+  const groups = $derived(groupRows(visible.filter(row => tabOf(row) === tab && matchesRowFilter(row, ui.sidebarFilter, tick) && matchesQuery(row, query.trim(), tagMap)), ui.sidebarSort));
   const SORTS: readonly SidebarSort[] = ["grouped", "recent"];
   const VIEWS: readonly { view: SidebarView; icon: "list" | "tag" }[] = [{ view: "current", icon: "list" }, { view: "tags", icon: "tag" }];
   const minute = $derived(Math.floor(clock.now / 60_000));
@@ -197,7 +197,10 @@
                   {:else if row.failure}<span class="dot failed" role="img" aria-label="Last turn failed"></span>
                   {:else if needsResponse(row)}<span class="dot" role="img" aria-label="Needs response"></span>{/if}
                 </span>
-                {#if pulse?.level === "failed" || (row.status !== "running" && row.failure)}
+                {#if ui.sidebarView === "tags"}
+                {@const shownTags = row.tags.flatMap(id => tagMap.get(id) ?? [])}
+                {#if shownTags.length}<span class="line sub"><span class="chips all">{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}</span></span>{/if}
+                {:else if pulse?.level === "failed" || (row.status !== "running" && row.failure)}
                 {@const failure = pulse?.level === "failed" ? pulse.text : row.failure}
                 <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
                 {:else}
@@ -238,7 +241,6 @@
         <div class="empty">
           {#if store.daemon === "unknown"}<span class="spinner tiny"></span>
           {:else if query || filterCount}<span>No threads match.{#if filterCount}{" "}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear filters</button>{/if}</span>
-          {:else if ui.sidebarView === "tags"}No tagged threads.
           {:else if tab === "heartbeats"}No heartbeat threads.
           {:else}No threads yet.{/if}
         </div>
