@@ -7,7 +7,7 @@ import { parseSchedules, projectRow, runningByParent, sessionPulse } from "../sr
 import { applyLabelAction, ChatLabels, LabelError, type LabelsState } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { readPulse } from "../src/shared/pulse.ts";
-import { activeFilters, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, groupRowsByTag, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
+import { activeFilters, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, matchesRowFilter, matchesView, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
 import type { SessionRow, Tag } from "../src/shared/types.ts";
 
 const artifacts = () => process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(import.meta.dirname, "../.test-artifacts");
@@ -149,11 +149,11 @@ test("sidebar: chronological sort is one unlabeled list by activity, created age
   assert.deepEqual(groupRows([], "recent"), []);
   const tags: Tag[] = [{ id: "t1", name: "infra", hue: 10 }, { id: "t2", name: "seo", hue: 200 }, { id: "t3", name: "unused", hue: 300 }];
   const tagged = [row("a", { tags: ["t2"], lastActivityAt: "2026-09-21T10:00:00Z" }), row("b", { tags: ["t1", "t2"], status: "running" }), row("c", { tags: ["gone"] }), row("d")];
-  const byTag = groupRowsByTag(tagged, tags);
-  assert.deepEqual(byTag.map(group => [group.tag?.name ?? null, group.rows.map(entry => entry.id)]),
-    [["infra", ["b"]], ["seo", ["b", "a"]], [null, ["c", "d"]]], "tag order from the list, a row under each of its tags, unknown tag ids count as no tag, unused tags are left out");
-  assert.deepEqual(groupRowsByTag(tagged, tags, "recent")[1]!.rows.map(entry => entry.id), ["a", "b"], "chronological sort orders inside each tag");
-  assert.deepEqual(groupRowsByTag([row("a", { tags: ["t1"] })], tags).map(group => group.tag?.id), ["t1"], "no empty No tag section");
+  const tagMap = new Map(tags.map(tag => [tag.id, tag]));
+  const onlyTagged = tagged.filter(entry => matchesView(entry, "tags", tagMap));
+  assert.deepEqual(onlyTagged.map(entry => entry.id), ["a", "b"], "the Tags view keeps threads with a known tag; unknown tag ids count as none");
+  assert.deepEqual(groupRows(onlyTagged).map(group => [group.bucket, group.rows.map(entry => entry.id)]), [["working", ["b"]], ["other", ["a"]]], "same sections and order as the full list");
+  assert.equal(tagged.every(entry => matchesView(entry, "current", tagMap)), true);
   const now = new Date(2026, 8, 23, 15, 0).getTime();
   assert.equal(createdAge(new Date(2026, 8, 23, 0, 5).toISOString(), now), "", "created today shows nothing");
   assert.equal(createdAge(new Date(2026, 8, 22, 23, 50).toISOString(), now), "1d");

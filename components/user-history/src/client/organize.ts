@@ -55,33 +55,16 @@ export function matchesQuery(row: SessionRow, needle: string, tags: ReadonlyMap<
 
 export type SidebarSort = "grouped" | "recent";
 export const SIDEBAR_SORT_LABEL: Record<SidebarSort, string> = { grouped: "Needs response, working, other", recent: "Chronological" };
-/** Current: today's Needs response, Working, Other sections. Tags: one section per tag, threads without a tag last. */
+/** Current: every thread. Tags: only threads that carry a tag, in the same sections, order and rows. */
 export type SidebarView = "current" | "tags";
-export const SIDEBAR_VIEW_LABEL: Record<SidebarView, string> = { current: "Current", tags: "Tags" };
-
-/** A sidebar section: a status bucket, a tag, "No tag" (`tag: null`), or the unlabeled chronological list (`bucket: null`). */
-export interface BucketGroup { kind: "bucket"; bucket: Bucket | null; rows: SessionRow[] }
-export interface TagGroup { kind: "tag"; tag: Tag | null; rows: SessionRow[] }
-export type SidebarGroup = BucketGroup | TagGroup;
+export const SIDEBAR_VIEW_LABEL: Record<SidebarView, string> = { current: "All threads", tags: "Tagged threads only" };
+export const matchesView = (row: SessionRow, view: SidebarView, tags: ReadonlyMap<string, Tag>): boolean => view === "current" || row.tags.some(id => tags.has(id));
 
 /** Sidebar sections. Grouped: Needs response, Working, then the rest. Recent: one unlabeled list, most recent activity first. */
-export function groupRows(rows: readonly SessionRow[], sort: SidebarSort = "grouped"): BucketGroup[] {
-  if (sort === "recent") return rows.length ? [{ kind: "bucket", bucket: null, rows: [...rows].sort((left, right) => activityOf(right) - activityOf(left)) }] : [];
+export function groupRows(rows: readonly SessionRow[], sort: SidebarSort = "grouped"): { bucket: Bucket | null; rows: SessionRow[] }[] {
+  if (sort === "recent") return rows.length ? [{ bucket: null, rows: [...rows].sort((left, right) => activityOf(right) - activityOf(left)) }] : [];
   const sorted = [...rows].sort(compareRows);
-  return BUCKETS.flatMap(bucket => { const items = sorted.filter(row => bucketOf(row) === bucket); return items.length ? [{ kind: "bucket", bucket, rows: items }] : []; });
-}
-
-/**
- * One section per tag in the saved tag order, with the rows sorted like the grouped view inside it (a row with several tags sits under each),
- * then "No tag". Tags no row carries are left out.
- */
-export function groupRowsByTag(rows: readonly SessionRow[], tags: readonly Tag[], sort: SidebarSort = "grouped"): TagGroup[] {
-  const order = sort === "recent" ? (left: SessionRow, right: SessionRow) => activityOf(right) - activityOf(left) : compareRows;
-  const sorted = [...rows].sort(order);
-  const groups: TagGroup[] = tags.flatMap(tag => { const items = sorted.filter(row => row.tags.includes(tag.id)); return items.length ? [{ kind: "tag", tag, rows: items }] : []; });
-  const known = new Set(tags.map(tag => tag.id));
-  const untagged = sorted.filter(row => !row.tags.some(id => known.has(id)));
-  return untagged.length ? [...groups, { kind: "tag", tag: null, rows: untagged }] : groups;
+  return BUCKETS.flatMap(bucket => { const items = sorted.filter(row => bucketOf(row) === bucket); return items.length ? [{ bucket, rows: items }] : []; });
 }
 
 const MINUTE = 60_000;
