@@ -46,7 +46,7 @@ browser  -> POST api/threads/:id/prompt  ThreadHub.prompt -> connection.prompt(.
 
 ## HTTP API
 
-All routes sit under the capability URL. Writes need JSON, the page token in `X-Chat-Token`, and the exact loopback `Origin`.
+All routes sit under the capability URL. Writes need JSON, the page token in `X-Chat-Token`, and the exact `Origin` for the requested host, either loopback HTTP or the configured HTTPS origin.
 
 | Route | Purpose |
 | --- | --- |
@@ -83,6 +83,23 @@ npm run test:native    # isolated daemon, deterministic provider, real HTTP and 
 ```
 
 The service keeps its configuration, instance record, read markers and labels (`labels.json`) under `~/.prime/agent/browser-chat` by default. Use `--data-dir` for a second instance.
+
+## Phone access through Tailscale
+
+Keep Tailscale connected on both devices, on the same tailnet. Configure the HTTPS origin printed by Tailscale Serve:
+
+```sh
+tailscale serve --bg 5182
+sieun-pi chat stop
+sieun-pi chat start --public-origin https://YOUR-MACHINE.YOUR-TAILNET.ts.net
+sieun-pi chat url
+```
+
+On the phone, replace `http://127.0.0.1:5182` in the chat URL with that HTTPS origin. Keep the entire secret path and optional `#thread-id`. The origin setting persists across restarts. Stop chat before changing it; use `chat start --public-origin none` to return to local-only access.
+
+The listener stays on `127.0.0.1`. Only the configured remote host is allowed, with matching HTTPS Origin and page-token checks for writes. Forwarded headers cannot add hosts. The service-stop API stays local-only. A cross-site link may open the secret chat page; cross-site API requests remain blocked. Assets and event streams use relative URLs, so they pass through the same proxy.
+
+Keep the full URL private. Anyone who can reach the service and has that URL can read chats and control agents. Tailscale Serve limits network access to the tailnet; do not use Funnel or an unauthenticated public proxy. Other HTTPS reverse proxies must preserve Host, stream SSE without buffering, and restrict who can connect. Keep the Mac awake and the chat service running.
 
 ## Limits
 

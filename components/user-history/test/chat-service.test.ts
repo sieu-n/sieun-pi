@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,13 @@ import { test } from "node:test";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const execute = promisify(execFile);
+function getStatus(url: string, headers: Record<string, string>): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { headers }, res => { res.resume(); resolve(res.statusCode); });
+    req.on("error", reject);
+    req.end();
+  });
+}
 async function unusedChatPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -18,7 +25,7 @@ async function unusedChatPort(): Promise<number> {
   return address.port;
 }
 
-test("standalone CLI converges concurrent starts, preserves its URL, and stops only its own listener", { timeout: 60000 }, async () => {
+test("standalone CLI converges concurrent starts, preserves its URL, and stops only its own listener", { timeout: 120000 }, async () => {
   const artifacts = process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(root, "components/user-history/.test-artifacts");
   await mkdir(artifacts, { recursive: true });
   const directory = await mkdtemp(join(artifacts, "service-"));
@@ -72,6 +79,43 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.match(await run("status"), /Chat is stopped/);
     assert.equal(await run("start", flags), url, "a stale instance record never blocks a new listener");
     assert.notEqual((await (await fetch(url + "api/identity")).json()).instanceId, restarted.instanceId);
+    await run("stop");
+    const publicOrigin = "https://chat.example.ts.net";
+    assert.equal(await run("start", [...flags, "--public-origin", publicOrigin + "/"]), url);
+    const remote = { Host: new URL(publicOrigin).host, Origin: publicOrigin };
+    const page = await fetch(url, { headers: remote });
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /Prime Agent chat/);
+    assert.equal((await fetch(url + "app.js", { headers: remote })).status, 200);
+    assert.equal((await fetch(new URL("/", url), { headers: remote })).status, 404);
+    assert.equal((await fetch(url, { headers: { Host: "evil.example" } })).status, 421);
+    assert.equal((await fetch(url, { headers: { Host: "evil.example", "X-Forwarded-Host": remote.Host, "X-Forwarded-Proto": "https" } })).status, 421);
+    assert.equal((await fetch(url, { headers: { ...remote, Origin: "https://evil.example" } })).status, 403);
+    assert.equal((await fetch(url, { headers: { ...remote, Origin: publicOrigin.replace("https:", "http:") } })).status, 403);
+    assert.equal((await fetch(url, { headers: { ...remote, "Sec-Fetch-Site": "cross-site" } })).status, 403);
+    assert.equal((await fetch(url, { headers: { Origin: publicOrigin } })).status, 403);
+    const navigation = { Host: remote.Host, "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" };
+    assert.equal(await getStatus(url, navigation), 200, "a link from another site can open the private chat page");
+    assert.equal(await getStatus(url + "api/labels", navigation), 403);
+    const writeHeaders = { ...remote, "Content-Type": "application/json", "X-Chat-Token": configuration.csrfToken };
+    const createLabel = () => fetch(url + "api/labels", { method: "POST", headers: writeHeaders, body: JSON.stringify({ op: "create", name: "Remote test", ids: [] }) });
+    assert.equal((await createLabel()).status, 200, "remote writes accept the configured HTTPS origin and page token");
+    assert.equal((await fetch(url + "api/labels", { method: "POST", headers: { ...remote, "Content-Type": "application/json" }, body: "{}" })).status, 403);
+    assert.equal((await fetch(url + "api/labels", { method: "POST", headers: { Host: remote.Host, "Content-Type": "application/json", "X-Chat-Token": configuration.csrfToken }, body: "{}" })).status, 403);
+    assert.equal((await fetch(url + "api/service-stop", { method: "POST", headers: { ...writeHeaders, "X-Chat-Stop-Token": configuration.stopToken }, body: "{}" })).status, 403);
+    const stream = await fetch(url + "api/sessions/stream", { headers: remote });
+    assert.equal(stream.status, 200);
+    const reader = stream.body!.getReader();
+    try { assert.match(new TextDecoder().decode((await reader.read()).value), /event: build/); }
+    finally { await reader.cancel(); }
+    await assert.rejects(run("start", ["--public-origin", "https://different.example"]), /Stop chat before changing/);
+    await run("stop");
+    assert.equal(await run("start", flags), url);
+    assert.equal((await fetch(url, { headers: remote })).status, 200, "the external origin persists across restart");
+    await run("stop");
+    assert.equal(await run("start", ["--public-origin", "none"]), url);
+    assert.equal((await fetch(url, { headers: remote })).status, 421);
+    assert.equal((await fetch(url)).status, 200);
     await run("stop");
     const foreground = spawn(process.execPath, [join(root, "scripts/cli.mjs"), "chat", "serve", "--data-dir", data, ...flags], { env, stdio: ["ignore", "pipe", "pipe"] });
     const exited = new Promise<number | null>(resolve => foreground.once("exit", resolve));

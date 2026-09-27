@@ -4,6 +4,7 @@ import { createGzip, type Gzip } from "node:zlib";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
+import { parsePublicOrigin } from "./chat-origin.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
@@ -182,11 +183,13 @@ class Bounded<V> {
   clear(): void { this.map.clear(); }
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins() }: {
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins() }: {
   backend: ChatBackend; bundle: ClientBundle; port: number; capability: string; csrfToken: string;
-  identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string;
+  identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins;
 }): Promise<{ url: string; close(): Promise<void> }> {
+  const externalOrigin = parsePublicOrigin(publicOrigin);
+  const externalHost = externalOrigin ? new URL(externalOrigin).host : null;
   const base = "/" + capability + "/";
   const shell = renderShell(csrfToken, bundle.version);
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
@@ -234,12 +237,17 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Content-Security-Policy", contentSecurityPolicy);
     try {
-      if (req.headers.host !== host) throw new RequestError(421, "Unexpected host.");
-      if (req.headers["sec-fetch-site"] === "cross-site" || (req.headers.origin !== undefined && req.headers.origin !== `http://${host}`)) {
+      const origin = req.headers.host === host ? `http://${host}`
+        : externalHost !== null && req.headers.host === externalHost ? externalOrigin : null;
+      if (origin === null) throw new RequestError(421, "Unexpected host.");
+      const url = new URL(req.url ?? "/", origin);
+      if (url.origin !== origin || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
+      const shellNavigation = req.method === "GET" && url.pathname === base &&
+        req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document";
+      if ((req.headers["sec-fetch-site"] === "cross-site" && !shellNavigation) ||
+        (req.headers.origin !== undefined && req.headers.origin !== origin)) {
         throw new RequestError(403, "Cross-origin requests are blocked.");
       }
-      const url = new URL(req.url ?? "/", `http://${host}`);
-      if (url.origin !== `http://${host}` || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
       const route = url.pathname.slice(base.length);
       if (closing) throw new RequestError(410, "Chat service is stopping. Run sieun-pi chat start again.");
       const method = req.method ?? "GET";
@@ -324,7 +332,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         throw new RequestError(404, "Not found.");
       }
       if (method !== "POST") throw new RequestError(405, "Expected POST.");
-      if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== `http://${host}`) throw new RequestError(403, "Write authorization is missing. Reopen the chat URL.");
+      if (req.headers["x-chat-token"] !== csrfToken || req.headers.origin !== origin) throw new RequestError(403, "Write authorization is missing. Reopen the chat URL.");
       const body = record(await jsonBody(req));
       if (route === "api/threads") {
         const id = requestId(body.requestId);

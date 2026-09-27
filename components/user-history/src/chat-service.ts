@@ -5,9 +5,10 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { defaultDaemonSocketPath, getAgentDir } from "prime-agent";
+import { parsePublicOrigin } from "./chat-origin.ts";
 
-type Options = { port?: number; socketPath?: string; dataDir?: string };
-type Configuration = { port: number; socketPath: string; capability: string; csrfToken: string; stopToken: string };
+type Options = { port?: number; socketPath?: string; dataDir?: string; publicOrigin?: string | null };
+type Configuration = { port: number; socketPath: string; capability: string; csrfToken: string; stopToken: string; publicOrigin: string | null };
 type Instance = { pid: number; instanceId: string; url: string };
 type Service = { directory: string; config: Configuration; url: string };
 const secret = () => randomBytes(32).toString("hex");
@@ -21,7 +22,7 @@ function validPort(port: number): number {
 function configuration(value: unknown): Configuration {
   if (!isRecord(value) || typeof value.port !== "number" || typeof value.socketPath !== "string" || !value.socketPath.startsWith("/") ||
     !isSecret(value.capability) || !isSecret(value.csrfToken) || !isSecret(value.stopToken)) throw new Error("Invalid private chat configuration. Refusing to replace it.");
-  return { port: validPort(value.port), socketPath: value.socketPath, capability: value.capability, csrfToken: value.csrfToken, stopToken: value.stopToken };
+  return { port: validPort(value.port), socketPath: value.socketPath, capability: value.capability, csrfToken: value.csrfToken, stopToken: value.stopToken, publicOrigin: parsePublicOrigin(value.publicOrigin ?? null) };
 }
 function instance(value: unknown): Instance {
   if (!isRecord(value) || typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid < 1 ||
@@ -50,7 +51,7 @@ async function loadService(options: Options, create: boolean): Promise<Service |
     if (!hasCode(error, "ENOENT")) throw error;
     if (!create) return null;
     const proposed: Configuration = { port: validPort(options.port ?? 5182), socketPath: resolve(options.socketPath ?? defaultDaemonSocketPath()),
-      capability: secret(), csrfToken: secret(), stopToken: secret() };
+      capability: secret(), csrfToken: secret(), stopToken: secret(), publicOrigin: options.publicOrigin ?? null };
     try { await privateWrite(path, proposed, true); }
     catch (error) { if (!hasCode(error, "EEXIST")) throw error; }
     config = configuration(await readJson(path));
@@ -59,7 +60,13 @@ async function loadService(options: Options, create: boolean): Promise<Service |
     (options.socketPath !== undefined && resolve(options.socketPath) !== config.socketPath)) {
     throw new Error(`Chat configuration uses port ${config.port} and socket ${config.socketPath}. Use those settings, or stop it and choose a separate --data-dir for the new configuration.`);
   }
-  return { directory, config, url: `http://127.0.0.1:${config.port}/${config.capability}/` };
+  const service = { directory, config, url: `http://127.0.0.1:${config.port}/${config.capability}/` };
+  if (create && options.publicOrigin !== undefined && options.publicOrigin !== config.publicOrigin) {
+    if (await running(service)) throw new Error("Stop chat before changing --public-origin. Native sessions keep running.");
+    config.publicOrigin = parsePublicOrigin(options.publicOrigin);
+    await privateWrite(path, config);
+  }
+  return service;
 }
 async function running(service: Service): Promise<Instance | null> {
   let response: Response;
@@ -138,7 +145,7 @@ async function serve(options: Options): Promise<void> {
   let publishIdentity: () => void = () => {};
   const identityReady = new Promise<void>(resolve => { publishIdentity = resolve; });
   const server = await startChatServer({ backend, bundle, port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken,
-    identity, identityReady, stopToken: service.config.stopToken, onStop: close }).catch(error => {
+    identity, identityReady, publicOrigin: service.config.publicOrigin, stopToken: service.config.stopToken, onStop: close }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
       throw error;
     });
@@ -157,17 +164,19 @@ export async function runChatCommand(args: string[]): Promise<void> {
   const options: Options = {};
   for (let index = 0; index < flags.length; index += 2) {
     const flag = flags[index], value = flags[index + 1];
-    if (!value || value.startsWith("--")) throw new Error("Chat options require values: --port, --socket, --data-dir.");
+    if (!value || value.startsWith("--")) throw new Error("Chat options require values: --port, --socket, --data-dir, --public-origin.");
     if (flag === "--port") options.port = validPort(Number(value));
     else if (flag === "--socket") options.socketPath = resolve(value);
     else if (flag === "--data-dir") options.dataDir = resolve(value);
+    else if (flag === "--public-origin") options.publicOrigin = parsePublicOrigin(value);
     else throw new Error("Unknown chat option: " + flag);
   }
+  if (options.publicOrigin !== undefined && command !== "start" && command !== "serve") throw new Error("Use --public-origin with chat start or serve.");
   if (command === "start") { process.stdout.write((await ensureChatService(options)).url + "\n"); return; }
   if (command === "serve") { await serve(options); return; }
   if (!["url", "status", "stop"].includes(command)) {
     if (!["help", "--help", "-h"].includes(command)) throw new Error("Unknown chat command: " + command);
-    process.stdout.write("sieun-pi chat start|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH]\nNo browser opens. The URL is a private read capability.\n"); return;
+    process.stdout.write("sieun-pi chat start|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin https://HOST|none]\nNo browser opens. Keep the URL private: it grants chat access.\n"); return;
   }
   const service = await loadService(options, false);
   if (!service) {
