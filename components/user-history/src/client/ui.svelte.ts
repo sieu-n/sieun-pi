@@ -1,4 +1,4 @@
-import { emptyRowFilter, ROW_FILTER_KEYS, type RowFilter, type SidebarSort } from "./organize.ts";
+import { emptyRowFilter, ROW_FILTER_KEYS, type RowFilter, type SidebarSort, type SidebarView } from "./organize.ts";
 
 export type ViewMode = "default" | "questions";
 export const SIDEBAR_MIN = 180;
@@ -31,11 +31,13 @@ class Ui {
   sidebarWidth = $state(clampWidth(Number(stored("chat.sidebarWidth")) || 260));
   sidebarFilter = $state<RowFilter>(storedFilter());
   sidebarSort = $state<SidebarSort>(stored("chat.sidebarSort") === "recent" ? "recent" : "grouped");
+  sidebarView = $state<SidebarView>(stored("chat.sidebarView") === "tags" ? "tags" : "current");
   agentsOpen = $state(false);
   /** Thread ids in the order the sidebar shows them, so archiving the open thread can move to the next one. */
   sidebarOrder = $state.raw<string[]>([]);
   setSidebarFilter(filter: RowFilter): void { this.sidebarFilter = filter; store("chat.sidebarFilter", JSON.stringify(filter)); }
   setSidebarSort(sort: SidebarSort): void { this.sidebarSort = sort; store("chat.sidebarSort", sort); }
+  setSidebarView(view: SidebarView): void { this.sidebarView = view; store("chat.sidebarView", view); }
   setViewMode(mode: ViewMode): void { this.viewMode = mode; store("chat.viewMode", mode); }
   setSidebarWidth(width: number, persist: boolean): void {
     this.sidebarWidth = clampWidth(width);

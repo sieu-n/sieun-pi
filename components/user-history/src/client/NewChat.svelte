@@ -52,7 +52,8 @@
 
   const hour = new Date().getHours();
   const greeting = hour < 5 ? "Still up?" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  const modelLabel = $derived((model?.name ?? catalog?.current?.name ?? "Default model") + (effort ? " · " + effort : ""));
+  const shownEffort = $derived(effort ?? (model ? null : catalog?.thinkingLevel ?? null));
+  const modelLabel = $derived((model?.name ?? catalog?.current?.name ?? "Default model") + (shownEffort ? " · " + shownEffort : ""));
   const effortLevels = $derived((model ?? catalog?.current)?.thinkingLevels ?? catalog?.availableThinkingLevels ?? []);
   $effect(() => { if (effort && !effortLevels.includes(effort)) effort = null; });
   const activeModel = $derived(model ?? catalog?.current ?? null);

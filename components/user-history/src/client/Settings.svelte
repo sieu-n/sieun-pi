@@ -2,10 +2,11 @@
   import { store } from "./store.svelte.ts";
   import Modal from "./Modal.svelte";
   import AccountsSettings from "./AccountsSettings.svelte";
+  import DefaultsSettings from "./DefaultsSettings.svelte";
 
   type Section = NonNullable<typeof store.drawer>;
   let { section }: { section: Section } = $props();
-  const SECTIONS: { id: Section; label: string }[] = [{ id: "accounts", label: "Accounts" }];
+  const SECTIONS: { id: Section; label: string }[] = [{ id: "accounts", label: "Accounts" }, { id: "defaults", label: "Defaults" }];
 </script>
 
 <Modal title="Settings" width="920px" onclose={() => { store.drawer = null; }}>
@@ -16,7 +17,7 @@
       {/each}
     </nav>
     <div class="content">
-      {#if section === "accounts"}<AccountsSettings />{/if}
+      {#if section === "accounts"}<AccountsSettings />{:else if section === "defaults"}<DefaultsSettings />{/if}
     </div>
   </div>
 </Modal>

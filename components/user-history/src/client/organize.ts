@@ -55,12 +55,33 @@ export function matchesQuery(row: SessionRow, needle: string, tags: ReadonlyMap<
 
 export type SidebarSort = "grouped" | "recent";
 export const SIDEBAR_SORT_LABEL: Record<SidebarSort, string> = { grouped: "Needs response, working, other", recent: "Chronological" };
+/** Current: today's Needs response, Working, Other sections. Tags: one section per tag, threads without a tag last. */
+export type SidebarView = "current" | "tags";
+export const SIDEBAR_VIEW_LABEL: Record<SidebarView, string> = { current: "Current", tags: "Tags" };
+
+/** A sidebar section: a status bucket, a tag, "No tag" (`tag: null`), or the unlabeled chronological list (`bucket: null`). */
+export interface BucketGroup { kind: "bucket"; bucket: Bucket | null; rows: SessionRow[] }
+export interface TagGroup { kind: "tag"; tag: Tag | null; rows: SessionRow[] }
+export type SidebarGroup = BucketGroup | TagGroup;
 
 /** Sidebar sections. Grouped: Needs response, Working, then the rest. Recent: one unlabeled list, most recent activity first. */
-export function groupRows(rows: readonly SessionRow[], sort: SidebarSort = "grouped"): { bucket: Bucket | null; rows: SessionRow[] }[] {
-  if (sort === "recent") return rows.length ? [{ bucket: null, rows: [...rows].sort((left, right) => activityOf(right) - activityOf(left)) }] : [];
+export function groupRows(rows: readonly SessionRow[], sort: SidebarSort = "grouped"): BucketGroup[] {
+  if (sort === "recent") return rows.length ? [{ kind: "bucket", bucket: null, rows: [...rows].sort((left, right) => activityOf(right) - activityOf(left)) }] : [];
   const sorted = [...rows].sort(compareRows);
-  return BUCKETS.flatMap(bucket => { const items = sorted.filter(row => bucketOf(row) === bucket); return items.length ? [{ bucket, rows: items }] : []; });
+  return BUCKETS.flatMap(bucket => { const items = sorted.filter(row => bucketOf(row) === bucket); return items.length ? [{ kind: "bucket", bucket, rows: items }] : []; });
+}
+
+/**
+ * One section per tag in the saved tag order, with the rows sorted like the grouped view inside it (a row with several tags sits under each),
+ * then "No tag". Tags no row carries are left out.
+ */
+export function groupRowsByTag(rows: readonly SessionRow[], tags: readonly Tag[], sort: SidebarSort = "grouped"): TagGroup[] {
+  const order = sort === "recent" ? (left: SessionRow, right: SessionRow) => activityOf(right) - activityOf(left) : compareRows;
+  const sorted = [...rows].sort(order);
+  const groups: TagGroup[] = tags.flatMap(tag => { const items = sorted.filter(row => row.tags.includes(tag.id)); return items.length ? [{ kind: "tag", tag, rows: items }] : []; });
+  const known = new Set(tags.map(tag => tag.id));
+  const untagged = sorted.filter(row => !row.tags.some(id => known.has(id)));
+  return untagged.length ? [...groups, { kind: "tag", tag: null, rows: untagged }] : groups;
 }
 
 const MINUTE = 60_000;
@@ -81,16 +102,16 @@ export function shortDate(value: string | undefined, now = Date.now()): string {
   return date.toLocaleDateString("en-US", sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" });
 }
 
-/** Age by calendar day: "" for today, "1d ago", "12d ago", then "3mo ago" and "2y ago". */
+/** Age by calendar day: "" for today, "1d", "12d", then "3mo" and "2y". */
 export function createdAge(value: string | undefined, now = Date.now()): string {
   const ms = Date.parse(value ?? "");
   if (!Number.isFinite(ms)) return "";
   const day = (time: number) => { const date = new Date(time); return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000; };
   const days = Math.max(0, Math.round(day(now) - day(ms)));
   if (days === 0) return "";
-  if (days < 60) return days + "d ago";
-  if (days < 730) return Math.floor(days / 30) + "mo ago";
-  return Math.floor(days / 365) + "y ago";
+  if (days < 60) return days + "d";
+  if (days < 730) return Math.floor(days / 30) + "mo";
+  return Math.floor(days / 365) + "y";
 }
 
 export function nextRun(value: string | undefined, now = Date.now()): string {

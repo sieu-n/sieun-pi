@@ -18,7 +18,7 @@ class Store {
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
   sidebarOpen = $state(window.innerWidth >= 900);
-  drawer = $state<"accounts" | null>(null);
+  drawer = $state<"accounts" | "defaults" | null>(null);
   private toastId = 0;
   private sessionsStop: (() => void) | null = null;
 

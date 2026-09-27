@@ -59,7 +59,12 @@ export interface ChildAgent {
  * What a running session is doing, from its native daemon summary. `activityAt` is its latest activity or that of any running subagent under it,
  * so a thread that only waits on busy subagents still reads as live.
  */
-export interface Pulse { streaming: boolean; tools: boolean; bash: boolean; children: boolean; activityAt?: string; summary?: string; silentSince?: string; failed?: boolean }
+export interface Pulse {
+  streaming: boolean; tools: boolean; bash: boolean; children: boolean; activityAt?: string; summary?: string;
+  /** The daemon judged `summary` at the session's present message count (it sends `taskState` only then); absent once a later message landed. */
+  summaryCurrent?: true;
+  silentSince?: string; failed?: boolean;
+}
 /** The pool account a new chat starts on; `force` uses an account that cannot serve now, after the user confirmed. */
 export interface NewChatAccount { provider: string; id: string; force: boolean }
 export interface ChildPulse extends Pulse { rlmChildId: string; sessionId: string }
@@ -163,7 +168,17 @@ export type LabelAction =
   | { op: "priority"; ids: string[]; priority: Priority }
   | { op: "progress"; ids: string[]; progress: Progress };
 
+/**
+ * Model catalog for one thread, or, with no thread, for the new-chat screen: `current`, `thinkingLevel` and `availableThinkingLevels` then come from
+ * the Prime Agent defaults (`ChatDefaults`) resolved against `models`.
+ */
 export interface ModelCatalog { models: ModelInfo[]; configuredProviders: string[]; current: ModelInfo | null; thinkingLevel: ThinkingLevel | null; availableThinkingLevels: ThinkingLevel[] }
+/** The model and effort a new native session starts with, from `defaultProvider`, `defaultModel` and `defaultThinkingLevel` in Prime Agent's settings.json. */
+export interface ChatDefaults { provider: string | null; modelId: string | null; thinkingLevel: ThinkingLevel | null }
+/** A write of the defaults; a missing or null `thinkingLevel` keeps the stored level, which the native session clamps to the model. */
+export interface ChatDefaultsInput { provider: string; modelId: string; thinkingLevel?: ThinkingLevel | null }
+export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+export const isThinkingLevel = (value: unknown): value is ThinkingLevel => typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
 export interface Command { name: string; description?: string; argumentHint?: string; source: "extension" | "prompt" | "skill" | "session" }
 export interface Workspace { cwd: string; lastUsedAt?: string; count: number }
 export interface ImageInput { type: "image"; mimeType: string; data: string }

@@ -7,7 +7,7 @@ import { parseChatImages } from "./chat-images.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat-pool.ts";
 import { ThreadError } from "./chat-threads.ts";
-import type { AccountAction, LabelAction, SendMode, ThinkingLevel } from "./shared/types.ts";
+import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type SendMode, type ThinkingLevel } from "./shared/types.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
@@ -108,6 +108,17 @@ function parseAccountAction(body: Record<string, unknown>): AccountAction {
     case "disable": case "enable": case "remove": if (!account) throw new RequestError(400, "Choose an account."); return { action: body.action, provider, account };
     default: throw new RequestError(400, "Unknown account action.");
   }
+}
+
+/** The defaults a new chat starts with; the model must be in the catalog and the effort, when given, one of that model's levels. */
+function parseDefaults(body: Record<string, unknown>, catalog: ModelCatalog): ChatDefaultsInput {
+  const provider = text(body.provider, "provider", 128);
+  const modelId = text(body.modelId, "modelId", 256);
+  const model = catalog.models.find(entry => entry.provider === provider && entry.id === modelId);
+  if (!model) throw new RequestError(400, "Choose a model from the catalog.");
+  if (body.thinkingLevel === undefined || body.thinkingLevel === null) return { provider, modelId };
+  if (!isThinkingLevel(body.thinkingLevel) || !model.thinkingLevels?.includes(body.thinkingLevel)) throw new RequestError(400, `Choose an effort ${model.name} supports.`);
+  return { provider, modelId, thinkingLevel: body.thinkingLevel };
 }
 
 function threadIds(value: unknown): string[] {
@@ -261,6 +272,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, await backend.threads.models(id ? threadId(id) : null)); return;
         }
         if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
+        if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
         if (route === "api/accounts/login/stream") {
           const stream = openStream(req, res);
           const unsubscribe = logins.subscribe(login => stream.send("login", login));
@@ -349,6 +361,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const result = await backend.labels.apply(parseLabelAction(body));
         await backend.catalog.notify();
         json(res, 200, { ok: true, ...result }); return;
+      }
+      if (route === "api/defaults") {
+        await backend.defaults.write(parseDefaults(body, await backend.threads.models(null)));
+        json(res, 200, backend.defaults.read()); return;
       }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
       if (route === "api/accounts") {

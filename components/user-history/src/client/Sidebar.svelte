@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
-  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, SIDEBAR_SORT_LABEL, tabOf, type SidebarSort, type Tab } from "./organize.ts";
+  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, groupRowsByTag, matchesRowFilter, modelShort, money, needsResponse, nextRun, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, type SidebarGroup, type SidebarSort, type SidebarView, type Tab } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Icon from "./Icon.svelte";
@@ -19,7 +19,6 @@
   import { ui, SIDEBAR_MAX, SIDEBAR_MIN, SIDEBAR_SNAP } from "./ui.svelte.ts";
 
   let { narrow }: { narrow: boolean } = $props();
-  let query = $state("");
   let tab = $state<Tab>("threads");
   let showArchived = $state(false);
   let renaming = $state<{ id: string; name: string } | null>(null);
@@ -39,8 +38,11 @@
   });
   const archivedCount = $derived(store.sessions.filter(row => row.archived && tabOf(row) === tab).length);
   const filterCount = $derived(activeFilters(ui.sidebarFilter));
-  const groups = $derived(groupRows(visible.filter(row => tabOf(row) === tab && matchesRowFilter(row, ui.sidebarFilter, tick) && matchesQuery(row, query.trim(), tagMap)), ui.sidebarSort));
+  const shown = $derived(visible.filter(row => tabOf(row) === tab && matchesRowFilter(row, ui.sidebarFilter, tick)));
+  const groups = $derived(ui.sidebarView === "tags" ? groupRowsByTag(shown, store.tags, ui.sidebarSort) : groupRows(shown, ui.sidebarSort));
+  const groupKey = (group: SidebarGroup): string => group.kind === "tag" ? "tag:" + (group.tag?.id ?? "") : "bucket:" + (group.bucket ?? "");
   const SORTS: readonly SidebarSort[] = ["grouped", "recent"];
+  const VIEWS: readonly SidebarView[] = ["current", "tags"];
   const minute = $derived(Math.floor(clock.now / 60_000));
   /** Freshness marks move on a 5 s step of the page clock. */
   const tick = $derived(Math.floor(clock.now / 5000) * 5000);
@@ -75,7 +77,7 @@
     requestAnimationFrame(() => { if (!document.activeElement || document.activeElement === document.body) list?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`)?.focus(); });
   }
   function archive(row: SessionRow): void { void labels.archive([row.id]); }
-  $effect(() => { ui.sidebarOrder = groups.flatMap(group => group.rows.map(row => row.id)); });
+  $effect(() => { ui.sidebarOrder = [...new Set(groups.flatMap(group => group.rows.map(row => row.id)))]; });
 
   function onRowKey(row: SessionRow, event: KeyboardEvent): void {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -158,10 +160,11 @@
       <button type="button" class="icon-button" aria-label="Hide sidebar" use:tooltip={"Hide sidebar ⌘B"} onclick={() => { store.sidebarOpen = false; }}><Icon name="sidebar" /></button>
     </div>
     <div class="find">
-      <label class="search">
-        <Icon name="search" size={14} />
-        <input type="search" placeholder="Search threads or tags" aria-label="Search threads" bind:value={query} />
-      </label>
+      <div class="segmented view" role="radiogroup" aria-label="Sidebar view">
+        {#each VIEWS as view (view)}
+          <button type="button" role="radio" aria-checked={ui.sidebarView === view} class:on={ui.sidebarView === view} onclick={() => ui.setSidebarView(view)}>{SIDEBAR_VIEW_LABEL[view]}</button>
+        {/each}
+      </div>
       <button type="button" class="filter-button" class:on={filterCount > 0} bind:this={filterButton} aria-haspopup="dialog" aria-expanded={filterOpen}
         aria-label={filterCount ? `Filter, ${filterCount} active` : "Filter and sort"} use:tooltip={"Filter and sort"} onclick={() => { filterOpen = !filterOpen; }}>
         <Icon name="filter" size={14} />{#if filterCount}<span class="filter-count">{filterCount}</span>{/if}
@@ -174,9 +177,11 @@
       </button>
     </div>
     <div class="list" bind:this={list} role="tabpanel">
-      {#each groups as group, index (group.bucket)}
-        {#if group.bucket && (group.bucket !== "other" || index > 0)}<div class="group-label">{BUCKET_LABEL[group.bucket]} <span class="count">{group.rows.length}</span></div>{/if}
-        {#each group.rows as row (row.id)}
+      {#each groups as group, index (groupKey(group))}
+        {#if group.kind === "tag"}
+          <div class="group-label">{#if group.tag}<TagChip tag={group.tag} />{:else}No tag{/if} <span class="count">{group.rows.length}</span></div>
+        {:else if group.bucket && (group.bucket !== "other" || index > 0)}<div class="group-label">{BUCKET_LABEL[group.bucket]} <span class="count">{group.rows.length}</span></div>{/if}
+        {#each group.rows as row (groupKey(group) + row.id)}
           <div class="row" class:selected={row.id === store.selectedId} class:archived={row.archived} class:held={menu?.id === row.id || tagging?.id === row.id}
             onmouseenter={() => warm(row.id)} onmouseleave={cancelWarm} oncontextmenu={event => openMenu(row, event)} role="presentation">
             {#if renaming?.id === row.id}
@@ -228,7 +233,7 @@
       {#if !groups.length}
         <div class="empty">
           {#if store.daemon === "unknown"}<span class="spinner tiny"></span>
-          {:else if query || filterCount}<span>No threads match.{#if filterCount}{" "}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear filters</button>{/if}</span>
+          {:else if filterCount}<span>No threads match.{" "}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear filters</button></span>
           {:else if tab === "heartbeats"}No heartbeat threads.
           {:else}No threads yet.{/if}
         </div>
@@ -295,10 +300,8 @@
     border: 1px solid var(--border-strong); font-size: 13px; font-weight: 500; box-shadow: var(--shadow-small); transition: border-color 0.12s; }
   .new:hover { border-color: var(--text-faint); }
   .find { display: flex; align-items: center; gap: 4px; margin: 2px 10px 8px; }
-  .search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0 8px; height: 30px; border-radius: var(--radius-small); background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-faint); }
-  .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-  .search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 13px; }
-  .search input::-webkit-search-cancel-button { appearance: none; }
+  .view { flex: 1; min-width: 0; display: flex; height: 30px; padding: 2px; border: 1px solid var(--border); background: var(--bg-elevated); border-radius: var(--radius-small); }
+  .view > button { flex: 1; }
   .filter-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none; min-width: 30px; height: 30px; padding: 0 7px; border-radius: var(--radius-small);
     border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-muted); transition: border-color 0.12s, color 0.12s, background-color 0.12s; }
   .filter-button:hover, .filter-button[aria-expanded="true"] { color: var(--text); border-color: var(--border-strong); }
@@ -314,7 +317,7 @@
   .count { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; font-weight: 500; }
   .tabs .on .count { color: inherit; opacity: 0.7; }
   .list { flex: 1; overflow-y: auto; padding: 0 6px 10px; }
-  .group-label { padding: 12px 8px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
+  .group-label { display: flex; align-items: center; gap: 5px; padding: 12px 8px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
   .row { position: relative; border-radius: var(--radius-small); content-visibility: auto; contain-intrinsic-size: auto 44px; --row-bg: var(--bg-sunken); }
   .row:hover, .row.held { background: var(--rail-hover); --row-bg: var(--rail-hover); }
   .row.selected { background: var(--rail-active); --row-bg: var(--rail-active); }

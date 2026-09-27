@@ -5,7 +5,7 @@ import type { Catalog } from "./chat-catalog.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { Command, ModelCatalog, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { ChatDefaults, Command, ModelCatalog, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 
@@ -66,7 +66,7 @@ export class ThreadHub {
   private readonly sweeper: ReturnType<typeof setInterval>;
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly catalog: Catalog) {
+  constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults) {
     this.sweeper = setInterval(() => this.sweep(), 30000);
     this.sweeper.unref();
   }
@@ -451,10 +451,16 @@ export class ThreadHub {
     return summaries;
   }
 
+  /** A thread reports its own model and effort. With no thread the catalog carries the Prime Agent defaults, which a new session starts with. */
   private async catalogFrom(connection: DaemonAgentConnection, thread: Thread | null): Promise<ModelCatalog> {
     const [catalog, state] = await Promise.all([connection.getModelCatalog(), connection.getState()]);
-    return { models: catalog.models.map(projectModel), configuredProviders: [...catalog.configuredProviders],
-      current: state.model ? projectModel(state.model) : null, thinkingLevel: thread ? state.thinkingLevel : null, availableThinkingLevels: [...state.availableThinkingLevels] };
+    const models = catalog.models.map(projectModel);
+    const shared = { models, configuredProviders: [...catalog.configuredProviders] };
+    if (thread) return { ...shared, current: state.model ? projectModel(state.model) : null, thinkingLevel: state.thinkingLevel, availableThinkingLevels: [...state.availableThinkingLevels] };
+    const defaults = this.defaults();
+    const current = models.find(model => model.provider === defaults.provider && model.id === defaults.modelId) ?? null;
+    const availableThinkingLevels = current?.thinkingLevels ?? [];
+    return { ...shared, current, thinkingLevel: defaults.thinkingLevel && availableThinkingLevels.includes(defaults.thinkingLevel) ? defaults.thinkingLevel : null, availableThinkingLevels };
   }
 
   async commands(id: string | null): Promise<Command[]> {

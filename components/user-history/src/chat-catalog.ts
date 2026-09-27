@@ -54,6 +54,7 @@ function pulseOf(row: SessionSummary, running: ReadonlyMap<string, SessionSummar
   return {
     streaming: row.isStreaming, tools: row.isRunningTools === true, bash: row.isBashRunning === true, children: row.hasRunningRlmChildren === true,
     ...(at > 0 ? { activityAt: new Date(at).toISOString() } : {}), ...(row.summary?.trim() ? { summary: row.summary.trim().slice(0, 400) } : {}),
+    ...(row.taskState !== undefined ? { summaryCurrent: true } : {}),
     ...(row.lastHeardFromAt ? { silentSince: row.lastHeardFromAt } : {}), ...(row.statusLabel === "failed" || row.workerState === "failed" ? { failed: true } : {}),
   };
 }

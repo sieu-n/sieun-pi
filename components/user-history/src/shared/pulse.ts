@@ -9,7 +9,11 @@ export const QUIET_AFTER_MS = 60_000;
 export const STALLED_AFTER_MS = 5 * 60_000;
 export type PulseLevel = "live" | "quiet" | "stalled" | "failed";
 
-/** The daemon summary line of a model loop that keeps failing: a failed request, a usage or rate limit, a retry. */
+/**
+ * The daemon summary line of a failed model call. The daemon writes "Model request failed: ..." when a session settles idle on an assistant error
+ * and keeps that line until its recap model replaces it, which on a machine without that model never happens. It sends `taskState` only while
+ * the line was judged at the session's present message count, so a line without it belongs to an earlier turn.
+ */
 const FAILURE = /model request failed|request failed|usage limit|rate limit|try again in|retrying|overloaded/i;
 
 const MINUTE = 60_000;
@@ -25,15 +29,15 @@ export function span(ms: number): string {
 export interface PulseReading { level: PulseLevel; quietMs: number; text: string }
 
 /**
- * Failed: the worker failed, or the session is streaming while its summary reports a failing model call (a summary on a session that only waits
- * for subagents is often left over from an earlier call, so it does not count). Stalled: the worker went silent, or no activity for five minutes.
+ * Failed: the worker failed, or the daemon's failure line is current, so no message landed after the failed call. A failure line that message
+ * activity has passed is stale (the thread ran on) and the activity marks take over. Stalled: the worker went silent, or no activity for five minutes.
  */
 export function readPulse(pulse: Pulse, now: number): PulseReading {
   const at = Date.parse(pulse.activityAt ?? "");
   const quietMs = Number.isFinite(at) ? Math.max(0, now - at) : 0;
   const summary = pulse.summary?.trim() ?? "";
   if (pulse.failed) return { level: "failed", quietMs, text: summary || "The worker failed" };
-  if (pulse.streaming && FAILURE.test(summary)) return { level: "failed", quietMs, text: summary };
+  if (pulse.summaryCurrent && FAILURE.test(summary)) return { level: "failed", quietMs, text: summary };
   const silent = Date.parse(pulse.silentSince ?? "");
   if (Number.isFinite(silent)) return { level: "stalled", quietMs, text: "worker silent " + span(Math.max(0, now - silent)) };
   if (quietMs >= STALLED_AFTER_MS) return { level: "stalled", quietMs, text: "no activity " + span(quietMs) };
