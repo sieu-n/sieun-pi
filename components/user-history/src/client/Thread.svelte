@@ -8,7 +8,7 @@
   import type { ModelCatalog, ModelInfo, ThinkingLevel, ThreadMessage } from "../shared/types.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import ContextMeter from "./ContextMeter.svelte";
-  import { clockTime, duration, shortPath } from "./format.ts";
+  import { clockTime, shortPath } from "./format.ts";
   import Turn from "./Turn.svelte";
   import Composer from "./Composer.svelte";
   import QueueChips from "./QueueChips.svelte";
@@ -74,7 +74,6 @@
   const agentsLabel = $derived((runningChildren ? `Subagents, ${runningChildren} of ${thread?.children.length ?? 0} running` : "Subagents") +
     (childAlert === "failed" ? ", one is failing" : childAlert === "stalled" ? ", one has no activity" : ""));
 
-  const now = $derived(busy ? clock.now : 0);
   const statusText = $derived.by(() => {
     if (!thread || !busy) return "";
     const parts: string[] = [];
@@ -82,9 +81,7 @@
     else if (thread.info.isCompacting) parts.push("Compacting context");
     else if (thread.retry) parts.push(`Retry ${thread.retry.attempt} of ${thread.retry.maxAttempts}${thread.retry.error ? ": " + thread.retry.error : ""}`);
     else if (thread.info.isBashRunning) parts.push("Running a shell command");
-    else parts.push("Working");
     if (thread.info.queuedActions) parts.push(`${thread.info.queuedActions} queued`);
-    if (thread.runStartedAt) parts.push(duration(now - thread.runStartedAt));
     return parts.join(" · ");
   });
 
@@ -305,7 +302,7 @@
           {/snippet}
         </Composer>
         <div class="status-line">
-          {#if busy}<span class="spinner tiny"></span><span class="status-text">{statusText}</span>{/if}
+          {#if statusText}<span class="status-text">{statusText}</span>{/if}
         </div>
       </div>
     </div>
@@ -359,7 +356,7 @@
   .jump-close:hover { background: var(--bg-hover); }
   .foot { position: relative; flex: none; background: var(--bg); }
   .foot .column { padding: 4px 20px 8px; }
-  .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-muted); }
+  .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-faint); }
   .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   @container app (max-width: 899px) {
     .cwd, .label-text { display: none; }
