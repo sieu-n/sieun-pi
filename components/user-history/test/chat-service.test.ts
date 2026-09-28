@@ -16,6 +16,19 @@ function getStatus(url: string, headers: Record<string, string>): Promise<number
     req.end();
   });
 }
+/** fetch drops a custom Host header, so requests that arrive through the remote name go through node:http. */
+function viaHost(url: string, { method = "GET", headers, body, until }: { method?: string; headers: Record<string, string>; body?: string; until?: RegExp }): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, { method, headers }, res => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (chunk: string) => { text += chunk; if (until?.test(text)) { req.destroy(); resolve({ status: res.statusCode ?? 0, text }); } });
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
+    });
+    req.setTimeout(10000, () => req.destroy(new Error("No response within 10 s.")));
+    req.on("error", error => { if (!until?.test("")) reject(error); });
+    req.end(body);
+  });
+}
 async function unusedChatPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -49,7 +62,7 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.equal((await fetch(new URL("/", url), { redirect: "manual" })).status, 404);
     const typed = { "Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" };
     // fetch sets its own Sec-Fetch-Mode, so these two go through node:http like a browser navigation.
-    const rootGet = (headers: Record<string, string>) => new Promise<{ status: number; location?: string }>((done, fail) => {
+    const rootGet = (headers: Record<string, string>) => new Promise<{ status: number; location?: string | undefined }>((done, fail) => {
       request(new URL("/", url), { headers }, response => { response.resume(); done({ status: response.statusCode ?? 0, location: response.headers.location }); }).on("error", fail).end();
     });
     const opened = await rootGet(typed);
@@ -57,6 +70,9 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.equal(new URL(opened.location ?? "", url).href, url);
     assert.equal((await rootGet({ ...typed, "Sec-Fetch-Site": "cross-site" })).status, 404, "another site never learns the path");
     assert.equal((await fetch(url)).status, 200, "page renders without native daemon");
+    const extra = await (await fetch(url + "api/remote")).json();
+    assert.equal(extra.mode, "off", "an instance outside ~/.prime/agent/browser-chat never turns on Tailscale by itself");
+    assert.equal(extra.keepRunning.available, false, "only the main instance installs a login item");
     assert.equal((await fetch(url + "api/sessions")).status, 404, "the polling list route is gone; the list is a stream");
     assert.equal((await fetch(url + "app.js")).status, 200, "the bundle is served without native daemon");
     const unavailable = await fetch(url + "api/models");
@@ -92,38 +108,38 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     const publicOrigin = "https://chat.example.ts.net";
     assert.equal(await run("start", [...flags, "--public-origin", publicOrigin + "/"]), url);
     const remote = { Host: new URL(publicOrigin).host, Origin: publicOrigin };
-    const page = await fetch(url, { headers: remote });
+    assert.equal((await (await fetch(url + "api/remote")).json()).mode, "custom", "an explicit origin on an extra instance stays fixed");
+    const page = await viaHost(url, { headers: remote });
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /Prime Agent chat/);
-    assert.equal((await fetch(url + "app.js", { headers: remote })).status, 200);
-    assert.equal((await fetch(new URL("/", url), { headers: remote })).status, 404);
-    assert.equal((await fetch(url, { headers: { Host: "evil.example" } })).status, 421);
-    assert.equal((await fetch(url, { headers: { Host: "evil.example", "X-Forwarded-Host": remote.Host, "X-Forwarded-Proto": "https" } })).status, 421);
-    assert.equal((await fetch(url, { headers: { ...remote, Origin: "https://evil.example" } })).status, 403);
-    assert.equal((await fetch(url, { headers: { ...remote, Origin: publicOrigin.replace("https:", "http:") } })).status, 403);
-    assert.equal((await fetch(url, { headers: { ...remote, "Sec-Fetch-Site": "cross-site" } })).status, 403);
+    assert.match(page.text, /Prime Agent chat/);
+    assert.equal((await viaHost(url + "app.js", { headers: remote })).status, 200);
+    assert.equal((await viaHost(new URL("/", url).href, { headers: remote })).status, 404);
+    assert.equal((await viaHost(url, { headers: { Host: "evil.example" } })).status, 421);
+    assert.equal((await viaHost(url, { headers: { Host: "evil.example", "X-Forwarded-Host": remote.Host, "X-Forwarded-Proto": "https" } })).status, 421);
+    assert.equal((await viaHost(url, { headers: { ...remote, Origin: "https://evil.example" } })).status, 403);
+    assert.equal((await viaHost(url, { headers: { ...remote, Origin: publicOrigin.replace("https:", "http:") } })).status, 403);
+    assert.equal((await viaHost(url, { headers: { ...remote, "Sec-Fetch-Site": "cross-site" } })).status, 403);
     assert.equal((await fetch(url, { headers: { Origin: publicOrigin } })).status, 403);
     const navigation = { Host: remote.Host, "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" };
     assert.equal(await getStatus(url, navigation), 200, "a link from another site can open the private chat page");
     assert.equal(await getStatus(url + "api/labels", navigation), 403);
     const writeHeaders = { ...remote, "Content-Type": "application/json", "X-Chat-Token": configuration.csrfToken };
-    const createLabel = () => fetch(url + "api/labels", { method: "POST", headers: writeHeaders, body: JSON.stringify({ op: "create", name: "Remote test", ids: [] }) });
+    const createLabel = () => viaHost(url + "api/labels", { method: "POST", headers: writeHeaders, body: JSON.stringify({ op: "create", name: "Remote test", ids: [] }) });
     assert.equal((await createLabel()).status, 200, "remote writes accept the configured HTTPS origin and page token");
-    assert.equal((await fetch(url + "api/labels", { method: "POST", headers: { ...remote, "Content-Type": "application/json" }, body: "{}" })).status, 403);
-    assert.equal((await fetch(url + "api/labels", { method: "POST", headers: { Host: remote.Host, "Content-Type": "application/json", "X-Chat-Token": configuration.csrfToken }, body: "{}" })).status, 403);
-    assert.equal((await fetch(url + "api/service-stop", { method: "POST", headers: { ...writeHeaders, "X-Chat-Stop-Token": configuration.stopToken }, body: "{}" })).status, 403);
-    const stream = await fetch(url + "api/sessions/stream", { headers: remote });
+    assert.equal((await viaHost(url + "api/labels", { method: "POST", headers: { ...remote, "Content-Type": "application/json" }, body: "{}" })).status, 403);
+    assert.equal((await viaHost(url + "api/labels", { method: "POST", headers: { Host: remote.Host, "Content-Type": "application/json", "X-Chat-Token": configuration.csrfToken }, body: "{}" })).status, 403);
+    assert.equal((await viaHost(url + "api/service-stop", { method: "POST", headers: { ...writeHeaders, "X-Chat-Stop-Token": configuration.stopToken }, body: "{}" })).status, 403);
+    assert.equal((await viaHost(url + "api/remote", { method: "POST", headers: writeHeaders, body: JSON.stringify({ tailscale: false }) })).status, 403, "phone access changes only on the Mac");
+    const stream = await viaHost(url + "api/sessions/stream", { headers: remote, until: /event: build/ });
     assert.equal(stream.status, 200);
-    const reader = stream.body!.getReader();
-    try { assert.match(new TextDecoder().decode((await reader.read()).value), /event: build/); }
-    finally { await reader.cancel(); }
-    await assert.rejects(run("start", ["--public-origin", "https://different.example"]), /Stop chat before changing/);
+    assert.match(stream.text, /event: build/);
+    await assert.rejects(run("start", [...flags, "--public-origin", "https://different.example"]), /Stop chat before changing/);
     await run("stop");
     assert.equal(await run("start", flags), url);
-    assert.equal((await fetch(url, { headers: remote })).status, 200, "the external origin persists across restart");
+    assert.equal((await viaHost(url, { headers: remote })).status, 200, "the external origin persists across restart");
     await run("stop");
-    assert.equal(await run("start", ["--public-origin", "none"]), url);
-    assert.equal((await fetch(url, { headers: remote })).status, 421);
+    assert.equal(await run("start", [...flags, "--public-origin", "none"]), url);
+    assert.equal((await viaHost(url, { headers: remote })).status, 421);
     assert.equal((await fetch(url)).status, 200);
     await run("stop");
     const foreground = spawn(process.execPath, [join(root, "scripts/cli.mjs"), "chat", "serve", "--data-dir", data, ...flags], { env, stdio: ["ignore", "pipe", "pipe"] });

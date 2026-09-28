@@ -8,3 +8,12 @@ export function parsePublicOrigin(value: unknown): string | null {
     (value !== url.origin && value !== url.origin + "/")) throw new Error(message);
   return url.origin;
 }
+
+export type RemoteSetting = { mode: "tailscale" | "custom" | "off"; origin: string | null };
+
+/** `--public-origin tailscale` follows this Mac's tailnet name, `none` turns remote access off, an HTTPS origin is fixed. */
+export function parseRemoteFlag(value: string): RemoteSetting {
+  if (value === "tailscale") return { mode: "tailscale", origin: null };
+  const origin = parsePublicOrigin(value);
+  return origin === null ? { mode: "off", origin: null } : { mode: "custom", origin };
+}

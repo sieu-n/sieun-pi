@@ -32,7 +32,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
           ...(typeof port === "string" ? { port: Number(port) } : {}),
           ...(typeof dataDir === "string" ? { dataDir } : {}),
         });
-        ctx.ui.notify(service.url + "#" + encodeURIComponent(ctx.sessionManager.getSessionId()), "info");
+        const thread = "#" + encodeURIComponent(ctx.sessionManager.getSessionId());
+        ctx.ui.notify(service.url + thread + (service.phoneUrl ? `\nPhone: ${service.phoneUrl}${thread}` : ""), "info");
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : "Could not start agent chat.", "error");
       }

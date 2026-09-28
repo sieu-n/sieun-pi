@@ -11,7 +11,8 @@ import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat
 import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
-import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type SendMode, type ThinkingLevel } from "./shared/types.ts";
+import type { RemoteControl } from "./chat-remote.ts";
+import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type ThinkingLevel } from "./shared/types.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
@@ -186,13 +187,34 @@ class Bounded<V> {
   clear(): void { this.map.clear(); }
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins() }: {
+/** A fixed `publicOrigin` with no Tailscale management, for tests and embedded servers. */
+function fixedRemote(publicOrigin: string | null, capability: string): RemoteControl {
+  const origin = parsePublicOrigin(publicOrigin);
+  return {
+    origin: () => origin,
+    view: editable => ({ mode: origin ? "custom" : "off", state: origin ? "on" : "off", origin, phoneUrl: origin ? `${origin}/${capability}/` : null, checkedAt: null, reachable: null, editable,
+      message: origin ? `On through ${origin}.` : "Off. Only this Mac can open the chat.",
+      keepRunning: { available: false, enabled: false, state: "off", message: "Start at login is not available for this chat instance." } }),
+    set: async () => { throw new RequestError(409, "Phone access is fixed for this chat instance."); },
+    check: async () => {},
+  };
+}
+
+function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
+  const input: RemoteAccessInput = {};
+  if (body.tailscale !== undefined) { if (typeof body.tailscale !== "boolean") throw new RequestError(400, "tailscale must be true or false."); input.tailscale = body.tailscale; }
+  if (body.keepRunning !== undefined) { if (typeof body.keepRunning !== "boolean") throw new RequestError(400, "keepRunning must be true or false."); input.keepRunning = body.keepRunning; }
+  if (input.tailscale === undefined && input.keepRunning === undefined) throw new RequestError(400, "Choose tailscale or keepRunning.");
+  return input;
+}
+
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins() }: {
   backend: ChatBackend; bundle: ClientBundle; port: number; capability: string; csrfToken: string;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
+  /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
+  remote?: RemoteControl;
   onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins;
 }): Promise<{ url: string; close(): Promise<void> }> {
-  const externalOrigin = parsePublicOrigin(publicOrigin);
-  const externalHost = externalOrigin ? new URL(externalOrigin).host : null;
   const base = "/" + capability + "/";
   const shell = renderShell(csrfToken, bundle.version);
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
@@ -240,8 +262,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Content-Security-Policy", contentSecurityPolicy);
     try {
+      // The remote origin can change while the server runs (Settings, a renamed tailnet machine), so it is read per request.
+      const externalOrigin = remote.origin();
       const origin = req.headers.host === host ? `http://${host}`
-        : externalHost !== null && req.headers.host === externalHost ? externalOrigin : null;
+        : externalOrigin !== null && req.headers.host === new URL(externalOrigin).host ? externalOrigin : null;
       if (origin === null) throw new RequestError(421, "Unexpected host.");
       const url = new URL(req.url ?? "/", origin);
       // A typed or bookmarked http://127.0.0.1:<port>/ opens the chat. The browser sends Sec-Fetch-Site: none only for
@@ -299,6 +323,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         }
         if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
         if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
+        if (route === "api/remote") { json(res, 200, remote.view(origin === `http://${host}`)); return; }
         if (route === "api/accounts/login/stream") {
           const stream = openStream(req, res);
           const unsubscribe = logins.subscribe(login => stream.send("login", login));
@@ -409,6 +434,13 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         await backend.defaults.write(parseDefaults(body, await backend.threads.models(null)));
         json(res, 200, backend.defaults.read()); return;
       }
+      if (route === "api/remote") {
+        // A leaked link must not be able to widen or cut network access, so the switches change only on the Mac itself.
+        if (origin !== `http://${host}`) throw new RequestError(403, "Change phone access on the Mac that runs the chat.");
+        await remote.set(parseRemoteInput(body));
+        json(res, 200, remote.view(true)); return;
+      }
+      if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
       if (route === "api/accounts") {
         const action = parseAccountAction(body);

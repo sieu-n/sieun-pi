@@ -207,3 +207,21 @@ export interface AccountLogin {
   status: "starting" | "waiting" | "finishing" | "done" | "failed" | "cancelled";
   url: string | null; manualUrl: string | null; code: string | null; paste: boolean; message: string | null;
 }
+
+/** Phone access: `tailscale` follows this Mac's tailnet name, `custom` is a fixed `--public-origin`, `off` is loopback only. */
+export type RemoteMode = "tailscale" | "custom" | "off";
+export interface RemoteAccessView {
+  mode: RemoteMode;
+  state: "on" | "off" | "checking" | "problem";
+  message: string;
+  origin: string | null;
+  /** The full private chat URL on the remote origin; null while there is no origin. */
+  phoneUrl: string | null;
+  checkedAt: string | null;
+  /** Result of the last request to `<origin>/<capability>/api/identity` from this Mac; null before the first check. */
+  reachable: boolean | null;
+  keepRunning: { available: boolean; enabled: boolean; state: "on" | "off" | "problem"; message: string };
+  /** False on a remote origin: these switches change only from the Mac that runs the chat. */
+  editable: boolean;
+}
+export interface RemoteAccessInput { tailscale?: boolean; keepRunning?: boolean }

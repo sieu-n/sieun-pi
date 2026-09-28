@@ -21,7 +21,7 @@ Prime Agent owns every run, queue, name, model, skill and worker. The browser at
 - Updates: the page carries its build id and the sessions stream reports the running build on every connect. After the service restarts on new code, an open tab reloads itself; when a composer holds an unsent draft or a chat is starting, a toast offers Reload instead.
 - Saved threads open read-only in a few hundred milliseconds. Sending a reply resumes them natively.
 - Account: the composer bar shows the thread's account by full email, with one meter per usage window in one style (label, percent, a 4 px bar that turns amber at 70% and red at 90%). Claude shows 5h and Week, plus the Fable weekly cap only when the current model name contains "fable"; Codex shows the windows its plan has. Hover shows the reset times. A click opens Settings.
-- Settings: a dialog opened from the account or the gear in the sidebar. Two sections. Defaults holds the model and effort every new chat starts with, the same `defaultModel` and `defaultThinkingLevel` in Prime Agent's settings.json the terminal uses, written through Prime Agent's own settings manager; it shows the same model menu as the composer (favorites, search, Effort row) and each pick saves at once. An open new-chat screen reads the new default at once, and a send with no model picked passes the shown default model and effort to the create request, so the label and the new session always agree. Accounts is the first section. It has a tab per provider, an "Add Claude account" or "Add Codex account" button, the sentence "This thread uses X (reason)", and one row per account: email, plan, one state badge (off, seat, live, pinned, depleted, cooldown, refused, needs login) and every usage window with its percent and "resets in 3h 46m". A click on a row uses that account for the open thread; an account that cannot serve asks first, and an account that is off is never picked. Off rows are dimmed and show Turn on. Needs-login rows show Sign in again. The row menu holds Use for this thread, Pin or Unpin for all sessions, Drop seat, Check again (re-probe refused Claude accounts), Sign in again, Turn off or Turn on, and Remove, which asks you to type the email. Add account and Sign in again run `pi-pool login`: the page opens the sign-in page in a new tab, shows the Codex device code with a copy button or a paste box for the Claude code, and streams the status until it is done, failed or cancelled. One sign-in runs at a time and the service stops it after 10 minutes. The refresh button asks tokenmaxxing to read every account's usage now.
+- Settings: a dialog opened from the account or the gear in the sidebar. Three sections: Accounts, Defaults and Phone access (see Phone access through Tailscale). Defaults holds the model and effort every new chat starts with, the same `defaultModel` and `defaultThinkingLevel` in Prime Agent's settings.json the terminal uses, written through Prime Agent's own settings manager; it shows the same model menu as the composer (favorites, search, Effort row) and each pick saves at once. An open new-chat screen reads the new default at once, and a send with no model picked passes the shown default model and effort to the create request, so the label and the new session always agree. Accounts is the first section. It has a tab per provider, an "Add Claude account" or "Add Codex account" button, the sentence "This thread uses X (reason)", and one row per account: email, plan, one state badge (off, seat, live, pinned, depleted, cooldown, refused, needs login) and every usage window with its percent and "resets in 3h 46m". A click on a row uses that account for the open thread; an account that cannot serve asks first, and an account that is off is never picked. Off rows are dimmed and show Turn on. Needs-login rows show Sign in again. The row menu holds Use for this thread, Pin or Unpin for all sessions, Drop seat, Check again (re-probe refused Claude accounts), Sign in again, Turn off or Turn on, and Remove, which asks you to type the email. Add account and Sign in again run `pi-pool login`: the page opens the sign-in page in a new tab, shows the Codex device code with a copy button or a paste box for the Claude code, and streams the status until it is done, failed or cancelled. One sign-in runs at a time and the service stops it after 10 minutes. The refresh button asks tokenmaxxing to read every account's usage now.
 
 Keyboard: Cmd+N new chat with the composer focused, Cmd+K the Agents view with its search focused, Cmd+B sidebar, Esc closes menus or stops a busy thread when the composer has focus, arrows and Enter move and pick in lists and menus. Use `/compact` in the composer to compact context.
 
@@ -79,7 +79,7 @@ All routes sit under the capability URL. A browser navigation the person typed o
 ## Commands
 
 ```sh
-node src/chat-service-cli.mjs start|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH]
+node src/chat-service-cli.mjs start|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none]
 npm run typecheck      # tsc and svelte-check
 npm test               # unit and service tests
 npm run test:native    # isolated daemon, deterministic provider, real HTTP and SSE
@@ -89,20 +89,33 @@ The service keeps its configuration, instance record, read markers and labels (`
 
 ## Phone access through Tailscale
 
-Keep Tailscale connected on both devices, on the same tailnet. Configure the HTTPS origin printed by Tailscale Serve:
+The main chat instance (`~/.prime/agent/browser-chat`) opens on your other devices through Tailscale with no setup. Keep Tailscale connected on the Mac and the phone, signed in to the same tailnet. The tailnet needs MagicDNS and HTTPS Certificates turned on (DNS page of the Tailscale admin console).
 
-```sh
-tailscale serve --bg 5182
-sieun-pi chat stop
-sieun-pi chat start --public-origin https://YOUR-MACHINE.YOUR-TAILNET.ts.net
-sieun-pi chat url
+```text
+phone (tailnet) --https--> https://<mac>.<tailnet>.ts.net/<secret>/
+                             Tailscale Serve on the Mac, port 443, path /
+                               --> http://127.0.0.1:5182/<secret>/  (chat listener, loopback only)
 ```
 
-On the phone, replace `http://127.0.0.1:5182` in the chat URL with that HTTPS origin. Keep the entire secret path and optional `#thread-id`. The origin setting persists across restarts. Stop chat before changing it; use `chat start --public-origin none` to return to local-only access.
+- On start and every 60 s the service reads `tailscale status --json` and `tailscale serve status --json`. If `https://<mac>.<tailnet>.ts.net/` has no handler, it runs `tailscale serve --bg --https=443 http://127.0.0.1:5182`. A handler there that points anywhere else is never replaced; Settings shows the command that frees it.
+- The service then requests `https://<mac>.<tailnet>.ts.net/<secret>/api/identity` from the Mac and checks that this instance answered. Settings shows the time and result of the last check.
+- The phone link is `https://<mac>.<tailnet>.ts.net/<secret>/`. It stays the same across restarts. If the machine is renamed in Tailscale, the service follows the new name on its next check.
+- Settings > Phone access has the link, a Copy button and a QR code. Scan it with the phone camera and bookmark the page. `sieun-pi chat status` also prints it as `Phone:`, and `/agent-chat` prints it under the local URL.
+- Turning "Open from my devices on Tailscale" off removes only this chat's root handler (`tailscale serve --https=443 --set-path=/ off`) and the remote host stops working at once. The switches change only from a page opened on the Mac (`127.0.0.1`); a remote page sees them read-only.
+- `chat start --public-origin tailscale|https://HOST|none` sets the same thing from the terminal while chat is stopped. An HTTPS origin is fixed and never touches Tailscale. Instances with `--data-dir`, or under a different HOME, start with phone access off. `SIEUN_PI_CHAT_AUTOMATIC=0` turns the automatic defaults off for the main instance too.
 
-The listener stays on `127.0.0.1`. Only the configured remote host is allowed, with matching HTTPS Origin and page-token checks for writes. Forwarded headers cannot add hosts. The service-stop API stays local-only. A cross-site link may open the secret chat page; cross-site API requests remain blocked. Assets and event streams use relative URLs, so they pass through the same proxy.
+The listener stays on `127.0.0.1`. Only the current remote host is allowed, with matching HTTPS Origin and page-token checks for writes. Forwarded headers cannot add hosts. The service-stop API stays local-only. A cross-site link may open the secret chat page; cross-site API requests remain blocked. Assets and event streams use relative URLs, so they pass through the same proxy.
 
-Keep the full URL private. Anyone who can reach the service and has that URL can read chats and control agents. Tailscale Serve limits network access to the tailnet; do not use Funnel or an unauthenticated public proxy. Other HTTPS reverse proxies must preserve Host, stream SSE without buffering, and restrict who can connect. Keep the Mac awake and the chat service running.
+Keep the full URL private. Anyone who can reach the service and has that URL can read chats and control agents. Tailscale Serve limits network access to devices on the tailnet; do not use Funnel or an unauthenticated public proxy. Other HTTPS reverse proxies must preserve Host, stream SSE without buffering, and restrict who can connect. Keep the Mac awake.
+
+## Keep running
+
+On macOS the main instance runs as the LaunchAgent `com.sieun.agent-chat` (`~/Library/LaunchAgents/com.sieun.agent-chat.plist`). The first `chat start` or `/agent-chat` writes and loads it, so there is nothing to install by hand.
+
+- At login launchd starts `chat serve --supervised`. After a crash it restarts it within about 10 s. `chat stop` exits cleanly, so launchd leaves it stopped until `chat start`, `/agent-chat` or the next login.
+- If another chat process already holds the port, the supervised process waits for it. It takes over when that process crashes and stays idle when it stops with `chat stop`.
+- Settings > Phone access > "Keep the chat running" turns this off. That removes the plist; a process that launchd started keeps running until it stops.
+- Output goes to `~/.prime/agent/browser-chat/service.log`.
 
 ## Limits
 

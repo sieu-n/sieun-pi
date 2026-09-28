@@ -1,4 +1,4 @@
-import type { AccountAction, AccountLogin, AccountsView, ChatDefaults, ChatDefaultsInput, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, Workspace } from "../shared/types.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -51,6 +51,9 @@ export const api = {
   models: (id: string | null) => get<ModelCatalog>("api/models" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
   defaults: () => get<ChatDefaults>("api/defaults"),
   setDefaults: (input: ChatDefaultsInput) => post<ChatDefaults>("api/defaults", input),
+  remote: () => get<RemoteAccessView>("api/remote"),
+  setRemote: (input: RemoteAccessInput) => post<RemoteAccessView>("api/remote", input, 60000),
+  checkRemote: () => post<RemoteAccessView>("api/remote/check", {}, 60000),
   commands: (id: string | null) => get<{ commands: Command[] }>(id ? "api/threads/" + encodeURIComponent(id) + "/commands" : "api/commands", 30000).then(body => body.commands),
   childUsage: (id: string) => get<{ children: ChildUsage[] }>("api/threads/" + encodeURIComponent(id) + "/child-usage").then(body => body.children),
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
