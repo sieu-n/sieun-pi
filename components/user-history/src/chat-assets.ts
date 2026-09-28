@@ -9,7 +9,7 @@ export interface Asset { body: Buffer; etag: string; contentType: string }
 /** `version` names this build; the page carries it and the sessions stream reports it, so an open tab sees a restart onto new code. */
 export interface ClientBundle { js: Asset; css: Asset; version: string }
 
-function asset(body: Uint8Array, contentType: string): Asset {
+export function asset(body: Uint8Array, contentType: string): Asset {
   const buffer = Buffer.from(body);
   return { body: buffer, etag: '"' + createHash("sha256").update(buffer).digest("hex").slice(0, 32) + '"', contentType };
 }

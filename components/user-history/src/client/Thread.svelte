@@ -165,13 +165,23 @@
     return () => { document.removeEventListener("visibilitychange", onHidden); store.markRead(id); };
   });
 
+  const reading = $derived(ui.viewMode === "read");
+  /** Esc leaves Read for Default, except from a text field, where Esc keeps its own job (cancel a rename, stop a busy thread). */
+  function onReadKey(event: KeyboardEvent): void {
+    if (event.key !== "Escape" || !reading || event.defaultPrevented) return;
+    if (event.target instanceof HTMLElement && event.target.closest("input, textarea, [contenteditable], dialog, [popover]")) return;
+    ui.setViewMode("default");
+  }
+
   const send = (text: string, images: Parameters<typeof store.send>[2], mode: Parameters<typeof store.send>[3]) => store.send(id, text, images, mode);
   const stop = () => { void store.run(api.abort(id)); };
 </script>
 
-<div class="thread">
+<svelte:window onkeydown={onReadKey} />
+
+<div class="thread" class:read={reading}>
   <header class="head">
-    {#if !store.sidebarOpen || narrow}
+    {#if (!store.sidebarOpen || narrow) && !reading}
       <button type="button" class="icon-button" aria-label="Show sidebar" use:tooltip={"Show sidebar ⌘B"} onclick={() => { store.sidebarOpen = true; }}><Icon name={narrow ? "menu" : "sidebar"} /></button>
     {/if}
     <div class="title-wrap">
@@ -180,8 +190,8 @@
       {:else}
         <button type="button" class="title" aria-label="Rename thread {title}" onclick={startRename}>{title}</button>
       {/if}
-      {#if cwd}<span class="cwd">{shortPath(cwd)}</span>{/if}
-      {#if row}<span class="tags">
+      {#if cwd && !reading}<span class="cwd">{shortPath(cwd)}</span>{/if}
+      {#if row && !reading}<span class="tags">
         {#each rowTags as tag (tag.id)}
           <button type="button" class="tag-button" aria-label="Remove tag {tag.name}" onclick={() => void labels.setTag([id], tag.id, false)}><TagChip {tag} /><span class="x" aria-hidden="true"><Icon name="x" size={10} /></span></button>
         {/each}
@@ -200,7 +210,9 @@
       <div class="segmented" role="radiogroup" aria-label="View">
         <button type="button" role="radio" aria-checked={ui.viewMode === "default"} class:on={ui.viewMode === "default"} onclick={() => ui.setViewMode("default")}>Default</button>
         <button type="button" role="radio" aria-checked={ui.viewMode === "questions"} class:on={ui.viewMode === "questions"} onclick={() => ui.setViewMode("questions")}>Questions</button>
+        <button type="button" role="radio" aria-checked={reading} class:on={reading} use:tooltip={reading ? "Esc goes back to Default" : "Full window, only the conversation"} onclick={() => ui.setViewMode("read")}>Read</button>
       </div>
+      {#if !reading}
       {#if thread?.children.length}
         {#if thread.children.length > MODAL_CHILDREN}
           <button type="button" class="bar-button" class:active-agents={runningChildren > 0} aria-label={agentsLabel} use:tooltip={agentsLabel} onclick={() => { agentsOpen = true; }}>
@@ -226,6 +238,7 @@
         onclick={() => ui.setNotesOpen(!ui.notesOpen)}><Icon name="note" size={16} /></button>
       {#if row && !row.archived}
         <button type="button" class="icon-button" aria-label="Archive thread" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
+      {/if}
       {/if}
     </div>
   </header>
@@ -371,6 +384,13 @@
   .foot .column { padding: 4px 20px 8px; }
   .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-faint); }
   .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Read mode covers the sidebar and notepad; menus and dialogs still open above it in the top layer. */
+  .thread.read { position: fixed; inset: 0; z-index: 35; background: var(--bg); --column: 720px; }
+  .thread.read .head { height: 48px; padding: 0 14px; border-bottom-color: transparent; }
+  .thread.read .title { font-weight: 500; color: var(--text-muted); }
+  .thread.read .scroller { font-size: 16.5px; line-height: 1.75; }
+  .thread.read .column { padding-top: 28px; padding-bottom: 64px; }
+  .thread.read .foot .column { padding-top: 4px; padding-bottom: 12px; }
   @container app (max-width: 899px) {
     .cwd, .label-text { display: none; }
     .column { padding: 8px 12px 16px; }

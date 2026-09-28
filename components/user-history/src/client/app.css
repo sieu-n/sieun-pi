@@ -65,30 +65,64 @@ a { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 ::selection { background: var(--accent-soft); }
 
-.prose { overflow-wrap: anywhere; }
+/* Reply text. Spacing is in em so read mode's larger font scales it. Headings get more room above than below so each
+   one sits with the section it opens. */
+.prose { overflow-wrap: anywhere; line-height: 1.7; }
 .prose > :first-child { margin-top: 0; }
 .prose > :last-child { margin-bottom: 0; }
-.prose p, .prose ul, .prose ol, .prose blockquote, .prose table { margin: 0 0 0.9em; }
-.prose h1, .prose h2, .prose h3, .prose h4 { margin: 1.2em 0 0.5em; line-height: 1.3; font-weight: 600; }
-.prose h1 { font-size: 1.35em; } .prose h2 { font-size: 1.2em; } .prose h3 { font-size: 1.08em; } .prose h4 { font-size: 1em; }
-.prose ul, .prose ol { padding-left: 1.4em; }
-.prose li + li { margin-top: 0.2em; }
-.prose blockquote { border-left: 3px solid var(--border-strong); padding-left: 0.9em; color: var(--text-muted); }
-.prose code { font-family: var(--mono); font-size: 0.88em; background: var(--bg-sunken); padding: 0.12em 0.35em; border-radius: 5px; }
-.prose pre { margin: 0; padding: 0.8em 1em; overflow: auto; background: transparent; }
-.prose pre code { background: none; padding: 0; font-size: 0.85em; line-height: 1.5; }
-.prose .code-block { margin: 0 0 0.9em; border: 1px solid var(--border); border-radius: var(--radius-small); background: var(--bg-sunken); overflow: hidden; }
-.prose .code-head { display: flex; justify-content: space-between; align-items: center; padding: 0.25em 0.6em 0.25em 0.9em; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-muted); }
+.prose p, .prose ul, .prose ol, .prose blockquote, .prose .table-wrap, .prose .code-block { margin: 0 0 1em; }
+.prose h1, .prose h2, .prose h3, .prose h4 { margin: 1.9em 0 0.55em; line-height: 1.3; font-weight: 600; letter-spacing: -0.01em; }
+.prose h1 { font-size: 1.4em; } .prose h2 { font-size: 1.22em; } .prose h3 { font-size: 1.07em; } .prose h4 { font-size: 1em; color: var(--text-muted); }
+.prose h1 + h2, .prose h2 + h3, .prose h3 + h4 { margin-top: 0.8em; }
+.prose strong { font-weight: 600; }
+.prose ul, .prose ol { padding-left: 1.5em; }
+.prose li { padding-left: 0.2em; }
+.prose li + li { margin-top: 0.4em; }
+.prose li::marker { color: var(--text-faint); }
+.prose li > ul, .prose li > ol { margin: 0.4em 0 0; }
+.prose li > p { margin: 0 0 0.5em; }
+.prose blockquote { margin-left: 0; border-left: 3px solid var(--border-strong); padding: 0.1em 0 0.1em 1em; color: var(--text-muted); }
+.prose a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.18em; }
+.prose a:hover { text-decoration-color: currentColor; }
+.prose .path-link { font-family: var(--mono); font-size: 0.88em; color: var(--text-muted); border-bottom: 1px dotted var(--border-strong); cursor: help; }
+.prose code { font-family: var(--mono); font-size: 0.86em; background: var(--bg-sunken); border: 1px solid var(--border); padding: 0.08em 0.35em; border-radius: 5px; }
+.prose a code { color: inherit; }
+.prose pre { margin: 0; padding: 0.9em 1.1em; overflow: auto; background: transparent; }
+.prose pre code { background: none; border: 0; padding: 0; font-size: 0.83em; line-height: 1.6; }
+.prose .code-block { margin-top: 0.4em; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-sunken); overflow: hidden; }
+.prose .code-head { display: flex; justify-content: space-between; align-items: center; min-height: 32px; padding: 0 0.5em 0 1em; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.4; color: var(--text-muted); }
 .prose .code-lang { font-family: var(--mono); text-transform: lowercase; }
 .prose .copy-button { font-size: 12px; color: var(--text-muted); padding: 2px 8px; border-radius: 6px; }
 .prose .copy-button:hover { background: var(--bg-hover); color: var(--text); }
-.prose table { border-collapse: collapse; font-size: 0.93em; display: block; overflow-x: auto; }
-.prose th, .prose td { border: 1px solid var(--border); padding: 0.35em 0.7em; text-align: left; }
-.prose th { background: var(--bg-sunken); font-weight: 600; }
-.prose hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
+.prose .table-wrap { margin-top: 0.4em; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.prose table { width: 100%; border-collapse: collapse; overflow-wrap: break-word; font-size: 0.9em; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.prose th, .prose td { padding: 0.55em 0.9em; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+.prose th + th, .prose td + td { border-left: 1px solid var(--border); }
+.prose tr:last-child td { border-bottom: 0; }
+.prose th { background: var(--bg-sunken); font-weight: 600; white-space: nowrap; }
+.prose tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--bg-sunken) 45%, transparent); }
+.prose hr { border: 0; border-top: 1px solid var(--border); margin: 2em 0; }
 .prose img { max-width: 100%; }
-.prose .inert-url { color: var(--text-faint); font-size: 0.9em; }
-.prose .link { text-decoration: underline; text-decoration-color: var(--border-strong); }
+.prose .reply-image { display: block; max-height: 480px; margin: 0.4em 0 1em; border: 1px solid var(--border); border-radius: var(--radius); cursor: zoom-in; background: var(--bg-sunken); }
+/* Diagram blocks show their source until the sandboxed frame reports a drawing; then the switch picks one. */
+.prose .diagram-switch { display: none; gap: 2px; margin-left: auto; margin-right: 6px; }
+.prose .diagram-ready .diagram-switch { display: inline-flex; }
+.prose .diagram-switch button { font-size: 12px; padding: 2px 8px; border-radius: 6px; color: var(--text-muted); }
+.prose .diagram-switch button:hover { color: var(--text); background: var(--bg-hover); }
+.prose .diagram-switch button[aria-pressed="true"] { color: var(--accent-bold); background: var(--accent-soft); }
+.prose .diagram-slot { height: 0; overflow: hidden; }
+.prose .diagram-frame { display: block; width: 100%; height: 0; border: 0; background: transparent; }
+.prose .diagram-ready:not(.show-source) .diagram-slot { height: auto; overflow: visible; }
+.prose .diagram-ready:not(.show-source) pre { display: none; }
+.prose .diagram-failed .diagram-slot { height: auto; }
+.prose .diagram-failed .diagram-frame { display: none; }
+.diagram-dialog { width: min(96vw, 1600px); max-height: 92vh; padding: 12px; overflow: auto; }
+.diagram-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.diagram-dialog-close { position: sticky; top: 0; float: right; z-index: 1; }
+.diagram-dialog .diagram-frame { display: block; width: 100%; height: 0; border: 0; background: transparent; }
+.diagram-dialog.diagram-failed .diagram-frame { display: none; }
+.diagram-dialog .diagram-error { padding: 0.5em 1em; font-size: 12.5px; color: var(--warning); }
+.prose .diagram-error { padding: 0.5em 1em; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--warning); }
 .prose .inert-image { color: var(--text-muted); font-style: normal; }
 .prose .checkbox { font-family: var(--mono); color: var(--text-muted); }
 

@@ -4,6 +4,7 @@ import { createGzip, type Gzip } from "node:zlib";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
+import { buildRenderBundle, LocalImageError, readLocalImage, renderPage, renderPolicy } from "./chat-render.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat-pool.ts";
@@ -15,7 +16,7 @@ const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
 const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
-export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -243,6 +244,14 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (origin === null) throw new RequestError(421, "Unexpected host.");
       const url = new URL(req.url ?? "/", origin);
       if (url.origin !== origin || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
+      // The diagram frame is sandboxed with an opaque origin, so its own script request arrives cross-site. Both are static.
+      const frameRoute = url.pathname.slice(base.length);
+      if (req.method === "GET" && frameRoute === "render" && req.headers["sec-fetch-dest"] === "iframe") {
+        res.removeHeader("X-Frame-Options");
+        res.setHeader("Content-Security-Policy", renderPolicy(origin, base));
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderPage); return;
+      }
+      if (req.method === "GET" && frameRoute === "render.js" && req.headers["sec-fetch-dest"] === "script") { serveAsset(req, res, await buildRenderBundle()); return; }
       const shellNavigation = req.method === "GET" && url.pathname === base &&
         req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document";
       if ((req.headers["sec-fetch-site"] === "cross-site" && !shellNavigation) ||
@@ -293,6 +302,16 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const id = url.searchParams.get("id");
           const model = url.searchParams.get("model");
           json(res, 200, await listAccounts(id ? threadId(id) : null, model ? text(model, "model", 256) : null)); return;
+        }
+        if (route === "api/local-image") {
+          let image: Awaited<ReturnType<typeof readLocalImage>>;
+          try { image = await readLocalImage(url.searchParams.get("path") ?? ""); }
+          catch (error) { throw error instanceof LocalImageError ? new RequestError(error.status, error.message) : error; }
+          // An SVG opened on its own is a document; the sandbox keeps any script in it from running as this page.
+          if (image.mimeType === "image/svg+xml") res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
+          res.writeHead(200, { "Content-Type": image.mimeType, "Content-Length": image.bytes.length });
+          res.end(image.bytes);
+          return;
         }
         const image = /^api\/images\/([a-f0-9]{64})$/.exec(route);
         if (image) {

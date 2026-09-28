@@ -16,7 +16,7 @@ function isImageMimeType(value: unknown): value is ImageMimeType {
   return value === "image/png" || value === "image/jpeg" || value === "image/gif" || value === "image/webp";
 }
 
-function hasImageSignature(bytes: Buffer, mimeType: ImageMimeType): boolean {
+export function hasImageSignature(bytes: Buffer, mimeType: ImageMimeType): boolean {
   switch (mimeType) {
     case "image/png":
       return bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));

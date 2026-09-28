@@ -1,6 +1,7 @@
 import { emptyRowFilter, ROW_FILTER_KEYS, type RowFilter, type SidebarSort, type SidebarView } from "./organize.ts";
 
-export type ViewMode = "default" | "questions";
+export type ViewMode = "default" | "questions" | "read";
+const VIEW_MODES: readonly ViewMode[] = ["default", "questions", "read"];
 export const SIDEBAR_MIN = 180;
 export const SIDEBAR_MAX = 480;
 /** Dragging the sidebar edge narrower than this collapses the sidebar. */
@@ -27,7 +28,7 @@ function storedFilter(): RowFilter {
 const clampWidth = (width: number): number => Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)));
 
 class Ui {
-  viewMode = $state<ViewMode>(stored("chat.viewMode") === "questions" ? "questions" : "default");
+  viewMode = $state<ViewMode>(VIEW_MODES.find(mode => mode === stored("chat.viewMode")) ?? "default");
   sidebarWidth = $state(clampWidth(Number(stored("chat.sidebarWidth")) || 260));
   sidebarFilter = $state<RowFilter>(storedFilter());
   sidebarSort = $state<SidebarSort>(stored("chat.sidebarSort") === "recent" ? "recent" : "grouped");

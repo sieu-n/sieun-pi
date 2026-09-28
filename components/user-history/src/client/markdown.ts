@@ -4,17 +4,58 @@ export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
+/** Fenced block languages drawn in the sandboxed `render` frame. */
+const DIAGRAM_LANGUAGES = new Set(["mermaid"]);
+/** The thread folder, for image paths relative to it. Set around each synchronous parse. */
+let renderCwd = "";
+
+/**
+ * Where a markdown image loads from: https and data URLs as they are, and a file on this Mac (absolute, `~/`, `file://`, or
+ * relative to the thread folder) through `api/local-image`. Anything else stays as text.
+ */
+export function imageSource(href: string, cwd: string): string | null {
+  if (/^https:\/\//i.test(href)) return href;
+  if (/^data:image\/(png|jpeg|gif|webp);/i.test(href)) return href;
+  let path = href;
+  if (/^file:\/\//i.test(path)) {
+    try { path = decodeURIComponent(new URL(path).pathname); } catch { return null; }
+  } else if (/^[a-z][a-z0-9+.-]*:/i.test(path)) return null;
+  if (!path.startsWith("/") && !path.startsWith("~/")) {
+    if (!cwd) return null;
+    path = cwd.replace(/\/+$/, "") + "/" + path.replace(/^\.\//, "");
+  }
+  return "api/local-image?path=" + encodeURIComponent(path);
+}
+
+/** Only web and mail links open; file paths, relative links and other schemes stay as marked text with the target on hover. */
+const WEB_LINK = /^(https?:\/\/|mailto:)/i;
+
 const marked = new Marked({
   gfm: true,
   async: false,
+  // Raw HTML is escaped, so a literal <table> in the output always came from the table renderer.
+  hooks: { postprocess: html => html.replaceAll("<table>", '<div class="table-wrap"><table>').replaceAll("</table>", "</table></div>") },
   renderer: {
     html({ text }) { return escapeHtml(text); },
     link({ href, title, tokens }) {
-      return `<span class="link">${this.parser.parseInline(tokens)} <span class="inert-url">(${escapeHtml(href)})${title ? " " + escapeHtml(title) : ""}</span></span>`;
+      const text = this.parser.parseInline(tokens);
+      const tip = escapeHtml(title ? `${title} (${href})` : href);
+      if (WEB_LINK.test(href)) return `<a href="${escapeHtml(href)}" title="${tip}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+      return `<span class="path-link" title="${tip}">${text}</span>`;
     },
-    image({ href, text }) { return `<span class="inert-image">Image: ${escapeHtml(text || href)}</span>`; },
+    image({ href, title, text }) {
+      const src = imageSource(href, renderCwd);
+      if (!src) return `<span class="inert-image">Image: ${escapeHtml(text || href)}</span>`;
+      const label = escapeHtml(title || text || href);
+      return `<img class="reply-image" src="${escapeHtml(src)}" alt="${escapeHtml(text)}" title="${label}" loading="lazy" data-source="${escapeHtml(href)}">`;
+    },
     code({ text, lang }) {
       const language = (lang ?? "").split(/\s/)[0] ?? "";
+      if (DIAGRAM_LANGUAGES.has(language.toLowerCase())) {
+        return `<div class="code-block diagram-block" data-diagram="${escapeHtml(language.toLowerCase())}"><div class="code-head"><span class="code-lang">${escapeHtml(language)}</span>` +
+          `<span class="diagram-switch" role="group" aria-label="Show"><button type="button" data-diagram-view="diagram" aria-pressed="true">Diagram</button><button type="button" data-diagram-view="source" aria-pressed="false">Source</button><button type="button" data-diagram-expand>Expand</button></span>` +
+          `<button type="button" class="copy-button" data-copy>Copy</button></div><div class="diagram-slot"></div><pre><code>${escapeHtml(text)}</code></pre></div>\n`;
+      }
       return `<div class="code-block"><div class="code-head"><span class="code-lang">${escapeHtml(language)}</span><button type="button" class="copy-button" data-copy>Copy</button></div><pre><code>${escapeHtml(text)}</code></pre></div>\n`;
     },
     checkbox({ checked }) { return `<span class="checkbox">${checked ? "[x]" : "[ ]"}</span> `; },
@@ -24,11 +65,14 @@ const marked = new Marked({
 const cache = new Map<string, string>();
 const CACHE_LIMIT = 4000;
 
-export function renderMarkdown(text: string): string {
-  const cached = cache.get(text);
+export function renderMarkdown(text: string, cwd = ""): string {
+  const key = cwd + "\0" + text;
+  const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const html = marked.parse(text, { async: false });
-  cache.set(text, html);
+  renderCwd = cwd;
+  let html: string;
+  try { html = marked.parse(text, { async: false }); } finally { renderCwd = ""; }
+  cache.set(key, html);
   if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
   return html;
 }
