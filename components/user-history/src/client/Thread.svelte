@@ -53,7 +53,7 @@
     if (!turn.prompt) return [];
     const content = turn.prompt.message.content;
     return [{ key: turn.key, text: messageText(turn.prompt.message).trim(), skill: turn.prompt.message.skill ?? null,
-      images: typeof content === "string" ? 0 : content.filter(part => part.type === "image").length, at: clockTime(turn.prompt.message.timestamp) }];
+      images: typeof content === "string" ? [] : content.filter(part => part.type === "image"), at: clockTime(turn.prompt.message.timestamp) }];
   }));
   async function jumpTo(key: string): Promise<void> {
     ui.setViewMode("default");
@@ -264,9 +264,16 @@
         {#if ui.viewMode === "questions"}
           {#each questions as question (question.key)}
             <button type="button" class="question" onclick={() => void jumpTo(question.key)}>
-              {#if question.skill}<span class="question-skill">{question.skill}</span>{/if}
-              <span class="question-text">{question.text || (question.images ? "Image" : "(empty)")}</span>
-              <span class="question-meta">{question.images ? `${question.images} image${question.images === 1 ? "" : "s"} · ` : ""}{question.at}</span>
+              <span class="question-body">
+                {#if question.skill}<span class="question-skill">{question.skill}</span>{/if}
+                {#if question.text || !question.images.length}<span class="question-text">{question.text || "(empty)"}</span>{/if}
+                {#if question.images.length}
+                  <span class="question-images">
+                    {#each question.images as image, index (image.url + index)}<img src={image.url} alt="Attached {index + 1}" loading="lazy" />{/each}
+                  </span>
+                {/if}
+              </span>
+              <span class="question-meta">{question.at}</span>
             </button>
           {/each}
           {#if !questions.length}<div class="empty muted">No questions in this thread yet.</div>{/if}
@@ -332,8 +339,11 @@
   .modal-list { padding: 12px 14px; }
   .question { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: var(--radius-small); text-align: left; }
   .question:hover { background: var(--bg-hover); }
+  .question-body { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; }
+  .question-images { display: flex; flex-wrap: wrap; gap: 6px; }
+  .question-images img { display: block; max-width: 160px; max-height: 120px; border-radius: var(--radius-small); }
   .question-skill { flex: none; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-family: var(--mono); }
-  .question-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .question-text { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
   .question-meta { flex: none; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .column :global(.turn.flash) { animation: flash 1.2s ease-out; }
   @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
