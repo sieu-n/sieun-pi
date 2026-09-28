@@ -7,6 +7,7 @@ import { parseChatImages } from "./chat-images.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat-pool.ts";
+import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type SendMode, type ThinkingLevel } from "./shared/types.ts";
 
@@ -317,6 +318,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             }
             return;
           }
+          if (action === "note") { json(res, 200, await backend.notes.get(id)); return; }
           if (action === "tool-output") {
             const toolCallId = url.searchParams.get("toolCallId") ?? "";
             if (!toolCallId || toolCallId.length > 512) throw new RequestError(400, "Choose a tool call.");
@@ -408,6 +410,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         case "abort": await backend.threads.abort(id); break;
         case "archive": await backend.threads.archive(id); break;
         case "unarchive": await backend.threads.unarchive(id); break;
+        case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;
         case "rename": {
           const name = text(body.name, "name", 200).trim();
           if (!name) throw new RequestError(400, "Use a name of 1 to 200 characters.");

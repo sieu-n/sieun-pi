@@ -33,6 +33,9 @@ class Ui {
   sidebarSort = $state<SidebarSort>(stored("chat.sidebarSort") === "recent" ? "recent" : "grouped");
   sidebarView = $state<SidebarView>(stored("chat.sidebarView") === "tags" ? "tags" : "current");
   agentsOpen = $state(false);
+  /** The notepad panel beside the open thread; the choice holds across threads and reloads. */
+  notesOpen = $state(stored("chat.notesOpen") === "1");
+  setNotesOpen(open: boolean): void { this.notesOpen = open; store("chat.notesOpen", open ? "1" : "0"); }
   /** Thread ids in the order the sidebar shows them, so archiving the open thread can move to the next one. */
   sidebarOrder = $state.raw<string[]>([]);
   setSidebarFilter(filter: RowFilter): void { this.sidebarFilter = filter; store("chat.sidebarFilter", JSON.stringify(filter)); }

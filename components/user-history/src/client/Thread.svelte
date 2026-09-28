@@ -222,6 +222,8 @@
           </Popover>
         {/if}
       {/if}
+      <button type="button" class="icon-button" class:on={ui.notesOpen} aria-label="Notepad" aria-pressed={ui.notesOpen} use:tooltip={ui.notesOpen ? "Hide notepad" : "Notepad"}
+        onclick={() => ui.setNotesOpen(!ui.notesOpen)}><Icon name="note" size={16} /></button>
       {#if row && !row.archived}
         <button type="button" class="icon-button" aria-label="Archive thread" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
       {/if}
@@ -323,6 +325,7 @@
   .title-wrap { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
   .cwd { flex: none; font-size: 12px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
   .active-agents { color: var(--accent-bold); }
+  .head .icon-button.on { color: var(--accent-bold); background: var(--accent-soft); }
   .child-alert { width: 7px; height: 7px; border-radius: 50%; flex: none; }
   .child-alert.stalled { background: var(--warning); }
   .child-alert.failed { background: var(--danger); }

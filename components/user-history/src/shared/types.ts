@@ -161,6 +161,8 @@ export interface Tag { id: string; name: string; hue: number }
 export type Progress = "none" | "plan" | "implementation" | "qa";
 export const PROGRESS_STEPS: readonly Progress[] = ["none", "plan", "implementation", "qa"];
 export interface ThreadLabels { tags: string[]; priority: Priority; progress: Progress }
+/** A person's memo on a thread. `updatedAt` is 0 when there is none. */
+export interface ThreadNote { text: string; updatedAt: number }
 export interface ThreadSchedule { kind: "heartbeat" | "cron"; label?: string; status: "active" | "paused"; expression: string; nextRunAt?: string }
 export type LabelAction =
   | { op: "create"; name: string; ids: string[] }

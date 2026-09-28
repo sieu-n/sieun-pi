@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { defaultDaemonSocketPath, getAgentDir, SettingsManager } from "prime-agent";
 import { Catalog } from "./chat-catalog.ts";
 import { ChatLabels } from "./chat-labels.ts";
+import { ChatNotes } from "./chat-notes.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
@@ -17,6 +18,7 @@ export interface ChatBackend {
   threads: ThreadHub;
   readState: ChatReadState;
   labels: ChatLabels;
+  notes: ChatNotes;
   defaults: ChatDefaultsStore;
   close(): Promise<void>;
 }
@@ -50,6 +52,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dataDir = options.dataDir ?? join(agentDir, "browser-chat");
   const readState = new ChatReadState(join(dataDir, "read-state.json"));
   const labels = new ChatLabels(join(dataDir, "labels.json"));
+  const notes = new ChatNotes(join(dataDir, "notes.json"));
   const defaults = chatDefaultsStore(agentDir);
   await readState.snapshot().catch(() => null);
   const catalog = new Catalog(socketPath, readState, labels);
@@ -57,7 +60,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   catalog.runStartedAt = id => threads.state(id)?.runStartedAt ?? null;
   let closed = false;
   return {
-    catalog, threads, readState, labels, defaults,
+    catalog, threads, readState, labels, notes, defaults,
     async close() {
       if (closed) return;
       closed = true;

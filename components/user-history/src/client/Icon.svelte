@@ -24,6 +24,7 @@
     arrowDown: "M12 5v14M5 12l7 7 7-7",
     alert: "M12 3l10 18H2zM12 10v5M12 18h.01",
     folder: "M3 6h6l2 2h10v11H3z",
+    note: "M5 3h10l4 4v14H5zM15 3v4h4M8 11h8M8 15h8M8 19h5",
     menu: "M4 7h16M4 12h16M4 17h16",
     steer: "M4 12h10M4 6h16M4 18h6M18 15l3 3-3 3",
     sparkle: "M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z",

@@ -1,4 +1,4 @@
-import type { AccountAction, AccountLogin, AccountsView, ChatDefaults, ChatDefaultsInput, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadStats, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, ChatDefaults, ChatDefaultsInput, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, Workspace } from "../shared/types.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -59,6 +59,8 @@ export const api = {
     const query = new URLSearchParams({ ...(id ? { id } : {}), ...(model ? { model } : {}) }).toString();
     return get<AccountsView>("api/accounts" + (query ? "?" + query : ""), 30000);
   },
+  note: (id: string) => get<ThreadNote>("api/threads/" + encodeURIComponent(id) + "/note"),
+  setNote: (id: string, text: string) => post<ThreadNote>("api/threads/" + encodeURIComponent(id) + "/note", { text }),
   accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000),
   loginStream(onLogin: (login: AccountLogin | null) => void): () => void {
     const source = new EventSource("api/accounts/login/stream");

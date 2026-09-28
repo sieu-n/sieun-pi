@@ -7,6 +7,7 @@
   import { isThreadBusy } from "../shared/thread-state.ts";
   import Sidebar from "./Sidebar.svelte";
   import Thread from "./Thread.svelte";
+  import Notepad from "./Notepad.svelte";
   import NewChat from "./NewChat.svelte";
   import Settings from "./Settings.svelte";
   import AgentsDialog from "./AgentsDialog.svelte";
@@ -93,6 +94,9 @@
         <NewChat {narrow} />
       {/if}
     </main>
+    {#if store.selectedId && ui.notesOpen}
+      {#key store.selectedId}<Notepad id={store.selectedId} {narrow} />{/key}
+    {/if}
     {#if store.drawer}
       <Settings section={store.drawer} />
     {/if}
