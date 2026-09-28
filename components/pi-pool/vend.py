@@ -568,11 +568,27 @@ def with_models(accounts, models, cfg):
     return [dataclasses.replace(a, gate_off=True) for a in accounts]
 
 
+def tree_records(state, key):
+    """The records one session tree owns: the one under its key, then any record
+    the same worker wrote before its descriptor named the tree uuid. A new
+    worker's session_start runs before the daemon writes rootSessionId, so
+    `pi-pool model` files the model under the short active id while the first
+    request already resolves the uuid (seen 2026-09-28 on 01a0e55b)."""
+    if key is None:
+        return []
+    sessions = state["sessions"]
+    recs = [sessions[key.key]] if key.key in sessions else []
+    if key.active_id:
+        recs += [rec for k, rec in sessions.items()
+                 if k != key.key and not rec.get("uuid") and rec.get("active_id") == key.active_id]
+    return recs
+
+
 def session_models(state, key, provider, cfg, now):
     """The models the sessions of one tree last selected on this provider, as
     the /account extension recorded them (`pi-pool model`)."""
-    rec = state["sessions"].get(key.key) if key else None
-    entries = (((rec or {}).get("models") or {}).get(provider) or {}).values()
+    entries = [e for rec in tree_records(state, key)
+               for e in (((rec.get("models") or {}).get(provider)) or {}).values()]
     return [e.get("model") for e in entries if now - (e.get("at") or 0) <= cfg["pin_ttl_sec"]]
 
 
@@ -2038,18 +2054,21 @@ def cmd_model(rest):
     now = time.time()
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
-        rec = state["sessions"].get(key.key)
-        if rec is None and f["clear"]:
+        recs = tree_records(state, key)
+        if not recs and f["clear"]:
             return 0
-        if rec is None:
-            rec = state["sessions"][key.key] = {"uuid": key.uuid, "active_id": key.active_id, "last_seen": now, "pins": {}}
-        models = rec.setdefault("models", {})
-        for provider in PROVIDERS:
-            (models.get(provider) or {}).pop(source, None)
+        if not recs:
+            recs = [state["sessions"].setdefault(key.key, {"uuid": key.uuid, "active_id": key.active_id, "last_seen": now, "pins": {}})]
+        for rec in recs:
+            models = rec.setdefault("models", {})
+            for provider in PROVIDERS:
+                (models.get(provider) or {}).pop(source, None)
         if not f["clear"]:
-            models.setdefault(f["provider"], {})[source] = {"model": model, "at": now}
-        for provider in [p for p, entries in models.items() if not entries]:
-            del models[provider]
+            recs[0]["models"].setdefault(f["provider"], {})[source] = {"model": model, "at": now}
+        for rec in recs:
+            models = rec["models"]
+            for provider in [p for p, entries in models.items() if not entries]:
+                del models[provider]
         save_json(STATE, state)
     return 0
 

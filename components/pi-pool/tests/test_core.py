@@ -354,6 +354,18 @@ class ModelGatedCap(unittest.TestCase):
         self.assertEqual(vend.session_models(state, KEY, "anthropic", CFG, NOW), ["claude-opus-5-5"])
         self.assertEqual(vend.session_models(state, None, "anthropic", CFG, NOW), [])
 
+    def test_session_models_reads_a_record_filed_before_the_uuid_was_known(self):
+        # A new worker records its model at session_start, before the daemon writes
+        # rootSessionId, so the record sits under the short active id with no uuid.
+        state = state_v2()
+        state["sessions"]["35abe469e594"] = {"uuid": None, "active_id": KEY.active_id, "pins": {},
+                                             "models": {"anthropic": {"01a0-uuid": {"model": "claude-opus-5-5", "at": NOW}}}}
+        state["sessions"]["other-worker"] = {"uuid": None, "active_id": "ffffffffffff", "pins": {},
+                                             "models": {"anthropic": {"x": {"model": "claude-fable-5-1", "at": NOW}}}}
+        self.assertEqual(vend.session_models(state, KEY, "anthropic", CFG, NOW), ["claude-opus-5-5"])
+        [acct] = vend.with_models([account("k", "k@x", gated_pct=100)], vend.session_models(state, KEY, "anthropic", CFG, NOW), CFG)
+        self.assertIsNone(vend.unusable_reason(acct, {}, CFG, NOW))
+
 
 class StoreLayout(unittest.TestCase):
     """The store path and keychain service must match tokenmaxxing's
