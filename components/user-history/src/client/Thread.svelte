@@ -333,7 +333,7 @@
   .question { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: var(--radius-small); text-align: left; }
   .question:hover { background: var(--bg-hover); }
   .question-skill { flex: none; padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-family: var(--mono); }
-  .question-text { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .question-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .question-meta { flex: none; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .column :global(.turn.flash) { animation: flash 1.2s ease-out; }
   @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
