@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionSummary } from "prime-agent";
+import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
@@ -21,6 +21,36 @@ type Live = { connection: DaemonAgentConnection; activeSessionId: string; unsubs
 
 /** The daemon's kill answer when the worker outlived the stop window; the supervisor still finishes the stop. */
 const STOP_PENDING = /^Session worker \S+ did not stop/;
+
+/**
+ * Display messages for stored branch entries, in file order: messages, custom messages (agent replies and notices), branch summaries, and a
+ * compaction marker where each compaction happened.
+ */
+export function historyMessages(entries: readonly SessionEntry[]): AgentMessage[] {
+  return entries.flatMap((entry): AgentMessage[] => {
+    const timestamp = new Date(entry.timestamp).getTime();
+    switch (entry.type) {
+      case "message": return [entry.message];
+      case "custom_message": return [{ role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp }];
+      case "branch_summary": return entry.summary ? [{ role: "branchSummary", summary: entry.summary, fromId: entry.fromId, timestamp }] : [];
+      case "compaction": return [{ role: "compactionSummary", summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp }];
+      default: return [];
+    }
+  });
+}
+
+/**
+ * The live context after a compaction starts at its summary, so the turns it replaced are only in the session file. These are the branch entries
+ * before the latest compaction's first kept entry.
+ */
+export function compactedEntries(branch: readonly SessionEntry[]): SessionEntry[] {
+  let compaction = -1;
+  for (let index = branch.length - 1; index >= 0; index--) if (branch[index]!.type === "compaction") { compaction = index; break; }
+  if (compaction < 0) return [];
+  const entry = branch[compaction]!;
+  const firstKept = entry.type === "compaction" ? branch.findIndex((candidate, index) => index < compaction && candidate.id === entry.firstKeptEntryId) : -1;
+  return branch.slice(0, firstKept >= 0 ? firstKept : compaction);
+}
 
 export class ThreadError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -118,14 +148,14 @@ export class ThreadHub {
 
   private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined): Promise<ThreadSnapshot> {
     const [snapshot, queue] = await Promise.all([connection.getInitialSnapshot(), connection.getQueue()]);
-    const messages = this.projector.messages(snapshot.messages);
+    const messages = this.projector.messages([...this.compactedHistory(snapshot.messages, summary), ...snapshot.messages]);
     const streaming = snapshot.streamingMessage?.role === "assistant" ? this.projector.assistant(snapshot.streamingMessage) : null;
     return { kind: "live", info: projectInfo(snapshot.state, summary), messages, streaming, queue: { steering: [...queue.steering], followUp: [...queue.followUp] },
       children: (snapshot.children ?? []).map(projectChild), tools: [], retry: null,
       runStartedAt: snapshot.state.isStreaming ? runStartedAtFromMessages(messages) : null };
   }
 
-  private savedMessages(summary: SessionSummary): { messages: AgentMessage[]; info: ThreadInfo } {
+  private branch(summary: SessionSummary): SessionEntry[] {
     if (!summary.sessionFile) throw new ThreadError(409, "This saved thread has no session file.");
     if (!existsSync(summary.sessionFile)) {
       void this.catalog.refresh().catch(() => {});
@@ -134,8 +164,22 @@ export class ThreadHub {
     const manager = SessionManager.inMemory(summary.cwd);
     manager.setSessionFile(summary.sessionFile);
     if (manager.getSessionId() !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
-    const branch = manager.getBranch();
-    const messages = branch.flatMap(entry => entry.type === "message" ? [entry.message] : []);
+    return manager.getBranch();
+  }
+
+  /** Turns a compaction removed from a live context, read back from the session file so the thread keeps its full history. */
+  private compactedHistory(live: readonly AgentMessage[], summary: SessionSummary | undefined): AgentMessage[] {
+    if (live[0]?.role !== "compactionSummary" || !summary?.sessionFile) return [];
+    try { return historyMessages(compactedEntries(this.branch(summary))); }
+    catch (error) {
+      process.stderr.write(`history ${summary.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`);
+      return [];
+    }
+  }
+
+  private savedMessages(summary: SessionSummary): { messages: AgentMessage[]; info: ThreadInfo } {
+    const branch = this.branch(summary);
+    const messages = historyMessages(branch);
     let name: string | undefined;
     let thinkingLevel: ThinkingLevel = "off";
     for (const entry of branch) {

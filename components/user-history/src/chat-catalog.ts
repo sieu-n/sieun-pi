@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
@@ -11,6 +12,47 @@ export function previewTitle(value: unknown): string {
   const skill = parseSkillBlock(value);
   const text = skill ? skill.userMessage ?? "" : /^\s*<(?:skill|system|instructions)(?:\s|>)/i.test(value) ? "" : value;
   return text.trim().replace(/\s+/g, " ").slice(0, 100) || "New chat";
+}
+
+const FIRST_MESSAGE_SCAN_BYTES = 4 * 1024 * 1024;
+
+function userText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((part: unknown) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n");
+}
+
+/**
+ * The first user message stored in a session file, read from the head of the file. Undefined when the file is missing or has no user message yet;
+ * an empty string when none appears in the first FIRST_MESSAGE_SCAN_BYTES.
+ */
+export function fileFirstMessage(sessionFile: string): string | undefined {
+  let fd: number;
+  try { fd = openSync(sessionFile, "r"); } catch { return undefined; }
+  try {
+    const decoder = new StringDecoder("utf8");
+    const chunk = Buffer.alloc(64 * 1024);
+    let pending = "";
+    let scanned = 0;
+    while (scanned < FIRST_MESSAGE_SCAN_BYTES) {
+      const read = readSync(fd, chunk, 0, chunk.length, scanned);
+      if (read === 0) return undefined;
+      scanned += read;
+      pending += decoder.write(chunk.subarray(0, read));
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf("\n");
+        if (!line.includes('"user"')) continue;
+        try {
+          const entry: unknown = JSON.parse(line);
+          if (isRecord(entry) && entry.type === "message" && isRecord(entry.message) && entry.message.role === "user") return userText(entry.message.content);
+        } catch { /* a torn last line is still being written */ }
+      }
+    }
+    return "";
+  } finally { closeSync(fd); }
 }
 
 export function isTopLevel(row: SessionSummary): boolean {
@@ -139,6 +181,7 @@ export class Catalog {
   private childSummaries: SessionSummary[] = [];
   private schedules = new Map<string, ThreadSchedule>();
   private readonly workingSince = new Map<string, number>();
+  private readonly firstMessages = new Map<string, string>();
   /** The attached thread's native run start, when the browser has that thread open. */
   runStartedAt: (sessionId: string) => number | null = () => null;
   private readonly listeners = new Set<(event: SessionsEvent) => void>();
@@ -237,6 +280,25 @@ export class Catalog {
     return since;
   }
 
+  /**
+   * A live daemon row takes firstMessage from the saved-session scan when it has one, else from the in-memory context. After a compaction that
+   * context starts at a later user turn (often an injected resume notice), so the title of a live thread is read from its session file instead.
+   */
+  private firstMessage(row: SessionSummary): string | undefined {
+    if (row.activeSessionId === undefined || !row.sessionFile) return row.firstMessage;
+    const cached = this.firstMessages.get(row.sessionFile);
+    if (cached !== undefined) return cached || row.firstMessage;
+    const found = fileFirstMessage(row.sessionFile);
+    if (found === undefined) return row.firstMessage;
+    this.firstMessages.set(row.sessionFile, found);
+    return found || row.firstMessage;
+  }
+
+  private withFirstMessage(row: SessionSummary): SessionSummary {
+    const firstMessage = this.firstMessage(row);
+    return firstMessage === row.firstMessage || firstMessage === undefined ? row : { ...row, firstMessage };
+  }
+
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
     const [state, labels] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null)]);
     const now = Date.now();
@@ -248,7 +310,7 @@ export class Catalog {
         const schedule = this.schedules.get(row.sessionId);
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
         const workingSince = this.trackWorking(row, now);
-        return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
+        return this.applyHeld(row, projectRow(this.withFirstMessage(row), state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
           ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), ...(workingSince === undefined ? {} : { workingSince }),
           ...(isBusySummary(row) ? { pulse: sessionPulse(row, running) } : {}) }));
       })
