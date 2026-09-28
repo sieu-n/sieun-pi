@@ -405,14 +405,21 @@ export class ThreadHub {
     void this.catalog.refresh().catch(() => {});
   }
 
+  /** A saved thread resumes first, so its model and effort can change before the next reply. A running one changes at once and the next request uses it. */
+  private async requireResumed(id: string): Promise<{ thread: Thread; live: Live }> {
+    const thread = await this.resume(id);
+    if (!thread.live) throw new ThreadError(502, "Prime Agent did not resume this thread.");
+    return { thread, live: thread.live };
+  }
+
   async setModel(id: string, provider: string, modelId: string): Promise<void> {
-    const { thread, live } = await this.requireLive(id);
+    const { thread, live } = await this.requireResumed(id);
     await live.connection.setModel(provider, modelId);
     await this.refreshInfo(thread);
   }
 
   async setThinking(id: string, level: string): Promise<void> {
-    const { thread, live } = await this.requireLive(id);
+    const { thread, live } = await this.requireResumed(id);
     const state = await live.connection.getState();
     const nativeLevel = state.availableThinkingLevels.find(value => value === level);
     if (!nativeLevel) throw new ThreadError(400, "Choose an effort level this model supports.");

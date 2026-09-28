@@ -15,6 +15,7 @@
 
   const threadId = $derived(store.selectedId);
   const modelProvider = $derived(threadId ? store.thread(threadId)?.state?.info.model?.provider : undefined);
+  const modelId = $derived(threadId ? store.thread(threadId)?.state?.info.model?.id ?? null : null);
   let view = $state<AccountsView | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -70,13 +71,13 @@
     loading = true;
     error = null;
     try {
-      const result = await loadAccounts(threadId, { fresh });
+      const result = await loadAccounts(threadId, { fresh, model: modelId });
       view = result;
       if (!tab) tab = threadProvider(result, modelProvider)?.provider ?? result.providers[0]?.provider ?? null;
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
     finally { loading = false; }
   }
-  $effect(() => { void threadId; void load(); });
+  $effect(() => { void threadId; void modelId; void load(); });
 
   async function run(action: AccountAction, key: string): Promise<void> {
     confirm = null;

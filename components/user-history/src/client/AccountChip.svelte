@@ -31,11 +31,14 @@
     ...windows.map(window => `${windowLabel(window)} ${Math.round(window.pct)}%${resetText(window) ? ", " + resetText(window) : ""}`),
     onchoose ? "Choose the account for this chat" : "Open account settings"].join("\n"));
 
+  const modelId = $derived(model?.split(" ")[0] ?? null);
+
   $effect(() => {
     const id = threadId;
+    const forModel = modelId;
     let cancelled = false;
     failed = false;
-    loadAccounts(id).then(result => { if (!cancelled) view = result; }, () => { if (!cancelled) failed = true; });
+    loadAccounts(id, { model: forModel }).then(result => { if (!cancelled) view = result; }, () => { if (!cancelled) failed = true; });
     return () => { cancelled = true; };
   });
 </script>

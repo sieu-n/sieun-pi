@@ -324,6 +324,37 @@ class IndexV2Windows(unittest.TestCase):
         self.assertEqual(vend.gated_pct(acct, dict(CFG, switch_models=["opus"]), NOW), 0)
 
 
+class ModelGatedCap(unittest.TestCase):
+    """A spent Fable cap stops an account only for sessions that run Fable."""
+    FABLE_SPENT = account("f", "f@x", session_pct=5, weekly_pct=75, gated_pct=100)
+
+    def reason(self, models):
+        [acct] = vend.with_models([self.FABLE_SPENT], models, CFG)
+        return vend.unusable_reason(acct, {}, CFG, NOW)
+
+    def test_opus_session_can_use_an_account_whose_fable_cap_is_spent(self):
+        self.assertIsNone(self.reason(["claude-opus-5-5"]))
+        self.assertIsNone(self.reason(["anthropic/claude-opus-5-5"]))
+
+    def test_fable_or_unknown_model_keeps_the_cap(self):
+        self.assertEqual(self.reason(["claude-fable-5-1"]), "depleted")
+        self.assertEqual(self.reason(["claude-opus-5-5", "claude-fable-5-1"]), "depleted")
+        self.assertEqual(self.reason([]), "depleted")
+        self.assertEqual(self.reason(None), "depleted")
+
+    def test_the_weekly_limit_still_depletes_an_opus_session(self):
+        [acct] = vend.with_models([account("w", "w@x", weekly_pct=100)], ["claude-opus-5-5"], CFG)
+        self.assertEqual(vend.unusable_reason(acct, {}, CFG, NOW), "depleted")
+
+    def test_session_models_reads_the_tree_record(self):
+        state = state_v2()
+        state["sessions"][KEY.key]["models"] = {"anthropic": {
+            "root": {"model": "claude-opus-5-5", "at": NOW},
+            "old-child": {"model": "claude-fable-5-1", "at": NOW - CFG["pin_ttl_sec"] - 1}}}
+        self.assertEqual(vend.session_models(state, KEY, "anthropic", CFG, NOW), ["claude-opus-5-5"])
+        self.assertEqual(vend.session_models(state, None, "anthropic", CFG, NOW), [])
+
+
 class StoreLayout(unittest.TestCase):
     """The store path and keychain service must match tokenmaxxing's
     storeDirFor and namespacedCredService byte for byte."""

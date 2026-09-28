@@ -553,6 +553,29 @@ def gated_pct(account, cfg, now):
     return worst
 
 
+def model_gated(model_id, cfg):
+    """Whether a model belongs to a gated family (switch_models): claude-fable-5-1
+    is gated by the fable cap, claude-opus-5-5 is not."""
+    return any(f.lower() in family_tokens(model_id) for f in cfg["switch_models"])
+
+
+def with_models(accounts, models, cfg):
+    """Lift the per-model cap for a session that runs no gated model. No known
+    model keeps the cap: an unknown session may be on Fable."""
+    models = [m for m in models or () if m]
+    if not models or any(model_gated(m, cfg) for m in models):
+        return accounts
+    return [dataclasses.replace(a, gate_off=True) for a in accounts]
+
+
+def session_models(state, key, provider, cfg, now):
+    """The models the sessions of one tree last selected on this provider, as
+    the /account extension recorded them (`pi-pool model`)."""
+    rec = state["sessions"].get(key.key) if key else None
+    entries = (((rec or {}).get("models") or {}).get(provider) or {}).values()
+    return [e.get("model") for e in entries if now - (e.get("at") or 0) <= cfg["pin_ttl_sec"]]
+
+
 def fmt_dur(sec):
     """Compact countdown, tokenmaxxing-watch style (4d22h / 3h39m / 42m)."""
     if sec is None:
@@ -608,6 +631,9 @@ class Account:
     windows: tuple = ()
     usage_at: float = 0
     disabled: bool = False
+    # True when every model the session runs is outside the gated families, so
+    # a spent per-model cap (Fable) does not stop this account serving it.
+    gate_off: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -860,7 +886,7 @@ def unusable_reason(a, cooldowns, cfg, now):
         return "cooldown"
     if a.session_pct >= cfg["five_hour_max_pct"] or a.weekly_pct >= cfg["seven_day_max_pct"]:
         return "depleted"
-    if a.gated_pct >= cfg["seven_day_max_pct"]:
+    if a.gated_pct >= cfg["seven_day_max_pct"] and not a.gate_off:
         return "depleted"
     if a.is_live and not cfg["allow_active_account"]:
         return "live-elsewhere"
@@ -1343,6 +1369,7 @@ def vend(provider):
         if HookWriter(state).prune(cfg, now):
             save_json(STATE, state)
         accounts = with_disabled(accounts, state, provider)
+        accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
         intent = intent_for(state, key, provider)
         in_use = in_use_counts(state, provider)
         cooldowns = dict(state["providers"][provider]["cooldowns"])
@@ -1395,6 +1422,7 @@ def vend(provider):
 # ------------------------------------------------------------------------ CLI
 def parse_flags(rest, provider_default="anthropic"):
     provider, session, as_json, force, follow, new_session, positional = provider_default, None, False, False, False, False, []
+    model, source, clear = None, None, False
     i = 0
     while i < len(rest):
         tok = rest[i]
@@ -1412,11 +1440,20 @@ def parse_flags(rest, provider_default="anthropic"):
             follow = True
         elif tok == "--new-session":
             new_session = True
+        elif tok == "--model":
+            i += 1
+            model = rest[i]
+        elif tok == "--source":
+            i += 1
+            source = rest[i]
+        elif tok == "--clear":
+            clear = True
         else:
             positional.append(tok)
         i += 1
     return {"provider": provider, "session": session, "json": as_json,
-            "force": force, "follow": follow, "new_session": new_session, "positional": positional}
+            "force": force, "follow": follow, "new_session": new_session, "positional": positional,
+            "model": model, "source": source, "clear": clear}
 
 
 def session_key_for(session_arg, state):
@@ -1946,6 +1983,7 @@ def cmd_ls(rest):
         msg = f"--session {f['session']} matches no known session"
         print(json.dumps({"error": msg}) if f["json"] else msg)
         return 2
+    accounts = with_models(accounts, [f["model"]] if f["model"] else session_models(state, key, provider, cfg, now), cfg)
     intent = intent_for(state, key, provider) if key else Intent()
     in_use = in_use_counts(state, provider)
     cooldowns = state["providers"][provider]["cooldowns"]
@@ -1986,6 +2024,36 @@ def cmd_ls(rest):
     return 0
 
 
+def cmd_model(rest):
+    """Record the model one session of this process's tree runs, or clear it.
+    A Fable cap then only stops an account for trees that run Fable."""
+    f = parse_flags(rest)
+    source = f["source"]
+    model = f["positional"][0] if f["positional"] else None
+    if not source or (not f["clear"] and not model):
+        raise SystemExit("usage: pi-pool model (<id> --provider <p> | --clear) --source <session id>")
+    key = session_key()
+    if key is None:
+        return 0
+    now = time.time()
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        rec = state["sessions"].get(key.key)
+        if rec is None and f["clear"]:
+            return 0
+        if rec is None:
+            rec = state["sessions"][key.key] = {"uuid": key.uuid, "active_id": key.active_id, "last_seen": now, "pins": {}}
+        models = rec.setdefault("models", {})
+        for provider in PROVIDERS:
+            (models.get(provider) or {}).pop(source, None)
+        if not f["clear"]:
+            models.setdefault(f["provider"], {})[source] = {"model": model, "at": now}
+        for provider in [p for p, entries in models.items() if not entries]:
+            del models[provider]
+        save_json(STATE, state)
+    return 0
+
+
 def cmd_who(rest):
     f = parse_flags(rest)
     state = load_state()
@@ -2002,6 +2070,7 @@ def cmd_who(rest):
         except Exception as e:
             providers_out[provider] = {"error": str(e)}
             continue
+        accounts = with_models(accounts, [f["model"]] if f["model"] else session_models(state, key, provider, cfg, now), cfg)
         intent = intent_for(state, key, provider) if key else Intent()
         in_use = in_use_counts(state, provider)
         cooldowns = state["providers"][provider]["cooldowns"]
@@ -2399,9 +2468,14 @@ USAGE = """usage: pi-pool [command]
   switch [--provider <p>]        drop the seat; the next request re-picks the best account
   use <email|id> [--force] [--follow] [--provider <p>] [--session <id>] [--new-session]
                                   pin (or, with --follow, unpin) this session tree
-  ls [--json] [--provider <p>] [--session <id>]
-                                  the rows /account renders
-  who [--json] [--session <id>]  what this session resolves to now, per provider
+  ls [--json] [--provider <p>] [--session <id>] [--model <id>]
+                                  the rows /account renders; --model judges per-model caps
+                                  for that model instead of the session's recorded ones
+  who [--json] [--session <id>] [--model <id>]
+                                  what this session resolves to now, per provider
+  model (<id> --provider <p> | --clear) --source <session id>
+                                  record the model one session of this tree runs; the
+                                  /account extension calls it on session start and model change
   enable openai-codex            wire the openai-codex provider into models.json
   off <email|id> [--provider <p>]
                                   keep an account pooled but never pick it
@@ -2429,7 +2503,7 @@ def cli(args):
         "config": cmd_config, "set": cmd_set, "log": cmd_log, "enable": cmd_enable,
         "adopt-logins": cmd_adopt_logins, "probe": cmd_probe, "refresh": cmd_refresh,
         "off": lambda rest: cmd_toggle(rest, True), "on": lambda rest: cmd_toggle(rest, False),
-        "rm": cmd_rm, "login": cmd_login,
+        "rm": cmd_rm, "login": cmd_login, "model": cmd_model,
     }
     if cmd in handlers:
         return handlers[cmd](rest)

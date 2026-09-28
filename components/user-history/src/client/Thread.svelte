@@ -296,7 +296,7 @@
             {/if}
           {/snippet}
           {#snippet right()}
-            <ModelPicker label={modelLabel} disabled={busy || saved || !thread}
+            <ModelPicker label={modelLabel} disabled={!thread}
               {catalog} error={catalogError} current={thread?.info.model ?? null} onopen={loadCatalog} onchoose={model => void chooseModel(model)}
               effort={thread?.info.thinkingLevel ?? null} levels={thread?.info.availableThinkingLevels ?? []} oneffort={level => void chooseEffort(level)} />
           {/snippet}

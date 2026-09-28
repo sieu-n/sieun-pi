@@ -6,20 +6,22 @@ const STALE_USAGE_MS = 20 * 60_000;
 const cache = new Map<string, { at: number; view: AccountsView }>();
 const inflight = new Map<string, Promise<AccountsView>>();
 
-const key = (id: string | null): string => id ?? "";
+const key = (id: string | null, model?: string | null): string => (id ?? "") + "|" + (model ?? "");
 
-export function loadAccounts(id: string | null, options: { fresh?: boolean } = {}): Promise<AccountsView> {
-  const cached = cache.get(key(id));
+/** `model` is the model id the chat runs: the pool then judges a per-model cap (Fable) for that model only. */
+export function loadAccounts(id: string | null, options: { fresh?: boolean; model?: string | null } = {}): Promise<AccountsView> {
+  const model = options.model ?? null;
+  const cached = cache.get(key(id, model));
   if (cached && !options.fresh && Date.now() - cached.at < MAX_AGE_MS) return Promise.resolve(cached.view);
-  const pending = inflight.get(key(id));
+  const pending = inflight.get(key(id, model));
   if (pending) return pending;
-  const request = api.accounts(id).then(view => { rememberAccounts(id, view); return view; }).finally(() => inflight.delete(key(id)));
-  inflight.set(key(id), request);
+  const request = api.accounts(id, model).then(view => { rememberAccounts(id, view, model); return view; }).finally(() => inflight.delete(key(id, model)));
+  inflight.set(key(id, model), request);
   return request;
 }
 
-export function rememberAccounts(id: string | null, view: AccountsView): void {
-  cache.set(key(id), { at: Date.now(), view });
+export function rememberAccounts(id: string | null, view: AccountsView, model: string | null = null): void {
+  cache.set(key(id, model), { at: Date.now(), view });
 }
 
 export function forgetAccounts(): void { cache.clear(); }

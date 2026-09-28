@@ -170,7 +170,10 @@ step never fires there.
 
 Score, lowest wins: `max(5h%, 7d%) + 8 per session that vended from it in the last
 hour + 15 if a tokenmaxxing-supervised session runs on it`. Excluded: needs-reauth,
-depleted (>=95% 5h or >=98% 7d or the Fable cap), and accounts in cooldown. A cooldown
+depleted (>=95% 5h or >=98% 7d or the Fable cap), and accounts in cooldown. The Fable cap
+only counts for a session tree that runs Fable: the `/account` extension records each
+session's model (`pi-pool model`) at session start and on every model change, and a tree
+with no Fable model ignores the cap. A tree with no recorded model keeps it. A cooldown
 comes from a refusal probe (see the dependency section) and also overrides a `--force` pin.
 
 ## A pin covers the whole session tree

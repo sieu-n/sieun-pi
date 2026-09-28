@@ -65,11 +65,13 @@ function run(args: string[], timeout = 15000): Promise<string> {
 
 const session = (sessionId: string | null) => sessionId ? ["--session", sessionId] : [];
 
-export async function listAccounts(sessionId: string | null): Promise<AccountsView> {
-  const resolution = await run(["who", "--json", ...session(sessionId)]).then(JSON.parse).catch(() => null);
+/** `model` names the model the chat runs, so a spent per-model cap (Fable) only marks an account depleted for that model. */
+export async function listAccounts(sessionId: string | null, model: string | null = null): Promise<AccountsView> {
+  const forModel = model ? ["--model", model] : [];
+  const resolution = await run(["who", "--json", ...session(sessionId), ...forModel]).then(JSON.parse).catch(() => null);
   const providers = await Promise.all(pooledProviders.map(async (provider): Promise<PoolProvider> => {
     try {
-      const listing: unknown = JSON.parse(await run(["ls", "--json", "--provider", provider, ...session(sessionId)]));
+      const listing: unknown = JSON.parse(await run(["ls", "--json", "--provider", provider, ...session(sessionId), ...forModel]));
       if (isRecord(listing) && typeof listing.error === "string") return { provider, rows: [], resolution: null, error: listing.error };
       const poolPin = isRecord(listing) && isRecord(listing.pin) ? text(listing.pin.id) : null;
       return { provider, rows: parsePoolRows(listing, provider), resolution: resolution ? parsePoolResolution(resolution, provider) : null, poolPin };

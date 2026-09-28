@@ -149,6 +149,13 @@ async function refreshStatus(ctx: ExtensionContext): Promise<void> {
 	}
 }
 
+/** Tells the pool which model this session runs, so a spent Fable cap only stops an account for sessions on Fable. */
+async function recordModel(ctx: ExtensionContext, model = ctx.model): Promise<void> {
+	const sid = sessionId(ctx);
+	if (!sid) return;
+	await pool(model && POOLED_PROVIDERS.has(model.provider) ? ["model", model.id, "--provider", model.provider, "--source", sid] : ["model", "--clear", "--source", sid]);
+}
+
 /** Moves a stored /login for a pooled provider into the pool's fallback, so it cannot shadow the pool. */
 async function adoptLogins(ctx: ExtensionContext): Promise<void> {
 	const res = await pool(["adopt-logins"]);
@@ -168,6 +175,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		clearTimers();
 		await adoptLogins(ctx);
+		await recordModel(ctx);
 		await refreshStatus(ctx);
 		// Refusal check across the pool; the CLI rate-limits itself to once per 6h.
 		void pool(["probe"]);
@@ -175,8 +183,15 @@ export default function (pi: ExtensionAPI): void {
 		timers.push(setTimeout(() => void refreshStatus(ctx), 3000));
 		timers.push(setInterval(() => void refreshStatus(ctx), STATUS_REFRESH_MS));
 	});
-	pi.on("session_shutdown", async () => clearTimers());
-	pi.on("model_select", async (_event, ctx) => refreshStatus(ctx));
+	pi.on("session_shutdown", async (_event, ctx) => {
+		clearTimers();
+		const sid = sessionId(ctx);
+		if (sid) await pool(["model", "--clear", "--source", sid]);
+	});
+	pi.on("model_select", async (event, ctx) => {
+		await recordModel(ctx, event.model);
+		await refreshStatus(ctx);
+	});
 	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
 
 	pi.registerCommand("account", {

@@ -290,7 +290,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         }
         if (route === "api/accounts") {
           const id = url.searchParams.get("id");
-          json(res, 200, await listAccounts(id ? threadId(id) : null)); return;
+          const model = url.searchParams.get("model");
+          json(res, 200, await listAccounts(id ? threadId(id) : null, model ? text(model, "model", 256) : null)); return;
         }
         const image = /^api\/images\/([a-f0-9]{64})$/.exec(route);
         if (image) {

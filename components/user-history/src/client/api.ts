@@ -55,7 +55,10 @@ export const api = {
   toolOutput: (id: string, toolCallId: string) => get<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }>(
     "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),
   part: (id: string, message: number, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?message=${message}&part=${part}`),
-  accounts: (id: string | null) => get<AccountsView>("api/accounts" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
+  accounts: (id: string | null, model: string | null = null) => {
+    const query = new URLSearchParams({ ...(id ? { id } : {}), ...(model ? { model } : {}) }).toString();
+    return get<AccountsView>("api/accounts" + (query ? "?" + query : ""), 30000);
+  },
   accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000),
   loginStream(onLogin: (login: AccountLogin | null) => void): () => void {
     const source = new EventSource("api/accounts/login/stream");
