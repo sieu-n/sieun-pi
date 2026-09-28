@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applyThreadEvent, isThreadBusy, threadStateFromSnapshot } from "../src/shared/thread-state.ts";
-import { allTurns, buildTurns, liveTurn, toolDurationMs, triggerSummary, workCounts } from "../src/shared/turns.ts";
+import { allTurns, buildTurns, currentRun, liveTurn, responseOf, toolDurationMs, triggerSummary, workCounts, workItems } from "../src/shared/turns.ts";
 import { CACHE_COLD_GAP_MS, cacheHealth } from "../src/shared/cache-health.ts";
 import { matchCommands } from "../src/client/command-match.ts";
 import type { AssistantMessage, Command, CustomMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
@@ -148,7 +148,8 @@ test("agent messages and background completions start a turn as a trigger, never
   const bash: CustomMessage = { role: "custom", customType: "async_bash_completion", content: '[bash-done pid:42 exit:0]\n\nCommand: "npm test"', timestamp: 3 };
   const user: UserMessage = { role: "user", content: "real question", timestamp: 5 };
   const turns = buildTurns([agent, assistant([{ type: "text", text: "Noted." }], 2), bash, assistant([{ type: "text", text: "Tests pass." }], 4), user]);
-  assert.deepEqual(turns.map(turn => [turn.prompt?.index ?? null, turn.trigger?.index ?? null]), [[null, 0], [null, 2], [4, null]]);
+  assert.deepEqual(turns.map(turn => [turn.prompt?.index ?? null, turn.trigger?.index ?? null]), [[null, 0], [4, null]]);
+  assert.deepEqual(turns[0]?.work.map(item => item.kind), ["exchange"], "a completion after the run settled nests in the open turn");
   assert.deepEqual(triggerSummary(agent), { label: "Message", detail: "from child:worker", body: "Done. See the report." });
   assert.deepEqual(triggerSummary(bash), { label: "Background command finished", detail: "exit 0", body: "npm test" });
 });
@@ -170,12 +171,54 @@ test("Default view keeps one final reply per turn and folds everything else into
   assert.equal(rest.length, 0, "a message that lands mid-run and a later system note do not open turns");
   assert.equal(turn.reply?.message.timestamp, 8);
   assert.deepEqual(turn.work.map(item => item.kind), ["note", "tool", "trigger", "note", "system"]);
-  assert.deepEqual(workCounts(turn.work), { tools: 1, notes: 4 });
+  assert.deepEqual(workCounts(turn.work), { tools: 1, notes: 4, exchanges: 0 });
   assert.equal(turn.endedAt, 8, "a note after the reply does not stretch the duration");
   const idle = liveTurn(turn, null, [], messages.length);
   assert.equal(idle, null);
   const between = liveTurn(turn, null, [], messages.length, true);
   assert.equal(between?.live, true, "a running thread keeps its last turn live between model calls");
+});
+
+test("messages after a settled run nest as exchanges and the latest reply is the one Response", () => {
+  const fromChild = (name: string, body: string, timestamp: number): CustomMessage =>
+    ({ role: "custom", customType: "agent_message", content: `[agent-message from child:${name}]\n\n${body}`, timestamp });
+  const heartbeat: CustomMessage = { role: "custom", customType: "heartbeat_prompt", content: "[heartbeat daily]\n\nCheck the queue.", timestamp: 20 };
+  const messages = [
+    user("Ship it", 1),
+    assistant([{ type: "text", text: "Started two workers." }], 2),
+    fromChild("a", "a is done", 3),
+    assistant([{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "git log" } }], 4, "toolUse"),
+    result("c1", "ok", 5),
+    assistant([{ type: "text", text: "One of two done." }], 6),
+    fromChild("b", "b is done", 7),
+    assistant([{ type: "text", text: "Both done." }], 8),
+    heartbeat,
+    assistant([{ type: "text", text: "Queue empty." }], 21),
+  ];
+  const [turn, beat, ...rest] = buildTurns(messages);
+  assert(turn && beat);
+  assert.equal(rest.length, 0);
+  assert.equal(beat.trigger?.index, 8, "a heartbeat is a scheduled prompt and opens its own turn");
+  assert.deepEqual(turn.work.map(item => item.kind), ["exchange", "exchange"]);
+  const response = responseOf(turn);
+  assert.equal(response?.message.timestamp, 8, "the latest reply is the Response");
+  assert.deepEqual(workItems(turn, response).map(item => item.kind === "note" ? item.text : item.kind), ["Started two workers.", "exchange", "exchange"]);
+  const [first, second] = turn.work;
+  assert(first?.kind === "exchange" && second?.kind === "exchange");
+  assert.deepEqual(workItems(first.turn, response).map(item => item.kind === "note" ? item.text : item.kind), ["tool", "One of two done."]);
+  assert.deepEqual(workItems(second.turn, response), [], "the promoted reply is not repeated inside its exchange");
+  assert.deepEqual(workCounts(workItems(turn, response)), { tools: 0, notes: 1, exchanges: 2 });
+
+  const settled = messages.slice(0, 7);
+  const [open] = buildTurns(settled);
+  assert(open);
+  const streaming = assistant([{ type: "text", text: "Checking b" }], 9);
+  const live = liveTurn(open, streaming, [], settled.length);
+  assert(live);
+  assert.equal(currentRun(live).trigger?.index, 6, "the stream lands in the latest exchange");
+  assert.equal(currentRun(live).live, true);
+  assert.equal(responseOf(live)?.live, true, "the streaming reply is the Response");
+  assert.equal(currentRun(open).reply, null, "the committed turn is not mutated");
 });
 
 test("cache health flags a warm call that reads nothing from the cache and ignores cold starts", () => {

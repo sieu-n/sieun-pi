@@ -7,7 +7,14 @@ export type WorkItem =
   | { kind: "tool"; call: ToolCallPart; result: ToolResultMessage | null; run: ToolRun | null; messageIndex: number; partIndex: number }
   | { kind: "note"; text: string; messageIndex: number }
   | { kind: "system"; message: SystemMessage; messageIndex: number }
-  | { kind: "trigger"; message: CustomMessage; messageIndex: number };
+  | { kind: "trigger"; message: CustomMessage; messageIndex: number }
+  /** An agent message or background completion that arrived after the run settled, with the run it started. */
+  | { kind: "exchange"; turn: Turn; messageIndex: number };
+/**
+ * A user prompt, or a heartbeat, opens a turn. Agent messages and background completions that arrive after the turn's run
+ * settles nest inside it as exchanges, each a turn of its own with a trigger, work and reply. The turn's Response is the
+ * latest reply among its own run and its exchanges; every other reply stays in the work as a note.
+ */
 export interface Turn {
   key: string;
   /** What the user typed. */
@@ -28,6 +35,36 @@ export function messageText(message: { content: string | { type: string; text?: 
 
 export function isPromptCustom(message: CustomMessage): boolean {
   return message.customType === "agent_message" || message.customType === "heartbeat_prompt" || message.customType === "async_bash_completion";
+}
+
+/** A heartbeat is a scheduled prompt and opens its own turn. Other triggers nest in the turn they answer. */
+const opensTurn = (message: CustomMessage): boolean => message.customType === "heartbeat_prompt";
+
+type Exchange = Extract<WorkItem, { kind: "exchange" }>;
+const lastExchange = (turn: Turn): Exchange | undefined => turn.work.findLast((item): item is Exchange => item.kind === "exchange");
+
+/** The run new messages belong to: the latest exchange, else the turn itself. */
+export function currentRun(turn: Turn): Turn {
+  return lastExchange(turn)?.turn ?? turn;
+}
+
+/** The reply shown under the turn: the latest reply among its exchanges, else its own. */
+export function responseOf(turn: Turn): Turn["reply"] {
+  for (let index = turn.work.length - 1; index >= 0; index--) {
+    const item = turn.work[index]!;
+    if (item.kind === "exchange" && item.turn.reply) return item.turn.reply;
+  }
+  return turn.reply;
+}
+
+/** A run's items as the work list shows them: its reply becomes a note in place, before any exchange, unless it is the Response. */
+export function workItems(turn: Turn, response: Turn["reply"]): WorkItem[] {
+  const reply = turn.reply;
+  const text = reply && reply !== response ? messageText(reply.message).trim() : "";
+  if (!reply || !text) return turn.work;
+  const note: WorkItem = { kind: "note", text, messageIndex: reply.index };
+  const at = turn.work.findIndex(item => item.kind === "exchange");
+  return at < 0 ? [...turn.work, note] : [...turn.work.slice(0, at), note, ...turn.work.slice(at)];
 }
 
 /** One-line label and body for a trigger, from the native "[kind detail]" header line. */
@@ -86,52 +123,71 @@ export function toolResults(messages: readonly ThreadMessage[]): Map<string, Too
 
 /**
  * Committed turns only. Recompute when `messages` changes; overlay the live tail with `liveTurn`.
- * A user message always starts a turn. An agent message or background completion starts one only when the
- * previous run has settled; one that lands mid-run is part of that run's work.
+ * A user message or heartbeat always starts a turn. An agent message or background completion that lands after the run
+ * settled opens an exchange inside the current turn; one that lands mid-run is part of that run's work.
  */
 export function buildTurns(messages: readonly ThreadMessage[]): Turn[] {
   const results = toolResults(messages);
   const turns: Turn[] = [];
   let current: Turn | undefined;
+  let run: Turn | undefined;
   let settled = true;
   messages.forEach((message, index) => {
     const trigger = message.role === "custom" && isPromptCustom(message);
-    if (message.role === "user" || (trigger && settled)) {
-      current = openTurn(index, message.timestamp);
+    if (message.role === "user" || (trigger && settled && (!current || opensTurn(message)))) {
+      current = run = openTurn(index, message.timestamp);
       if (message.role === "user") current.prompt = { message, index };
       else if (message.role === "custom") current.trigger = { message, index };
       turns.push(current);
       settled = false;
       return;
     }
-    if (!current) { current = openTurn(index, message.timestamp); turns.push(current); }
-    if (message.role === "assistant") { addAssistant(current, message, index, results, false); settled = message.stopReason !== "toolUse"; }
-    else if (message.role === "toolResult") current.endedAt = Math.max(current.endedAt, message.timestamp);
-    else if (message.role === "custom" && trigger) current.work.push({ kind: "trigger", message, messageIndex: index });
-    else current.work.push({ kind: "system", message, messageIndex: index });
+    if (trigger && settled && current) {
+      run = openTurn(index, message.timestamp);
+      run.trigger = { message, index };
+      current.work.push({ kind: "exchange", turn: run, messageIndex: index });
+      settled = false;
+      return;
+    }
+    if (!current || !run) { current = run = openTurn(index, message.timestamp); turns.push(current); }
+    if (message.role === "assistant") { addAssistant(run, message, index, results, false); settled = message.stopReason !== "toolUse"; }
+    else if (message.role === "toolResult") run.endedAt = Math.max(run.endedAt, message.timestamp);
+    else if (message.role === "custom" && trigger) run.work.push({ kind: "trigger", message, messageIndex: index });
+    else run.work.push({ kind: "system", message, messageIndex: index });
   });
   return turns;
+}
+
+function withRuns(turn: Turn, tools: readonly ToolRun[]): Turn {
+  return { ...turn, work: turn.work.map(item => item.kind === "tool" ? { ...item, run: tools.find(run => run.toolCallId === item.call.id) ?? null }
+    : item.kind === "exchange" ? { ...item, turn: withRuns(item.turn, tools) } : item) };
 }
 
 /** The last turn with the streaming message and running tools folded in. `running` keeps it live between model calls. Returns null when nothing is live. */
 export function liveTurn(last: Turn | undefined, streaming: AssistantMessage | null, tools: readonly ToolRun[], messageCount: number, running = false): Turn | null {
   const toolRunning = tools.some(run => run.status === "running");
   if (!streaming && !toolRunning && !running) return null;
-  const base = last ?? openTurn(messageCount, streaming?.timestamp ?? Date.now());
-  const turn: Turn = { ...base, work: base.work.map(item => item.kind === "tool" ? { ...item, run: tools.find(run => run.toolCallId === item.call.id) ?? null } : item), live: true };
-  if (streaming) addAssistant(turn, streaming, messageCount, new Map(), true);
+  const turn: Turn = { ...withRuns(last ?? openTurn(messageCount, streaming?.timestamp ?? Date.now()), tools), live: true };
+  const exchange = lastExchange(turn);
+  if (exchange) {
+    const liveExchange: Exchange = { ...exchange, turn: { ...exchange.turn, live: true } };
+    turn.work = turn.work.map(item => item === exchange ? liveExchange : item);
+  }
+  if (streaming) addAssistant(currentRun(turn), streaming, messageCount, new Map(), true);
   return turn;
 }
 
-/** Counts for the folded row: tool calls, and notes (interim messages, system notes, messages that arrived mid-run). */
-export function workCounts(work: readonly WorkItem[]): { tools: number; notes: number } {
+/** Counts for the folded row: tool calls, notes (interim messages, system notes, messages that arrived mid-run), and exchanges. */
+export function workCounts(work: readonly WorkItem[]): { tools: number; notes: number; exchanges: number } {
   let tools = 0;
   let notes = 0;
+  let exchanges = 0;
   for (const item of work) {
     if (item.kind === "tool") tools++;
+    else if (item.kind === "exchange") exchanges++;
     else if (item.kind !== "thinking") notes++;
   }
-  return { tools, notes };
+  return { tools, notes, exchanges };
 }
 
 export function allTurns(messages: readonly ThreadMessage[], streaming: AssistantMessage | null = null, tools: readonly ToolRun[] = [], running = false): Turn[] {

@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { clockTime } from "./format.ts";
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
-  import { messageText, type Turn } from "../shared/turns.ts";
+  import { messageText, responseOf, type Turn } from "../shared/turns.ts";
   import type { ImagePart } from "../shared/types.ts";
   import WorkRow from "./WorkRow.svelte";
   import Icon from "./Icon.svelte";
@@ -17,7 +17,7 @@
   const promptImages = $derived(prompt && typeof prompt.message.content !== "string" ? prompt.message.content.filter((part): part is ImagePart => part.type === "image") : []);
   const promptAt = $derived(prompt ? clockTime(prompt.message.timestamp) : "");
 
-  const reply = $derived(turn.reply);
+  const reply = $derived(responseOf(turn));
   const replyLive = $derived(reply?.live ?? false);
   const replyText = $derived(reply ? messageText(reply.message) : "");
   const replyTruncated = $derived(reply ? reply.message.content.some(part => part.type === "text" && part.truncated) : false);

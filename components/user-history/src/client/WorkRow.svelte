@@ -5,31 +5,37 @@
   import { duration } from "./format.ts";
   import { clock } from "./clock.svelte.ts";
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
-  import { messageText, toolDurationMs, triggerSummary, workCounts, type SystemMessage, type Turn, type WorkItem } from "../shared/turns.ts";
+  import { currentRun, messageText, responseOf, toolDurationMs, triggerSummary, workCounts, workItems, type SystemMessage, type Turn, type WorkItem } from "../shared/turns.ts";
   import Icon from "./Icon.svelte";
+  import WorkRow from "./WorkRow.svelte";
   import { span, QUIET_AFTER_MS, STALLED_AFTER_MS } from "../shared/pulse.ts";
 
   type ToolItem = Extract<WorkItem, { kind: "tool" }>;
   type Output = { text: string; isError: boolean | null; loading: boolean; error: string | null };
 
-  let { turn, threadId }: { turn: Turn; threadId: string } = $props();
+  /** `response` is the reply the turn shows below its work; a nested exchange passes its parent's so that reply is not repeated. */
+  let { turn, threadId, response, nested = false }: { turn: Turn; threadId: string; response?: Turn["reply"] | undefined; nested?: boolean } = $props();
+  const shownResponse = $derived(response === undefined ? responseOf(turn) : response);
 
   const live = $derived(turn.live);
   const trigger = $derived(turn.trigger ? triggerSummary(turn.trigger.message) : null);
-  const counts = $derived(workCounts(turn.work));
+  const items = $derived(workItems(turn, shownResponse));
+  const counts = $derived(workCounts(items));
   const worked = $derived(turn.work.some(item => item.kind === "tool" || item.kind === "thinking"));
-  const tools = $derived(turn.work.filter((item): item is ToolItem => item.kind === "tool"));
+  const run = $derived(currentRun(turn));
+  const tools = $derived(run.work.filter((item): item is ToolItem => item.kind === "tool"));
   const runningTool = $derived(tools.find(item => item.run?.status === "running"));
   const verb = $derived.by(() => {
     if (runningTool) return "Running " + runningTool.call.name;
-    if (turn.reply?.live) return "Writing";
-    if (turn.work.at(-1)?.kind === "thinking") return "Thinking";
+    if (run.reply?.live) return "Writing";
+    if (run.work.at(-1)?.kind === "thinking") return "Thinking";
     return "Working";
   });
   const firstSystem = $derived(turn.work.find((item): item is Extract<WorkItem, { kind: "system" }> => item.kind === "system"));
   const countText = $derived([
     counts.tools ? `${counts.tools} tool ${counts.tools === 1 ? "call" : "calls"}` : "",
     counts.notes ? `${counts.notes} ${counts.notes === 1 ? "note" : "notes"}` : "",
+    counts.exchanges ? `${counts.exchanges} ${counts.exchanges === 1 ? "message" : "messages"}` : "",
   ].filter(Boolean).join(" · "));
 
   const now = $derived(live ? clock.now : Date.now());
@@ -44,7 +50,7 @@
   const stalled = $derived(quietMs >= STALLED_AFTER_MS);
   const quiet = $derived(quietMs >= QUIET_AFTER_MS);
   const elapsedMs = $derived(live ? Math.max(0, now - turn.startedAt) : Math.max(0, turn.endedAt - turn.startedAt));
-  const label = $derived(live ? verb : worked ? "Worked " + duration(elapsedMs) : firstSystem ? systemTitle(firstSystem.message) : "");
+  const label = $derived(live ? verb : nested ? "" : worked ? "Worked " + duration(elapsedMs) : firstSystem ? systemTitle(firstSystem.message) : "");
   const freshness = $derived.by(() => {
     if (!live) return "";
     const parts = [];
@@ -120,7 +126,7 @@
   }
 </script>
 
-<div class="work" class:live class:open class:trigger-row={trigger !== null}>
+<div class="work" class:live class:open class:nested class:trigger-row={trigger !== null}>
   <button class="head" aria-expanded={open} title={freshness || undefined} onclick={() => { open = !open; }}>
     <span class="mark">
       {#if live}<span class="spinner tiny"></span>{:else}<span class="chevron" class:down={open}><Icon name="chevronRight" size={12} /></span>{/if}
@@ -129,7 +135,7 @@
       <Icon name="bolt" size={12} />
       <span class="trigger-label">{trigger.label}</span>
       {#if trigger.detail}<span class="trigger-detail">{trigger.detail}</span>{/if}
-      {#if !live && !worked && trigger.body}<span class="trigger-inline">{trigger.body.split("\n", 1)[0]}</span>{/if}
+      {#if !live && (nested || !worked) && trigger.body}<span class="trigger-inline">{trigger.body.split("\n", 1)[0]}</span>{/if}
     {/if}
     {#if label}<span class="label" class:shimmer={live} class:sep={trigger !== null}>{label}</span>{/if}
     {#if live}
@@ -143,10 +149,10 @@
   {#if open}
     <div class="items">
       {#if trigger?.body}<div class="item trigger-body">{trigger.body}</div>{/if}
-      {#each turn.work as item, itemIndex (item.kind === "tool" ? item.call.id : item.kind + ":" + item.messageIndex + ":" + ("partIndex" in item ? item.partIndex : itemIndex))}
+      {#each items as item, itemIndex (item.kind === "tool" ? item.call.id : item.kind + ":" + item.messageIndex + ":" + ("partIndex" in item ? item.partIndex : itemIndex))}
         {#if item.kind === "thinking"}
           {@const key = partKey(item)}
-          {@const streaming = live && itemIndex === turn.work.length - 1}
+          {@const streaming = live && itemIndex === items.length - 1}
           {@const clipped = item.part.truncated && !fullParts.has(key) && !streaming}
           <div class="item thinking" class:clipped>
             <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
@@ -158,6 +164,8 @@
         {:else if item.kind === "note"}
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
           <div class="item note prose" onclick={copyFromClick}>{@html renderMarkdown(item.text)}</div>
+        {:else if item.kind === "exchange"}
+          <div class="item exchange"><WorkRow turn={item.turn} {threadId} response={shownResponse} nested /></div>
         {:else if item.kind === "trigger"}
           {@const inner = triggerSummary(item.message)}
           <details class="item system">
@@ -221,6 +229,9 @@
 
 <style>
   .work { margin: 2px 0 8px; }
+  .work.nested { margin: 0; }
+  .work.nested.open { margin-bottom: 4px; }
+  .exchange { padding: 1px 0; }
   .work.open { margin-bottom: 14px; }
   .head { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 3px 0; font-size: 13px; line-height: 1.5; color: var(--text-faint); text-align: left; transition: color 0.12s; }
   .head:hover { color: var(--text-muted); }
