@@ -72,12 +72,27 @@
     return () => { cancelled = true; };
   });
 
-  function chooseWorkspace(path: string): void {
-    const trimmed = path.trim();
-    if (!trimmed.startsWith("/")) { store.toast("Use an absolute workspace path."); return; }
-    cwd = trimmed;
+  /** The folder dialog opens on the Mac running the service, so it is offered only on a loopback page. */
+  const canChooseFolder = ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
+  let choosing = $state(false);
+  const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+  function useWorkspace(path: string): void {
+    cwd = path;
+    if (!workspaces.some(workspace => workspace.cwd === path)) workspaces = [{ cwd: path, count: 0 }, ...workspaces];
     customCwd = "";
     closePopover();
+  }
+  async function typeWorkspace(): Promise<void> {
+    if (!customCwd.trim()) return;
+    try { useWorkspace(await api.resolveWorkspace(customCwd)); } catch (error) { store.toast(errorText(error)); }
+  }
+  async function browseWorkspace(): Promise<void> {
+    if (choosing) return;
+    choosing = true;
+    try { const chosen = await api.chooseFolder(cwd); if (chosen) useWorkspace(chosen); }
+    catch (error) { store.toast(errorText(error)); }
+    finally { choosing = false; }
   }
 
   async function send(text: string, images: ImageInput[], _mode: SendMode): Promise<boolean> {
@@ -135,16 +150,21 @@
                 </button>
               {/snippet}
               {#each workspaces as workspace (workspace.cwd)}
-                <button type="button" class="menu-item" class:current={workspace.cwd === cwd} onclick={() => chooseWorkspace(workspace.cwd)}>
+                <button type="button" class="menu-item" class:current={workspace.cwd === cwd} onclick={() => useWorkspace(workspace.cwd)}>
                   <span class="path"><bdi>{workspace.cwd.replace(/^\/Users\/[^/]+/, "~")}</bdi></span>
                   <span class="hint">{workspace.count}{workspace.lastUsedAt ? " · " + relativeTime(workspace.lastUsedAt) : ""}</span>
                 </button>
               {/each}
               <div class="menu-separator"></div>
-              <form class="custom" onsubmit={event => { event.preventDefault(); chooseWorkspace(customCwd); }}>
-                <input class="field" placeholder="/absolute/path" aria-label="Other workspace path" bind:value={customCwd} />
+              <form class="custom" onsubmit={event => { event.preventDefault(); void typeWorkspace(); }}>
+                <input class="field" placeholder="~/path or /absolute/path" aria-label="Other workspace path" bind:value={customCwd} />
                 <button class="button small primary" type="submit" disabled={!customCwd.trim()}>Use</button>
               </form>
+              {#if canChooseFolder}
+                <button type="button" class="menu-item choose" disabled={choosing} onclick={() => void browseWorkspace()}>
+                  <Icon name="folder" size={14} /><span>{choosing ? "Waiting for the folder dialog…" : "Choose path…"}</span>
+                </button>
+              {/if}
             </Popover>
             <AccountChip threadId={null} provider={activeModel?.provider} model={activeModel ? activeModel.id + " " + activeModel.name : undefined}
               choice={account} onchoose={next => { account = next; }} />

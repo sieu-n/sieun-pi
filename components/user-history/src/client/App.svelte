@@ -11,6 +11,7 @@
   import NewChat from "./NewChat.svelte";
   import Settings from "./Settings.svelte";
   import AgentsDialog from "./AgentsDialog.svelte";
+  import Icon from "./Icon.svelte";
 
   const NARROW_BELOW = 900;
   let root: HTMLElement | undefined = $state();
@@ -107,9 +108,10 @@
   {#if store.toasts.length}
     <div class="toasts" aria-live="polite">
       {#each store.toasts as toast (toast.id)}
-        <div class="toast fade-in {toast.kind}" class:has-action={toast.action}>
+        <div class="toast fade-in {toast.kind}">
           <span>{toast.text}</span>
           {#if toast.action}{@const action = toast.action}<button type="button" class="toast-action" onclick={() => { store.dismiss(toast.id); action.run(); }}>{action.label}</button>{/if}
+          <button type="button" class="toast-close" aria-label="Close" onclick={() => store.dismiss(toast.id)}><Icon name="x" size={14} /></button>
         </div>
       {/each}
     </div>
@@ -123,9 +125,10 @@
   .main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .scrim { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.35); }
   .toasts { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
-  .toast { padding: 10px 16px; border-radius: var(--radius); background: var(--text); color: var(--bg); font-size: 14px; box-shadow: var(--shadow); max-width: min(520px, 90vw); }
+  .toast { display: flex; align-items: center; gap: 14px; padding: 10px 8px 10px 16px; border-radius: var(--radius); background: var(--text); color: var(--bg); font-size: 14px; box-shadow: var(--shadow); max-width: min(520px, 90vw); pointer-events: auto; }
   .toast.error { background: var(--danger); color: #fff; }
-  .toast.has-action { display: flex; align-items: center; gap: 14px; padding-right: 8px; pointer-events: auto; }
+  .toast-close { display: grid; place-items: center; width: 24px; height: 24px; margin-left: -6px; border-radius: var(--radius-small); color: inherit; opacity: 0.6; flex: none; }
+  .toast-close:hover { opacity: 1; background: color-mix(in srgb, var(--bg) 14%, transparent); }
   .toast-action { padding: 3px 10px; border-radius: var(--radius-small); font-size: 13px; font-weight: 600; color: var(--primary); }
   .toast-action:hover { background: color-mix(in srgb, var(--bg) 14%, transparent); }
 </style>

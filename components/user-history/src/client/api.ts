@@ -46,6 +46,8 @@ export const api = {
     return () => source.close();
   },
   workspaces: () => get<{ workspaces: Workspace[] }>("api/workspaces").then(body => body.workspaces),
+  resolveWorkspace: (path: string) => post<{ cwd: string }>("api/workspaces/resolve", { path }).then(body => body.cwd),
+  chooseFolder: (start: string) => post<{ cwd: string | null }>("api/workspaces/choose", { start }, 11 * 60_000).then(body => body.cwd),
   models: (id: string | null) => get<ModelCatalog>("api/models" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
   defaults: () => get<ChatDefaults>("api/defaults"),
   setDefaults: (input: ChatDefaultsInput) => post<ChatDefaults>("api/defaults", input),

@@ -10,6 +10,7 @@ import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.
 import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat-pool.ts";
 import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
+import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type SendMode, type ThinkingLevel } from "./shared/types.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
@@ -243,6 +244,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         : externalHost !== null && req.headers.host === externalHost ? externalOrigin : null;
       if (origin === null) throw new RequestError(421, "Unexpected host.");
       const url = new URL(req.url ?? "/", origin);
+      // A typed or bookmarked http://127.0.0.1:<port>/ opens the chat. The browser sends Sec-Fetch-Site: none only for
+      // navigations the person started, so a link or script on another site still gets 404 and never learns the path.
+      if (origin === `http://${host}` && url.pathname === "/" && req.method === "GET" && req.headers["sec-fetch-site"] === "none" &&
+        req.headers["sec-fetch-mode"] === "navigate" && req.headers["sec-fetch-dest"] === "document") {
+        res.writeHead(302, { Location: base }); res.end(); return;
+      }
       if (url.origin !== origin || !url.pathname.startsWith(base)) throw new RequestError(404, "Not found.");
       // The diagram frame is sandboxed with an opaque origin, so its own script request arrives cross-site. Both are static.
       const frameRoute = url.pathname.slice(base.length);
@@ -358,8 +365,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       const body = record(await jsonBody(req));
       if (route === "api/threads") {
         const id = requestId(body.requestId);
-        const cwd = text(body.cwd, "cwd", 1024);
-        if (!cwd.startsWith("/")) throw new RequestError(400, "Choose an absolute workspace path.");
+        const cwd = await resolveWorkspace(text(body.cwd, "cwd", 1024));
         const message = text(body.message, "message");
         const images = parseImages(body.images);
         if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
@@ -387,6 +393,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           creations.set(id, creation);
         }
         json(res, 200, await creation.result); return;
+      }
+      if (route === "api/workspaces/resolve") { json(res, 200, { cwd: await resolveWorkspace(text(body.path, "path", 1024)) }); return; }
+      if (route === "api/workspaces/choose") {
+        if (origin !== `http://${host}`) throw new RequestError(409, "The folder dialog opens only on the Mac running the chat. Type the path instead.");
+        const start = typeof body.start === "string" ? await resolveWorkspace(body.start).catch(() => null) : null;
+        json(res, 200, { cwd: await chooseFolder(start) }); return;
       }
       if (route === "api/labels") {
         const result = await backend.labels.apply(parseLabelAction(body));
@@ -459,7 +471,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       }
       json(res, 200, { ok: true });
     } catch (error) {
-      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError || error instanceof PoolError ? error.status : 502;
+      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError || error instanceof PoolError ? error.status : error instanceof WorkspaceError ? 400 : 502;
       if (!res.headersSent && !res.destroyed) json(res, status, { error: error instanceof Error ? error.message : "Prime Agent is unavailable." });
     }
   }

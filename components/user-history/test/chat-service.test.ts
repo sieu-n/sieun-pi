@@ -47,6 +47,15 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.equal(await run("start", flags), url);
     assert.deepEqual(await (await fetch(url + "api/identity")).json(), first);
     assert.equal((await fetch(new URL("/", url), { redirect: "manual" })).status, 404);
+    const typed = { "Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" };
+    // fetch sets its own Sec-Fetch-Mode, so these two go through node:http like a browser navigation.
+    const rootGet = (headers: Record<string, string>) => new Promise<{ status: number; location?: string }>((done, fail) => {
+      request(new URL("/", url), { headers }, response => { response.resume(); done({ status: response.statusCode ?? 0, location: response.headers.location }); }).on("error", fail).end();
+    });
+    const opened = await rootGet(typed);
+    assert.equal(opened.status, 302, "a typed or bookmarked root URL opens the chat");
+    assert.equal(new URL(opened.location ?? "", url).href, url);
+    assert.equal((await rootGet({ ...typed, "Sec-Fetch-Site": "cross-site" })).status, 404, "another site never learns the path");
     assert.equal((await fetch(url)).status, 200, "page renders without native daemon");
     assert.equal((await fetch(url + "api/sessions")).status, 404, "the polling list route is gone; the list is a stream");
     assert.equal((await fetch(url + "app.js")).status, 200, "the bundle is served without native daemon");
