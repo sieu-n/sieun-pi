@@ -222,6 +222,20 @@ test("messages after a settled run nest as exchanges and the prompt's own reply 
   assert.equal(currentRun(open).reply, null, "the committed turn is not mutated");
 });
 
+test("a subagent exit notice nests as an exchange, and a failed call with no text keeps the reply", () => {
+  const exited: CustomMessage = { role: "custom", customType: "rlm_child_terminal_notice", content: "[child-exited: cancelled child:g-staging]\n\nDeleted by parent orchestrator", timestamp: 3 };
+  const failure: AssistantMessage = { ...assistant([], 6), stopReason: "error", errorMessage: "rate limited" };
+  const messages = [user("Status?", 1), assistant([{ type: "text", text: "The full report." }], 2), exited, assistant([{ type: "text", text: "Expected exit." }], 4), failure];
+  const [turn, ...rest] = buildTurns(messages);
+  assert(turn);
+  assert.equal(rest.length, 0);
+  assert.equal(turn.reply?.message.timestamp, 2, "the answer to the prompt stays the Response");
+  const [exchange] = exchangesOf(turn);
+  assert.equal(exchange?.reply?.message.timestamp, 4);
+  assert.equal(exchange?.failure?.message.errorMessage, "rate limited", "the error shows under the reply it followed");
+  assert.deepEqual(triggerSummary(exited), { label: "Subagent exited", detail: "g-staging, cancelled", body: "Deleted by parent orchestrator" });
+});
+
 test("cache health flags a warm call that reads nothing from the cache and ignores cold starts", () => {
   const call = (timestamp: number, usage: { input: number; cacheRead: number; cacheWrite: number }, model = "m"): AssistantMessage =>
     ({ ...assistant([{ type: "text", text: "x" }], timestamp, "toolUse"), model, usage: { ...usage, output: 10, totalTokens: 0, cost: 0.01 } });

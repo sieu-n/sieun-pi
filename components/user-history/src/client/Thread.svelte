@@ -293,8 +293,8 @@
           {/each}
           {#if !questions.length}<div class="empty muted">No questions in this thread yet.</div>{/if}
         {:else}
-          {#each shown as turn (turn.key)}
-            <Turn {turn} threadId={id} />
+          {#each shown as turn, index (turn.key)}
+            <Turn {turn} threadId={id} latest={index === shown.length - 1} />
           {/each}
           {#if !shown.length}<div class="empty muted">No messages yet.</div>{/if}
         {/if}

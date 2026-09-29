@@ -23,6 +23,8 @@ export interface Turn {
   trigger: { message: CustomMessage; index: number } | null;
   work: WorkItem[];
   reply: { message: AssistantMessage; index: number; live: boolean } | null;
+  /** A model call that failed with no text after the run already had its reply; the reply stays, the error shows under it. */
+  failure: { message: AssistantMessage; index: number } | null;
   startedAt: number;
   endedAt: number;
   live: boolean;
@@ -33,8 +35,11 @@ export function messageText(message: { content: string | { type: string; text?: 
   return message.content.flatMap(part => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n\n");
 }
 
+/** Native custom messages that wake the agent. Each starts a turn or an exchange, so the reply to it never replaces an earlier reply. */
+const PROMPT_TYPES = new Set(["agent_message", "heartbeat_prompt", "async_bash_completion", "goal_context", "rlm_child_terminal_notice", "rlm_child_failure", "prime-agent.update_restart"]);
+
 export function isPromptCustom(message: CustomMessage): boolean {
-  return message.customType === "agent_message" || message.customType === "heartbeat_prompt" || message.customType === "async_bash_completion";
+  return PROMPT_TYPES.has(message.customType);
 }
 
 /** A heartbeat is a scheduled prompt and opens its own turn. Other triggers nest in the turn they answer. */
@@ -76,6 +81,14 @@ export function triggerSummary(message: CustomMessage): { label: string; detail:
     return { label: "Background command finished", detail: exit !== undefined ? "exit " + exit : "", body: command };
   }
   if (message.customType === "heartbeat_prompt") return { label: "Heartbeat", detail: header, body };
+  if (message.customType === "goal_context") return { label: "Goal", detail: /^goal:\s*(.+)$/.exec(header)?.[1] ?? "", body };
+  if (message.customType === "rlm_child_terminal_notice" || message.customType === "rlm_child_failure") {
+    const failed = message.customType === "rlm_child_failure";
+    const child = /child:(\S+)/.exec(header)?.[1] ?? /^RLM child (\S+)/.exec(text)?.[1] ?? "";
+    const state = /^child-exited:\s*(\S+)/.exec(header)?.[1];
+    return { label: failed ? "Subagent failed" : "Subagent exited", detail: [child, state].filter(Boolean).join(", "), body };
+  }
+  if (message.customType === "prime-agent.update_restart") return { label: "Prime Agent restarted", detail: "", body: text.replace(/<\/?[a-z_]+>/g, "").trim() };
   return { label: message.customType.replaceAll("_", " "), detail: header, body };
 }
 
@@ -87,12 +100,17 @@ export function toolDurationMs(item: Extract<WorkItem, { kind: "tool" }>, now: n
 
 function addAssistant(turn: Turn, message: AssistantMessage, index: number, results: ReadonlyMap<string, ToolResultMessage>, live: boolean): void {
   const previousReply = turn.reply;
+  const failed = message.stopReason === "error" || message.stopReason === "aborted";
+  if (failed && !live && !messageText(message).trim() && previousReply && !previousReply.live && messageText(previousReply.message).trim()) {
+    turn.failure = { message, index };
+    turn.endedAt = Math.max(turn.endedAt, message.timestamp);
+    return;
+  }
   if (previousReply && !previousReply.live) {
     const previousText = messageText(previousReply.message).trim();
     if (previousText) turn.work.push({ kind: "note", text: previousText, messageIndex: previousReply.index });
     turn.reply = null;
   }
-  const failed = message.stopReason === "error" || message.stopReason === "aborted";
   const textIsNote = message.stopReason === "toolUse" && !failed && !live;
   message.content.forEach((part, partIndex) => {
     if (part.type === "thinking") { if (part.thinking.trim()) turn.work.push({ kind: "thinking", part, messageIndex: index, partIndex }); }
@@ -105,7 +123,7 @@ function addAssistant(turn: Turn, message: AssistantMessage, index: number, resu
 }
 
 function openTurn(index: number, timestamp: number): Turn {
-  return { key: "turn-" + index, prompt: null, trigger: null, work: [], reply: null, startedAt: timestamp, endedAt: timestamp, live: false };
+  return { key: "turn-" + index, prompt: null, trigger: null, work: [], reply: null, failure: null, startedAt: timestamp, endedAt: timestamp, live: false };
 }
 
 export function toolResults(messages: readonly ThreadMessage[]): Map<string, ToolResultMessage> {

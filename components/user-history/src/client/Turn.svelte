@@ -13,8 +13,11 @@
   import { tooltip } from "./ui/tooltip.ts";
   import Lightbox from "./ui/Lightbox.svelte";
 
-  /** `nested` marks an exchange: an agent message or background completion shown below the reply it followed. */
-  let { turn, threadId, nested = false }: { turn: Turn; threadId: string; nested?: boolean } = $props();
+  /**
+   * `nested` marks an exchange: an agent message or background completion shown below the reply it followed.
+   * `latest` marks the thread's last turn, which keeps its newest exchange open; every other exchange folds into one row.
+   */
+  let { turn, threadId, nested = false, latest = false }: { turn: Turn; threadId: string; nested?: boolean; latest?: boolean } = $props();
 
   const prompt = $derived(turn.prompt);
   const promptText = $derived(prompt ? messageText(prompt.message) : "");
@@ -23,11 +26,15 @@
 
   const own = $derived(ownRun(turn));
   const exchanges = $derived(exchangesOf(turn));
+  const pinned = $derived(latest ? exchanges.at(-1) ?? null : null);
+  const folded = $derived(pinned ? exchanges.slice(0, -1) : exchanges);
+  const foldLabel = $derived(`${folded.length} ${pinned ? "earlier " : ""}${folded.length === 1 ? "message" : "messages"}${pinned ? "" : " after this reply"}`);
+  let showFolded = $state(false);
   const reply = $derived(turn.reply);
   const replyLive = $derived(reply?.live ?? false);
   const replyText = $derived(reply ? messageText(reply.message) : "");
   const replyTruncated = $derived(reply ? reply.message.content.some(part => part.type === "text" && part.truncated) : false);
-  const failed = $derived(reply && !reply.live && (reply.message.stopReason === "error" || reply.message.stopReason === "aborted") ? reply.message : null);
+  const failed = $derived(reply && !reply.live && (reply.message.stopReason === "error" || reply.message.stopReason === "aborted") ? reply.message : turn.failure?.message ?? null);
   let fullReply = $state<string | null>(null);
   const shownText = $derived(fullReply ?? replyText);
   const cwd = $derived(store.thread(threadId)?.state?.info.cwd ?? "");
@@ -110,9 +117,19 @@
   {#if failed}
     <div class="failed" role="status">{failed.stopReason === "aborted" ? "Response stopped" : "Error: " + (failed.errorMessage || "the model returned an error")}</div>
   {/if}
-  {#each exchanges as exchange (exchange.key)}
-    <TurnView turn={exchange} {threadId} nested />
-  {/each}
+  {#if folded.length}
+    <button type="button" class="fold" aria-expanded={showFolded} onclick={() => { showFolded = !showFolded; }}>
+      <span class="fold-mark" class:down={showFolded}><Icon name="chevronRight" size={12} /></span>{foldLabel}
+    </button>
+    {#if showFolded}
+      {#each folded as exchange (exchange.key)}
+        <TurnView turn={exchange} {threadId} nested />
+      {/each}
+    {/if}
+  {/if}
+  {#if pinned}
+    <TurnView turn={pinned} {threadId} nested />
+  {/if}
 </article>
 
 <style>
@@ -120,6 +137,10 @@
   :global(.turn) + .turn { border-top: 1px solid var(--border); }
   .turn.triggered { padding: 6px 0 10px; }
   .turn.nested { content-visibility: visible; padding: 10px 0 0; }
+  .fold { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 3px 0; font-size: 13px; line-height: 1.5; color: var(--text-faint); transition: color 0.12s; }
+  .fold:hover { color: var(--text); }
+  .fold-mark { display: inline-flex; width: 14px; justify-content: center; transition: transform 0.12s; }
+  .fold-mark.down { transform: rotate(90deg); }
   :global(.turn.triggered) + .turn.triggered { border-top: 0; }
   .prompt-row { display: flex; flex-direction: column; align-items: flex-end; margin: 10px 0 18px; }
   .bubble { max-width: min(85%, 640px); padding: 10px 16px; border-radius: 18px 18px 6px 18px; background: var(--user-bubble); }
