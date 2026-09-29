@@ -12,8 +12,8 @@ export type WorkItem =
   | { kind: "exchange"; turn: Turn; messageIndex: number };
 /**
  * A user prompt, or a heartbeat, opens a turn. Agent messages and background completions that arrive after the turn's run
- * settles nest inside it as exchanges, each a turn of its own with a trigger, work and reply. The turn's Response is the
- * latest reply among its own run and its exchanges; every other reply stays in the work as a note.
+ * settles nest inside it as exchanges, each a turn of its own with a trigger, work and reply. The turn's own reply is its
+ * Response and always shows; each exchange shows below it with its own reply, so a later message never hides the answer.
  */
 export interface Turn {
   key: string;
@@ -48,23 +48,16 @@ export function currentRun(turn: Turn): Turn {
   return lastExchange(turn)?.turn ?? turn;
 }
 
-/** The reply shown under the turn: the latest reply among its exchanges, else its own. */
-export function responseOf(turn: Turn): Turn["reply"] {
-  for (let index = turn.work.length - 1; index >= 0; index--) {
-    const item = turn.work[index]!;
-    if (item.kind === "exchange" && item.turn.reply) return item.turn.reply;
-  }
-  return turn.reply;
+/** The exchanges that arrived after the turn's own run settled, in order. Each renders below the turn's reply. */
+export function exchangesOf(turn: Turn): Turn[] {
+  return turn.work.flatMap(item => item.kind === "exchange" ? [item.turn] : []);
 }
 
-/** A run's items as the work list shows them: its reply becomes a note in place, before any exchange, unless it is the Response. */
-export function workItems(turn: Turn, response: Turn["reply"]): WorkItem[] {
-  const reply = turn.reply;
-  const text = reply && reply !== response ? messageText(reply.message).trim() : "";
-  if (!reply || !text) return turn.work;
-  const note: WorkItem = { kind: "note", text, messageIndex: reply.index };
-  const at = turn.work.findIndex(item => item.kind === "exchange");
-  return at < 0 ? [...turn.work, note] : [...turn.work.slice(0, at), note, ...turn.work.slice(at)];
+/** The turn's own run for its work row: exchanges removed, and not live once an exchange has taken over the live run. */
+export function ownRun(turn: Turn): Turn {
+  const work = turn.work.filter(item => item.kind !== "exchange");
+  if (work.length === turn.work.length) return turn;
+  return { ...turn, work, live: false };
 }
 
 /** One-line label and body for a trigger, from the native "[kind detail]" header line. */
@@ -177,17 +170,15 @@ export function liveTurn(last: Turn | undefined, streaming: AssistantMessage | n
   return turn;
 }
 
-/** Counts for the folded row: tool calls, notes (interim messages, system notes, messages that arrived mid-run), and exchanges. */
-export function workCounts(work: readonly WorkItem[]): { tools: number; notes: number; exchanges: number } {
+/** Counts for the folded row: tool calls and notes (interim messages, system notes, messages that arrived mid-run). */
+export function workCounts(work: readonly WorkItem[]): { tools: number; notes: number } {
   let tools = 0;
   let notes = 0;
-  let exchanges = 0;
   for (const item of work) {
     if (item.kind === "tool") tools++;
-    else if (item.kind === "exchange") exchanges++;
-    else if (item.kind !== "thinking") notes++;
+    else if (item.kind !== "thinking" && item.kind !== "exchange") notes++;
   }
-  return { tools, notes, exchanges };
+  return { tools, notes };
 }
 
 export function allTurns(messages: readonly ThreadMessage[], streaming: AssistantMessage | null = null, tools: readonly ToolRun[] = [], running = false): Turn[] {

@@ -5,37 +5,33 @@
   import { duration } from "./format.ts";
   import { clock } from "./clock.svelte.ts";
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
-  import { currentRun, messageText, responseOf, toolDurationMs, triggerSummary, workCounts, workItems, type SystemMessage, type Turn, type WorkItem } from "../shared/turns.ts";
+  import { messageText, toolDurationMs, triggerSummary, workCounts, type SystemMessage, type Turn, type WorkItem } from "../shared/turns.ts";
   import Icon from "./Icon.svelte";
-  import WorkRow from "./WorkRow.svelte";
   import { span, QUIET_AFTER_MS, STALLED_AFTER_MS } from "../shared/pulse.ts";
 
   type ToolItem = Extract<WorkItem, { kind: "tool" }>;
   type Output = { text: string; isError: boolean | null; loading: boolean; error: string | null };
 
-  /** `response` is the reply the turn shows below its work; a nested exchange passes its parent's so that reply is not repeated. */
-  let { turn, threadId, response, nested = false }: { turn: Turn; threadId: string; response?: Turn["reply"] | undefined; nested?: boolean } = $props();
-  const shownResponse = $derived(response === undefined ? responseOf(turn) : response);
+  /** `turn` is one run without its exchanges; `nested` marks an exchange, which names its message inline instead of "Worked". */
+  let { turn, threadId, nested = false }: { turn: Turn; threadId: string; nested?: boolean } = $props();
 
   const live = $derived(turn.live);
   const trigger = $derived(turn.trigger ? triggerSummary(turn.trigger.message) : null);
-  const items = $derived(workItems(turn, shownResponse));
+  const items = $derived(turn.work.filter((item): item is Exclude<WorkItem, { kind: "exchange" }> => item.kind !== "exchange"));
   const counts = $derived(workCounts(items));
   const worked = $derived(turn.work.some(item => item.kind === "tool" || item.kind === "thinking"));
-  const run = $derived(currentRun(turn));
-  const tools = $derived(run.work.filter((item): item is ToolItem => item.kind === "tool"));
+  const tools = $derived(turn.work.filter((item): item is ToolItem => item.kind === "tool"));
   const runningTool = $derived(tools.find(item => item.run?.status === "running"));
   const verb = $derived.by(() => {
     if (runningTool) return "Running " + runningTool.call.name;
-    if (run.reply?.live) return "Writing";
-    if (run.work.at(-1)?.kind === "thinking") return "Thinking";
+    if (turn.reply?.live) return "Writing";
+    if (turn.work.at(-1)?.kind === "thinking") return "Thinking";
     return "Working";
   });
   const firstSystem = $derived(turn.work.find((item): item is Extract<WorkItem, { kind: "system" }> => item.kind === "system"));
   const countText = $derived([
     counts.tools ? `${counts.tools} tool ${counts.tools === 1 ? "call" : "calls"}` : "",
     counts.notes ? `${counts.notes} ${counts.notes === 1 ? "note" : "notes"}` : "",
-    counts.exchanges ? `${counts.exchanges} ${counts.exchanges === 1 ? "message" : "messages"}` : "",
   ].filter(Boolean).join(" · "));
 
   const now = $derived(live ? clock.now : Date.now());
@@ -164,8 +160,6 @@
         {:else if item.kind === "note"}
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
           <div class="item note prose" onclick={copyFromClick}>{@html renderMarkdown(item.text)}</div>
-        {:else if item.kind === "exchange"}
-          <div class="item exchange"><WorkRow turn={item.turn} {threadId} response={shownResponse} nested /></div>
         {:else if item.kind === "trigger"}
           {@const inner = triggerSummary(item.message)}
           <details class="item system">
@@ -231,7 +225,6 @@
   .work { margin: 2px 0 8px; }
   .work.nested { margin: 0; }
   .work.nested.open { margin-bottom: 4px; }
-  .exchange { padding: 1px 0; }
   .work.open { margin-bottom: 14px; }
   .head { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 3px 0; font-size: 13px; line-height: 1.5; color: var(--text-faint); text-align: left; transition: color 0.12s; }
   .head:hover { color: var(--text-muted); }

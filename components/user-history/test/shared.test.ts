@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applyThreadEvent, isThreadBusy, threadStateFromSnapshot } from "../src/shared/thread-state.ts";
-import { allTurns, buildTurns, currentRun, liveTurn, responseOf, toolDurationMs, triggerSummary, workCounts, workItems } from "../src/shared/turns.ts";
+import { allTurns, buildTurns, currentRun, exchangesOf, liveTurn, ownRun, toolDurationMs, triggerSummary, workCounts } from "../src/shared/turns.ts";
 import { CACHE_COLD_GAP_MS, cacheHealth } from "../src/shared/cache-health.ts";
 import { matchCommands } from "../src/client/command-match.ts";
 import type { AssistantMessage, Command, CustomMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
@@ -171,7 +171,7 @@ test("Default view keeps one final reply per turn and folds everything else into
   assert.equal(rest.length, 0, "a message that lands mid-run and a later system note do not open turns");
   assert.equal(turn.reply?.message.timestamp, 8);
   assert.deepEqual(turn.work.map(item => item.kind), ["note", "tool", "trigger", "note", "system"]);
-  assert.deepEqual(workCounts(turn.work), { tools: 1, notes: 4, exchanges: 0 });
+  assert.deepEqual(workCounts(turn.work), { tools: 1, notes: 4 });
   assert.equal(turn.endedAt, 8, "a note after the reply does not stretch the duration");
   const idle = liveTurn(turn, null, [], messages.length);
   assert.equal(idle, null);
@@ -179,7 +179,7 @@ test("Default view keeps one final reply per turn and folds everything else into
   assert.equal(between?.live, true, "a running thread keeps its last turn live between model calls");
 });
 
-test("messages after a settled run nest as exchanges and the latest reply is the one Response", () => {
+test("messages after a settled run nest as exchanges and the prompt's own reply stays the Response", () => {
   const fromChild = (name: string, body: string, timestamp: number): CustomMessage =>
     ({ role: "custom", customType: "agent_message", content: `[agent-message from child:${name}]\n\n${body}`, timestamp });
   const heartbeat: CustomMessage = { role: "custom", customType: "heartbeat_prompt", content: "[heartbeat daily]\n\nCheck the queue.", timestamp: 20 };
@@ -200,14 +200,14 @@ test("messages after a settled run nest as exchanges and the latest reply is the
   assert.equal(rest.length, 0);
   assert.equal(beat.trigger?.index, 8, "a heartbeat is a scheduled prompt and opens its own turn");
   assert.deepEqual(turn.work.map(item => item.kind), ["exchange", "exchange"]);
-  const response = responseOf(turn);
-  assert.equal(response?.message.timestamp, 8, "the latest reply is the Response");
-  assert.deepEqual(workItems(turn, response).map(item => item.kind === "note" ? item.text : item.kind), ["Started two workers.", "exchange", "exchange"]);
-  const [first, second] = turn.work;
-  assert(first?.kind === "exchange" && second?.kind === "exchange");
-  assert.deepEqual(workItems(first.turn, response).map(item => item.kind === "note" ? item.text : item.kind), ["tool", "One of two done."]);
-  assert.deepEqual(workItems(second.turn, response), [], "the promoted reply is not repeated inside its exchange");
-  assert.deepEqual(workCounts(workItems(turn, response)), { tools: 0, notes: 1, exchanges: 2 });
+  assert.equal(turn.reply?.message.timestamp, 2, "a later agent message does not take the prompt's reply away");
+  assert.deepEqual(ownRun(turn).work, [], "the work row holds only the prompt's own run");
+  const [first, second] = exchangesOf(turn);
+  assert(first && second);
+  assert.equal(first.reply?.message.timestamp, 6, "each exchange keeps its own reply");
+  assert.equal(second.reply?.message.timestamp, 8);
+  assert.deepEqual(first.work.map(item => item.kind), ["tool"]);
+  assert.deepEqual(workCounts(first.work), { tools: 1, notes: 0 });
 
   const settled = messages.slice(0, 7);
   const [open] = buildTurns(settled);
@@ -216,8 +216,9 @@ test("messages after a settled run nest as exchanges and the latest reply is the
   const live = liveTurn(open, streaming, [], settled.length);
   assert(live);
   assert.equal(currentRun(live).trigger?.index, 6, "the stream lands in the latest exchange");
-  assert.equal(currentRun(live).live, true);
-  assert.equal(responseOf(live)?.live, true, "the streaming reply is the Response");
+  assert.equal(currentRun(live).reply?.live, true);
+  assert.equal(live.reply?.message.timestamp, 2, "the prompt's reply stays while an exchange streams");
+  assert.equal(ownRun(live).live, false, "only the exchange shows as running");
   assert.equal(currentRun(open).reply, null, "the committed turn is not mutated");
 });
 

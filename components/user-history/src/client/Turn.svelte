@@ -5,21 +5,25 @@
   import { clockTime } from "./format.ts";
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
   import { diagrams, diagramSwitchFromClick, expandFromClick } from "./diagrams.ts";
-  import { messageText, responseOf, type Turn } from "../shared/turns.ts";
+  import { exchangesOf, messageText, ownRun, type Turn } from "../shared/turns.ts";
   import type { ImagePart } from "../shared/types.ts";
   import WorkRow from "./WorkRow.svelte";
+  import TurnView from "./Turn.svelte";
   import Icon from "./Icon.svelte";
   import { tooltip } from "./ui/tooltip.ts";
   import Lightbox from "./ui/Lightbox.svelte";
 
-  let { turn, threadId }: { turn: Turn; threadId: string } = $props();
+  /** `nested` marks an exchange: an agent message or background completion shown below the reply it followed. */
+  let { turn, threadId, nested = false }: { turn: Turn; threadId: string; nested?: boolean } = $props();
 
   const prompt = $derived(turn.prompt);
   const promptText = $derived(prompt ? messageText(prompt.message) : "");
   const promptImages = $derived(prompt && typeof prompt.message.content !== "string" ? prompt.message.content.filter((part): part is ImagePart => part.type === "image") : []);
   const promptAt = $derived(prompt ? clockTime(prompt.message.timestamp) : "");
 
-  const reply = $derived(responseOf(turn));
+  const own = $derived(ownRun(turn));
+  const exchanges = $derived(exchangesOf(turn));
+  const reply = $derived(turn.reply);
   const replyLive = $derived(reply?.live ?? false);
   const replyText = $derived(reply ? messageText(reply.message) : "");
   const replyTruncated = $derived(reply ? reply.message.content.some(part => part.type === "text" && part.truncated) : false);
@@ -62,7 +66,7 @@
   }
 </script>
 
-<article class="turn" class:triggered={turn.trigger !== null} id={turn.key}>
+<article class="turn" class:triggered={turn.trigger !== null} class:nested id={turn.key}>
   {#if prompt}
     <div class="prompt-row">
       {#if prompt.message.skill}<div class="skill-tag"><Icon name="sparkle" size={12} />{prompt.message.skill}</div>{/if}
@@ -79,8 +83,8 @@
       <div class="stamp">{promptAt}</div>
     </div>
   {/if}
-  {#if (turn.trigger || turn.work.length) && !(ui.viewMode === "read" && prompt)}
-    <WorkRow {turn} {threadId} />
+  {#if (turn.trigger || own.work.length) && !(ui.viewMode === "read" && prompt)}
+    <WorkRow turn={own} {threadId} {nested} />
   {/if}
   {#if reply && (shownText || replyLive)}
     <div class="reply fade-in">
@@ -106,12 +110,16 @@
   {#if failed}
     <div class="failed" role="status">{failed.stopReason === "aborted" ? "Response stopped" : "Error: " + (failed.errorMessage || "the model returned an error")}</div>
   {/if}
+  {#each exchanges as exchange (exchange.key)}
+    <TurnView turn={exchange} {threadId} nested />
+  {/each}
 </article>
 
 <style>
   .turn { content-visibility: auto; contain-intrinsic-size: auto 120px; padding: 14px 0 22px; }
   :global(.turn) + .turn { border-top: 1px solid var(--border); }
   .turn.triggered { padding: 6px 0 10px; }
+  .turn.nested { content-visibility: visible; padding: 10px 0 0; }
   :global(.turn.triggered) + .turn.triggered { border-top: 0; }
   .prompt-row { display: flex; flex-direction: column; align-items: flex-end; margin: 10px 0 18px; }
   .bubble { max-width: min(85%, 640px); padding: 10px 16px; border-radius: 18px 18px 6px 18px; background: var(--user-bubble); }
