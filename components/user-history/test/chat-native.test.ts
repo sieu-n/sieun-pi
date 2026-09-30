@@ -371,9 +371,11 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert.equal(SessionManager.open(saved.sessionFile, sessions).getSessionState()?.status, "archived", "archive records the native archived state");
     await unlink(gate).catch(() => {});
     const runningPrompt = `ARCHIVE RUNNING ${id} [hold]`;
-    const runningCreated = await post("api/threads", { cwd, message: runningPrompt, requestId: requestId(), provider: "chat-native-test", modelId: "synthetic" });
+    const runningName = `Named at creation ${id}`;
+    const runningCreated = await post("api/threads", { cwd, name: runningName, message: runningPrompt, requestId: requestId(), provider: "chat-native-test", modelId: "synthetic" });
     assert.equal(runningCreated.status, 200, JSON.stringify(runningCreated.body));
     const runningId = runningCreated.body.id as string;
+    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === runningId && row.name === runningName), 20000, "a name given at creation is the thread title");
     await waitForChatNativeFile(calls, text => text.split("\n").some(line => line.includes('"stage":"held"') && line.includes(runningPrompt)), 60000);
     const runningWatch = threadWatcher(chatUrl + `api/threads/${runningId}/stream`);
     watchers.push(runningWatch);

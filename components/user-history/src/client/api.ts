@@ -75,7 +75,7 @@ export const api = {
   startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),
   pasteLogin: (id: string, code: string) => post<AccountLogin>("api/accounts/login/paste", { id, code }),
   cancelLogin: (id: string) => post<AccountLogin>("api/accounts/login/cancel", { id }),
-  createThread: (input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; message: string; images: ImageInput[]; requestId: string }) =>
+  createThread: (input: { cwd: string; name?: string; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; message: string; images: ImageInput[]; requestId: string }) =>
     post<{ id: string }>("api/threads", input, 120000),
   warm: (id: string) => post<{ ok: true }>("api/warm", { id }),
   prompt: (id: string, input: { message: string; images: ImageInput[]; mode: SendMode; requestId: string }) =>

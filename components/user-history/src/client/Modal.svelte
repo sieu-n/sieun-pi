@@ -2,8 +2,8 @@
   import type { Snippet } from "svelte";
   import { tooltip } from "./ui/tooltip.ts";
 
-  let { title, onclose, width = "720px", header, children }: {
-    title: string; onclose: () => void; width?: string; header?: Snippet; children: Snippet;
+  let { title, onclose, width = "720px", full = false, header, children }: {
+    title: string; onclose: () => void; width?: string; full?: boolean; header?: Snippet; children: Snippet;
   } = $props();
   let dialog: HTMLDialogElement | undefined = $state();
 
@@ -16,7 +16,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-<dialog bind:this={dialog} class="modal" style:--modal-width={width} aria-label={title}
+<dialog bind:this={dialog} class="modal" class:full style:--modal-width={width} aria-label={title}
   oncancel={event => { event.preventDefault(); onclose(); }}
   onclick={event => { if (event.target === dialog) onclose(); }}>
   <div class="frame">
@@ -42,4 +42,9 @@
   .extra { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
   .head > .icon-button { margin-left: auto; }
   .body { flex: 1; min-height: 0; overflow: auto; }
+  .modal.full { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+  .modal.full[open] { animation: none; }
+  .modal.full .frame { height: 100%; max-height: none; }
+  .modal.full .head { padding: 10px 12px 10px 20px; }
+  .modal.full h2 { font-size: 16px; }
 </style>

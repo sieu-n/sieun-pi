@@ -1,9 +1,10 @@
 <script lang="ts">
   import { store } from "./store.svelte.ts";
+  import { ui } from "./ui.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
   import { shortPath, relativeTime } from "./format.ts";
   import { clock } from "./clock.svelte.ts";
-  import { activeFilters, pulseOf, emptyFilter, matchesFilter, modelShort, money, needsResponse, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type SortKey } from "./organize.ts";
+  import { activeFilters, pulseOf, emptyFilter, matchesFilter, modelShort, money, needsResponse, nextRun, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type SortKey } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Modal from "./Modal.svelte";
@@ -17,25 +18,28 @@
   import PriorityPicker from "./PriorityPicker.svelte";
   import ProgressPicker from "./ProgressPicker.svelte";
   import Checkbox from "./ui/Checkbox.svelte";
-  import Select from "./ui/Select.svelte";
   import DateRange from "./ui/DateRange.svelte";
   import Floating from "./ui/Floating.svelte";
   import TagPicker from "./ui/TagPicker.svelte";
 
   let { onclose }: { onclose: () => void } = $props();
 
-  const COLUMNS: readonly { key: SortKey; label: string; firstDescending: boolean }[] = [
+  /** `shown` is the default for an optional column; Status and Title have none and always show. */
+  const COLUMNS: readonly { key: SortKey; label: string; firstDescending: boolean; shown?: boolean }[] = [
     { key: "status", label: "Status", firstDescending: false },
     { key: "name", label: "Title", firstDescending: false },
-    { key: "tags", label: "Tags", firstDescending: false },
-    { key: "priority", label: "Priority", firstDescending: true },
-    { key: "progress", label: "Progress", firstDescending: true },
-    { key: "cwd", label: "Workspace", firstDescending: false },
-    { key: "model", label: "Model", firstDescending: false },
-    { key: "cost", label: "Cost", firstDescending: true },
-    { key: "created", label: "Created", firstDescending: true },
-    { key: "activity", label: "Activity", firstDescending: true },
+    { key: "tags", label: "Tags", firstDescending: false, shown: true },
+    { key: "priority", label: "Priority", firstDescending: true, shown: true },
+    { key: "progress", label: "Progress", firstDescending: true, shown: true },
+    { key: "cwd", label: "Workspace", firstDescending: false, shown: false },
+    { key: "model", label: "Model", firstDescending: false, shown: true },
+    { key: "cost", label: "Cost", firstDescending: true, shown: true },
+    { key: "created", label: "Created", firstDescending: true, shown: false },
+    { key: "activity", label: "Activity", firstDescending: true, shown: true },
   ];
+  const on = (key: SortKey): boolean => { const column = COLUMNS.find(entry => entry.key === key); return column?.shown === undefined || (ui.agentsColumns[key] ?? column.shown); };
+  const shownColumns = $derived(COLUMNS.filter(column => on(column.key)));
+  let columnsAnchor = $state<HTMLElement | null>(null);
   type Field = "tags" | "priority" | "progress";
 
   let filter = $state<AgentFilter>(emptyFilter());
@@ -55,12 +59,20 @@
   const selectedIds = $derived(rows.filter(row => selected.has(row.id)).map(row => row.id));
   const allSelected = $derived(rows.length > 0 && selectedIds.length === rows.length);
   const filtered = $derived(activeFilters(filter) > 0 || filter.kind !== "any" || filter.from !== "" || filter.to !== "");
+  /** The second line under a title: a failure, what a running thread is doing, or a heartbeat's schedule. Empty when there is nothing to add. */
+  function detail(row: SessionRow): { text: string; tone: string } | null {
+    const pulse = pulseOf(row, now);
+    if (pulse?.level === "failed") return { text: pulse.text, tone: "failed" };
+    if (row.status !== "running" && row.failure) return { text: row.failure, tone: "failed" };
+    if (row.status === "running" && row.statusLabel) return { text: row.statusLabel, tone: "" };
+    if (row.schedule) return { text: (row.schedule.label ?? row.schedule.kind) + (row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, now) : ""), tone: "" };
+    return null;
+  }
   const archivedCount = $derived(store.sessions.filter(row => row.archived).length);
   const bulkPriority = $derived(selectedIds.length && rows.filter(row => selected.has(row.id)).every(row => row.priority === rows.find(entry => selected.has(entry.id))!.priority)
     ? rows.find(row => selected.has(row.id))!.priority : null);
   const bulkProgress = $derived(selectedIds.length && rows.filter(row => selected.has(row.id)).every(row => row.progress === rows.find(entry => selected.has(entry.id))!.progress)
     ? rows.find(row => selected.has(row.id))!.progress : null);
-  const kindOptions = [{ value: "any", label: "Threads and heartbeats" }, { value: "threads", label: "Threads" }, { value: "heartbeats", label: "Heartbeats" }];
   const editRow = $derived(editing ? store.session(editing.id) : undefined);
 
   $effect(() => { search?.focus(); });
@@ -124,24 +136,25 @@
   }
 </script>
 
-<Modal title="Agents" width="1240px" {onclose}>
+<Modal title="Agents" full {onclose}>
   {#snippet header()}
     <label class="search">
       <Icon name="search" size={14} />
       <input bind:this={search} data-agents-search type="search" placeholder="Search title, workspace, model or tag" aria-label="Search threads" bind:value={filter.query} onkeydown={onSearchKey} />
     </label>
-    <span class="total">{rows.length} of {filter.archived ? store.sessions.length : store.sessions.length - archivedCount}</span>
-  {/snippet}
-  <div class="view">
     <div class="filters" role="group" aria-label="Filters">
-      <Select label="Kind" options={kindOptions} value={filter.kind} resetValue="any" onchange={value => { filter.kind = value as AgentFilter["kind"]; }} />
       <FilterSelects {filter} onchange={patch => { filter = { ...filter, ...patch }; }} />
       <DateRange label="Created" from={filter.from} to={filter.to} onchange={(from, to) => { filter.from = from; filter.to = to; }} />
       <button type="button" class="toggle-chip" class:on={filter.archived} aria-pressed={filter.archived} onclick={() => { filter.archived = !filter.archived; }}>
-        <Icon name="archive" size={13} />{filter.archived ? "Archived shown" : "Show archived"}<span class="n">{archivedCount}</span>
+        <Icon name="archive" size={13} />{filter.archived ? "Archived shown" : "Archived"}<span class="n">{archivedCount}</span>
       </button>
       {#if filtered}<button type="button" class="clear" onclick={() => { filter = { ...emptyFilter(), query: filter.query, archived: filter.archived }; search?.focus(); }}>Clear filters</button>{/if}
     </div>
+    <span class="total">{rows.length} of {filter.archived ? store.sessions.length : store.sessions.length - archivedCount}</span>
+    <button type="button" class="button small" aria-haspopup="menu" aria-expanded={columnsAnchor !== null}
+      onclick={event => { columnsAnchor = columnsAnchor ? null : event.currentTarget as HTMLElement; }}><Icon name="list" size={13} />Columns</button>
+  {/snippet}
+  <div class="view">
     {#if selectedIds.length}
       <div class="bulk fade-in" role="toolbar" aria-label="Selection">
         <span class="picked">{selectedIds.length} selected</span>
@@ -159,7 +172,7 @@
         <thead>
           <tr>
             <th class="pick"><Checkbox checked={allSelected} indeterminate={selectedIds.length > 0 && !allSelected} label="Select all" tabindex={-1} onchange={toggleAll} /></th>
-            {#each COLUMNS as column (column.key)}
+            {#each shownColumns as column (column.key)}
               <th class={column.key} aria-sort={sort.key === column.key ? (sort.descending ? "descending" : "ascending") : "none"}>
                 <button type="button" tabindex="-1" onclick={() => toggleSort(column.key, column.firstDescending)}>
                   {column.label}{#if sort.key === column.key}<span class="arrow"><Icon name={sort.descending ? "chevronDown" : "chevronUp"} size={11} /></span>{/if}
@@ -187,31 +200,32 @@
                   {#if row.schedule}<span class="kind">{row.schedule.label ?? row.schedule.kind}</span>{/if}
                   {#if row.archived}<span class="kind">archived</span>{/if}
                 </span>
+                {#if detail(row)}{@const extra = detail(row)!}<span class="detail {extra.tone}" title={extra.text}>{extra.text}</span>{/if}
               </td>
-              <td class="tags">
+              {#if on("tags")}<td class="tags">
                 <button type="button" class="cell-edit" tabindex="-1" aria-label="Tags for {row.name}" aria-haspopup="dialog" aria-expanded={editing?.id === row.id && editing.field === "tags"}
                   onclick={event => edit(event, row, "tags")} ondblclick={event => event.stopPropagation()}>
                   {#each row.tags as id (id)}{@const tag = tagMap.get(id)}{#if tag}<TagChip {tag} />{/if}{/each}
                   {#if !row.tags.length}<span class="set-hint"><Icon name="plus" size={11} />Tag</span>{/if}
                 </button>
-              </td>
-              <td class="priority">
+              </td>{/if}
+              {#if on("priority")}<td class="priority">
                 <button type="button" class="cell-edit" tabindex="-1" aria-label="Priority for {row.name}" aria-haspopup="dialog" aria-expanded={editing?.id === row.id && editing.field === "priority"}
                   onclick={event => edit(event, row, "priority")} ondblclick={event => event.stopPropagation()}>
                   {#if row.priority > 0}<PriorityBars level={row.priority} />{:else}<span class="set-hint">Set</span>{/if}
                 </button>
-              </td>
-              <td class="progress">
+              </td>{/if}
+              {#if on("progress")}<td class="progress">
                 <button type="button" class="cell-edit" tabindex="-1" aria-label="Progress for {row.name}" aria-haspopup="dialog" aria-expanded={editing?.id === row.id && editing.field === "progress"}
                   onclick={event => edit(event, row, "progress")} ondblclick={event => event.stopPropagation()}>
                   {#if row.progress !== "none"}<ProgressSteps progress={row.progress} /><span class="progress-label">{PROGRESS_LABEL[row.progress]}</span>{:else}<span class="set-hint">Set</span>{/if}
                 </button>
-              </td>
-              <td class="cwd">{shortPath(row.cwd)}</td>
-              <td class="model">{modelShort(row.model)}</td>
-              <td class="cost" class:unknown={row.cost === undefined}>{money(row.cost)}</td>
-              <td class="created">{shortDate(row.created, now)}</td>
-              <td class="activity">{relativeTime(row.lastActivityAt ?? row.created, now)}</td>
+              </td>{/if}
+              {#if on("cwd")}<td class="cwd" title={row.cwd}>{shortPath(row.cwd)}</td>{/if}
+              {#if on("model")}<td class="model">{modelShort(row.model)}</td>{/if}
+              {#if on("cost")}<td class="cost" class:unknown={row.cost === undefined}>{money(row.cost)}</td>{/if}
+              {#if on("created")}<td class="created">{shortDate(row.created, now)}</td>{/if}
+              {#if on("activity")}<td class="activity">{relativeTime(row.lastActivityAt ?? row.created, now)}</td>{/if}
             </tr>
           {/each}
         </tbody>
@@ -221,6 +235,16 @@
   </div>
   {#if menu}
     <ThreadMenu ids={menu.ids} at={menu.at} onclose={closeMenu} />
+  {/if}
+  {#if columnsAnchor}
+    <Floating anchor={columnsAnchor} width={200} align="end" role="menu" label="Columns" onclose={() => { columnsAnchor = null; }}>
+      <div class="menu-heading">Columns</div>
+      {#each COLUMNS.filter(column => column.shown !== undefined) as column (column.key)}
+        <button type="button" class="menu-item" role="menuitemcheckbox" aria-checked={on(column.key)} onclick={() => ui.setAgentsColumn(column.key, !on(column.key))}>
+          <span class="check">{#if on(column.key)}<Icon name="check" size={13} />{/if}</span>{column.label}
+        </button>
+      {/each}
+    </Floating>
   {/if}
   {#if tagAnchor}
     <Floating anchor={tagAnchor} width={260} maxHeight={360} label="Tags for {selectedIds.length} threads" onclose={() => { tagAnchor = null; }}><TagPicker selection={threadTags(selectedIds)} /></Floating>
@@ -244,12 +268,12 @@
 </Modal>
 
 <style>
-  .search { flex: 1; display: flex; align-items: center; gap: 7px; max-width: 460px; height: 30px; padding: 0 9px; border-radius: var(--radius-small); border: 1px solid var(--border-strong); color: var(--text-faint); background: var(--bg); }
+  .search { flex: 0 1 380px; display: flex; align-items: center; gap: 7px; min-width: 200px; height: 30px; padding: 0 9px; border-radius: var(--radius-small); border: 1px solid var(--border-strong); color: var(--text-faint); background: var(--bg); }
   .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   .search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 13px; color: var(--text); }
   .total { font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .view { display: flex; flex-direction: column; height: min(74vh, 780px); }
-  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .view { display: flex; flex-direction: column; height: 100%; }
+  .filters { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
   .toggle-chip { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; border-radius: var(--radius-small); border: 1px dashed var(--border-strong); font-size: 12.5px; color: var(--text-muted); }
   .toggle-chip:hover { color: var(--text); }
   .toggle-chip.on { border-style: solid; border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: var(--accent-soft); color: var(--accent-bold); }
@@ -260,14 +284,14 @@
   .picked { font-weight: 600; margin-right: 4px; font-variant-numeric: tabular-nums; }
   .bulk-picker { display: inline-flex; }
   .bulk-picker :global(.levels) { margin: 0; background: var(--bg-elevated); }
-  .grid { flex: 1; min-height: 0; overflow: auto; outline: none; }
+  .grid { flex: 1; min-height: 0; overflow: auto; outline: none; padding: 0 12px; }
   .grid:focus-visible tr.active td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; table-layout: fixed; }
   thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-elevated); border-bottom: 1px solid var(--border); text-align: left; font-weight: 500; color: var(--text-muted); font-size: 12px; padding: 0; }
   th button { display: inline-flex; align-items: center; gap: 3px; width: 100%; text-align: left; padding: 7px 8px; color: inherit; }
   th button:hover { color: var(--text); }
   .arrow { display: inline-flex; color: var(--accent-bold); }
-  td { padding: 4px 8px; height: 34px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+  td { padding: 5px 8px; height: 40px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
   tbody tr:hover td { background: var(--row-hover); }
   tr.active td { background: var(--row-hover); }
   tr.picked td { background: var(--row-selected); }
@@ -296,9 +320,12 @@
   .state.stalled { color: var(--warning); font-weight: 500; }
   .state.failed { color: var(--danger); font-weight: 500; }
   .name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
-  .open { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--text); font-size: 13px; }
+  .open { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--text); font-size: 14px; font-weight: 500; }
   .open:hover { text-decoration: underline; text-decoration-color: var(--border-strong); }
-  .open.strong { font-weight: 600; }
+  .open.strong { font-weight: 650; }
+  .detail { display: block; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-faint); }
+  .detail.failed { color: var(--danger); }
+  .check { display: inline-flex; width: 16px; }
   .kind { flex: none; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--bg-sunken); color: var(--text-muted); }
   .empty { padding: 40px; text-align: center; color: var(--text-faint); font-size: 13px; }
 </style>

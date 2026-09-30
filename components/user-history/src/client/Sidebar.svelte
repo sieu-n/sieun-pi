@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
-  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, type SidebarSort, type SidebarView, type Tab } from "./organize.ts";
+  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, compareRows, type SidebarSort, type SidebarView } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Icon from "./Icon.svelte";
@@ -20,7 +20,6 @@
 
   let { narrow }: { narrow: boolean } = $props();
   let query = $state("");
-  let tab = $state<Tab>("threads");
   let showArchived = $state(false);
   let renaming = $state<{ id: string; name: string } | null>(null);
   let menu = $state<{ id: string; at: Anchor } | null>(null);
@@ -32,14 +31,13 @@
 
   const tagMap = $derived(new Map(store.tags.map(tag => [tag.id, tag])));
   const visible = $derived(store.sessions.filter(row => showArchived || !row.archived));
-  const counts = $derived({
-    threads: visible.filter(row => tabOf(row) === "threads").length,
-    heartbeats: visible.filter(row => tabOf(row) === "heartbeats").length,
-    heartbeatsNeeding: visible.filter(row => tabOf(row) === "heartbeats" && needsResponse(row)).length,
-  });
-  const archivedCount = $derived(store.sessions.filter(row => row.archived && tabOf(row) === tab).length);
+  const archivedCount = $derived(store.sessions.filter(row => row.archived).length);
   const filterCount = $derived(activeFilters(ui.sidebarFilter));
-  const groups = $derived(groupRows(visible.filter(row => tabOf(row) === tab && matchesRowFilter(row, ui.sidebarFilter, tick) && matchesQuery(row, query.trim(), tagMap)), ui.sidebarSort));
+  const shown = $derived(visible.filter(row => matchesRowFilter(row, ui.sidebarFilter, tick) && matchesQuery(row, query.trim(), tagMap)));
+  /** Heartbeat threads sit in their own section above Needs response, in the same order as the grouped list. */
+  const beats = $derived(shown.filter(row => tabOf(row) === "heartbeats").sort(compareRows));
+  const beatsNeeding = $derived(beats.filter(needsResponse).length);
+  const groups = $derived(groupRows(shown.filter(row => tabOf(row) === "threads"), ui.sidebarSort));
   const SORTS: readonly SidebarSort[] = ["grouped", "recent"];
   const VIEWS: readonly { view: SidebarView; icon: "list" | "tag" }[] = [{ view: "current", icon: "list" }, { view: "tags", icon: "tag" }];
   const minute = $derived(Math.floor(clock.now / 60_000));
@@ -76,7 +74,7 @@
     requestAnimationFrame(() => { if (!document.activeElement || document.activeElement === document.body) list?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`)?.focus(); });
   }
   function archive(row: SessionRow): void { void labels.archive([row.id]); }
-  $effect(() => { ui.sidebarOrder = groups.flatMap(group => group.rows.map(row => row.id)); });
+  $effect(() => { ui.sidebarOrder = [...(ui.heartbeatsOpen ? beats.map(row => row.id) : []), ...groups.flatMap(group => group.rows.map(row => row.id))]; });
 
   function onRowKey(row: SessionRow, event: KeyboardEvent): void {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -150,6 +148,60 @@
   }
 </script>
 
+{#snippet threadRow(row: SessionRow)}
+    <div class="row" class:selected={row.id === store.selectedId} class:archived={row.archived} class:held={menu?.id === row.id || tagging?.id === row.id}
+      onmouseenter={() => warm(row.id)} onmouseleave={cancelWarm} oncontextmenu={event => openMenu(row, event)} role="presentation">
+      {#if renaming?.id === row.id}
+        <input class="field rename" bind:value={renaming.name} placeholder={row.name} aria-label="Thread name" use:focusAndSelect onkeydown={onRenameKey} onblur={() => void commitRename()} />
+      {:else}
+        {@const pulse = pulseOf(row, tick)}
+        <a class="link" data-row={row.id} href={"#" + encodeURIComponent(row.id)} onkeydown={event => onRowKey(row, event)}>
+          <span class="line" title={pulse && pulse.level !== "live" ? pulse.text : undefined}>
+            <span class="title" class:strong={needsResponse(row)}>{row.name}</span>
+            {#if row.status === "running"}<span class="run" role="img" aria-label={pulse?.text ? "Working, " + pulse.text : "Working"}><StatusMark status="working" level={pulse?.level ?? "live"} /></span>
+            {:else if row.failure}<span class="dot failed" role="img" aria-label="Last turn failed"></span>
+            {:else if needsResponse(row)}<span class="dot" role="img" aria-label="Needs response"></span>{/if}
+          </span>
+          {#if ui.sidebarView === "tags"}
+          {@const shownTags = row.tags.flatMap(id => tagMap.get(id) ?? [])}
+          {#if shownTags.length}<span class="line sub"><span class="chips all">{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}</span></span>{/if}
+          {:else if pulse?.level === "failed" || (row.status !== "running" && row.failure)}
+          {@const failure = pulse?.level === "failed" ? pulse.text : row.failure}
+          <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
+          {:else}
+          <span class="line sub">
+            {#if row.schedule}
+              <span class="meta date">{row.schedule.label ?? row.schedule.kind}{row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, minute * 60_000) : ""}</span>
+            {:else if createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}
+              <span class="meta date">{createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}</span>
+            {/if}
+            {#if pulse && pulse.level !== "live"}<span class="meta working {pulse.level}">{pulse.text}</span>
+            {:else if row.status === "running" && workingLabel(row)}<span class="meta working">{workingLabel(row)}</span>{/if}
+            <span class="meta cost" class:unknown={row.cost === undefined}>{money(row.cost)}</span>
+            {#if row.model}<span class="meta model">{modelShort(row.model)}</span>{/if}
+            <span class="chips">
+              {#each row.tags.slice(0, 2) as id (id)}{@const tag = tagMap.get(id)}{#if tag}<TagChip {tag} />{/if}{/each}
+              {#if row.tags.length > 2}<span class="more-tags">+{row.tags.length - 2}</span>{/if}
+            </span>
+            {#if row.progress !== "none"}<ProgressSteps progress={row.progress} />{/if}
+            {#if row.priority > 0}<PriorityBars level={row.priority} />{/if}
+          </span>
+          {/if}
+        </a>
+        <div class="actions">
+            <button type="button" class="icon-button small" aria-label="Tags for {row.name}" use:tooltip={"Add tag"}
+              onclick={event => { tagging = { id: row.id, anchor: event.currentTarget as HTMLElement }; }}><Icon name="tag" /></button>
+            <span class="expand">
+              <button type="button" class="icon-button small" aria-label="Archive {row.name}" use:tooltip={"Archive"} onclick={() => archive(row)}><Icon name="archive" /></button>
+            </span>
+            <button type="button" class="icon-button small" aria-label="Options for {row.name}" aria-haspopup="menu" aria-expanded={menu?.id === row.id}
+              use:tooltip={"More"} onclick={event => openMenu(row, event)}><Icon name="more" /></button>
+          
+        </div>
+      {/if}
+    </div>
+{/snippet}
+
 <aside class="sidebar" class:open={store.sidebarOpen} class:narrow class:resizing aria-label="Threads" bind:this={aside}>
   <div class="inner">
     <div class="top">
@@ -174,74 +226,24 @@
         <Icon name="filter" size={14} />{#if filterCount}<span class="filter-count">{filterCount}</span>{/if}
       </button>
     </div>
-    <div class="segmented tabs" role="tablist" aria-label="Thread kind">
-      <button type="button" role="tab" aria-selected={tab === "threads"} class:on={tab === "threads"} onclick={() => { tab = "threads"; }}>Threads <span class="count">{counts.threads}</span></button>
-      <button type="button" role="tab" aria-selected={tab === "heartbeats"} class:on={tab === "heartbeats"} onclick={() => { tab = "heartbeats"; }}>
-        Heartbeats <span class="count">{counts.heartbeats}</span>{#if counts.heartbeatsNeeding && tab !== "heartbeats"}<span class="dot small" aria-label="{counts.heartbeatsNeeding} need a response"></span>{/if}
-      </button>
-    </div>
-    <div class="list" bind:this={list} role="tabpanel">
+    <div class="list" bind:this={list}>
+      {#if beats.length}
+        <button type="button" class="group-label beats-toggle" aria-expanded={ui.heartbeatsOpen} onclick={() => ui.setHeartbeatsOpen(!ui.heartbeatsOpen)}>
+          <span class="chev" class:open={ui.heartbeatsOpen}><Icon name="chevronDown" size={11} /></span>Heartbeats <span class="count">{beats.length}</span>
+          {#if beatsNeeding && !ui.heartbeatsOpen}<span class="dot small" role="img" aria-label="{beatsNeeding} need a response"></span>{/if}
+        </button>
+        {#if ui.heartbeatsOpen}
+          {#each beats as row (row.id)}{@render threadRow(row)}{/each}
+        {/if}
+      {/if}
       {#each groups as group, index (group.bucket)}
-        {#if group.bucket && (group.bucket !== "other" || index > 0)}<div class="group-label">{BUCKET_LABEL[group.bucket]} <span class="count">{group.rows.length}</span></div>{/if}
-        {#each group.rows as row (row.id)}
-          <div class="row" class:selected={row.id === store.selectedId} class:archived={row.archived} class:held={menu?.id === row.id || tagging?.id === row.id}
-            onmouseenter={() => warm(row.id)} onmouseleave={cancelWarm} oncontextmenu={event => openMenu(row, event)} role="presentation">
-            {#if renaming?.id === row.id}
-              <input class="field rename" bind:value={renaming.name} placeholder={row.name} aria-label="Thread name" use:focusAndSelect onkeydown={onRenameKey} onblur={() => void commitRename()} />
-            {:else}
-              {@const pulse = pulseOf(row, tick)}
-              <a class="link" data-row={row.id} href={"#" + encodeURIComponent(row.id)} onkeydown={event => onRowKey(row, event)}>
-                <span class="line" title={pulse && pulse.level !== "live" ? pulse.text : undefined}>
-                  <span class="title" class:strong={needsResponse(row)}>{row.name}</span>
-                  {#if row.status === "running"}<span class="run" role="img" aria-label={pulse?.text ? "Working, " + pulse.text : "Working"}><StatusMark status="working" level={pulse?.level ?? "live"} /></span>
-                  {:else if row.failure}<span class="dot failed" role="img" aria-label="Last turn failed"></span>
-                  {:else if needsResponse(row)}<span class="dot" role="img" aria-label="Needs response"></span>{/if}
-                </span>
-                {#if ui.sidebarView === "tags"}
-                {@const shownTags = row.tags.flatMap(id => tagMap.get(id) ?? [])}
-                {#if shownTags.length}<span class="line sub"><span class="chips all">{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}</span></span>{/if}
-                {:else if pulse?.level === "failed" || (row.status !== "running" && row.failure)}
-                {@const failure = pulse?.level === "failed" ? pulse.text : row.failure}
-                <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
-                {:else}
-                <span class="line sub">
-                  {#if row.schedule}
-                    <span class="meta date">{row.schedule.label ?? row.schedule.kind}{row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, minute * 60_000) : ""}</span>
-                  {:else if createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}
-                    <span class="meta date">{createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}</span>
-                  {/if}
-                  {#if pulse && pulse.level !== "live"}<span class="meta working {pulse.level}">{pulse.text}</span>
-                  {:else if row.status === "running" && workingLabel(row)}<span class="meta working">{workingLabel(row)}</span>{/if}
-                  <span class="meta cost" class:unknown={row.cost === undefined}>{money(row.cost)}</span>
-                  {#if row.model}<span class="meta model">{modelShort(row.model)}</span>{/if}
-                  <span class="chips">
-                    {#each row.tags.slice(0, 2) as id (id)}{@const tag = tagMap.get(id)}{#if tag}<TagChip {tag} />{/if}{/each}
-                    {#if row.tags.length > 2}<span class="more-tags">+{row.tags.length - 2}</span>{/if}
-                  </span>
-                  {#if row.progress !== "none"}<ProgressSteps progress={row.progress} />{/if}
-                  {#if row.priority > 0}<PriorityBars level={row.priority} />{/if}
-                </span>
-                {/if}
-              </a>
-              <div class="actions">
-                  <button type="button" class="icon-button small" aria-label="Tags for {row.name}" use:tooltip={"Add tag"}
-                    onclick={event => { tagging = { id: row.id, anchor: event.currentTarget as HTMLElement }; }}><Icon name="tag" /></button>
-                  <span class="expand">
-                    <button type="button" class="icon-button small" aria-label="Archive {row.name}" use:tooltip={"Archive"} onclick={() => archive(row)}><Icon name="archive" /></button>
-                  </span>
-                  <button type="button" class="icon-button small" aria-label="Options for {row.name}" aria-haspopup="menu" aria-expanded={menu?.id === row.id}
-                    use:tooltip={"More"} onclick={event => openMenu(row, event)}><Icon name="more" /></button>
-                
-              </div>
-            {/if}
-          </div>
-        {/each}
+        {#if group.bucket && (group.bucket !== "other" || index > 0 || beats.length)}<div class="group-label">{BUCKET_LABEL[group.bucket]} <span class="count">{group.rows.length}</span></div>{/if}
+        {#each group.rows as row (row.id)}{@render threadRow(row)}{/each}
       {/each}
-      {#if !groups.length}
+      {#if !groups.length && !beats.length}
         <div class="empty">
           {#if store.daemon === "unknown"}<span class="spinner tiny"></span>
           {:else if query || filterCount}<span>No threads match.{#if filterCount}{" "}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear filters</button>{/if}</span>
-          {:else if tab === "heartbeats"}No heartbeat threads.
           {:else}No threads yet.{/if}
         </div>
       {/if}
@@ -325,12 +327,13 @@
   .check { display: inline-flex; width: 14px; flex: none; color: var(--accent-bold); }
   .link-button { padding: 2px 6px; border-radius: var(--radius-small); font-size: 12px; color: var(--accent-bold); }
   .link-button:hover { background: var(--accent-soft); }
-  .tabs { display: flex; margin: 0 10px 4px; }
-  .tabs > button { flex: 1; }
   .count { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; font-weight: 500; }
-  .tabs .on .count { color: inherit; opacity: 0.7; }
   .list { flex: 1; overflow-y: auto; padding: 0 6px 10px; }
   .group-label { padding: 12px 8px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
+  .beats-toggle { display: flex; align-items: center; gap: 5px; width: 100%; text-align: left; }
+  .beats-toggle:hover { color: var(--text); }
+  .chev { display: inline-flex; transform: rotate(-90deg); transition: transform 0.12s; }
+  .chev.open { transform: none; }
   .row { position: relative; border-radius: var(--radius-small); content-visibility: auto; contain-intrinsic-size: auto 44px; --row-bg: var(--bg-sunken); }
   .row:hover, .row.held { background: var(--rail-hover); --row-bg: var(--rail-hover); }
   .row.selected { background: var(--rail-active); --row-bg: var(--rail-active); }

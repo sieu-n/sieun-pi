@@ -398,7 +398,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const modelId = typeof body.modelId === "string" ? text(body.modelId, "modelId", 256) : undefined;
         const thinkingLevel = typeof body.thinkingLevel === "string" ? text(body.thinkingLevel, "thinkingLevel", 16) as ThinkingLevel : undefined;
         const account = parseNewChatAccount(body.account);
-        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account])).digest("hex");
+        const name = typeof body.name === "string" ? text(body.name, "name", 200).trim() : "";
+        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account, name])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
@@ -412,6 +413,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
                 throw new RequestError(502, error instanceof Error ? error.message : String(error));
               }
             }
+            // The name is set before the prompt, so the thread never shows the first message as its title. A failed rename still sends the message.
+            if (name) await backend.threads.rename(thread.id, name).catch(() => {});
             await backend.threads.prompt(thread.id, { message, images, mode: "followUp" });
             return { id: thread.id };
           })() };

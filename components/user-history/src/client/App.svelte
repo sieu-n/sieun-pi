@@ -46,17 +46,15 @@
     store.select(null);
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-composer]")?.focus());
   }
-  function openAgents(): void {
-    if (ui.agentsOpen) document.querySelector<HTMLInputElement>("[data-agents-search]")?.focus();
-    ui.agentsOpen = true;
-  }
+  /** Cmd+K opens the Agents view, and closes it when it is already open. */
+  function toggleAgents(): void { ui.agentsOpen = !ui.agentsOpen; }
 
   function onKeydown(event: KeyboardEvent): void {
     const meta = event.metaKey || event.ctrlKey;
     if (meta && !event.shiftKey && !event.altKey) {
       const key = event.key.toLowerCase();
       if (key === "n") { event.preventDefault(); newChat(); }
-      else if (key === "k") { event.preventDefault(); openAgents(); }
+      else if (key === "k") { event.preventDefault(); toggleAgents(); }
       else if (key === "b") { event.preventDefault(); store.sidebarOpen = !store.sidebarOpen; }
       return;
     }

@@ -248,7 +248,7 @@
             {/each}
             <div class="actions" role="cell">
               {#if acting === row.id}<span class="spinner tiny"></span>
-              {:else if canPick}<span class="hint">Use</span>{/if}
+              {:else if canPick}<button type="button" class="hint" aria-label="Use {row.email} for this thread" onclick={() => useForThread(current.provider, row)}>Use</button>{/if}
               {#if row.disabled}
                 <button class="button small" disabled={acting !== null} onclick={() => void run({ action: "enable", provider: current.provider, account: row.id }, row.id)}>Turn on</button>
               {:else if state === "needs-login"}
@@ -273,7 +273,7 @@
   {@const state = accountState(row)}
   <Floating anchor={menu.anchor} width={220} align="end" role="menu" label="Actions for {row.email}" onclose={() => { menu = null; }}>
     {#if pickable(row)}
-      <button type="button" class="menu-item" role="menuitem" onclick={() => useForThread(provider, row)}>Use for this thread</button>
+      <button type="button" class="menu-item" role="menuitem" onclick={() => useForThread(provider, row)}>Use in this thread</button>
     {/if}
     {#if !row.disabled}
       {#if current.poolPin === row.id}
@@ -363,7 +363,9 @@
   .reset { font-size: 11px; color: var(--text-faint); white-space: nowrap; min-height: 13px; }
   .actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
   .hint { padding: 0 6px; font-size: 12px; font-weight: 500; color: var(--accent-bold); opacity: 0; transition: opacity 0.12s; }
-  .row.pick:hover .hint { opacity: 1; }
+  .hint { height: 24px; border-radius: var(--radius-small); }
+  .hint:hover { background: var(--accent-soft); }
+  .row.pick:hover .hint, .hint:focus-visible { opacity: 1; }
   .notes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: 12px; color: var(--text-muted); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .confirm { display: flex; flex-direction: column; gap: 14px; padding: 14px 18px 16px; }

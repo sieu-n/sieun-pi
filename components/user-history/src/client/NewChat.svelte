@@ -30,6 +30,8 @@
   let model = $state<ModelInfo | null>(null);
   let effort = $state<ThinkingLevel | null>(null);
   let workspaceOpen = $state(false);
+  /** An explicit thread name; empty lets Prime Agent title the thread from its first message. */
+  let threadName = $state("");
   const closePopover = () => { workspaceOpen = false; };
   let lightbox = $state<number | null>(null);
 
@@ -101,9 +103,11 @@
     const priority = draftPriority;
     const progress = draftProgress;
     const chosen = activeModel;
-    const id = await store.createChat({ cwd, message: text, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
+    const name = threadName.trim();
+    const id = await store.createChat({ cwd, ...(name ? { name } : {}), message: text, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
+    threadName = "";
     draftTags = [];
     draftPriority = 0;
     draftProgress = "none";
@@ -136,10 +140,13 @@
             {/if}
             {#if store.pending.message}<div class="text">{store.pending.message}</div>{/if}
           </div>
+          {#if store.pending.name}<div class="pending-name">{store.pending.name}</div>{/if}
           <div class="starting"><span class="spinner"></span> Starting the chat in {shortPath(store.pending.cwd)}</div>
         </div>
       {:else}
         <h1 class="greeting">{greeting}</h1>
+        <input class="thread-name" type="text" maxlength="200" placeholder="Thread name (optional)" aria-label="Thread name" autocomplete="off" spellcheck="false" bind:value={threadName}
+          onkeydown={event => { if (event.key === "Enter") { event.preventDefault(); document.querySelector<HTMLTextAreaElement>("[data-composer]")?.focus(); } }} />
         <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder="Ask Prime Agent anything" />
         <div class="options-row">
           <div class="group" role="group" aria-label="Setup for the new thread">
@@ -214,6 +221,11 @@
   .center { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 20px 10vh; overflow-y: auto; }
   .column { width: 100%; max-width: var(--column); }
   .greeting { margin: 0 0 18px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+  .thread-name { display: block; width: 100%; margin: 0 0 8px; padding: 6px 4px; border: 0; border-bottom: 1px solid transparent; background: none; outline: none; color: var(--text); font-size: 15px; font-weight: 600; }
+  .thread-name::placeholder { color: var(--text-faint); font-weight: 500; }
+  .thread-name:hover { border-bottom-color: var(--border); }
+  .thread-name:focus { border-bottom-color: var(--accent); }
+  .pending-name { align-self: flex-start; font-size: 15px; font-weight: 600; }
   .options-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-top: 8px; padding: 0 4px; }
   .group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
   .group .bar-button { gap: 6px; }

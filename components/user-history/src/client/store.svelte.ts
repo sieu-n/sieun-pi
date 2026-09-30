@@ -4,7 +4,7 @@ import { applyThreadEvent, isThreadBusy } from "../shared/thread-state.ts";
 import type { ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
-export interface PendingChat { cwd: string; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
+export interface PendingChat { cwd: string; name?: string; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
 
 /** `lastEventAt` is when this tab last got a live event from the thread stream (0 until the first one after the snapshot). */
 type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number };

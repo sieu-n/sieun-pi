@@ -25,6 +25,13 @@ function storedFilter(): RowFilter {
   } catch { /* A broken saved filter starts empty. */ }
   return filter;
 }
+function storedColumns(): Record<string, boolean> {
+  try {
+    const saved: unknown = JSON.parse(stored("chat.agentsColumns") ?? "null");
+    if (typeof saved !== "object" || saved === null) return {};
+    return Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
+  } catch { return {}; }
+}
 const clampWidth = (width: number): number => Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)));
 
 class Ui {
@@ -36,6 +43,12 @@ class Ui {
   agentsOpen = $state(false);
   /** The notepad panel beside the open thread; the choice holds across threads and reloads. */
   notesOpen = $state(stored("chat.notesOpen") === "1");
+  /** The Heartbeats section at the top of the sidebar; open unless folded, and the choice holds across reloads. */
+  /** Optional Agents view columns the person turned on or off; Status and Title always show. */
+  agentsColumns = $state<Record<string, boolean>>(storedColumns());
+  setAgentsColumn(key: string, on: boolean): void { this.agentsColumns = { ...this.agentsColumns, [key]: on }; store("chat.agentsColumns", JSON.stringify(this.agentsColumns)); }
+  heartbeatsOpen = $state(stored("chat.heartbeatsOpen") !== "0");
+  setHeartbeatsOpen(open: boolean): void { this.heartbeatsOpen = open; store("chat.heartbeatsOpen", open ? "1" : "0"); }
   setNotesOpen(open: boolean): void { this.notesOpen = open; store("chat.notesOpen", open ? "1" : "0"); }
   /** Thread ids in the order the sidebar shows them, so archiving the open thread can move to the next one. */
   sidebarOrder = $state.raw<string[]>([]);
