@@ -176,7 +176,11 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     await daemon.connect();
     await daemon.waitForHello();
     const sessionsStream = openStream<SessionsEvent>(chatUrl + "api/sessions/stream");
-    const initial = await sessionsStream.waitFor(frame => frame.event === "sessions" && frame.data.daemon === "up", 20000, "sessions with daemon up");
+    // The stream opens with a build frame (the page reloads on a new build); every other frame is a sessions frame.
+    const sessionsFrame = (predicate: (data: SessionsEvent) => boolean, timeout?: number, label?: string) =>
+      sessionsStream.waitFor(frame => frame.event === "sessions" && predicate(frame.data), timeout, label);
+    const initial = await sessionsFrame(data => data.daemon === "up", 20000, "sessions with daemon up");
+    assert.equal(sessionsStream.frames[0]?.event, "build", "the sessions stream opens with the running build");
     assert.deepEqual(initial.data.sessions.map(row => row.id).sort(), [saved.sessionId, moved.sessionId].sort(), "the isolated catalog lists the seeded saved threads only");
     assert.equal(initial.data.sessions.find(row => row.id === saved.sessionId)?.kind, "saved");
     assert.equal(initial.data.sessions.find(row => row.id === saved.sessionId)?.name, saved.name);
@@ -186,7 +190,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert(goneStatus.data.type === "status" && goneStatus.data.connection === "closed");
     assert.match(goneStatus.data.error ?? "", /moved or deleted/, "a saved thread whose file moved says so instead of claiming the file changed");
     gone.close();
-    await sessionsStream.waitFor(frame => frame.data.sessions.every(row => row.id !== moved.sessionId), 20000, "moved row leaves the list");
+    await sessionsFrame(data => data.sessions.every(row => row.id !== moved.sessionId), 20000, "moved row leaves the list");
     assert.equal((await fetch(chatUrl + "api/workspaces").then(response => response.json()) as { workspaces: { cwd: string }[] }).workspaces[0]?.cwd, cwd);
     const rejected = await post("api/threads", { cwd, message: "no request id" });
     assert.equal(rejected.status, 400);
@@ -215,7 +219,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert.equal(streaming.info.isStreaming, true);
     assert.equal(streaming.streaming?.role, "assistant");
     assert.match(JSON.stringify(streaming.streaming?.content), /SYNTHETIC REPLY: /);
-    const running = await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.status === "running"), 20000, "sessions row running");
+    const running = await sessionsFrame(data => data.sessions.some(row => row.id === threadId && row.status === "running"), 20000, "sessions row running");
     assert.equal(running.data.sessions.find(row => row.id === threadId)?.kind, "live");
     const secondPrompt = `SECOND ${id}`;
     const queuedSend = await post(`api/threads/${threadId}/prompt`, { message: secondPrompt, requestId: requestId(), mode: "followUp" });
@@ -230,7 +234,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert.deepEqual(texts, [firstPrompt, `SYNTHETIC REPLY: ${firstPrompt}`, secondPrompt, `SYNTHETIC REPLY: ${secondPrompt}`]);
     assert.equal(afterTwo.streaming, null);
     assert.deepEqual(afterTwo.queue, { steering: [], followUp: [] });
-    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.status === "idle" && row.messageCount >= 4), 20000, "sessions row idle");
+    await sessionsFrame(data => data.sessions.some(row => row.id === threadId && row.status === "idle" && row.messageCount >= 4), 20000, "sessions row idle");
 
     await unlink(gate);
     const stopPrompt = `STOP ME ${id} [hold]`;
@@ -258,7 +262,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert.equal((await post(`api/threads/${threadId}/thinking`, { level: "invented" })).status, 400);
     assert.equal((await post(`api/threads/${threadId}/rename`, { name: `Renamed ${id}` })).status, 200);
     await thread.waitFor(event => event.type === "info" && event.info.name === `Renamed ${id}`, 20000, "rename info");
-    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.name === `Renamed ${id}`), 20000, "renamed row");
+    await sessionsFrame(data => data.sessions.some(row => row.id === threadId && row.name === `Renamed ${id}`), 20000, "renamed row");
     const imagePrompt = `WITH IMAGE ${id}`;
     assert.equal((await post(`api/threads/${threadId}/prompt`, { message: imagePrompt, images: [png], requestId: requestId(), mode: "followUp" })).status, 200);
     const imageUser = await thread.waitFor(event => event.type === "event" && event.event.type === "message_end" && event.event.message.role === "user" && JSON.stringify(event.event.message.content).includes(imagePrompt), 20000, "image user message");
@@ -295,7 +299,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert.deepEqual(thread.state?.tools, [], "tool runs clear when the run ends");
     assert.equal((await post(`api/threads/${threadId}/prompt`, { message: "/unknown-command", requestId: requestId() })).status, 400);
     assert.equal((await post(`api/threads/${threadId}/read`, {})).status, 200);
-    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && row.unread === false), 20000, "read marker");
+    await sessionsFrame(data => data.sessions.some(row => row.id === threadId && row.unread === false), 20000, "read marker");
     const tagged = await post("api/labels", { op: "create", name: "native-proof", ids: [threadId] });
     assert.equal(tagged.status, 200, JSON.stringify(tagged.body));
     const tagId = tagged.body.tagId;
@@ -306,7 +310,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert.equal((await post("api/labels", { op: "progress", ids: [threadId], progress: "done" })).status, 400);
     assert.equal((await post("api/labels", { op: "tag", tagId: "missing", ids: [threadId], on: true })).status, 404);
     assert.equal((await fetch(chatUrl + "api/labels", { method: "POST", headers: { "Content-Type": "application/json", Origin: new URL(chatUrl).origin }, body: JSON.stringify({ op: "delete", tagId }) })).status, 403);
-    await sessionsStream.waitFor(frame => frame.data.tags.some(tag => tag.id === tagId) && frame.data.sessions.some(row => row.id === threadId && row.tags.includes(tagId) && row.priority === 3 && row.progress === "implementation"), 20000, "labels on the sessions stream");
+    await sessionsFrame(data => data.tags.some(tag => tag.id === tagId) && data.sessions.some(row => row.id === threadId && row.tags.includes(tagId) && row.priority === 3 && row.progress === "implementation"), 20000, "labels on the sessions stream");
     const stored = await (await fetch(chatUrl + "api/labels")).json() as { threads: Record<string, { priority: number }> };
     assert.equal(stored.threads[threadId]?.priority, 3);
     assert.equal(JSON.parse(await readFile(join(chatData, "labels.json"), "utf8")).threads[threadId].priority, 3, "labels live next to the read markers");
@@ -329,7 +333,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     await savedThread.waitFor(event => event.type === "info" && !event.info.isStreaming, 20000, "resumed idle");
     const resumedTexts = savedThread.state?.messages.map(message => message.role === "user" || message.role === "assistant" ? messageText(message) : message.role);
     assert.deepEqual(resumedTexts, [`SAVED QUESTION ${saved.name}`, `SAVED ANSWER ${saved.name}`, resumePrompt, `SYNTHETIC REPLY: ${resumePrompt}`]);
-    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === saved.sessionId && row.kind === "live" && row.status === "idle"), 20000, "saved row is live now");
+    await sessionsFrame(data => data.sessions.some(row => row.id === saved.sessionId && row.kind === "live" && row.status === "idle"), 20000, "saved row is live now");
     const entries = SessionManager.open(saved.sessionFile, sessions).getEntries();
     assert(entries.some(entry => entry.type === "message" && entry.message.role === "user" && messageText(entry.message) === resumePrompt), "the resumed reply persists in the native file");
 
@@ -344,7 +348,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     assert(thread.state?.messages.some(message => message.role === "assistant" && message.usage?.cacheRead === 40 && message.usage.cost === 0.00364), "per-call usage reaches the browser");
     assert.equal((await post(`api/threads/${threadId}/prompt`, { message: "/compact", requestId: requestId(), mode: "followUp" })).status, 200, "/compact runs through the prompt path");
     await thread.waitFor(event => event.type === "event" && event.event.type === "compaction_end" && !event.event.aborted, 60000, "compaction from /compact");
-    const costed = await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === threadId && (row.cost ?? 0) > 0), 20000, "native usage cost on the row");
+    const costed = await sessionsFrame(data => data.sessions.some(row => row.id === threadId && (row.cost ?? 0) > 0), 20000, "native usage cost on the row");
     assert(costed.data.sessions.find(row => row.id === threadId)!.cost! > 0);
     const accountPrompt = `ACCOUNT ${id}`;
     const withAccount = await post("api/threads", { cwd, message: accountPrompt, requestId: requestId(), provider: "chat-native-test", modelId: "synthetic",
@@ -367,7 +371,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     const childUsage = await fetch(chatUrl + `api/threads/${threadId}/child-usage`).then(response => response.json()) as { children: unknown[] };
     assert.deepEqual(childUsage.children, [], "a thread without subagents has no child usage");
     assert.equal((await post(`api/threads/${saved.sessionId}/archive`, {})).status, 200);
-    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === saved.sessionId && row.archived && row.kind === "saved"), 20000, "archived row");
+    await sessionsFrame(data => data.sessions.some(row => row.id === saved.sessionId && row.archived && row.kind === "saved"), 20000, "archived row");
     assert.equal(SessionManager.open(saved.sessionFile, sessions).getSessionState()?.status, "archived", "archive records the native archived state");
     await unlink(gate).catch(() => {});
     const runningPrompt = `ARCHIVE RUNNING ${id} [hold]`;
@@ -375,7 +379,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     const runningCreated = await post("api/threads", { cwd, name: runningName, message: runningPrompt, requestId: requestId(), provider: "chat-native-test", modelId: "synthetic" });
     assert.equal(runningCreated.status, 200, JSON.stringify(runningCreated.body));
     const runningId = runningCreated.body.id as string;
-    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === runningId && row.name === runningName), 20000, "a name given at creation is the thread title");
+    await sessionsFrame(data => data.sessions.some(row => row.id === runningId && row.name === runningName), 20000, "a name given at creation is the thread title");
     await waitForChatNativeFile(calls, text => text.split("\n").some(line => line.includes('"stage":"held"') && line.includes(runningPrompt)), 60000);
     const runningWatch = threadWatcher(chatUrl + `api/threads/${runningId}/stream`);
     watchers.push(runningWatch);
@@ -383,17 +387,17 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     for (const [target, label] of [[runningId, "running"], [accountThread, "idle"]] as const) {
       const archived = await post(`api/threads/${target}/archive`, {});
       assert.equal(archived.status, 200, `archive ${label}: ${JSON.stringify(archived.body)}`);
-      await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === target && row.archived), 20000, `archived ${label} row`);
+      await sessionsFrame(data => data.sessions.some(row => row.id === target && row.archived), 20000, `archived ${label} row`);
     }
     runningWatch.close();
     await new Promise(resolve => setTimeout(resolve, 3000));
-    const after = sessionsStream.frames.at(-1)!.data.sessions;
+    const after = sessionsStream.frames.filter(frame => frame.event === "sessions").at(-1)!.data.sessions;
     for (const target of [runningId, accountThread]) {
       const row = after.find(entry => entry.id === target);
       assert(!row || (row.archived && row.kind === "saved" && row.status === "saved"), `an archived thread stays archived and stopped: ${JSON.stringify(row)}`);
     }
     assert.equal((await post(`api/threads/${accountThread}/unarchive`, {})).status, 200);
-    await sessionsStream.waitFor(frame => frame.data.sessions.some(row => row.id === accountThread && !row.archived && row.kind === "saved"), 20000, "unarchived row");
+    await sessionsFrame(data => data.sessions.some(row => row.id === accountThread && !row.archived && row.kind === "saved"), 20000, "unarchived row");
     thread.close();
     savedThread.close();
     sessionsStream.close();
