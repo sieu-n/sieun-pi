@@ -11,6 +11,7 @@ import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat
 import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
+import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type ThinkingLevel } from "./shared/types.ts";
 
@@ -314,6 +315,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           return;
         }
         if (route === "api/labels") { json(res, 200, await backend.labels.snapshot()); return; }
+        if (route === "api/interrupted") { json(res, 200, await interruptedRuns.check()); return; }
         const usage = /^api\/threads\/([^/]+)\/child-usage$/.exec(route);
         if (usage) { json(res, 200, { children: backend.catalog.childUsage(threadId(decodeURIComponent(usage[1]!))) }); return; }
         if (route === "api/workspaces") { json(res, 200, { workspaces: await backend.catalog.workspaces() }); return; }
@@ -443,6 +445,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         await remote.set(parseRemoteInput(body));
         json(res, 200, remote.view(true)); return;
       }
+      if (route === "api/interrupted") { json(res, 200, await interruptedRuns.resume()); return; }
       if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
       if (route === "api/accounts") {

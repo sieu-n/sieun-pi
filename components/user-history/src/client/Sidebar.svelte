@@ -12,6 +12,7 @@
   import TagChip from "./TagChip.svelte";
   import ThreadMenu from "./ThreadMenu.svelte";
   import FilterSelects from "./FilterSelects.svelte";
+  import InterruptedRuns from "./InterruptedRuns.svelte";
   import StatusMark from "./StatusMark.svelte";
   import Floating from "./ui/Floating.svelte";
   import TagPicker from "./ui/TagPicker.svelte";
@@ -226,6 +227,7 @@
         <Icon name="filter" size={14} />{#if filterCount}<span class="filter-count">{filterCount}</span>{/if}
       </button>
     </div>
+    <InterruptedRuns />
     <div class="list" bind:this={list}>
       {#if beats.length}
         <button type="button" class="group-label beats-toggle" aria-expanded={ui.heartbeatsOpen} onclick={() => ui.setHeartbeatsOpen(!ui.heartbeatsOpen)}>
