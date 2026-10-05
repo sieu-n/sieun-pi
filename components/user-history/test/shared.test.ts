@@ -6,7 +6,7 @@ import { CACHE_COLD_GAP_MS, cacheHealth } from "../src/shared/cache-health.ts";
 import { matchCommands } from "../src/client/command-match.ts";
 import type { AssistantMessage, Command, CustomMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
 import { ImageStore, Projector, TEXT_LIMIT, THINKING_LIMIT } from "../src/chat-projection.ts";
-import { isListed, previewTitle, projectRow } from "../src/chat-catalog.ts";
+import { isListed, projectRow, sessionTitle } from "../src/chat-catalog.ts";
 import { duration } from "../src/client/format.ts";
 import type { SessionSummary } from "prime-agent";
 
@@ -132,7 +132,10 @@ test("catalog rows hide empty drafts and saved rows whose file is gone", () => {
   assert.equal(row.kind, "saved");
   assert.equal(row.unread, true);
   assert.equal(projectRow({ ...base, lastActivityAt: "2026-01-02T00:00:00Z" }, Date.parse("2026-01-03T00:00:00Z"), 0).unread, false);
-  assert.equal(previewTitle(""), "New chat");
+  assert.equal(sessionTitle({}), "New chat");
+  assert.equal(sessionTitle({ firstMessage: "", cwd: "/w/auto-sns-agent" }), "auto-sns-agent", "no name and no first message: the folder, as in the terminal agents view");
+  assert.equal(sessionTitle({ sessionName: "  spec\n work ", firstMessage: "ignored" }), "spec work", "the native name wins, as in the terminal agents view");
+  assert.equal(sessionTitle({ firstMessage: "(large message)" }), "(large message)", "the native first message is shown as the daemon sends it");
 });
 
 test("durations never show 0s for a timed call", () => {

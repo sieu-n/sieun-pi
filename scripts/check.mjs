@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { lockedPrimeVersion } from "../utils/prime-version.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ignored = new Set([".git", ".work", ".venv", "node_modules", "dist", "__pycache__", ".test-artifacts", ".pytest_cache", ".cache"]);
@@ -33,8 +34,9 @@ try {
   requireFile("components/user-history/node_modules/tsx/dist/cli.mjs", "npm ci --ignore-scripts --prefix components/user-history");
   requireFile("skills/poteto-mode/scripts/node_modules/typescript/bin/tsc", "cd skills/poteto-mode/scripts && bun install --frozen-lockfile");
   const host = JSON.parse(readFileSync(join(root, "node_modules/prime-agent/package.json"), "utf8"));
-  if (host.name !== "prime-agent" || host.version !== "0.9.4") {
-    throw new Error("The source checks require the locked Prime Agent 0.9.4 type declarations.");
+  const locked = lockedPrimeVersion(root);
+  if (host.name !== "prime-agent" || host.version !== locked) {
+    throw new Error(`The source checks require the locked Prime Agent ${locked} type declarations. Run npm ci --ignore-scripts.`);
   }
   const python = (...args) => run("uv", ["run", "--locked", "--no-sync", "python", "-B", ...args]);
   python("scripts/check_skills.py");

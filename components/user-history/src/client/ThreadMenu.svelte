@@ -14,7 +14,7 @@
   const rows = $derived(store.sessions.filter(row => ids.includes(row.id)));
   const priority = $derived(rows.length && rows.every(row => row.priority === rows[0]!.priority) ? rows[0]!.priority : null);
   const progress = $derived(rows.length && rows.every(row => row.progress === rows[0]!.progress) ? rows[0]!.progress : null);
-  const running = $derived(rows.some(row => row.status === "running"));
+  const running = $derived(rows.some(row => row.working));
 </script>
 
 <Floating anchor={at} width={260} maxHeight={480} label={ids.length > 1 ? `Labels for ${ids.length} threads` : "Thread options"} {onclose}>

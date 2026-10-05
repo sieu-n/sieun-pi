@@ -57,7 +57,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   await readState.snapshot().catch(() => null);
   const catalog = new Catalog(socketPath, readState, labels);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read());
-  catalog.runStartedAt = id => threads.state(id)?.runStartedAt ?? null;
   let closed = false;
   return {
     catalog, threads, readState, labels, notes, defaults,

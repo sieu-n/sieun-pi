@@ -36,7 +36,7 @@
   const thread = $derived(entry?.state ?? null);
   const hasState = $derived(thread !== null);
   const row = $derived(store.session(id));
-  const title = $derived(thread?.info.name ?? row?.name ?? "Untitled");
+  const title = $derived(row?.name ?? thread?.info.name ?? "New chat");
   const cwd = $derived(thread?.info.cwd ?? row?.cwd ?? "");
   const busy = $derived(thread ? isThreadBusy(thread) : false);
   const saved = $derived(thread?.kind === "saved");
@@ -186,7 +186,7 @@
     {/if}
     <div class="title-wrap">
       {#if editingTitle !== null}
-        <input class="field title-input" bind:value={editingTitle} placeholder="Thread name" aria-label="Thread name" use:focusAndSelect onkeydown={onTitleKey} onblur={() => void commitRename()} />
+        <input class="field title-input" bind:value={editingTitle} placeholder="Thread name" aria-label="Thread name" use:focusAndSelect onkeydown={onTitleKey} onblur={() => { editingTitle = null; }} />
       {:else}
         <button type="button" class="title" aria-label="Rename thread {title}" onclick={startRename}>{title}</button>
       {/if}

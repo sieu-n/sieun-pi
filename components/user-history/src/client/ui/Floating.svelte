@@ -60,7 +60,8 @@
       const hadFocus = !document.activeElement || document.activeElement === document.body || node.contains(document.activeElement);
       if (node.matches(":popover-open")) node.hidePopover();
       node.remove();
-      if (hadFocus && anchor instanceof HTMLElement && anchor.isConnected) queueMicrotask(() => { if (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected) anchor.focus({ preventScroll: true }); });
+      const target = anchor;
+      if (hadFocus && target instanceof HTMLElement && target.isConnected) queueMicrotask(() => { if (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected) target.focus({ preventScroll: true }); });
     };
   }
 </script>

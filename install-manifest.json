@@ -2,7 +2,7 @@
   "version": 1,
   "host": {
     "name": "prime-agent",
-    "version": "0.9.4"
+    "version": "0.9.8"
   },
   "entries": [
     {

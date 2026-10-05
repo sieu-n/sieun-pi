@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { lockedPrimeVersion } from "../utils/prime-version.mjs";
 
 const source = fileURLToPath(new URL("..", import.meta.url));
 
@@ -69,7 +70,7 @@ test("native global discovery, policy watcher, last-good load, and unrelated che
     rmSync(temp, { recursive: true, force: true });
   });
   const primeRoot = join(source, "node_modules/prime-agent");
-  assert.equal(JSON.parse(readFileSync(join(primeRoot, "package.json"), "utf8")).version, "0.9.4");
+  assert.equal(JSON.parse(readFileSync(join(primeRoot, "package.json"), "utf8")).version, lockedPrimeVersion(source));
   const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(join(primeRoot, "dist/index.js")).href);
   const makeLoader = cwd => new DefaultResourceLoader({
     cwd, agentDir, settingsManager: SettingsManager.create(cwd, agentDir),

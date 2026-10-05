@@ -215,8 +215,12 @@ async function serve(options: Options): Promise<void> {
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
   const [{ buildClientBundle }, { createChatBackend }, { startChatServer }] = await Promise.all([
     import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts")]);
-  const bundle = await buildClientBundle();
+  const [bundle, { SdkSync, loadedClientVersion }] = await Promise.all([buildClientBundle(), import("./chat-sdk.ts")]);
   const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory });
+  // Exit 75 after an SDK update: launchd's KeepAlive starts a crashed (non-zero) login item again, now on the new packages.
+  const sdk = new SdkSync(join(service.directory, "sdk.json"), { client: loadedClientVersion(), build: bundle.version,
+    canRestart: options.supervised === true && service.primary, restart: () => { process.exitCode = 75; stop(); } });
+  backend.catalog.onDaemonVersion = version => { void sdk.daemonVersion(version); };
   let stopped: () => void = () => {};
   const done = new Promise<void>(resolve => { stopped = resolve; });
   let closing: Promise<void> | undefined;
@@ -254,7 +258,7 @@ async function serve(options: Options): Promise<void> {
     check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile()]); },
   };
   const server = await startChatServer({ backend, bundle, port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken,
-    identity, identityReady, remote: control, stopToken: service.config.stopToken, onStop: close }).catch(error => {
+    identity, identityReady, remote: control, sdk, stopToken: service.config.stopToken, onStop: close }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
       throw error;
     });

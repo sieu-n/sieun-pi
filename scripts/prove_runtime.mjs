@@ -4,6 +4,7 @@ import { readdirSync, realpathSync, existsSync, readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { lockedPrimeVersion } from "../utils/prime-version.mjs";
 
 const { values } = parseArgs({ options: {
   home: { type: "string" }, project: { type: "string" },
@@ -25,7 +26,7 @@ process.chdir(project);
 const primeRoot = values["prime-root"] ? realpathSync(values["prime-root"])
   : dirname(dirname(fileURLToPath(import.meta.resolve("prime-agent"))));
 const primePackage = JSON.parse(readFileSync(join(primeRoot, "package.json"), "utf8"));
-assert.equal(primePackage.version, "0.9.4");
+assert.equal(primePackage.version, lockedPrimeVersion(fileURLToPath(new URL("..", import.meta.url))));
 const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(join(primeRoot, "dist", "index.js")).href);
 const loader = new DefaultResourceLoader({
   cwd: project,

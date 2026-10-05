@@ -3,17 +3,17 @@ import { mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { parseSchedules, projectRow, runningByParent, sessionPulse } from "../src/chat-catalog.ts";
+import { childrenByParent, parseSchedules, projectRow, runningByParent, sessionPulse, subtreeOf } from "../src/chat-catalog.ts";
 import { applyLabelAction, ChatLabels, LabelError, type LabelsState } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { readPulse } from "../src/shared/pulse.ts";
-import { activeFilters, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
+import { activeFilters, bucketOf, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
 import type { SessionRow, Tag } from "../src/shared/types.ts";
 
 const artifacts = () => process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(import.meta.dirname, "../.test-artifacts");
 const fresh = (): LabelsState => ({ tags: [], threads: Object.create(null) });
-const row = (id: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name: id, named: true, cwd: "/w", kind: "live", status: "idle", archived: false, messageCount: 2,
-  unread: false, tags: [], priority: 0, progress: "none", created: "2026-09-10T10:00:00Z", lastActivityAt: "2026-09-20T10:00:00Z", ...extra });
+const row = (id: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name: id, cwd: "/w", kind: "live", status: "idle", archived: false, messageCount: 2,
+  working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", created: "2026-09-10T10:00:00Z", lastActivityAt: "2026-09-20T10:00:00Z", ...extra });
 
 test("labels: create reuses a tag by name, rename refuses a clash, delete strips it from every thread, empty entries are pruned", () => {
   const state = fresh();
@@ -79,21 +79,27 @@ test("schedules come from active or paused jobs; heartbeat sources are heartbeat
   assert.equal(parseSchedules(null).size, 0);
 });
 
-test("catalog rows carry labels, schedule, and a working start only while busy", () => {
+test("catalog rows carry labels and schedule; status is the native roster status", () => {
   const base = { id: "a", lifecycle: "live", activity: "working", isSessionActive: true, sessionId: "a", activeSessionId: "live-a", cwd: "/tmp", isStreaming: true, isCompacting: false,
     attachedClients: 0, messageCount: 3, sessionActions: { queuedCount: 0, steering: [], followUps: [] } } as unknown as SessionSummary;
-  const busy = projectRow({ ...base, usage: { inputTokens: 10, outputTokens: 5, cost: 1.25 } } as SessionSummary, undefined, 0, { labels: { tags: ["t1"], priority: 2, progress: "plan" }, workingSince: Date.parse("2026-09-23T08:00:00Z"),
+  const busy = projectRow({ ...base, usage: { inputTokens: 10, outputTokens: 5, cost: 1.25 } } as SessionSummary, undefined, 0, { labels: { tags: ["t1"], priority: 2, progress: "plan" },
     schedule: { kind: "heartbeat", status: "active", expression: "every 5m" } });
   assert.equal(busy.status, "running");
-  assert.deepEqual([busy.tags, busy.priority, busy.workingSince, busy.schedule?.kind], [["t1"], 2, "2026-09-23T08:00:00.000Z", "heartbeat"]);
-  const idle = projectRow({ ...base, isStreaming: false }, undefined, 0, { workingSince: 1 });
-  assert.equal(idle.workingSince, undefined);
+  assert.deepEqual([busy.tags, busy.priority, busy.schedule?.kind], [["t1"], 2, "heartbeat"]);
+  const quiet = { ...base, isStreaming: false, activity: "idle", isSessionActive: false } as unknown as SessionSummary;
+  const idle = projectRow(quiet, undefined, 0);
+  assert.equal(idle.status, "idle");
+  const delegating = projectRow({ ...quiet, hasRunningRlmChildren: true, lastActivityAt: "2026-01-02T00:00:00Z" }, undefined, 0);
+  assert.deepEqual([delegating.status, delegating.working, delegating.subagentsRunning, delegating.unread], ["idle", true, 1, false],
+    "running subagents keep the thread working while its own turn is idle, and it does not need a response yet");
+  assert.equal(projectRow({ ...base, rosterStatus: "idle" } as SessionSummary, undefined, 0).status, "idle", "the daemon roster status wins");
+  assert.equal(projectRow({ ...quiet, rosterStatus: "running" } as SessionSummary, undefined, 0).status, "running");
   assert.deepEqual([idle.tags, idle.priority, idle.progress, idle.cost], [[], 0, "none", undefined], "no usage from the daemon means an unknown cost");
   assert.deepEqual([busy.progress, busy.cost], ["plan", 1.25]);
   const failedLine = "Model request failed: Provider rate limit exceeded (rate_limit_error, 429)";
-  const settled = projectRow({ ...base, isStreaming: false, summary: failedLine, taskState: "error" } as unknown as SessionSummary, undefined, 0);
+  const settled = projectRow({ ...quiet, summary: failedLine, taskState: "error" } as unknown as SessionSummary, undefined, 0);
   assert.equal(settled.failure, failedLine, "an idle session whose last call failed shows the failure line");
-  assert.equal(projectRow({ ...base, isStreaming: false, summary: failedLine } as SessionSummary, undefined, 0).failure, undefined, "a line the daemon no longer judges current is stale");
+  assert.equal(projectRow({ ...quiet, summary: failedLine } as SessionSummary, undefined, 0).failure, undefined, "a line the daemon no longer judges current is stale");
   assert.equal(projectRow({ ...base, summary: failedLine, taskState: "error" } as unknown as SessionSummary, undefined, 0).failure, undefined, "a running row uses its pulse");
 });
 
@@ -101,14 +107,14 @@ test("sidebar order: needs response, then working, then the rest by priority and
   const rows = [
     row("old-high", { priority: 3, lastActivityAt: "2026-09-01T00:00:00Z" }),
     row("recent", { lastActivityAt: "2026-09-22T00:00:00Z" }),
-    row("working", { status: "running" }),
+    row("working", { status: "running", working: true }),
     row("needs-low", { unread: true, lastActivityAt: "2026-09-02T00:00:00Z" }),
     row("needs-high", { unread: true, priority: 2, lastActivityAt: "2026-09-01T00:00:00Z" }),
     row("heartbeat", { schedule: { kind: "heartbeat", status: "active", expression: "every 5m" } }),
   ];
   assert.deepEqual([...rows].sort(compareRows).map(item => item.id), ["needs-high", "needs-low", "working", "old-high", "recent", "heartbeat"]);
-  assert.deepEqual(groupRows(rows).map(group => [group.bucket, group.rows.length]), [["needs", 2], ["working", 1], ["other", 3]]);
-  assert.equal(needsResponse(row("x", { status: "running", unread: true })), false, "a running thread never needs a response");
+  assert.deepEqual(groupRows(rows).map(group => [group.bucket, group.rows.length]), [["needs", 2], ["working", 1], ["idle", 3]]);
+  assert.equal(needsResponse(row("x", { status: "running", working: true, unread: true })), false, "a running thread never needs a response");
   assert.equal(statusOf(row("s", { status: "saved" })), "saved");
   assert.equal(tabOf(rows[5]!), "heartbeats");
   assert.deepEqual([elapsed(20_000), elapsed(12 * 60_000), elapsed(125 * 60_000), elapsed(50 * 3_600_000)], ["<1m", "12m", "2h 5m", "2d"]);
@@ -141,14 +147,14 @@ test("row shorthand: model names and session cost", () => {
 
 test("sidebar: chronological sort is one unlabeled list by activity, created age counts calendar days, row filters count and match", () => {
   const rows = [row("old", { lastActivityAt: "2026-09-20T10:00:00Z" }), row("needs", { unread: true, lastActivityAt: "2026-09-19T10:00:00Z" }), row("new", { lastActivityAt: "2026-09-21T10:00:00Z" })];
-  assert.deepEqual(groupRows(rows).map(group => group.bucket), ["needs", "other"]);
+  assert.deepEqual(groupRows(rows).map(group => group.bucket), ["needs", "idle"]);
   const recent = groupRows(rows, "recent");
   assert.equal(recent.length, 1);
   assert.equal(recent[0]!.bucket, null);
   assert.deepEqual(recent[0]!.rows.map(entry => entry.id), ["new", "old", "needs"]);
   assert.deepEqual(groupRows([], "recent"), []);
   const tags: Tag[] = [{ id: "t1", name: "infra", hue: 10 }, { id: "t2", name: "seo", hue: 200 }, { id: "t3", name: "unused", hue: 300 }];
-  const tagged = [row("a", { tags: ["t2"], lastActivityAt: "2026-09-21T10:00:00Z" }), row("b", { tags: ["t1", "t2"], status: "running" }), row("c", { tags: ["gone"] }), row("d")];
+  const tagged = [row("a", { tags: ["t2"], lastActivityAt: "2026-09-21T10:00:00Z" }), row("b", { tags: ["t1", "t2"], status: "running", working: true }), row("c", { tags: ["gone"] }), row("d")];
   const now = new Date(2026, 8, 23, 15, 0).getTime();
   assert.equal(createdAge(new Date(2026, 8, 23, 0, 5).toISOString(), now), "", "created today shows nothing");
   assert.equal(createdAge(new Date(2026, 8, 22, 23, 50).toISOString(), now), "1d");
@@ -182,8 +188,8 @@ test("pulse: live under a minute, quiet to five, then stalled; a current failure
 test("session pulse takes activity from running subagents below the thread and lists its direct ones", () => {
   const summary = (extra: Record<string, unknown>) => ({ sessionId: "s", cwd: "/w", isStreaming: false, isCompacting: false, messageCount: 1, sessionActions: { active: null, queuedCount: 0 }, ...extra }) as unknown as SessionSummary;
   const parent = summary({ sessionId: "p", hasRunningRlmChildren: true, lastActivityAt: "2026-09-23T10:00:00Z", summary: "Model request failed: 403", taskState: "error" });
-  const child = summary({ sessionId: "c", parentSessionId: "p", rlmChildId: "sub-1", isStreaming: true, isRunningTools: true, lastActivityAt: "2026-09-23T10:05:00Z" });
-  const grandchild = summary({ sessionId: "g", parentSessionId: "c", rlmChildId: "sub-2", isStreaming: true, lastActivityAt: "2026-09-23T10:09:00Z" });
+  const child = summary({ sessionId: "c", parentSessionId: "p", rlmChildId: "sub-1", activeSessionId: "live-c", activity: "working", isStreaming: true, isRunningTools: true, lastActivityAt: "2026-09-23T10:05:00Z" });
+  const grandchild = summary({ sessionId: "g", parentSessionId: "c", rlmChildId: "sub-2", activeSessionId: "live-g", activity: "working", isStreaming: true, lastActivityAt: "2026-09-23T10:09:00Z" });
   const idle = summary({ sessionId: "i", parentSessionId: "p", rlmChildId: "sub-3", lastActivityAt: "2026-09-23T11:00:00Z" });
   const pulse = sessionPulse(parent, runningByParent([child, grandchild, idle]));
   assert.equal(pulse.activityAt, "2026-09-23T10:09:00.000Z", "the freshest running descendant counts, finished ones do not");
@@ -191,4 +197,24 @@ test("session pulse takes activity from running subagents below the thread and l
   assert.equal(pulse.summary, "Model request failed: 403");
   assert.equal(pulse.summaryCurrent, true, "taskState on the wire means the daemon judged the summary at this message count");
   assert.equal(sessionPulse(summary({ sessionId: "p", isStreaming: true, summary: "Model request failed: 403" }), new Map()).summaryCurrent, undefined);
+});
+
+test("catalog subtree: cost adds every subagent below a thread, live or saved, and running subagents at any depth make it working", () => {
+  const summary = (sessionId: string, extra: Record<string, unknown> = {}) => ({ sessionId, cwd: "/w", lifecycle: "live", activity: "idle", isSessionActive: false, isStreaming: false,
+    isCompacting: false, attachedClients: 0, messageCount: 4, activeSessionId: "live-" + sessionId, sessionActions: { queuedCount: 0, steering: [], followUps: [] }, ...extra }) as unknown as SessionSummary;
+  const parent = summary("p", { usage: { inputTokens: 1, outputTokens: 1, cost: 4.5 }, lastActivityAt: "2026-01-02T00:00:00Z" });
+  const done = summary("c1", { parentSessionId: "p", rlmChildId: "sub-1", activeSessionId: undefined, lifecycle: "inactive", usage: { inputTokens: 1, outputTokens: 1, cost: 10 } });
+  const doneResident = summary("c1", { parentSessionId: "p", rlmChildId: "sub-1", usage: { inputTokens: 1, outputTokens: 1, cost: 10 } });
+  const deep = summary("g1", { parentSessionId: "c1", rlmChildId: "sub-2", rosterStatus: "running", usage: { inputTokens: 1, outputTokens: 1, cost: 2.5 } });
+  const children = childrenByParent([done, doneResident, deep]);
+  const subtree = subtreeOf(parent, children);
+  assert.deepEqual(subtree, { cost: 17, running: 1 }, "one copy per session id, and the grandchild counts");
+  const projected = projectRow(parent, undefined, 0, { subtree });
+  assert.deepEqual([projected.status, projected.working, projected.subagentsRunning, projected.cost, projected.unread], ["idle", true, 1, 17, false]);
+  const settled = projectRow(parent, undefined, 0, { subtree: subtreeOf(parent, childrenByParent([done])) });
+  assert.deepEqual([settled.working, settled.subagentsRunning, settled.cost, settled.unread], [false, 0, 14.5, true], "once subagents stop, an unread thread needs a response");
+  assert.equal(bucketOf(projected), "working");
+  assert.equal(bucketOf(settled), "needs");
+  assert.equal(bucketOf(projectRow(parent, Date.parse("2026-01-03T00:00:00Z"), 0, { subtree: subtreeOf(parent, new Map()) })), "idle", "read and not working is idle");
+  assert.equal(subtreeOf(summary("lonely"), new Map()).cost, undefined, "no usage anywhere stays unknown");
 });

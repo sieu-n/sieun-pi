@@ -1,7 +1,7 @@
 # sieun-pi
 
 Custom Prime Agent extensions, skills and account-pool tools in one source package.
-The supported host is **Prime Agent 0.9.4**. Upstream Pi compatibility is not claimed.
+The supported host is **Prime Agent 0.9.8**. `node scripts/sync-prime-agent.mjs` moves the locked SDK to the installed Prime Agent version; the chat service runs it on its own when the daemon updates. Upstream Pi compatibility is not claimed.
 
 ```text
 Public Git source or installed npm package
@@ -19,7 +19,7 @@ Credentials, settings, sessions and account stores stay outside the source tree.
 
 Use Node.js 22.8 or later and Python 3.11 or later on macOS or Linux.
 Native chat runs as a standalone loopback server on macOS and Linux. It never opens a browser. Keychain account operations and the updater require macOS.
-Install the Prime Agent 0.9.4 host separately. Provider credentials and account enrollment are not included.
+Install the Prime Agent 0.9.8 host separately. Provider credentials and account enrollment are not included.
 
 ```sh
 npm install --global --ignore-scripts 'git+https://github.com/sieu-n/sieun-pi.git'
@@ -77,8 +77,8 @@ npm run test:package
 It checks native Prime loading twice, then repeats apply, updates source links, rolls back and uninstalls them.
 
 Prime loads TypeScript and MJS from source. Its kernel installs the linked Python skills into its own environment.
-The root `.venv` is only for development. The runtime SDK dependency uses the locked official 0.9.4 R2 release,
-not the unavailable `prime-agent@0.9.4` npm registry version. `marked` is also a runtime dependency.
+The root `.venv` is only for development. The runtime SDK dependency uses the locked official R2 release (0.9.8 now),
+not the npm registry, which has no `prime-agent` release. `marked` is also a runtime dependency.
 
 ## Update, roll back and uninstall
 

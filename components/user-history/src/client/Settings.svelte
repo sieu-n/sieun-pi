@@ -4,10 +4,11 @@
   import AccountsSettings from "./AccountsSettings.svelte";
   import DefaultsSettings from "./DefaultsSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
+  import VersionsSettings from "./VersionsSettings.svelte";
 
   type Section = NonNullable<typeof store.drawer>;
   let { section }: { section: Section } = $props();
-  const SECTIONS: { id: Section; label: string }[] = [{ id: "accounts", label: "Accounts" }, { id: "defaults", label: "Defaults" }, { id: "remote", label: "Phone access" }];
+  const SECTIONS: { id: Section; label: string }[] = [{ id: "accounts", label: "Accounts" }, { id: "defaults", label: "Defaults" }, { id: "remote", label: "Phone access" }, { id: "versions", label: "Versions" }];
 </script>
 
 <Modal title="Settings" width="920px" onclose={() => { store.drawer = null; }}>
@@ -18,7 +19,7 @@
       {/each}
     </nav>
     <div class="content">
-      {#if section === "accounts"}<AccountsSettings />{:else if section === "defaults"}<DefaultsSettings />{:else if section === "remote"}<RemoteSettings />{/if}
+      {#if section === "accounts"}<AccountsSettings />{:else if section === "defaults"}<DefaultsSettings />{:else if section === "remote"}<RemoteSettings />{:else if section === "versions"}<VersionsSettings />{/if}
     </div>
   </div>
 </Modal>

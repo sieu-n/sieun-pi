@@ -1,6 +1,6 @@
 import { api, ApiError, requestId } from "./api.ts";
 import { hasUnsentDrafts } from "./drafts.ts";
-import { applyThreadEvent, isThreadBusy } from "../shared/thread-state.ts";
+import { applyThreadEvent } from "../shared/thread-state.ts";
 import type { ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
@@ -19,7 +19,7 @@ class Store {
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
   sidebarOpen = $state(window.innerWidth >= 900);
-  drawer = $state<"accounts" | "defaults" | "remote" | null>(null);
+  drawer = $state<"accounts" | "defaults" | "remote" | "versions" | null>(null);
   /** Bumped when Settings saves new defaults, so the new-chat screen reads them again. */
   defaultsRevision = $state(0);
   private toastId = 0;
@@ -100,11 +100,16 @@ class Store {
     void api.warm(id).catch(() => {});
   }
 
+  /**
+   * Leaving a thread marks everything up to now read, busy or not. The server keeps the later of now and the last activity, so output that
+   * arrives after you leave still counts as unread. Skipped only when nothing happened since this page last marked it.
+   */
   markRead(id: string): void {
     const entry = this.threads[id];
-    if (!entry?.state || isThreadBusy(entry.state)) return;
     const row = this.session(id);
-    if (!row?.unread && entry.lastReadAt > 0) return;
+    if (!entry?.state || !row) return;
+    const activity = Date.parse(row.lastActivityAt ?? "") || 0;
+    if (!row.unread && entry.lastReadAt > 0 && entry.lastReadAt >= activity) return;
     this.patch(id, { lastReadAt: Date.now() });
     void api.read(id).catch(() => {});
   }

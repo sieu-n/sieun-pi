@@ -1,5 +1,5 @@
-import { closeSync, existsSync, openSync, readSync } from "node:fs";
-import { StringDecoder } from "node:string_decoder";
+import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
@@ -7,52 +7,17 @@ import type { ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsE
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-export function previewTitle(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) return "New chat";
-  const skill = parseSkillBlock(value);
-  const text = skill ? skill.userMessage ?? "" : /^\s*<(?:skill|system|instructions)(?:\s|>)/i.test(value) ? "" : value;
-  return text.trim().replace(/\s+/g, " ").slice(0, 100) || "New chat";
-}
-
-const FIRST_MESSAGE_SCAN_BYTES = 4 * 1024 * 1024;
-
-function userText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.flatMap((part: unknown) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n");
-}
-
 /**
- * The first user message stored in a session file, read from the head of the file. Undefined when the file is missing or has no user message yet;
- * an empty string when none appears in the first FIRST_MESSAGE_SCAN_BYTES.
+ * The title the terminal agents view shows (`getAgentsViewSessionTitle`): the native session name, else the native first message, else the folder name. This server stores
+ * no title of its own. The one display change: a skill invocation shows what the user typed instead of the raw `<skill>` block.
  */
-export function fileFirstMessage(sessionFile: string): string | undefined {
-  let fd: number;
-  try { fd = openSync(sessionFile, "r"); } catch { return undefined; }
-  try {
-    const decoder = new StringDecoder("utf8");
-    const chunk = Buffer.alloc(64 * 1024);
-    let pending = "";
-    let scanned = 0;
-    while (scanned < FIRST_MESSAGE_SCAN_BYTES) {
-      const read = readSync(fd, chunk, 0, chunk.length, scanned);
-      if (read === 0) return undefined;
-      scanned += read;
-      pending += decoder.write(chunk.subarray(0, read));
-      let newline = pending.indexOf("\n");
-      while (newline >= 0) {
-        const line = pending.slice(0, newline);
-        pending = pending.slice(newline + 1);
-        newline = pending.indexOf("\n");
-        if (!line.includes('"user"')) continue;
-        try {
-          const entry: unknown = JSON.parse(line);
-          if (isRecord(entry) && entry.type === "message" && isRecord(entry.message) && entry.message.role === "user") return userText(entry.message.content);
-        } catch { /* a torn last line is still being written */ }
-      }
-    }
-    return "";
-  } finally { closeSync(fd); }
+export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMessage"> & { cwd?: string }): string {
+  const name = row.sessionName?.replace(/\s+/g, " ").trim();
+  if (name) return name;
+  const first = row.firstMessage ?? "";
+  const skill = parseSkillBlock(first);
+  const text = skill ? skill.userMessage ?? "" : /^\s*<(?:skill|system|instructions)(?:\s|>)/i.test(first) ? "" : first;
+  return text.replace(/\s+/g, " ").trim().slice(0, 100) || (row.cwd ? basename(row.cwd) : "") || "New chat";
 }
 
 export function isTopLevel(row: SessionSummary): boolean {
@@ -66,16 +31,22 @@ export function isListed(row: SessionSummary, fileExists: (path: string) => bool
   return row.sessionFile !== undefined && fileExists(row.sessionFile);
 }
 
-export function isBusySummary(row: SessionSummary): boolean {
-  return row.isStreaming || row.isCompacting || row.isBashRunning === true || row.hasRunningRlmChildren === true || row.isRunningTools === true ||
-    Boolean(row.sessionActions?.active) || (row.sessionActions?.queuedCount ?? 0) > 0;
+/**
+ * The status the terminal agents view shows: the daemon roster's `rosterStatus`, else the same formula the daemon uses
+ * (`classifySessionRosterStatus`: not resident is inactive; `activity` "working" or `isSessionActive` is running; else idle).
+ * This is the thread's own turn only; `isWorking` adds running subagents.
+ */
+export function nativeStatus(row: SessionSummary): "running" | "idle" | "inactive" {
+  if (row.rosterStatus) return row.rosterStatus;
+  if (row.activeSessionId === undefined) return "inactive";
+  return row.activity === "working" || row.isSessionActive ? "running" : "idle";
 }
 
 /** Running subagent summaries by the session id of their parent. */
 export function runningByParent(children: readonly SessionSummary[]): Map<string, SessionSummary[]> {
   const map = new Map<string, SessionSummary[]>();
   for (const row of children) {
-    if (!row.parentSessionId || !isBusySummary(row)) continue;
+    if (!row.parentSessionId || nativeStatus(row) !== "running") continue;
     const list = map.get(row.parentSessionId) ?? [];
     list.push(row);
     map.set(row.parentSessionId, list);
@@ -109,24 +80,69 @@ export function sessionPulse(row: SessionSummary, running: ReadonlyMap<string, S
 
 /**
  * The daemon writes "Model request failed: ..." with task state "error" when a session settles idle on an assistant error, judged at its present
- * message count; a later message replaces the state, so the pair means the last turn failed. The wire type (0.9.4) predates the "error" state.
+ * message count; a later message replaces the state, so the pair means the last turn failed. The wire type predates the "error" state.
  */
 export function settledOnFailure(row: SessionSummary): boolean {
   return (row.taskState as string | undefined) === "error" && Boolean(row.summary?.trim());
 }
 
-export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; workingSince?: number; pulse?: SessionPulse }
+/** Subagent summaries by parent session id, one per session id (the resident copy wins over a saved one). */
+export function childrenByParent(children: readonly SessionSummary[]): Map<string, SessionSummary[]> {
+  const byId = new Map<string, SessionSummary>();
+  for (const row of children) {
+    const existing = byId.get(row.sessionId);
+    if (!existing || (existing.activeSessionId === undefined && row.activeSessionId !== undefined)) byId.set(row.sessionId, row);
+  }
+  const map = new Map<string, SessionSummary[]>();
+  for (const row of byId.values()) {
+    if (!row.parentSessionId) continue;
+    const list = map.get(row.parentSessionId) ?? [];
+    list.push(row);
+    map.set(row.parentSessionId, list);
+  }
+  return map;
+}
+
+export interface Subtree { cost?: number; running: number }
+
+/**
+ * The terminal agents view's numbers for a thread's subagent tree: `recursiveCost` (own cost plus every subagent below it, live or saved, as
+ * `computeRecursiveRollups` adds it) and `runningSubagentCount` (running subagents at any depth).
+ */
+export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, SessionSummary[]>): Subtree {
+  let cost = row.usage && Number.isFinite(row.usage.cost) ? row.usage.cost : undefined;
+  let running = 0;
+  const seen = new Set<string>([row.sessionId]);
+  const pending = [...(children.get(row.sessionId) ?? [])];
+  for (let child = pending.pop(); child; child = pending.pop()) {
+    if (seen.has(child.sessionId)) continue;
+    seen.add(child.sessionId);
+    if (child.usage && Number.isFinite(child.usage.cost)) cost = (cost ?? 0) + child.usage.cost;
+    if (nativeStatus(child) === "running") running++;
+    pending.push(...(children.get(child.sessionId) ?? []));
+  }
+  return { ...(cost !== undefined ? { cost } : {}), running };
+}
+
+export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree }
+
+/** Working: the thread's own turn runs, or any subagent below it runs (`isSessionSummaryBusy` in the daemon counts both). */
+export function isWorking(row: SessionSummary, subtree?: Subtree): boolean {
+  if (row.activeSessionId === undefined) return false;
+  return nativeStatus(row) === "running" || row.hasRunningRlmChildren === true || (subtree?.running ?? 0) > 0;
+}
 
 export function projectRow(row: SessionSummary, readMarker: number | undefined, baseline: number, extras: RowExtras = {}): SessionRow {
   const live = row.activeSessionId !== undefined;
-  const named = typeof row.sessionName === "string" && row.sessionName.trim().length > 0;
   const lastActivity = Date.parse(row.lastActivityAt ?? row.modified ?? "");
   const finishedAt = Number.isFinite(lastActivity) ? lastActivity : 0;
-  const status: SessionRow["status"] = !live ? "saved" : isBusySummary(row) ? "running" : "idle";
+  const status: SessionRow["status"] = !live ? "saved" : nativeStatus(row) === "running" ? "running" : "idle";
+  const working = isWorking(row, extras.subtree);
+  const subagentsRunning = Math.max(extras.subtree?.running ?? 0, row.hasRunningRlmChildren === true ? 1 : 0);
+  const cost = extras.subtree ? extras.subtree.cost : row.usage && Number.isFinite(row.usage.cost) ? row.usage.cost : undefined;
   return {
     id: row.sessionId,
-    name: named ? row.sessionName!.trim() : previewTitle(row.firstMessage),
-    named,
+    name: sessionTitle(row),
     cwd: row.cwd,
     kind: live ? "live" : "saved",
     status,
@@ -136,16 +152,17 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     ...(row.created ? { created: row.created } : {}),
     ...(row.lastActivityAt ? { lastActivityAt: row.lastActivityAt } : row.modified ? { lastActivityAt: row.modified } : {}),
     messageCount: row.messageCount,
-    unread: status !== "running" && row.messageCount > 0 && finishedAt > Math.max(baseline, readMarker ?? 0),
+    working,
+    subagentsRunning,
+    unread: !working && row.messageCount > 0 && finishedAt > Math.max(baseline, readMarker ?? 0),
     ...(row.workerState ? { workerState: row.workerState } : {}),
     ...(row.statusLabel ? { statusLabel: row.statusLabel } : {}),
     ...(status !== "running" && settledOnFailure(row) ? { failure: row.summary!.trim().slice(0, 400) } : {}),
     tags: extras.labels?.tags ?? [],
     priority: extras.labels?.priority ?? 0,
     progress: extras.labels?.progress ?? "none",
-    ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}),
-    ...(status === "running" && extras.workingSince !== undefined ? { workingSince: new Date(extras.workingSince).toISOString() } : {}),
-    ...(status === "running" && extras.pulse ? { pulse: extras.pulse } : {}),
+    ...(cost !== undefined ? { cost } : {}),
+    ...(working && extras.pulse ? { pulse: extras.pulse } : {}),
     ...(extras.schedule ? { schedule: extras.schedule } : {}),
   };
 }
@@ -180,10 +197,8 @@ export class Catalog {
   private summaries = new Map<string, SessionSummary>();
   private childSummaries: SessionSummary[] = [];
   private schedules = new Map<string, ThreadSchedule>();
-  private readonly workingSince = new Map<string, number>();
-  private readonly firstMessages = new Map<string, string>();
-  /** The attached thread's native run start, when the browser has that thread open. */
-  runStartedAt: (sessionId: string) => number | null = () => null;
+  /** Called with `daemon_hello.appVersion` after each daemon connect, so a Prime Agent update is seen when the daemon comes back. */
+  onDaemonVersion: (version: string | undefined) => void = () => {};
   private readonly listeners = new Set<(event: SessionsEvent) => void>();
   private daemon: "up" | "down" = "down";
   private lastError: string | undefined;
@@ -226,7 +241,8 @@ export class Catalog {
     this.connecting = (async () => {
       try {
         await this.client.reconnect(1500);
-        await this.client.waitForHello(1500);
+        const hello = await this.client.waitForHello(1500);
+        this.onDaemonVersion(hello.appVersion);
         const response = await this.client.request({ type: "roster_subscribe" }, 10000, { recoverable: false });
         if (!response.success) throw new Error(response.error);
         this.subscribed = true;
@@ -271,48 +287,19 @@ export class Catalog {
     return this.refreshing;
   }
 
-  /** Working time starts at the attached thread's native run start, else when this server first saw the session busy. */
-  private trackWorking(row: SessionSummary, now: number): number | undefined {
-    if (!isBusySummary(row) || row.activeSessionId === undefined) { this.workingSince.delete(row.sessionId); return undefined; }
-    const native = this.runStartedAt(row.sessionId);
-    const since = Math.min(this.workingSince.get(row.sessionId) ?? now, native ?? now);
-    this.workingSince.set(row.sessionId, since);
-    return since;
-  }
-
-  /**
-   * A live daemon row takes firstMessage from the saved-session scan when it has one, else from the in-memory context. After a compaction that
-   * context starts at a later user turn (often an injected resume notice), so the title of a live thread is read from its session file instead.
-   */
-  private firstMessage(row: SessionSummary): string | undefined {
-    if (row.activeSessionId === undefined || !row.sessionFile) return row.firstMessage;
-    const cached = this.firstMessages.get(row.sessionFile);
-    if (cached !== undefined) return cached || row.firstMessage;
-    const found = fileFirstMessage(row.sessionFile);
-    if (found === undefined) return row.firstMessage;
-    this.firstMessages.set(row.sessionFile, found);
-    return found || row.firstMessage;
-  }
-
-  private withFirstMessage(row: SessionSummary): SessionSummary {
-    const firstMessage = this.firstMessage(row);
-    return firstMessage === row.firstMessage || firstMessage === undefined ? row : { ...row, firstMessage };
-  }
-
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
     const [state, labels] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null)]);
-    const now = Date.now();
-    for (const id of this.workingSince.keys()) if (!this.summaries.has(id)) this.workingSince.delete(id);
     const running = runningByParent(this.childSummaries);
+    const children = childrenByParent(this.childSummaries);
     const rows = [...this.summaries.values()]
       .filter(row => isListed(row))
       .map(row => {
         const schedule = this.schedules.get(row.sessionId);
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
-        const workingSince = this.trackWorking(row, now);
-        return this.applyHeld(row, projectRow(this.withFirstMessage(row), state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
-          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), ...(workingSince === undefined ? {} : { workingSince }),
-          ...(isBusySummary(row) ? { pulse: sessionPulse(row, running) } : {}) }));
+        const subtree = subtreeOf(row, children);
+        return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
+          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree,
+          ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
     return { rows, tags: labels?.tags ?? [] };
@@ -375,8 +362,8 @@ export class Catalog {
     const agrees = held === "archived" ? row.lifecycle === "archived" && row.activeSessionId === undefined : row.lifecycle !== "archived";
     if (agrees) { this.heldLifecycle.delete(row.sessionId); return projected; }
     if (held === "active") return { ...projected, archived: false };
-    const { pulse: _pulse, workingSince: _since, ...rest } = projected;
-    return { ...rest, archived: true, kind: "saved", status: "saved", unread: false };
+    const { pulse: _pulse, ...rest } = projected;
+    return { ...rest, archived: true, kind: "saved", status: "saved", working: false, subagentsRunning: 0, unread: false };
   }
 
   async workspaces(): Promise<Workspace[]> {

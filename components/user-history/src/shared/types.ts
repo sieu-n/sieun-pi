@@ -128,8 +128,8 @@ export type SessionKind = "live" | "saved";
 export type SessionStatus = "running" | "idle" | "saved";
 export interface SessionRow {
   id: string;
+  /** The native title: session name, else first message (see sessionTitle). */
   name: string;
-  named: boolean;
   cwd: string;
   kind: SessionKind;
   status: SessionStatus;
@@ -139,6 +139,11 @@ export interface SessionRow {
   created?: string;
   lastActivityAt?: string;
   messageCount: number;
+  /** The thread's own turn runs (`status` "running") or a subagent below it runs. Drives the Working group. */
+  working: boolean;
+  /** Running subagents at any depth, as the terminal agents view counts them under a row. */
+  subagentsRunning: number;
+  /** Not working, and its last activity came after the browser last left it (the read marker). */
   unread: boolean;
   workerState?: string;
   statusLabel?: string;
@@ -146,12 +151,11 @@ export interface SessionRow {
   failure?: string;
   tags: string[];
   priority: Priority;
-  workingSince?: string;
   schedule?: ThreadSchedule;
   progress: Progress;
-  /** Native session usage cost in dollars from the daemon summary; absent when the daemon did not report usage. */
+  /** Cost in dollars of the thread plus every subagent below it, the terminal agents view's number; absent when the daemon reported no usage. */
   cost?: number;
-  /** Present while running: freshness inputs for this thread and its running subagents. */
+  /** Present while working: freshness inputs for this thread and its running subagents. */
   pulse?: SessionPulse;
 }
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
@@ -225,3 +229,19 @@ export interface RemoteAccessView {
   editable: boolean;
 }
 export interface RemoteAccessInput { tailscale?: boolean; keepRunning?: boolean }
+
+/** A chat-client SDK update. `failed` comes back after a restart until the daemon version changes or Retry succeeds. */
+export interface SdkUpdateState { state: "idle" | "running" | "failed" | "restarting"; target?: string; message: string; log: string[]; at?: string }
+/** Settings > Versions: the Prime Agent daemon, the prime-agent package this chat loaded, and the chat build. */
+export interface SdkView {
+  daemon: string | null;
+  client: string;
+  build: string;
+  matched: boolean;
+  auto: boolean;
+  /** scripts/sync-prime-agent.mjs is present, so this chat can update itself. */
+  available: boolean;
+  /** The service runs under launchd, so it can restart itself after an update. */
+  canRestart: boolean;
+  update: SdkUpdateState;
+}

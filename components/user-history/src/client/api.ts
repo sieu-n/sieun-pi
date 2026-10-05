@@ -1,4 +1,6 @@
-import type { AccountAction, AccountLogin, AccountsView, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, SdkView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, Workspace } from "../shared/types.ts";
+
+import { subscribeFeed } from "./feeds.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -29,21 +31,19 @@ export function requestId(): string {
 
 export const api = {
   sessionsStream(onEvent: (event: SessionsEvent) => void, onError: () => void, onBuild: (version: string) => void): () => void {
-    const source = new EventSource("api/sessions/stream");
-    source.addEventListener("build", event => onBuild((JSON.parse((event as MessageEvent<string>).data) as { version: string }).version));
-    source.addEventListener("sessions", event => onEvent(JSON.parse((event as MessageEvent<string>).data) as SessionsEvent));
-    source.onerror = () => onError();
-    return () => source.close();
+    return subscribeFeed({ feed: "sessions" }, (event, data) => {
+      if (event === "build") onBuild((data as { version: string }).version);
+      else if (event === "sessions") onEvent(data as SessionsEvent);
+    }, onError);
   },
   threadStream(id: string, onEvent: (event: ThreadEvent) => void, onError: () => void): () => void {
-    const source = new EventSource("api/threads/" + encodeURIComponent(id) + "/stream");
-    source.addEventListener("thread", event => {
-      const parsed = JSON.parse((event as MessageEvent<string>).data) as ThreadEvent;
-      if (parsed.type === "status" && parsed.connection === "closed" && parsed.error) source.close();
+    const stop = subscribeFeed({ feed: "thread", id }, (event, data) => {
+      if (event !== "thread") return;
+      const parsed = data as ThreadEvent;
+      if (parsed.type === "status" && parsed.connection === "closed" && parsed.error) stop();
       onEvent(parsed);
-    });
-    source.onerror = () => onError();
-    return () => source.close();
+    }, onError);
+    return stop;
   },
   workspaces: () => get<{ workspaces: Workspace[] }>("api/workspaces").then(body => body.workspaces),
   resolveWorkspace: (path: string) => post<{ cwd: string }>("api/workspaces/resolve", { path }).then(body => body.cwd),
@@ -54,6 +54,9 @@ export const api = {
   remote: () => get<RemoteAccessView>("api/remote"),
   setRemote: (input: RemoteAccessInput) => post<RemoteAccessView>("api/remote", input, 60000),
   checkRemote: () => post<RemoteAccessView>("api/remote/check", {}, 60000),
+  sdk: () => get<SdkView | null>("api/sdk"),
+  updateSdk: () => post<SdkView>("api/sdk", { action: "update" }),
+  setSdkAuto: (auto: boolean) => post<SdkView>("api/sdk", { action: "auto", auto }),
   commands: (id: string | null) => get<{ commands: Command[] }>(id ? "api/threads/" + encodeURIComponent(id) + "/commands" : "api/commands", 30000).then(body => body.commands),
   childUsage: (id: string) => get<{ children: ChildUsage[] }>("api/threads/" + encodeURIComponent(id) + "/child-usage").then(body => body.children),
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
@@ -68,9 +71,7 @@ export const api = {
   setNote: (id: string, text: string) => post<ThreadNote>("api/threads/" + encodeURIComponent(id) + "/note", { text }),
   accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000),
   loginStream(onLogin: (login: AccountLogin | null) => void): () => void {
-    const source = new EventSource("api/accounts/login/stream");
-    source.addEventListener("login", event => onLogin(JSON.parse((event as MessageEvent<string>).data) as AccountLogin | null));
-    return () => source.close();
+    return subscribeFeed({ feed: "login" }, (event, data) => { if (event === "login") onLogin(data as AccountLogin | null); });
   },
   startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),
   pasteLogin: (id: string, code: string) => post<AccountLogin>("api/accounts/login/paste", { id, code }),

@@ -1,19 +1,14 @@
 # Rules for every prime-agent session
 
+## Subagents, not new threads
+
+Delegate work with `await rlm.spawn(...)` (subagents). This holds for fan-out, audits, long jobs, and "have someone/an agent work on this" requests.
+
+Do not call `rlm.create_session(...)` to open a new top-level thread unless the user explicitly asks for a new or separate thread, or a top-level session. The base system prompt describes `rlm.create_session`; that text only says the call exists. It is not a reason to use it. If `rlm.spawn` fails (for example at the `RLM_MAX_DEPTH` ceiling), do the work inline or tell the user. Do not fall back to a new thread.
+
 ## Subagent models (rlm children)
 
-Soft default. Unless the user explicitly asks for a specific subagent architecture (named models, a cross-family panel, an arena), pick the child model like this:
-
-- Claude child: `anthropic/claude-fable-5-1`. Not Opus. Omit `model=` when you already run on Fable 5.1.
-- Codex child: GPT Astra. Find the exact selector with `await rlm.find_models('astra')`. If no Astra selector is available, use `anthropic/claude-fable-5-1` instead.
-
-Hard rule, no exceptions, even when a skill, playbook, or config file names them:
-
-- Never Sonnet, any version.
-- Never Haiku, any version.
-- Never the gpt terra or luna series (`gpt-5.6-terra`, `gpt-5.6-terra-pro`, `gpt-5.6-luna`, `gpt-5.6-luna-pro`, and later models with those names).
-
-Do not add a hard lock (extension, setting, code patch) to enforce this. The user wants the written rule only.
+The model policy lives in one place: the `policy` block and `roles` of `~/.prime/agent/pstack-models.json`. Read it before you set `model=` on a spawn. Change it with the `setup-pstack` skill, not here.
 
 ## Rich replies in the browser chat
 

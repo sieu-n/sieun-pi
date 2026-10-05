@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
+  import { ui } from "./ui.svelte.ts";
   import { labels, type TagSelection } from "./labels.ts";
   import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
   import type { ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, Progress, SendMode, ThinkingLevel, Workspace } from "../shared/types.ts";
@@ -37,9 +38,12 @@
 
   /** Labels for the thread this send creates; they are written to it right after the create returns its id. */
   let draftTags = $state<string[]>([]);
+  /** The tag the sidebar is filtered by starts selected, so a new thread stays in the list you are looking at. */
+  const filterTags = (): string[] => { const tag = ui.sidebarFilter.tag; return tag !== "any" && tag !== "none" ? [tag] : []; };
+  $effect(() => { draftTags = filterTags(); });
   let draftPriority = $state<Priority>(0);
   let draftProgress = $state<Progress>("none");
-  let labelPicker = $state<{ field: "tags" | "priority" | "progress"; anchor: HTMLElement } | null>(null);
+  let labelPicker = $state<{ field: "name" | "tags" | "priority" | "progress"; anchor: HTMLElement } | null>(null);
   const shownTags = $derived(store.tags.filter(tag => draftTags.includes(tag.id)));
   const draftSelection: TagSelection = {
     label: "Tags for the new thread",
@@ -47,7 +51,7 @@
     set: async (tagId, on) => { draftTags = on ? [...draftTags.filter(entry => entry !== tagId), tagId] : draftTags.filter(entry => entry !== tagId); },
     create: async name => { const tagId = await labels.create(name, []); if (tagId && !draftTags.includes(tagId)) draftTags = [...draftTags, tagId]; },
   };
-  function pick(event: MouseEvent, field: "tags" | "priority" | "progress"): void {
+  function pick(event: MouseEvent, field: "name" | "tags" | "priority" | "progress"): void {
     const anchor = event.currentTarget as HTMLElement;
     labelPicker = labelPicker?.field === field ? null : { field, anchor };
   }
@@ -108,7 +112,7 @@
       ...(account ? { account } : {}) });
     if (!id) return false;
     threadName = "";
-    draftTags = [];
+    draftTags = filterTags();
     draftPriority = 0;
     draftProgress = "none";
     await Promise.all([
@@ -145,8 +149,6 @@
         </div>
       {:else}
         <h1 class="greeting">{greeting}</h1>
-        <input class="thread-name" type="text" maxlength="200" placeholder="Thread name (optional)" aria-label="Thread name" autocomplete="off" spellcheck="false" bind:value={threadName}
-          onkeydown={event => { if (event.key === "Enter") { event.preventDefault(); document.querySelector<HTMLTextAreaElement>("[data-composer]")?.focus(); } }} />
         <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder="Ask Prime Agent anything" />
         <div class="options-row">
           <div class="group" role="group" aria-label="Setup for the new thread">
@@ -179,6 +181,10 @@
               defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
           </div>
           <div class="group" role="group" aria-label="Labels for the new thread">
+            <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "name"} aria-label={threadName.trim() ? "Thread name: " + threadName.trim() : "Thread name"}
+              onclick={event => pick(event, "name")}>
+              <Icon name="pencil" size={13} /><span class="name-label" class:set={threadName.trim()}>{threadName.trim() || "Name"}</span>
+            </button>
             <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "tags"} onclick={event => pick(event, "tags")}>
               <Icon name="tag" size={13} />
               {#if shownTags.length}{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}{:else}<span>Tags</span>{/if}
@@ -200,7 +206,14 @@
   <Lightbox images={store.pending.images.map((image, index) => ({ src: "data:" + image.mimeType + ";base64," + image.data, alt: `Image ${index + 1}` }))} index={lightbox} onclose={() => { lightbox = null; }} />
 {/if}
 {#if labelPicker}
-  {#if labelPicker.field === "tags"}
+  {#if labelPicker.field === "name"}
+    <Floating anchor={labelPicker.anchor} width={300} maxHeight={120} label="Name for the new thread" onclose={() => { labelPicker = null; }}>
+      <div class="menu-heading">Thread name</div>
+      <input class="field name-field" type="text" maxlength="200" placeholder="Leave empty to name it from the first message" aria-label="Thread name" autocomplete="off" spellcheck="false"
+        data-autofocus bind:value={threadName}
+        onkeydown={event => { if (event.key === "Enter") { event.preventDefault(); labelPicker = null; requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("[data-composer]")?.focus()); } }} />
+    </Floating>
+  {:else if labelPicker.field === "tags"}
     <Floating anchor={labelPicker.anchor} width={260} maxHeight={360} label="Tags for the new thread" onclose={() => { labelPicker = null; }}><TagPicker selection={draftSelection} /></Floating>
   {:else if labelPicker.field === "priority"}
     <Floating anchor={labelPicker.anchor} width={210} maxHeight={120} label="Priority for the new thread" onclose={() => { labelPicker = null; }}>
@@ -221,10 +234,9 @@
   .center { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 20px 10vh; overflow-y: auto; }
   .column { width: 100%; max-width: var(--column); }
   .greeting { margin: 0 0 18px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
-  .thread-name { display: block; width: 100%; margin: 0 0 8px; padding: 6px 4px; border: 0; border-bottom: 1px solid transparent; background: none; outline: none; color: var(--text); font-size: 15px; font-weight: 600; }
-  .thread-name::placeholder { color: var(--text-faint); font-weight: 500; }
-  .thread-name:hover { border-bottom-color: var(--border); }
-  .thread-name:focus { border-bottom-color: var(--accent); }
+  .name-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .name-label.set { color: var(--text); font-weight: 600; }
+  .name-field { display: block; width: calc(100% - 16px); margin: 4px 8px 8px; }
   .pending-name { align-self: flex-start; font-size: 15px; font-weight: 600; }
   .options-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-top: 8px; padding: 0 4px; }
   .group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }

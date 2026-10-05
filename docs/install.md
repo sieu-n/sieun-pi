@@ -1,6 +1,6 @@
 # Install and manage source links
 
-This installer targets Prime Agent 0.9.4. It does not install an interactive Prime host, configure accounts, or copy runtime state.
+This installer targets Prime Agent 0.9.8. It does not install an interactive Prime host, configure accounts, or copy runtime state.
 Use Node.js 22.8 or later and Python 3.11 or later. The installer supports macOS and Linux.
 The history/chat UI, Keychain operations and LaunchAgent need macOS. Aside and provider credentials remain external requirements.
 
@@ -16,9 +16,9 @@ No npm publication is required. The package has a `bin` command, source-file all
 The command skips dependency lifecycle hooks with `--ignore-scripts`. Do not use `--omit=optional`.
 No dependency resolves to a path on the author's machine.
 
-The root runtime dependencies include `marked@18.0.12` and the official Prime Agent 0.9.4 SDK tarball.
-The registry returns E404 for `prime-agent@0.9.4`, so this package uses the versioned R2 URL in `package.json` and `package-lock.json`.
-The matching release checksums are at [SHA256SUMS](https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.4/SHA256SUMS).
+The root runtime dependencies include `marked@18.0.12` and the official Prime Agent SDK tarball (0.9.8 now). `node scripts/sync-prime-agent.mjs` moves it to the installed Prime Agent version.
+The registry returns E404 for `prime-agent`, so this package uses the versioned R2 URL in `package.json` and `package-lock.json`.
+The matching release checksums are at [SHA256SUMS](https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev/releases/v0.9.8/SHA256SUMS).
 The dependency supports history/session APIs. It does not replace your interactive host or its accounts.
 The pinned SDK currently has two high-severity npm audit entries through `extract-zip`. No fix is available in that release.
 Do not use it to extract untrusted archives.
@@ -55,7 +55,7 @@ sieun-pi apply --plan "$PROFILE/plan.json"
 node "$(sieun-pi source)/scripts/prove_runtime.mjs" --home "$PROFILE/home" --project "$PROFILE/project"
 ```
 
-The proof uses the installed package's Prime 0.9.4 SDK. It checks every custom skill, three extension entry points,
+The proof uses the installed package's locked Prime SDK. It checks every custom skill, three extension entry points,
 all four command registrations and the history flag. It reloads twice. It exercises the Virev guard and writing rules,
 and verifies that a directory outside the configured project does not receive its Git policy.
 It runs no model, account or MCP calls and opens no browser.

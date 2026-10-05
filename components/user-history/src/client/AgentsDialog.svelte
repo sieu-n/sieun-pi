@@ -63,8 +63,9 @@
   function detail(row: SessionRow): { text: string; tone: string } | null {
     const pulse = pulseOf(row, now);
     if (pulse?.level === "failed") return { text: pulse.text, tone: "failed" };
-    if (row.status !== "running" && row.failure) return { text: row.failure, tone: "failed" };
+    if (!row.working && row.failure) return { text: row.failure, tone: "failed" };
     if (row.status === "running" && row.statusLabel) return { text: row.statusLabel, tone: "" };
+    if (row.working && row.subagentsRunning > 0) return { text: `${row.subagentsRunning} ${row.subagentsRunning === 1 ? "subagent" : "subagents"} running`, tone: "" };
     if (row.schedule) return { text: (row.schedule.label ?? row.schedule.kind) + (row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, now) : ""), tone: "" };
     return null;
   }

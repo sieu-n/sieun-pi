@@ -1,136 +1,140 @@
 {
   "version": 1,
+  "verified_at": "2026-09-23",
   "roles": {
     "feature, refactoring": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "bug-fix": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "perf-issue": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "hillclimb": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "judgment and prose": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "hardest tasks": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "how explorer": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "xhigh"
+        "model": "inherit-parent"
       }
     ],
     "how explainer": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "how critics": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "xhigh"
+        "model": "inherit-parent"
       },
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "why investigators": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "xhigh"
+        "model": "inherit-parent"
       }
     ],
     "why synthesizer": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "reflect tooling": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "reflect judgment, divergent, synthesizer": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "arena runners": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "xhigh"
+        "model": "inherit-parent"
       },
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "arena cross-judge pool": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "xhigh"
+        "model": "inherit-parent"
       },
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "swarm workers": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "xhigh"
+        "model": "inherit-parent"
       }
     ],
     "architect runners": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "xhigh"
+        "model": "inherit-parent"
       },
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
       }
     ],
     "interrogate reviewers": [
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "xhigh"
+        "model": "inherit-parent"
       },
       {
-        "model": "anthropic/claude-fable-5-1",
-        "thinking": "max"
+        "model": "inherit-parent"
+      }
+    ],
+    "frontend": [
+      {
+        "model": "anthropic/claude-fable-5-1"
       }
     ]
   },
   "policy": {
-    "rule": "Use the written model policy in AGENTS.md. Run setup-pstack to detect available models and change role assignments."
+    "source_of_truth": "This file is the only model policy for Prime Agent subagents. ~/.prime/agent/AGENTS.md points here. Change it with the setup-pstack skill.",
+    "default": "inherit-parent: omit model= so the child runs on the parent's model. Omit thinking= too unless a role sets it.",
+    "allowed": [
+      "inherit-parent",
+      "anthropic/claude-opus-5-5",
+      "anthropic/claude-fable-5-1",
+      "openai-codex/gpt-6-astra"
+    ],
+    "recommended": {
+      "frontend": [
+        "anthropic/claude-fable-5-1",
+        "anthropic/claude-opus-5-5"
+      ]
+    },
+    "banned": "Never Sonnet or Haiku (any version). Never the gpt terra or luna series (gpt-5.6-terra, gpt-5.6-terra-pro, gpt-5.6-luna, gpt-5.6-luna-pro, and later models with those names). Never other Opus or Fable versions. This holds even when a skill, playbook, or config names them.",
+    "explicit_user_choice": "When the user names a model or a subagent architecture (named models, a cross-family panel, an arena), follow the user, inside the banned list.",
+    "enforcement": "Written rule only. Do not add an extension, setting, or code patch to enforce it.",
+    "reachability_2026-09-23": {
+      "anthropic/claude-fable-5-1": "MODEL_OK",
+      "anthropic/claude-opus-5-5": "MODEL_OK",
+      "openai-codex/gpt-6-astra": "blocked: 'You have hit your ChatGPT usage limit (pro plan). Try again in ~9667 min.' If a spawn on it fails, use inherit-parent or a Claude model."
+    }
   }
 }

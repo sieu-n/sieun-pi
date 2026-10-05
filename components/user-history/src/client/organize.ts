@@ -1,12 +1,12 @@
 import type { Priority, Progress, SessionRow, Tag } from "../shared/types.ts";
 import { readPulse, type PulseReading } from "../shared/pulse.ts";
 
-export type Bucket = "needs" | "working" | "other";
+export type Bucket = "needs" | "working" | "idle";
 export type Tab = "threads" | "heartbeats";
 export type RowStatus = "needs" | "working" | "stalled" | "idle" | "saved";
 
-export const BUCKETS: readonly Bucket[] = ["needs", "working", "other"];
-export const BUCKET_LABEL: Record<Bucket, string> = { needs: "Needs response", working: "Working", other: "Other threads" };
+export const BUCKETS: readonly Bucket[] = ["needs", "working", "idle"];
+export const BUCKET_LABEL: Record<Bucket, string> = { needs: "Needs response", working: "Working", idle: "Idle" };
 export const STATUS_LABEL: Record<RowStatus, string> = { needs: "Needs response", working: "Working", stalled: "Stalled", idle: "Idle", saved: "Saved" };
 export const PRIORITY_LABEL: Record<Priority, string> = { 0: "No priority", 1: "Low", 2: "Medium", 3: "High" };
 export const PROGRESS_LABEL: Record<Progress, string> = { none: "No progress", plan: "Plan", implementation: "Implementation", qa: "QA" };
@@ -28,14 +28,14 @@ export function money(cost: number | undefined): string {
   return "$" + (cost < 100 ? cost.toFixed(2) : Math.round(cost).toLocaleString("en-US"));
 }
 
-/** Needs response: not running, has messages, and its last activity came after the browser last opened it (the unread marker). */
-export const needsResponse = (row: SessionRow): boolean => row.status !== "running" && row.unread;
-export const bucketOf = (row: SessionRow): Bucket => row.status === "running" ? "working" : needsResponse(row) ? "needs" : "other";
-/** Freshness of a running row, null when it is not running. */
-export const pulseOf = (row: SessionRow, now = Date.now()): PulseReading | null => row.status === "running" && row.pulse ? readPulse(row.pulse, now) : null;
-/** Stalled covers a running row that is stalled or failed. */
+/** Working: its own turn or any subagent below it runs. Needs response: not working, and it changed after the browser last left it. Idle: the rest. */
+export const needsResponse = (row: SessionRow): boolean => !row.working && row.unread;
+export const bucketOf = (row: SessionRow): Bucket => row.working ? "working" : needsResponse(row) ? "needs" : "idle";
+/** Freshness of a working row, null when it is not working. */
+export const pulseOf = (row: SessionRow, now = Date.now()): PulseReading | null => row.working && row.pulse ? readPulse(row.pulse, now) : null;
+/** Stalled covers a working row that is stalled or failed. */
 export function statusOf(row: SessionRow, now = Date.now()): RowStatus {
-  if (row.status === "running") { const level = pulseOf(row, now)?.level; return level === "stalled" || level === "failed" ? "stalled" : "working"; }
+  if (row.working) { const level = pulseOf(row, now)?.level; return level === "stalled" || level === "failed" ? "stalled" : "working"; }
   return needsResponse(row) ? "needs" : row.status === "idle" ? "idle" : "saved";
 }
 export const tabOf = (row: SessionRow): Tab => row.schedule ? "heartbeats" : "threads";
@@ -54,7 +54,7 @@ export function matchesQuery(row: SessionRow, needle: string, tags: ReadonlyMap<
 }
 
 export type SidebarSort = "grouped" | "recent";
-export const SIDEBAR_SORT_LABEL: Record<SidebarSort, string> = { grouped: "Needs response, working, other", recent: "Chronological" };
+export const SIDEBAR_SORT_LABEL: Record<SidebarSort, string> = { grouped: "Needs response, working, idle", recent: "Chronological" };
 /** How much a sidebar card shows under its title. Current: age, working time, cost, model, tags, progress and priority. Tags: only the tag chips. */
 export type SidebarView = "current" | "tags";
 export const SIDEBAR_VIEW_LABEL: Record<SidebarView, string> = { current: "Show details", tags: "Show tags only" };
