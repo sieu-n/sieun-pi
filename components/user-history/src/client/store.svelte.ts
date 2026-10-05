@@ -1,10 +1,14 @@
 import { api, ApiError, requestId } from "./api.ts";
 import { hasUnsentDrafts } from "./drafts.ts";
 import { applyThreadEvent } from "../shared/thread-state.ts";
+import type { PendingSend } from "../shared/chat-feed.ts";
 import type { ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
-export interface PendingChat { cwd: string; name?: string; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
+/** `kind` "chat" creates a chat thread (the server marks the session and lists it under Chats); absent means a normal thread. */
+export interface PendingChat { cwd: string; name?: string; kind?: "chat"; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
+/** How long `createChat` waits for the sessions stream to list a new chat before showing it, so the chat view opens instead of the thread view. */
+const NEW_ROW_WAIT_MS = 3000;
 
 /** `lastEventAt` is when this tab last got a live event from the thread stream (0 until the first one after the snapshot). */
 type ThreadEntry = { state: ThreadState | null; error: string | null; loading: boolean; close: (() => void) | null; lastReadAt: number; lastEventAt: number };
@@ -22,6 +26,8 @@ class Store {
   drawer = $state<"accounts" | "defaults" | "remote" | "versions" | null>(null);
   /** Bumped when Settings saves new defaults, so the new-chat screen reads them again. */
   defaultsRevision = $state(0);
+  /** Chat sends each thread has not echoed back yet, by thread id, oldest first. */
+  pendingSends = $state.raw<Record<string, PendingSend[]>>({});
   private toastId = 0;
   private sessionsStop: (() => void) | null = null;
 
@@ -133,15 +139,47 @@ class Store {
     return result !== undefined;
   }
 
+  /**
+   * A chat send: the bubble appears at once as pending and the box is free again; the message steers the thread so it lands
+   * even while it is busy. A refused send drops the bubble and shows the error; the composer gets its text back.
+   */
+  async sendChat(id: string, text: string, images: ImageInput[]): Promise<boolean> {
+    const send: PendingSend = { id: requestId(), text, at: Date.now(),
+      images: images.map(image => ({ type: "image", mimeType: image.mimeType, url: "data:" + image.mimeType + ";base64," + image.data })) };
+    this.pendingSends = { ...this.pendingSends, [id]: [...(this.pendingSends[id] ?? []), send] };
+    const ok = await this.send(id, text, images, "steer");
+    if (!ok) this.settleSends(id, new Set([send.id]));
+    return ok;
+  }
+
+  /** Forget pending sends the thread has echoed back (the chat view reports them), so the list never grows. */
+  settleSends(id: string, ids: ReadonlySet<string>): void {
+    const sends = this.pendingSends[id] ?? [];
+    if (!sends.some(send => ids.has(send.id))) return;
+    const left = sends.filter(send => !ids.has(send.id));
+    const { [id]: _dropped, ...rest } = this.pendingSends;
+    this.pendingSends = left.length ? { ...rest, [id]: left } : rest;
+  }
+
   /** Creates the native session, opens it, and returns its id; null when the create failed (the error is a toast). */
   async createChat(input: Omit<PendingChat, "startedAt">): Promise<string | null> {
     this.pending = { ...input, startedAt: Date.now() };
     const result = await this.run(api.createThread({ ...input, requestId: requestId() }));
     if (!result) { this.pending = null; return null; }
     this.open(result.id);
+    if (input.kind === "chat") await this.awaitRow(result.id);
     this.select(result.id);
     this.pending = null;
     return result.id;
+  }
+
+  /** Resolves once the sessions stream lists `id`, or after NEW_ROW_WAIT_MS. */
+  private awaitRow(id: string): Promise<void> {
+    return new Promise(resolve => {
+      const started = Date.now();
+      const check = () => { if (this.session(id) || Date.now() - started > NEW_ROW_WAIT_MS) resolve(); else setTimeout(check, 50); };
+      check();
+    });
   }
 }
 

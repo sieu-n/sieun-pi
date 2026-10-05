@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import { createGzip, type Gzip } from "node:zlib";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
 import { buildRenderBundle, LocalImageError, readLocalImage, renderPage, renderPolicy } from "./chat-render.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
+import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat-pool.ts";
 import { NOTE_MAX } from "./chat-notes.ts";
@@ -13,6 +15,7 @@ import { ThreadError } from "./chat-threads.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
+import type { SdkSync } from "./chat-sdk.ts";
 import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type ThinkingLevel } from "./shared/types.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
@@ -90,6 +93,12 @@ function parseMode(value: unknown): SendMode {
   const mode = value ?? "followUp";
   if (mode !== "steer" && mode !== "followUp") throw new RequestError(400, "Choose steer or followUp.");
   return mode;
+}
+/** The kind of thread `POST api/threads` creates: a plain thread, or a chat. */
+function parseKind(value: unknown): "thread" | "chat" {
+  if (value === undefined || value === null || value === "thread") return "thread";
+  if (value === "chat") return "chat";
+  throw new RequestError(400, "Choose kind thread or chat.");
 }
 /** The pool account a new chat starts on; absent means follow the pool. */
 function parseNewChatAccount(value: unknown): { provider: string; id: string; force: boolean } | undefined {
@@ -209,11 +218,13 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   return input;
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins() }: {
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins() }: {
   backend: ChatBackend; bundle: ClientBundle; port: number; capability: string; csrfToken: string;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
   remote?: RemoteControl;
+  /** Settings > Versions and the SDK auto-update; null for instances that do not manage their packages. */
+  sdk?: SdkSync | null;
   onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins;
 }): Promise<{ url: string; close(): Promise<void> }> {
   const base = "/" + capability + "/";
@@ -229,6 +240,19 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   server.headersTimeout = 10000;
   server.maxHeadersCount = 30;
   server.on("clientError", (_error, socket) => { socket.destroy(); });
+  const feeds = new FeedSockets(async (feed, send) => {
+    if (feed.feed === "sessions") {
+      send("build", { version: bundle.version });
+      return backend.catalog.subscribe(event => send("sessions", event));
+    }
+    if (feed.feed === "login") return logins.subscribe(login => send("login", login));
+    try { return await backend.threads.subscribe(threadId(feed.id), event => send("thread", event)); }
+    catch (error) {
+      send("thread", { type: "status", connection: "closed", error: error instanceof Error ? error.message : String(error) });
+      return () => {};
+    }
+  });
+  server.on("upgrade", (req, socket, head) => { upgrade(req, socket, head); });
 
   function json(res: ServerResponse, status: number, value: unknown) {
     res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -243,6 +267,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
     if (closing) return closing;
     closing = (async () => {
       for (const stream of streams) stream.close();
+      feeds.close();
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
       sends.clear();
       await logins.close();
@@ -256,6 +281,31 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
     res.once("close", () => streams.delete(stream));
     return stream;
   }
+  /** The page origin for the requested host: loopback HTTP, or the remote HTTPS origin while phone access is on. */
+  function requestOrigin(req: IncomingMessage): string | null {
+    // The remote origin can change while the server runs (Settings, a renamed tailnet machine), so it is read per request.
+    const externalOrigin = remote.origin();
+    return req.headers.host === host ? `http://${host}`
+      : externalOrigin !== null && req.headers.host === new URL(externalOrigin).host ? externalOrigin : null;
+  }
+  /**
+   * The live feeds socket at `<capability>/api/ws`. Browsers send Origin on every WebSocket handshake and do not apply
+   * CORS to it, so the exact Origin and the page token in `?token=` stand in for the checks a POST gets.
+   */
+  function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    const refuse = (status: number, reason: string) => {
+      socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\nCache-Control: no-store\r\n\r\n`);
+    };
+    socket.on("error", () => { socket.destroy(); });
+    const origin = requestOrigin(req);
+    if (origin === null) { refuse(421, "Misdirected Request"); return; }
+    let url: URL;
+    try { url = new URL(req.url ?? "/", origin); } catch { refuse(400, "Bad Request"); return; }
+    if (url.origin !== origin || url.pathname !== base + "api/ws") { refuse(404, "Not Found"); return; }
+    if (closing) { refuse(410, "Gone"); return; }
+    if (req.headers.origin !== origin || url.searchParams.get("token") !== csrfToken) { refuse(403, "Forbidden"); return; }
+    feeds.accept(req, socket, head);
+  }
   async function handle(req: IncomingMessage, res: ServerResponse) {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -263,10 +313,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Content-Security-Policy", contentSecurityPolicy);
     try {
-      // The remote origin can change while the server runs (Settings, a renamed tailnet machine), so it is read per request.
-      const externalOrigin = remote.origin();
-      const origin = req.headers.host === host ? `http://${host}`
-        : externalOrigin !== null && req.headers.host === new URL(externalOrigin).host ? externalOrigin : null;
+      const origin = requestOrigin(req);
       if (origin === null) throw new RequestError(421, "Unexpected host.");
       const url = new URL(req.url ?? "/", origin);
       // A typed or bookmarked http://127.0.0.1:<port>/ opens the chat. The browser sends Sec-Fetch-Site: none only for
@@ -326,6 +373,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
         if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
         if (route === "api/remote") { json(res, 200, remote.view(origin === `http://${host}`)); return; }
+        if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
         if (route === "api/accounts/login/stream") {
           const stream = openStream(req, res);
           const unsubscribe = logins.subscribe(login => stream.send("login", login));
@@ -401,23 +449,30 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const thinkingLevel = typeof body.thinkingLevel === "string" ? text(body.thinkingLevel, "thinkingLevel", 16) as ThinkingLevel : undefined;
         const account = parseNewChatAccount(body.account);
         const name = typeof body.name === "string" ? text(body.name, "name", 200).trim() : "";
-        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account, name])).digest("hex");
+        const kind = parseKind(body.kind);
+        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account, name, kind])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
           creation = { fingerprint, result: (async () => {
-            const thread = await backend.threads.create({ cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) });
+            const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) };
+            // A chat is created with its name (a job replies to it by name), pinned, set to steering mode all and given its check-in heartbeat.
+            const thread = kind === "chat" ? await backend.chats.create({ ...input, ...(name ? { name } : {}) }) : await backend.threads.create(input);
+            // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.
+            await backend.created.add(thread.id).catch(() => {});
             if (account) {
               // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
               try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, force: account.force, newSession: true }); }
               catch (error) {
                 await backend.threads.archive(thread.id).catch(() => {});
+                if (kind === "chat") await backend.chats.forget(thread.id).catch(() => {});
                 throw new RequestError(502, error instanceof Error ? error.message : String(error));
               }
             }
             // The name is set before the prompt, so the thread never shows the first message as its title. A failed rename still sends the message.
-            if (name) await backend.threads.rename(thread.id, name).catch(() => {});
-            await backend.threads.prompt(thread.id, { message, images, mode: "followUp" });
+            if (name && kind !== "chat") await backend.threads.rename(thread.id, name).catch(() => {});
+            // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
+            await backend.threads.prompt(thread.id, { message, images, mode: kind === "chat" ? "steer" : "followUp" });
             return { id: thread.id };
           })() };
           creations.set(id, creation);
@@ -445,6 +500,13 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         await remote.set(parseRemoteInput(body));
         json(res, 200, remote.view(true)); return;
       }
+      if (route === "api/sdk") {
+        if (!sdk) throw new RequestError(409, "This chat instance does not manage its prime-agent packages.");
+        if (body.action === "update") await sdk.start().catch(error => { throw new RequestError(409, error instanceof Error ? error.message : String(error)); });
+        else if (body.action === "auto" && typeof body.auto === "boolean") await sdk.setAuto(body.auto);
+        else throw new RequestError(400, "Use action update, or action auto with auto true or false.");
+        json(res, 200, await sdk.view()); return;
+      }
       if (route === "api/interrupted") { json(res, 200, await interruptedRuns.resume()); return; }
       if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
@@ -467,7 +529,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const rid = requestId(body.requestId);
           const message = text(body.message, "message");
           const images = parseImages(body.images);
-          const mode = parseMode(body.mode);
+          const mode = (await backend.chats.ids()).has(id) ? "steer" : parseMode(body.mode);
           if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
           const fingerprint = createHash("sha256").update(JSON.stringify([id, message, images, mode])).digest("hex");
           let pending = sends.get(rid);
@@ -476,8 +538,16 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           await pending.result;
           json(res, 200, { accepted: true }); return;
         }
-        case "abort": await backend.threads.abort(id); break;
-        case "archive": await backend.threads.archive(id); break;
+        case "abort": {
+          const chat = (await backend.chats.ids()).has(id);
+          await backend.threads.abort(id);
+          if (chat) await backend.threads.resumeQueue(id);
+          break;
+        }
+        case "archive":
+          await backend.threads.archive(id);
+          if ((await backend.chats.ids()).has(id)) await backend.chats.forget(id);
+          break;
         case "unarchive": await backend.threads.unarchive(id); break;
         case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;
         case "rename": {

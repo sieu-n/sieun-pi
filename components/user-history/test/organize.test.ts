@@ -7,7 +7,7 @@ import { childrenByParent, parseSchedules, projectRow, runningByParent, sessionP
 import { applyLabelAction, ChatLabels, LabelError, type LabelsState } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { readPulse } from "../src/shared/pulse.ts";
-import { activeFilters, bucketOf, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
+import { activeFilters, bucketOf, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, inSidebar, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, originOf, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
 import type { SessionRow, Tag } from "../src/shared/types.ts";
 
 const artifacts = () => process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(import.meta.dirname, "../.test-artifacts");
@@ -137,6 +137,20 @@ test("agents filters combine and sort by any column", () => {
   assert.deepEqual(ids({ priority: 1, model: "anthropic/opus" }), ["a"]);
   assert.deepEqual(sortBy(rows, "created", true, tags).map(item => item.id), ["c", "a", "b"]);
   assert.deepEqual(sortBy(rows, "tags", false, tags).map(item => item.id)[2], "a");
+});
+
+test("origin: agent-created rows stay out of the sidebar until shown, and the agents view lists both until filtered", () => {
+  const rows = [row("mine"), row("bot", { origin: "agent", working: true, status: "running" }), row("old", { archived: true }), row("oldbot", { origin: "agent", archived: true })];
+  assert.deepEqual(rows.map(originOf), ["user", "agent", "user", "agent"], "a row without the field reads as user");
+  const listed = (show: { archived: boolean; agentCreated: boolean }) => rows.filter(item => inSidebar(item, show)).map(item => item.id);
+  assert.deepEqual(listed({ archived: false, agentCreated: false }), ["mine"], "a running agent-created row is still hidden");
+  assert.deepEqual(listed({ archived: false, agentCreated: true }), ["mine", "bot"]);
+  assert.deepEqual(listed({ archived: true, agentCreated: false }), ["mine", "old"]);
+  assert.deepEqual(listed({ archived: true, agentCreated: true }), ["mine", "bot", "old", "oldbot"]);
+  const ids = (filter: Partial<ReturnType<typeof emptyFilter>>) => rows.filter(item => matchesFilter(item, { ...emptyFilter(), ...filter }, new Map())).map(item => item.id);
+  assert.deepEqual(ids({}), ["mine", "bot"], "the agents view shows both origins by default");
+  assert.deepEqual(ids({ origin: "agent" }), ["bot"]);
+  assert.deepEqual(ids({ origin: "user", archived: true }), ["mine", "old"]);
 });
 
 test("row shorthand: model names and session cost", () => {

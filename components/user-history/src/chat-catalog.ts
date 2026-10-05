@@ -2,7 +2,9 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
+import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
+import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -124,7 +126,7 @@ export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, Ses
   return { ...(cost !== undefined ? { cost } : {}), running };
 }
 
-export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree }
+export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin }
 
 /** Working: the thread's own turn runs, or any subagent below it runs (`isSessionSummaryBusy` in the daemon counts both). */
 export function isWorking(row: SessionSummary, subtree?: Subtree): boolean {
@@ -164,6 +166,8 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     ...(cost !== undefined ? { cost } : {}),
     ...(working && extras.pulse ? { pulse: extras.pulse } : {}),
     ...(extras.schedule ? { schedule: extras.schedule } : {}),
+    ...(extras.chat ? { chat: true } : {}),
+    origin: extras.origin ?? "user",
   };
 }
 
@@ -210,7 +214,8 @@ export class Catalog {
   private refreshing: Promise<void> | undefined;
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels) {
+  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids">,
+    private readonly origins: ThreadOrigins) {
     this.client = new DaemonClient(socketPath);
     this.client.onMessage(message => {
       if (message.type === "roster_update") this.scheduleRefresh();
@@ -288,7 +293,8 @@ export class Catalog {
   }
 
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
-    const [state, labels] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null)]);
+    const [state, labels, chats] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null), this.chats.ids().catch(() => null)]);
+    const originOf = await this.origins.resolver(chats ?? new Set());
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
     const rows = [...this.summaries.values()]
@@ -298,7 +304,7 @@ export class Catalog {
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
         const subtree = subtreeOf(row, children);
         return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
-          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree,
+          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, ...(chats?.has(row.sessionId) ? { chat: true } : {}), origin: originOf(row),
           ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));

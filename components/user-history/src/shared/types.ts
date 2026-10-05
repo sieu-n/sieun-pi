@@ -157,6 +157,13 @@ export interface SessionRow {
   cost?: number;
   /** Present while working: freshness inputs for this thread and its running subagents. */
   pulse?: SessionPulse;
+  /** The thread is a chat (listed in `<dataDir>/chats.json`): the sidebar sections it under Chats and the main view renders Chat.svelte. */
+  chat?: true;
+  /**
+   * Who started the thread: a person through this chat (`threads.json`, `chats.json`) or an agent through `rlm.create_session` (its name precedes
+   * `session_state` in the session file). The sidebar hides agent-created rows by default. Absent reads as user.
+   */
+  origin?: "user" | "agent";
 }
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
 

@@ -217,6 +217,9 @@ async function serve(options: Options): Promise<void> {
     import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts")]);
   const [bundle, { SdkSync, loadedClientVersion }] = await Promise.all([buildClientBundle(), import("./chat-sdk.ts")]);
   const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory });
+  // Every chat in the index is pinned again, so a saved one resumes on the first catalog update. The daemon may be down here; the pin waits for it.
+  void backend.chats.adopt().then(({ pinned, forgotten }) => { if (pinned.length || forgotten.length) process.stderr.write(`chats: pinned ${pinned.length}, forgot ${forgotten.length}\n`); },
+    error => { process.stderr.write(`chats: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Exit 75 after an SDK update: launchd's KeepAlive starts a crashed (non-zero) login item again, now on the new packages.
   const sdk = new SdkSync(join(service.directory, "sdk.json"), { client: loadedClientVersion(), build: bundle.version,
     canRestart: options.supervised === true && service.primary, restart: () => { process.exitCode = 75; stop(); } });

@@ -6,6 +6,7 @@
   import { clock } from "./clock.svelte.ts";
   import { readPulse } from "../shared/pulse.ts";
   import type { ChildAgent, ChildPulse, ChildStatus, ChildUsage } from "../shared/types.ts";
+  import { childDetail, childName, isActiveChild } from "./children.ts";
   import StatusMark from "./StatusMark.svelte";
 
   /**
@@ -32,7 +33,6 @@
   let usage = $state<ChildUsage[] | null>(null);
   let usageError = $state(false);
 
-  const isActive = (child: ChildAgent) => child.status === "running" || child.status === "queued";
   $effect(() => {
     void children.length;
     let cancelled = false;
@@ -48,26 +48,9 @@
     }
     return (child: ChildAgent): ChildUsage | undefined => byId.get(child.id) ?? (child.sessionName ? byName.get(child.sessionName) : undefined);
   });
-  const nameOf = (child: ChildAgent) => child.sessionName ?? child.label.split("\n", 1)[0]!.slice(0, 80);
-  const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
-
-  function activityText(child: ChildAgent): string {
-    if (child.status === "queued") return "Queued";
-    const activity = child.activity;
-    if (!activity) return "Starting";
-    if (activity.kind === "executing") return activity.toolName ? "Running " + activity.toolName : "Running a tool";
-    return activity.kind === "writing" ? "Writing" : "Thinking";
-  }
-  /** Line two: now (activity and recap) for a running child, the outcome for a finished one. */
-  function detailOf(child: ChildAgent): { lead: string; text: string; tone: "" | "quiet" | "stalled" | "failed" } {
-    const reading = readingOf(child);
-    if (reading?.level === "failed") return { lead: "Failed", text: oneLine(reading.text), tone: "failed" };
-    if (reading && reading.level !== "live") return { lead: activityText(child) + ", " + reading.text, text: child.recap ? oneLine(child.recap) : "", tone: reading.level };
-    if (isActive(child)) return { lead: activityText(child), text: child.recap ? oneLine(child.recap) : "", tone: "" };
-    if (child.status === "error") return { lead: "Failed", text: oneLine(child.error ?? ""), tone: "failed" };
-    if (child.status === "cancelled") return { lead: "Cancelled", text: oneLine(child.recap ?? ""), tone: "" };
-    return { lead: "", text: oneLine(child.answerPreview ?? child.recap ?? "Done"), tone: "" };
-  }
+  const nameOf = childName;
+  const isActive = isActiveChild;
+  const detailOf = (child: ChildAgent) => childDetail(child, readingOf(child));
 
   const counts = $derived({ all: children.length, active: children.filter(isActive).length, inactive: children.filter(child => !isActive(child)).length });
   const matched = $derived.by(() => {

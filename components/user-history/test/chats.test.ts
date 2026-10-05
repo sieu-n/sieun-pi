@@ -1,0 +1,229 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { CHECK_IN, CHECK_IN_SCHEDULE, Chats, chatGuard, type ChatThreads, chatModeAt, checkInAction, checkInWanted, hasChatMarker, judgeChatCode, withChatTool } from "../src/chats.ts";
+import { IdIndex } from "../src/id-index.ts";
+import type { ChildAgent } from "../src/shared/types.ts";
+import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
+
+test("id index: add puts the newest first once, forget removes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  assert.deepEqual(await index.ids(), []);
+  await index.add("a");
+  await index.add("b");
+  await index.add("a");
+  assert.deepEqual(await index.ids(), ["b", "a"]);
+  await index.forget("b");
+  await index.forget("zzz");
+  assert.deepEqual(await index.ids(), ["a"]);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, "chats.json"), "utf8")), { ids: ["a"] });
+});
+
+const ALLOWED = [
+  "await bash('prime-agent stop readme-lines')",
+  'h = bash("prime-agent send --from chat md-count \'slack-green\'")',
+  "await bash(f'prime-agent send {job} done')",
+  "print(1 + 1)\nagents = await agent_observe.list_agents()",
+  'r = await agent_message.send("Owner says: slack-green", receiver_role="child", receiver_name="md-count")',
+  "handle = await rlm.spawn(brief, name='readme-lines')",
+  'await rlm.create_session(brief, name="readme-lines", cwd="/Users/sieunpark/Documents/Github/auto-sns-agent")',
+  "text = open('/tmp/x.txt').read()",
+  "with open(path, 'r', encoding='utf8') as f: data = f.read()",
+  "brief = 'Never call bash(\"git status\") in this job; use edit( only in your repo'",
+  "# bash('git status') is not what we do here\nx = 1",
+  "await rlm.collect([h], timeout_ms=0)",
+  "!prime-agent stop readme-lines",
+];
+const BLOCKED: [string, RegExp][] = [
+  ["await edit(path='a.py', old_str='x', new_str='y')", /edits no files/],
+  ["open('/tmp/out.txt', 'w').write('x')", /writes no files/],
+  ["with open(p, mode='a') as f: f.write(x)", /writes no files/],
+  ["open(p, 'r+')", /writes no files/],
+  ["Path(p).open('wb')", /writes no files/],
+  ["await bash('git status')", /prime-agent stop and prime-agent send/],
+  ["bash(command='ls -la')", /prime-agent stop and prime-agent send/],
+  ["cmd = 'prime-agent stop x'\nawait bash(cmd)", /computed bash\(\) command/],
+  ["await bash('prime-agentx')", /prime-agent stop and prime-agent send/],
+  ["%%bash\nprime-agent stop x", /a shell cell/],
+  ["!git status", /a ! line/],
+];
+
+test("chat guard: the decision table, only in a marked root", () => {
+  for (const code of ALLOWED) assert.equal(judgeChatCode(code), null, code);
+  for (const [code, reason] of BLOCKED) assert.match(judgeChatCode(code) ?? "", reason, code);
+  const at = (depth: number, marked: boolean, toolName: string, input: Record<string, unknown>) => chatGuard({ toolName, input, depth, marked });
+  assert.equal(at(0, true, "ipython", { code: "await bash('git status')" })?.block, true);
+  assert.equal(at(1, true, "ipython", { code: "await bash('git status')" }), undefined, "a job under the chat is not guarded");
+  assert.equal(at(0, false, "ipython", { code: "await bash('git status')" }), undefined, "an unmarked root is not guarded");
+  assert.equal(at(0, true, "ipython", { code: "await bash('prime-agent send a b')" }), undefined);
+  assert.equal(at(0, true, "bash", { command: "prime-agent stop a" }), undefined);
+  assert.match(at(0, true, "bash", { command: "git status" })?.reason ?? "", /the bash tool/);
+  assert.match(at(0, true, "edit", { path: "a" })?.reason ?? "", /edits no files/);
+  assert.equal(at(0, true, "read", { path: "a" }), undefined);
+  assert.equal(at(0, true, "ipython", { code: 42 }), undefined, "a non-string cell is left to the tool");
+});
+
+test("chat marker: written once in a flagged root, read back later, never in a child; the brief tool follows it", () => {
+  assert.deepEqual(chatModeAt({ depth: 0, flagged: true, marked: false }), { mark: true, active: true }, "first start of a new chat");
+  assert.deepEqual(chatModeAt({ depth: 0, flagged: false, marked: true }), { mark: false, active: true }, "a re-create passes no flag; the entry holds");
+  assert.deepEqual(chatModeAt({ depth: 0, flagged: true, marked: true }), { mark: false, active: true }, "the entry is not written twice");
+  assert.deepEqual(chatModeAt({ depth: 0, flagged: false, marked: false }), { mark: false, active: false }, "a plain thread");
+  assert.deepEqual(chatModeAt({ depth: 1, flagged: true, marked: false }), { mark: false, active: false }, "a child inherits the flag and gets nothing");
+  assert.equal(hasChatMarker([{ type: "message" }, { type: "custom", customType: "chat_mode" }]), true);
+  assert.equal(hasChatMarker([{ type: "custom_message", customType: "chat_mode" }]), false, "a custom message is not the entry");
+  assert.deepEqual(withChatTool(["ipython", "chat_mode"], true), null, "already active");
+  assert.deepEqual(withChatTool(["ipython"], true), ["ipython", "chat_mode"]);
+  assert.deepEqual(withChatTool(["ipython", "chat_mode", "bash"], false), ["ipython", "bash"], "a child drops the inherited tool");
+  assert.deepEqual(withChatTool(["ipython"], false), null);
+});
+
+const child = (status: ChildAgent["status"]): ChildAgent => ({ id: status, label: status, status });
+
+test("check-in: wanted only while a job runs or waits; the update is the step from the known state, nothing when already there", () => {
+  assert.equal(checkInWanted([]), false);
+  assert.equal(checkInWanted([child("done"), child("error"), child("cancelled")]), false);
+  assert.equal(checkInWanted([child("done"), child("running")]), true);
+  assert.equal(checkInWanted([child("queued")]), true);
+  assert.equal(checkInAction(undefined, true), "resume", "after an attach the daemon state is unknown: send it");
+  assert.equal(checkInAction(undefined, false), "pause");
+  assert.equal(checkInAction("active", true), null);
+  assert.equal(checkInAction("active", false), "pause");
+  assert.equal(checkInAction("paused", false), null);
+  assert.equal(checkInAction("paused", true), "resume");
+});
+
+type Observer = Parameters<ChatThreads["observe"]>[0];
+function fakeThreads(calls: string[], pinLimit = 8) {
+  let observer: Observer | undefined;
+  let next = 1;
+  const pinned = new Set<string>();
+  return {
+    pinned,
+    fire: () => observer!,
+    async create(input: { cwd: string; name: string; kind: "chat"; thinkingLevel?: string }) { calls.push(`create ${input.kind} ${input.name} ${input.cwd}`); return { id: `s${next++}` }; },
+    pin(id: string) { if (!pinned.has(id) && pinned.size >= pinLimit) return false; calls.push(`pin ${id}`); pinned.add(id); return true; },
+    unpin(id: string) { calls.push(`unpin ${id}`); pinned.delete(id); },
+    async setSteeringMode(id: string, mode: string) { calls.push(`steering ${id} ${mode}`); },
+    async setHeartbeat(id: string, schedule: string, instruction: string, mode: string) { calls.push(`heartbeat ${id} ${schedule} ${mode} ${instruction === CHECK_IN ? "check-in" : "?"}`); },
+    async updateHeartbeat(id: string, action: string) { calls.push(`heartbeat ${id} ${action}`); },
+    observe(next: Observer) { observer = next; return () => { observer = undefined; }; },
+  };
+}
+
+test("chats: create names, indexes, pins, sets steering all and a paused check-in; children toggle it; an attach re-applies steering", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }));
+  const created = await chats.create({ cwd: "/repo", name: "  " });
+  assert.equal(created.id, "s1");
+  assert.match(created.name, /^chat-[0-9a-f]{4}$/, "a blank name becomes a generated one");
+  assert.deepEqual(calls, [`create chat ${created.name} /repo`, "pin s1", "steering s1 all", `heartbeat s1 ${CHECK_IN_SCHEDULE} follow_up check-in`, "heartbeat s1 pause"]);
+  assert.deepEqual(await index.ids(), ["s1"]);
+  assert.deepEqual([...await chats.ids()], ["s1"]);
+  assert.equal((await chats.create({ cwd: "/repo", name: "Feature X" })).name, "Feature X");
+
+  calls.length = 0;
+  threads.fire().children("s1", [child("queued")]);
+  await chats.settled();
+  assert.deepEqual(calls, ["heartbeat s1 resume"]);
+  calls.length = 0;
+  threads.fire().children("s1", [child("running")]);
+  threads.fire().children("s1", [child("done")]);
+  await chats.settled();
+  assert.deepEqual(calls, ["heartbeat s1 pause"], "running after queued is no change; done pauses");
+  calls.length = 0;
+  threads.fire().children("s1", [child("running")]);
+  threads.fire().children("s1", [child("done")]);
+  await chats.settled();
+  assert.deepEqual(calls, [], "each sync reads the newest children, so a burst that ends where it started sends nothing");
+
+  calls.length = 0;
+  threads.fire().live("s1", [child("done")]);
+  await chats.settled();
+  assert.deepEqual(calls, ["steering s1 all", "heartbeat s1 pause"], "after a re-create the runtime state is unknown: steering and the pause are sent again");
+  calls.length = 0;
+  threads.fire().live("s2", [child("running")]);
+  await chats.settled();
+  assert.deepEqual(calls, ["steering s2 all", "heartbeat s2 resume"]);
+  calls.length = 0;
+  threads.fire().live("other", [child("running")]);
+  threads.fire().children("other", []);
+  await chats.settled();
+  assert.deepEqual(calls, [], "a plain thread is not touched");
+
+  calls.length = 0;
+  await chats.forget("s1");
+  assert.deepEqual(calls, ["unpin s1"]);
+  assert.deepEqual(await index.ids(), ["s2"]);
+  threads.fire().children("s1", [child("running")]);
+  await chats.settled();
+  assert.deepEqual(calls, ["unpin s1"], "a forgotten chat gets no heartbeat updates");
+  chats.close();
+});
+
+test("chats: adopt pins what the daemon still lists, forgets archived and missing, keeps an unknown one while the daemon is down", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  for (const id of ["gone", "archived", "down", "live"]) await index.add(id);
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const chats = new Chats(index, threads, async id => {
+    if (id === "gone") return undefined;
+    if (id === "archived") return { lifecycle: "archived" };
+    if (id === "down") throw new Error("Prime Agent daemon is not reachable.");
+    return { lifecycle: "live" };
+  });
+  assert.deepEqual(await chats.adopt(), { pinned: ["live", "down"], forgotten: ["archived", "gone"] }, "newest first, as the index lists them");
+  assert.deepEqual(calls, ["pin live", "pin down", "unpin archived", "unpin gone"]);
+  assert.deepEqual(await index.ids(), ["live", "down"]);
+  const lines: string[] = [];
+  const full = new Chats(index, fakeThreads([], 0), async () => ({ lifecycle: "live" }), line => lines.push(line));
+  assert.deepEqual(await full.adopt(), { pinned: [], forgotten: [] });
+  assert.equal(lines.length, 2, "the live limit is logged, not thrown");
+  chats.close(); full.close();
+});
+
+const header = JSON.stringify({ type: "session", version: 3, id: "x", timestamp: "2026-10-03T10:23:48Z", cwd: "/repo", rlmDepth: 0 });
+const info = JSON.stringify({ type: "session_info", id: "i", timestamp: "2026-10-03T10:23:50Z", name: "md-count" });
+const state = JSON.stringify({ type: "session_state", id: "s", timestamp: "2026-10-03T10:23:50Z", state: { status: "active" } });
+const digest = JSON.stringify({ type: "custom_message", id: "d", customType: "harness_digest", content: "x".repeat(70000) });
+const message = JSON.stringify({ type: "message", id: "m", message: { role: "user", content: "Job: count the Markdown files", timestamp: 1 } });
+
+test("origin: a root named at create (rlm.create_session) is the agent's; one named after its state entry or never named is the person's", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "origin-"));
+  const file = (name: string, lines: string[]) => { const path = join(dir, name); return writeFile(path, lines.join("\n") + "\n").then(() => path); };
+  const agent = await file("agent.jsonl", [header, info, state, digest, message]);
+  const renamed = await file("renamed.jsonl", [header, state, info, digest, message]);
+  const unnamed = await file("unnamed.jsonl", [header, state, digest, message]);
+  const legacyAgent = await file("legacy-agent.jsonl", [header, info, message]);
+  const legacyUser = await file("legacy-user.jsonl", [header, message, info]);
+  const fresh = await file("fresh.jsonl", [header, info]);
+  assert.deepEqual(fileOrigin(agent), { origin: "agent", final: true });
+  assert.deepEqual(fileOrigin(renamed), { origin: "user", final: true }, "a name after session_state is a rename");
+  assert.deepEqual(fileOrigin(unnamed), { origin: "user", final: true });
+  assert.deepEqual(fileOrigin(legacyAgent), { origin: "agent", final: true }, "no session_state: the name precedes the first message");
+  assert.deepEqual(fileOrigin(legacyUser), { origin: "user", final: true });
+  assert.deepEqual(fileOrigin(fresh), { origin: "agent", final: false }, "no state or message yet: asked again next time");
+  assert.deepEqual(fileOrigin(join(dir, "missing.jsonl")), { origin: "user", final: false });
+
+  const created = new IdIndex(join(dir, "threads.json"), "Thread index");
+  await created.add("own");
+  const origins = new ThreadOrigins(created);
+  let resolve = await origins.resolver(new Set(["chat"]));
+  assert.equal(resolve({ sessionId: "own", sessionFile: agent }), "user", "a thread this server created wins over its file");
+  assert.equal(resolve({ sessionId: "chat", sessionFile: agent }), "user", "a chat is named at create and still the person's");
+  assert.equal(resolve({ sessionId: "a", sessionFile: agent }), "agent");
+  assert.equal(resolve({ sessionId: "f", sessionFile: fresh }), "agent");
+  assert.equal(resolve({ sessionId: "n" }), "user", "no file, nothing says otherwise");
+  await writeFile(agent, [header, state, info, message].join("\n") + "\n");
+  await writeFile(fresh, [header, info, state, message].join("\n") + "\n");
+  resolve = await origins.resolver(new Set());
+  assert.equal(resolve({ sessionId: "a", sessionFile: agent }), "agent", "a final decision is kept; the head of a session file does not change");
+  assert.equal(resolve({ sessionId: "f", sessionFile: fresh }), "agent", "an open decision is read again");
+  assert.deepEqual(fileOrigin(fresh), { origin: "agent", final: true });
+});

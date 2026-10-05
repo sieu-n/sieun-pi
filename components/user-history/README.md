@@ -48,6 +48,19 @@ browser  -> POST api/threads/:id/prompt  ThreadHub.prompt -> connection.prompt(.
 - Diagrams: `src/chat-render.ts` serves `render`, a page embedded only as `<iframe sandbox="allow-scripts">`, and `render.js`, built on first use from `src/render/main.ts` with mermaid (about 5 MB). The sandbox gives the frame an opaque origin, so it cannot read the chat's storage or call its API, and the chat page keeps its strict CSP (it only adds `frame-src 'self'` and `https:` images). The frame has its own policy: inline styles for mermaid's SVG, scripts only from `render.js`, no network. `src/client/diagrams.ts` posts `{ type: "render", id, kind, source, theme }` to the frame and sizes it from `{ type: "size", height }`; wide drawings shrink to 70% and then scroll sideways. Another block kind (charts, HTML previews) is a new `kind` in the frame.
 - `src/chat-pool.ts` wraps `components/pi-pool/bin/pi-pool` with argument arrays. `poolCommand` holds the exact command lines for off, on, rm and login. `AccountLogins` runs one `pi-pool login` child at a time: stdout JSON lines become the login state, a pasted code goes to its stdin, cancel closes stdin, then SIGTERM and SIGKILL follow; its own deadline backs up `--timeout 600`. It never runs `pi-pool-token`. It drops the calling session's variables, so pi-pool resolves only the thread named with `--session`.
 
+## Chats
+
+A chat is a thread kind: a Prime Agent session that is the owner's chat partner for one topic ("let's develop feature X"), created from the New chat screen with the Thread / Chat switch. It keeps the normal per-thread workspace (the repository it is responsible for), model, account, effort, name, labels and archive. It talks like a DM and does no work itself: it starts jobs with `rlm.spawn` (children in its repository) or `rlm.create_session(..., cwd=...)` (another repository), relays their reports, and forwards the owner's answers.
+
+- Index: `<data dir>/chats.json` (`{ ids }`, newest first, an `IdIndex` from `src/id-index.ts`) is the chat side's one definition of "chat". `src/chats.ts` owns it. Rows in `api/sessions/stream` carry `chat: true` from it, so the sidebar sections chats apart. Archive from the sidebar works as for any thread and drops the id from the index.
+- Mark: the server creates the session with `config.extensionFlagValues: { chat: true }`. `extension/index.ts`, at `session_start` of a depth-0 session with that flag and no mark yet, writes the session entry `chat_mode` (`pi.appendEntry`), and on every later start finds it with `ctx.sessionManager.getEntries()`. The entry is the agent side's one definition. Children (depth 1 and deeper) inherit the flag through the runtime config but never get the entry.
+- Brief: the extension registers a tool `chat_mode` whose `promptGuidelines` carry the chat brief. In a marked root it adds the tool to the active tools (`pi.setActiveTools`), which rebuilds the base system prompt, so the brief reaches agent-message wakes and heartbeat turns, which skip `before_agent_start`. Children drop the inherited tool. Calling the tool does nothing.
+- Guard: in a marked root the extension blocks the `edit` tool, the `bash` tool unless the command starts with `prime-agent `, and ipython cells with `edit(`, write-mode `open(...)`, `bash(` whose literal does not start with `prime-agent ` or whose command is computed, `%%bash` cells and `!` lines with the same rule. Calls are found with string literals and comments blanked, so a job brief that mentions `bash(` passes. `rlm.spawn` and `rlm.create_session` are allowed. Any error fails open.
+- Sends: every message to a chat is a steer (`POST api/threads/:id/prompt` ignores `mode`), and the server sets steering mode `all` on every attach, so consecutive job reports batch into one turn. Stop sends `resume_queue` right after the native abort, because an abort suspends the session's input pump and an agent message to an idle suspended session is refused until then.
+- Residency: chats are pinned (`ThreadHub.pin`, up to the live limit of 8): never swept or evicted, resumed again on each catalog update that finds them not live, at most once per 15 s. At service start every chat in the index is pinned again; one the daemon lists as archived or not at all is forgotten.
+- Check-in: on create the server sets the session heartbeat `every 10m` (delivery `follow_up`) with the check-in text, then pauses it. It resumes while a job runs or waits under the chat and pauses when none does, driven by the thread's subagent list (`rlm_child_update` events and snapshots reach `ThreadHub.observe`, `Chats` sends `updateHeartbeat`); after an attach both are sent again because the runtime state is unknown.
+- Origin: every row carries `origin: "user" | "agent"` and the sidebar hides agent-created sessions by default. The daemon records no creator, so `src/thread-origin.ts` decides, in order: an id in `<data dir>/threads.json` (every thread `POST api/threads` created, both kinds) or in `chats.json` is `user`; else the session file decides, `agent` when its first `session_info` precedes its first `session_state` (a `create` request with a name writes the name first; `rlm.create_session` names roots at create, a person's session is renamed later), with files that have no `session_state` falling back to the name preceding the first message; else `user`. A file's decision is kept once it has a `session_state` or `message` entry. Sessions a person created with a name through a `create` request outside this server (`prime-agent --name`) read as `agent`; so do named browser threads from before `threads.json` existed.
+
 ## HTTP API
 
 All routes sit under the capability URL. A browser navigation the person typed or bookmarked to `http://127.0.0.1:<port>/` (`Sec-Fetch-Site: none`) redirects there; every other request to `/` gets 404. Writes need JSON, the page token in `X-Chat-Token`, and the exact `Origin` for the requested host, either loopback HTTP or the configured HTTPS origin.
@@ -55,7 +68,7 @@ All routes sit under the capability URL. A browser navigation the person typed o
 | Route | Purpose |
 | --- | --- |
 | `GET api/ws?token=` (WebSocket) | the page's one live connection: sessions, open threads and sign-in feeds (below) |
-| `GET api/sessions/stream` | SSE list of top-level sessions (kept for tests and scripts; the page uses `api/ws`) |
+| `GET api/sessions/stream` | SSE list of top-level sessions, each row with `chat` and `origin` (kept for tests and scripts; the page uses `api/ws`) |
 | `GET api/threads/:id/stream` | SSE snapshot, then native events |
 | `GET api/threads/:id/tool-output?toolCallId=` | full tool result text |
 | `GET api/threads/:id/part?message=&part=` | full text of a truncated part |
@@ -73,7 +86,7 @@ All routes sit under the capability URL. A browser navigation the person typed o
 | `GET api/images/:hash` | an image from the transcript |
 | `GET api/labels` | saved tags and per-thread tags, priority and progress |
 | `GET api/threads/:id/child-usage` | native usage cost of each subagent of a thread |
-| `POST api/threads` | create a thread and send the first message |
+| `POST api/threads` | create a thread and send the first message; `kind: "chat"` creates a chat; the id goes in `threads.json` |
 | `POST api/threads/:id/prompt` | send, queue or steer |
 | `POST api/threads/:id/abort`, `rename`, `model`, `thinking`, `queue`, `read`, `archive` | thread controls |
 | `POST api/warm` | attach ahead of a click |

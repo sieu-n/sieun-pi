@@ -2,12 +2,15 @@ import { existsSync } from "node:fs";
 import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
+import { CHAT_FLAG } from "./chats.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatDefaults, Command, ModelCatalog, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { ChatDefaults, ChildAgent, Command, ModelCatalog, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
+/** What chats watch on the hub: each attach (with the children known then) and every change of a thread's subagent list while attached. */
+export interface ThreadObserver { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void }
 
 /** Native session-owned slash commands (prime-agent SESSION_SLASH_COMMAND_NAMES). The session runs them from prompt text; getCommands does not list them. */
 const SESSION_COMMANDS: Command[] = [
@@ -64,10 +67,12 @@ class Thread {
   touched = Date.now();
   idleSince: number | null = Date.now();
   private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent } | undefined;
-  constructor(readonly id: string, snapshot: ThreadSnapshot) { this.state = threadStateFromSnapshot(snapshot); }
+  constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread) => void) { this.state = threadStateFromSnapshot(snapshot); }
   broadcast(event: ThreadEvent): void {
+    const children = this.state.children;
     this.state = applyThreadEvent(this.state, event);
     for (const listener of [...this.listeners]) listener(event);
+    if (this.state.children !== children) this.onChildren(this);
   }
   coalesce(event: ProjectedSessionEvent, delayMs: number): void {
     if (event.type !== "message_update") { this.flush(); this.broadcast({ type: "event", event }); return; }
@@ -87,6 +92,8 @@ const MAX_LIVE = 8;
 const MAX_SAVED = 16;
 const IDLE_MS = 3 * 60 * 1000;
 const UPDATE_COALESCE_MS = 40;
+/** A pinned thread that is not live is resumed again no sooner than this after the last try. */
+const PIN_RETRY_MS = 15000;
 
 export class ThreadHub {
   readonly images = new ImageStore();
@@ -94,6 +101,11 @@ export class ThreadHub {
   private readonly threads = new Map<string, Thread>();
   private readonly opening = new Map<string, Promise<Thread>>();
   private readonly sweeper: ReturnType<typeof setInterval>;
+  /** Threads kept attached and resident while the service runs: never swept or evicted, resumed again when the daemon comes back. */
+  private readonly pinned = new Set<string>();
+  private readonly pinTried = new Map<string, number>();
+  private unwatchCatalog: (() => void) | undefined;
+  private readonly observers = new Set<ThreadObserver>();
   private closed = false;
 
   constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults) {
@@ -104,18 +116,62 @@ export class ThreadHub {
   private sweep(): void {
     const now = Date.now();
     for (const [id, thread] of this.threads) {
-      if (thread.listeners.size === 0 && thread.idleSince !== null && now - thread.idleSince > IDLE_MS) void this.dispose(id);
+      if (!this.pinned.has(id) && thread.listeners.size === 0 && thread.idleSince !== null && now - thread.idleSince > IDLE_MS) void this.dispose(id);
     }
   }
 
   private evict(kind: "live" | "saved"): void {
-    const candidates = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && thread.listeners.size === 0)
+    const candidates = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && thread.listeners.size === 0 && !this.pinned.has(thread.id))
       .sort((left, right) => left.touched - right.touched);
     const total = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live")).length;
     const limit = kind === "live" ? MAX_LIVE : MAX_SAVED;
     for (const thread of candidates) {
       if (total - (candidates.indexOf(thread)) <= limit) break;
       void this.dispose(thread.id);
+    }
+  }
+
+  /** Pins up to MAX_LIVE threads; false when the limit is reached, so pins never push every other live thread out. */
+  pin(id: string): boolean {
+    if (!this.pinned.has(id) && this.pinned.size >= MAX_LIVE) return false;
+    this.pinned.add(id);
+    this.unwatchCatalog ??= this.catalog.subscribe(event => { if (event.daemon === "up") this.keepPinnedLive(); });
+    return true;
+  }
+
+  unpin(id: string): void {
+    this.pinned.delete(id);
+    this.pinTried.delete(id);
+  }
+
+  observe(observer: ThreadObserver): () => void {
+    this.observers.add(observer);
+    return () => { this.observers.delete(observer); };
+  }
+
+  private attached(thread: Thread): void {
+    for (const observer of [...this.observers]) observer.live(thread.id, thread.state.children);
+  }
+
+  private childrenChanged(thread: Thread): void {
+    for (const observer of [...this.observers]) observer.children(thread.id, thread.state.children);
+  }
+
+  /**
+   * On every catalog update with the daemon up, a pinned thread that lost its attachment (daemon restart, worker exit) is resumed again. One
+   * archived outside this server (the terminal agents view) is unpinned instead, so the pin never brings an archived session back.
+   */
+  private keepPinnedLive(): void {
+    if (this.closed) return;
+    const now = Date.now();
+    for (const id of this.pinned) {
+      if (this.threads.get(id)?.live || now - (this.pinTried.get(id) ?? 0) < PIN_RETRY_MS) continue;
+      this.pinTried.set(id, now);
+      void (async () => {
+        const summary = await this.catalog.summary(id);
+        if (!summary || summary.lifecycle === "archived") { this.unpin(id); return; }
+        await this.resume(id);
+      })().catch(error => { process.stderr.write(`pin ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     }
   }
 
@@ -273,7 +329,7 @@ export class ThreadHub {
         const connection = await this.attach(summary.activeSessionId);
         at = mark("attach", at);
         try {
-          thread = new Thread(id, await this.liveSnapshot(connection, summary));
+          thread = new Thread(id, await this.liveSnapshot(connection, summary), candidate => this.childrenChanged(candidate));
           at = mark("snapshot+project", at);
           this.bind(thread, connection, summary.activeSessionId);
         } catch (error) { await connection.dispose().catch(() => {}); throw error; }
@@ -281,12 +337,14 @@ export class ThreadHub {
         this.evict("saved");
         const { messages, info } = this.savedMessages(summary);
         at = mark("read", at);
-        thread = new Thread(id, { kind: "saved", info, messages: this.projector.messages(messages), streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null });
+        thread = new Thread(id, { kind: "saved", info, messages: this.projector.messages(messages), streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null },
+          candidate => this.childrenChanged(candidate));
         mark("project", at);
         thread.sessionFile = summary.sessionFile;
       }
       this.threads.set(id, thread);
       process.stderr.write(`open ${id.slice(0, 8)} ${thread.live ? "live" : "saved"} ${thread.state.messages.length} messages: ${marks.join(", ")}, total ${Math.round(performance.now() - started)}ms\n`);
+      if (thread.live) this.attached(thread);
       return thread;
     })().finally(() => { this.opening.delete(id); });
     this.opening.set(id, promise);
@@ -334,13 +392,16 @@ export class ThreadHub {
       this.bind(thread, connection, resumed.activeSessionId);
       thread.broadcast({ type: "snapshot", snapshot });
     } catch (error) { await connection.dispose().catch(() => {}); throw error; }
+    this.attached(thread);
     return thread;
   }
 
-  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel }): Promise<Thread> {
+  /** `kind: "chat"` sets the extension flag the user-history extension turns into the session's chat marker at its first session_start. */
+  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat" }): Promise<Thread> {
     await this.catalog.connect();
-    const response = await this.catalog.client.request({ type: "create", lifecycle: "resident", config: { cwd: input.cwd,
-      ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}) } }, 60000, { recoverable: false });
+    const response = await this.catalog.client.request({ type: "create", lifecycle: "resident", ...(input.name ? { name: input.name } : {}), config: { cwd: input.cwd,
+      ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
+      ...(input.kind === "chat" ? { extensionFlagValues: { [CHAT_FLAG]: true } } : {}) } }, 60000, { recoverable: false });
     if (!response.success) throw new ThreadError(502, response.error);
     const data = response.data;
     if (typeof data !== "object" || data === null || !("sessionId" in data) || typeof data.sessionId !== "string" || !("activeSessionId" in data) || typeof data.activeSessionId !== "string") {
@@ -350,11 +411,12 @@ export class ThreadHub {
     const connection = await this.attach(data.activeSessionId);
     let thread: Thread;
     try {
-      thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data as SessionSummary));
+      thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data as SessionSummary), candidate => this.childrenChanged(candidate));
       this.bind(thread, connection, data.activeSessionId);
     } catch (error) { await connection.dispose().catch(() => {}); throw error; }
     this.threads.set(thread.id, thread);
     void this.catalog.refresh().catch(() => {});
+    this.attached(thread);
     return thread;
   }
 
@@ -386,12 +448,41 @@ export class ThreadHub {
   }
 
   /**
+   * A native abort suspends the session's input pump until the next human prompt, and an agent message to an idle suspended session is refused.
+   * A chat gets this right after Stop, so job reports keep arriving; "No queued work to resume" means the pump is open with nothing waiting.
+   */
+  async resumeQueue(id: string): Promise<void> {
+    const { live } = await this.requireLive(id);
+    await this.catalog.connect();
+    const response = await this.catalog.client.request({ type: "resume_queue", activeSessionId: live.activeSessionId }, 10000, { recoverable: false });
+    if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
+  }
+
+  /** `all` batches every queued steer into one turn; `one-at-a-time` runs each as its own turn. Runtime state: it resets on every re-create. */
+  async setSteeringMode(id: string, mode: "all" | "one-at-a-time"): Promise<void> {
+    const { live } = await this.requireResumed(id);
+    await live.connection.setSteeringMode(mode);
+  }
+
+  /** Replaces the session's heartbeat. The daemon keeps it with the session file, so it survives a re-create and wakes a saved session. */
+  async setHeartbeat(id: string, schedule: string, instruction: string, deliveryMode: "steer" | "follow_up"): Promise<void> {
+    const { live } = await this.requireResumed(id);
+    await live.connection.setHeartbeat(schedule, instruction, deliveryMode);
+  }
+
+  async updateHeartbeat(id: string, action: "pause" | "resume"): Promise<void> {
+    const { live } = await this.requireResumed(id);
+    await live.connection.updateHeartbeat(action);
+  }
+
+  /**
    * Archive the way the terminal agents view deactivates an agent (Ctrl+X): tell open tabs, drop this server's own attachment, kill the resident
    * session ("Unknown active session" means it already ended), record the native archived state in its session file, and hide the row at once.
    */
   async archive(id: string): Promise<void> {
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "Thread not found.");
+    this.unpin(id);
     this.threads.get(id)?.broadcast({ type: "status", connection: "closed", error: "This thread was archived." });
     await this.dispose(id);
     if (summary.activeSessionId) {
@@ -573,6 +664,7 @@ export class ThreadHub {
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.sweeper);
+    this.unwatchCatalog?.();
     await Promise.all([...this.threads.keys()].map(id => this.dispose(id)));
   }
 }

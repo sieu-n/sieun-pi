@@ -39,6 +39,12 @@ export function statusOf(row: SessionRow, now = Date.now()): RowStatus {
   return needsResponse(row) ? "needs" : row.status === "idle" ? "idle" : "saved";
 }
 export const tabOf = (row: SessionRow): Tab => row.schedule ? "heartbeats" : "threads";
+export type Origin = NonNullable<SessionRow["origin"]>;
+export const ORIGIN_LABEL: Record<Origin, string> = { user: "Created by me", agent: "Created by an agent" };
+export const originOf = (row: SessionRow): Origin => row.origin ?? "user";
+/** What the sidebar lists: archived and agent-created rows stay out until their toggle is on. */
+export const inSidebar = (row: SessionRow, show: { archived: boolean; agentCreated: boolean }): boolean =>
+  (show.archived || !row.archived) && (show.agentCreated || originOf(row) !== "agent");
 export const activityOf = (row: SessionRow): number => Date.parse(row.lastActivityAt ?? row.created ?? "") || 0;
 export const createdOf = (row: SessionRow): number => Date.parse(row.created ?? "") || 0;
 
@@ -105,9 +111,9 @@ export function nextRun(value: string | undefined, now = Date.now()): string {
 export type SortKey = "status" | "name" | "priority" | "progress" | "tags" | "cwd" | "model" | "cost" | "created" | "activity";
 /** The label filters the Agents view and the sidebar share. "any" means unset; tag also takes "none" for threads without tags. */
 export interface RowFilter { status: RowStatus | "any"; tag: string; priority: Priority | "any"; progress: Progress | "any"; cwd: string; model: string }
-export interface AgentFilter extends RowFilter { query: string; from: string; to: string; kind: Tab | "any"; archived: boolean }
+export interface AgentFilter extends RowFilter { query: string; from: string; to: string; kind: Tab | "any"; origin: Origin | "any"; archived: boolean }
 export const emptyRowFilter = (): RowFilter => ({ status: "any", tag: "any", priority: "any", progress: "any", cwd: "any", model: "any" });
-export const emptyFilter = (): AgentFilter => ({ ...emptyRowFilter(), query: "", from: "", to: "", kind: "any", archived: false });
+export const emptyFilter = (): AgentFilter => ({ ...emptyRowFilter(), query: "", from: "", to: "", kind: "any", origin: "any", archived: false });
 export const ROW_FILTER_KEYS = ["status", "tag", "priority", "progress", "cwd", "model"] as const satisfies readonly (keyof RowFilter)[];
 export const activeFilters = (filter: RowFilter): number => ROW_FILTER_KEYS.filter(key => filter[key] !== "any").length;
 
@@ -127,6 +133,7 @@ const dayStart = (value: string): number => { const ms = Date.parse(value + "T00
 export function matchesFilter(row: SessionRow, filter: AgentFilter, tags: ReadonlyMap<string, Tag>, now = Date.now()): boolean {
   if (!filter.archived && row.archived) return false;
   if (filter.kind !== "any" && tabOf(row) !== filter.kind) return false;
+  if (filter.origin !== "any" && originOf(row) !== filter.origin) return false;
   if (!matchesRowFilter(row, filter, now)) return false;
   const created = createdOf(row);
   const from = filter.from ? dayStart(filter.from) : NaN;

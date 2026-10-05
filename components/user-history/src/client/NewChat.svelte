@@ -33,6 +33,8 @@
   let workspaceOpen = $state(false);
   /** An explicit thread name; empty lets Prime Agent title the thread from its first message. */
   let threadName = $state("");
+  /** Thread: a normal Prime Agent session. Chat: a DM-style partner for one topic that runs jobs for you and checks in on them. */
+  let kind = $state<"thread" | "chat">("thread");
   const closePopover = () => { workspaceOpen = false; };
   let lightbox = $state<number | null>(null);
 
@@ -108,7 +110,7 @@
     const progress = draftProgress;
     const chosen = activeModel;
     const name = threadName.trim();
-    const id = await store.createChat({ cwd, ...(name ? { name } : {}), message: text, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
+    const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), message: text, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
     threadName = "";
@@ -145,11 +147,17 @@
             {#if store.pending.message}<div class="text">{store.pending.message}</div>{/if}
           </div>
           {#if store.pending.name}<div class="pending-name">{store.pending.name}</div>{/if}
-          <div class="starting"><span class="spinner"></span> Starting the chat in {shortPath(store.pending.cwd)}</div>
+          <div class="starting"><span class="spinner"></span> Starting the {store.pending.kind === "chat" ? "chat" : "thread"} in {shortPath(store.pending.cwd)}</div>
         </div>
       {:else}
-        <h1 class="greeting">{greeting}</h1>
-        <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder="Ask Prime Agent anything" />
+        <div class="greeting-row">
+          <h1 class="greeting">{greeting}</h1>
+          <div class="segmented" role="radiogroup" aria-label="Kind of thread">
+            <button type="button" role="radio" aria-checked={kind === "thread"} class:on={kind === "thread"} use:tooltip={"A Prime Agent session that does the work itself"} onclick={() => { kind = "thread"; }}>Thread</button>
+            <button type="button" role="radio" aria-checked={kind === "chat"} class:on={kind === "chat"} use:tooltip={"A chat partner for one topic: it starts jobs, reports back and checks in every 10 minutes"} onclick={() => { kind = "chat"; }}>Chat</button>
+          </div>
+        </div>
+        <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder={kind === "chat" ? "Say what this chat is about" : "Ask Prime Agent anything"} />
         <div class="options-row">
           <div class="group" role="group" aria-label="Setup for the new thread">
             <Popover open={workspaceOpen} onclose={closePopover} width={340} label="Workspace">
@@ -233,7 +241,8 @@
   .top { display: flex; align-items: center; padding: 0 8px; height: 40px; }
   .center { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 20px 10vh; overflow-y: auto; }
   .column { width: 100%; max-width: var(--column); }
-  .greeting { margin: 0 0 18px; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+  .greeting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 18px; }
+  .greeting { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
   .name-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .name-label.set { color: var(--text); font-weight: 600; }
   .name-field { display: block; width: calc(100% - 16px); margin: 4px 8px 8px; }

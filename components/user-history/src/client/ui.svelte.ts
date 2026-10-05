@@ -49,6 +49,9 @@ class Ui {
   setAgentsColumn(key: string, on: boolean): void { this.agentsColumns = { ...this.agentsColumns, [key]: on }; store("chat.agentsColumns", JSON.stringify(this.agentsColumns)); }
   heartbeatsOpen = $state(stored("chat.heartbeatsOpen") !== "0");
   setHeartbeatsOpen(open: boolean): void { this.heartbeatsOpen = open; store("chat.heartbeatsOpen", open ? "1" : "0"); }
+  /** Threads an agent started through `rlm.create_session` are out of the sidebar unless this is on; the choice holds across reloads. */
+  agentCreatedShown = $state(stored("chat.agentCreatedShown") === "1");
+  setAgentCreatedShown(shown: boolean): void { this.agentCreatedShown = shown; store("chat.agentCreatedShown", shown ? "1" : "0"); }
   setNotesOpen(open: boolean): void { this.notesOpen = open; store("chat.notesOpen", open ? "1" : "0"); }
   /** Thread ids in the order the sidebar shows them, so archiving the open thread can move to the next one. */
   sidebarOrder = $state.raw<string[]>([]);

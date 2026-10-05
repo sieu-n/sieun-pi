@@ -4,7 +4,7 @@
   import { labels, threadTags } from "./labels.ts";
   import { shortPath, relativeTime } from "./format.ts";
   import { clock } from "./clock.svelte.ts";
-  import { activeFilters, pulseOf, emptyFilter, matchesFilter, modelShort, money, needsResponse, nextRun, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type SortKey } from "./organize.ts";
+  import { activeFilters, pulseOf, emptyFilter, matchesFilter, modelShort, money, needsResponse, nextRun, ORIGIN_LABEL, PROGRESS_LABEL, shortDate, sortBy, statusOf, STATUS_LABEL, type AgentFilter, type Origin, type SortKey } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Modal from "./Modal.svelte";
@@ -18,6 +18,7 @@
   import PriorityPicker from "./PriorityPicker.svelte";
   import ProgressPicker from "./ProgressPicker.svelte";
   import Checkbox from "./ui/Checkbox.svelte";
+  import Select, { type SelectOption } from "./ui/Select.svelte";
   import DateRange from "./ui/DateRange.svelte";
   import Floating from "./ui/Floating.svelte";
   import TagPicker from "./ui/TagPicker.svelte";
@@ -58,7 +59,9 @@
   const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
   const selectedIds = $derived(rows.filter(row => selected.has(row.id)).map(row => row.id));
   const allSelected = $derived(rows.length > 0 && selectedIds.length === rows.length);
-  const filtered = $derived(activeFilters(filter) > 0 || filter.kind !== "any" || filter.from !== "" || filter.to !== "");
+  const filtered = $derived(activeFilters(filter) > 0 || filter.kind !== "any" || filter.origin !== "any" || filter.from !== "" || filter.to !== "");
+  const ORIGINS: readonly Origin[] = ["user", "agent"];
+  const originOptions: SelectOption[] = [{ value: "any", label: "Any origin" }, ...ORIGINS.map(origin => ({ value: origin, label: ORIGIN_LABEL[origin] }))];
   /** The second line under a title: a failure, what a running thread is doing, or a heartbeat's schedule. Empty when there is nothing to add. */
   function detail(row: SessionRow): { text: string; tone: string } | null {
     const pulse = pulseOf(row, now);
@@ -145,6 +148,7 @@
     </label>
     <div class="filters" role="group" aria-label="Filters">
       <FilterSelects {filter} onchange={patch => { filter = { ...filter, ...patch }; }} />
+      <Select label="Origin" options={originOptions} value={filter.origin} resetValue="any" onchange={value => { filter.origin = value as Origin | "any"; }} />
       <DateRange label="Created" from={filter.from} to={filter.to} onchange={(from, to) => { filter.from = from; filter.to = to; }} />
       <button type="button" class="toggle-chip" class:on={filter.archived} aria-pressed={filter.archived} onclick={() => { filter.archived = !filter.archived; }}>
         <Icon name="archive" size={13} />{filter.archived ? "Archived shown" : "Archived"}<span class="n">{archivedCount}</span>
@@ -199,6 +203,7 @@
                 <span class="name-line">
                   <button type="button" tabindex="-1" class="open" class:strong={needsResponse(row)} onclick={event => { event.stopPropagation(); open(row); }}>{row.name}</button>
                   {#if row.schedule}<span class="kind">{row.schedule.label ?? row.schedule.kind}</span>{/if}
+                  {#if row.origin === "agent"}<span class="kind">agent-created</span>{/if}
                   {#if row.archived}<span class="kind">archived</span>{/if}
                 </span>
                 {#if detail(row)}{@const extra = detail(row)!}<span class="detail {extra.tone}" title={extra.text}>{extra.text}</span>{/if}

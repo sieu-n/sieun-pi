@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
-  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, compareRows, type SidebarSort, type SidebarView } from "./organize.ts";
+  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, emptyRowFilter, groupRows, inSidebar, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, originOf, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, compareRows, type SidebarSort, type SidebarView } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Icon from "./Icon.svelte";
@@ -31,14 +31,19 @@
   let warmTimer: ReturnType<typeof setTimeout> | null = null;
 
   const tagMap = $derived(new Map(store.tags.map(tag => [tag.id, tag])));
-  const visible = $derived(store.sessions.filter(row => showArchived || !row.archived));
+  const visible = $derived(store.sessions.filter(row => inSidebar(row, { archived: showArchived, agentCreated: ui.agentCreatedShown })));
   const archivedCount = $derived(store.sessions.filter(row => row.archived).length);
+  /** Agent-created rows the archive toggle would let through; the count the toggle under the list names. */
+  const agentCreatedCount = $derived(store.sessions.filter(row => originOf(row) === "agent" && (showArchived || !row.archived)).length);
   const filterCount = $derived(activeFilters(ui.sidebarFilter));
   const shown = $derived(visible.filter(row => matchesRowFilter(row, ui.sidebarFilter, tick) && matchesQuery(row, query.trim(), tagMap)));
+  /** Chats sit first, in the grouped order; a chat's own check-in heartbeat never makes it a heartbeat row. */
+  const chats = $derived(shown.filter(row => row.chat).sort(compareRows));
+  const chatsNeeding = $derived(chats.filter(needsResponse).length);
   /** Heartbeat threads sit in their own section above Needs response, in the same order as the grouped list. */
-  const beats = $derived(shown.filter(row => tabOf(row) === "heartbeats").sort(compareRows));
+  const beats = $derived(shown.filter(row => !row.chat && tabOf(row) === "heartbeats").sort(compareRows));
   const beatsNeeding = $derived(beats.filter(needsResponse).length);
-  const groups = $derived(groupRows(shown.filter(row => tabOf(row) === "threads"), ui.sidebarSort));
+  const groups = $derived(groupRows(shown.filter(row => !row.chat && tabOf(row) === "threads"), ui.sidebarSort));
   const SORTS: readonly SidebarSort[] = ["grouped", "recent"];
   const VIEWS: readonly { view: SidebarView; icon: "list" | "tag" }[] = [{ view: "current", icon: "list" }, { view: "tags", icon: "tag" }];
   const minute = $derived(Math.floor(clock.now / 60_000));
@@ -75,7 +80,7 @@
     requestAnimationFrame(() => { if (!document.activeElement || document.activeElement === document.body) list?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`)?.focus(); });
   }
   function archive(row: SessionRow): void { void labels.archive([row.id]); }
-  $effect(() => { ui.sidebarOrder = [...(ui.heartbeatsOpen ? beats.map(row => row.id) : []), ...groups.flatMap(group => group.rows.map(row => row.id))]; });
+  $effect(() => { ui.sidebarOrder = [...chats.map(row => row.id), ...(ui.heartbeatsOpen ? beats.map(row => row.id) : []), ...groups.flatMap(group => group.rows.map(row => row.id))]; });
 
   function onRowKey(row: SessionRow, event: KeyboardEvent): void {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -90,10 +95,10 @@
     }
   }
 
+  /** The native status label while the thread's own turn runs, else the subagent count the terminal shows under the row. */
   function workingLabel(row: SessionRow): string {
-    if (row.statusLabel) return row.statusLabel;
-    const since = Date.parse(row.workingSince ?? "");
-    return Number.isFinite(since) ? elapsed(Math.max(0, minute * 60_000 - since)) : "";
+    if (row.status === "running" && row.statusLabel) return row.statusLabel;
+    return row.subagentsRunning > 0 ? `${row.subagentsRunning} ${row.subagentsRunning === 1 ? "subagent" : "subagents"}` : "";
   }
 
   let aside: HTMLElement | undefined = $state();
@@ -153,31 +158,31 @@
     <div class="row" class:selected={row.id === store.selectedId} class:archived={row.archived} class:held={menu?.id === row.id || tagging?.id === row.id}
       onmouseenter={() => warm(row.id)} onmouseleave={cancelWarm} oncontextmenu={event => openMenu(row, event)} role="presentation">
       {#if renaming?.id === row.id}
-        <input class="field rename" bind:value={renaming.name} placeholder={row.name} aria-label="Thread name" use:focusAndSelect onkeydown={onRenameKey} onblur={() => void commitRename()} />
+        <input class="field rename" bind:value={renaming.name} placeholder={row.name} aria-label="Thread name" use:focusAndSelect onkeydown={onRenameKey} onblur={() => { renaming = null; }} />
       {:else}
         {@const pulse = pulseOf(row, tick)}
         <a class="link" data-row={row.id} href={"#" + encodeURIComponent(row.id)} onkeydown={event => onRowKey(row, event)}>
           <span class="line" title={pulse && pulse.level !== "live" ? pulse.text : undefined}>
             <span class="title" class:strong={needsResponse(row)}>{row.name}</span>
-            {#if row.status === "running"}<span class="run" role="img" aria-label={pulse?.text ? "Working, " + pulse.text : "Working"}><StatusMark status="working" level={pulse?.level ?? "live"} /></span>
+            {#if row.working}<span class="run" role="img" aria-label={pulse?.text ? "Working, " + pulse.text : "Working"}><StatusMark status="working" level={pulse?.level ?? "live"} /></span>
             {:else if row.failure}<span class="dot failed" role="img" aria-label="Last turn failed"></span>
             {:else if needsResponse(row)}<span class="dot" role="img" aria-label="Needs response"></span>{/if}
           </span>
           {#if ui.sidebarView === "tags"}
           {@const shownTags = row.tags.flatMap(id => tagMap.get(id) ?? [])}
           {#if shownTags.length}<span class="line sub"><span class="chips all">{#each shownTags as tag (tag.id)}<TagChip {tag} />{/each}</span></span>{/if}
-          {:else if pulse?.level === "failed" || (row.status !== "running" && row.failure)}
+          {:else if pulse?.level === "failed" || (!row.working && row.failure)}
           {@const failure = pulse?.level === "failed" ? pulse.text : row.failure}
           <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
           {:else}
           <span class="line sub">
-            {#if row.schedule}
+            {#if row.schedule && !row.chat}
               <span class="meta date">{row.schedule.label ?? row.schedule.kind}{row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, minute * 60_000) : ""}</span>
             {:else if createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}
               <span class="meta date">{createdAge(row.created ?? row.lastActivityAt, minute * 60_000)}</span>
             {/if}
             {#if pulse && pulse.level !== "live"}<span class="meta working {pulse.level}">{pulse.text}</span>
-            {:else if row.status === "running" && workingLabel(row)}<span class="meta working">{workingLabel(row)}</span>{/if}
+            {:else if row.working && workingLabel(row)}<span class="meta working">{workingLabel(row)}</span>{/if}
             <span class="meta cost" class:unknown={row.cost === undefined}>{money(row.cost)}</span>
             {#if row.model}<span class="meta model">{modelShort(row.model)}</span>{/if}
             <span class="chips">
@@ -229,6 +234,10 @@
     </div>
     <InterruptedRuns />
     <div class="list" bind:this={list}>
+      {#if chats.length}
+        <div class="group-label chats-label">Chats <span class="count">{chats.length}</span>{#if chatsNeeding}<span class="dot small" role="img" aria-label="{chatsNeeding} need a response"></span>{/if}</div>
+        {#each chats as row (row.id)}{@render threadRow(row)}{/each}
+      {/if}
       {#if beats.length}
         <button type="button" class="group-label beats-toggle" aria-expanded={ui.heartbeatsOpen} onclick={() => ui.setHeartbeatsOpen(!ui.heartbeatsOpen)}>
           <span class="chev" class:open={ui.heartbeatsOpen}><Icon name="chevronDown" size={11} /></span>Heartbeats <span class="count">{beats.length}</span>
@@ -239,18 +248,22 @@
         {/if}
       {/if}
       {#each groups as group, index (group.bucket)}
-        {#if group.bucket && (group.bucket !== "other" || index > 0 || beats.length)}<div class="group-label">{BUCKET_LABEL[group.bucket]} <span class="count">{group.rows.length}</span></div>{/if}
+        {#if group.bucket && (group.bucket !== "idle" || index > 0 || beats.length || chats.length)}<div class="group-label">{BUCKET_LABEL[group.bucket]} <span class="count">{group.rows.length}</span></div>{/if}
         {#each group.rows as row (row.id)}{@render threadRow(row)}{/each}
       {/each}
-      {#if !groups.length && !beats.length}
+      {#if !groups.length && !beats.length && !chats.length}
         <div class="empty">
           {#if store.daemon === "unknown"}<span class="spinner tiny"></span>
           {:else if query || filterCount}<span>No threads match.{#if filterCount}{" "}<button type="button" class="link-button" onclick={() => ui.setSidebarFilter(emptyRowFilter())}>Clear filters</button>{/if}</span>
+          {:else if agentCreatedCount}Only agent-created threads.
           {:else}No threads yet.{/if}
         </div>
       {/if}
       {#if archivedCount}
         <button type="button" class="archived-toggle" onclick={() => { showArchived = !showArchived; }}>{showArchived ? "Hide archived" : `Show ${archivedCount} archived`}</button>
+      {/if}
+      {#if agentCreatedCount}
+        <button type="button" class="archived-toggle" aria-pressed={ui.agentCreatedShown} onclick={() => ui.setAgentCreatedShown(!ui.agentCreatedShown)}>{ui.agentCreatedShown ? "Hide agent-created" : `Show agent-created (${agentCreatedCount})`}</button>
       {/if}
     </div>
   </div>
@@ -340,6 +353,7 @@
   .row:hover, .row.held { background: var(--rail-hover); --row-bg: var(--rail-hover); }
   .row.selected { background: var(--rail-active); --row-bg: var(--rail-active); }
   .row.archived .title { color: var(--text-muted); }
+  .chats-label { display: flex; align-items: center; gap: 5px; padding-top: 6px; }
   .link { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; color: inherit; text-decoration: none; min-width: 0; border-radius: var(--radius-small); }
   .link:focus-visible { outline-offset: -2px; }
   .line { display: flex; align-items: center; gap: 6px; min-width: 0; }
@@ -371,5 +385,6 @@
   .rename { margin: 3px 2px; width: calc(100% - 4px); }
   .empty { display: flex; justify-content: center; padding: 24px 8px; color: var(--text-faint); font-size: 12.5px; text-align: center; }
   .archived-toggle { display: block; width: 100%; padding: 8px; margin-top: 8px; font-size: 12px; color: var(--text-faint); border-radius: var(--radius-small); }
+  .archived-toggle + .archived-toggle { margin-top: 0; }
   .archived-toggle:hover { background: var(--bg-hover); color: var(--text-muted); }
 </style>

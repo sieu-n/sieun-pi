@@ -5,6 +5,9 @@ import { ChatLabels } from "./chat-labels.ts";
 import { ChatNotes } from "./chat-notes.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
+import { Chats } from "./chats.ts";
+import { IdIndex } from "./id-index.ts";
+import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -20,6 +23,9 @@ export interface ChatBackend {
   labels: ChatLabels;
   notes: ChatNotes;
   defaults: ChatDefaultsStore;
+  chats: Chats;
+  /** `<dataDir>/threads.json`: every thread `POST api/threads` created, both kinds. A listed id is `origin: "user"`. */
+  created: IdIndex;
   close(): Promise<void>;
 }
 
@@ -55,14 +61,19 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const notes = new ChatNotes(join(dataDir, "notes.json"));
   const defaults = chatDefaultsStore(agentDir);
   await readState.snapshot().catch(() => null);
-  const catalog = new Catalog(socketPath, readState, labels);
+  const index = new IdIndex(join(dataDir, "chats.json"), "Chat index");
+  const created = new IdIndex(join(dataDir, "threads.json"), "Thread index");
+  let chats: Chats;
+  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids() }, new ThreadOrigins(created));
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read());
+  chats = new Chats(index, threads, id => catalog.summary(id), line => process.stderr.write(line + "\n"));
   let closed = false;
   return {
-    catalog, threads, readState, labels, notes, defaults,
+    catalog, threads, readState, labels, notes, defaults, chats, created,
     async close() {
       if (closed) return;
       closed = true;
+      chats.close();
       await threads.close();
       await catalog.close();
     },
