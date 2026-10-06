@@ -18,7 +18,7 @@ Private rotation journals live under the pool state directory.
 
 stdout = the token, and nothing else. All diagnostics go to the log file.
 """
-import base64, collections, dataclasses, fcntl, hashlib, json, os, re, shlex, shutil, subprocess, sys, time, unicodedata, urllib.request, urllib.error
+import base64, collections, dataclasses, fcntl, hashlib, json, os, queue, re, shlex, shutil, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error
 
 HOME = os.path.expanduser("~")
 TM = os.environ.get("TOKENMAXXING_HOME") or os.path.join(HOME, ".config", "tokenmaxxing")
@@ -1928,8 +1928,9 @@ def cmd_use(rest):
         return 0
 
 
-TM_REPORTS = {"anthropic": "claude", "openai-codex": "codex"}
-REFRESH_TIMEOUT_SEC = 60
+REFRESH_TIMEOUT_SEC = 180
+USAGE_READ = os.path.join(CODE_ROOT, "app", "usage-read.ts")
+_WRAPPER_RUN = re.compile(r'exec\s+"([^"]+)"\s.*?\brun\s+"([^"]+)/main\.ts"')
 
 
 def tokenmaxxing_exe():
@@ -1937,49 +1938,156 @@ def tokenmaxxing_exe():
     return own if os.access(own, os.X_OK) else shutil.which("tokenmaxxing")
 
 
-def cmd_refresh(rest):
-    """Sample every account's usage now through `tokenmaxxing status --json`,
-    tokenmaxxing's own read of the usage endpoints. It writes only
-    tokenmaxxing's usage figures and moves no seat or pin. Prints the
-    outcome per account; never a credential."""
-    f = parse_flags(rest, provider_default=None)
-    providers = [f["provider"]] if f["provider"] else list(PROVIDERS)
-
-    def fail(msg):
-        print(json.dumps({"error": msg}) if f["json"] else msg)
-        return 1
-
+def tokenmaxxing_runtime():
+    """The Bun binary and the `src` directory of the tokenmaxxing install the
+    wrapper runs. usage-read.ts imports tokenmaxxing's own read and save code
+    from that directory, so the read always matches the installed release."""
     exe = tokenmaxxing_exe()
     if not exe:
-        return fail("tokenmaxxing is not installed")
+        raise RuntimeError("tokenmaxxing is not installed")
+    real = os.path.realpath(exe)
+    if real.endswith(os.path.join("src", "main.ts")):
+        bun = shutil.which("bun")
+        if not bun:
+            raise RuntimeError("bun is not on PATH")
+        return bun, os.path.dirname(real)
     try:
-        done = subprocess.run([exe, "status", "--json"], capture_output=True, text=True,
-                              timeout=REFRESH_TIMEOUT_SEC, env=dict(os.environ, TOKENMAXXING_HOME=TM))
-    except subprocess.TimeoutExpired:
-        return fail(f"tokenmaxxing status did not finish in {REFRESH_TIMEOUT_SEC}s")
+        with open(real, encoding="utf-8", errors="replace") as fh:
+            match = _WRAPPER_RUN.search(fh.read(4096))
+    except OSError as e:
+        raise RuntimeError(f"cannot read {exe}: {e}")
+    if not match:
+        raise RuntimeError(f"cannot find the tokenmaxxing source behind {exe}")
+    return match.group(1), match.group(2)
+
+
+def read_usage(selection, emit, timeout=REFRESH_TIMEOUT_SEC):
+    """Run usage-read.ts once per provider, all at once, and pass each event to
+    `emit` with its provider and email. `selection` maps a provider to account
+    ids, or to None for every account. An account still unread at the deadline
+    is reported as not finished. Returns the providers that failed as a whole."""
+    bun, src = tokenmaxxing_runtime()
+    env = dict(os.environ, TOKENMAXXING_HOME=TM)
+    events, procs, errors, pumps = queue.Queue(), {}, {}, []
+    for provider, ids in selection.items():
+        proc = subprocess.Popen([bun, "--no-env-file", USAGE_READ, src, provider, *(ids or [])], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        procs[provider] = proc
+
+        def pump(provider=provider, proc=proc):
+            for line in proc.stdout:
+                events.put((provider, line))
+            events.put((provider, None))
+        pumps.append(threading.Thread(target=pump, daemon=True))
+        pumps[-1].start()
+    emails, pending, open_, listed = {}, {p: set() for p in procs}, set(procs), set()
+    deadline = time.monotonic() + timeout
+    while open_:
+        try:
+            provider, line = events.get(timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Empty:
+            break
+        if line is None:
+            open_.discard(provider)
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("event")
+        if kind == "accounts":
+            listed.add(provider)
+            for a in event.get("accounts") or []:
+                emails[(provider, a.get("id"))] = a.get("email")
+                pending[provider].add(a.get("id"))
+        elif kind == "read":
+            pending[provider].discard(event.get("id"))
+        elif kind == "error":
+            errors[provider] = str(event.get("message") or "usage-read failed")
+        if kind in ("reading", "read"):
+            event["email"] = emails.get((provider, event.get("id")))
+        emit(dict(event, provider=provider))
+    for provider, proc in procs.items():
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        said = (proc.stderr.read() or "").strip().splitlines()
+        if proc.returncode and provider not in errors and provider not in listed:
+            errors[provider] = (said[-1] if said else f"usage-read exited {proc.returncode}")[:300]
+            emit({"event": "error", "provider": provider, "message": errors[provider]})
+        for account in sorted(pending[provider], key=str):
+            emit({"event": "read", "provider": provider, "id": account, "email": emails.get((provider, account)),
+                  "ok": False, "reason": f"the read did not finish in {timeout}s", "retry_at": None})
+    for pump in pumps:
+        pump.join(timeout=5)
+    for proc in procs.values():
+        proc.stdout.close()
+        proc.stderr.close()
+    return errors
+
+
+def cmd_refresh(rest):
+    """Read usage now for every account, or for the named ones, through
+    tokenmaxxing's own read (app/usage-read.ts). It skips no account for having
+    been read recently, but it waits out a rate limit the usage endpoint set.
+    It writes only tokenmaxxing's usage figures and moves no seat or pin.
+    --stream prints each event as one JSON line while the reads run; --json
+    prints one report at the end. Never prints a credential."""
+    stream = "--stream" in rest
+    f = parse_flags([tok for tok in rest if tok != "--stream"], provider_default=None)
+    as_json = f["json"] or stream
+
+    def fail(msg):
+        print(json.dumps({"event": "error", "message": msg} if stream else {"error": msg}) if as_json else msg, flush=True)
+        return 1
+
+    if f["provider"] is not None and f["provider"] not in PROVIDERS:
+        return fail(f"unknown provider {f['provider']}")
+    if f["positional"] and f["provider"] is None:
+        return fail("name the provider with --provider when choosing accounts")
+    selection = {}
+    for provider in [f["provider"]] if f["provider"] else list(PROVIDERS):
+        if not f["positional"]:
+            selection[provider] = None
+            continue
+        try:
+            accounts = load_index(provider)
+        except Exception as e:
+            return fail(f"cannot load the {provider} pool: {e}")
+        ids = []
+        for sel in f["positional"]:
+            account = find_account(accounts, sel)
+            if account is None:
+                return fail(f"{sel} is not in the {provider} pool")
+            ids.append(account.id)
+        selection[provider] = ids
+
+    rows = {provider: [] for provider in selection}
+
+    def emit(event):
+        if event.get("event") == "read":
+            rows[event["provider"]].append({k: event.get(k) for k in ("id", "email", "ok", "reason", "retry_at", "usage_at")})
+        if stream:
+            print(json.dumps(event), flush=True)
+        elif not as_json and event.get("event") == "read":
+            print(f"{event['provider']:14s} {event.get('email') or event.get('id')}  {'read' if event.get('ok') else event.get('reason')}", flush=True)
+
     try:
-        report = json.loads(done.stdout)
-    except ValueError:
-        return fail(f"tokenmaxxing status exited {done.returncode} without a report")
-    if not report.get("ok"):
-        return fail(str(report.get("error") or report.get("message") or "tokenmaxxing status failed")[:300])
-    out = {}
-    for provider in providers:
-        rows = []
-        for a in (report.get(TM_REPORTS[provider]) or {}).get("accounts") or []:
-            sample = a.get("sample") or {}
-            rows.append({"id": a.get("id"), "email": a.get("email") or a.get("label"),
-                         "ok": sample.get("ok") is True, "reason": sample.get("reason")})
-        out[provider] = rows
-    failed = [r["email"] for rows in out.values() for r in rows if not r["ok"]]
-    log("usage_refresh", providers=providers, failed=failed)
-    if f["json"]:
-        print(json.dumps({"providers": out}, indent=2))
+        errors = read_usage(selection, emit)
+    except RuntimeError as e:
+        return fail(str(e))
+    failed = [r["email"] or r["id"] for provider_rows in rows.values() for r in provider_rows if not r["ok"]]
+    log("usage_refresh", providers=list(selection), accounts=sum(len(r) for r in rows.values()), failed=failed, errors=errors)
+    if stream:
+        print(json.dumps({"event": "end"}), flush=True)
+    elif as_json:
+        print(json.dumps({"providers": rows, **({"errors": errors} if errors else {})}, indent=2))
     else:
-        for provider, rows in out.items():
-            for r in rows:
-                print(f"{provider:14s} {r['email']}  {'ok' if r['ok'] else r['reason']}")
-    return 0
+        for provider, message in errors.items():
+            print(f"{provider:14s} {message}")
+    return 1 if errors else 0
 
 
 def cmd_ls(rest):
@@ -2502,8 +2610,9 @@ USAGE = """usage: pi-pool [command]
   rm <email|id> [--provider <p>] tokenmaxxing rm, then drop its pins and seat here
   login [<email|id>] [--provider <p>] [--timeout <sec>]
                                   tokenmaxxing add (or auth <account>) driven as JSON lines
-  refresh [--json] [--provider <p>]
-                                  sample every account's usage now (tokenmaxxing status)
+  refresh [<email|id> ...] [--provider <p>] [--json | --stream]
+                                  read usage now for every account or the named ones (tokenmaxxing's own read);
+                                  --stream prints one JSON line per event while the reads run
   probe [--force]                check every anthropic account for an API refusal (no refresh);
                                   the extension runs it at session start, at most every 6h
   adopt-logins                   move a stored /login that would bypass the pool into

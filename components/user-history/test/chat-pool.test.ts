@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parsePoolRows, refreshNotice, runAccountAction } from "../src/chat-pool.ts";
+import { parsePoolRows, parseRefreshEvent, UsageRefreshes } from "../src/chat-pool.ts";
+import type { UsageRefresh } from "../src/shared/types.ts";
 
 const base = { id: "a", email: "a@x", usage: "7%/61%", session_pct: 7, weekly_pct: 61, gated_pct: 100, usable: false, reason: "depleted",
   current: false, pinned: false, force: false, live: false, seat: true, score: null };
@@ -30,28 +31,69 @@ test("a refused row keeps its cooldown end and reason", () => {
   assert.equal(row!.cooldownReason, "oauth not allowed for organization");
 });
 
-test("the refresh notice names only the accounts that could not be read", () => {
-  assert.equal(refreshNotice({ providers: { anthropic: [{ email: "a@x", ok: true }], "openai-codex": [{ email: "c@x", ok: true }] } }), "Usage updated for 2 accounts.");
-  assert.equal(refreshNotice({ providers: { anthropic: [{ email: "a@x", ok: true }, { email: "b@x", ok: false, reason: "usage read failed (see log)" }] } }),
-    "Usage updated for 1 of 2 accounts. b@x: usage read failed (see log).");
-  assert.throws(() => refreshNotice({ error: "x" }));
+test("refresh stream lines become events with epoch ms", () => {
+  assert.deepEqual(parseRefreshEvent('{"event":"accounts","accounts":[{"id":"a","email":"a@x"},{"bad":1}],"provider":"anthropic"}'),
+    { event: "accounts", accounts: [{ id: "a", email: "a@x" }] });
+  assert.deepEqual(parseRefreshEvent('{"event":"read","id":"a","ok":false,"reason":"rate limited","retry_at":1790000600,"usage_at":null}'),
+    { event: "read", id: "a", ok: false, reason: "rate limited", usageAt: null, retryAt: 1790000600000 });
+  assert.equal(parseRefreshEvent("not json"), null);
+  assert.equal(parseRefreshEvent('{"event":"reading"}'), null);
 });
 
-test("refresh runs pi-pool against an isolated pool and tokenmaxxing", async () => {
-  const root = mkdtempSync(join(tmpdir(), "chat-pool-"));
-  const saved = { pool: process.env.PI_POOL_DIR, tm: process.env.TOKENMAXXING_HOME };
+/** A fake pi-pool that prints the given refresh lines, then exits with `code`. */
+function fakePool(root: string, lines: string[], code = 0): string {
+  const path = join(root, "pi-pool");
+  writeFileSync(path, "#!/bin/sh\necho \"$@\" > " + JSON.stringify(join(root, "args")) + "\n" + lines.map(line => `echo '${line}'`).join("\n") + `\nexit ${code}\n`, { mode: 0o755 });
+  return path;
+}
+
+async function settle(refreshes: UsageRefreshes, provider: string): Promise<UsageRefresh> {
+  return new Promise(resolve => { const stop = refreshes.subscribe(run => { if (run.provider === provider && run.status !== "running") { queueMicrotask(() => stop()); resolve(run); } }); });
+}
+
+test("a refresh reports every account's read as it lands, and the failures with their reasons", async () => {
+  const root = mkdtempSync(join(tmpdir(), "chat-refresh-"));
   try {
-    mkdirSync(join(root, "tm", "bin"), { recursive: true });
-    mkdirSync(join(root, "pool"));
-    const report = { ok: true, claude: { accounts: [{ id: "a", email: "a@x", sample: { ok: false, reason: "usage read failed (see log)" } }] }, codex: { accounts: [] } };
-    writeFileSync(join(root, "tm", "bin", "tokenmaxxing"), `#!/bin/sh\necho '${JSON.stringify(report)}'\n`, { mode: 0o755 });
-    process.env.PI_POOL_DIR = join(root, "pool");
-    process.env.TOKENMAXXING_HOME = join(root, "tm");
-    assert.equal(await runAccountAction({ action: "refresh", provider: "anthropic" }), "Usage updated for 0 of 1 accounts. a@x: usage read failed (see log).");
-  } finally {
-    for (const [name, value] of [["PI_POOL_DIR", saved.pool], ["TOKENMAXXING_HOME", saved.tm]] as const) {
-      if (value === undefined) delete process.env[name]; else process.env[name] = value;
-    }
-    rmSync(root, { recursive: true, force: true });
-  }
+    const refreshes = new UsageRefreshes({ executable: fakePool(root, [
+      '{"event":"accounts","accounts":[{"id":"a","email":"a@x"},{"id":"b","email":"b@x"}]}',
+      '{"event":"reading","id":"a"}', '{"event":"read","id":"a","ok":true,"usage_at":1790000000}',
+      '{"event":"reading","id":"b"}', '{"event":"read","id":"b","ok":false,"reason":"rate limited","retry_at":1790000600}', '{"event":"end"}']) });
+    const seen: string[] = [];
+    refreshes.subscribe(run => seen.push(run.accounts.map(entry => entry.state).join(",")));
+    const started = refreshes.start("anthropic", null);
+    assert.equal(started.status, "running");
+    assert.throws(() => refreshes.start("anthropic", null), /still running/);
+    const run = await settle(refreshes, "anthropic");
+    assert.equal(run.status, "done");
+    assert.deepEqual(run.accounts, [
+      { id: "a", email: "a@x", state: "read", reason: null, usageAt: 1790000000000, retryAt: null },
+      { id: "b", email: "b@x", state: "failed", reason: "rate limited", usageAt: null, retryAt: 1790000600000 }]);
+    assert.ok(seen.includes("reading,queued") && seen.includes("read,reading"), seen.join(" | "));
+    assert.equal(readFileSync(join(root, "args"), "utf8").trim(), "refresh --provider anthropic --stream");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("one account is refreshed by id, and a read the run never finished is a failure", async () => {
+  const root = mkdtempSync(join(tmpdir(), "chat-refresh-"));
+  try {
+    const refreshes = new UsageRefreshes({ executable: fakePool(root, ['{"event":"accounts","accounts":[{"id":"a","email":"a@x"}]}', '{"event":"reading","id":"a"}'], 1) });
+    refreshes.start("openai-codex", "a");
+    const run = await settle(refreshes, "openai-codex");
+    assert.equal(readFileSync(join(root, "args"), "utf8").trim(), "refresh a --provider openai-codex --stream");
+    assert.equal(run.account, "a");
+    assert.deepEqual(run.accounts.map(entry => [entry.state, entry.reason]), [["failed", "The refresh stopped before this account was read."]]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a refresh that cannot start fails with pi-pool's own message", async () => {
+  const root = mkdtempSync(join(tmpdir(), "chat-refresh-"));
+  try {
+    const refreshes = new UsageRefreshes({ executable: fakePool(root, ['{"event":"error","message":"tokenmaxxing is not installed"}'], 1) });
+    refreshes.start("anthropic", null);
+    const run = await settle(refreshes, "anthropic");
+    assert.equal(run.status, "failed");
+    assert.equal(run.message, "tokenmaxxing is not installed");
+    assert.throws(() => refreshes.start("grok", null), /pooled provider/);
+    assert.throws(() => refreshes.start("anthropic", "--all"), /Choose an account/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

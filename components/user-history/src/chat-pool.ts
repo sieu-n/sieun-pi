@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { AccountAction, AccountLogin, AccountsView, PoolAccount, PoolProvider, PoolResolution, PoolWindow } from "./shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, PoolAccount, PoolProvider, PoolResolution, PoolWindow, UsageRefresh, UsageRefreshAccount } from "./shared/types.ts";
 
 /** The pi-pool CLI next to this component; PI_POOL_BIN names another one (the native test runs a recording fake). */
 const executable = process.env.PI_POOL_BIN ?? fileURLToPath(new URL("../../pi-pool/bin/pi-pool", import.meta.url));
@@ -80,21 +80,12 @@ export async function listAccounts(sessionId: string | null, model: string | nul
   return { sessionId, checkedAt: new Date().toISOString(), providers };
 }
 
-/** One sentence from `pi-pool refresh --json`: which accounts tokenmaxxing could not read. */
-export function refreshNotice(value: unknown): string {
-  if (!isRecord(value) || !isRecord(value.providers)) throw new Error("pi-pool returned an invalid refresh report");
-  const rows = Object.values(value.providers).flatMap(rows => Array.isArray(rows) ? rows.filter(isRecord) : []);
-  const failed = rows.filter(row => row.ok !== true);
-  if (!failed.length) return rows.length === 1 ? "Usage updated." : `Usage updated for ${rows.length} accounts.`;
-  return `Usage updated for ${rows.length - failed.length} of ${rows.length} accounts. ` +
-    failed.map(row => `${text(row.email) ?? "An account"}: ${text(row.reason) ?? "not read"}.`).join(" ");
-}
-
 /** The pi-pool command lines this service runs for account changes. A CLI contract change is a one-line fix here. */
 export const poolCommand = {
   disable: (provider: string, account: string) => ["off", account, "--provider", provider],
   enable: (provider: string, account: string) => ["on", account, "--provider", provider],
   remove: (provider: string, account: string) => ["rm", account, "--provider", provider],
+  refresh: (provider: string, account: string | null) => ["refresh", ...(account ? [account] : []), "--provider", provider, "--stream"],
   login: (provider: string, account: string | null, seconds: number) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds)],
 };
 
@@ -122,7 +113,6 @@ export async function runAccountAction(action: AccountAction): Promise<string | 
     case "disable": await run(poolCommand.disable(action.provider, accountArgument(action.account))); return null;
     case "enable": await run(poolCommand.enable(action.provider, accountArgument(action.account))); return null;
     case "remove": await run(poolCommand.remove(action.provider, accountArgument(action.account)), 75000); return null;
-    case "refresh": return refreshNotice(JSON.parse(await run(["refresh", "--json"], 75000)));
     case "recheck": {
       if (action.provider !== "anthropic") throw new Error("Only Claude accounts can be checked for a refusal.");
       const found = (await run(["probe", "--force"], 30000)).trim();
@@ -280,5 +270,110 @@ export class AccountLogins {
     this.login = login;
     for (const listener of this.listeners) listener(login);
     return login;
+  }
+}
+
+/** One stdout line of `pi-pool refresh --stream`, parsed at the boundary. Times arrive in epoch seconds and leave in epoch ms. */
+export type RefreshEvent = { event: "accounts"; accounts: { id: string; email: string | null }[] } | { event: "reading"; id: string }
+  | { event: "read"; id: string; ok: boolean; reason: string | null; usageAt: number | null; retryAt: number | null }
+  | { event: "error"; message: string } | { event: "end" };
+
+export function parseRefreshEvent(line: string): RefreshEvent | null {
+  let value: unknown;
+  try { value = JSON.parse(line); } catch { return null; }
+  if (!isRecord(value)) return null;
+  const id = text(value.id);
+  switch (value.event) {
+    case "accounts": return Array.isArray(value.accounts)
+      ? { event: "accounts", accounts: value.accounts.flatMap(entry => isRecord(entry) && text(entry.id) ? [{ id: entry.id as string, email: text(entry.email) }] : []) } : null;
+    case "reading": return id ? { event: "reading", id } : null;
+    case "read": return id ? { event: "read", id, ok: value.ok === true, reason: text(value.reason), usageAt: epochMs(value.usage_at), retryAt: epochMs(value.retry_at) } : null;
+    case "error": return { event: "error", message: text(value.message) ?? "pi-pool refresh failed." };
+    case "end": return { event: "end" };
+    default: return null;
+  }
+}
+
+/**
+ * Runs `pi-pool refresh --stream` for the browser, one run per provider at a time: every account, or one.
+ * Each event updates the run and goes to every subscriber, so the page shows which account is being read and how each read ended.
+ * The last run per provider stays readable after it ends, so a page opened later sees the result.
+ */
+export class UsageRefreshes {
+  private readonly runs = new Map<string, UsageRefresh>();
+  private readonly children = new Map<string, ChildProcess>();
+  private readonly listeners = new Set<(refresh: UsageRefresh) => void>();
+  private readonly executable: string;
+  private readonly deadlineMs: number;
+
+  constructor(options: { executable?: string; deadlineMs?: number } = {}) {
+    this.executable = options.executable ?? executable;
+    this.deadlineMs = options.deadlineMs ?? 200_000;
+  }
+
+  current(): UsageRefresh[] { return [...this.runs.values()]; }
+
+  subscribe(listener: (refresh: UsageRefresh) => void): () => void {
+    this.listeners.add(listener);
+    for (const run of this.runs.values()) listener(run);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  start(provider: string, account: string | null): UsageRefresh {
+    if (!isPooled(provider)) throw new PoolError(400, "Choose a pooled provider.");
+    if (account !== null && (!account || account.startsWith("-") || account.length > 256)) throw new PoolError(400, "Choose an account.");
+    if (this.runs.get(provider)?.status === "running") throw new PoolError(409, "A usage refresh is still running for these accounts. Wait for it to finish.");
+    const child = spawn(this.executable, poolCommand.refresh(provider, account), { env: poolEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    this.children.set(provider, child);
+    const id = randomUUID();
+    this.update({ id, provider, account, status: "running", accounts: [], message: null, startedAt: Date.now(), endedAt: null });
+    const edit = (change: (run: UsageRefresh) => UsageRefresh): void => {
+      const run = this.runs.get(provider);
+      if (run?.id === id) this.update(change(run));
+    };
+    const setAccount = (accountId: string, change: Partial<UsageRefreshAccount>): void =>
+      edit(run => ({ ...run, accounts: run.accounts.map(entry => entry.id === accountId ? { ...entry, ...change } : entry) }));
+    let stdout = "";
+    let stderr = "";
+    let stopped = false;
+    child.stdout!.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk;
+      let newline: number;
+      while ((newline = stdout.indexOf("\n")) >= 0) {
+        const event = parseRefreshEvent(stdout.slice(0, newline));
+        stdout = stdout.slice(newline + 1);
+        if (!event) continue;
+        if (event.event === "accounts") edit(run => ({ ...run, accounts: event.accounts.map(entry => ({ ...entry, state: "queued", reason: null, usageAt: null, retryAt: null })) }));
+        else if (event.event === "reading") setAccount(event.id, { state: "reading" });
+        else if (event.event === "read") setAccount(event.id, { state: event.ok ? "read" : "failed", reason: event.ok ? null : event.reason ?? "Not read.", usageAt: event.usageAt, retryAt: event.retryAt });
+        else if (event.event === "error") edit(run => ({ ...run, message: event.message }));
+      }
+    });
+    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-2000); });
+    child.once("error", error => { stderr = error.message; });
+    const deadline = setTimeout(() => { stopped = true; child.kill("SIGTERM"); setTimeout(() => child.kill("SIGKILL"), 5000).unref(); }, this.deadlineMs);
+    child.once("close", code => {
+      clearTimeout(deadline);
+      if (this.children.get(provider) === child) this.children.delete(provider);
+      const said = stderr.trim().split("\n").at(-1)?.slice(0, 300);
+      edit(run => {
+        const message = stopped ? `The refresh did not finish in ${Math.round(this.deadlineMs / 1000)} s.`
+          : run.message ?? (code !== 0 && !run.accounts.length ? said || `pi-pool refresh stopped with exit code ${code ?? "none"}.` : null);
+        const accounts = run.accounts.map(entry => entry.state === "queued" || entry.state === "reading"
+          ? { ...entry, state: "failed" as const, reason: "The refresh stopped before this account was read." } : entry);
+        return { ...run, accounts, message, status: message && !accounts.some(entry => entry.state === "read") ? "failed" : "done", endedAt: Date.now() };
+      });
+    });
+    return this.runs.get(provider)!;
+  }
+
+  async close(): Promise<void> {
+    for (const child of this.children.values()) child.kill("SIGTERM");
+    this.children.clear();
+  }
+
+  private update(run: UsageRefresh): void {
+    this.runs.set(run.provider, run);
+    for (const listener of this.listeners) listener(run);
   }
 }

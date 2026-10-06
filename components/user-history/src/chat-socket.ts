@@ -6,11 +6,11 @@ import { WebSocketServer, type RawData, type WebSocket } from "ws";
  * One WebSocket per browser tab carries every live feed the page watches. A tab used to hold an EventSource per feed, and
  * Chromium allows only six HTTP/1.1 connections per host, so three tabs used them all and every later request queued.
  *
- * Client to server: `{ type: "subscribe", sub, feed: "sessions" | "login" }`, `{ type: "subscribe", sub, feed: "thread", id }`
+ * Client to server: `{ type: "subscribe", sub, feed: "sessions" | "login" | "refresh" }`, `{ type: "subscribe", sub, feed: "thread", id }`
  * and `{ type: "unsubscribe", sub }`. `sub` is a number the page picks. Server to client: `{ sub, event, data }` for a feed
  * event, and `{ event: "ping" }` every `pingMs` so proxies keep the socket open and the page can tell a dead socket.
  */
-export type Feed = { feed: "sessions" } | { feed: "login" } | { feed: "thread"; id: string };
+export type Feed = { feed: "sessions" } | { feed: "login" } | { feed: "refresh" } | { feed: "thread"; id: string };
 export type FeedSend = (event: string, data: unknown) => void;
 /** Starts one feed. A thread feed opens the thread first, so it may resolve later; the returned function stops it. */
 export type FeedSubscriber = (feed: Feed, send: FeedSend) => (() => void) | Promise<() => void>;
@@ -28,7 +28,7 @@ function parseMessage(raw: RawData): { type: "subscribe"; sub: number; feed: Fee
   if (typeof sub !== "number" || !Number.isSafeInteger(sub) || sub < 0) return null;
   if (message.type === "unsubscribe") return { type: "unsubscribe", sub };
   if (message.type !== "subscribe") return null;
-  if (message.feed === "sessions" || message.feed === "login") return { type: "subscribe", sub, feed: { feed: message.feed } };
+  if (message.feed === "sessions" || message.feed === "login" || message.feed === "refresh") return { type: "subscribe", sub, feed: { feed: message.feed } };
   if (message.feed === "thread" && typeof message.id === "string" && message.id.length <= 512) return { type: "subscribe", sub, feed: { feed: "thread", id: message.id } };
   return null;
 }

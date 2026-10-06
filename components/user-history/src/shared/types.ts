@@ -210,8 +210,17 @@ export interface PoolProvider { provider: "anthropic" | "openai-codex"; rows: Po
 export interface AccountsView { sessionId: string | null; checkedAt: string; providers: PoolProvider[]; notice?: string }
 export type AccountAction = { action: "use"; provider: string; account: string; id: string; force: boolean; newSession?: boolean } | { action: "follow"; provider: string; id: string }
   | { action: "pin"; provider: string; account: string } | { action: "unpin"; provider: string } | { action: "switch"; provider: string }
-  | { action: "refresh"; provider: string } | { action: "recheck"; provider: string }
+  | { action: "recheck"; provider: string }
   | { action: "disable"; provider: string; account: string } | { action: "enable"; provider: string; account: string } | { action: "remove"; provider: string; account: string };
+/** One account inside a usage refresh. `usageAt` and `retryAt` are epoch ms. */
+export interface UsageRefreshAccount {
+  id: string; email: string | null; state: "queued" | "reading" | "read" | "failed"; reason: string | null; usageAt: number | null; retryAt: number | null;
+}
+/** One `pi-pool refresh --stream` run: every account of a provider, or one account. The last run per provider stays readable after it ends. */
+export interface UsageRefresh {
+  id: string; provider: "anthropic" | "openai-codex"; account: string | null; status: "running" | "done" | "failed";
+  accounts: UsageRefreshAccount[]; message: string | null; startedAt: number; endedAt: number | null;
+}
 /** One browser-driven `pi-pool login`: add an account, or sign one in again when `account` is set. */
 export interface AccountLogin {
   id: string; provider: "anthropic" | "openai-codex"; account: string | null;

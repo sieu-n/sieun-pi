@@ -1,4 +1,4 @@
-import type { AccountAction, AccountLogin, AccountsView, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, SdkView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, SdkView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import { subscribeFeed } from "./feeds.ts";
 
@@ -73,6 +73,10 @@ export const api = {
   loginStream(onLogin: (login: AccountLogin | null) => void): () => void {
     return subscribeFeed({ feed: "login" }, (event, data) => { if (event === "login") onLogin(data as AccountLogin | null); });
   },
+  refreshStream(onRefresh: (refresh: UsageRefresh) => void): () => void {
+    return subscribeFeed({ feed: "refresh" }, (event, data) => { if (event === "refresh") onRefresh(data as UsageRefresh); });
+  },
+  startRefresh: (provider: string, account: string | null) => post<UsageRefresh>("api/accounts/refresh", { provider, account }),
   startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),
   pasteLogin: (id: string, code: string) => post<AccountLogin>("api/accounts/login/paste", { id, code }),
   cancelLogin: (id: string) => post<AccountLogin>("api/accounts/login/cancel", { id }),

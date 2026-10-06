@@ -3,7 +3,7 @@ index parsing, JWT claim decoding, ls row building, and use idempotence.
 
 Run: python3 -m unittest discover -s tests   (from the pool directory)
 """
-import base64, contextlib, dataclasses, importlib.util, io, json, os, shutil, sys, tempfile, unittest, unittest.mock
+import base64, contextlib, dataclasses, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, types, unittest, unittest.mock
 
 from fixture_isolation import isolate_test_module
 
@@ -587,44 +587,103 @@ class LsNamesThePoolPin(unittest.TestCase):
 
 
 class RefreshUsage(unittest.TestCase):
-    """`refresh` runs tokenmaxxing's own sampling read and reports the outcome
-    per account. A fake tokenmaxxing stands in; no network, no keychain."""
+    """`refresh` runs usage-read.ts once per provider and passes its events on
+    with provider and email. A fake script stands in for bun; no network."""
 
-    def run_refresh(self, script, *args):
-        with tempfile.TemporaryDirectory() as tm:
-            os.makedirs(os.path.join(tm, "bin"))
-            exe = os.path.join(tm, "bin", "tokenmaxxing")
-            with open(exe, "w") as f:
-                f.write("#!/bin/sh\n" + script)
-            os.chmod(exe, 0o755)
-            out = io.StringIO()
-            with unittest.mock.patch.object(vend, "TM", tm), unittest.mock.patch.object(vend, "log", lambda *a, **k: None), \
-                 contextlib.redirect_stdout(out):
-                code = vend.cmd_refresh(["--json", *args])
-            return code, json.loads(out.getvalue())
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
 
-    def test_each_account_reports_its_sample_outcome(self):
-        report = {"ok": True, "claude": {"accounts": [
-            {"id": "a", "email": "a@x", "sample": {"ok": True, "source": "probe"}},
-            {"id": "b", "email": "b@x", "sample": {"ok": False, "reason": "usage read failed (see log)"}}]},
-            "codex": {"accounts": [{"id": "c", "label": "c@x", "sample": {"ok": True, "source": "probe"}}]}}
-        script = 'test "$1 $2" = "status --json" || exit 9\ncat <<EOF\n' + json.dumps(report) + "\nEOF\n"
-        code, out = self.run_refresh(script)
+    def fake(self, body):
+        path = os.path.join(self.tmp, "bun")
+        with open(path, "w") as f:
+            # argv: --no-env-file <usage-read.ts> <src> <provider> [ids...]
+            f.write('#!/bin/sh\nprovider="$4"\n' + body)
+        os.chmod(path, 0o755)
+        return unittest.mock.patch.object(vend, "tokenmaxxing_runtime", lambda: (path, "src"))
+
+    def run_refresh(self, *args):
+        out = io.StringIO()
+        with unittest.mock.patch.object(vend, "log", lambda *a, **k: None), contextlib.redirect_stdout(out):
+            code = vend.cmd_refresh(list(args))
+        return code, out.getvalue()
+
+    READS = (
+        'if [ "$provider" = anthropic ]; then\n'
+        '  echo \'{"event":"accounts","accounts":[{"id":"a","email":"a@x"},{"id":"b","email":"b@x"}]}\'\n'
+        '  echo \'{"event":"reading","id":"a"}\'\n'
+        '  echo \'{"event":"read","id":"a","ok":true,"usage_at":1790000000}\'\n'
+        '  echo \'{"event":"read","id":"b","ok":false,"reason":"rate limited","retry_at":1790000600}\'\n'
+        'else\n'
+        '  echo \'{"event":"accounts","accounts":[{"id":"c","email":"c@x"}]}\'\n'
+        '  echo \'{"event":"read","id":"c","ok":true,"usage_at":1790000001}\'\n'
+        'fi\n')
+
+    def test_stream_names_provider_and_email_on_every_read(self):
+        with self.fake(self.READS):
+            code, out = self.run_refresh("--stream", "--provider", "anthropic")
+        events = [json.loads(line) for line in out.splitlines()]
         self.assertEqual(code, 0)
-        self.assertEqual(out["providers"]["anthropic"], [
-            {"id": "a", "email": "a@x", "ok": True, "reason": None},
-            {"id": "b", "email": "b@x", "ok": False, "reason": "usage read failed (see log)"}])
-        self.assertEqual(out["providers"]["openai-codex"], [{"id": "c", "email": "c@x", "ok": True, "reason": None}])
+        self.assertEqual([e["event"] for e in events], ["accounts", "reading", "read", "read", "end"])
+        self.assertEqual((events[1]["email"], events[2]["email"], events[3]["provider"]), ("a@x", "a@x", "anthropic"))
+        self.assertEqual((events[3]["ok"], events[3]["reason"], events[3]["retry_at"]), (False, "rate limited", 1790000600))
 
-    def test_one_provider_can_be_asked_for(self):
-        report = {"ok": True, "claude": {"accounts": []}, "codex": {"accounts": []}}
-        code, out = self.run_refresh("echo '" + json.dumps(report) + "'", "--provider", "openai-codex")
-        self.assertEqual((code, list(out["providers"])), (0, ["openai-codex"]))
+    def test_json_reports_every_provider(self):
+        with self.fake(self.READS):
+            code, out = self.run_refresh("--json")
+        report = json.loads(out)["providers"]
+        self.assertEqual(code, 0)
+        self.assertEqual([r["ok"] for r in report["anthropic"]], [True, False])
+        self.assertEqual(report["openai-codex"], [{"id": "c", "email": "c@x", "ok": True, "reason": None, "retry_at": None, "usage_at": 1790000001}])
 
-    def test_a_failed_status_is_an_error(self):
-        code, out = self.run_refresh("echo 'not json'; exit 3")
+    def test_named_accounts_need_a_provider(self):
+        code, out = self.run_refresh("--json", "a@x")
         self.assertEqual(code, 1)
-        self.assertIn("exited 3", out["error"])
+        self.assertIn("--provider", json.loads(out)["error"])
+
+    def test_named_account_is_resolved_to_its_id(self):
+        seen = os.path.join(self.tmp, "args")
+        account = types.SimpleNamespace(id="abc-123", email="a@x")
+        with self.fake(f'echo "$@" > {seen}\necho \'{{"event":"accounts","accounts":[]}}\'\n'), \
+             unittest.mock.patch.object(vend, "load_index", lambda provider: [account]):
+            code, _ = self.run_refresh("--json", "--provider", "anthropic", "a@x")
+        self.assertEqual(code, 0)
+        with open(seen) as f:
+            self.assertTrue(f.read().split()[-2:] == ["anthropic", "abc-123"])
+
+    def test_a_read_still_running_at_the_deadline_is_reported_unfinished(self):
+        events = []
+        with self.fake('echo \'{"event":"accounts","accounts":[{"id":"a","email":"a@x"}]}\'\necho \'{"event":"reading","id":"a"}\'\nexec sleep 30\n'):
+            errors = vend.read_usage({"anthropic": None}, events.append, timeout=1)
+        self.assertEqual(errors, {})
+        self.assertEqual(events[-1], {"event": "read", "provider": "anthropic", "id": "a", "email": "a@x", "ok": False,
+                                      "reason": "the read did not finish in 1s", "retry_at": None})
+
+    def test_a_helper_crash_is_an_error(self):
+        with self.fake('echo "boom" >&2\nexit 3\n'):
+            code, out = self.run_refresh("--json", "--provider", "openai-codex")
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out)["errors"], {"openai-codex": "boom"})
+
+    def test_runtime_comes_from_the_tokenmaxxing_wrapper(self):
+        os.makedirs(os.path.join(self.tmp, "bin"))
+        wrapper = os.path.join(self.tmp, "bin", "tokenmaxxing")
+        with open(wrapper, "w") as f:
+            f.write('#!/bin/sh\nexec "/x/bun" --no-env-file run "/y/tokenmaxxing/src/main.ts" "$@"\n')
+        os.chmod(wrapper, 0o755)
+        with unittest.mock.patch.object(vend, "TM", self.tmp):
+            self.assertEqual(vend.tokenmaxxing_runtime(), ("/x/bun", "/y/tokenmaxxing/src"))
+
+    def test_usage_read_loads_against_the_installed_tokenmaxxing(self):
+        """Contract check: a tokenmaxxing auto-update that renames a function usage-read.ts calls fails here."""
+        try:
+            bun, src = vend.tokenmaxxing_runtime()
+        except RuntimeError as e:
+            self.skipTest(str(e))
+        done = subprocess.run([bun, "--no-env-file", vend.USAGE_READ, src, "anthropic", "not-an-account"], capture_output=True, text=True,
+                              timeout=60, env=dict(os.environ, TOKENMAXXING_HOME=self.tmp))
+        lines = [json.loads(line) for line in done.stdout.splitlines()]
+        self.assertEqual((done.returncode, lines[-1]), (0, {"event": "read", "id": "not-an-account", "ok": False, "reason": "not in the pool", "retry_at": None}))
 
 
 class UseIdempotence(unittest.TestCase):

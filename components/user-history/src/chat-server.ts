@@ -9,7 +9,7 @@ import { buildRenderBundle, LocalImageError, readLocalImage, renderPage, renderP
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
-import { AccountLogins, listAccounts, PoolError, runAccountAction } from "./chat-pool.ts";
+import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
@@ -118,7 +118,6 @@ function parseAccountAction(body: Record<string, unknown>): AccountAction {
     case "pin": if (!account) throw new RequestError(400, "Choose an account."); return { action: "pin", provider, account };
     case "unpin": return { action: "unpin", provider };
     case "switch": return { action: "switch", provider };
-    case "refresh": return { action: "refresh", provider };
     case "recheck": return { action: "recheck", provider };
     case "disable": case "enable": case "remove": if (!account) throw new RequestError(400, "Choose an account."); return { action: body.action, provider, account };
     default: throw new RequestError(400, "Unknown account action.");
@@ -218,14 +217,14 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   return input;
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins() }: {
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes() }: {
   backend: ChatBackend; bundle: ClientBundle; port: number; capability: string; csrfToken: string;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
   remote?: RemoteControl;
   /** Settings > Versions and the SDK auto-update; null for instances that do not manage their packages. */
   sdk?: SdkSync | null;
-  onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins;
+  onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins; refreshes?: UsageRefreshes;
 }): Promise<{ url: string; close(): Promise<void> }> {
   const base = "/" + capability + "/";
   const shell = renderShell(csrfToken, bundle.version);
@@ -246,6 +245,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       return backend.catalog.subscribe(event => send("sessions", event));
     }
     if (feed.feed === "login") return logins.subscribe(login => send("login", login));
+    if (feed.feed === "refresh") return refreshes.subscribe(refresh => send("refresh", refresh));
     try { return await backend.threads.subscribe(threadId(feed.id), event => send("thread", event)); }
     catch (error) {
       send("thread", { type: "status", connection: "closed", error: error instanceof Error ? error.message : String(error) });
@@ -271,6 +271,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
       sends.clear();
       await logins.close();
+      await refreshes.close();
       await backend.close();
     })();
     return closing;
@@ -518,6 +519,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (route === "api/accounts/login") {
         const account = body.account === undefined || body.account === null ? null : text(body.account, "account", 256);
         json(res, 200, logins.start(text(body.provider, "provider", 64), account)); return;
+      }
+      if (route === "api/accounts/refresh") {
+        const account = body.account === undefined || body.account === null ? null : text(body.account, "account", 256);
+        json(res, 200, refreshes.start(text(body.provider, "provider", 64), account)); return;
       }
       if (route === "api/accounts/login/paste") { json(res, 200, logins.paste(text(body.id, "id", 64), text(body.code, "code", 4096))); return; }
       if (route === "api/accounts/login/cancel") { json(res, 200, logins.cancel(text(body.id, "id", 64))); return; }

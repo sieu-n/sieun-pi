@@ -118,7 +118,8 @@ until the session's next provider request runs the hook.
     pi-pool switch                drop the seat; the next request re-picks
     pi-pool enable openai-codex   wire the codex provider into models.json
     pi-pool adopt-logins          move a stored /login that would bypass the pool into fallback.json
-    pi-pool refresh [--json]      sample every account's usage now (runs `tokenmaxxing status --json`)
+    pi-pool refresh [<email|id> ...] [--provider p] [--json | --stream]
+                                  read usage now for every account, or the named ones (needs --provider)
     pi-pool off <email|id> [--provider <p>]   keep an account pooled but never pick it (`ls --json` shows `disabled`)
     pi-pool on <email|id> [--provider <p>]    let the pool pick it again
     pi-pool rm <email|id> [--provider <p>]    `tokenmaxxing rm`, then drop its pins and seat here
@@ -139,10 +140,22 @@ until the session's next provider request runs the hook.
 `usage_at` and `usage_age_sec`, `sessions` (vends in the last hour), and `cooldown_until`
 and `cooldown_reason` for a refused account.
 
-`refresh` asks tokenmaxxing to read every account's usage now, the same read
-`tokenmaxxing status` does. It writes only tokenmaxxing's usage figures. It moves no seat
-or pin. tokenmaxxing may refresh an expiring Codex store under its own lock while it
-reads, as its `status` always does. Claude usage is also sampled every minute by
+`refresh` reads usage now for every account, or the named ones. `tokenmaxxing status`
+cannot do this: it skips a Claude account read in the last 90 s to 15 min and reports it
+as `cached`. So `refresh` runs `app/usage-read.ts` with tokenmaxxing's own Bun, once per
+provider. That script imports tokenmaxxing's own read and save functions from the installed
+release (found through the `tokenmaxxing` wrapper), reads four accounts at a time, and saves
+each result under tokenmaxxing's pool lock. It still waits out a rate limit the usage
+endpoint set, and reports it with the time of the next read. If an auto-update renames a
+function it calls, it fails with the missing name, and the contract test in
+`tests/test_core.py` fails too. It writes only tokenmaxxing's usage figures and moves no
+seat or pin. tokenmaxxing may refresh an expiring store under its own lock while it reads.
+
+`--stream` prints one JSON line per event while the reads run: `accounts` (the list),
+`reading`, `read` with `ok` and `usage_at` or `reason` and `retry_at` (epoch seconds),
+`error`, and a final `end`. Every line carries `provider`, and `reading` and `read` carry
+`email`. A read still running after 180 s is reported as not finished. `--json` prints one
+report at the end. Claude usage is also sampled every minute by
 tokenmaxxing's `check` timer; Codex usage only when tokenmaxxing samples it, so Codex
 figures can be hours old.
 

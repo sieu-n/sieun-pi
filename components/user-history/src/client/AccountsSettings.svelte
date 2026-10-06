@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { accountState, forgetAccounts, loadAccounts, meterTone, PROVIDER_LABEL, rememberAccounts, resetText, resolutionSentence, span, staleText, STATE_LABEL, threadProvider, windowColumns, windowLabel,
     type AccountState } from "./accounts.ts";
-  import type { AccountAction, AccountLogin as Login, AccountsView, PoolAccount, PoolProvider } from "../shared/types.ts";
+  import type { AccountAction, AccountLogin as Login, AccountsView, PoolAccount, PoolProvider, UsageRefresh, UsageRefreshAccount } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import Floating from "./ui/Floating.svelte";
@@ -29,6 +29,11 @@
   let login = $state<Login | null>(null);
   /** The login this page started or saw running. An ended login from an earlier visit stays hidden. */
   let watched = $state<string | null>(null);
+  /** The latest usage refresh per provider, from the server. */
+  let refreshes = $state<Partial<Record<Provider, UsageRefresh>>>({});
+  /** Refresh runs this page started or saw running. A run that ended before the page opened stays hidden. */
+  let watchedRefreshes = $state<string[]>([]);
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
   /** A tab opened on the click that started a login, so the sign-in page lands in it without a popup block. */
   let signInTab: Window | null = null;
 
@@ -57,8 +62,50 @@
     }
   }));
 
+  /** Reload the table shortly after a read lands, at most once per 700 ms, without dimming it. */
+  function reloadSoon(): void {
+    if (reloadTimer) return;
+    reloadTimer = setTimeout(() => { reloadTimer = null; forgetAccounts(); void load(true, true); }, 700);
+  }
+  $effect(() => () => { if (reloadTimer) clearTimeout(reloadTimer); });
+
+  const settled = (run: UsageRefresh | undefined): number => run ? run.accounts.filter(entry => entry.state === "read" || entry.state === "failed").length : 0;
+  $effect(() => api.refreshStream(next => {
+    const previous = refreshes[next.provider];
+    refreshes = { ...refreshes, [next.provider]: next };
+    if (next.status === "running" && !watchedRefreshes.includes(next.id)) watchedRefreshes = [...watchedRefreshes, next.id];
+    if (watchedRefreshes.includes(next.id) && (settled(next) > (previous?.id === next.id ? settled(previous) : 0) || next.status !== "running")) reloadSoon();
+  }));
+
+  async function startRefresh(provider: Provider, row: PoolAccount | null): Promise<void> {
+    menu = null;
+    try {
+      const started = await api.startRefresh(provider, row?.id ?? null);
+      if (!watchedRefreshes.includes(started.id)) watchedRefreshes = [...watchedRefreshes, started.id];
+      if (!refreshes[provider] || refreshes[provider]!.id !== started.id) refreshes = { ...refreshes, [provider]: started };
+    } catch (caught) { store.toast(caught instanceof Error ? caught.message : String(caught)); }
+  }
+
+  /** One line under the header for a refresh this page watched: progress while it runs, the count read when it ends. */
+  function refreshSummary(job: UsageRefresh): string {
+    const total = job.accounts.length;
+    const read = job.accounts.filter(entry => entry.state === "read");
+    const failed = job.accounts.filter(entry => entry.state === "failed");
+    const name = (entry: UsageRefreshAccount) => entry.email ?? entry.id;
+    if (job.status === "running") return total ? `Reading usage: ${settled(job)} of ${total} done.` : "Starting the usage read.";
+    if (job.status === "failed" || !total) return `The usage read failed. ${job.message ?? ""}`.trim();
+    if (job.account !== null && total === 1) return read.length ? `Read ${name(read[0]!)} just now.` : `Could not read ${name(failed[0]!)}. The reason is on its row.`;
+    const head = `Read ${read.length} of ${total} accounts just now.`;
+    const tail = failed.length ? ` Not read: ${failed.map(name).join(", ")}. The reasons are on their rows.` : "";
+    return head + tail + (job.message ? " " + job.message : "");
+  }
+
   const current = $derived(view ? (view.providers.find(entry => entry.provider === tab) ?? threadProvider(view, modelProvider)) : undefined);
   const resolution = $derived(current?.resolution ?? null);
+  const refresh = $derived(current ? refreshes[current.provider] : undefined);
+  const refreshing = $derived(refresh?.status === "running");
+  const shownRefresh = $derived(refresh && watchedRefreshes.includes(refresh.id) ? refresh : null);
+  const refreshEntry = (row: PoolAccount): UsageRefreshAccount | undefined => shownRefresh?.accounts.find(entry => entry.id === row.id);
   const columns = $derived(current ? windowColumns(current.rows) : []);
   const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, cooldown: 4, refused: 4, "needs-login": 5, off: 6 };
   const rows = $derived([...(current?.rows ?? [])].sort((a, b) => rank(a) - rank(b) || a.email.localeCompare(b.email)));
@@ -67,8 +114,9 @@
     return row.id === resolution?.account && !row.disabled ? 0 : RANK[accountState(row) ?? "ready"];
   }
 
-  async function load(fresh = false): Promise<void> {
-    loading = true;
+  /** `quiet` keeps the table at full opacity: a refresh reloads it after every read. */
+  async function load(fresh = false, quiet = false): Promise<void> {
+    if (!quiet) loading = true;
     error = null;
     try {
       const result = await loadAccounts(threadId, { fresh, model: modelId });
@@ -119,13 +167,16 @@
 
   function notes(row: PoolAccount): string[] {
     const state = accountState(row);
-    if (state === "off") return ["Off. The pool never picks it."];
+    const read = refreshEntry(row);
+    const unread = read?.state === "failed" && read.reason ? [`Not read: ${read.reason.replace(/\.$/, "")}.`] : [];
+    if (state === "off") return ["Off. The pool never picks it.", ...unread];
     const out: string[] = [];
     if (state === "needs-login") out.push("The sign-in expired.");
     else if (state === "refused" || state === "cooldown") {
       const left = row.cooldownUntil && row.cooldownUntil > now ? ` The pool tries it again in ${span(row.cooldownUntil - now)}.` : "";
       out.push((row.cooldownReason ? `Refused: ${row.cooldownReason}.` : "Cooling down after a failure.") + left);
     }
+    out.push(...unread);
     const stale = staleText(row, now);
     if (stale && state !== "needs-login") out.push(stale + ".");
     return out;
@@ -177,10 +228,15 @@
         <Icon name="plus" size={14} /> Add {PROVIDER_LABEL[current.provider]} account
       </button>
     {/if}
-    <button class="icon-button small" disabled={acting !== null || !current} aria-label="Refresh usage" use:tooltip={acting === "refresh" ? "Reading usage" : "Refresh usage"}
-      onclick={() => current && void run({ action: "refresh", provider: current.provider }, "refresh")}>
-      {#if acting === "refresh"}<span class="spinner tiny"></span>{:else}<Icon name="refresh" size={14} />{/if}
-    </button>
+    {#if current}
+      <button class="button small" disabled={refreshing} use:tooltip={`Read usage for every ${PROVIDER_LABEL[current.provider]} account now`}
+        onclick={() => current && void startRefresh(current.provider, null)}>
+        {#if refreshing}
+          <span class="spinner tiny"></span>
+          {refresh?.accounts.length ? `Reading ${settled(refresh)} of ${refresh.accounts.length}` : "Reading"}
+        {:else}<Icon name="refresh" size={14} /> Refresh all{/if}
+      </button>
+    {/if}
   </header>
 
   {#if shownLogin}
@@ -201,6 +257,14 @@
         <button class="button small" disabled={acting !== null} onclick={() => threadId && void run({ action: "follow", provider: current.provider, id: threadId }, "follow")}>Follow the pool</button>
       {/if}
     </div>
+    {#if shownRefresh}
+      <div class="notice" class:failed={shownRefresh.status === "failed"} role="status" aria-live="polite">
+        <span>{refreshSummary(shownRefresh)}</span>
+        {#if shownRefresh.status !== "running"}
+          <button class="icon-button small" aria-label="Dismiss" onclick={() => { watchedRefreshes = watchedRefreshes.filter(id => id !== shownRefresh?.id); }}><Icon name="x" size={14} /></button>
+        {/if}
+      </div>
+    {/if}
     {#if notice}
       <div class="notice"><span>{notice}</span><button class="icon-button small" aria-label="Dismiss" onclick={() => { notice = null; }}><Icon name="x" size={14} /></button></div>
     {/if}
@@ -221,6 +285,7 @@
           {@const inUse = row.id === resolution?.account && !row.disabled}
           {@const rowNotes = notes(row)}
           {@const canPick = pickable(row)}
+          {@const read = refreshEntry(row)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
           <div class="row" role="row" class:this={inUse} class:off={row.disabled} class:dead={state === "needs-login"} class:pick={canPick} class:busy={acting === row.id}
             onclick={event => rowClick(event, current.provider, row)}>
@@ -247,6 +312,14 @@
               </div>
             {/each}
             <div class="actions" role="cell">
+              {#if read?.state === "queued"}<span class="read-state">Queued</span>
+              {:else if read?.state === "reading"}<span class="read-state"><span class="spinner tiny"></span> Reading</span>
+              {:else}
+                {#if read?.state === "read"}<span class="read-state ok">Updated</span>
+                {:else if read?.state === "failed"}<span class="read-state bad">Not read</span>{/if}
+                <button type="button" class="icon-button small row-refresh" disabled={refreshing} aria-label="Refresh usage for {row.email}" use:tooltip={"Refresh usage"}
+                  onclick={() => void startRefresh(current.provider, row)}><Icon name="refresh" size={14} /></button>
+              {/if}
               {#if acting === row.id}<span class="spinner tiny"></span>
               {:else if canPick}<button type="button" class="hint" aria-label="Use {row.email} for this thread" onclick={() => useForThread(current.provider, row)}>Use</button>{/if}
               {#if row.disabled}
@@ -275,6 +348,7 @@
     {#if pickable(row)}
       <button type="button" class="menu-item" role="menuitem" onclick={() => useForThread(provider, row)}>Use in this thread</button>
     {/if}
+    <button type="button" class="menu-item" role="menuitem" disabled={refreshes[provider]?.status === "running"} onclick={() => void startRefresh(provider, row)}>Refresh usage</button>
     {#if !row.disabled}
       {#if current.poolPin === row.id}
         <button type="button" class="menu-item" role="menuitem" onclick={() => askUnpin(provider)}>Unpin for all sessions</button>
@@ -330,6 +404,12 @@
   .warning { color: var(--warning); }
   .notice { display: flex; align-items: flex-start; gap: 8px; padding: 6px 6px 6px 12px; border-radius: var(--radius-small); background: var(--bg-sunken); color: var(--text-muted); line-height: 1.4; }
   .notice span { flex: 1; overflow-wrap: anywhere; padding-top: 3px; }
+  .notice.failed { background: var(--danger-soft); color: var(--danger); }
+  .read-state { display: inline-flex; align-items: center; gap: 5px; padding: 0 4px; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+  .read-state.ok { color: var(--success); }
+  .read-state.bad { color: var(--warning); }
+  .row-refresh { opacity: 0; transition: opacity 0.12s; }
+  .row:hover .row-refresh, .row-refresh:focus-visible { opacity: 1; }
   .inline-error { padding: 8px 10px; border-radius: var(--radius-small); background: var(--danger-soft); color: var(--danger); }
   .empty { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 32px 0; }
   .error { display: flex; align-items: center; gap: 8px; color: var(--danger); }
