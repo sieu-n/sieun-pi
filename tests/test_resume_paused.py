@@ -128,7 +128,8 @@ class ResumePausedTests(unittest.TestCase):
 
     def test_hung_working_session_counts_only_with_nothing_long_running(self):
         self.session("hunghunghung", [assistant(80, "toolUse"), role(79, "toolResult")], activity="working", isStreaming=True, lastActivityAt=at(79))
-        self.session("toolstoolsto", [assistant(80, "toolUse")], activity="working", isRunningTools=True, lastActivityAt=at(80))
+        self.session("toolstoolsto", [assistant(50, "toolUse")], activity="working", isRunningTools=True, lastActivityAt=at(50))
+        self.session("childchildch", [assistant(80, "toolUse")], activity="working", hasRunningRlmChildren=True, lastActivityAt=at(80))
         self.session("freshfreshfr", [assistant(5, "toolUse")], activity="working", isStreaming=True, lastActivityAt=at(5))
         for row in self.sessions:
             os.utime(row["sessionFile"], (NOW.timestamp() - 79 * 60,) * 2)
@@ -136,6 +137,13 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("hunghunghung", "hung")])
         self.assertEqual(self.sent, [])  # a hung head is aborted by the chat first, never messaged while hung
         self.assertIn("hung", report["heads"][0]["result"])
+
+    def test_tool_call_stuck_for_an_hour_counts(self):
+        self.session("stucktoolcal", [assistant(77, "toolUse")], activity="working", isStreaming=True, isRunningTools=True, lastActivityAt=at(77))
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 77 * 60,) * 2)
+        report = self.run_resume(dry_run=True)
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("stucktoolcal", "hung")])
+        self.assertIn("tool call", report["paused"][0]["error"])
 
     def test_retry_loop_and_finished_turn_are_not_hung(self):
         self.session("retryretryre", [assistant(3, "error", "undefined is not an object")], activity="working", isSessionActive=True, lastActivityAt=at(60))

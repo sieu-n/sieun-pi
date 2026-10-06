@@ -11,9 +11,9 @@ it is live and idle, and either:
   - its last message is a tool result, a user message or a tool call with no
     reply after it: the turn was cut off, or
   - its last message is an empty model reply that asked for a tool, or
-  - it shows "working" but did nothing for 30 minutes with no tool, shell
-    command, child run or compaction running: a hung model stream or retry
-    wait. A message cannot reach it; it has to be aborted first, which the chat
+  - it shows "working" but did nothing for 30 minutes with no child run or
+    compaction running (60 minutes when a tool call is running): a hung model
+    stream, retry wait or tool call. A message cannot reach it; it has to be aborted first, which the chat
     Resume button does before it runs this script with --unstuck.
 
 Runs that were aborted ("Request was aborted") or archived, for example a
@@ -54,9 +54,13 @@ INTERRUPTION_ERROR = re.compile(
     re.IGNORECASE,
 )
 BUSY_FLAGS = ("isStreaming", "isRunningTools", "isBashRunning", "hasRunningRlmChildren", "isCompacting")
-# A tool, shell command, child run or compaction may legitimately take long; a model call or retry wait with no event this long is hung.
-WORK_FLAGS = ("isRunningTools", "isBashRunning", "hasRunningRlmChildren", "isCompacting")
+# A child run or compaction may legitimately take long; a model call or retry wait with no event for 30 min is hung.
+# A tool call gets 60 min: blocking calls are short by design, and the 10-06 monitor found two stuck for 31 and 76 min
+# on `convex logs`, which streams forever.
+WORK_FLAGS = ("hasRunningRlmChildren", "isCompacting")
+TOOL_FLAGS = ("isRunningTools", "isBashRunning")
 HUNG_MIN = 30.0
+TOOL_HUNG_MIN = 60.0
 # A cut-off turn younger than this may still be between a tool result and the next model call.
 CUT_OFF_GRACE_MIN = 2.0
 # Full session ids the caller aborted because they were hung; their "aborted" last message still counts.
@@ -231,7 +235,8 @@ def hung_since(session, now):
     if msg.get("role") == "assistant" and msg.get("stopReason") == "stop":
         return None  # the turn finished; the daemon's "working" is stale, and there is nothing to resume
     idle = (now - max(stamps)).total_seconds() / 60
-    return idle if idle >= HUNG_MIN else None
+    limit = TOOL_HUNG_MIN if any(session.get(flag) for flag in TOOL_FLAGS) else HUNG_MIN
+    return idle if idle >= limit else None
 
 
 def classify(last, now):
@@ -296,7 +301,8 @@ def find_paused(sessions, since_minutes, state, now):
                 continue
             head = head_of(sid, by_id)
             paused.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)",
-                           "kind": s.get("runtimeKind"), "reason": "hung", "error": f"Shows working but did nothing for {hung:.0f} min.",
+                           "kind": s.get("runtimeKind"), "reason": "hung", "error": (f"Stuck in one tool call for {hung:.0f} min." if any(s.get(flag) for flag in TOOL_FLAGS)
+                                     else f"Shows working but did nothing for {hung:.0f} min."),
                            "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head})
             continue
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
