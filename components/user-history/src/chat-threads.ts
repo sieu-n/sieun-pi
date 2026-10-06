@@ -6,7 +6,7 @@ import { CHAT_FLAG } from "./chats.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatDefaults, ChildAgent, Command, ModelCatalog, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { ChatDefaults, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then) and every change of a thread's subagent list while attached. */
@@ -100,6 +100,8 @@ export class ThreadHub {
   readonly projector = new Projector(this.images);
   private readonly threads = new Map<string, Thread>();
   private readonly opening = new Map<string, Promise<Thread>>();
+  /** Every model the last catalog read listed, by "provider/id", so a saved thread can name the model it last ran. */
+  private readonly knownModels = new Map<string, ModelInfo>();
   private readonly sweeper: ReturnType<typeof setInterval>;
   /** Threads kept attached and resident while the service runs: never swept or evicted, resumed again when the daemon comes back. */
   private readonly pinned = new Set<string>();
@@ -238,14 +240,29 @@ export class ThreadHub {
     const messages = historyMessages(branch);
     let name: string | undefined;
     let thinkingLevel: ThinkingLevel = "off";
+    let ran: { provider: string; id: string } | null = null;
     for (const entry of branch) {
       if (entry.type === "session_info" && entry.name?.trim()) name = entry.name;
       if (entry.type === "thinking_level_change") thinkingLevel = entry.thinkingLevel as ThinkingLevel;
+      if (entry.type === "model_change") ran = { provider: entry.provider, id: entry.modelId };
+      if (entry.type === "message" && entry.message.role === "assistant" && entry.message.provider && entry.message.model) ran = { provider: entry.message.provider, id: entry.message.model };
     }
-    const info: ThreadInfo = { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: summary.model ? projectModel(summary.model) : null,
+    const info: ThreadInfo = { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: summary.model ? projectModel(summary.model) : this.savedModel(ran),
       thinkingLevel: summary.thinkingLevel ?? thinkingLevel, availableThinkingLevels: [], isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0,
       messageCount: messages.length, context: null, usage: sessionUsage(summary.usage), sessionAction: null, queuedActions: 0 };
     return { messages, info };
+  }
+
+  /**
+   * The daemon's summary of a saved session carries no model, so the composer showed "Model" and the account chip guessed the provider.
+   * The session file records the last model it ran; the name comes from the last model catalog read, else the model id stands in.
+   */
+  private savedModel(ran: { provider: string; id: string } | null): ModelInfo | null {
+    if (!ran) return null;
+    const known = this.knownModels.get(ran.provider + "/" + ran.id);
+    if (known) return known;
+    if (!this.knownModels.size) void this.models(null).catch(() => {});
+    return { provider: ran.provider, id: ran.id, name: ran.id, input: ["text"], contextWindow: 0, reasoning: false };
   }
 
   private bind(thread: Thread, connection: DaemonAgentConnection, activeSessionId: string): void {
@@ -597,6 +614,7 @@ export class ThreadHub {
   private async catalogFrom(connection: DaemonAgentConnection, thread: Thread | null): Promise<ModelCatalog> {
     const [catalog, state] = await Promise.all([connection.getModelCatalog(), connection.getState()]);
     const models = catalog.models.map(projectModel);
+    for (const model of models) this.knownModels.set(model.provider + "/" + model.id, model);
     const shared = { models, configuredProviders: [...catalog.configuredProviders] };
     if (thread) return { ...shared, current: state.model ? projectModel(state.model) : null, thinkingLevel: state.thinkingLevel, availableThinkingLevels: [...state.availableThinkingLevels] };
     const defaults = this.defaults();
