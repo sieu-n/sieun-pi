@@ -125,6 +125,23 @@ class ResumePausedTests(unittest.TestCase):
         with patch.object(resume_paused, "account_blocker", return_value=None):
             self.assertEqual([p["id"] for p in self.run_resume(dry_run=True)["paused"]], ["aaaaaaaaaaaa"])
 
+    def test_hung_working_session_counts_only_with_nothing_long_running(self):
+        self.session("hunghunghung", [assistant(80, "toolUse"), role(79, "toolResult")], activity="working", isStreaming=True, lastActivityAt=at(79))
+        self.session("toolstoolsto", [assistant(80, "toolUse")], activity="working", isRunningTools=True, lastActivityAt=at(80))
+        self.session("freshfreshfr", [assistant(5, "toolUse")], activity="working", isStreaming=True, lastActivityAt=at(5))
+        report = self.run_resume()
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("hunghunghung", "hung")])
+        self.assertEqual(self.sent, [])  # a hung head is aborted by the chat first, never messaged while hung
+        self.assertIn("hung", report["heads"][0]["result"])
+
+    def test_unstuck_run_is_resumed_after_its_abort(self):
+        aborted = {"type": "message", "timestamp": at(0.5), "message": {"role": "assistant", "stopReason": "aborted", "errorMessage": "Request was aborted", "content": []}}
+        self.session("hunghunghung", [role(79, "toolResult"), aborted])
+        resume_paused.UNSTUCK.add("0" * 24 + "hunghunghung")
+        self.addCleanup(resume_paused.UNSTUCK.clear)
+        self.run_resume()
+        self.assertEqual([target for target, _ in self.sent], ["hunghunghung"])
+
     def test_old_interruptions_are_ignored(self):
         self.session("aaaaaaaaaaaa", [assistant(3000, "error", "Connection error.")], lastActivityAt=at(3000))
         self.assertEqual(self.run_resume(dry_run=True)["paused"], [])

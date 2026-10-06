@@ -5,6 +5,7 @@ import { createGzip, type Gzip } from "node:zlib";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
+import { BOARD_PREFIX, BoardError, parseBoardOps } from "./shared/chat-board.ts";
 import { buildRenderBundle, LocalImageError, readLocalImage, renderPage, renderPolicy } from "./chat-render.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
@@ -514,7 +515,14 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         else throw new RequestError(400, "Use action update, or action auto with auto true or false.");
         json(res, 200, await sdk.view()); return;
       }
-      if (route === "api/interrupted") { json(res, 200, await interruptedRuns.resume()); return; }
+      if (route === "api/interrupted") {
+        json(res, 200, await interruptedRuns.resume(async sessionId => {
+          await backend.threads.abort(sessionId);
+          // A native abort holds the session's input until the next human prompt; reopen it so its head's message gets through.
+          await backend.threads.resumeQueue(sessionId).catch(() => {});
+        }));
+        return;
+      }
       if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
       if (route === "api/accounts") {
@@ -561,6 +569,26 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           break;
         case "unarchive": await backend.threads.unarchive(id); break;
         case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;
+        case "board": {
+          // The owner's side of the chat board: todo ops only. The chat then gets a steer that says in plain words what the owner did.
+          if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+          let applied: Awaited<ReturnType<typeof backend.boards.apply>>;
+          try {
+            const ops = parseBoardOps(body.ops);
+            if (!ops.length) throw new RequestError(400, "Add a board op.");
+            applied = await backend.boards.apply(id, ops, "owner");
+          } catch (error) {
+            if (error instanceof BoardError) throw new RequestError(error.kind === "forbidden" ? 403 : error.kind === "unknown" ? 409 : 400, error.message);
+            throw error;
+          }
+          const board = applied.board!;
+          backend.threads.setBoard(id, board);
+          let sent = true;
+          let error: string | undefined;
+          try { await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer" }); }
+          catch (failure) { sent = false; error = failure instanceof Error ? failure.message : String(failure); }
+          json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
+        }
         case "rename": {
           const name = text(body.name, "name", 200).trim();
           if (!name) throw new RequestError(400, "Use a name of 1 to 200 characters.");

@@ -10,7 +10,11 @@ it is live and idle, and either:
     "Failed to resolve API key ..."), or
   - its last message is a tool result, a user message or a tool call with no
     reply after it: the turn was cut off, or
-  - its last message is an empty model reply that asked for a tool.
+  - its last message is an empty model reply that asked for a tool, or
+  - it shows "working" but did nothing for 30 minutes with no tool, shell
+    command, child run or compaction running: a hung model stream or retry
+    wait. A message cannot reach it; it has to be aborted first, which the chat
+    Resume button does before it runs this script with --unstuck.
 
 Runs that were aborted ("Request was aborted") or archived, for example a
 helper its parent deleted, do not count. Rate limits (429), overloaded (529)
@@ -50,8 +54,13 @@ INTERRUPTION_ERROR = re.compile(
     re.IGNORECASE,
 )
 BUSY_FLAGS = ("isStreaming", "isRunningTools", "isBashRunning", "hasRunningRlmChildren", "isCompacting")
+# A tool, shell command, child run or compaction may legitimately take long; a model call or retry wait with no event this long is hung.
+WORK_FLAGS = ("isRunningTools", "isBashRunning", "hasRunningRlmChildren", "isCompacting")
+HUNG_MIN = 30.0
 # A cut-off turn younger than this may still be between a tool result and the next model call.
 CUT_OFF_GRACE_MIN = 2.0
+# Full session ids the caller aborted because they were hung; their "aborted" last message still counts.
+UNSTUCK = set()
 DEFAULT_STATE = Path.home() / ".prime" / "agent" / "resume-paused-sessions.json"
 
 
@@ -197,6 +206,21 @@ def stopped_on_purpose(entries, last):
     return any(e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived" for e in after)
 
 
+def hung_since(session, now):
+    """Minutes a session has shown as working with no activity and nothing legitimately long running, else None.
+
+    After a sleep or a network drop a model stream or a retry wait can hang for hours while the session still reads
+    "working". Sending it a message does nothing: it has to be aborted first (the chat's Resume button does that).
+    """
+    if not is_busy(session) or any(session.get(flag) for flag in WORK_FLAGS):
+        return None
+    seen = parse_ts(session.get("lastActivityAt") or session.get("modified"))
+    if not seen:
+        return None
+    idle = (now - seen).total_seconds() / 60
+    return idle if idle >= HUNG_MIN else None
+
+
 def classify(last, now):
     """("error" | "cut_off" | "empty_reply", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
@@ -251,15 +275,27 @@ def find_paused(sessions, since_minutes, state, now):
     paused = []
     for s in sessions:
         sid = short_id(s)
-        if s.get("lifecycle") != "live" or is_busy(s):
+        if s.get("lifecycle") != "live":
+            continue
+        if is_busy(s):
+            hung = hung_since(s, now)
+            if hung is None or (since_minutes and hung > since_minutes):
+                continue
+            head = head_of(sid, by_id)
+            paused.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)",
+                           "kind": s.get("runtimeKind"), "reason": "hung", "error": f"Shows working but did nothing for {hung:.0f} min.",
+                           "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head})
             continue
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
             continue
         last = last_message(entries_of(sid))
-        if not last or stopped_on_purpose(entries_of(sid), last):
+        if not last:
             continue
-        verdict = classify(last, now)
+        unstuck = (s.get("sessionId") or s["id"]) in UNSTUCK
+        if not unstuck and stopped_on_purpose(entries_of(sid), last):
+            continue
+        verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now)
         if not verdict:
             continue
         ts = parse_ts(last.get("timestamp"))
@@ -288,6 +324,7 @@ def find_paused(sessions, since_minutes, state, now):
             "errored_at": last.get("timestamp"),
             "age_min": round(age_min, 1) if age_min is not None else None,
             "head": head,
+            **({"aborted": True} if unstuck else {}),
         })
     return paused
 
@@ -333,7 +370,10 @@ def resume(sessions, args, now):
             "working": working,
             "paused_in_tree": [p["id"] for p in runs],
         }
-        if working and all(p["id"] == h for p in runs):
+        own_hang = any(p["id"] == h and p["reason"] == "hung" and not p.get("aborted") for p in runs)
+        if own_hang and not args.dry_run:
+            row["result"] = "skipped: hung, abort it first (the chat's Resume button does)"
+        elif working and not own_hang and all(p["id"] == h for p in runs):
             row["result"] = "skipped: already working"
         elif args.dry_run:
             row["result"] = "dry-run"
@@ -371,7 +411,9 @@ def main():
     ap.add_argument("--include-children", action="store_true", help="also message interrupted child sessions, not only heads")
     ap.add_argument("--state", default=str(DEFAULT_STATE), help="file that remembers resumed interruptions")
     ap.add_argument("--json", action="store_true", help="print JSON")
+    ap.add_argument("--unstuck", default="", help="comma-separated full session ids the caller aborted because they were hung")
     args = ap.parse_args()
+    UNSTUCK.update(filter(None, args.unstuck.split(",")))
 
     report = resume(list_sessions(), args, dt.datetime.now(dt.timezone.utc))
     if args.json:

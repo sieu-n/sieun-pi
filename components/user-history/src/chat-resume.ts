@@ -32,8 +32,23 @@ export class InterruptedRuns {
     return report;
   }
 
-  resume(): Promise<InterruptedReport> {
-    const report = this.serial(() => runScript([]));
+  /**
+   * A hung run (working, no activity for 30 min) cannot take a message, so `unstick` aborts it first; the script then counts the
+   * aborted run as resumable through --unstuck and messages its head.
+   */
+  resume(unstick: (sessionId: string) => Promise<void>): Promise<InterruptedReport> {
+    const report = this.serial(async () => {
+      const planned = await runScript(["--dry-run"]);
+      const unstuck: string[] = [];
+      for (const run of planned.paused) {
+        if (run.reason !== "hung" || !run.session_id) continue;
+        try { await unstick(run.session_id); unstuck.push(run.session_id); }
+        catch (error) { process.stderr.write(`resume: could not abort ${run.id}: ${error instanceof Error ? error.message : String(error)}\n`); }
+      }
+      // The abort lands in the session file a moment after the call returns.
+      if (unstuck.length) await new Promise(resolve => setTimeout(resolve, 2000));
+      return runScript(unstuck.length ? ["--unstuck", unstuck.join(",")] : []);
+    });
     this.last = null;
     return report;
   }

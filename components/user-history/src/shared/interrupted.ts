@@ -6,8 +6,10 @@ export interface InterruptedRun {
   /**
    * "error": the last turn failed on a network or sign-in error. "cut_off": the turn ended with no reply after a tool call.
    * "empty_reply": the model returned an empty reply that asked for a tool, so the turn ended.
+   * "hung": it showed working with no activity for 30 min; Resume aborts it before it messages the head.
    */
-  reason: "error" | "cut_off" | "empty_reply";
+  reason: "error" | "cut_off" | "empty_reply" | "hung";
+  session_id?: string;
   error: string;
   errored_at: string;
   head: string;
