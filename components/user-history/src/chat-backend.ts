@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { defaultDaemonSocketPath, getAgentDir, SettingsManager } from "prime-agent";
+import { BoardStore } from "./chat-board-store.ts";
 import { Catalog } from "./chat-catalog.ts";
 import { ChatLabels } from "./chat-labels.ts";
 import { ChatNotes } from "./chat-notes.ts";
@@ -24,6 +25,8 @@ export interface ChatBackend {
   notes: ChatNotes;
   defaults: ChatDefaultsStore;
   chats: Chats;
+  /** `<dataDir>/boards/<id>.json`: each chat's board. Changes from either writer reach the open thread as a board event. */
+  boards: BoardStore;
   /** `<dataDir>/threads.json`: every thread `POST api/threads` created, both kinds. A listed id is `origin: "user"`. */
   created: IdIndex;
   close(): Promise<void>;
@@ -65,14 +68,18 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const created = new IdIndex(join(dataDir, "threads.json"), "Thread index");
   let chats: Chats;
   const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids() }, new ThreadOrigins(created));
-  const threads = new ThreadHub(socketPath, catalog, () => defaults.read());
+  const boards = new BoardStore(dataDir);
+  const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
   chats = new Chats(index, threads, id => catalog.summary(id), line => process.stderr.write(line + "\n"));
+  const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
+    error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   let closed = false;
   return {
-    catalog, threads, readState, labels, notes, defaults, chats, created,
+    catalog, threads, readState, labels, notes, defaults, chats, boards, created,
     async close() {
       if (closed) return;
       closed = true;
+      unwatchBoards();
       chats.close();
       await threads.close();
       await catalog.close();

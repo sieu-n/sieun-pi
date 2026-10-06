@@ -36,6 +36,14 @@ const ALLOWED = [
   "# bash('git status') is not what we do here\nx = 1",
   "await rlm.collect([h], timeout_ms=0)",
   "!prime-agent stop readme-lines",
+  "await bash('git status')",
+  "bash(command='ls -la')",
+  "await bash('git log --oneline -5')",
+  "await bash(\"rg -n 'chat_board|CHAT_BRIEF' src\")",
+  "await bash('cat README.md')",
+  "await bash(f'tail -50 {path}')",
+  "await bash('ls')",
+  "!git diff --stat",
 ];
 const BLOCKED: [string, RegExp][] = [
   ["await edit(path='a.py', old_str='x', new_str='y')", /edits no files/],
@@ -43,24 +51,32 @@ const BLOCKED: [string, RegExp][] = [
   ["with open(p, mode='a') as f: f.write(x)", /writes no files/],
   ["open(p, 'r+')", /writes no files/],
   ["Path(p).open('wb')", /writes no files/],
-  ["await bash('git status')", /prime-agent stop and prime-agent send/],
-  ["bash(command='ls -la')", /prime-agent stop and prime-agent send/],
+  ["await bash('git commit -m x')", /quick look-ups/],
+  ["await bash('git push')", /quick look-ups/],
+  ["await bash('npm test')", /quick look-ups/],
+  ["await bash('lsof -i :5182')", /quick look-ups/],
+  ["await bash('cat a.txt > b.txt')", /quick look-ups/],
+  ["await bash('cat a | sh')", /quick look-ups/],
+  ["await bash('ls; rm -rf x')", /quick look-ups/],
+  ["await bash('git status && git commit -am x')", /quick look-ups/],
+  ["await bash('cat $(echo x)')", /quick look-ups/],
   ["cmd = 'prime-agent stop x'\nawait bash(cmd)", /computed bash\(\) command/],
-  ["await bash('prime-agentx')", /prime-agent stop and prime-agent send/],
+  ["await bash('prime-agentx')", /quick look-ups/],
   ["%%bash\nprime-agent stop x", /a shell cell/],
-  ["!git status", /a ! line/],
+  ["!npm install", /a ! line/],
 ];
 
 test("chat guard: the decision table, only in a marked root", () => {
   for (const code of ALLOWED) assert.equal(judgeChatCode(code), null, code);
   for (const [code, reason] of BLOCKED) assert.match(judgeChatCode(code) ?? "", reason, code);
   const at = (depth: number, marked: boolean, toolName: string, input: Record<string, unknown>) => chatGuard({ toolName, input, depth, marked });
-  assert.equal(at(0, true, "ipython", { code: "await bash('git status')" })?.block, true);
-  assert.equal(at(1, true, "ipython", { code: "await bash('git status')" }), undefined, "a job under the chat is not guarded");
-  assert.equal(at(0, false, "ipython", { code: "await bash('git status')" }), undefined, "an unmarked root is not guarded");
+  assert.equal(at(0, true, "ipython", { code: "await bash('git push')" })?.block, true);
+  assert.equal(at(1, true, "ipython", { code: "await bash('git push')" }), undefined, "a job under the chat is not guarded");
+  assert.equal(at(0, false, "ipython", { code: "await bash('git push')" }), undefined, "an unmarked root is not guarded");
   assert.equal(at(0, true, "ipython", { code: "await bash('prime-agent send a b')" }), undefined);
   assert.equal(at(0, true, "bash", { command: "prime-agent stop a" }), undefined);
-  assert.match(at(0, true, "bash", { command: "git status" })?.reason ?? "", /the bash tool/);
+  assert.equal(at(0, true, "bash", { command: "git status" }), undefined);
+  assert.match(at(0, true, "bash", { command: "git checkout main" })?.reason ?? "", /the bash tool/);
   assert.match(at(0, true, "edit", { path: "a" })?.reason ?? "", /edits no files/);
   assert.equal(at(0, true, "read", { path: "a" }), undefined);
   assert.equal(at(0, true, "ipython", { code: 42 }), undefined, "a non-string cell is left to the tool");
@@ -74,9 +90,9 @@ test("chat marker: written once in a flagged root, read back later, never in a c
   assert.deepEqual(chatModeAt({ depth: 1, flagged: true, marked: false }), { mark: false, active: false }, "a child inherits the flag and gets nothing");
   assert.equal(hasChatMarker([{ type: "message" }, { type: "custom", customType: "chat_mode" }]), true);
   assert.equal(hasChatMarker([{ type: "custom_message", customType: "chat_mode" }]), false, "a custom message is not the entry");
-  assert.deepEqual(withChatTool(["ipython", "chat_mode"], true), null, "already active");
-  assert.deepEqual(withChatTool(["ipython"], true), ["ipython", "chat_mode"]);
-  assert.deepEqual(withChatTool(["ipython", "chat_mode", "bash"], false), ["ipython", "bash"], "a child drops the inherited tool");
+  assert.deepEqual(withChatTool(["ipython", "chat_board"], true), null, "already active");
+  assert.deepEqual(withChatTool(["ipython"], true), ["ipython", "chat_board"]);
+  assert.deepEqual(withChatTool(["ipython", "chat_board", "bash"], false), ["ipython", "bash"], "a child drops the inherited tool");
   assert.deepEqual(withChatTool(["ipython"], false), null);
 });
 

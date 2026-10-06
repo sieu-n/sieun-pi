@@ -79,6 +79,27 @@ export interface ToolRun {
 }
 export interface RetryState { attempt: number; maxAttempts: number; delayMs: number; error: string }
 
+/**
+ * A chat's shared board, one JSON file per chat (`<dataDir>/boards/<sessionId>.json`). The agent writes it with the `chat_board` tool, the owner
+ * through `POST api/threads/<id>/board`; both go through `applyBoardOp` (src/shared/chat-board.ts). `rev` rises by one per applied op.
+ */
+export type PlanStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
+export interface PlanItem { id: string; text: string; status: PlanStatus; job?: string; note?: string; children: PlanItem[] }
+/** Something the agent needs from the owner (or a note the owner added). The owner checks it, edits it, or answers in `reply`. */
+export interface OwnerTodo { id: string; text: string; done: boolean; reply?: string; from: "agent" | "owner"; at: string }
+export interface ChatBoard { v: 1; rev: number; plan: PlanItem[]; scratchpad: string; todos: OwnerTodo[]; updatedAt: string }
+export type BoardActor = "agent" | "owner";
+export type PlanItemInput = { id?: string; text: string; status?: PlanStatus; job?: string; note?: string; children?: PlanItemInput[] };
+export type BoardOp =
+  | { op: "plan_set"; items: PlanItemInput[] }
+  | { op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string }
+  | { op: "plan_update"; id: string; text?: string; status?: PlanStatus; job?: string | null; note?: string | null }
+  | { op: "plan_remove"; id: string }
+  | { op: "scratchpad"; text: string; mode: "replace" | "append" }
+  | { op: "todo_add"; text: string }
+  | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null }
+  | { op: "todo_remove"; id: string };
+
 export interface ThreadSnapshot {
   kind: "live" | "saved";
   info: ThreadInfo;
@@ -89,6 +110,8 @@ export interface ThreadSnapshot {
   tools: ToolRun[];
   retry: RetryState | null;
   runStartedAt: number | null;
+  /** Chats only: the shared board, null until the first op. */
+  board?: ChatBoard | null;
 }
 
 export interface ThreadState extends ThreadSnapshot { connection: ThreadConnection; error?: string }
@@ -122,6 +145,7 @@ export type ThreadEvent =
   | { type: "info"; info: ThreadInfo }
   | { type: "queue"; queue: QueueState }
   | { type: "children"; children: ChildAgent[] }
+  | { type: "board"; board: ChatBoard }
   | { type: "status"; connection: ThreadConnection; error?: string };
 
 export type SessionKind = "live" | "saved";
@@ -159,11 +183,19 @@ export interface SessionRow {
   pulse?: SessionPulse;
   /** The thread is a chat (listed in `<dataDir>/chats.json`): the sidebar sections it under Chats and the main view renders Chat.svelte. */
   chat?: true;
+  /** Chats only: the subagent sessions under it, for the sidebar tree. A chat's `unread` ignores `working`, so a job report shows while other jobs run. */
+  jobs?: ChatJob[];
   /**
    * Who started the thread: a person through this chat (`threads.json`, `chats.json`) or an agent through `rlm.create_session` (its name precedes
    * `session_state` in the session file). The sidebar hides agent-created rows by default. Absent reads as user.
    */
   origin?: "user" | "agent";
+}
+/** One job of a chat in the sessions stream: a subagent session whose parent is the chat. `name` is its session name, what the chat and the plan call it. */
+export interface ChatJob {
+  id: string; childId?: string; name: string; status: "running" | "idle" | "saved";
+  /** What it is doing (the daemon summary or status label) while running, or how it ended. */
+  activity?: string; lastActivityAt?: string; failed?: true;
 }
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
 

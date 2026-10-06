@@ -22,8 +22,11 @@
   import { labels } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
   import { readPulse } from "../shared/pulse.ts";
+  import { parentChatOf } from "./jobs.ts";
 
   let { id, narrow }: { id: string; narrow: boolean } = $props();
+  /** A job of a chat (its session is listed under a chat row, or an open chat started it) gets a way back to the chat with its drawer open. */
+  const parentChat = $derived(parentChatOf(id, store.sessions, chat => store.thread(chat)?.state?.messages));
 
   const entry = $derived(store.thread(id));
   const thread = $derived(entry?.state ?? null);
@@ -152,6 +155,9 @@
     {#if (!store.sidebarOpen || narrow) && !reading}
       <button type="button" class="icon-button" aria-label="Show sidebar" use:tooltip={"Show sidebar ⌘B"} onclick={() => { store.sidebarOpen = true; }}><Icon name={narrow ? "menu" : "sidebar"} /></button>
     {/if}
+    {#if parentChat && !reading}
+      <button type="button" class="crumb" title="Back to {parentChat.chat.name}" onclick={() => store.openJob(parentChat.chat.id, parentChat.open)}><Icon name="chevronLeft" size={14} /><span class="crumb-name">{parentChat.chat.name}</span></button>
+    {/if}
     <ThreadTitle {id} {reading} />
     <div class="controls">
       <div class="segmented" role="radiogroup" aria-label="View">
@@ -268,6 +274,9 @@
   .thread { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .head { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 40px; border-bottom: 1px solid var(--border); background: var(--bg); }
   .head .icon-button { width: 28px; height: 28px; }
+  .crumb { display: inline-flex; align-items: center; gap: 2px; flex: none; max-width: 200px; height: 28px; padding: 0 8px 0 4px; border-radius: var(--radius-small); font-size: 12.5px; color: var(--text-muted); }
+  .crumb:hover { background: var(--bg-hover); color: var(--text); }
+  .crumb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .active-agents { color: var(--accent-bold); }
   .head .icon-button.on { color: var(--accent-bold); background: var(--accent-soft); }
   .child-alert { width: 7px; height: 7px; border-radius: 50%; flex: none; }

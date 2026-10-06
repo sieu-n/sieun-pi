@@ -1,0 +1,97 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { briefFor, briefFromCode, findJob, jobName, jobViews, parentChatOf, reportsFor, spawnCalls, treeJobs } from "../src/client/jobs.ts";
+import type { ChatItem } from "../src/shared/chat-feed.ts";
+import type { ChildAgent, SessionRow, ThreadMessage } from "../src/shared/types.ts";
+
+const child = (id: string, sessionName: string, status: ChildAgent["status"] = "running"): ChildAgent => ({ id, sessionName, label: "brief first line", status });
+
+test("jobName drops the agent-message role prefix", () => {
+  assert.equal(jobName("child:ux-email"), "ux-email");
+  assert.equal(jobName("sibling:seo-todo"), "seo-todo");
+  assert.equal(jobName("readme-lines"), "readme-lines");
+});
+
+test("jobViews lists active jobs first and finds a job by name, key or session id", () => {
+  const jobs = jobViews([child("sub-1", "ux-monitor", "done"), child("sub-2", "ux-email")], [{ sessionId: "01a1-root", name: "seo-todo" }],
+    [{ sessionId: "01a1-two", rlmChildId: "sub-2" }], () => undefined);
+  assert.deepEqual(jobs.map(job => job.name), ["ux-email", "ux-monitor", "seo-todo"]);
+  assert.equal(jobs[0]?.sessionId, "01a1-two");
+  assert.equal(jobs[1]?.sessionId, null);
+  assert.equal(findJob(jobs, "child:ux-monitor")?.key, "child:sub-1");
+  assert.equal(findJob(jobs, "child:sub-1")?.name, "ux-monitor");
+  assert.equal(findJob(jobs, "session:01a1-root")?.name, "seo-todo");
+  assert.equal(findJob(jobs, "01a1-two")?.name, "ux-email");
+  assert.equal(findJob(jobs, "nobody"), undefined);
+});
+
+test("reportsFor returns the job's messages newest first", () => {
+  const feed: ChatItem[] = [
+    { kind: "job", id: "m1", from: "child:ux-email", title: "first", body: "first", at: 1 },
+    { kind: "job", id: "m2", from: "child:ux-monitor", title: "other", body: "other", at: 2 },
+    { kind: "job", id: "m3", from: "child:ux-email", title: "second", body: "second", at: 3 },
+    { kind: "agent", id: "m4", text: "ok", at: 4 },
+  ];
+  assert.deepEqual(reportsFor(feed, "ux-email").map(item => item.id), ["m3", "m1"]);
+  assert.deepEqual(reportsFor(feed, "nobody"), []);
+});
+
+test("briefFromCode reads the first argument of the spawn call that names the job", () => {
+  const code = [
+    'common = """',
+    'Repo: /x. Follow AGENTS.md.',
+    '"""',
+    'monitor = await rlm.spawn("Surface: Monitor.\\n" + common, name="ux-monitor")',
+    "email = await rlm.spawn('Surface: Email, with a \"quote\" and name=\"not-this\".' + common, name='ux-email', model=\"m\")",
+    'print(monitor, email)',
+  ].join("\n");
+  assert.equal(briefFromCode(code, "ux-monitor"), "Surface: Monitor.\n\nRepo: /x. Follow AGENTS.md.\n");
+  assert.equal(briefFromCode(code, "ux-email"), 'Surface: Email, with a "quote" and name="not-this".\nRepo: /x. Follow AGENTS.md.\n');
+  assert.equal(briefFromCode(code, "nobody"), null);
+  assert.equal(briefFromCode('h = await rlm("do it", name="w", thinking="max")', "w"), "do it");
+  assert.equal(briefFromCode('h = await rlm.create_session(brief=f"go {x}", name="w", cwd="/r")', "w"), "go {x}");
+  assert.equal(briefFromCode('brief = persona + "\\n\\n## Task\\n" + task\nh = await rlm.spawn(brief, name="w")', "w"), "\n\n## Task\n");
+  assert.equal(briefFromCode('h = await rlm.spawn(make_brief(), name="w")', "w"), null);
+  assert.equal(briefFromCode('h = await rlm.spawn("unfinished', "w"), null);
+});
+
+test("briefFor takes the last naming call across the chat's ipython tool calls", () => {
+  const call = (code: string): ThreadMessage => ({ role: "assistant", content: [{ type: "toolCall", id: "c", name: "ipython", arguments: { code } }], provider: "p", model: "m", stopReason: "toolUse", timestamp: 1 });
+  const messages: ThreadMessage[] = [
+    { role: "user", content: "go", timestamp: 0 },
+    call('h = await rlm.spawn("first brief", name="w")'),
+    call('print(await rlm.list_subagents())'),
+    call('h = await rlm.spawn("second brief", name="w")'),
+  ];
+  assert.equal(briefFor(messages, "w"), "second brief");
+  assert.equal(briefFor(messages, "other"), null);
+});
+
+test("treeJobs and parentChatOf read a chat's jobs from its row and from the sessions its transcript started", () => {
+  const row = (over: Partial<SessionRow>): SessionRow => ({ id: "r", name: "row", cwd: "/r", kind: "live", status: "idle", archived: false, messageCount: 1, working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", ...over });
+  const chat = row({ id: "chat", name: "ux", chat: true, jobs: [
+    { id: "s1", childId: "sub-1", name: "ux-email", status: "saved" },
+    { id: "s2", childId: "sub-2", name: "ux-monitor", status: "running", activity: "Reading routes" },
+  ] });
+  const created = row({ id: "01a1-root", name: "seo-todo", working: true, statusLabel: "queued", origin: "agent" });
+  const messages: ThreadMessage[] = [{ role: "toolResult", toolCallId: "t", toolName: "ipython", content: [{ type: "text", text: "RLMCreateSessionHandle(active_session_id='a', session_id='01a1-root', name='seo-todo', session_file=PosixPath('/x'))" }], isError: false, timestamp: 1 }];
+  const rows = [chat, created];
+  const rowOf = (id: string) => rows.find(entry => entry.id === id);
+  const tree = treeJobs(chat, messages, rowOf);
+  assert.deepEqual(tree.map(job => [job.key, job.running, job.activity, job.open]), [
+    ["job:s2", true, "Reading routes", "ux-monitor"],
+    ["session:01a1-root", true, "queued", "session:01a1-root"],
+    ["job:s1", false, "", "ux-email"],
+  ]);
+  assert.deepEqual(treeJobs(chat, undefined, rowOf).map(job => job.key), ["job:s2", "job:s1"]);
+  const messagesOf = (id: string) => id === "chat" ? messages : undefined;
+  assert.deepEqual(parentChatOf("s1", rows, messagesOf), { chat, open: "ux-email" });
+  assert.deepEqual(parentChatOf("01a1-root", rows, messagesOf), { chat, open: "session:01a1-root" });
+  assert.equal(parentChatOf("nobody", rows, messagesOf), null);
+});
+
+test("spawnCalls keeps every truncated cell, since the call may sit past the head", () => {
+  const call = (id: string, code: string, truncated?: true): ThreadMessage => ({ role: "assistant", content: [{ type: "toolCall", id, name: "ipython", arguments: { code }, ...(truncated ? { truncated } : {}) }], provider: "p", model: "m", stopReason: "toolUse", timestamp: 1 });
+  const calls = spawnCalls([call("a", "print(1)"), call("b", 'common = """long brief', true), call("c", 'h = await rlm.spawn("x", name="w")')]);
+  assert.deepEqual(calls.map(entry => [entry.toolCallId, entry.truncated]), [["b", true], ["c", false]]);
+});

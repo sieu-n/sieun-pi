@@ -86,6 +86,7 @@ export function applyThreadEvent(state: ThreadState, event: ThreadEvent, now = D
     case "info": return { ...state, info: event.info };
     case "queue": return { ...state, queue: event.queue };
     case "children": return { ...state, children: event.children };
+    case "board": return { ...state, board: event.board };
     case "status": return { ...state, connection: event.connection, ...(event.error === undefined ? {} : { error: event.error }) };
   }
 }

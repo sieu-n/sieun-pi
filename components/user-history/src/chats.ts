@@ -6,26 +6,38 @@ import type { ChildAgent, ThinkingLevel } from "./shared/types.ts";
 export const CHAT_FLAG = "chat";
 /** The session entry that defines "this session is a chat". Children get their own session files, so it never reaches them. */
 export const CHAT_MODE_ENTRY = "chat_mode";
-/** The tool whose promptGuidelines carry the brief. Active only in a marked root; its call does nothing. */
-export const CHAT_MODE_TOOL = "chat_mode";
+/** The board tool. Its promptGuidelines carry the brief, so it is active only in a marked root. */
+export const CHAT_BOARD_TOOL = "chat_board";
 export const CHECK_IN_SCHEDULE = "every 10m";
-export const CHECK_IN = "Check-in. Look at what each job is doing (rlm.list_subagents, rlm.collect, agent_observe). Re-brief or stop anything stuck. " +
-  "Reply to the owner only if there is something to report, ask, or decide; otherwise end the turn with no text.";
-const ALLOWED_SHELL = "prime-agent ";
+export const CHECK_IN = "Check-in. Read the board (chat_board with no ops) and what each job is doing (rlm.list_subagents, rlm.collect, agent_observe.recent_messages). " +
+  "Update the board, re-brief or stop anything stuck. Reply to the owner only if there is something to report, ask, or decide; otherwise end the turn with no text.";
+/** Shell commands a chat may run: prime-agent (stop, send) and quick read-only look-ups. Each entry matches as a whole word at the start. */
+const ALLOWED_SHELL = ["prime-agent", "git log", "git status", "git diff", "git show", "rg", "ls", "cat", "head", "tail", "wc"];
+const SHELL_LIST = "prime-agent, git log/status/diff/show, rg, ls, cat, head, tail, wc";
 
 /** The brief, as promptGuidelines bullets. It reaches every turn kind, including agent-message wakes and check-ins, through the base system prompt. */
 export const CHAT_BRIEF: readonly string[] = [
-  "This session is a chat: you are the owner's chat partner for this thread's topic. The owner texts from a phone. Answer like a DM, in the owner's language: " +
-    "one to four short sentences, no headings, lists, tables or code unless asked.",
-  "You coordinate; you do not do the work yourself. Start a job with `handle = await rlm.spawn(brief, name=...)` (it runs in this repository with its rules), " +
-    "or `await rlm.create_session(brief, name=..., cwd=...)` for another repository.",
-  "Start every job you can at once, reply in one short message, and end the turn. Never wait inside a turn: job reports and check-ins wake you later.",
-  "Every job brief ends with the reply instruction. For a child: `await agent_message.send(report, receiver_role=\"parent\")`. For a create_session root: " +
-    "`receiver_role=\"sibling\", receiver_name=<your session name>` (`current.sessionName` from `await agent_observe.list_agents()`). Ask for at most one progress message.",
-  "When a job needs the owner, relay the exact ask in one line. Forward the owner's answer with `await agent_message.send(answer, receiver_role=\"child\", receiver_name=<job>)`.",
-  "On a check-in, look at `await rlm.list_subagents()`, `await rlm.collect(...)` and `agent_observe`. Re-brief or stop anything stuck. " +
-    "Reply only if the owner needs to know or decide; otherwise end the turn with no text.",
-  "The only shell allowed is `bash('prime-agent stop ...')` or `bash('prime-agent send ...')`. No edit(), no write-mode open(), no git. The chat_mode tool only confirms the mode.",
+  "This session is a chat. The owner is the CTO; you are the VP for this thread's topic. You own the outcome: plan it, staff it with jobs, " +
+    "keep the board current, and bring the owner only what needs them.",
+  "Voice: the owner's language, one to four short sentences, plain words, no em dashes, no headings, lists, bold, tables or code unless asked. " +
+    "This holds on every turn, most of all when a job report arrives: say the one or two things that matter in plain sentences and put the detail " +
+    "(findings, options, file paths) in the board scratchpad or as owner todos, never as a list in chat.",
+  "Do yourself only quick read-only look-ups that answer the owner in about a minute: read a file, `rg`, `git log/status/diff/show`, open a screenshot " +
+    "with `attach_image`, read a job's report or wiki page, `await agent_observe.recent_messages(name)`. Any real task, read-only or not " +
+    "(research, an audit, implementation, checks, browser work), goes to a job.",
+  "Jobs: `handle = await rlm.spawn(brief, name=...)` runs in this repository with its rules; `await rlm.create_session(brief, name=..., cwd=...)` for another " +
+    "repository. Every brief starts with `Owner's words (verbatim):` quoting each owner message that led to the job exactly, then `My read:` with your " +
+    "interpretation marked as yours, then the task, then the reply instruction: `await agent_message.send(report, receiver_role=\"parent\")` for a child, " +
+    "`receiver_role=\"sibling\", receiver_name=<your session name>` for a create_session root (`current.sessionName` from `await agent_observe.list_agents()`). " +
+    "When the owner adds or changes something, forward their exact words to the job with `await agent_message.send(words, receiver_role=\"child\", receiver_name=<job>)`.",
+  "Board: keep it current with the `chat_board` tool; the owner sees it next to the chat. The plan is a nested checklist: top items are goals, children " +
+    "are steps, each job linked by name. Use the scratchpad for working notes and decisions. Every ask to the owner (a decision, a login, an approval) " +
+    "becomes an owner todo, plus one short line in chat. Update the board in the same turn you start or finish a job. A user message that starts with " +
+    "`[board] ` is the owner acting on the board (checking or answering a todo); act on it.",
+  "Start every job at once, reply in one short message, and end the turn. Never wait inside a turn: job reports and check-ins wake you later. " +
+    "On a check-in, read the board and the jobs (`await rlm.list_subagents()`, `await rlm.collect(...)`, `await agent_observe.recent_messages(name)`), " +
+    "update statuses, re-brief or stop what is stuck, and reply only if the owner needs to know or decide; otherwise end the turn with no text.",
+  `Shell: only \`bash()\` commands that start with ${SHELL_LIST}, with no pipes, redirects or chaining. No edit(), no write-mode open(), no git writes.`,
 ];
 
 /** A chat with no name from the owner gets one, so a create_session root can reply to it by name. */
@@ -44,9 +56,9 @@ export function chatModeAt(input: { depth: number; flagged: boolean; marked: boo
 
 /** The active tool list with the brief tool added or removed; null when it is already right. Extension tools start active in every session. */
 export function withChatTool(active: readonly string[], on: boolean): string[] | null {
-  const has = active.includes(CHAT_MODE_TOOL);
+  const has = active.includes(CHAT_BOARD_TOOL);
   if (has === on) return null;
-  return on ? [...active, CHAT_MODE_TOOL] : active.filter(name => name !== CHAT_MODE_TOOL);
+  return on ? [...active, CHAT_BOARD_TOOL] : active.filter(name => name !== CHAT_BOARD_TOOL);
 }
 
 const PY_STRING = /(?:[rbfuRBFU]{0,2})("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
@@ -86,9 +98,17 @@ function literals(text: string): string[] {
   return out;
 }
 
+/** The command with quoted text blanked, so `rg "a|b"` passes while `cat x | sh` and `ls; rm x` do not. */
+function unquotedShell(command: string): string {
+  return command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, text => " ".repeat(text.length));
+}
 function shellReason(command: string | null, how: string): string | null {
-  if (command !== null && command.startsWith(ALLOWED_SHELL)) return null;
-  return `A chat runs no shell commands except prime-agent stop and prime-agent send (${how}). Give the work to a job with rlm.spawn.`;
+  if (command !== null) {
+    const trimmed = command.trim();
+    const allowed = ALLOWED_SHELL.some(prefix => trimmed === prefix || trimmed.startsWith(prefix + " "));
+    if (allowed && !/[;&|<>`\n]|\$\(/.test(unquotedShell(trimmed))) return null;
+  }
+  return `A chat runs only quick look-ups in the shell (${SHELL_LIST}; no pipes, redirects or chaining) (${how}). Give the work to a job with rlm.spawn.`;
 }
 const EDIT_REASON = "A chat edits no files. Give the change to a job with rlm.spawn.";
 const WRITE_REASON = "A chat writes no files. Give the change to a job with rlm.spawn.";

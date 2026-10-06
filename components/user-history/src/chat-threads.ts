@@ -6,7 +6,7 @@ import { CHAT_FLAG } from "./chats.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatDefaults, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { ChatBoard, ChatDefaults, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then) and every change of a thread's subagent list while attached. */
@@ -69,6 +69,8 @@ class Thread {
   private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent } | undefined;
   constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread) => void) { this.state = threadStateFromSnapshot(snapshot); }
   broadcast(event: ThreadEvent): void {
+    // A snapshot from the daemon carries no board; a chat keeps its board until a board event replaces it.
+    if (event.type === "snapshot" && event.snapshot.board === undefined && this.state.board !== undefined) event = { ...event, snapshot: { ...event.snapshot, board: this.state.board } };
     const children = this.state.children;
     this.state = applyThreadEvent(this.state, event);
     for (const listener of [...this.listeners]) listener(event);
@@ -110,7 +112,9 @@ export class ThreadHub {
   private readonly observers = new Set<ThreadObserver>();
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults) {
+  /** `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat. */
+  constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults,
+    private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined) {
     this.sweeper = setInterval(() => this.sweep(), 30000);
     this.sweeper.unref();
   }
@@ -359,6 +363,8 @@ export class ThreadHub {
         mark("project", at);
         thread.sessionFile = summary.sessionFile;
       }
+      const board = await this.board(id).catch(error => { process.stderr.write(`board ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); return undefined; });
+      if (board !== undefined) thread.state = { ...thread.state, board };
       this.threads.set(id, thread);
       process.stderr.write(`open ${id.slice(0, 8)} ${thread.live ? "live" : "saved"} ${thread.state.messages.length} messages: ${marks.join(", ")}, total ${Math.round(performance.now() - started)}ms\n`);
       if (thread.live) this.attached(thread);
@@ -382,6 +388,14 @@ export class ThreadHub {
   }
 
   state(id: string): ThreadState | undefined { return this.threads.get(id)?.state; }
+
+  /** A chat's board changed (either writer): its open thread's listeners get a board event. A closed thread reads the file when it opens. */
+  setBoard(id: string, board: ChatBoard): void {
+    const thread = this.threads.get(id);
+    const current = thread?.state.board;
+    if (!thread || (current && current.rev === board.rev && current.updatedAt === board.updatedAt)) return;
+    thread.broadcast({ type: "board", board });
+  }
 
   private async requireLive(id: string): Promise<{ thread: Thread; live: Live }> {
     const thread = await this.open(id);

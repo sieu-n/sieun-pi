@@ -5,6 +5,7 @@
   import { clock } from "./clock.svelte.ts";
   import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, emptyRowFilter, groupRows, inSidebar, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, originOf, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, compareRows, type SidebarSort, type SidebarView } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
+  import { treeJobs } from "./jobs.ts";
   import type { Anchor } from "./ui/floating.ts";
   import Icon from "./Icon.svelte";
   import PriorityBars from "./PriorityBars.svelte";
@@ -81,6 +82,9 @@
     requestAnimationFrame(() => { if (!document.activeElement || document.activeElement === document.body) list?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`)?.focus(); });
   }
   function archive(row: SessionRow): void { void labels.archive([row.id]); }
+  /** A chat's jobs under its row: from the row, plus the sessions it started once its transcript is loaded here. */
+  const jobsOf = (row: SessionRow) => treeJobs(row, store.thread(row.id)?.state?.messages, id => store.session(id));
+  const treeOpen = (row: SessionRow): boolean => ui.chatTreeOpen[row.id] === true;
   $effect(() => { ui.sidebarOrder = [...chats.map(row => row.id), ...(ui.heartbeatsOpen ? beats.map(row => row.id) : []), ...groups.flatMap(group => group.rows.map(row => row.id))]; });
 
   function onRowKey(row: SessionRow, event: KeyboardEvent): void {
@@ -162,12 +166,13 @@
         <input class="field rename" bind:value={renaming.name} placeholder={row.name} aria-label="Thread name" use:focusAndSelect onkeydown={onRenameKey} onblur={() => { renaming = null; }} />
       {:else}
         {@const pulse = pulseOf(row, tick)}
-        <a class="link" data-row={row.id} href={"#" + encodeURIComponent(row.id)} onkeydown={event => onRowKey(row, event)}>
+        {@const jobs = row.chat ? jobsOf(row) : []}
+        <a class="link" class:tree={row.chat} data-row={row.id} href={"#" + encodeURIComponent(row.id)} onkeydown={event => onRowKey(row, event)}>
           <span class="line" title={pulse && pulse.level !== "live" ? pulse.text : undefined}>
-            <span class="title" class:strong={needsResponse(row)}>{row.name}</span>
-            {#if row.working}<span class="run" role="img" aria-label={pulse?.text ? "Working, " + pulse.text : "Working"}><StatusMark status="working" level={pulse?.level ?? "live"} /></span>
-            {:else if row.failure}<span class="dot failed" role="img" aria-label="Last turn failed"></span>
-            {:else if needsResponse(row)}<span class="dot" role="img" aria-label="Needs response"></span>{/if}
+            <span class="title" class:strong={needsResponse(row) || (row.chat && row.unread)}>{row.name}</span>
+            {#if row.working}<span class="run" role="img" aria-label={pulse?.text ? "Working, " + pulse.text : "Working"}><StatusMark status="working" level={pulse?.level ?? "live"} /></span>{/if}
+            {#if !row.working && row.failure}<span class="dot failed" role="img" aria-label="Last turn failed"></span>
+            {:else if row.chat ? row.unread : needsResponse(row)}<span class="dot" role="img" aria-label={row.chat ? "New since you left" : "Needs response"}></span>{/if}
           </span>
           {#if ui.sidebarView === "tags"}
           {@const shownTags = row.tags.flatMap(id => tagMap.get(id) ?? [])}
@@ -195,6 +200,10 @@
           </span>
           {/if}
         </a>
+        {#if row.chat}
+          <button type="button" class="tree-toggle" aria-expanded={treeOpen(row)} aria-label="{treeOpen(row) ? 'Hide' : 'Show'} jobs of {row.name}" use:tooltip={jobs.length ? `${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}` : "No jobs yet"}
+            onclick={() => ui.setChatTreeOpen(row.id, !treeOpen(row))}><span class="chev" class:open={treeOpen(row)}><Icon name="chevronDown" size={11} /></span></button>
+        {/if}
         <div class="actions">
             <button type="button" class="icon-button small" aria-label="Tags for {row.name}" use:tooltip={"Add tag"}
               onclick={event => { tagging = { id: row.id, anchor: event.currentTarget as HTMLElement }; }}><Icon name="tag" /></button>
@@ -207,6 +216,20 @@
         </div>
       {/if}
     </div>
+    {#if row.chat && treeOpen(row)}
+      <ul class="tree-jobs" aria-label="Jobs of {row.name}">
+        {#each jobsOf(row) as job (job.key)}
+          <li>
+            <button type="button" class="tree-job" title={[job.name, job.activity].filter(Boolean).join("\n")} onclick={() => store.openJob(row.id, job.open)}>
+              <span class="tree-state">{#if job.running}<span class="spinner tiny"></span>{:else}<span class="tree-mark" class:saved={job.saved} class:failed={job.failed}></span>{/if}</span>
+              <span class="tree-name">{job.name}</span>
+              {#if job.activity}<span class="tree-activity" class:failed={job.failed}>{job.activity}</span>{/if}
+            </button>
+          </li>
+        {/each}
+        {#if !jobsOf(row).length}<li class="tree-none">No jobs yet</li>{/if}
+      </ul>
+    {/if}
 {/snippet}
 
 <aside class="sidebar" class:open={store.sidebarOpen} class:narrow class:resizing aria-label="Threads" bind:this={aside}>
@@ -357,6 +380,20 @@
   .row.archived .title { color: var(--text-muted); }
   .chats-label { display: flex; align-items: center; gap: 5px; padding-top: 6px; }
   .link { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; color: inherit; text-decoration: none; min-width: 0; border-radius: var(--radius-small); }
+  .link.tree { padding-left: 22px; }
+  .tree-toggle { position: absolute; left: 2px; top: 6px; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; color: var(--text-faint); }
+  .tree-toggle:hover { background: var(--bg-active); color: var(--text); }
+  .tree-jobs { list-style: none; margin: 0 0 2px; padding: 0 0 0 20px; }
+  .tree-job { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 2px 8px 2px 4px; border-radius: var(--radius-small); text-align: left; font-size: 12.5px; line-height: 18px; }
+  .tree-job:hover { background: var(--rail-hover); }
+  .tree-state { display: inline-flex; flex: none; width: 12px; justify-content: center; }
+  .tree-mark { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+  .tree-mark.saved { background: transparent; border: 1.5px solid var(--border-strong); border-style: dashed; }
+  .tree-mark.failed { background: var(--danger); }
+  .tree-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tree-activity { flex: 1; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-faint); }
+  .tree-activity.failed { color: var(--danger); }
+  .tree-none { padding: 2px 8px; font-size: 12px; color: var(--text-faint); }
   .link:focus-visible { outline-offset: -2px; }
   .line { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; line-height: 20px; }

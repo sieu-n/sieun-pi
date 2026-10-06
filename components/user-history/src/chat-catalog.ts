@@ -5,7 +5,7 @@ import type { ChatLabels } from "./chat-labels.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
-import type { ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChatJob, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -126,7 +126,22 @@ export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, Ses
   return { ...(cost !== undefined ? { cost } : {}), running };
 }
 
-export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin }
+export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin; jobs?: ChatJob[] }
+
+/** A chat's direct subagent sessions as sidebar jobs, running first, then by latest activity. */
+export function chatJobs(children: readonly SessionSummary[]): ChatJob[] {
+  const jobs = children.map((row): ChatJob => {
+    const status = nativeStatus(row);
+    const failed = row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row);
+    const activity = status === "running" ? row.statusLabel ?? row.summary?.trim().slice(0, 200) : failed ? row.summary?.trim().slice(0, 200) : undefined;
+    const at = row.lastActivityAt ?? row.modified;
+    return { id: row.sessionId, ...(row.rlmChildId ? { childId: row.rlmChildId } : {}), name: sessionTitle(row),
+      status: status === "running" ? "running" : row.activeSessionId !== undefined ? "idle" : "saved",
+      ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: at } : {}), ...(failed ? { failed: true } : {}) };
+  });
+  const at = (job: ChatJob) => Date.parse(job.lastActivityAt ?? "") || 0;
+  return jobs.sort((left, right) => Number(right.status === "running") - Number(left.status === "running") || at(right) - at(left));
+}
 
 /** Working: the thread's own turn runs, or any subagent below it runs (`isSessionSummaryBusy` in the daemon counts both). */
 export function isWorking(row: SessionSummary, subtree?: Subtree): boolean {
@@ -156,7 +171,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     messageCount: row.messageCount,
     working,
     subagentsRunning,
-    unread: !working && row.messageCount > 0 && finishedAt > Math.max(baseline, readMarker ?? 0),
+    unread: (extras.chat === true || !working) && row.messageCount > 0 && finishedAt > Math.max(baseline, readMarker ?? 0),
     ...(row.workerState ? { workerState: row.workerState } : {}),
     ...(row.statusLabel ? { statusLabel: row.statusLabel } : {}),
     ...(status !== "running" && settledOnFailure(row) ? { failure: row.summary!.trim().slice(0, 400) } : {}),
@@ -166,7 +181,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     ...(cost !== undefined ? { cost } : {}),
     ...(working && extras.pulse ? { pulse: extras.pulse } : {}),
     ...(extras.schedule ? { schedule: extras.schedule } : {}),
-    ...(extras.chat ? { chat: true } : {}),
+    ...(extras.chat ? { chat: true, jobs: extras.jobs ?? [] } : {}),
     origin: extras.origin ?? "user",
   };
 }
@@ -304,7 +319,8 @@ export class Catalog {
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
         const subtree = subtreeOf(row, children);
         return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
-          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, ...(chats?.has(row.sessionId) ? { chat: true } : {}), origin: originOf(row),
+          ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
+          ...(chats?.has(row.sessionId) ? { chat: true, jobs: chatJobs(children.get(row.sessionId) ?? []) } : {}),
           ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));

@@ -2,7 +2,7 @@ import { api, ApiError, requestId } from "./api.ts";
 import { hasUnsentDrafts } from "./drafts.ts";
 import { applyThreadEvent } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
-import type { ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
+import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
 /** `kind` "chat" creates a chat thread (the server marks the session and lists it under Chats); absent means a normal thread. */
@@ -28,6 +28,8 @@ class Store {
   defaultsRevision = $state(0);
   /** Chat sends each thread has not echoed back yet, by thread id, oldest first. */
   pendingSends = $state.raw<Record<string, PendingSend[]>>({});
+  /** The job drawer: a job of a chat, by the name the chat gave it (a job key or session id also works). Null when closed. */
+  jobDrawer = $state.raw<{ chat: string; job: string } | null>(null);
   private toastId = 0;
   private sessionsStop: (() => void) | null = null;
 
@@ -60,6 +62,12 @@ class Store {
     const next = id ? "#" + encodeURIComponent(id) : "";
     if (location.hash !== next) history.pushState(null, "", location.pathname + location.search + next);
     this.selectedId = id;
+  }
+
+  /** Opens the job drawer in its chat, switching to the chat first when another thread is open. */
+  openJob(chat: string, job: string): void {
+    if (this.selectedId !== chat) this.select(chat);
+    this.jobDrawer = { chat, job };
   }
 
   session(id: string | null): SessionRow | undefined {
@@ -150,6 +158,22 @@ class Store {
     const ok = await this.send(id, text, images, "steer");
     if (!ok) this.settleSends(id, new Set([send.id]));
     return ok;
+  }
+
+  /**
+   * An owner's board change: the board updates at once with `next` and the ops go to the server, which also tells the chat. A refused change
+   * puts the previous board back and shows the error. The server's board event lands after and wins either way.
+   */
+  async boardOps(id: string, next: ChatBoard, ops: BoardOp[]): Promise<boolean> {
+    const entry = this.threads[id];
+    if (!entry?.state) return false;
+    const previous = entry.state.board ?? null;
+    this.patch(id, { state: { ...entry.state, board: next } });
+    const result = await this.run(api.board(id, ops));
+    if (result) return true;
+    const current = this.threads[id];
+    if (current?.state && current.state.board === next) this.patch(id, { state: { ...current.state, board: previous } });
+    return false;
   }
 
   /** Forget pending sends the thread has echoed back (the chat view reports them), so the list never grows. */

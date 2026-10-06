@@ -32,6 +32,12 @@ function storedColumns(): Record<string, boolean> {
     return Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
   } catch { return {}; }
 }
+function storedTree(): Record<string, true> {
+  try {
+    const saved: unknown = JSON.parse(stored("chat.chatTreeOpen") ?? "null");
+    return Array.isArray(saved) ? Object.fromEntries(saved.filter((id): id is string => typeof id === "string").map(id => [id, true])) : {};
+  } catch { return {}; }
+}
 const clampWidth = (width: number): number => Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)));
 
 class Ui {
@@ -53,6 +59,16 @@ class Ui {
   agentCreatedShown = $state(stored("chat.agentCreatedShown") === "1");
   setAgentCreatedShown(shown: boolean): void { this.agentCreatedShown = shown; store("chat.agentCreatedShown", shown ? "1" : "0"); }
   setNotesOpen(open: boolean): void { this.notesOpen = open; store("chat.notesOpen", open ? "1" : "0"); }
+  /** The Board panel beside a chat on a wide window; open unless folded, and the choice holds across chats and reloads. */
+  boardOpen = $state(stored("chat.boardOpen") !== "0");
+  setBoardOpen(open: boolean): void { this.boardOpen = open; store("chat.boardOpen", open ? "1" : "0"); }
+  /** Chats whose job list is unfolded in the sidebar. */
+  chatTreeOpen = $state.raw<Record<string, true>>(storedTree());
+  setChatTreeOpen(id: string, open: boolean): void {
+    const { [id]: _was, ...rest } = this.chatTreeOpen;
+    this.chatTreeOpen = open ? { ...rest, [id]: true } : rest;
+    store("chat.chatTreeOpen", JSON.stringify(Object.keys(this.chatTreeOpen)));
+  }
   /** Thread ids in the order the sidebar shows them, so archiving the open thread can move to the next one. */
   sidebarOrder = $state.raw<string[]>([]);
   setSidebarFilter(filter: RowFilter): void { this.sidebarFilter = filter; store("chat.sidebarFilter", JSON.stringify(filter)); }

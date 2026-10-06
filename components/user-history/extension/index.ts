@@ -1,6 +1,9 @@
-import type { ExtensionAPI } from "prime-agent";
+import { join, resolve } from "node:path";
+import { getAgentDir, type ExtensionAPI } from "prime-agent";
+import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
-import { CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, CHAT_MODE_TOOL, chatGuard, chatModeAt, hasChatMarker, withChatTool } from "../src/chats.ts";
+import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, hasChatMarker, withChatTool } from "../src/chats.ts";
+import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -10,16 +13,49 @@ export default function historyExtension(pi: ExtensionAPI): void {
     return messages ? { messages } : undefined;
   });
   pi.registerFlag(CHAT_FLAG, { description: "Create this session as a browser chat (the chat server sets it; the session entry chat_mode is the durable mark)", type: "boolean" });
-  // The chat brief lives in this tool's promptGuidelines: when the tool is active the base system prompt carries the bullets, so agent-message
-  // wakes and heartbeat turns (which skip before_agent_start) read it too. The tool itself does nothing.
+  // The chat brief lives in the board tool's promptGuidelines: when the tool is active the base system prompt carries the bullets, so agent-message
+  // wakes and heartbeat turns (which skip before_agent_start) read it too. The board file is the one the chat server shows and the owner edits.
   pi.registerTool({
-    name: CHAT_MODE_TOOL,
-    label: "Chat mode",
-    description: "Confirms that this session is a browser chat. It changes nothing.",
+    name: CHAT_BOARD_TOOL,
+    label: "Chat board",
+    description: "Read or change this chat's board, which the owner sees next to the chat: the plan (a nested checklist of goals and steps, each step " +
+      "linked to its job), the owner's todo list, and the scratchpad. Ops apply in order, all or none. No ops returns the current board. Every result " +
+      "shows the whole board with item ids (p1, t1).",
     promptGuidelines: [...CHAT_BRIEF],
-    parameters: { type: "object", properties: {} },
-    async execute() { return { content: [{ type: "text", text: "chat mode is on" }], details: undefined }; },
+    parameters: {
+      type: "object",
+      properties: {
+        ops: {
+          type: "array",
+          description: "Board ops. plan_set {items:[{text,status?,job?,note?,children?}]} replaces the plan. plan_add {text,parent?,status?,job?} adds a goal, " +
+            "or a step under parent. plan_update {id,text?,status?,job?,note?} (job or note null clears it). plan_remove {id} removes an item and its steps. " +
+            "scratchpad {text,mode:replace|append}. todo_add {text} asks the owner for something. todo_update {id,text?,done?,reply?}. todo_remove {id}.",
+          items: {
+            type: "object",
+            properties: {
+              op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratchpad", "todo_add", "todo_update", "todo_remove"] },
+              id: { type: "string" }, parent: { type: "string" }, text: { type: "string" },
+              status: { type: "string", enum: [...PLAN_STATUSES] }, job: { type: ["string", "null"] }, note: { type: ["string", "null"] },
+              mode: { type: "string", enum: ["replace", "append"] }, done: { type: "boolean" }, reply: { type: ["string", "null"] },
+              items: { type: "array", items: { type: "object" } },
+            },
+            required: ["op"],
+          },
+        },
+      },
+      required: ["ops"],
+    },
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const ops = parseBoardOps((params as { ops?: unknown }).ops ?? []);
+      const { board, summaries } = await boards().apply(ctx.sessionManager.getSessionId(), ops, "agent");
+      return { content: [{ type: "text", text: [...summaries, renderBoard(board)].join("\n") }], details: undefined };
+    },
   });
+  // Same directory as the chat server: the agent-chat-data-dir flag, else <agentDir>/browser-chat.
+  const boards = () => {
+    const dataDir = pi.getFlag("agent-chat-data-dir");
+    return new BoardStore(typeof dataDir === "string" && dataDir ? resolve(dataDir) : join(getAgentDir(), "browser-chat"));
+  };
   // The marker is written once, at the first session_start of a flagged root, and read back on every later start. Children (depth > 0) inherit
   // the flag and the active tool list through the runtime config, so they drop the tool. Any error fails open.
   let marked = false;
