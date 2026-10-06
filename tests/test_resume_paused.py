@@ -98,6 +98,21 @@ class ResumePausedTests(unittest.TestCase):
         again = self.run_resume(dry_run=True)
         self.assertEqual(again["paused"], [])
 
+    def test_aborted_or_archived_runs_do_not_count(self):
+        aborted = {"type": "message", "timestamp": at(20), "message": {"role": "toolResult", "isError": True,
+                                                                       "content": [{"type": "text", "text": "Request was aborted"}]}}
+        self.session("aaaaaaaaaaaa", [assistant(21, "toolUse"), aborted])
+        self.session("bbbbbbbbbbbb", [assistant(21, "toolUse"), role(20, "toolResult"),
+                                      {"type": "session_state", "timestamp": at(20), "state": {"status": "archived"}}])
+        self.assertEqual(self.run_resume(dry_run=True)["paused"], [])
+
+    def test_empty_model_reply_counts_and_full_parent_ids_find_the_head(self):
+        self.session("headheadhead", [assistant(5, "stop")])
+        self.session("childchild01", [role(31, "toolResult"), assistant(30, "toolUse")],
+                     parent="01a0edbc-9c2c-76a3-9e56-f1e8headheadhead"[-36:].replace("f1e8headheadhead", "") + "headheadhead")
+        report = self.run_resume(dry_run=True)
+        self.assertEqual([(p["id"], p["reason"], p["head"]) for p in report["paused"]], [("childchild01", "empty_reply", "headheadhead")])
+
     def test_old_interruptions_are_ignored(self):
         self.session("aaaaaaaaaaaa", [assistant(3000, "error", "Connection error.")], lastActivityAt=at(3000))
         self.assertEqual(self.run_resume(dry_run=True)["paused"], [])

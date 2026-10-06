@@ -14,6 +14,7 @@
 
   function why(run: InterruptedRun): string {
     if (run.reason === "cut_off") return "cut off mid-turn";
+    if (run.reason === "empty_reply") return "empty model reply";
     return /api key/i.test(run.error) ? "sign-in failed" : "network error";
   }
 

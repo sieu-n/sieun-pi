@@ -9,7 +9,11 @@ it is live and idle, and either:
     failure ("Connection error.", "fetch failed", "WebSocket closed",
     "Failed to resolve API key ..."), or
   - its last message is a tool result, a user message or a tool call with no
-    reply after it: the turn was cut off.
+    reply after it: the turn was cut off, or
+  - its last message is an empty model reply that asked for a tool.
+
+Runs that were aborted ("Request was aborted") or archived, for example a
+helper its parent deleted, do not count.
 
 Each interrupted run maps to its head (the top-level root). Idle heads get one
 message (default "continue") that names the interrupted runs below them.
@@ -123,7 +127,9 @@ def head_of(sid, by_id):
         s = by_id.get(cur)
         if not s:
             return cur
-        parent = s.get("parentActiveSessionId")
+        # The daemon gives a resident parent's short id, and a parent's full session id once it was reloaded.
+        parent = s.get("parentActiveSessionId") or s.get("parentSessionId")
+        parent = parent[-12:] if parent else parent
         if not parent or parent in seen or parent not in by_id:
             return cur
         seen.add(cur)
@@ -134,12 +140,27 @@ def is_busy(session):
     return session.get("activity") == "working" or any(session.get(flag) for flag in BUSY_FLAGS)
 
 
+def stopped_on_purpose(entries, last):
+    """The run was aborted or archived (a parent deleted it, or the user pressed stop), so it is not interrupted."""
+    msg = last.get("message") or {}
+    if msg.get("role") == "toolResult" and any(
+            isinstance(part, dict) and part.get("text") == "Request was aborted" for part in msg.get("content") or []):
+        return True
+    after = entries[entries.index(last) + 1:] if last in entries else []
+    return any(e.get("type") == "session_state" and (e.get("state") or {}).get("status") == "archived" for e in after)
+
+
 def classify(last, now):
-    """("error", text) or ("cut_off", text) when the last message shows an interruption, else None."""
+    """("error" | "cut_off" | "empty_reply", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
         return None
     msg = last.get("message") or {}
     role, stop = msg.get("role"), msg.get("stopReason")
+    if role == "assistant" and stop == "toolUse" and not msg.get("content"):
+        ts = parse_ts(last.get("timestamp"))
+        if ts is None or (now - ts).total_seconds() / 60 < CUT_OFF_GRACE_MIN:
+            return None
+        return ("empty_reply", "The model returned an empty reply that asked for a tool, so the turn ended.")
     if role == "assistant" and stop == "error":
         err = str(msg.get("errorMessage") or "")
         return ("error", err) if INTERRUPTION_ERROR.search(err) else None
@@ -188,6 +209,8 @@ def find_paused(sessions, since_minutes, state, now):
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
             continue
         last = last_message(entries_of(sid))
+        if not last or stopped_on_purpose(entries_of(sid), last):
+            continue
         verdict = classify(last, now)
         if not verdict:
             continue
