@@ -97,6 +97,10 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([target for target, _ in self.sent], ["loneloneone1"])
         again = self.run_resume(dry_run=True)
         self.assertEqual(again["paused"], [])
+        # A reload gives the run a new short id; the record still matches by the full session id.
+        lone = next(row for row in self.sessions if row["sessionName"] == "loneloneone1")
+        lone["sessionId"], lone["id"] = lone["id"], "1" * 24 + "newshortid01"
+        self.assertEqual(self.run_resume(dry_run=True)["paused"], [])
 
     def test_aborted_or_archived_runs_do_not_count(self):
         aborted = {"type": "message", "timestamp": at(20), "message": {"role": "toolResult", "isError": True,

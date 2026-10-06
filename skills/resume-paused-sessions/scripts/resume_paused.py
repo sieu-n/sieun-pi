@@ -218,7 +218,7 @@ def find_paused(sessions, since_minutes, state, now):
         age_min = (now - ts).total_seconds() / 60 if ts else None
         if since_minutes and age_min is not None and age_min > since_minutes:
             continue
-        if state.get(sid) == last.get("timestamp"):
+        if state.get(s.get("sessionId") or s["id"]) == last.get("timestamp"):
             continue  # this script already resumed this interruption
         head = head_of(sid, by_id)
         if head != sid and head in by_id and ts:
@@ -227,6 +227,8 @@ def find_paused(sessions, since_minutes, state, now):
                 continue  # someone sent the head a message after the interruption
         paused.append({
             "id": sid,
+            # The short id changes when a session is reloaded; the state file keys by the full session id.
+            "session_id": s.get("sessionId") or s["id"],
             "name": s.get("sessionName") or "(unnamed)",
             "kind": s.get("runtimeKind"),
             "reason": verdict[0],
@@ -286,7 +288,7 @@ def resume(sessions, args, now):
         else:
             row["result"] = send(h, compose(args.message, h, runs, working))
             for p in runs:
-                state[p["id"]] = p["errored_at"]
+                state[p["session_id"]] = p["errored_at"]
             sent_any = True
         actions.append(row)
 
@@ -299,7 +301,7 @@ def resume(sessions, args, now):
                 res = "dry-run"
             else:
                 res = send(p["id"], args.message)
-                state[p["id"]] = p["errored_at"]
+                state[p["session_id"]] = p["errored_at"]
                 sent_any = True
             child_actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
 
