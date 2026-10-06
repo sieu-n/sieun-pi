@@ -214,10 +214,23 @@ def hung_since(session, now):
     """
     if not is_busy(session) or any(session.get(flag) for flag in WORK_FLAGS):
         return None
-    seen = parse_ts(session.get("lastActivityAt") or session.get("modified"))
-    if not seen:
+    # lastActivityAt can lag: a retry loop keeps writing error messages to the session file without moving it.
+    stamps = [parse_ts(session.get("lastActivityAt") or session.get("modified"))]
+    path = session.get("sessionFile")
+    entries = tail_entries(path, 64_000) if path else []
+    stamps += [parse_ts(entry.get("timestamp")) for entry in entries[-5:]]
+    try:
+        stamps.append(dt.datetime.fromtimestamp(os.path.getmtime(path), dt.timezone.utc) if path else None)
+    except OSError:
+        pass
+    stamps = [stamp for stamp in stamps if stamp]
+    if not stamps:
         return None
-    idle = (now - seen).total_seconds() / 60
+    last = last_message(entries)
+    msg = (last or {}).get("message") or {}
+    if msg.get("role") == "assistant" and msg.get("stopReason") == "stop":
+        return None  # the turn finished; the daemon's "working" is stale, and there is nothing to resume
+    idle = (now - max(stamps)).total_seconds() / 60
     return idle if idle >= HUNG_MIN else None
 
 

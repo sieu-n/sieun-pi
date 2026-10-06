@@ -2,6 +2,7 @@ import argparse
 import datetime as dt
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -129,10 +130,19 @@ class ResumePausedTests(unittest.TestCase):
         self.session("hunghunghung", [assistant(80, "toolUse"), role(79, "toolResult")], activity="working", isStreaming=True, lastActivityAt=at(79))
         self.session("toolstoolsto", [assistant(80, "toolUse")], activity="working", isRunningTools=True, lastActivityAt=at(80))
         self.session("freshfreshfr", [assistant(5, "toolUse")], activity="working", isStreaming=True, lastActivityAt=at(5))
+        for row in self.sessions:
+            os.utime(row["sessionFile"], (NOW.timestamp() - 79 * 60,) * 2)
         report = self.run_resume()
         self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("hunghunghung", "hung")])
         self.assertEqual(self.sent, [])  # a hung head is aborted by the chat first, never messaged while hung
         self.assertIn("hung", report["heads"][0]["result"])
+
+    def test_retry_loop_and_finished_turn_are_not_hung(self):
+        self.session("retryretryre", [assistant(3, "error", "undefined is not an object")], activity="working", isSessionActive=True, lastActivityAt=at(60))
+        self.session("finishedfini", [assistant(60, "stop")], activity="working", isSessionActive=True, lastActivityAt=at(60))
+        for row in self.sessions:
+            os.utime(row["sessionFile"], (NOW.timestamp() - 3600,) * 2)
+        self.assertEqual(self.run_resume(dry_run=True)["paused"], [])
 
     def test_unstuck_run_is_resumed_after_its_abort(self):
         aborted = {"type": "message", "timestamp": at(0.5), "message": {"role": "assistant", "stopReason": "aborted", "errorMessage": "Request was aborted", "content": []}}
