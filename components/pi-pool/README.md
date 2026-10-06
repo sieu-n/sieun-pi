@@ -128,6 +128,8 @@ until the session's next provider request runs the hook.
                                   for a browser: stdout is JSON lines ({"event":"url"} with the link and the
                                   Codex device code, {"event":"retry"}, one {"event":"done","ok":...}); stdin takes
                                   one pasted Claude code per line, and closing stdin cancels
+    pi-pool resets [<email|id> ...] [--json]   read each Claude account's banked usage-limit resets (spends nothing)
+    pi-pool reset <email|id> [--grant <id>] [--json]   spend one banked reset
     pi-pool probe [--force]       check every Claude account for an API refusal (no token refresh)
     pi-pool log [n]               last n pool events
     pi-pool config / set <k> <v>
@@ -158,6 +160,35 @@ seat or pin. tokenmaxxing may refresh an expiring store under its own lock while
 report at the end. Claude usage is also sampled every minute by
 tokenmaxxing's `check` timer; Codex usage only when tokenmaxxing samples it, so Codex
 figures can be hours old.
+
+## Banked resets
+
+Anthropic gives some Claude accounts banked usage-limit resets (program `cedar_ember`,
+for example "Claude Opus 5.5 launch: one usage-limit reset for Pro and Max"). The contract
+comes from the CLIProxyAPI Management Center (`src/services/api/claudeResetGrants.ts`,
+`resetGrantOperations.ts`) and was checked against live accounts.
+
+- `resets` calls `GET /api/oauth/usage?cedar_ember=1&skip_spend=1` as each account and saves
+  the parsed `cedar_ember` block in `resets.json`; `ls --json` shows it as `resets` on Claude
+  rows. One grant that does not parse rejects the account's whole block. A failed read keeps
+  the last good grants and adds `error`.
+- Anthropic decides eligibility by client. The calls send Claude Code's own User-Agent with
+  the installed version (`claude-cli/2.1.289 (external, cli)`); pi-pool's plain User-Agent
+  makes every account read as ineligible with reason `surface`.
+- `reset` reads the organization (`GET /api/oauth/profile`) and the grants, and sends nothing
+  when a grant cannot be spent (paused, not usable now, none left, needs the account to be
+  limited, not started, expired, cooldown). Otherwise it writes the claim, with a new
+  `request_id`, to `reset-claims.json` before it calls
+  `POST /api/organizations/<org>/reset_rate_limits` with `{program, grant_id, request_id}`.
+  The answer is one of `reset`, `already_used`, `not_limited`, `cooldown`, `ineligible`,
+  `unavailable`; 429 and 401/403 mean nothing was spent.
+- No answer (timeout, network) leaves the claim open. Running `reset` again within 10 minutes
+  resends the same `request_id`, which Anthropic counts once. A refusal on such a retry does
+  not settle the claim, because the first POST may have spent the reset. After 10 minutes the
+  next `reset` compares the grant's `resets_left` with the count before the claim, and records
+  whether the reset was spent.
+- `reset.lock` allows one claim at a time on this Mac. Exit codes: 0 reset, 1 not reset or
+  blocked, 3 unknown outcome.
 
 ## Which account a request gets
 

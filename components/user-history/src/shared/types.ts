@@ -204,13 +204,27 @@ export interface PoolAccount {
   id: string; email: string; plan?: string; usage: string; session_pct: number | null; weekly_pct: number | null;
   usable: boolean; reason: string | null; current: boolean; pinned: boolean; force: boolean; live: boolean; seat: boolean; score: number | null;
   tier: string | null; windows: PoolWindow[]; usageAt: number | null; cooldownUntil: number | null; cooldownReason: string | null; disabled: boolean;
+  /** Claude only: the last read of the account's banked usage-limit resets; null when never read. */
+  resets?: AccountResets | null;
+}
+/** One banked reset grant. Times are epoch ms. */
+export interface ResetGrant {
+  id: string; label: string; resetsTotal: number; resetsLeft: number; startsAt: number | null; endsAt: number | null;
+  clears: string[]; paused: boolean; usableNow: boolean; useRequiresLimit: boolean;
+}
+/** `pi-pool resets` for one account. `grants` is the last good read; `error` is a later read that failed. */
+export interface AccountResets {
+  checkedAt: number | null; eligible: boolean | null; ineligibleReason: string | null; atLimit: boolean; cooldownUntil: number | null;
+  grants: ResetGrant[]; nextGrantId: string | null; error: string | null; errorAt: number | null;
+  /** A claim whose outcome is unknown; using the reset again retries it with the same request id. */
+  pending: { grantId: string; createdAt: number } | null;
 }
 export interface PoolResolution { account: string | null; email: string | null; reason: string | null; pinned: boolean }
 export interface PoolProvider { provider: "anthropic" | "openai-codex"; rows: PoolAccount[]; resolution: PoolResolution | null; poolPin?: string | null; error?: string }
 export interface AccountsView { sessionId: string | null; checkedAt: string; providers: PoolProvider[]; notice?: string }
 export type AccountAction = { action: "use"; provider: string; account: string; id: string; force: boolean; newSession?: boolean } | { action: "follow"; provider: string; id: string }
   | { action: "pin"; provider: string; account: string } | { action: "unpin"; provider: string } | { action: "switch"; provider: string }
-  | { action: "recheck"; provider: string }
+  | { action: "recheck"; provider: string } | { action: "resets"; provider: string; account?: string } | { action: "reset"; provider: string; account: string; grant?: string }
   | { action: "disable"; provider: string; account: string } | { action: "enable"; provider: string; account: string } | { action: "remove"; provider: string; account: string };
 /** One account inside a usage refresh. `usageAt` and `retryAt` are epoch ms. */
 export interface UsageRefreshAccount {

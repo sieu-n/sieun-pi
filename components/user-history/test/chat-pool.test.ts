@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parsePoolRows, parseRefreshEvent, UsageRefreshes } from "../src/chat-pool.ts";
+import { parsePoolRows, parseRefreshEvent, parseResets, resetsNotice, UsageRefreshes } from "../src/chat-pool.ts";
 import type { UsageRefresh } from "../src/shared/types.ts";
 
 const base = { id: "a", email: "a@x", usage: "7%/61%", session_pct: 7, weekly_pct: 61, gated_pct: 100, usable: false, reason: "depleted",
@@ -96,4 +96,24 @@ test("a refresh that cannot start fails with pi-pool's own message", async () =>
     assert.throws(() => refreshes.start("grok", null), /pooled provider/);
     assert.throws(() => refreshes.start("anthropic", "--all"), /Choose an account/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a Claude row's resets parse with times in epoch ms, and a claim with no answer is pending", () => {
+  const resets = parseResets({ checked_at: 1791282989, pending: { grant_id: "g1", created_at: 1791283000 }, status: { eligible: true, ineligible_reason: null, at_limit: false,
+    next_grant_id: "g1", cooldown_until: null, grants: [{ id: "g1", label: "Launch reset", resets_total: 1, resets_left: 1, starts_at: "2026-09-22T16:00:00+00:00",
+      ends_at: "2026-10-22T16:00:00+00:00", clears: ["five_hour", 3], paused: false, usable_now: true, use_requires_limit: false }, { bad: true }] } });
+  assert.deepEqual(resets, { checkedAt: 1791282989000, eligible: true, ineligibleReason: null, atLimit: false, cooldownUntil: null, nextGrantId: "g1", error: null, errorAt: null,
+    pending: { grantId: "g1", createdAt: 1791283000000 },
+    grants: [{ id: "g1", label: "Launch reset", resetsTotal: 1, resetsLeft: 1, startsAt: Date.parse("2026-09-22T16:00:00+00:00"), endsAt: Date.parse("2026-10-22T16:00:00+00:00"),
+      clears: ["five_hour"], paused: false, usableNow: true, useRequiresLimit: false }] });
+  const failed = parseResets({ error: "rate limited", error_at: 1791282989 });
+  assert.equal(failed?.eligible, null);
+  assert.equal(failed?.errorAt, 1791282989000);
+  assert.equal(parseResets(null), null);
+});
+
+test("the resets notice counts the reads and names the failures", () => {
+  assert.equal(resetsNotice({ accounts: [{ email: "a@x", status: {} }, { email: "b@x", error: "rate limited" }] }), "Resets read for 1 of 2 accounts. b@x: rate limited.");
+  assert.equal(resetsNotice({ accounts: [{ email: "a@x", status: {} }] }), "Resets read for a@x.");
+  assert.equal(resetsNotice({ error: "only Claude accounts have resets" }), "only Claude accounts have resets");
 });

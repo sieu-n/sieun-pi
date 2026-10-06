@@ -119,6 +119,12 @@ function parseAccountAction(body: Record<string, unknown>): AccountAction {
     case "unpin": return { action: "unpin", provider };
     case "switch": return { action: "switch", provider };
     case "recheck": return { action: "recheck", provider };
+    case "resets": return { action: "resets", provider, ...(account ? { account } : {}) };
+    case "reset": {
+      if (!account) throw new RequestError(400, "Choose an account.");
+      const grant = typeof body.grant === "string" ? text(body.grant, "grant", 40) : undefined;
+      return { action: "reset", provider, account, ...(grant ? { grant } : {}) };
+    }
     case "disable": case "enable": case "remove": if (!account) throw new RequestError(400, "Choose an account."); return { action: body.action, provider, account };
     default: throw new RequestError(400, "Unknown account action.");
   }

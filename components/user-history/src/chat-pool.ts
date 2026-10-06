@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { AccountAction, AccountLogin, AccountsView, PoolAccount, PoolProvider, PoolResolution, PoolWindow, UsageRefresh, UsageRefreshAccount } from "./shared/types.ts";
+import type { AccountAction, AccountLogin, AccountResets, AccountsView, PoolAccount, PoolProvider, PoolResolution, PoolWindow, UsageRefresh, UsageRefreshAccount } from "./shared/types.ts";
 
 /** The pi-pool CLI next to this component; PI_POOL_BIN names another one (the native test runs a recording fake). */
 const executable = process.env.PI_POOL_BIN ?? fileURLToPath(new URL("../../pi-pool/bin/pi-pool", import.meta.url));
@@ -22,6 +22,25 @@ function parseWindows(value: unknown): PoolWindow[] {
   });
 }
 
+const isoMs = (value: unknown): number | null => typeof value === "string" && !Number.isNaN(Date.parse(value)) ? Date.parse(value) : null;
+
+/** The `resets` entry of a Claude row from `pi-pool ls --json`, or null. Grants that do not parse are dropped, never guessed. */
+export function parseResets(value: unknown): AccountResets | null {
+  if (!isRecord(value)) return null;
+  const status = isRecord(value.status) ? value.status : null;
+  const grants = status && Array.isArray(status.grants) ? status.grants.flatMap(grant => {
+    if (!isRecord(grant) || !text(grant.id) || typeof grant.resets_total !== "number" || typeof grant.resets_left !== "number") return [];
+    return [{ id: grant.id as string, label: text(grant.label) ?? "", resetsTotal: grant.resets_total, resetsLeft: grant.resets_left,
+      startsAt: isoMs(grant.starts_at), endsAt: isoMs(grant.ends_at), clears: Array.isArray(grant.clears) ? grant.clears.filter((w): w is string => typeof w === "string") : [],
+      paused: grant.paused === true, usableNow: grant.usable_now === true, useRequiresLimit: grant.use_requires_limit !== false }];
+  }) : [];
+  const pending = isRecord(value.pending) && text(value.pending.grant_id) && typeof value.pending.created_at === "number"
+    ? { grantId: value.pending.grant_id as string, createdAt: value.pending.created_at * 1000 } : null;
+  return { checkedAt: status ? epochMs(value.checked_at) : null, eligible: status && typeof status.eligible === "boolean" ? status.eligible : null,
+    ineligibleReason: status ? text(status.ineligible_reason) : null, atLimit: status?.at_limit === true, cooldownUntil: status ? isoMs(status.cooldown_until) : null,
+    grants, nextGrantId: status ? text(status.next_grant_id) : null, error: text(value.error), errorAt: epochMs(value.error_at ?? (status ? null : value.checked_at)), pending };
+}
+
 export function parsePoolRows(value: unknown, provider: string): PoolAccount[] {
   if (!isRecord(value) || value.provider !== provider || !Array.isArray(value.rows)) throw new Error("pi-pool returned an invalid listing");
   return value.rows.map((row: unknown): PoolAccount => {
@@ -34,7 +53,7 @@ export function parsePoolRows(value: unknown, provider: string): PoolAccount[] {
       live: row.live, seat: row.seat, session_pct: percent(row.session_pct), weekly_pct: percent(row.weekly_pct), score: percent(row.score),
       ...(typeof row.plan === "string" ? { plan: row.plan } : {}),
       tier: text(row.tier), windows: parseWindows(row.windows), usageAt: epochMs(row.usage_at), cooldownUntil: epochMs(row.cooldown_until),
-      cooldownReason: text(row.cooldown_reason), disabled: row.disabled === true };
+      cooldownReason: text(row.cooldown_reason), disabled: row.disabled === true, ...("resets" in row ? { resets: parseResets(row.resets) } : {}) };
   });
 }
 
@@ -61,6 +80,27 @@ function run(args: string[], timeout = 15000): Promise<string> {
       resolve(stdout);
     });
   });
+}
+
+/** For commands that answer in JSON on stdout whatever their exit code (`reset`, `resets`). */
+function runJson(args: string[], timeout: number): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    execFile(executable, args, { timeout, maxBuffer: 4 * 1024 * 1024, env: poolEnv() }, (error, stdout, stderr) => {
+      let value: unknown = null;
+      try { value = JSON.parse(String(stdout)); } catch { /* reported below */ }
+      if (isRecord(value)) { resolve(value); return; }
+      reject(new Error("pi-pool failed: " + (String(stderr).trim() || error?.message || "no answer").slice(0, 300)));
+    });
+  });
+}
+
+/** One sentence from `pi-pool resets --json`: how many accounts were read and which were not. */
+export function resetsNotice(value: Record<string, unknown>): string {
+  const rows = Array.isArray(value.accounts) ? value.accounts.filter(isRecord) : [];
+  if (typeof value.error === "string") return value.error;
+  const failed = rows.filter(row => typeof row.error === "string");
+  const head = rows.length === 1 ? (failed.length ? "" : `Resets read for ${text(rows[0]!.email) ?? "the account"}.`) : `Resets read for ${rows.length - failed.length} of ${rows.length} accounts.`;
+  return [head, ...failed.map(row => `${text(row.email) ?? "An account"}: ${text(row.error)}.`)].filter(Boolean).join(" ");
 }
 
 const session = (sessionId: string | null) => sessionId ? ["--session", sessionId] : [];
@@ -113,6 +153,16 @@ export async function runAccountAction(action: AccountAction): Promise<string | 
     case "disable": await run(poolCommand.disable(action.provider, accountArgument(action.account))); return null;
     case "enable": await run(poolCommand.enable(action.provider, accountArgument(action.account))); return null;
     case "remove": await run(poolCommand.remove(action.provider, accountArgument(action.account)), 75000); return null;
+    case "resets": {
+      if (action.provider !== "anthropic") throw new Error("Only Claude accounts have resets.");
+      return resetsNotice(await runJson(["resets", "--json", ...(action.account ? [accountArgument(action.account)] : [])], 60000));
+    }
+    case "reset": {
+      if (action.provider !== "anthropic") throw new Error("Only Claude accounts have resets.");
+      if (action.grant !== undefined && !/^[a-z0-9_-]{1,40}$/.test(action.grant)) throw new Error("Choose a reset.");
+      const answer = await runJson(["reset", accountArgument(action.account), "--json", ...(action.grant ? ["--grant", action.grant] : [])], 90000);
+      return text(answer.message) ?? "pi-pool reset gave no answer.";
+    }
     case "recheck": {
       if (action.provider !== "anthropic") throw new Error("Only Claude accounts can be checked for a refusal.");
       const found = (await run(["probe", "--force"], 30000)).trim();

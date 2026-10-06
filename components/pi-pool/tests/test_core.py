@@ -3,7 +3,7 @@ index parsing, JWT claim decoding, ls row building, and use idempotence.
 
 Run: python3 -m unittest discover -s tests   (from the pool directory)
 """
-import base64, contextlib, dataclasses, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, types, unittest, unittest.mock
+import base64, contextlib, dataclasses, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, types, unittest, unittest.mock
 
 from fixture_isolation import isolate_test_module
 
@@ -654,10 +654,10 @@ class RefreshUsage(unittest.TestCase):
     def test_a_read_still_running_at_the_deadline_is_reported_unfinished(self):
         events = []
         with self.fake('echo \'{"event":"accounts","accounts":[{"id":"a","email":"a@x"}]}\'\necho \'{"event":"reading","id":"a"}\'\nexec sleep 30\n'):
-            errors = vend.read_usage({"anthropic": None}, events.append, timeout=1)
+            errors = vend.read_usage({"anthropic": None}, events.append, timeout=3)
         self.assertEqual(errors, {})
         self.assertEqual(events[-1], {"event": "read", "provider": "anthropic", "id": "a", "email": "a@x", "ok": False,
-                                      "reason": "the read did not finish in 1s", "retry_at": None})
+                                      "reason": "the read did not finish in 3s", "retry_at": None})
 
     def test_a_helper_crash_is_an_error(self):
         with self.fake('echo "boom" >&2\nexit 3\n'):
@@ -684,6 +684,141 @@ class RefreshUsage(unittest.TestCase):
                               timeout=60, env=dict(os.environ, TOKENMAXXING_HOME=self.tmp))
         lines = [json.loads(line) for line in done.stdout.splitlines()]
         self.assertEqual((done.returncode, lines[-1]), (0, {"event": "read", "id": "not-an-account", "ok": False, "reason": "not in the pool", "retry_at": None}))
+
+
+GRANT = {"id": "opus55-launch", "label": "Launch reset", "resets_total": 1, "resets_left": 1, "starts_at": "2026-09-22T16:00:00+00:00",
+         "ends_at": "2999-10-22T16:00:00+00:00", "clears": ["five_hour", "seven_day", "bogus"], "paused": False, "usable_now": True,
+         "use_requires_limit": False, "percent_used": {"five_hour": 3, "seven_day": 98}}
+BLOCK = {"eligible": True, "ineligible_reason": None, "at_limit": False, "grants": [GRANT], "next_grant_id": "opus55-launch",
+         "weekly_resets_at": "2026-10-10T13:00:00+00:00", "cooldown_until": None}
+
+
+class ResetGrants(unittest.TestCase):
+    """The cedar_ember block parses strictly, and a grant is spent only when nothing blocks it."""
+
+    def test_block_parses_and_drops_unknown_windows(self):
+        status = vend.parse_grant_status(BLOCK)
+        self.assertEqual(status["grants"][0]["clears"], ["five_hour", "seven_day"])
+        self.assertEqual(status["next_grant_id"], "opus55-launch")
+        self.assertIsNone(vend.grant_blocker(status, "opus55-launch", time.time()))
+        self.assertEqual(vend.pick_grant(status, time.time())["id"], "opus55-launch")
+
+    def test_one_bad_grant_rejects_the_block(self):
+        for bad in ({"resets_left": 2}, {"id": "Bad Id"}, {"ends_at": "soon"}, {"usable_now": "yes"}):
+            self.assertIsNone(vend.parse_grant_status({**BLOCK, "grants": [{**GRANT, **bad}]}), bad)
+        self.assertIsNone(vend.parse_grant_status({**BLOCK, "grants": [GRANT, GRANT]}))
+        self.assertIsNone(vend.parse_grant_status({"grants": []}))
+
+    def test_missing_flags_default_to_refusing(self):
+        grant = {k: v for k, v in GRANT.items() if k not in ("usable_now", "use_requires_limit")}
+        status = vend.parse_grant_status({**BLOCK, "grants": [grant]})
+        self.assertEqual(vend.grant_blocker(status, "opus55-launch", time.time()), "not_usable")
+        status["grants"][0]["usable_now"] = True
+        self.assertEqual(vend.grant_blocker(status, "opus55-launch", time.time()), "not_limited")
+
+    def test_blockers(self):
+        now = time.time()
+        cases = {"exhausted": {"grants": [{**GRANT, "resets_left": 0}]}, "ineligible": {"eligible": False},
+                 "cooldown": {"cooldown_until": "2999-01-01T00:00:00+00:00"}, "ended": {"grants": [{**GRANT, "ends_at": "2000-01-01T00:00:00Z"}]},
+                 "paused": {"grants": [{**GRANT, "paused": True}]}}
+        for blocker, change in cases.items():
+            status = vend.parse_grant_status({**BLOCK, **change})
+            self.assertEqual(vend.grant_blocker(status, "opus55-launch", now), blocker)
+            self.assertIsNone(vend.pick_grant(status, now))
+
+
+class ResetClaims(unittest.TestCase):
+    """`pi-pool reset` journals the request id before the POST and reuses it after an unknown outcome."""
+
+    ORG = "11111111-2222-3333-4444-555555555555"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.account = types.SimpleNamespace(id="acc-1", email="a@x", needs_reauth=False)
+        self.left, self.posts, self.answers = 1, [], []
+        patches = [unittest.mock.patch.object(vend, name, os.path.join(self.tmp, file)) for name, file in
+                   (("RESETS", "resets.json"), ("RESET_CLAIMS", "claims.json"), ("RESET_LOCK", "reset.lock"), ("LOCK", "lock"))]
+        patches += [unittest.mock.patch.object(vend, "log", lambda *a, **k: None),
+                    unittest.mock.patch.object(vend, "load_index", lambda provider: [self.account]),
+                    unittest.mock.patch.object(vend, "config", lambda: {}),
+                    unittest.mock.patch.object(vend, "credential_for", lambda a, cfg: ("tok", "store")),
+                    unittest.mock.patch.object(vend, "anthropic_call", self.call)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def call(self, url, token, payload=None, timeout=12.0):
+        if url == vend.PROFILE_URL:
+            return 200, {"organization": {"uuid": self.ORG}}
+        if url == vend.GRANT_STATUS_URL:
+            return 200, {"cedar_ember": {**BLOCK, "grants": [{**GRANT, "resets_left": self.left}]}}
+        self.posts.append(payload)
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        if answer == (200, {"result": "reset"}):
+            self.left = 0
+        return answer
+
+    def reset(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = vend.cmd_reset(["a@x", "--json", *args])
+        return code, json.loads(out.getvalue())
+
+    def claims(self):
+        return vend.load_json(vend.RESET_CLAIMS, {})
+
+    def test_a_claim_spends_one_reset(self):
+        self.answers = [(200, {"result": "reset"})]
+        code, out = self.reset()
+        self.assertEqual((code, out["result"]), (0, "reset"))
+        self.assertEqual(self.posts[0]["program"], "cedar_ember")
+        self.assertEqual(self.posts[0]["grant_id"], "opus55-launch")
+        self.assertEqual(self.claims()["acc-1"]["code"], "reset")
+
+    def test_an_unknown_outcome_is_retried_with_the_same_request_id(self):
+        self.answers = [TimeoutError(), (200, {"result": "reset"})]
+        code, out = self.reset()
+        self.assertEqual((code, out["result"]), (3, "unknown"))
+        self.assertIsNone(self.claims()["acc-1"]["code"])
+        code, out = self.reset()
+        self.assertEqual((code, out["result"]), (0, "reset"))
+        self.assertEqual(self.posts[0]["request_id"], self.posts[1]["request_id"])
+
+    def test_a_refusal_on_a_retry_does_not_settle_the_claim(self):
+        self.answers = [TimeoutError(), (200, {"result": "not_limited"})]
+        self.reset()
+        code, out = self.reset()
+        self.assertEqual(out["result"], "unknown")
+        self.assertIsNone(self.claims()["acc-1"]["code"])
+
+    def test_after_the_retry_window_the_grant_count_settles_the_claim(self):
+        self.answers = [TimeoutError()]
+        self.reset()
+        claims = self.claims()
+        claims["acc-1"]["created_at"] -= vend.RESET_RETRY_SEC + 1
+        vend.save_json(vend.RESET_CLAIMS, claims)
+        self.left = 0
+        code, out = self.reset()
+        self.assertEqual((code, out["result"], len(self.posts)), (0, "reset", 1))
+
+    def test_an_unspent_expired_claim_allows_a_new_claim(self):
+        self.answers = [TimeoutError(), (200, {"result": "reset"})]
+        self.reset()
+        claims = self.claims()
+        claims["acc-1"]["created_at"] -= vend.RESET_RETRY_SEC + 1
+        vend.save_json(vend.RESET_CLAIMS, claims)
+        code, out = self.reset()
+        self.assertEqual((code, out["result"]), (0, "reset"))
+        self.assertNotEqual(self.posts[0]["request_id"], self.posts[1]["request_id"])
+
+    def test_a_blocked_grant_sends_nothing(self):
+        self.left = 0
+        code, out = self.reset()
+        self.assertEqual((code, out["result"], out["blocker"], self.posts), (1, "blocked", "exhausted", []))
+        self.assertEqual(self.claims(), {})
 
 
 class UseIdempotence(unittest.TestCase):

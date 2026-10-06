@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { accountState, forgetAccounts, loadAccounts, meterTone, PROVIDER_LABEL, rememberAccounts, resetText, resolutionSentence, span, staleText, STATE_LABEL, threadProvider, windowColumns, windowLabel,
     type AccountState } from "./accounts.ts";
-  import type { AccountAction, AccountLogin as Login, AccountsView, PoolAccount, PoolProvider, UsageRefresh, UsageRefreshAccount } from "../shared/types.ts";
+  import type { AccountAction, AccountLogin as Login, AccountResets, AccountsView, PoolAccount, PoolProvider, ResetGrant, UsageRefresh, UsageRefreshAccount } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import Floating from "./ui/Floating.svelte";
@@ -77,10 +77,10 @@
     if (watchedRefreshes.includes(next.id) && (settled(next) > (previous?.id === next.id ? settled(previous) : 0) || next.status !== "running")) reloadSoon();
   }));
 
-  async function startRefresh(provider: Provider, row: PoolAccount | null): Promise<void> {
+  async function startRefresh(provider: Provider, account: string | null): Promise<void> {
     menu = null;
     try {
-      const started = await api.startRefresh(provider, row?.id ?? null);
+      const started = await api.startRefresh(provider, account);
       if (!watchedRefreshes.includes(started.id)) watchedRefreshes = [...watchedRefreshes, started.id];
       if (!refreshes[provider] || refreshes[provider]!.id !== started.id) refreshes = { ...refreshes, [provider]: started };
     } catch (caught) { store.toast(caught instanceof Error ? caught.message : String(caught)); }
@@ -137,6 +137,7 @@
       rememberAccounts("id" in action ? action.id : threadId, result);
       view = result;
       notice = result.notice ?? null;
+      if (action.action === "reset") void startRefresh("anthropic", action.account);
     } catch (caught) { store.toast(caught instanceof Error ? caught.message : String(caught)); }
     finally { acting = null; }
   }
@@ -165,6 +166,61 @@
     return plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : null;
   };
 
+  const RESET_WINDOW: Record<string, string> = { five_hour: "5h", seven_day: "week", seven_day_overage_included: "overage" };
+  const INELIGIBLE: Record<string, string> = { tenure: "the account is too new", tier: "the plan has none", seat: "team seats have none", surface: "this client cannot see them",
+    cli_version: "the Claude Code version is too old", no_grant: "no reset was granted", config_off: "resets are off", mobile: "mobile only", other_experiment: "another experiment", unavailable: "unavailable" };
+  /** Claims with an unknown outcome can be retried with the same request id for this long; pi-pool enforces it too. */
+  const RESET_RETRY_MS = 10 * 60_000;
+  const day = (ms: number): string => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+  /** The grant `pi-pool reset` would spend: Anthropic's pick when it can be spent, else the first usable one. Mirrors grant_blocker in vend.py. */
+  function usableGrant(resets: AccountResets | null | undefined): ResetGrant | undefined {
+    if (!resets?.eligible || (resets.cooldownUntil && resets.cooldownUntil > now)) return undefined;
+    const usable = resets.grants.filter(grant => !grant.paused && grant.usableNow && grant.resetsLeft > 0 && (!grant.useRequiresLimit || resets.atLimit)
+      && (!grant.startsAt || grant.startsAt <= now) && (!grant.endsAt || grant.endsAt > now)).sort((a, b) => a.id.localeCompare(b.id));
+    return usable.find(grant => grant.id === resets.nextGrantId) ?? usable[0];
+  }
+  const pendingReset = (resets: AccountResets | null | undefined) => resets?.pending && now - resets.pending.createdAt < RESET_RETRY_MS ? resets.pending : null;
+
+  /** One note about a Claude account's banked resets, or null when they were never read. */
+  function resetNote(resets: AccountResets | null | undefined): string | null {
+    if (!resets) return null;
+    const checked = resets.checkedAt ? ` Checked ${span(now - resets.checkedAt)} ago.` : "";
+    if (resets.pending) {
+      return now - resets.pending.createdAt < RESET_RETRY_MS
+        ? `A reset claim got no answer, so a reset may be spent. Use reset within ${span(resets.pending.createdAt + RESET_RETRY_MS - now)} to retry the same claim.`
+        : "A reset claim got no answer. Use reset again to check the count; it sends nothing new if the reset was spent.";
+    }
+    const failed = resets.error ? ` Last check failed: ${resets.error.replace(/\.$/, "")}.` : "";
+    if (resets.eligible === null) return `Resets not read: ${resets.error ?? "unknown error"}.`;
+    if (!resets.eligible) return `No banked resets: ${INELIGIBLE[resets.ineligibleReason ?? ""] ?? resets.ineligibleReason ?? "not eligible"}.` + checked + failed;
+    const left = resets.grants.reduce((sum, grant) => sum + grant.resetsLeft, 0);
+    if (!left) return "No banked resets left." + checked + failed;
+    const grant = usableGrant(resets) ?? resets.grants.find(entry => entry.resetsLeft > 0)!;
+    const ends = grant.endsAt ? ` Expires ${day(grant.endsAt)}.` : "";
+    return `${left} banked reset${left === 1 ? "" : "s"} left${grant.label ? `: ${grant.label}` : ""}.${ends}` + (usableGrant(resets) ? "" : " Not usable right now.") + checked + failed;
+  }
+
+  function askReset(row: PoolAccount): void {
+    const pending = pendingReset(row.resets);
+    if (pending) {
+      ask({ title: `Retry the reset on ${row.email}?`, label: "Retry the same claim",
+        body: "The last claim got no answer, so a reset may already be spent. A retry sends the same request id, so Anthropic counts it at most once.",
+        action: { action: "reset", provider: "anthropic", account: row.id, grant: pending.grantId } });
+      return;
+    }
+    const grant = usableGrant(row.resets);
+    if (!grant) return;
+    const clears = grant.clears.map(window => RESET_WINDOW[window] ?? window);
+    const week = row.windows.find(window => window.kind === "weekly");
+    const weekSoon = week?.resetsAt && week.resetsAt > now && week.resetsAt - now < 24 * 3600_000 ? ` The week resets by itself in ${span(week.resetsAt - now)}.` : "";
+    const usage = row.windows.filter(window => window.kind !== "model").map(window => `${windowLabel(window)} ${Math.round(window.pct)}%`).join(", ");
+    ask({ title: `Use a reset on ${row.email}?`, label: "Use reset",
+      body: `This spends 1 of ${grant.resetsLeft} banked reset${grant.resetsLeft === 1 ? "" : "s"}${grant.label ? ` (${grant.label})` : ""}. It clears the ${clears.join(", ") || "eligible"} usage limits now`
+        + (usage ? `; usage is ${usage}.` : ".") + weekSoon + " A spent reset cannot be given back.",
+      action: { action: "reset", provider: "anthropic", account: row.id, grant: grant.id } });
+  }
+
   function notes(row: PoolAccount): string[] {
     const state = accountState(row);
     const read = refreshEntry(row);
@@ -179,6 +235,8 @@
     out.push(...unread);
     const stale = staleText(row, now);
     if (stale && state !== "needs-login") out.push(stale + ".");
+    const resets = state === "needs-login" ? null : resetNote(row.resets);
+    if (resets) out.push(resets);
     return out;
   }
 
@@ -208,7 +266,7 @@
   const askRemove = (provider: Provider, row: PoolAccount) => ask({ title: `Remove ${row.email}?`,
     body: "This deletes its sign-in and drops its pins and seat. To use it again, add it again.", label: "Remove", danger: true, typed: row.email,
     action: { action: "remove", provider, account: row.id } });
-  const actionKey = (action: AccountAction): string => "account" in action ? action.account : action.action;
+  const actionKey = (action: AccountAction): string => "account" in action && action.account ? action.account : action.action;
 </script>
 
 <section class="accounts" aria-label="Accounts">
@@ -226,6 +284,12 @@
     {#if current}
       <button class="button small" disabled={running(login)} onclick={() => void startLogin(current.provider, null)}>
         <Icon name="plus" size={14} /> Add {PROVIDER_LABEL[current.provider]} account
+      </button>
+    {/if}
+    {#if current?.provider === "anthropic"}
+      <button class="button small" disabled={acting !== null} use:tooltip={"Read every Claude account's banked usage-limit resets. Spends nothing."}
+        onclick={() => current && void run({ action: "resets", provider: current.provider }, "resets")}>
+        {#if acting === "resets"}<span class="spinner tiny"></span> Checking resets{:else}Check resets{/if}
       </button>
     {/if}
     {#if current}
@@ -298,6 +362,8 @@
               <div class="sub">
                 {#if planText(row)}<span>{planText(row)}</span>{/if}
                 {#if state}<span class="badge {STATE_LABEL[state].tone}">{STATE_LABEL[state].label}</span>{/if}
+                {#if pendingReset(row.resets)}<span class="badge warning">Reset unknown</span>
+                {:else if usableGrant(row.resets)}<span class="badge success">{usableGrant(row.resets)!.resetsLeft} reset{usableGrant(row.resets)!.resetsLeft === 1 ? "" : "s"}</span>{/if}
                 {#if inUse}<span class="badge accent">{threadId ? "This thread" : "Next request"}</span>{/if}
               </div>
             </div>
@@ -318,10 +384,13 @@
                 {#if read?.state === "read"}<span class="read-state ok">Updated</span>
                 {:else if read?.state === "failed"}<span class="read-state bad">Not read</span>{/if}
                 <button type="button" class="icon-button small row-refresh" disabled={refreshing} aria-label="Refresh usage for {row.email}" use:tooltip={"Refresh usage"}
-                  onclick={() => void startRefresh(current.provider, row)}><Icon name="refresh" size={14} /></button>
+                  onclick={() => void startRefresh(current.provider, row.id)}><Icon name="refresh" size={14} /></button>
               {/if}
               {#if acting === row.id}<span class="spinner tiny"></span>
               {:else if canPick}<button type="button" class="hint" aria-label="Use {row.email} for this thread" onclick={() => useForThread(current.provider, row)}>Use</button>{/if}
+              {#if !row.disabled && (pendingReset(row.resets) || usableGrant(row.resets))}
+                <button class="button small" disabled={acting !== null} onclick={() => askReset(row)}>{pendingReset(row.resets) ? "Retry reset" : "Use reset"}</button>
+              {/if}
               {#if row.disabled}
                 <button class="button small" disabled={acting !== null} onclick={() => void run({ action: "enable", provider: current.provider, account: row.id }, row.id)}>Turn on</button>
               {:else if state === "needs-login"}
@@ -348,7 +417,7 @@
     {#if pickable(row)}
       <button type="button" class="menu-item" role="menuitem" onclick={() => useForThread(provider, row)}>Use in this thread</button>
     {/if}
-    <button type="button" class="menu-item" role="menuitem" disabled={refreshes[provider]?.status === "running"} onclick={() => void startRefresh(provider, row)}>Refresh usage</button>
+    <button type="button" class="menu-item" role="menuitem" disabled={refreshes[provider]?.status === "running"} onclick={() => void startRefresh(provider, row.id)}>Refresh usage</button>
     {#if !row.disabled}
       {#if current.poolPin === row.id}
         <button type="button" class="menu-item" role="menuitem" onclick={() => askUnpin(provider)}>Unpin for all sessions</button>
@@ -356,6 +425,12 @@
         <button type="button" class="menu-item" role="menuitem" onclick={() => askPin(provider, row)}>Pin for all sessions</button>
       {/if}
       {#if row.seat}<button type="button" class="menu-item" role="menuitem" onclick={() => askDropSeat(provider, row)}>Drop seat</button>{/if}
+      {#if provider === "anthropic" && (pendingReset(row.resets) || usableGrant(row.resets))}
+        <button type="button" class="menu-item" role="menuitem" onclick={() => askReset(row)}>{pendingReset(row.resets) ? "Retry the reset" : "Use a reset"}</button>
+      {/if}
+      {#if provider === "anthropic"}
+        <button type="button" class="menu-item" role="menuitem" disabled={acting !== null} onclick={() => void run({ action: "resets", provider, account: row.id }, row.id)}>Check resets</button>
+      {/if}
       {#if provider === "anthropic" && (state === "refused" || state === "cooldown")}
         <button type="button" class="menu-item" role="menuitem" onclick={() => askRecheck(provider)}>Check again</button>
       {/if}
