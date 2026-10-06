@@ -13,6 +13,7 @@
   import ThreadMenu from "./ThreadMenu.svelte";
   import FilterSelects from "./FilterSelects.svelte";
   import InterruptedRuns from "./InterruptedRuns.svelte";
+  import PoolMeters from "./PoolMeters.svelte";
   import StatusMark from "./StatusMark.svelte";
   import Floating from "./ui/Floating.svelte";
   import TagPicker from "./ui/TagPicker.svelte";
@@ -266,6 +267,7 @@
         <button type="button" class="archived-toggle" aria-pressed={ui.agentCreatedShown} onclick={() => ui.setAgentCreatedShown(!ui.agentCreatedShown)}>{ui.agentCreatedShown ? "Hide agent-created" : `Show agent-created (${agentCreatedCount})`}</button>
       {/if}
     </div>
+    <PoolMeters />
   </div>
 </aside>
 {#if !narrow}
