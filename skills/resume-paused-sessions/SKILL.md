@@ -20,7 +20,7 @@ The script:
 
 1. Runs `prime-agent list --json` (it also finds `~/.local/share/prime-agent/bin/prime-agent` when `prime-agent` is not on `PATH`, or uses `PRIME_AGENT_BIN`).
 2. For each live, idle session active in the window (`--since-minutes`, default 1440 = 24 h), reads the tail of `sessionFile` and takes the last `type == "message"` entry. The run is interrupted when that entry is an assistant error whose text names a network or sign-in failure, or when it is a tool result, user message or tool call with no reply (older than 2 minutes).
-3. Drops a run when its head got a user message after the interruption, or when this script already resumed it. The script records resumed runs in `~/.prime/agent/resume-paused-sessions.json`.
+3. Drops a run when its head got a user message after the interruption, or when this script already resumed it. The script records resumed runs by full session id in `~/.prime/agent/resume-paused-sessions.json`. Rate limits (429), overloaded (529) and 5xx errors also count. Every run waits until `pi-pool who` says the account its tree's next request gets can serve; resuming earlier fails again at once.
 4. Walks `parentActiveSessionId` up to the root. That root is the head.
 5. Sends each idle head `continue`, followed by the list of stopped runs below it. A working head gets the list as a steer note. A working head with no stopped children is skipped.
 6. Prints the interrupted runs, the heads, and each delivery status.

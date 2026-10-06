@@ -13,7 +13,9 @@ it is live and idle, and either:
   - its last message is an empty model reply that asked for a tool.
 
 Runs that were aborted ("Request was aborted") or archived, for example a
-helper its parent deleted, do not count.
+helper its parent deleted, do not count. Rate limits (429), overloaded (529)
+and 5xx errors count too, but a run is listed only once pi-pool says the
+account its next request gets can serve; resuming earlier fails again at once.
 
 Each interrupted run maps to its head (the top-level root). Idle heads get one
 message (default "continue") that names the interrupted runs below them.
@@ -44,7 +46,7 @@ from pathlib import Path
 INTERRUPTION_ERROR = re.compile(
     r"connection error|fetch failed|econnreset|econnrefused|enotfound|etimedout|eai_again|"
     r"socket hang up|network|terminated|other side closed|timed? ?out|websocket closed|"
-    r"failed to resolve api key",
+    r"failed to resolve api key|rate.?limit|\b429\b|overloaded|\b529\b|\b50[234]\b|internal server error|usage limit",
     re.IGNORECASE,
 )
 BUSY_FLAGS = ("isStreaming", "isRunningTools", "isBashRunning", "hasRunningRlmChildren", "isCompacting")
@@ -97,6 +99,51 @@ def last_message(entries):
     for entry in reversed(entries):
         if entry.get("type") == "message":
             return entry
+    return None
+
+
+def run_provider(entries):
+    """The provider of the last model call, so the account check asks about the right pool."""
+    for entry in reversed(entries):
+        msg = entry.get("message") or {}
+        if entry.get("type") == "message" and msg.get("role") == "assistant" and msg.get("provider"):
+            return msg["provider"]
+        if entry.get("type") == "model_change" and entry.get("provider"):
+            return entry["provider"]
+    return None
+
+
+def pool_bin():
+    found = shutil.which("pi-pool") or str(Path.home() / ".config" / "pi-pool" / "bin" / "pi-pool")
+    return found if Path(found).exists() else None
+
+
+def account_blocker(root_session_id, provider, cache):
+    """Why the account this tree's next request gets cannot serve, or None when it can (or there is no pool to ask).
+
+    A run that stopped on a rate limit or a used-up account fails again at once if it resumes on the same account,
+    so it stays off the list until pi-pool has an account for it.
+    """
+    tool = pool_bin()
+    if not tool or provider not in ("anthropic", "openai-codex"):
+        return None
+    try:
+        if provider not in cache:
+            listed = subprocess.run([tool, "ls", "--json", "--provider", provider], capture_output=True, text=True, timeout=30)
+            cache[provider] = {row["id"]: row for row in json.loads(listed.stdout).get("rows", [])} if listed.returncode == 0 else None
+        rows = cache[provider]
+        who = subprocess.run([tool, "who", "--json", "--session", root_session_id], capture_output=True, text=True, timeout=30)
+        resolved = (json.loads(who.stdout).get("providers") or {}).get(provider) if who.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if rows is None or resolved is None:
+        return None
+    account = resolved.get("account")
+    if not account:
+        return f"no {provider} account can serve"
+    row = rows.get(account)
+    if row and not row.get("usable"):
+        return f"{row.get('email')} is {row.get('reason') or 'not usable'}"
     return None
 
 
@@ -194,6 +241,7 @@ def save_state(path, state, now, keep_minutes):
 def find_paused(sessions, since_minutes, state, now):
     by_id = {short_id(s): s for s in sessions}
     tails = {}
+    accounts = {}
 
     def entries_of(sid):
         if sid not in tails:
@@ -225,6 +273,10 @@ def find_paused(sessions, since_minutes, state, now):
             redriven = last_user_at(entries_of(head))
             if redriven and redriven > ts:
                 continue  # someone sent the head a message after the interruption
+        root = by_id.get(head, s)
+        blocker = account_blocker(root.get("sessionId") or root["id"], run_provider(entries_of(sid)), accounts)
+        if blocker:
+            continue  # resuming now would fail on the same account; it shows again once pi-pool has one
         paused.append({
             "id": sid,
             # The short id changes when a session is reloaded; the state file keys by the full session id.

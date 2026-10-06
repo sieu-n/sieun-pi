@@ -50,7 +50,8 @@ class ResumePausedTests(unittest.TestCase):
     def run_resume(self, dry_run=False, include_children=False):
         args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=dry_run,
                                   include_children=include_children, state=str(self.root / "state.json"))
-        with patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+        with patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}), \
+                patch.object(resume_paused, "pool_bin", return_value=None):
             return resume_paused.resume(self.sessions, args, NOW)
 
     def test_network_and_sign_in_errors_count_other_errors_do_not(self):
@@ -116,6 +117,13 @@ class ResumePausedTests(unittest.TestCase):
                      parent="01a0edbc-9c2c-76a3-9e56-f1e8headheadhead"[-36:].replace("f1e8headheadhead", "") + "headheadhead")
         report = self.run_resume(dry_run=True)
         self.assertEqual([(p["id"], p["reason"], p["head"]) for p in report["paused"]], [("childchild01", "empty_reply", "headheadhead")])
+
+    def test_rate_limits_count_only_once_the_account_can_serve(self):
+        self.session("aaaaaaaaaaaa", [assistant(30, "error", "Provider rate limit exceeded (rate_limit_error, 429): would exceed")])
+        with patch.object(resume_paused, "account_blocker", return_value="claude3@slack.green is depleted"):
+            self.assertEqual(self.run_resume(dry_run=True)["paused"], [])
+        with patch.object(resume_paused, "account_blocker", return_value=None):
+            self.assertEqual([p["id"] for p in self.run_resume(dry_run=True)["paused"]], ["aaaaaaaaaaaa"])
 
     def test_old_interruptions_are_ignored(self):
         self.session("aaaaaaaaaaaa", [assistant(3000, "error", "Connection error.")], lastActivityAt=at(3000))

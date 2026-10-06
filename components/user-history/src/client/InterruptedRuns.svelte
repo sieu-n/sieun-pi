@@ -15,7 +15,8 @@
   function why(run: InterruptedRun): string {
     if (run.reason === "cut_off") return "cut off mid-turn";
     if (run.reason === "empty_reply") return "empty model reply";
-    return /api key/i.test(run.error) ? "sign-in failed" : "network error";
+    if (/api key/i.test(run.error)) return "sign-in failed";
+    return /rate.?limit|429|usage limit/i.test(run.error) ? "rate limited" : /overloaded|529|50[234]|server error/i.test(run.error) ? "provider error" : "network error";
   }
 
   async function check(): Promise<void> {
