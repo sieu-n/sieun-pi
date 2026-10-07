@@ -1,4 +1,5 @@
 import { parseArtifactTarget, normalizeArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
+import { findItem, walkItems } from "../shared/chat-board.ts";
 import type { ArtifactLink, ChatBoard, OwnerTodo, PlanItem, PlanStatus } from "../shared/types.ts";
 
 export const PLAN_STATUS_LABEL: Record<PlanStatus, string> = { todo: "To do", doing: "In progress", done: "Done", blocked: "Blocked", dropped: "Dropped" };
@@ -53,13 +54,52 @@ export function treeRows<T extends { id: string; children: T[] }>(items: readonl
   return rows;
 }
 
-/** The dot color of an item's id chip: the same muted color on every reload, from a hash of the chat id and the item id. */
-export const ID_PALETTE: readonly string[] = ["#c56b7c", "#c98a48", "#a89c38", "#67a35b", "#45a48d", "#4b9ac6", "#7b86d0", "#a878c4", "#c26ea7", "#8e8e8e"];
-export function idColor(chatId: string, itemId: string): string {
+/**
+ * The board's ids with a short title each, for the mention chips in chat text (`p<n>` plan steps, `s<n>` notes). `key` changes with every
+ * board op, so a render cache can key on it. Null for a chat with no board yet.
+ */
+export interface BoardIndex { chatId: string; key: string; titles: Map<string, string> }
+export function boardIndex(chatId: string, board: ChatBoard | null | undefined): BoardIndex | null {
+  if (!board) return null;
+  const titles = new Map<string, string>();
+  const add = (item: { id: string; text: string }) => titles.set(item.id, shortTitle(item.text));
+  walkItems(board.plan, add);
+  walkItems(board.scratch, add);
+  return { chatId, key: `${chatId}:${board.rev}`, titles };
+}
+/** An item's text cut for a tooltip: the first 60 characters. */
+export const shortTitle = (text: string): string => text.length > 60 ? text.slice(0, 59).trimEnd() + "\u2026" : text;
+
+/** Every item with children, in reading order: what the plan view's collapse-all folds. */
+export function parentIds<T extends { id: string; children: T[] }>(items: readonly T[]): string[] {
+  const ids: string[] = [];
+  walkItems(items, item => { if (item.children.length) ids.push(item.id); });
+  return ids;
+}
+/**
+ * What the plan view does to show `focus`: the parents to unfold (its ancestors), whether done items must show (the step or one above it is
+ * done or dropped), and which section holds it. Null when neither tree has the id.
+ */
+export interface FocusPlan { section: "plan" | "notes"; unfold: string[]; showDone: boolean }
+export function focusPlan(board: ChatBoard, focus: string): FocusPlan | null {
+  const step = findItem(board.plan, focus);
+  if (step) return { section: "plan", unfold: step.ancestors.map(item => item.id), showDone: [...step.ancestors, step.item].some(isFinished) };
+  const note = findItem(board.scratch, focus);
+  return note ? { section: "notes", unfold: note.ancestors.map(item => item.id), showDone: false } : null;
+}
+
+/**
+ * The dot color of an item's id chip: one of ID_COLORS muted colors, the same on every reload, from a hash of the chat id and the item id.
+ * The colors live in app.css (`.id-0` to `.id-9` set `--dot`), so rendered HTML can carry the color as a class: the page's CSP has no
+ * inline styles.
+ */
+export const ID_COLORS = 10;
+export function idIndex(chatId: string, itemId: string): number {
   let hash = 0x811c9dc5;
   for (const char of `${chatId}:${itemId}`) { hash ^= char.codePointAt(0)!; hash = Math.imul(hash, 0x01000193) >>> 0; }
-  return ID_PALETTE[hash % ID_PALETTE.length]!;
+  return hash % ID_COLORS;
 }
+export const idClass = (chatId: string, itemId: string): string => `id-${idIndex(chatId, itemId)}`;
 
 /** For you: the open items, newest first, and the done ones behind the "Done (N)" fold, newest first. */
 export function groupTodos(todos: readonly OwnerTodo[]): { open: OwnerTodo[]; done: OwnerTodo[] } {

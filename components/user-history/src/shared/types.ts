@@ -203,12 +203,28 @@ export interface SessionRow {
   chat?: true;
   /** Chats only: the subagent sessions under it, for the sidebar tree. A chat's `unread` ignores `working`, so a job report shows while other jobs run. */
   jobs?: ChatJob[];
+  /** Chats only: the check-in schedule the owner set (`<dataDir>/check-in-settings.json`). */
+  checkIn?: CheckInState;
   /**
    * Who started the thread: a person through this chat (`threads.json`, `chats.json`) or an agent through `rlm.create_session` (its name precedes
    * `session_state` in the session file). The sidebar hides agent-created rows by default. Absent reads as user.
    */
   origin?: "user" | "agent";
 }
+/**
+ * A chat's check-in schedule in the sessions stream: its interval, the pause in force (`pausedUntil`, "forever" until resumed, null when none) and
+ * when the next one runs (null while paused until resumed; after a timed pause it can be later than the pause end).
+ */
+export interface CheckInState { everyMs: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null }
+/** `GET api/threads/<id>/check-in`: the state and the last check-in this service ran (null before its first). */
+export interface CheckInView extends CheckInState { lastAt: number | null }
+/** The pause the owner picks: an hour, until the next 09:00 local, or until resumed. */
+export type CheckInPause = "1h" | "tomorrow" | "forever";
+export const CHECK_IN_PAUSES: readonly CheckInPause[] = ["1h", "tomorrow", "forever"];
+/** The intervals the owner may set, in whole minutes; the control offers 1, 5, 15, 30 and 60 and takes any other in range. */
+export const CHECK_IN_MIN_MINUTES = 1;
+export const CHECK_IN_MAX_MINUTES = 240;
+export const CHECK_IN_PRESET_MINUTES: readonly number[] = [1, 5, 15, 30, 60];
 /** One job of a chat in the sessions stream: a subagent session whose parent is the chat. `name` is its session name, what the chat and the plan call it. */
 export interface ChatJob {
   id: string; childId?: string; name: string; status: "running" | "idle" | "saved";

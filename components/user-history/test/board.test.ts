@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardActionText, countItems, groupTodos, ID_PALETTE, idColor, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, openAgentTodos, planProgress, planTotals, ROOT, treeRows, type TreeRow } from "../src/client/board.ts";
+import { boardActionText, countItems, focusPlan, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, openAgentTodos, parentIds, planProgress, planTotals, ROOT, shortTitle, treeRows, type TreeRow } from "../src/client/board.ts";
 import type { ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../src/shared/types.ts";
 
 const item = (id: string, status: PlanItem["status"], children: PlanItem[] = []): PlanItem => ({ id, text: id, status, children });
@@ -38,15 +38,15 @@ test("treeRows over notes never hides anything; countItems and planTotals count 
   assert.deepEqual(planTotals([]), { done: 0, total: 0 });
 });
 
-test("idColor is one of ten muted colors, the same for a chat and item on every call, and differs across items of one chat", () => {
-  assert.equal(ID_PALETTE.length, 10);
-  for (const color of ID_PALETTE) assert.match(color, /^#[0-9a-f]{6}$/);
-  const first = idColor("chat-a", "p1");
-  assert.equal(idColor("chat-a", "p1"), first);
-  assert.ok(ID_PALETTE.includes(first));
-  const colors = new Set(Array.from({ length: 30 }, (_, index) => idColor("chat-a", `p${index + 1}`)));
-  assert.ok(colors.size >= 6, `30 ids of one chat spread over ${colors.size} colors`);
-  assert.ok(Array.from({ length: 30 }, (_, index) => idColor(`chat-${index}`, "p1")).some(color => color !== first), "the chat id is part of the hash");
+test("idIndex is one of ten palette slots, the same for a chat and item on every call, and differs across items of one chat", () => {
+  assert.equal(ID_COLORS, 10);
+  const first = idIndex("chat-a", "p1");
+  assert.equal(idIndex("chat-a", "p1"), first);
+  assert.ok(Number.isInteger(first) && first >= 0 && first < ID_COLORS);
+  assert.equal(idClass("chat-a", "p1"), `id-${first}`);
+  const slots = new Set(Array.from({ length: 30 }, (_, index) => idIndex("chat-a", `p${index + 1}`)));
+  assert.ok(slots.size >= 6, `30 ids of one chat spread over ${slots.size} colors`);
+  assert.ok(Array.from({ length: 30 }, (_, index) => idIndex(`chat-${index}`, "p1")).some(slot => slot !== first), "the chat id is part of the hash");
 });
 
 test("planProgress counts every step below a goal except dropped ones", () => {
@@ -105,4 +105,21 @@ test("offeredLink takes the last word of a draft that is a link target and leave
   assert.deepEqual(offeredLink("/Users/me/notes.md"), { text: "", target: "file:/Users/me/notes.md" });
   assert.deepEqual(offeredLink("http://localhost:5176/page/sessions/2026/10/06/audit"), { text: "", target: "wiki:sessions/2026/10/06/audit" });
   assert.equal(offeredLink("plain words only"), null);
+});
+
+test("parentIds and focusPlan: collapse-all folds every parent; a focus unfolds its ancestors, shows done when it or one above it is finished, and names its section", () => {
+  const plan = [item("p1", "doing", [item("p2", "done", [item("p3", "done")]), item("p4", "todo", [item("p5", "todo")])]), item("p6", "dropped", [item("p7", "todo")])];
+  const scratch = [note("s1", [note("s2", [note("s3")])]), note("s4")];
+  const board: ChatBoard = { v: 2, rev: 1, plan, scratch, todos: [], updatedAt: "" };
+  assert.deepEqual(parentIds(plan), ["p1", "p2", "p4", "p6"]);
+  assert.deepEqual(parentIds(scratch), ["s1", "s2"]);
+  assert.deepEqual(focusPlan(board, "p5"), { section: "plan", unfold: ["p1", "p4"], showDone: false });
+  assert.deepEqual(focusPlan(board, "p3"), { section: "plan", unfold: ["p1", "p2"], showDone: true }, "a done step shows the done items");
+  assert.deepEqual(focusPlan(board, "p7"), { section: "plan", unfold: ["p6"], showDone: true }, "an open step under a dropped goal needs the done items shown");
+  assert.deepEqual(focusPlan(board, "p1"), { section: "plan", unfold: [], showDone: false });
+  assert.deepEqual(focusPlan(board, "s3"), { section: "notes", unfold: ["s1", "s2"], showDone: false });
+  assert.equal(focusPlan(board, "p99"), null);
+  assert.equal(shortTitle("short"), "short");
+  assert.equal(shortTitle("a".repeat(60)), "a".repeat(60));
+  assert.equal(shortTitle("a".repeat(61)), "a".repeat(59) + "\u2026");
 });

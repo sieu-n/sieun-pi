@@ -13,6 +13,7 @@
   import { triggerBody } from "../shared/turns.ts";
   import { anchorStamp, permalink } from "./permalink.ts";
   import { diffLines, wikiBlocks, wikiUrl, type ReaderView } from "./reader.ts";
+  import { boardIndex } from "./board.ts";
   import type { ChildUsage } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -31,6 +32,8 @@
   const snapshot = $derived(thread ? store.thread(thread)?.state ?? null : null);
   const entry = $derived(thread ? store.thread(thread) : undefined);
   const cwd = $derived(snapshot?.info.cwd ?? "");
+  /** Board ids in a chat's messages render as mention chips that open the chat's plan view. */
+  const mentions = $derived(thread ? boardIndex(thread, snapshot?.board) : null);
   /** A message of another thread needs that thread open; it is let go on close unless it is the one on screen. */
   $effect(() => {
     const id = thread;
@@ -164,13 +167,14 @@
     const click = proseClick(event);
     if (click?.kind === "image") image = { src: click.src, alt: click.alt };
     else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, thread ?? store.selectedId ?? ""); }
+    else if (click?.kind === "mention" && thread) { const chat = thread; onclose(); store.openPlan(chat, click.id); }
   }
   const dirOf = (path: string) => path.replace(/\/[^/]*$/, "");
 </script>
 
 {#snippet prose(text: string, base: string)}
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="prose reader-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html: renderMarkdown(text, base), live: false }}>{@html renderMarkdown(text, base)}</div>
+  <div class="prose reader-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html: renderMarkdown(text, base, mentions), live: false }}>{@html renderMarkdown(text, base, mentions)}</div>
 {/snippet}
 
 {#snippet loading()}<p class="snapshot"><span class="spinner tiny"></span> Opening</p>{/snippet}
@@ -231,7 +235,9 @@
       {#if entry?.error && !snapshot}{@render failure(entry.error)}
       {:else if !snapshot}{@render loading()}
       {:else if !message}<p class="snapshot">That link points at a message this thread does not have.</p>
-      {:else if message.kind === "user"}<div class="said">{@html renderInline(message.text)}</div>
+      {:else if message.kind === "user"}
+        <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+        <div class="said" onclick={onProseClick}>{@html renderInline(message.text, mentions)}</div>
       {:else if message.kind === "agent" || message.kind === "notes"}{@render prose(message.text, cwd)}
       {:else if message.kind === "job"}{@render prose(body(message), cwd)}
       {:else}<p class="snapshot">{message.text}</p>{/if}

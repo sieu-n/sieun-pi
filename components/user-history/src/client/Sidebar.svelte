@@ -222,7 +222,7 @@
       <ul class="tree-jobs" aria-label="Jobs of {row.name}">
         {#each jobsOf(row) as job (job.key)}
           <li>
-            <button type="button" class="tree-job" title={[job.name, job.activity].filter(Boolean).join("\n")} onclick={() => store.openJob(row.id, job.open)}>
+            <button type="button" class="tree-job" class:open={store.jobDrawer?.chat === row.id && store.jobDrawer.job === job.open} title={[job.name, job.activity].filter(Boolean).join("\n")} onclick={() => store.openJob(row.id, job.open)}>
               <span class="tree-state">{#if job.running}<span class="spinner tiny"></span>{:else}<span class="tree-mark" class:saved={job.saved} class:failed={job.failed}></span>{/if}</span>
               <span class="tree-name">{job.name}</span>
               {#if job.activity}<span class="tree-activity" class:failed={job.failed}>{job.activity}</span>{/if}
@@ -397,12 +397,14 @@
   .link.tree { padding-left: 22px; }
   .tree-toggle { position: absolute; left: 2px; top: 6px; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; color: var(--text-faint); }
   .tree-toggle:hover { background: var(--bg-active); color: var(--text); }
-  .tree-jobs { list-style: none; margin: 0 0 2px; padding: 0 0 0 20px; }
+  /* Job rows sit 14 px in from the chat's title, the mark column centered under its first letters; the open job's row stays marked while its drawer shows. */
+  .tree-jobs { list-style: none; margin: 0 0 4px; padding: 0 0 0 14px; }
   .tree-job { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 2px 8px 2px 4px; border-radius: var(--radius-small); text-align: left; font-size: 12.5px; line-height: 18px; }
   .tree-job:hover { background: var(--rail-hover); }
+  .tree-job.open { background: var(--rail-active); }
   .tree-state { display: inline-flex; flex: none; width: 12px; justify-content: center; }
   .tree-mark { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
-  .tree-mark.saved { background: transparent; border: 1.5px solid var(--border-strong); border-style: dashed; }
+  .tree-mark.saved { background: var(--border-strong); }
   .tree-mark.failed { background: var(--danger); }
   .tree-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tree-activity { flex: 1; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-faint); }

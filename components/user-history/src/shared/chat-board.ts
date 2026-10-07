@@ -68,6 +68,8 @@ function find<T extends Tree<T>>(items: readonly T[], id: string, above: T[] = [
   }
   return null;
 }
+/** The client's board views share the walk and the find: the mention index, the plan view's collapse-all and focus path. */
+export { walk as walkItems, find as findItem };
 /** The tree with the item `id` replaced by `change(item)` (null removes it with its children). */
 function map<T extends Tree<T>>(items: readonly T[], id: string, change: (item: T) => T | null): T[] {
   const out: T[] = [];
@@ -324,11 +326,11 @@ function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInpu
 }
 
 /**
- * The board as compact text for the agent: this chat's own link target, the plan as an indented checklist, the owner's todos with their choices
- * and answers, then the scratchpad as an indented bullet list with each note's links.
+ * The board as compact text for the agent: this chat's own link target and its check-in line, the plan as an indented checklist, the owner's todos
+ * with their choices and answers, then the scratchpad as an indented bullet list with each note's links.
  */
-export function renderBoard(board: ChatBoard | null, sessionId?: string): string {
-  const self = sessionId ? [`This chat: thread:${sessionId}`] : [];
+export function renderBoard(board: ChatBoard | null, sessionId?: string, checkIn?: string): string {
+  const self = [...(sessionId ? [`This chat: thread:${sessionId}`] : []), ...(checkIn ? [checkIn] : [])];
   if (!board) return [...self, "The board is empty: no plan, no todos, no scratchpad."].join("\n");
   const mark: Record<PlanStatus, string> = { todo: "[ ]", doing: "[~]", done: "[x]", blocked: "[!]", dropped: "[-]" };
   const lines = [...self, `Board rev ${board.rev}, updated ${board.updatedAt}`, "Plan:"];

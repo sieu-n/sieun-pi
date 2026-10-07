@@ -2,11 +2,13 @@
   import { untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, nextIds } from "../shared/chat-board.ts";
   import type { ArtifactLink, BoardOp, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../shared/types.ts";
-  import { countItems, groupTodos, idColor, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, planProgress, planTotals, PLAN_STATUS_LABEL, treeRows, type TreeRow, type TreeView } from "./board.ts";
+  import { countItems, groupTodos, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, planProgress, planTotals, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
   import Checkbox from "./ui/Checkbox.svelte";
   import Icon from "./Icon.svelte";
+  import IdChip from "./IdChip.svelte";
+  import PlanMark from "./PlanMark.svelte";
   import { tooltip } from "./ui/tooltip.ts";
 
   /**
@@ -16,8 +18,10 @@
    * each item carries its id chip (the id the chat uses, with a color hashed from the chat and item ids; a click copies the id).
    * A row reads as one paragraph: the fold, the status mark and the chip sit inline before the text, and a wrapped line comes back to the row's
    * left edge. A note's link opens through `store.openArtifact` (the reader, the thread, or a tab); the text of a plan step with an owner
-   * (`item.job`) is a link that `onjob` resolves (the job drawer, or the owner's own thread). `checkIn` is the server's 5-minute tick line
-   * under the cards. `apply` gets the board after the owner's ops and the ops themselves; it resolves false when the server refused them.
+   * (`item.job`) is a link that `onjob` resolves (the job drawer, or the owner's own thread). The Plan and Notes headers carry an "Open plan"
+   * button, and a double click on a row or its hover "open" button opens the plan view (`store.openPlan`) on that item. `checkIn` is the
+   * server's 5-minute tick line under the cards. `apply` gets the board after the owner's ops and the ops themselves; it resolves false when
+   * the server refused them.
    */
   let { id, board, checkIn, onjob, apply }: {
     id: string; board: ChatBoard | null; checkIn: { text: string; on: boolean }; onjob: (name: string) => void; apply: (next: ChatBoard, ops: BoardOp[]) => Promise<boolean>;
@@ -33,12 +37,9 @@
   const planRows = $derived(treeRows(board?.plan ?? [], view, isFinished));
   const noteRows = $derived(treeRows(scratch, view));
   const fold = (itemId: string) => ui.setBoardItemOpen(id, itemId, !view.open(itemId));
-  let copied = $state<string | null>(null);
-  function copyId(itemId: string): void {
-    void navigator.clipboard?.writeText(itemId);
-    copied = itemId;
-    setTimeout(() => { if (copied === itemId) copied = null; }, 1200);
-  }
+  const openPlan = (focus: string | null = null) => store.openPlan(id, focus);
+  /** A double click on a row opens the plan view on it; one that lands on a control (the chip, the fold, a link) is that control's own. */
+  const onRowDblClick = (itemId: string) => (event: MouseEvent) => { if (!(event.target instanceof Element && event.target.closest("button, a, input"))) openPlan(itemId); };
 
   function send(ops: BoardOp[]): Promise<boolean> {
     let next = board ?? emptyBoard(new Date().toISOString());
@@ -110,20 +111,24 @@
   const onStepKey = (job: string) => (event: KeyboardEvent) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onjob(job); } };
 </script>
 
-{#snippet card(key: "plan" | "foryou" | "notes", title: string, count: string, open: boolean, toggle: () => void, body: Snippet)}
+{#snippet card(key: "plan" | "foryou" | "notes", title: string, count: string, open: boolean, toggle: () => void, body: Snippet, expandable = false)}
   <section class="island {key}" class:open>
-    <button type="button" class="island-head" aria-expanded={open} onclick={toggle}>
-      <span class="island-title">{title}</span>
-      {#if count}<span class="island-count">{count}</span>{/if}
+    <div class="island-head">
+      <button type="button" class="island-toggle" aria-expanded={open} onclick={toggle}>
+        <span class="island-title">{title}</span>
+        {#if count}<span class="island-count">{count}</span>{/if}
+      </button>
+      {#if expandable}
+        <button type="button" class="icon-button small island-open" aria-label="Open the plan view" use:tooltip={"Open plan"} onclick={() => openPlan()}><Icon name="expandBox" size={13} /></button>
+      {/if}
       <span class="chev" class:open><Icon name="chevronDown" size={13} /></span>
-    </button>
+    </div>
     {#if open}<div class="island-body">{@render body()}</div>{/if}
   </section>
 {/snippet}
 
-{#snippet idChip(itemId: string)}
-  <button type="button" class="id-chip" class:copied={copied === itemId} style:--dot={idColor(id, itemId)} aria-label="Copy the id {itemId}"
-    title={copied === itemId ? "Copied" : `Copy ${itemId}`} onclick={() => copyId(itemId)}><span class="dot" aria-hidden="true"></span>{itemId}</button>
+{#snippet openRow(itemId: string)}
+  <button type="button" class="icon-button small row-open" aria-label="Open {itemId} in the plan view" use:tooltip={"Open in plan view"} onclick={() => openPlan(itemId)}><Icon name="expandBox" size={12} /></button>
 {/snippet}
 
 {#snippet foldButton(item: { id: string; text: string; children: unknown[] }, open: boolean)}
@@ -146,20 +151,18 @@
     {@const item = row.item}
     {@const progress = planProgress(item)}
     {@const open = view.open(item.id)}
-    <li class="plan-item {item.status}" style:--depth={row.depth}>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <li class="plan-item {item.status}" style:--depth={row.depth} ondblclick={onRowDblClick(item.id)}>
       <p class="plan-line">
         {@render foldButton(item, open)}
-        <span class="status" title={PLAN_STATUS_LABEL[item.status]} role="img" aria-label={PLAN_STATUS_LABEL[item.status]}>
-          {#if item.status === "doing"}<span class="spinner tiny"></span>
-          {:else if item.status === "done"}<span class="mark done"><Icon name="check" size={11} /></span>
-          {:else}<span class="mark {item.status}"></span>{/if}
-        </span>
-        {@render idChip(item.id)}
+        <PlanMark status={item.status} />
+        <IdChip chat={id} id={item.id} />
         {#if item.job}
           {@const job = item.job}
           <span class="plan-text linked" role="button" tabindex="0" title="Open {job}" onclick={() => onjob(job)} onkeydown={onStepKey(job)}>{item.text}</span>
         {:else}<span class="plan-text">{item.text}</span>{/if}
         {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
+        {@render openRow(item.id)}
       </p>
       {#if item.note}<p class="plan-note">{item.note}</p>{/if}
     </li>
@@ -203,11 +206,12 @@
   {#if row.kind === "item"}
     {@const item = row.item}
     {@const open = view.open(item.id)}
-    <li class="note" style:--depth={row.depth}>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <li class="note" style:--depth={row.depth} ondblclick={onRowDblClick(item.id)}>
       <div class="note-body">
         <p class="note-text">
           {@render foldButton(item, open)}
-          {@render idChip(item.id)}
+          <IdChip chat={id} id={item.id} />
           {item.text}{#if item.children.length && !open}<span class="progress">{item.children.length} under it</span>{/if}
         </p>
         {#if item.links.length}
@@ -225,6 +229,7 @@
         {/if}
       </div>
       <span class="note-actions">
+        {@render openRow(item.id)}
         <button type="button" class="icon-button small remove" aria-label="Add a note under {item.text}" use:tooltip={"Add a note under this"} onclick={() => addUnder(item)}><Icon name="plus" /></button>
         <button type="button" class="icon-button small remove" aria-label="Remove note {item.text}" onclick={() => void send([{ op: "scratch_remove", id: item.id }])}><Icon name="x" /></button>
       </span>
@@ -237,7 +242,7 @@
     {#if noteParent || noteLinks.length}
       <div class="chips pending">
         {#if noteParent}
-          <span class="link-chip under" title="The new note goes under {noteParent.id}">under {@render idChip(noteParent.id)}
+          <span class="link-chip under" title="The new note goes under {noteParent.id}">under <IdChip chat={id} id={noteParent.id} />
             <button type="button" class="chip-x" aria-label="Add at the top level instead" onclick={() => { noteParent = null; }}><Icon name="x" size={10} /></button></span>
         {/if}
         {#each noteLinks as link, index (link.target + index)}
@@ -280,9 +285,9 @@
     <p class="empty">The plan, the chat's questions and its notes show up here once it starts work.</p>
     {@render addNoteField()}
   {:else}
-    {@render card("plan", "Plan", totals.total ? `${totals.done} of ${totals.total} done` : "", planOpen, () => ui.setBoardCard("plan", !planOpen), planBody)}
+    {@render card("plan", "Plan", totals.total ? `${totals.done} of ${totals.total} done` : "", planOpen, () => ui.setBoardCard("plan", !planOpen), planBody, true)}
     {@render card("foryou", "For you", openCount ? `${openCount} open` : "", forYouOpen, () => { forYouOpen = !forYouOpen; }, forYouBody)}
-    {@render card("notes", "Notes", noteCount ? String(noteCount) : "", notesOpen, () => ui.setBoardCard("notes", !notesOpen), notesBody)}
+    {@render card("notes", "Notes", noteCount ? String(noteCount) : "", notesOpen, () => ui.setBoardCard("notes", !notesOpen), notesBody, true)}
   {/if}
   <p class="check-in" class:on={checkIn.on}><Icon name="bolt" size={12} /><span>{checkIn.text}</span></p>
 </div>
@@ -290,12 +295,19 @@
 <style>
   .board { display: flex; flex-direction: column; gap: 10px; padding: 10px 10px 20px; font-size: 13px; }
   .island { border-radius: var(--radius); background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow-small); }
-  .island-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 10px 9px 12px; border-radius: var(--radius); text-align: left; }
+  /* The header: the title button stretches over the whole row (its ::after), so the chevron area folds too; the Open plan button sits above it. */
+  .island-head { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 8px 0 0; border-radius: var(--radius); }
   .island-head:hover { background: var(--bg-hover); }
   .island.open > .island-head { border-radius: var(--radius) var(--radius) 0 0; }
+  .island-toggle { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; padding: 9px 0 9px 12px; text-align: left; border-radius: inherit; }
+  .island-toggle::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+  .island-toggle:focus-visible { outline: none; }
+  .island-toggle:focus-visible::after { outline: 2px solid var(--accent); outline-offset: -2px; }
   .island-title { font-size: 11.5px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .island-count { font-size: 11px; font-weight: 500; color: var(--accent-bold); font-variant-numeric: tabular-nums; }
-  .island-head .chev { margin-left: auto; color: var(--text-faint); }
+  .icon-button.island-open { position: relative; z-index: 1; width: 22px; height: 22px; color: var(--text-faint); opacity: 0; }
+  .island-head:hover .island-open, .island-open:focus-visible, .island-head:focus-within .island-open { opacity: 1; }
+  .island-head .chev { color: var(--text-faint); }
   .island-body { padding: 2px 12px 12px; }
   .chev { display: inline-flex; transform: rotate(-90deg); transition: transform 0.12s; }
   .chev.open { transform: none; }
@@ -309,22 +321,21 @@
   .plan-line { margin: 0; padding: 3px 0 3px min(calc(var(--depth) * 14px), 25%); line-height: 18px; overflow-wrap: anywhere; }
   .fold { display: inline-flex; vertical-align: top; width: 14px; height: 18px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
-  .status { display: inline-flex; vertical-align: top; width: 14px; height: 18px; align-items: center; justify-content: center; }
-  .mark { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--border-strong); box-sizing: border-box; }
-  .mark.done { width: 13px; height: 13px; border: 0; color: color-mix(in srgb, var(--success) 70%, var(--text-muted)); }
-  /* Blocked: a hollow ring with a slash, in the muted text color; the step text keeps its color. */
-  .mark.blocked { width: 10px; height: 10px; border-color: var(--text-muted); }
-  .mark.blocked::after { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1.5px; margin-left: -0.75px; background: var(--text-muted); transform: rotate(45deg); }
-  .mark.dropped { border-style: dashed; opacity: 0.6; }
   .plan-text.linked { cursor: pointer; border-radius: 3px; }
   .plan-text.linked:hover, .plan-text.linked:focus-visible { text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 0.16em; }
   .plan-item.done > .plan-line > .plan-text { color: var(--text-muted); }
   .plan-item.dropped > .plan-line > .plan-text { color: var(--text-faint); text-decoration: line-through; }
   .progress { margin-left: 4px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .id-chip { display: inline-flex; vertical-align: top; align-items: center; gap: 4px; height: 18px; padding: 0 3px; margin: 0 -1px; border-radius: 4px; font-family: var(--mono); font-size: 11px; line-height: 18px; color: var(--text); opacity: 0.6; font-variant-numeric: tabular-nums; }
-  .id-chip:hover, .id-chip:focus-visible { opacity: 1; background: var(--bg-hover); }
-  .id-chip.copied { opacity: 1; color: var(--accent-bold); }
-  .id-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot); }
+  /*
+   * The "open in plan view" button: on a plan row it sits over the row's top right corner, out of the text flow (an inline box that is
+   * invisible still wraps onto an empty line when the text fills the row), with a fade so it reads over a long first line; on a note it is
+   * one of the row's action buttons. Both show on hover and focus.
+   */
+  .plan-item { position: relative; }
+  .plan-item > .plan-line > .row-open { position: absolute; top: 3px; right: -4px; width: 20px; height: 18px; padding-left: 2px; border-radius: 4px; color: var(--text-faint); background: var(--bg-elevated); box-shadow: -8px 0 6px -2px var(--bg-elevated); opacity: 0; }
+  .icon-button.row-open :global(svg) { width: 12px; height: 12px; }
+  .note-actions > .row-open { opacity: 0; }
+  .plan-item:hover > .plan-line > .row-open, .note:hover > .note-actions > .row-open, .plan-line > .row-open:focus-visible, .note-actions > .row-open:focus-visible { opacity: 1; }
   .finished { list-style: none; padding-left: calc(min(calc(var(--depth) * 14px), 25%) + 14px); }
   .finished .done-fold { margin-top: 2px; }
   .plan-note { margin: 0; padding: 0 0 4px min(calc(var(--depth) * 14px), 25%); font-size: 12px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
@@ -357,14 +368,10 @@
   .note { display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
   .note-actions { display: inline-flex; flex: none; }
   .link-chip.under { gap: 2px; padding-right: 4px; }
-  .link-chip.under .id-chip { opacity: 1; }
+  .link-chip.under :global(.id-chip) { opacity: 1; }
   .note-body { flex: 1; min-width: 0; }
   .note-text { margin: 0; line-height: 18px; overflow-wrap: anywhere; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
-  .link-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 0 7px 0 6px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-sunken); font-size: 11.5px; line-height: 18px; color: var(--text-muted); }
-  button.link-chip:hover { border-color: var(--accent); color: var(--accent-bold); background: var(--accent-soft); }
-  .link-chip.broken { border-style: dashed; color: var(--text-faint); }
-  .chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip-x { display: inline-flex; margin: 0 -3px 0 0; padding: 2px; border-radius: 50%; color: var(--text-faint); }
   .chip-x:hover { color: var(--danger); background: var(--bg-hover); }
   .add-note { display: flex; flex-direction: column; gap: 5px; }

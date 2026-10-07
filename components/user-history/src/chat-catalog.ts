@@ -6,7 +6,7 @@ import type { ChatLabels } from "./chat-labels.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
-import type { ChatJob, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChatJob, CheckInState, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -189,7 +189,7 @@ export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, Ses
   return { ...(cost !== undefined ? { cost } : {}), running };
 }
 
-export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin; jobs?: ChatJob[] }
+export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin; jobs?: ChatJob[]; checkIn?: CheckInState }
 
 /** A chat's direct subagent sessions as sidebar jobs, running first, then by latest activity. */
 export function chatJobs(children: readonly SessionSummary[]): ChatJob[] {
@@ -244,7 +244,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     ...(cost !== undefined ? { cost } : {}),
     ...(working && extras.pulse ? { pulse: extras.pulse } : {}),
     ...(extras.schedule ? { schedule: extras.schedule } : {}),
-    ...(extras.chat ? { chat: true, jobs: extras.jobs ?? [] } : {}),
+    ...(extras.chat ? { chat: true, jobs: extras.jobs ?? [], ...(extras.checkIn ? { checkIn: extras.checkIn } : {}) } : {}),
     origin: extras.origin ?? "user",
   };
 }
@@ -296,7 +296,7 @@ export class Catalog {
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids">,
+  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns">,
     private readonly origins: ThreadOrigins) {
     this.client = new DaemonClient(socketPath);
     this.client.onMessage(message => {
@@ -413,7 +413,8 @@ export class Catalog {
   }
 
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
-    const [state, labels, chats] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null), this.chats.ids().catch(() => null)]);
+    const [state, labels, chats, checkIns] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null), this.chats.ids().catch(() => null),
+      this.chats.checkIns().catch(() => null)]);
     const originOf = await this.origins.resolver(chats ?? new Set());
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
@@ -423,9 +424,10 @@ export class Catalog {
         const schedule = this.schedules.get(row.sessionId);
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
         const subtree = subtreeOf(row, children);
+        const checkIn = checkIns?.get(row.sessionId);
         return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
           ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
-          ...(chats?.has(row.sessionId) ? { chat: true, jobs: chatJobs(children.get(row.sessionId) ?? []) } : {}),
+          ...(chats?.has(row.sessionId) ? { chat: true, jobs: chatJobs(children.get(row.sessionId) ?? []), ...(checkIn ? { checkIn } : {}) } : {}),
           ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));

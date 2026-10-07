@@ -3,8 +3,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInDigest, checkInDue, checkInMessage, checkInRecord, endedWithoutReport, jobFacts, readySteps, STALE_MS, STEP_STALE_MS, stepOwner, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
-import { applyBoardOp, emptyBoard, nextIds } from "../src/shared/chat-board.ts";
+import { activePause, checkInDigest, checkInDue, checkInLine, checkInMessage, checkInRecord, checkInSettings, endedWithoutReport, nextCheckIn, pauseEnd, validCheckInEvery, jobFacts, readySteps, STALE_MS, STEP_STALE_MS, stepOwner, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
+import { applyBoardOp, emptyBoard, nextIds, renderBoard } from "../src/shared/chat-board.ts";
 import { chatLines, turnStarter } from "../src/shared/chat-feed.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 
@@ -229,4 +229,34 @@ test("feed: a [check-in] or [job] line from the server folds into updates and st
   assert.equal(first?.kind === "job" && first.title, "What changed:");
   assert.equal(turnStarter(messages), "agent");
   assert.equal(turnStarter([...messages, { role: "user", content: "what's up?", timestamp: 4 }]), "owner");
+});
+
+test("check-in setting: the interval range, the pause ends, the next run, the board line, and the file", async () => {
+  for (const minutes of [1, 5, 15, 30, 60, 240, 7]) assert.equal(validCheckInEvery(minutes * 60_000), true, `${minutes} min`);
+  for (const ms of [0, 30_000, 241 * 60_000, 90_000, Number.NaN, "300000"]) assert.equal(validCheckInEvery(ms), false, String(ms));
+  const now = new Date(2026, 9, 8, 14, 30).getTime();
+  assert.equal(pauseEnd("1h", now), now + 3_600_000);
+  assert.equal(pauseEnd("tomorrow", now), new Date(2026, 9, 9, 9, 0).getTime());
+  assert.equal(pauseEnd("tomorrow", new Date(2026, 9, 8, 2, 0).getTime()), new Date(2026, 9, 8, 9, 0).getTime(), "before 09:00 it ends this morning");
+  assert.equal(pauseEnd("forever", now), "forever");
+
+  const every5 = { everyMs: 5 * 60_000 };
+  assert.equal(nextCheckIn(every5, now - 60_000, now), now + 4 * 60_000);
+  assert.equal(nextCheckIn({ ...every5, pausedUntil: "forever" }, now - 60_000, now), null);
+  assert.equal(nextCheckIn({ ...every5, pausedUntil: now + 3_600_000 }, now - 60 * 60_000, now), now + 3_600_000, "not before the pause ends");
+  assert.equal(nextCheckIn({ ...every5, pausedUntil: now - 1 }, now - 10 * 60_000, now), now - 5 * 60_000, "an expired pause is no pause");
+  assert.equal(activePause({ ...every5, pausedUntil: now - 1 }, now), null);
+
+  assert.equal(checkInLine(every5, now), "Check-in: every 5 min");
+  assert.equal(checkInLine({ everyMs: 60 * 60_000, pausedUntil: new Date(2026, 9, 9, 9, 0).getTime() }, now), "Check-in: paused until 2026-10-09 09:00");
+  assert.equal(checkInLine({ ...every5, pausedUntil: "forever" }, now), "Check-in: paused until the owner resumes it");
+  assert.equal(checkInLine({ ...every5, pausedUntil: now - 1 }, now), "Check-in: every 5 min");
+  assert.equal(renderBoard(null, "s-1", "Check-in: every 5 min").split("\n").slice(0, 3).join("|"), "This chat: thread:s-1|Check-in: every 5 min|The board is empty: no plan, no todos, no scratchpad.");
+
+  const path = join(await mkdtemp(join(tmpdir(), "check-in-settings-")), "check-in-settings.json");
+  const settings = checkInSettings(path);
+  assert.deepEqual(await settings.get("c1"), every5, "default 5 min");
+  await settings.update("c1", setting => ({ ...setting, everyMs: 15 * 60_000, pausedUntil: "forever" }));
+  assert.deepEqual(await checkInSettings(path).get("c1"), { everyMs: 15 * 60_000, pausedUntil: "forever" });
+  assert.deepEqual(await checkInSettings(path).all(), { c1: { everyMs: 15 * 60_000, pausedUntil: "forever" } });
 });

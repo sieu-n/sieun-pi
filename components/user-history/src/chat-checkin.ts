@@ -1,9 +1,9 @@
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { planJob } from "./shared/chat-board.ts";
-import type { ChatBoard, ChildAgent, PlanItem, PlanStatus, SessionRow } from "./shared/types.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type PlanItem, type PlanStatus, type SessionRow } from "./shared/types.ts";
 
 /**
- * The server's check-in for a chat: every CHECK_IN_MS it reads the chat's jobs (its subagents, and every thread an open plan step names as its
+ * The server's check-in for a chat: at its own interval (CHECK_IN_MS unless the owner set another, see CheckInSetting) it reads the chat's jobs (its subagents, and every thread an open plan step names as its
  * owner) and the board, compares them with what it saw last time, and steers the chat only with the changes that need the VP. No change, no
  * model call.
  */
@@ -245,5 +245,74 @@ export function checkInRecord(path: string): CheckInRecord {
     async get(id) { return (await snapshotJsonFile(file)).chats[id]; },
     async set(id, memory) { await transactJsonFile(file, state => { state.chats[id] = memory; }); },
     async forget(id) { await transactJsonFile(file, state => { delete state.chats[id]; }); },
+  };
+}
+
+/** The owner's check-in choices for one chat: its interval, and a pause until a time or until the owner resumes it. */
+export type CheckInPausedUntil = number | "forever";
+export interface CheckInSetting { everyMs: number; pausedUntil?: CheckInPausedUntil }
+export const DEFAULT_CHECK_IN: CheckInSetting = { everyMs: CHECK_IN_MS };
+
+/** An interval the owner may set: whole minutes from 1 to 240. */
+export const validCheckInEvery = (ms: unknown): ms is number =>
+  typeof ms === "number" && Number.isSafeInteger(ms) && ms % 60_000 === 0 && ms >= CHECK_IN_MIN_MINUTES * 60_000 && ms <= CHECK_IN_MAX_MINUTES * 60_000;
+
+/** When a pause the owner picks at `now` ends: in an hour, at the next 09:00 local time, or never. */
+export function pauseEnd(pause: CheckInPause, now: number): CheckInPausedUntil {
+  if (pause === "forever") return "forever";
+  if (pause === "1h") return now + 60 * 60_000;
+  const nine = new Date(now);
+  nine.setHours(9, 0, 0, 0);
+  if (nine.getTime() <= now) nine.setDate(nine.getDate() + 1);
+  return nine.getTime();
+}
+
+/** The pause still in force at `now`; an expired one is no pause. */
+export const activePause = (setting: CheckInSetting, now: number): CheckInPausedUntil | null =>
+  setting.pausedUntil === "forever" || (setting.pausedUntil !== undefined && setting.pausedUntil > now) ? setting.pausedUntil : null;
+
+/** When the chat's next check-in runs, given its last one: never while paused until resumed, not before a pause ends. Due when it is not after `now`. */
+export function nextCheckIn(setting: CheckInSetting, lastAt: number, now: number): number | null {
+  const pause = activePause(setting, now);
+  if (pause === "forever") return null;
+  return Math.max(lastAt + setting.everyMs, pause ?? 0);
+}
+
+const localTime = (at: number): string => {
+  const date = new Date(at);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+/** The line the chat_board tool shows the chat about its own check-in. */
+export function checkInLine(setting: CheckInSetting, now: number): string {
+  const pause = activePause(setting, now);
+  if (pause === "forever") return "Check-in: paused until the owner resumes it";
+  if (pause !== null) return `Check-in: paused until ${localTime(pause)}`;
+  return `Check-in: every ${setting.everyMs / 60_000} min`;
+}
+
+/** `<data dir>/check-in-settings.json`: `{ [chatId]: CheckInSetting }` through locked-json. Only the owner writes it, through the chat server. */
+export interface CheckInSettings {
+  all(): Promise<Record<string, CheckInSetting>>;
+  get(id: string): Promise<CheckInSetting>;
+  update(id: string, change: (setting: CheckInSetting) => CheckInSetting): Promise<CheckInSetting>;
+}
+function parseSetting(value: unknown): CheckInSetting | undefined {
+  if (!isRecord(value) || !validCheckInEvery(value.everyMs)) return undefined;
+  const until = value.pausedUntil;
+  const pausedUntil = until === "forever" || (typeof until === "number" && Number.isFinite(until)) ? until : undefined;
+  return { everyMs: value.everyMs, ...(pausedUntil !== undefined ? { pausedUntil } : {}) };
+}
+export function checkInSettings(path: string): CheckInSettings {
+  const file: JsonFile<Record<string, CheckInSetting>> = { path, label: "Check-in settings", initial: () => ({}), parse(value: unknown) {
+    return Object.fromEntries(Object.entries(isRecord(value) ? value : {}).flatMap(([id, entry]) => { const parsed = parseSetting(entry); return parsed ? [[id, parsed]] : []; }));
+  } };
+  return {
+    all: () => snapshotJsonFile(file),
+    async get(id) { return (await snapshotJsonFile(file))[id] ?? DEFAULT_CHECK_IN; },
+    async update(id, change) {
+      const { result } = await transactJsonFile(file, state => (state[id] = change(state[id] ?? DEFAULT_CHECK_IN)));
+      return result;
+    },
   };
 }

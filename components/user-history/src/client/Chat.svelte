@@ -7,7 +7,7 @@
   import { clockTime } from "./format.ts";
   import { createdSessions } from "./children.ts";
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobViews, reportsFor, spawnCalls } from "./jobs.ts";
-  import { boardActionText, isBoardAction, openAgentTodos } from "./board.ts";
+  import { boardActionText, boardIndex, isBoardAction, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
   import { chatFeed, chatLines, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
@@ -17,9 +17,11 @@
   import type { BoardOp, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
   import ChatComposer from "./ChatComposer.svelte";
   import BoardPanel from "./BoardPanel.svelte";
+  import PlanView from "./PlanView.svelte";
   import JobDrawer from "./JobDrawer.svelte";
   import ThreadTitle from "./ThreadTitle.svelte";
   import AccountChip from "./AccountChip.svelte";
+  import CheckInControl, { checkInStatus } from "./CheckInControl.svelte";
   import ModelPicker from "./ModelPicker.svelte";
   import Icon from "./Icon.svelte";
   import Lightbox from "./ui/Lightbox.svelte";
@@ -31,7 +33,8 @@
   /**
    * The chat view of one thread whose row has `chat`: a DM-style feed and a box that always sends at once, with the board in a side
    * panel on a wide window and behind a Chat / Board switch on a phone. The chat's jobs are rows under it in the sidebar; a job opens in
-   * a drawer over the panel, from the sidebar, the feed, or a plan step that links it.
+   * a drawer over the panel, from the sidebar, the feed, or a plan step that links it. Board ids in the text (`p7`, `s3`) render as chips
+   * that open the plan view (`store.planView`), the whole board as a tree in a modal, on that item.
    */
   let { id, narrow }: { id: string; narrow: boolean } = $props();
 
@@ -80,7 +83,7 @@
   const hasOpenStep = (items: readonly PlanItem[]): boolean => items.some(item => item.status === "todo" || item.status === "doing" || item.status === "blocked" || hasOpenStep(item.children));
   /** The server's check-in tick runs every 5 minutes while a job runs or a plan step is open (todo, doing, blocked), and steers the chat only on a change. */
   const checkIn = $derived.by(() => {
-    if (runningCount || hasOpenStep(board?.plan ?? [])) return { text: "Check-in every 5 min, on changes only", on: true };
+    if (runningCount || hasOpenStep(board?.plan ?? [])) return checkInStatus(row?.checkIn, clock.now);
     return { text: "Check-in paused, nothing open", on: false };
   });
 
@@ -89,6 +92,10 @@
   const board = $derived(thread?.board ?? null);
   const asks = $derived(openAgentTodos(board));
   const cwd = $derived(thread?.info.cwd ?? row?.cwd ?? "");
+  /** The board's ids and titles, for the mention chips in every bubble; a new board rev re-renders the feed once. */
+  const mentions = $derived(boardIndex(id, board));
+  const planView = $derived(store.planView?.chat === id ? store.planView : null);
+  const closePlan = () => { if (store.planView?.chat === id) store.planView = null; };
   const applyBoard = (next: ChatBoard, ops: BoardOp[]) => store.boardOps(id, next, ops);
 
   /** The job drawer follows `store.jobDrawer` for this chat, so the sidebar, the feed, the plan and the Jobs list all open the same drawer. */
@@ -134,6 +141,8 @@
     if (session) store.select(session.id);
     else openJob(owner);
   }
+  /** The owner's name for the plan view: the job's name, the session's name, or the first 8 characters of a bare id. */
+  const ownerName = (owner: string): string => findJob(jobs, owner)?.name ?? store.session(owner)?.name ?? (/^[0-9a-f]{8}-/.test(owner) ? owner.slice(0, 8) : jobName(owner));
 
   let lightbox = $state<{ images: { src: string; alt: string }[]; index: number } | null>(null);
   function viewImage(item: Extract<ChatItem, { kind: "user" }>, index: number): void {
@@ -144,6 +153,7 @@
     const click = proseClick(event);
     if (click?.kind === "image") lightbox = { images: [{ src: click.src, alt: click.alt }], index: 0 };
     else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, id); }
+    else if (click?.kind === "mention") store.openPlan(id, click.id);
   }
   /** A folded run of updates opens in the reader as a list: who wrote, when, and the whole text. */
   const readUpdates = (item: Extract<ChatItem, { kind: "updates" }>) => { store.reader = { kind: "updates", thread: id, at: item.at }; };
@@ -281,7 +291,7 @@
                 </div>
               {/if}
               <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-              {#if item.text}<div class="text said" onclick={onProseClick}>{@html renderInline(item.text)}</div>{/if}
+              {#if item.text}<div class="text said" onclick={onProseClick}>{@html renderInline(item.text, mentions)}</div>{/if}
             </div>
           </div>
         {:else if item.kind === "agent"}
@@ -289,7 +299,7 @@
           <div class="line agent" data-at={item.at}>
             <div class="blocks">
               {#each blocks as block, position (position)}
-                {@const html = renderMarkdown(block.text, cwd)}
+                {@const html = renderMarkdown(block.text, cwd, mentions)}
                 {@const streaming = item.streaming ?? false}
                 {#if block.kind === "prose"}
                   <div class="bubble theirs" use:longpress={() => void copyLink(item.at)}>
@@ -348,6 +358,7 @@
     {/if}
     <ThreadTitle {id} />
     <div class="controls">
+      <CheckInControl {id} />
       {#if !narrow}{@render setup()}{/if}
       {#if row && !row.archived}
         <button type="button" class="icon-button" aria-label="Archive chat" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
@@ -402,6 +413,9 @@
       {/if}
       {#if drawerName !== null}
         <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />
+      {/if}
+      {#if planView}
+        <PlanView chat={id} {board} focus={planView.focus} {narrow} onjob={openStep} {ownerName} onclose={closePlan} />
       {/if}
     </div>
   {/if}
@@ -461,6 +475,9 @@
   .said :global(a) { color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
   .said :global(code) { font-family: var(--mono); font-size: 0.88em; padding: 0.05em 0.3em; border-radius: 4px; background: color-mix(in srgb, currentColor 16%, transparent); }
   .said :global(.artifact-link) { font: inherit; color: inherit; text-decoration: underline; padding: 0; }
+  /* In the owner's accent bubble the pill takes the bubble text color; the dot keeps the item's color with a thin ring so it reads on the fill. */
+  .said :global(.mention-chip) { border-color: color-mix(in srgb, currentColor 55%, transparent); background: color-mix(in srgb, currentColor 16%, transparent); }
+  .said :global(.mention-chip .dot) { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 70%, transparent); }
   .blocks { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; }
   .blocks > .bubble { max-width: min(82%, 560px); }
   /* Bubble typography: paragraphs and lists sit tight, headings read as bold lines, blocks scroll sideways inside the bubble. */

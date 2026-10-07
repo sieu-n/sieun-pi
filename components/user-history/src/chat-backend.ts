@@ -6,7 +6,7 @@ import { ChatLabels } from "./chat-labels.ts";
 import { ChatNotes } from "./chat-notes.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
-import { checkInRecord } from "./chat-checkin.ts";
+import { checkInRecord, checkInSettings } from "./chat-checkin.ts";
 import { Chats, extensionBuild, loadRecord } from "./chats.ts";
 import { IdIndex } from "./id-index.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
@@ -72,27 +72,28 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const index = new IdIndex(join(dataDir, "chats.json"), "Chat index");
   const created = new IdIndex(join(dataDir, "threads.json"), "Thread index");
   let chats: Chats;
-  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids() }, new ThreadOrigins(created));
+  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns() }, new ThreadOrigins(created));
   const boards = new BoardStore(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
-    { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")) }, line => process.stderr.write(line + "\n"));
+    { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")),
+      settings: checkInSettings(join(dataDir, "check-in-settings.json")) }, line => process.stderr.write(line + "\n"));
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   // The usage worker thread reads the transcripts and owns usage.duckdb; its first build runs in the background.
   const usage = new UsageService({ dataDir, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   usage.start();
-  let closed = false;
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
+  let closed = false;
   return {
     catalog, threads, readState, labels, notes, defaults, chats, boards, created, usage,
     async close() {
       if (closed) return;
       closed = true;
       unwatchBoards();
-      await usage.close();
       stopPublish();
+      await usage.close();
       chats.close();
       await threads.close();
       await catalog.close();

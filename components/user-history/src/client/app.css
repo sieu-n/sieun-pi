@@ -22,6 +22,8 @@
   --accent-soft: light-dark(rgba(0, 119, 192, 0.08), rgba(46, 159, 230, 0.14));
   --accent-bold: light-dark(#005a93, #6fc0f2);
   --accent-text: #ffffff;
+  /* The ten muted colors of board id dots (`idIndex` in src/client/board.ts picks one per chat and item). */
+  --id-0: #c56b7c; --id-1: #c98a48; --id-2: #a89c38; --id-3: #67a35b; --id-4: #45a48d; --id-5: #4b9ac6; --id-6: #7b86d0; --id-7: #a878c4; --id-8: #c26ea7; --id-9: #8e8e8e;
   --accent-fill: #0077c0;
   --primary: light-dark(#8ed0f5, #6fc0f2);
   --primary-hover: light-dark(#74c4ef, #8ccffa);
@@ -141,6 +143,17 @@ a { color: var(--accent); }
 .icon-button svg { width: 18px; height: 18px; }
 .icon-button.small { width: 24px; height: 24px; }
 .icon-button.small svg { width: 14px; height: 14px; }
+/* A note's link chip (the board panel, the plan view): what it opens, with an icon; a button one opens the reader, the thread or a tab. */
+.link-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 0 7px 0 6px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-sunken); font-size: 11.5px; line-height: 18px; color: var(--text-muted); }
+button.link-chip:hover { border-color: var(--accent); color: var(--accent-bold); background: var(--accent-soft); }
+.link-chip.broken { border-style: dashed; color: var(--text-faint); }
+.link-chip .chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.id-0 { --dot: var(--id-0); } .id-1 { --dot: var(--id-1); } .id-2 { --dot: var(--id-2); } .id-3 { --dot: var(--id-3); } .id-4 { --dot: var(--id-4); }
+.id-5 { --dot: var(--id-5); } .id-6 { --dot: var(--id-6); } .id-7 { --dot: var(--id-7); } .id-8 { --dot: var(--id-8); } .id-9 { --dot: var(--id-9); }
+/* A board id mentioned in chat text: the item's dot and id in a faint pill tinted with the dot color; a click opens the plan view on it. */
+.mention-chip { display: inline-flex; align-items: center; gap: 4px; vertical-align: baseline; padding: 0 6px 0 5px; margin: 0 1px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--dot) 45%, transparent); background: color-mix(in srgb, var(--dot) 12%, transparent); font-family: var(--mono); font-size: 0.8em; line-height: 1.5; color: inherit; font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color 0.12s, border-color 0.12s; }
+.mention-chip:hover, .mention-chip:focus-visible { background: color-mix(in srgb, var(--dot) 26%, transparent); border-color: var(--dot); }
+.mention-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot); flex: none; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elevated); font-size: 13px; color: var(--text-muted); white-space: nowrap; max-width: 100%; }
 .chip:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
 .chip.active { background: var(--accent-soft); border-color: transparent; color: var(--accent-bold); }

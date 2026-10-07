@@ -14,13 +14,15 @@ import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
+import { validCheckInEvery } from "./chat-checkin.ts";
+import type { CheckInChange } from "./chats.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
-import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
@@ -105,6 +107,21 @@ function parseMode(value: unknown): SendMode {
   return mode;
 }
 /** The kind of thread `POST api/threads` creates: a plain thread, or a chat. */
+function parseCheckInChange(body: Record<string, unknown>): CheckInChange {
+  const change: CheckInChange = {};
+  if (body.everyMs !== undefined) {
+    if (!validCheckInEvery(body.everyMs)) throw new RequestError(400, `Use whole minutes from ${CHECK_IN_MIN_MINUTES} to ${CHECK_IN_MAX_MINUTES}.`);
+    change.everyMs = body.everyMs;
+  }
+  if (body.pause !== undefined) {
+    const pause = CHECK_IN_PAUSES.find(entry => entry === body.pause);
+    if (body.pause !== null && !pause) throw new RequestError(400, `Pause with ${CHECK_IN_PAUSES.join(", ")} or null.`);
+    change.pause = pause ?? null;
+  }
+  if (change.everyMs === undefined && change.pause === undefined) throw new RequestError(400, "Choose everyMs or pause.");
+  return change;
+}
+
 function parseKind(value: unknown): "thread" | "chat" {
   if (value === undefined || value === null || value === "thread") return "thread";
   if (value === "chat") return "chat";
@@ -489,6 +506,11 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           }
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
           if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
+          if (action === "check-in") {
+            const view = await backend.chats.checkInView(id);
+            if (!view) throw new RequestError(404, "This thread is not a chat.");
+            json(res, 200, view); return;
+          }
         }
         throw new RequestError(404, "Not found.");
       }
@@ -649,6 +671,13 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           try { await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer" }); }
           catch (failure) { sent = false; error = failure instanceof Error ? failure.message : String(failure); }
           json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
+        }
+        case "check-in": {
+          // The owner's interval and pause for the chat's check-in; the chat reads it on the board tool and has no op to change it.
+          const view = await backend.chats.setCheckIn(id, parseCheckInChange(body));
+          if (!view) throw new RequestError(404, "This thread is not a chat.");
+          await backend.catalog.notify();
+          json(res, 200, view); return;
         }
         case "rename": {
           const name = text(body.name, "name", 200).trim();

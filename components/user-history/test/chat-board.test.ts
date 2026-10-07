@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
+import { checkInSettings } from "../src/chat-checkin.ts";
 import { applyThreadEvent } from "../src/shared/thread-state.ts";
 import type { ThreadState } from "../src/shared/types.ts";
 import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, migrateBoard, nextIds, parseBoardOps, renderBoard } from "../src/shared/chat-board.ts";
@@ -273,8 +274,10 @@ test("extension: chat_board writes the chat's board under agent-chat-data-dir an
   assert.ok(tool.promptGuidelines?.some(line => line.includes("CTO")));
   const ctx = { sessionManager: { getSessionId: () => "s-1" } };
   const added = await tool.execute("c1", { ops: [{ op: "plan_add", text: "Goal", status: "doing" }, { op: "todo_add", text: "Approve" }] }, undefined, undefined, ctx);
-  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nThis chat: thread:s-1\nBoard rev 2/);
+  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nThis chat: thread:s-1\nCheck-in: every 5 min\nBoard rev 2/);
   assert.equal((await new BoardStore(dataDir).read("s-1"))?.rev, 2);
-  assert.match((await tool.execute("c2", { ops: [] }, undefined, undefined, ctx)).content[0]!.text, /^This chat: thread:s-1\nBoard rev 2/);
+  await checkInSettings(join(dataDir, "check-in-settings.json")).update("s-1", () => ({ everyMs: 15 * 60_000, pausedUntil: "forever" }));
+  assert.match((await tool.execute("c2", { ops: [] }, undefined, undefined, ctx)).content[0]!.text, /^This chat: thread:s-1\nCheck-in: paused until the owner resumes it\nBoard rev 2/,
+    "the chat reads the owner's setting from the data dir");
   await assert.rejects(tool.execute("c3", { ops: [{ op: "plan_update", id: "p7", status: "done" }] }, undefined, undefined, ctx), /No plan item p7/);
 });

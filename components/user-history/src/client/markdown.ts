@@ -1,5 +1,6 @@
-import { Marked, type Token } from "marked";
+import { Marked, type Token, type TokenizerAndRendererExtension } from "marked";
 import { normalizeArtifactTarget } from "../shared/artifact-link.ts";
+import { idClass, type BoardIndex } from "./board.ts";
 
 export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
@@ -9,6 +10,33 @@ export function escapeHtml(text: string): string {
 const DIAGRAM_LANGUAGES = new Set(["mermaid"]);
 /** The thread folder, for image paths relative to it. Set around each synchronous parse. */
 let renderCwd = "";
+/** The chat's board, for mention chips. Set around each synchronous parse; null renders every id as plain text. */
+let renderBoard: BoardIndex | null = null;
+
+/**
+ * A board id written as a whole word (`p7`, `s3`) that exists on the chat's board becomes a chip: the item's dot color and id, its short title
+ * on hover; the view's click handler opens the plan view on it. An id inside a code span, a code block or a link, or one the board does not
+ * have, stays text. The tokenizer runs before marked's own at every position, so a code span or a URL consumes its ids whole; the lexer's
+ * `inLink` covers link text; the token before the id must not end in a word character, so `xp7` is never a chip.
+ */
+const MENTION = /^[ps]\d+\b/;
+const MENTION_START = /(^|[^\w])[ps]\d+\b/;
+const mentions: TokenizerAndRendererExtension = {
+  name: "mention",
+  level: "inline",
+  start(src) { const match = MENTION_START.exec(src); return match ? match.index + match[1]!.length : undefined; },
+  tokenizer(src, tokens) {
+    if (!renderBoard || this.lexer.state.inLink) return undefined;
+    const match = MENTION.exec(src);
+    if (!match || !renderBoard.titles.has(match[0]) || /\w$/.test(tokens.at(-1)?.raw ?? "")) return undefined;
+    return { type: "mention", raw: match[0], id: match[0] };
+  },
+  renderer(token) {
+    const id = String(token.id);
+    const title = renderBoard?.titles.get(id) ?? id;
+    return `<button type="button" class="mention-chip ${renderBoard ? idClass(renderBoard.chatId, id) : ""}" data-mention="${escapeHtml(id)}" title="${escapeHtml(title)}"><span class="dot" aria-hidden="true"></span>${escapeHtml(id)}</button>`;
+  },
+};
 
 /**
  * Where a markdown image loads from: https and data URLs as they are, and a file on this Mac (absolute, `~/`, `file://`, or
@@ -42,6 +70,7 @@ function artifactTarget(href: string): string | null {
 
 const marked = new Marked({
   gfm: true,
+  extensions: [mentions],
   async: false,
   // Raw HTML is escaped, so a literal <table> in the output always came from the table renderer.
   hooks: { postprocess: html => html.replaceAll("<table>", '<div class="table-wrap"><table>').replaceAll("</table>", "</table></div>") },
@@ -77,24 +106,28 @@ const marked = new Marked({
 const cache = new Map<string, string>();
 const CACHE_LIMIT = 4000;
 
-export function renderMarkdown(text: string, cwd = ""): string {
-  const key = cwd + "\0" + text;
+/** `board` turns the chat's ids in the text into mention chips; a reply outside a chat passes none. */
+export function renderMarkdown(text: string, cwd = "", board: BoardIndex | null = null): string {
+  const key = cwd + "\0" + (board?.key ?? "") + "\0" + text;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
   renderCwd = cwd;
+  renderBoard = board;
   let html: string;
-  try { html = marked.parse(text, { async: false }); } finally { renderCwd = ""; }
+  try { html = marked.parse(text, { async: false }); } finally { renderCwd = ""; renderBoard = null; }
   cache.set(key, html);
   if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
   return html;
 }
 
-/** The owner's own bubble: links, inline code, bold and line breaks only; no lists, headings or blocks. */
-export function renderInline(text: string): string {
-  const key = "inline\0" + text;
+/** The owner's own bubble: links, inline code, bold, mention chips and line breaks only; no lists, headings or blocks. */
+export function renderInline(text: string, board: BoardIndex | null = null): string {
+  const key = "inline\0" + (board?.key ?? "") + "\0" + text;
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const html = marked.parseInline(text.replace(/\r\n?/g, "\n"), { async: false, breaks: true });
+  renderBoard = board;
+  let html: string;
+  try { html = marked.parseInline(text.replace(/\r\n?/g, "\n"), { async: false, breaks: true }); } finally { renderBoard = null; }
   cache.set(key, html);
   if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
   return html;
@@ -133,6 +166,16 @@ export function artifactFromClick(event: MouseEvent): string | null {
   if (!button?.dataset.target) return null;
   event.preventDefault();
   return button.dataset.target;
+}
+
+/** The board id of a clicked `.mention-chip` in rendered text, or null. */
+export function mentionFromClick(event: MouseEvent): string | null {
+  const target = event.target;
+  if (!(target instanceof Element)) return null;
+  const chip = target.closest<HTMLElement>("button.mention-chip");
+  if (!chip?.dataset.mention) return null;
+  event.preventDefault();
+  return chip.dataset.mention;
 }
 
 export function copyFromClick(event: MouseEvent): boolean {

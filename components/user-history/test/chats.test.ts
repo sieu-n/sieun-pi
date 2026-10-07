@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInRecord } from "../src/chat-checkin.ts";
+import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
 import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobOf, jobRegistry,
   jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, withChatTool } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
@@ -124,6 +124,7 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /On a `\[check-in\]`, act on every open step, not only the one that changed: start what can start, re-brief, replace or unblock a stuck owner, do or assign the commit, restart or check a step waits on, and if a step truly waits on the owner make sure exactly one owner todo exists for it\. Watching and reporting alone is not progress\./);
   assert.match(brief, /Make the board match reality/);
   assert.match(brief, /send a job only its own plan item, not the whole board/);
+  assert.match(brief, /Refer to board items by their id \(p7, s3\); the page turns them into links\./);
   assert.doesNotMatch(brief, /—/, "no em dashes");
 });
 
@@ -169,7 +170,8 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
 type Observer = Parameters<ChatThreads["observe"]>[0];
 /** A check-in source with no timer: an empty board unless one is given, no catalog rows, and its memory in `dir`. */
 function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () => 0): CheckInSource {
-  return { board: async id => boards[id] ?? null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), everyMs: 0, now, noReportGraceMs: 0 };
+  return { board: async id => boards[id] ?? null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")),
+    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now, noReportGraceMs: 0 };
 }
 function fakeThreads(calls: string[], pinLimit = 8) {
   let observer: Observer | undefined;
@@ -328,6 +330,67 @@ test("chats: the check-in tick steers only what changed, stays quiet with no cha
   assert.deepEqual(await chats.checkIn("c1"), [], "no job at work and no open step: paused");
   assert.deepEqual(calls, []);
   chats.close();
+});
+
+test("chats: the scheduler runs each chat at its own interval, skips a paused one, resumes it when the pause ends, and keeps the setting across a restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  for (const id of ["slow", "fast"]) await index.add(id);
+  let now = new Date(2026, 9, 8, 14, 0).getTime();
+  const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now));
+  assert.equal(await chats.checkInView("plain"), null, "not a chat");
+  assert.equal(await chats.setCheckIn("plain", { everyMs: 60_000 }), null);
+  assert.deepEqual(await chats.checkInView("fast"), { everyMs: 300_000, paused: false, nextAt: now + 300_000, pausedUntil: null, lastAt: null }, "default 5 min from the start");
+  await chats.setCheckIn("fast", { everyMs: 60_000 });
+  await chats.setCheckIn("slow", { everyMs: 15 * 60_000 });
+  const ran: Record<string, number> = { fast: 0, slow: 0 };
+  for (let second = 30; second <= 30 * 60; second += 30) {
+    now += 30_000;
+    for (const id of await chats.tick()) ran[id]!++;
+  }
+  assert.deepEqual(ran, { fast: 30, slow: 2 }, "30 min: every 1 min and every 15 min");
+  await chats.settled();
+  assert.equal((await chats.checkInView("fast"))?.lastAt, now);
+
+  await chats.setCheckIn("fast", { everyMs: 5 * 60_000 });
+  const before = now;
+  let fast = 0;
+  for (let second = 30; second <= 10 * 60; second += 30) { now += 30_000; if ((await chats.tick()).includes("fast")) fast++; }
+  assert.equal(fast, 2, "the new interval applies at the next wake");
+  assert.equal((await chats.checkInView("fast"))?.lastAt, before + 10 * 60_000);
+
+  const long = await chats.setCheckIn("slow", { pause: "1h" });
+  assert.deepEqual([long?.pausedUntil, long?.nextAt], [now + 3_600_000, now + 3_600_000], "the pause end, then the run it allows");
+  await chats.setCheckIn("slow", { pause: null });
+  const paused = await chats.setCheckIn("fast", { pause: "1h" });
+  assert.equal(paused?.paused, true);
+  assert.equal(paused?.pausedUntil, now + 3_600_000);
+  assert.equal(paused?.nextAt, now + 3_600_000);
+  const pausedAt = now;
+  fast = 0;
+  for (let second = 30; second < 60 * 60; second += 30) { now += 30_000; if ((await chats.tick()).includes("fast")) fast++; }
+  assert.equal(fast, 0, "no check-in while paused");
+  now = pausedAt + 3_600_000;
+  assert.deepEqual((await chats.tick()).includes("fast"), true, "the pause ended: it runs at once");
+  assert.equal((await chats.checkInView("fast"))?.paused, false);
+
+  await chats.setCheckIn("fast", { pause: "forever" });
+  now += 24 * 3_600_000;
+  assert.equal((await chats.tick()).includes("fast"), false, "paused until resumed");
+  assert.deepEqual(await chats.checkIns(), new Map([["slow", { everyMs: 900_000, paused: false, pausedUntil: null, nextAt: (await chats.checkInView("slow"))!.nextAt }],
+    ["fast", { everyMs: 300_000, paused: true, pausedUntil: "forever", nextAt: null }]]));
+  await chats.settled();
+  chats.close();
+
+  const again = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now));
+  assert.deepEqual(await again.checkInView("fast"), { everyMs: 300_000, paused: true, nextAt: null, pausedUntil: "forever", lastAt: null }, "the setting survives a restart");
+  const resumed = await again.setCheckIn("fast", { pause: null });
+  assert.deepEqual(resumed, { everyMs: 300_000, paused: false, nextAt: now + 300_000, pausedUntil: null, lastAt: null }, "resume keeps the interval");
+  now += 300_000;
+  assert.deepEqual(await again.tick(), ["fast"], "the slow chat waits 15 min after the restart, the resumed one 5");
+  await again.settled();
+  again.close();
 });
 
 test("chats: adopt pins what the daemon still lists, forgets archived and missing, keeps an unknown one while the daemon is down", async () => {

@@ -3,22 +3,28 @@
   import { tooltip } from "./ui/tooltip.ts";
   import Icon, { type IconName } from "./Icon.svelte";
 
-  /** `tall` fixes the height (the reader), so a long document scrolls inside a frame that does not grow and shrink while it loads. */
-  let { title, onclose, width = "720px", full = false, tall = false, icon, header, children }: {
-    title: string; onclose: () => void; width?: string; full?: boolean; tall?: boolean; icon?: IconName; header?: Snippet; children: Snippet;
+  /** `tall` fixes the height at `height` (the reader, the plan view), so a long document scrolls inside a frame that does not grow and shrink while it loads. */
+  let { title, onclose, width = "720px", height = "86vh", full = false, tall = false, icon, header, children }: {
+    title: string; onclose: () => void; width?: string; height?: string; full?: boolean; tall?: boolean; icon?: IconName; header?: Snippet; children: Snippet;
   } = $props();
   let dialog: HTMLDialogElement | undefined = $state();
 
+  /** Focus goes back to the control that opened the modal; the dialog's own restore is lost when Svelte removes the node on close. */
   $effect(() => {
     const node = dialog;
     if (!node) return;
+    const opener = document.activeElement;
     node.showModal();
-    return () => { if (node.open) node.close(); };
+    return () => {
+      if (node.open) node.close();
+      const active = document.activeElement;
+      if (opener instanceof HTMLElement && opener.isConnected && (active === null || active === document.body || node.contains(active))) opener.focus();
+    };
   });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-<dialog bind:this={dialog} class="modal" class:full class:tall style:--modal-width={width} aria-label={title}
+<dialog bind:this={dialog} class="modal" class:full class:tall style:--modal-width={width} style:--modal-height={height} aria-label={title}
   oncancel={event => { event.preventDefault(); onclose(); }}
   onkeydown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onclose(); } }}
   onclick={event => { if (event.target === dialog) onclose(); }}>
@@ -44,7 +50,7 @@
   .head { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-bottom: 1px solid var(--border); }
   h2 { margin: 0; font-size: 14px; font-weight: 600; flex: none; }
   .kind-icon { display: inline-flex; flex: none; color: var(--text-muted); }
-  .modal.tall { height: 86vh; max-height: 86vh; }
+  .modal.tall { height: var(--modal-height); max-height: var(--modal-height); }
   .modal.tall .frame { height: 100%; max-height: none; }
   .modal.tall h2 { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .extra { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }

@@ -38,6 +38,8 @@ class Store {
   jump = $state.raw<{ id: string; at: number } | null>(null);
   /** The reader modal: a job's report, a file, a wiki page or one message. Null when closed. */
   reader = $state.raw<ReaderView | null>(null);
+  /** The plan view modal of a chat: its whole board as a tree, scrolled to `focus` (a plan step or note id) when set. Null when closed. */
+  planView = $state.raw<{ chat: string; focus: string | null } | null>(null);
   private toastId = 0;
   private sessionsStop: (() => void) | null = null;
 
@@ -85,6 +87,12 @@ class Store {
   openJob(chat: string, job: string): void {
     if (this.selectedId !== chat) this.select(chat);
     this.jobDrawer = { chat, job };
+  }
+
+  /** Opens the plan view of a chat, switching to the chat first when another thread is open. */
+  openPlan(chat: string, focus: string | null = null): void {
+    if (this.selectedId !== chat) this.select(chat);
+    this.planView = { chat, focus };
   }
 
   /** Opens an artifact link from `thread`: a web URL in a new tab, a bare thread link as the thread, everything else in the reader. */

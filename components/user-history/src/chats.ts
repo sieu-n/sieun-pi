@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { checkInDigest, checkInDue, checkInMessage, CHECK_IN_MS, childName, childWorking, endedWithoutReport, jobFacts, noReportKey, noReportNotice, type CheckInRecord } from "./chat-checkin.ts";
+import { activePause, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN, endedWithoutReport, jobFacts,
+  nextCheckIn, noReportKey, noReportNotice, pauseEnd } from "./chat-checkin.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
-import type { ChatBoard, ChildAgent, SessionRow, ThinkingLevel } from "./shared/types.ts";
+import type { ChatBoard, CheckInPause, CheckInState, CheckInView, ChildAgent, SessionRow, ThinkingLevel } from "./shared/types.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -35,8 +36,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "blocked with the exact thing that unblocks it. A step that waits on someone else is still yours to chase. Before you mark a step done, check " +
     "the real state (the commit, the live service, the report), never an old note. Plan it, staff it with jobs, and bring the owner only what needs them.",
   "Voice: the owner's language, short. Owner replies: one to three sentences, 15 to 60 words, lead with the answer. Markdown renders in the chat: use a short list, " +
-    "inline code or a link when it makes the reply easier to scan; no headings, no tables unless asked, no em dashes. Long detail (findings, " +
-    "options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
+    "inline code or a link when it makes the reply easier to scan; no headings, no tables unless asked, no em dashes. Refer to board items by " +
+    "their id (p7, s3); the page turns them into links. Long detail (findings, options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
     "diagrams; put one on its own block when it is the point of the reply (it shows as a separate card under your message), keep it inline " +
     "when it is a small aside.",
   "Quiet: you talk to the owner when the owner writes. On any other wake-up (a job report, another thread, a check-in) say nothing unless a goal " +
@@ -316,7 +317,7 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
 }
 
 /** The source files a chat session runs as its extension. A change in any of them is a new build; a chat that loaded an older one is reloaded. */
-const BUILD_FILES = ["../extension/index.ts", "chats.ts", "shared/chat-board.ts", "shared/chat-feed.ts"];
+const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts"];
 /** A short hash of the extension sources on disk now. */
 export function extensionBuild(dir: string = import.meta.dirname): string {
   const hash = createHash("sha256");
@@ -372,23 +373,29 @@ export interface ChatThreads {
 }
 export type ChatSummary = (id: string) => Promise<{ lifecycle?: string; sessionFile?: string } | undefined>;
 
-/** What the check-in tick reads besides the children: the board, the catalog rows (threads a plan item links), and its memory per chat. */
+/** What the check-in reads besides the children: the board, the catalog rows (threads a plan item links), its memory and the owner's setting per chat. */
 export interface CheckInSource {
   board(id: string): Promise<ChatBoard | null>;
   rows(): Promise<readonly SessionRow[]>;
   memory: CheckInRecord;
-  /** The tick period; 0 starts no timer (tests call `checkIn`). Default CHECK_IN_MS. */
-  everyMs?: number;
+  settings: CheckInSettings;
+  /** How often the scheduler wakes to run the chats whose interval has passed; 0 starts no timer (tests call `tick`). Default CHECK_IN_TICK_MS. */
+  tickMs?: number;
   now?: () => number;
   /** How long a job must stay quiet before the no-report notice; default NO_REPORT_GRACE_MS. Tests pass 0. */
   noReportGraceMs?: number;
 }
 
+/** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
+export const CHECK_IN_TICK_MS = 30_000;
+/** What the owner changes in a chat's check-in: the interval, and a pause (null resumes). */
+export interface CheckInChange { everyMs?: number; pause?: CheckInPause | null }
+
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
- * state), the check-in tick, the no-report notice, and the extension build: a chat that last loaded an older build than the one on disk is
- * reloaded when it attaches, at once if idle, else at the end of its turn. Everything converges from the index plus the daemon list, so a restart
- * re-adopts what it finds.
+ * state), the check-in scheduler (each chat at its own interval, none while the owner paused it), the no-report notice, and the extension build:
+ * a chat that last loaded an older build than the one on disk is reloaded when it attaches, at once if idle, else at the end of its turn.
+ * Everything converges from the index plus the daemon list, so a restart re-adopts what it finds.
  */
 export class Chats {
   private readonly chatIds = new Set<string>();
@@ -404,6 +411,9 @@ export class Chats {
   private readonly unobserve: () => void;
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
+  /** When the scheduler last ran each chat's check-in; a chat it has not run yet counts from the service start, as the old single tick did. */
+  private readonly lastCheckIn = new Map<string, number>();
+  private readonly started: number;
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
@@ -412,6 +422,7 @@ export class Chats {
   constructor(readonly index: IdIndex, private readonly threads: ChatThreads, private readonly summary: ChatSummary, private readonly build: string,
     private readonly loads: LoadRecord, private readonly source: CheckInSource, private readonly log: (line: string) => void = () => {}) {
     this.now = source.now ?? Date.now;
+    this.started = this.now();
     this.unobserve = threads.observe({
       live: (id, children) => { this.children.set(id, children); this.queue(id, () => this.attached(id)); this.queue(id, () => this.refreshExtension(id)); },
       children: (id, children) => {
@@ -422,9 +433,9 @@ export class Chats {
       },
       idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); },
     });
-    const every = source.everyMs ?? CHECK_IN_MS;
-    if (every > 0) {
-      this.timer = setInterval(() => { void this.load().then(() => { for (const id of this.chatIds) this.queue(id, async () => { await this.checkIn(id); }); }); }, every);
+    const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
+    if (tickMs > 0) {
+      this.timer = setInterval(() => { void this.tick(); }, tickMs);
       this.timer.unref();
     }
   }
@@ -498,6 +509,62 @@ export class Chats {
     await this.index.forget(id);
     await this.loads.forget(id);
     await this.source.memory.forget(id);
+  }
+
+  /** The owner's settings, or none when the file cannot be read (logged): every chat then runs at the default interval. */
+  private async settings(): Promise<Record<string, CheckInSetting>> {
+    try { return await this.source.settings.all(); }
+    catch (error) { this.log(`check-in settings: ${error instanceof Error ? error.message : String(error)}`); return {}; }
+  }
+
+  /** One scheduler wake: queues the check-in of every chat whose interval has passed since its last one and that is not paused. Returns their ids. */
+  async tick(): Promise<string[]> {
+    await this.load();
+    const settings = await this.settings();
+    const now = this.now();
+    const due = [...this.chatIds].filter(id => {
+      const next = nextCheckIn(settings[id] ?? DEFAULT_CHECK_IN, this.lastCheckIn.get(id) ?? this.started, now);
+      return next !== null && next <= now;
+    });
+    for (const id of due) { this.lastCheckIn.set(id, now); this.queue(id, async () => { await this.checkIn(id); }); }
+    return due;
+  }
+
+  private state(id: string, setting: CheckInSetting, now: number): CheckInView {
+    const pausedUntil = activePause(setting, now);
+    const lastAt = this.lastCheckIn.get(id) ?? null;
+    return { everyMs: setting.everyMs, paused: pausedUntil !== null, nextAt: nextCheckIn(setting, lastAt ?? this.started, now), pausedUntil, lastAt };
+  }
+
+  /** The sessions stream's check-in field for every chat. */
+  async checkIns(): Promise<ReadonlyMap<string, CheckInState>> {
+    await this.load();
+    const settings = await this.settings();
+    const now = this.now();
+    return new Map([...this.chatIds].map(id => {
+      const { lastAt: _lastAt, ...state } = this.state(id, settings[id] ?? DEFAULT_CHECK_IN, now);
+      return [id, state];
+    }));
+  }
+
+  /** A chat's check-in as the owner's control shows it; null for a thread that is not a chat. */
+  async checkInView(id: string): Promise<CheckInView | null> {
+    await this.load();
+    if (!this.chatIds.has(id)) return null;
+    return this.state(id, await this.source.settings.get(id), this.now());
+  }
+
+  /** The owner's change to a chat's check-in; null for a thread that is not a chat. The scheduler reads the new setting at its next wake. */
+  async setCheckIn(id: string, change: CheckInChange): Promise<CheckInView | null> {
+    await this.load();
+    if (!this.chatIds.has(id)) return null;
+    const now = this.now();
+    const setting = await this.source.settings.update(id, current => {
+      const everyMs = change.everyMs ?? current.everyMs;
+      const pausedUntil = change.pause === undefined ? current.pausedUntil : change.pause === null ? undefined : pauseEnd(change.pause, now);
+      return { everyMs, ...(pausedUntil !== undefined ? { pausedUntil } : {}) };
+    });
+    return this.state(id, setting, now);
   }
 
   /**

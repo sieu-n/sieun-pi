@@ -6,6 +6,7 @@ import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, cha
   jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool } from "../src/chats.ts";
 import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
+import { checkInLine, checkInSettings } from "../src/chat-checkin.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
   const images = new ImageFitter();
@@ -59,7 +60,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const ops = parseBoardOps((params as { ops?: unknown }).ops ?? []);
       const sessionId = ctx.sessionManager.getSessionId();
       const { board, summaries } = await boards().apply(sessionId, ops, "agent");
-      return { content: [{ type: "text", text: [...summaries, renderBoard(board, sessionId)].join("\n") }], details: undefined };
+      const checkIn = checkInLine(await checkInSettings(join(dataDir(), "check-in-settings.json")).get(sessionId), Date.now());
+      return { content: [{ type: "text", text: [...summaries, renderBoard(board, sessionId, checkIn)].join("\n") }], details: undefined };
     },
   });
   // The feed shows this call's text as a bubble on any turn; on a turn the owner did not start it is the only text the owner sees.
