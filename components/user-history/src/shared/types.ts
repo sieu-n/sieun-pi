@@ -321,10 +321,12 @@ export interface RemoteAccessView {
   /** Result of the last request to `<origin>/<capability>/api/identity` from this Mac; null before the first check. */
   reachable: boolean | null;
   keepRunning: { available: boolean; enabled: boolean; state: "on" | "off" | "problem"; message: string };
+  /** "Open the app at login". `appName` is the installed app for this chat URL, null while none is installed. */
+  openAppAtLogin: { available: boolean; enabled: boolean; appName: string | null; message: string };
   /** False on a remote origin: these switches change only from the Mac that runs the chat. */
   editable: boolean;
 }
-export interface RemoteAccessInput { tailscale?: boolean; keepRunning?: boolean }
+export interface RemoteAccessInput { tailscale?: boolean; keepRunning?: boolean; openAppAtLogin?: boolean }
 
 /** Settings > Slack: the bridge that links each chat to a private Slack channel. */
 export interface SlackView {

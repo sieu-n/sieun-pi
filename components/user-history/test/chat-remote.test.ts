@@ -174,7 +174,8 @@ test("api/remote shows the phone link, follows origin changes at once, and chang
   let origin: string | null = "https://" + DNS;
   const inputs: RemoteAccessInput[] = [];
   const view = (editable: boolean): RemoteAccessView => ({ mode: origin ? "tailscale" : "off", state: origin ? "on" : "off", message: "", origin, phoneUrl: origin ? `${origin}/cap/` : null,
-    checkedAt: null, reachable: null, editable, keepRunning: { available: true, enabled: true, state: "on", message: "" } });
+    checkedAt: null, reachable: null, editable, keepRunning: { available: true, enabled: true, state: "on", message: "" },
+    openAppAtLogin: { available: true, enabled: true, appName: "Prime Agent chat", message: "" } });
   const remote: RemoteControl = { origin: () => origin, view, check: async () => {},
     set: async input => { inputs.push(input); if (input.tailscale === false) origin = null; } };
   const asset = { body: Buffer.from(""), etag: '"x"', contentType: "text/plain" };
@@ -193,8 +194,10 @@ test("api/remote shows the phone link, follows origin changes at once, and chang
     assert.equal((await write({ Origin: local }, { tailscale: "yes" })).status, 400);
     assert.equal((await write({ Origin: local }, {})).status, 400);
     assert.equal((await write({ Origin: local }, { keepRunning: false })).status, 200);
+    assert.equal((await write({ Origin: local }, { openAppAtLogin: "no" })).status, 400);
+    assert.equal((await write({ Origin: local }, { openAppAtLogin: false })).status, 200);
     assert.equal((await write({ Origin: local }, { tailscale: false })).status, 200);
-    assert.deepEqual(inputs, [{ keepRunning: false }, { tailscale: false }]);
+    assert.deepEqual(inputs, [{ keepRunning: false }, { openAppAtLogin: false }, { tailscale: false }]);
     assert.equal((await viaHost(server.url + "api/remote", "GET", remoteHeaders)).status, 421, "the tailnet host stops working as soon as access is off");
   } finally { await server.close(); }
 });

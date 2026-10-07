@@ -12,10 +12,11 @@
   let error = $state<string | null>(null);
   let checking = $state(false);
   /** The value a switch is being set to; it shows at once, and the server's answer replaces it. */
-  let pending = $state<{ key: "tailscale" | "keepRunning"; value: boolean } | null>(null);
+  let pending = $state<{ key: keyof RemoteAccessInput; value: boolean } | null>(null);
   const saving = $derived(pending?.key ?? null);
   const tailscaleOn = $derived(pending?.key === "tailscale" ? pending.value : view?.mode !== "off");
   const keepRunningOn = $derived(pending?.key === "keepRunning" ? pending.value : view?.keepRunning.enabled === true);
+  const openAppOn = $derived(pending?.key === "openAppAtLogin" ? pending.value : view?.openAppAtLogin.enabled === true);
   let copied = $state(false);
   let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -32,9 +33,9 @@
     if (next) view = next;
     checking = false;
   }
-  async function set(key: "tailscale" | "keepRunning", value: boolean): Promise<void> {
+  async function set(key: keyof RemoteAccessInput, value: boolean): Promise<void> {
     pending = { key, value };
-    const input: RemoteAccessInput = key === "tailscale" ? { tailscale: value } : { keepRunning: value };
+    const input: RemoteAccessInput = { [key]: value };
     const next = await store.run(api.setRemote(input));
     if (next) view = next;
     pending = null;
@@ -104,6 +105,15 @@
       <span class="text">
         <span class="label">Keep the chat running</span>
         <span class="note" class:problem={view.keepRunning.state === "problem"}>{view.keepRunning.message}</span>
+      </span>
+    </button>
+
+    <button type="button" class="toggle" role="switch" aria-checked={openAppOn} aria-busy={saving === "openAppAtLogin"} disabled={!view.editable || !view.openAppAtLogin.available || saving !== null}
+      onclick={() => void set("openAppAtLogin", !openAppOn)}>
+      {#if saving === "openAppAtLogin"}<span class="spinner tiny"></span>{:else}<Checkbox visual checked={openAppOn} />{/if}
+      <span class="text">
+        <span class="label">Open the app at login</span>
+        <span class="note">{view.openAppAtLogin.message}</span>
       </span>
     </button>
 

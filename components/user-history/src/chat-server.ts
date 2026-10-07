@@ -236,7 +236,8 @@ function fixedRemote(publicOrigin: string | null, capability: string): RemoteCon
     origin: () => origin,
     view: editable => ({ mode: origin ? "custom" : "off", state: origin ? "on" : "off", origin, phoneUrl: origin ? `${origin}/${capability}/` : null, checkedAt: null, reachable: null, editable,
       message: origin ? `On through ${origin}.` : "Off. Only this Mac can open the chat.",
-      keepRunning: { available: false, enabled: false, state: "off", message: "Start at login is not available for this chat instance." } }),
+      keepRunning: { available: false, enabled: false, state: "off", message: "Start at login is not available for this chat instance." },
+      openAppAtLogin: { available: false, enabled: false, appName: null, message: "Opening the app at login is not available for this chat instance." } }),
     set: async () => { throw new RequestError(409, "Phone access is fixed for this chat instance."); },
     check: async () => {},
   };
@@ -257,7 +258,11 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   const input: RemoteAccessInput = {};
   if (body.tailscale !== undefined) { if (typeof body.tailscale !== "boolean") throw new RequestError(400, "tailscale must be true or false."); input.tailscale = body.tailscale; }
   if (body.keepRunning !== undefined) { if (typeof body.keepRunning !== "boolean") throw new RequestError(400, "keepRunning must be true or false."); input.keepRunning = body.keepRunning; }
-  if (input.tailscale === undefined && input.keepRunning === undefined) throw new RequestError(400, "Choose tailscale or keepRunning.");
+  if (body.openAppAtLogin !== undefined) {
+    if (typeof body.openAppAtLogin !== "boolean") throw new RequestError(400, "openAppAtLogin must be true or false.");
+    input.openAppAtLogin = body.openAppAtLogin;
+  }
+  if (input.tailscale === undefined && input.keepRunning === undefined && input.openAppAtLogin === undefined) throw new RequestError(400, "Choose tailscale, keepRunning or openAppAtLogin.");
   return input;
 }
 

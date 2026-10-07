@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { defaultDaemonSocketPath, getAgentDir } from "prime-agent";
 import { parsePublicOrigin, parseRemoteFlag, type RemoteSetting } from "./chat-origin.ts";
 import { KeepRunning } from "./chat-autostart.ts";
+import { LoginWindow } from "./chat-login-window.ts";
 import { daemonAnswers, DaemonKeeper } from "./chat-daemon.ts";
 import { openChat } from "./chat-open.ts";
 import { RemoteAccess, type RemoteControl } from "./chat-remote.ts";
@@ -19,6 +20,8 @@ type Configuration = {
   port: number; socketPath: string; capability: string; csrfToken: string; stopToken: string;
   /** The remote HTTPS origin: fixed for `custom`, the last tailnet name seen for `tailscale`. */
   publicOrigin: string | null; remoteAccess: RemoteMode; keepRunning: boolean;
+  /** Settings > Phone access > "Open the app at login". On unless turned off. */
+  openAppAtLogin: boolean;
 };
 type Instance = { pid: number; instanceId: string; url: string };
 type Service = { directory: string; config: Configuration; url: string; primary: boolean };
@@ -49,6 +52,14 @@ function startsDaemon(primary: boolean): boolean {
   const flag = process.env.SIEUN_PI_CHAT_START_DAEMON;
   return flag === "1" ? true : flag === "0" ? false : primary;
 }
+/**
+ * The main instance has the "Open the app at login" switch, and its login start (`serve --supervised`) opens the app window once per boot.
+ * SIEUN_PI_CHAT_OPEN_AT_LOGIN=1 gives another instance the switch and makes its `serve` act as a login start (the isolated check uses it); 0 turns it off.
+ */
+function opensAppAtLogin(primary: boolean): boolean {
+  const flag = process.env.SIEUN_PI_CHAT_OPEN_AT_LOGIN;
+  return flag === "1" ? true : flag === "0" ? false : primary;
+}
 function configuration(value: unknown, primary: boolean): Configuration {
   if (!isRecord(value) || typeof value.port !== "number" || typeof value.socketPath !== "string" || !value.socketPath.startsWith("/") ||
     !isSecret(value.capability) || !isSecret(value.csrfToken) || !isSecret(value.stopToken)) throw new Error("Invalid private chat configuration. Refusing to replace it.");
@@ -58,10 +69,11 @@ function configuration(value: unknown, primary: boolean): Configuration {
     : publicOrigin ? primary && new URL(publicOrigin).hostname.endsWith(".ts.net") ? "tailscale" : "custom" : primary ? "tailscale" : "off";
   if (remoteAccess === "custom" && !publicOrigin) throw new Error("Invalid private chat configuration: custom remote access needs publicOrigin.");
   const keepRunning = typeof value.keepRunning === "boolean" ? value.keepRunning : primary && process.platform === "darwin";
+  const openAppAtLogin = typeof value.openAppAtLogin === "boolean" ? value.openAppAtLogin : true;
   return { port: validPort(value.port), socketPath: value.socketPath, capability: value.capability, csrfToken: value.csrfToken, stopToken: value.stopToken,
-    publicOrigin, remoteAccess, keepRunning };
+    publicOrigin, remoteAccess, keepRunning, openAppAtLogin };
 }
-async function saveConfiguration(service: Service, patch: Partial<Pick<Configuration, "publicOrigin" | "remoteAccess" | "keepRunning">>): Promise<void> {
+async function saveConfiguration(service: Service, patch: Partial<Pick<Configuration, "publicOrigin" | "remoteAccess" | "keepRunning" | "openAppAtLogin">>): Promise<void> {
   Object.assign(service.config, patch);
   await privateWrite(join(service.directory, "configuration.json"), service.config);
 }
@@ -263,21 +275,32 @@ async function serve(options: Options): Promise<void> {
     identity: async () => { await identityReady; return identity; } });
   const node = service.primary ? await findNode() : null;
   const keepRunning = node ? keepRunningFor(service, node, options.supervised === true) : null;
+  const loginStart = options.supervised === true || process.env.SIEUN_PI_CHAT_OPEN_AT_LOGIN === "1";
+  const loginWindow = opensAppAtLogin(service.primary) ? new LoginWindow({ url: service.url, markerPath: join(service.directory, "login-window.json"),
+    enabled: service.config.openAppAtLogin, save: enabled => saveConfiguration(service, { openAppAtLogin: enabled }),
+    // On a test instance the variable stands in for the login item.
+    startsAtLogin: () => keepRunning?.status().enabled === true || process.env.SIEUN_PI_CHAT_OPEN_AT_LOGIN === "1",
+    log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   const control: RemoteControl = {
     origin: () => remote.allowedOrigin(),
     view: editable => {
       const snapshot = remote.status();
       return { ...snapshot, phoneUrl: snapshot.origin && snapshot.mode !== "off" ? `${snapshot.origin}/${service.config.capability}/` : null, editable,
-        keepRunning: keepRunning?.status() ?? { available: false, enabled: false, state: "off", message: "Only the main chat instance in ~/.prime/agent/browser-chat starts at login." } };
+        keepRunning: keepRunning?.status() ?? { available: false, enabled: false, state: "off", message: "Only the main chat instance in ~/.prime/agent/browser-chat starts at login." },
+        openAppAtLogin: loginWindow?.status() ?? { available: false, enabled: false, appName: null, message: "Only the main chat instance in ~/.prime/agent/browser-chat opens at login." } };
     },
     set: async input => {
       if (input.keepRunning !== undefined) {
         if (!keepRunning?.available()) throw new Error("Start at login is not available for this chat instance.");
         await keepRunning.setEnabled(input.keepRunning);
       }
+      if (input.openAppAtLogin !== undefined) {
+        if (!loginWindow?.available()) throw new Error("Opening the app at login is not available for this chat instance.");
+        await loginWindow.setEnabled(input.openAppAtLogin);
+      }
       if (input.tailscale !== undefined) await remote.setMode(input.tailscale ? "tailscale" : "off");
     },
-    check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile()]); },
+    check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile(), loginWindow?.refresh()]); },
   };
   const server = await startChatServer({ backend, bundle, port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken,
     identity, identityReady, remote: control, slack, sdk, stopToken: service.config.stopToken, onStop: close }).catch(error => {
@@ -293,6 +316,14 @@ async function serve(options: Options): Promise<void> {
   process.send?.({ ready: true });
   remote.start();
   void keepRunning?.reconcile();
+  void loginWindow?.refresh();
+  // A login start opens the app window once per boot, and only after this server answers its identity check.
+  if (loginWindow && loginStart) {
+    void (async () => {
+      if (await waitForService(service, 30_000)) await loginWindow.atLogin();
+      else process.stderr.write(`${new Date().toISOString()} open at login: the chat did not answer within 30 s, nothing opened.\n`);
+    })().catch(error => { process.stderr.write(`open at login: ${error instanceof Error ? error.message : String(error)}\n`); });
+  }
   await done;
 }
 
