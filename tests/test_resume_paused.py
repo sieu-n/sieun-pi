@@ -138,9 +138,11 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(self.sent, [])  # a hung head is aborted by the chat first, never messaged while hung
         self.assertIn("hung", report["heads"][0]["result"])
 
-    def test_tool_call_stuck_for_an_hour_counts(self):
-        self.session("stucktoolcal", [assistant(77, "toolUse")], activity="working", isStreaming=True, isRunningTools=True, lastActivityAt=at(77))
-        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 77 * 60,) * 2)
+    def test_tool_call_stuck_for_two_hours_counts_a_long_poll_does_not(self):
+        self.session("stucktoolcal", [assistant(125, "toolUse")], activity="working", isStreaming=True, isRunningTools=True, lastActivityAt=at(125))
+        self.session("longpolllong", [assistant(95, "toolUse")], activity="working", isStreaming=True, isRunningTools=True, lastActivityAt=at(95))
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 125 * 60,) * 2)
+        os.utime(self.sessions[1]["sessionFile"], (NOW.timestamp() - 95 * 60,) * 2)
         report = self.run_resume(dry_run=True)
         self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("stucktoolcal", "hung")])
         self.assertIn("tool call", report["paused"][0]["error"])

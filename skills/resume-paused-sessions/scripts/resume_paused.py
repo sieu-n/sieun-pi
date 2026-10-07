@@ -12,7 +12,7 @@ it is live and idle, and either:
     reply after it: the turn was cut off, or
   - its last message is an empty model reply that asked for a tool, or
   - it shows "working" but did nothing for 30 minutes with no child run or
-    compaction running (60 minutes when a tool call is running): a hung model
+    compaction running (120 minutes when a tool call is running): a hung model
     stream, retry wait or tool call. A message cannot reach it; it has to be aborted first, which the chat
     Resume button does before it runs this script with --unstuck.
 
@@ -55,12 +55,12 @@ INTERRUPTION_ERROR = re.compile(
 )
 BUSY_FLAGS = ("isStreaming", "isRunningTools", "isBashRunning", "hasRunningRlmChildren", "isCompacting")
 # A child run or compaction may legitimately take long; a model call or retry wait with no event for 30 min is hung.
-# A tool call gets 60 min: blocking calls are short by design, and the 10-06 monitor found two stuck for 31 and 76 min
-# on `convex logs`, which streams forever.
+# A tool call gets 120 min: the 10-06 monitor found two stuck on `convex logs` (streams forever), but also bounded
+# deploy polls inside one call that wait up to 90 and 108 min on purpose.
 WORK_FLAGS = ("hasRunningRlmChildren", "isCompacting")
 TOOL_FLAGS = ("isRunningTools", "isBashRunning")
 HUNG_MIN = 30.0
-TOOL_HUNG_MIN = 60.0
+TOOL_HUNG_MIN = 120.0
 # A cut-off turn younger than this may still be between a tool result and the next model call.
 CUT_OFF_GRACE_MIN = 2.0
 # Full session ids the caller aborted because they were hung; their "aborted" last message still counts.
