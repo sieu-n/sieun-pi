@@ -39,6 +39,9 @@
     book: "M4 5a2 2 0 0 1 2-2h14v16H6a2 2 0 0 0-2 2zM4 5v16M8 7h8",
     file: "M6 3h8l4 4v14H6zM14 3v4h4",
     globe: "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18",
+    expand: "M4 12h16M4 12l4-4M4 12l4 4M20 12l-4-4M20 12l-4 4",
+    collapse: "M3 12h7M10 12l-3-3M10 12l-3 3M21 12h-7M14 12l3-3M14 12l3 3",
+    grip: "M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01",
   } as const;
   export type IconName = keyof typeof PATHS;
 </script>

@@ -6,6 +6,7 @@ import { ChatLabels } from "./chat-labels.ts";
 import { ChatNotes } from "./chat-notes.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
+import { checkInRecord } from "./chat-checkin.ts";
 import { Chats, extensionBuild, loadRecord } from "./chats.ts";
 import { IdIndex } from "./id-index.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
@@ -70,7 +71,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids() }, new ThreadOrigins(created));
   const boards = new BoardStore(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
-  chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")), line => process.stderr.write(line + "\n"));
+  chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
+    { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")) }, line => process.stderr.write(line + "\n"));
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   let closed = false;

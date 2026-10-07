@@ -2,15 +2,18 @@
   import { untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, nextIds } from "../shared/chat-board.ts";
   import type { ArtifactLink, BoardOp, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../shared/types.ts";
-  import { groupTodos, isEmptyBoard, linkChip, linkLabel, offeredLink, planProgress, PLAN_STATUS_LABEL } from "./board.ts";
+  import { countItems, groupTodos, idColor, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, planProgress, planTotals, PLAN_STATUS_LABEL, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
   import Checkbox from "./ui/Checkbox.svelte";
   import Icon from "./Icon.svelte";
+  import { tooltip } from "./ui/tooltip.ts";
 
   /**
    * The chat's board as three cards: the plan the chat keeps (read-only here), For you (the chat's asks, answered by a tap on a choice
-   * or a typed reply), and Notes (bullets with links to jobs, messages, wiki pages, files and web pages; the owner adds and removes bullets).
+   * or a typed reply), and Notes (nested notes with links to jobs, messages, wiki pages, files and web pages; the owner adds and removes notes).
+   * Plan steps and notes are trees: everything with children starts folded, done and dropped steps hide behind "Show done" per parent, and
+   * each item carries its id chip (the id the chat uses, with a color hashed from the chat and item ids; a click copies the id).
    * A note's link opens through `store.openArtifact` (the reader, the thread, or a tab); a plan step's job chip opens the job drawer.
    * `apply` gets the board after the owner's ops and the ops themselves; it resolves false when the server refused them.
    */
@@ -21,6 +24,19 @@
   const todos = $derived(groupTodos(board?.todos ?? []));
   const openCount = $derived(todos.open.length);
   const scratch = $derived(board?.scratch ?? []);
+  const noteCount = $derived(countItems(scratch));
+  const totals = $derived(planTotals(board?.plan ?? []));
+  /** Folds and "Show done" are the owner's per chat, kept in the browser (ui.boardItemsOpen, ui.boardShowDone). */
+  const view: TreeView = { open: itemId => ui.boardItemsOpen[`${id}/${itemId}`] === true, showDone: parent => ui.boardShowDone[`${id}/${parent}`] === true };
+  const planRows = $derived(treeRows(board?.plan ?? [], view, isFinished));
+  const noteRows = $derived(treeRows(scratch, view));
+  const fold = (itemId: string) => ui.setBoardItemOpen(id, itemId, !view.open(itemId));
+  let copied = $state<string | null>(null);
+  function copyId(itemId: string): void {
+    void navigator.clipboard?.writeText(itemId);
+    copied = itemId;
+    setTimeout(() => { if (copied === itemId) copied = null; }, 1200);
+  }
 
   function send(ops: BoardOp[]): Promise<boolean> {
     let next = board ?? emptyBoard(new Date().toISOString());
@@ -35,9 +51,6 @@
   let forYouOpen = $state(false);
   $effect(() => { if (openCount) untrack(() => { forYouOpen = true; }); });
   let doneOpen = $state(false);
-
-  let folded = $state<Record<string, true>>({});
-  const fold = (id: string) => { const { [id]: was, ...rest } = folded; folded = was ? rest : { ...rest, [id]: true }; };
 
   let editing = $state<{ id: string; text: string } | null>(null);
   let answering = $state<{ id: string; text: string } | null>(null);
@@ -66,6 +79,10 @@
 
   let noteDraft = $state("");
   let noteLinks = $state<ArtifactLink[]>([]);
+  /** The note the next note goes under, picked with a note's + button; cleared by its chip's x, Escape, or the save. */
+  let noteParent = $state<ScratchItem | null>(null);
+  let noteField: HTMLInputElement | undefined = $state();
+  function addUnder(item: ScratchItem): void { noteParent = item; noteField?.focus(); }
   const offer = $derived(offeredLink(noteDraft));
   function attachOffer(): void {
     if (!offer) return;
@@ -76,11 +93,15 @@
     const text = noteDraft.trim() || noteLinks[0]?.label || "";
     if (!text) return;
     const links = noteLinks;
+    const parent = noteParent;
     noteDraft = "";
     noteLinks = [];
-    void send([{ op: "scratch_add", text, links }]).then(ok => { if (!ok && !noteDraft.trim() && !noteLinks.length) { noteDraft = text; noteLinks = links; } });
+    noteParent = null;
+    if (parent) ui.setBoardItemOpen(id, parent.id, true);
+    void send([{ op: "scratch_add", text, links, ...(parent ? { parent: parent.id } : {}) }])
+      .then(ok => { if (!ok && !noteDraft.trim() && !noteLinks.length) { noteDraft = text; noteLinks = links; noteParent = parent; } });
   }
-  function clearNote(): void { noteDraft = ""; noteLinks = []; }
+  function clearNote(): void { noteDraft = ""; noteLinks = []; noteParent = null; }
 
   const todoLabel = (todo: OwnerTodo) => todo.from === "owner" ? "Your note" : "Ask from the chat";
 </script>
@@ -96,28 +117,46 @@
   </section>
 {/snippet}
 
-{#snippet planRow(item: PlanItem, depth: number)}
-  {@const progress = planProgress(item)}
-  {@const open = !folded[item.id]}
-  <li class="plan-item {item.status}" style:--depth={depth}>
-    <div class="plan-line">
-      {#if item.children.length}
-        <button type="button" class="fold" aria-expanded={open} aria-label="{open ? 'Fold' : 'Unfold'} {item.text}" onclick={() => fold(item.id)}><span class="chev" class:open><Icon name="chevronDown" size={11} /></span></button>
-      {:else}<span class="fold"></span>{/if}
-      <span class="status" title={PLAN_STATUS_LABEL[item.status]} role="img" aria-label={PLAN_STATUS_LABEL[item.status]}>
-        {#if item.status === "doing"}<span class="spinner tiny"></span>
-        {:else if item.status === "done"}<span class="mark done"><Icon name="check" size={10} /></span>
-        {:else}<span class="mark {item.status}"></span>{/if}
-      </span>
-      <span class="plan-text">{item.text}</span>
-      {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
-      {#if item.job}<button type="button" class="job-chip" title="Open job {item.job}" onclick={() => onjob(item.job!)}>{item.job}</button>{/if}
-    </div>
-    {#if item.note}<div class="plan-note">{item.note}</div>{/if}
-    {#if item.children.length && open}
-      <ul class="plan">{#each item.children as child (child.id)}{@render planRow(child, depth + 1)}{/each}</ul>
-    {/if}
+{#snippet idChip(itemId: string)}
+  <button type="button" class="id-chip" class:copied={copied === itemId} style:--dot={idColor(id, itemId)} aria-label="Copy the id {itemId}"
+    title={copied === itemId ? "Copied" : `Copy ${itemId}`} onclick={() => copyId(itemId)}><span class="dot" aria-hidden="true"></span>{itemId}</button>
+{/snippet}
+
+{#snippet foldButton(item: { id: string; text: string; children: unknown[] }, open: boolean)}
+  {#if item.children.length}
+    <button type="button" class="fold" aria-expanded={open} aria-label="{open ? 'Fold' : 'Unfold'} {item.text}" onclick={() => fold(item.id)}><span class="chev" class:open><Icon name="chevronDown" size={11} /></span></button>
+  {:else}<span class="fold"></span>{/if}
+{/snippet}
+
+{#snippet finishedRow(row: Extract<TreeRow<unknown>, { kind: "finished" }>)}
+  <li class="finished" style:--depth={row.depth}>
+    <button type="button" class="done-fold" aria-pressed={row.shown} onclick={() => ui.setBoardShowDone(id, row.parent, !row.shown)}>
+      <span class="chev" class:open={row.shown}><Icon name="chevronDown" size={11} /></span>{row.shown ? "Hide done" : `Show done (${row.count})`}
+    </button>
   </li>
+{/snippet}
+
+{#snippet planRow(row: TreeRow<PlanItem>)}
+  {#if row.kind === "finished"}{@render finishedRow(row)}
+  {:else}
+    {@const item = row.item}
+    {@const progress = planProgress(item)}
+    {@const open = view.open(item.id)}
+    <li class="plan-item {item.status}" style:--depth={row.depth}>
+      <div class="plan-line">
+        {@render foldButton(item, open)}
+        <span class="status" title={PLAN_STATUS_LABEL[item.status]} role="img" aria-label={PLAN_STATUS_LABEL[item.status]}>
+          {#if item.status === "doing"}<span class="spinner tiny"></span>
+          {:else if item.status === "done"}<span class="mark done"><Icon name="check" size={10} /></span>
+          {:else}<span class="mark {item.status}"></span>{/if}
+        </span>
+        {@render idChip(item.id)}
+        <span class="plan-text">{item.text}{#if progress}<span class="progress under">{progress.done} of {progress.total} done</span>{/if}</span>
+        {#if item.job}<button type="button" class="job-chip" title="Open job {item.job}" onclick={() => onjob(item.job!)}>{item.job}</button>{/if}
+      </div>
+      {#if item.note}<div class="plan-note">{item.note}</div>{/if}
+    </li>
+  {/if}
 {/snippet}
 
 {#snippet todoRow(todo: OwnerTodo)}
@@ -153,33 +192,43 @@
   </li>
 {/snippet}
 
-{#snippet noteRow(item: ScratchItem)}
-  <li class="note">
-    <span class="bullet" aria-hidden="true"></span>
-    <div class="note-body">
-      <div class="note-text">{item.text}</div>
-      {#if item.links.length}
-        <div class="chips">
-          {#each item.links as link, index (link.target + index)}
-            {@const chip = linkChip(link)}
-            {#if chip.target}
-              {@const target = chip.target}
-              <button type="button" class="link-chip {chip.kind}" title={link.target} onclick={() => store.openArtifact(target, id)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
-            {:else}
-              <span class="link-chip broken" title="This link cannot be opened: {link.target}"><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></span>
-            {/if}
-          {/each}
-        </div>
-      {/if}
-    </div>
-    <button type="button" class="icon-button small remove" aria-label="Remove note {item.text}" onclick={() => void send([{ op: "scratch_remove", id: item.id }])}><Icon name="x" /></button>
-  </li>
+{#snippet noteRow(row: TreeRow<ScratchItem>)}
+  {#if row.kind === "item"}
+    {@const item = row.item}
+    {@const open = view.open(item.id)}
+    <li class="note" style:--depth={row.depth}>
+      {@render foldButton(item, open)}
+      {@render idChip(item.id)}
+      <div class="note-body">
+        <div class="note-text">{item.text}{#if item.children.length && !open}<span class="progress under">{item.children.length} under it</span>{/if}</div>
+        {#if item.links.length}
+          <div class="chips">
+            {#each item.links as link, index (link.target + index)}
+              {@const chip = linkChip(link)}
+              {#if chip.target}
+                {@const target = chip.target}
+                <button type="button" class="link-chip {chip.kind}" title={link.target} onclick={() => store.openArtifact(target, id)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
+              {:else}
+                <span class="link-chip broken" title="This link cannot be opened: {link.target}"><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></span>
+              {/if}
+            {/each}
+          </div>
+        {/if}
+      </div>
+      <button type="button" class="icon-button small remove" aria-label="Add a note under {item.text}" use:tooltip={"Add a note under this"} onclick={() => addUnder(item)}><Icon name="plus" /></button>
+      <button type="button" class="icon-button small remove" aria-label="Remove note {item.text}" onclick={() => void send([{ op: "scratch_remove", id: item.id }])}><Icon name="x" /></button>
+    </li>
+  {/if}
 {/snippet}
 
 {#snippet addNoteField()}
   <div class="add-note">
-    {#if noteLinks.length}
+    {#if noteParent || noteLinks.length}
       <div class="chips pending">
+        {#if noteParent}
+          <span class="link-chip under" title="The new note goes under {noteParent.id}">under {@render idChip(noteParent.id)}
+            <button type="button" class="chip-x" aria-label="Add at the top level instead" onclick={() => { noteParent = null; }}><Icon name="x" size={10} /></button></span>
+        {/if}
         {#each noteLinks as link, index (link.target + index)}
           {@const chip = linkChip(link)}
           <span class="link-chip {chip.kind}" title={link.target}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span>
@@ -187,7 +236,7 @@
         {/each}
       </div>
     {/if}
-    <input class="field add" bind:value={noteDraft} placeholder={noteLinks.length ? "Note text, Enter saves" : "Add a note, paste a link or a path to attach it"} aria-label="Add a note" enterkeyhint="send"
+    <input class="field add" bind:this={noteField} bind:value={noteDraft} placeholder={noteLinks.length || noteParent ? "Note text, Enter saves" : "Add a note, paste a link or a path to attach it"} aria-label="Add a note" enterkeyhint="send"
       onkeydown={onKey(addNote, clearNote)} />
     {#if offer}
       <button type="button" class="offer" onclick={attachOffer}><Icon name="link" size={12} />Attach <span class="offer-target">{linkLabel(offer.target)}</span> as a link</button>
@@ -197,7 +246,7 @@
 
 {#snippet planBody()}
   {#if board?.plan.length}
-    <ul class="plan root">{#each board.plan as item (item.id)}{@render planRow(item, 0)}{/each}</ul>
+    <ul class="plan">{#each planRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render planRow(row)}{/each}</ul>
   {:else}<p class="none">No plan yet.</p>{/if}
 {/snippet}
 {#snippet forYouBody()}
@@ -211,7 +260,7 @@
   {/if}
 {/snippet}
 {#snippet notesBody()}
-  {#if scratch.length}<ul class="notes">{#each scratch as item (item.id)}{@render noteRow(item)}{/each}</ul>{/if}
+  {#if scratch.length}<ul class="notes">{#each noteRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render noteRow(row)}{/each}</ul>{/if}
   {@render addNoteField()}
 {/snippet}
 
@@ -220,9 +269,9 @@
     <p class="empty">The plan, the chat's questions and its notes show up here once it starts work.</p>
     {@render addNoteField()}
   {:else}
-    {@render card("plan", "Plan", "", planOpen, () => ui.setBoardCard("plan", !planOpen), planBody)}
+    {@render card("plan", "Plan", totals.total ? `${totals.done} of ${totals.total} done` : "", planOpen, () => ui.setBoardCard("plan", !planOpen), planBody)}
     {@render card("foryou", "For you", openCount ? `${openCount} open` : "", forYouOpen, () => { forYouOpen = !forYouOpen; }, forYouBody)}
-    {@render card("notes", "Notes", scratch.length ? String(scratch.length) : "", notesOpen, () => ui.setBoardCard("notes", !notesOpen), notesBody)}
+    {@render card("notes", "Notes", noteCount ? String(noteCount) : "", notesOpen, () => ui.setBoardCard("notes", !notesOpen), notesBody)}
   {/if}
 </div>
 
@@ -241,7 +290,8 @@
   .empty, .none { margin: 0; padding: 4px 0; color: var(--text-faint); font-size: 12.5px; line-height: 1.5; }
   .empty { padding: 24px 8px; text-align: center; }
   .plan { list-style: none; margin: 0; padding: 0; }
-  .plan-line { display: flex; align-items: flex-start; gap: 5px; padding: 3px 0 3px calc(var(--depth) * 16px); line-height: 18px; }
+  /* Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width; the id chips keep the levels apart. */
+  .plan-line { display: flex; align-items: flex-start; gap: 5px; padding: 3px 0 3px min(calc(var(--depth) * 14px), 25%); line-height: 18px; }
   .fold { display: inline-flex; flex: none; width: 14px; height: 18px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
   .status { display: inline-flex; flex: none; width: 14px; height: 18px; align-items: center; justify-content: center; }
@@ -254,9 +304,15 @@
   .plan-item.dropped > .plan-line > .plan-text { color: var(--text-faint); text-decoration: line-through; }
   .plan-item.blocked > .plan-line > .plan-text { color: var(--danger); }
   .progress { flex: none; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .id-chip { display: inline-flex; flex: none; align-items: center; gap: 4px; height: 18px; padding: 0 3px; margin: 0 -1px; border-radius: 4px; font-family: var(--mono); font-size: 11px; line-height: 18px; color: var(--text); opacity: 0.6; font-variant-numeric: tabular-nums; }
+  .id-chip:hover, .id-chip:focus-visible { opacity: 1; background: var(--bg-hover); }
+  .id-chip.copied { opacity: 1; color: var(--accent-bold); }
+  .id-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot); }
+  .finished { list-style: none; padding-left: calc(min(calc(var(--depth) * 14px), 25%) + 14px); }
+  .finished .done-fold { margin-top: 2px; }
   .job-chip { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 7px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--bg-elevated); font-size: 11px; line-height: 17px; color: var(--text-muted); font-family: var(--mono); }
   .job-chip:hover { border-color: var(--accent); color: var(--accent-bold); }
-  .plan-note { padding: 0 0 4px calc(var(--depth) * 16px + 38px); font-size: 12px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
+  .plan-note { padding: 0 0 4px calc(min(calc(var(--depth) * 14px), 25%) + 38px); font-size: 12px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
   .todos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   .todo { padding: 3px 0; }
   .todo-line { display: flex; align-items: flex-start; gap: 6px; }
@@ -283,8 +339,12 @@
   .done-fold:hover { color: var(--text); background: var(--bg-hover); }
   .done-fold + .todos { margin-top: 4px; }
   .notes { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-  .note { display: flex; align-items: flex-start; gap: 6px; }
-  .bullet { flex: none; width: 5px; height: 5px; margin: 7px 3px 0 4px; border-radius: 50%; background: var(--text-faint); }
+  .note { display: flex; align-items: flex-start; gap: 5px; padding-left: min(calc(var(--depth) * 14px), 25%); line-height: 18px; }
+  .note .fold { height: 19px; }
+  .note .id-chip { margin-top: 1px; }
+  .progress.under { margin-left: 6px; }
+  .link-chip.under { gap: 2px; padding-right: 4px; }
+  .link-chip.under .id-chip { opacity: 1; }
   .note-body { flex: 1; min-width: 0; line-height: 19px; }
   .note-text { overflow-wrap: anywhere; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }

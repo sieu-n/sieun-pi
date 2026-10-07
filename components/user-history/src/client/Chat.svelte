@@ -2,10 +2,9 @@
   import { tick, untrack } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
-  import { ui, BOARD_DEFAULT, BOARD_MAX, BOARD_MIN } from "./ui.svelte.ts";
+  import { ui, BOARD_DEFAULT, boardMax, BOARD_MIN } from "./ui.svelte.ts";
   import { clock } from "./clock.svelte.ts";
   import { clockTime } from "./format.ts";
-  import { nextRun } from "./organize.ts";
   import { createdSessions } from "./children.ts";
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobViews, reportsFor, spawnCalls } from "./jobs.ts";
   import { boardActionText, isBoardAction, openAgentTodos } from "./board.ts";
@@ -15,7 +14,7 @@
   import { bubbleBlocks, renderInline, renderMarkdown } from "./markdown.ts";
   import { diagrams } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
-  import type { BoardOp, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, ThinkingLevel } from "../shared/types.ts";
+  import type { BoardOp, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
   import ChatComposer from "./ChatComposer.svelte";
   import BoardPanel from "./BoardPanel.svelte";
   import JobList from "./JobList.svelte";
@@ -78,11 +77,11 @@
   const jobs = $derived(jobViews(children, started, usage, sessionId => store.session(sessionId)));
   const runningCount = $derived(jobs.filter(isActiveJob).length);
   const pulses = $derived(new Map<string, ChildPulse>((row?.pulse?.subagents ?? []).map(pulse => [pulse.rlmChildId, pulse])));
+  const hasOpenStep = (items: readonly PlanItem[]): boolean => items.some(item => item.status === "todo" || item.status === "doing" || item.status === "blocked" || hasOpenStep(item.children));
+  /** The server's check-in tick runs every 10 minutes while a job runs or a plan step is open (todo, doing, blocked), and steers the chat only on a change. */
   const checkIn = $derived.by(() => {
-    const schedule = row?.schedule;
-    if (!schedule) return { text: "Check-in off", on: false };
-    if (schedule.status === "paused") return { text: "Check-in paused, nothing running", on: false };
-    return { text: "Check-in " + (nextRun(schedule.nextRunAt, minute) || schedule.expression), on: true };
+    if (runningCount || hasOpenStep(board?.plan ?? [])) return { text: "Check-in every 10 min, on changes only", on: true };
+    return { text: "Check-in paused, nothing open", on: false };
   });
 
   /** The side panel (wide) and the phone switch share the Board and Jobs views; the phone adds Chat. */
@@ -167,7 +166,7 @@
   }
   function resizeKey(event: KeyboardEvent): void {
     const next = event.key === "ArrowLeft" ? ui.boardWidth + 16 : event.key === "ArrowRight" ? ui.boardWidth - 16
-      : event.key === "Home" ? BOARD_MAX : event.key === "End" ? BOARD_MIN : null;
+      : event.key === "Home" ? boardMax() : event.key === "End" ? BOARD_MIN : null;
     if (next === null) return;
     event.preventDefault();
     ui.setBoardWidth(next, true);
@@ -399,14 +398,18 @@
         {/if}
       </div>
       {#if !narrow && ui.boardOpen}
-        <aside class="side" class:resizing aria-label="Board and jobs" bind:this={sideNode} style:width="{ui.boardWidth}px">
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-          <div class="resize" class:resizing role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the board panel"
-            aria-valuemin={BOARD_MIN} aria-valuemax={BOARD_MAX} aria-valuenow={ui.boardWidth} use:tooltip={"Drag to resize, double-click to reset"}
-            onpointerdown={startResize} ondblclick={() => ui.setBoardWidth(BOARD_DEFAULT, true)} onkeydown={resizeKey}></div>
+        <aside class="side" class:resizing class:wide={ui.boardWide} aria-label="Board and jobs" bind:this={sideNode} style:width={ui.boardWide ? undefined : `${ui.boardWidth}px`}>
+          {#if !ui.boardWide}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+            <div class="resize" class:resizing role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the board panel"
+              aria-valuemin={BOARD_MIN} aria-valuemax={boardMax()} aria-valuenow={ui.boardWidth} use:tooltip={"Drag to resize, double-click to reset"}
+              onpointerdown={startResize} ondblclick={() => ui.setBoardWidth(BOARD_DEFAULT, true)} onkeydown={resizeKey}><span class="grip"><Icon name="grip" size={14} /></span></div>
+          {/if}
           <div class="switch side-tabs" role="tablist" aria-label="Side panel">
             {@render boardTab(side === "board", () => { side = "board"; })}
             {@render jobsTab(side === "jobs", () => { side = "jobs"; })}
+            <button type="button" class="icon-button small expand" class:on={ui.boardWide} aria-pressed={ui.boardWide} aria-label={ui.boardWide ? "Back to the chat" : "Expand the panel"}
+              use:tooltip={ui.boardWide ? "Back to the chat" : "Expand the panel"} onclick={() => ui.setBoardWide(!ui.boardWide)}><Icon name={ui.boardWide ? "collapse" : "expand"} size={14} /></button>
           </div>
           <div class="pane">{#if side === "board"}{@render boardView()}{:else}{@render jobsView()}{/if}</div>
         </aside>
@@ -438,10 +441,16 @@
   .body { position: relative; display: flex; flex: 1; min-height: 0; }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
   .side { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--bg-sunken); }
-  .resize { position: absolute; top: 0; bottom: 0; left: -4px; z-index: 20; width: 8px; cursor: col-resize; touch-action: none; }
-  .resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background-color 0.12s 0.1s; }
-  .resize:hover::after, .resize:focus-visible::after, .resize.resizing::after { background: var(--accent); }
+  .side.wide { flex: 1; min-width: 0; }
+  .body:has(> .side.wide) > .main { flex: none; width: 380px; }
+  .resize { position: absolute; top: 0; bottom: 0; left: -5px; z-index: 20; width: 10px; cursor: col-resize; touch-action: none; }
+  .resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 4px; border-radius: 2px; background: transparent; transition: background-color 0.12s; }
+  .grip { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: inline-flex; padding: 6px 0; border-radius: 999px; color: var(--text-faint); background: var(--bg-elevated); border: 1px solid var(--border); opacity: 0.7; transition: opacity 0.12s, color 0.12s; }
+  .resize:hover::after, .resize:focus-visible::after, .resize.resizing::after { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .resize:hover .grip, .resize:focus-visible .grip, .resize.resizing .grip { opacity: 1; color: var(--accent-bold); border-color: var(--accent); }
   .resize:focus-visible { outline: none; }
+  .side-tabs .expand { flex: none; margin-left: auto; width: 26px; height: 26px; padding: 0; color: var(--text-muted); }
+  .side-tabs .expand.on { color: var(--accent-bold); background: var(--accent-soft); }
   :global(body:has(.side .resize.resizing)) { cursor: col-resize; user-select: none; }
   .pane { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .switch { display: flex; flex: none; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--bg); }

@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
-import type { ChildAgent, ThinkingLevel } from "./shared/types.ts";
+import { checkInDigest, checkInDue, checkInMessage, CHECK_IN_MS, childName, endedWithoutReport, jobFacts, type CheckInRecord } from "./chat-checkin.ts";
+import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
+import type { ChatBoard, ChildAgent, SessionRow, ThinkingLevel } from "./shared/types.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -19,9 +20,8 @@ export const CHAT_BOARD_TOOL = "chat_board";
 export const CHAT_TOOLS: readonly string[] = [CHAT_BOARD_TOOL, TELL_OWNER_TOOL];
 export const TELL_OWNER_TOO_LONG = "shorter: one or two sentences";
 export const TELL_OWNER_DONE = "told the owner";
-export const CHECK_IN_SCHEDULE = "every 10m";
-export const CHECK_IN = "Check-in. Read the board (chat_board with no ops) and what each job is doing (rlm.list_subagents, rlm.collect, agent_observe.recent_messages). " +
-  "Update the board, re-brief or stop anything stuck. Reply to the owner only if there is something to report, ask, or decide; otherwise end the turn with no text.";
+/** The prompt of the daemon heartbeat that did the check-in before the server tick; an attach clears a heartbeat whose prompt starts with it. */
+export const OLD_CHECK_IN = "Check-in. Read the board";
 /** Shell commands a chat may run: prime-agent (stop, send) and quick read-only look-ups. Each entry matches as a whole word at the start. */
 const ALLOWED_SHELL = ["prime-agent", "git log", "git status", "git diff", "git show", "rg", "ls", "cat", "head", "tail", "wc"];
 const SHELL_LIST = "prime-agent, git log/status/diff/show, rg, ls, cat, head, tail, wc";
@@ -50,15 +50,25 @@ export const CHAT_BRIEF: readonly string[] = [
   "Board: keep it current with the `chat_board` tool; the owner sees it next to the chat. The plan is a nested checklist: top items are goals, children " +
     "are steps, each job linked by name. Update the board in the same turn you start or finish a job. A user message that starts with `[board] ` is " +
     "the owner acting on the board (choosing or answering a todo, adding a note); act on it.",
+  "Board shape: every goal gets its phases as child steps from the start: Plan (research or design), Decide (only when the owner must choose), Build, " +
+    "Verify. Each step carries its real status, including blocked steps nobody works on yet, so the owner sees the whole path. Link a job on the step " +
+    "it does, not on the goal. Example: goal `Reach chats from a messenger (Slack first)` has Plan (doing, job messenger-bridge-research), Decide " +
+    "(blocked), Build (blocked), Verify (todo). A step's `job` is a job name or the session name or id of a thread you started with rlm.create_session.",
   "The scratchpad is a short bullet list: one finding or decision per bullet, with links to what it is about (`job:<name>` for a job's report, " +
     "`thread:<id>`, `wiki:<path>`, `file:<path>`, or a URL). No long prose.",
   "You are the VP: decide everything you can yourself. Ask the owner only for what a VP cannot decide: product direction, money, irreversible or " +
     "external actions (deploys, sends, deletes), credentials and logins. Doc wording, small fixes, detail level and code choices are yours: decide, act, " +
     "and note the decision in the scratchpad. Keep at most 3 open owner todos; each is one short question with 2 to 4 `choices`, your recommendation " +
     "first. Before adding one, ask yourself whether the CTO would be annoyed to be asked; if so, decide. An ask is an owner todo plus one short line in chat.",
-  "Start every job at once, reply in one short message, and end the turn. Never wait inside a turn: job reports and check-ins wake you later. " +
-    "On a check-in, read the board and the jobs (`await rlm.list_subagents()`, `await rlm.collect(...)`, `await agent_observe.recent_messages(name)`), " +
-    "update statuses, re-brief or stop what is stuck, and reply only if the owner needs to know or decide; otherwise end the turn with no text.",
+  "Start every job at once, reply in one short message, and end the turn. Never wait inside a turn: job reports and check-ins wake you later.",
+  "A `[check-in]` message lists what changed. Make the board match reality (statuses, notes with links), start the next plan step whose earlier steps " +
+    "are done, re-brief or stop stuck jobs (send a job only its own plan item, not the whole board), and stay quiet unless a goal finished, something " +
+    "is blocked, or you need a decision (one tell_owner). `[job] <name> ended with no report` means that job stopped without reporting: read its last " +
+    "messages (`await agent_observe.recent_messages(name)`) and act on what it did.",
+  "Corrections stick: when the owner corrects how you work (board shape, tone, what to report), apply it now and make it hold for every future chat. " +
+    "If the brief or code must change, send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., " +
+    "receiver_role=\"sibling\", receiver_name=\"realtime layer\")`; if a note is enough, record it with `await refine.run()`. The owner should never " +
+    "have to give the same correction twice.",
   `Shell: only \`bash()\` commands that start with ${SHELL_LIST}, with no pipes, redirects or chaining. No edit(), no write-mode open(), no git writes.`,
 ];
 
@@ -206,16 +216,95 @@ export function chatGuard({ toolName, input, depth, marked }: GuardInput): { blo
   return reason ? { block: true, reason } : undefined;
 }
 
-/** The check-in heartbeat runs only while a job runs under the chat. */
-export function checkInWanted(children: readonly ChildAgent[]): boolean {
-  return children.some(child => child.status === "running" || child.status === "queued");
+/** The tool whose promptGuidelines tell a job of a chat how to report. Registered only in a job's own session, so its base prompt carries the line. */
+export const JOB_REPLY_TOOL = "job_reply";
+/** A session that works for a chat: `chat` is the chat's session name (empty when unknown); `root` for a thread the chat started with rlm.create_session. */
+export interface ChatJobOf { chat: string; root: boolean }
+
+export function jobReplyGuideline(job: ChatJobOf): string {
+  const send = job.root ? `await agent_message.send(report, receiver_role="sibling", receiver_name="${job.chat}")` : `await agent_message.send(report, receiver_role="parent")`;
+  return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you are done, failed or blocked, send it one report with \`${send}\`. ` +
+    "Send at most one progress message before that.";
 }
-export type CheckInState = "active" | "paused";
-/** The heartbeat update that takes `current` (undefined: not known since the last attach) to `wanted`; null when it is there already. */
-export function checkInAction(current: CheckInState | undefined, wanted: boolean): "pause" | "resume" | null {
-  const target: CheckInState = wanted ? "active" : "paused";
-  if (current === target) return null;
-  return wanted ? "resume" : "pause";
+
+/**
+ * Whether a session is a job of a chat: a direct subagent of a marked chat (`parentChat` is the chat's name, null when the parent is no chat),
+ * or an unmarked root the job registry lists under a chat (`registered`).
+ */
+export function jobOf(input: { depth: number; marked: boolean; parentChat?: string | null; registered?: string | undefined }): ChatJobOf | null {
+  if (input.depth === 1 && typeof input.parentChat === "string") return { chat: input.parentChat, root: false };
+  if (input.depth === 0 && !input.marked && input.registered) return { chat: input.registered, root: true };
+  return null;
+}
+
+/**
+ * The chat's name when a session file carries the chat_mode entry, else null. The name is the last session_info before the entry: a chat is named at
+ * create, before its first session_start writes the entry. The scan stops at the entry.
+ */
+export async function fileChatName(sessionFile: string): Promise<string | null> {
+  const lines = createInterface({ input: createReadStream(sessionFile, { encoding: "utf8" }), crlfDelay: Infinity });
+  let name = "";
+  try {
+    for await (const line of lines) {
+      if (line.startsWith('{"type":"session_info"')) {
+        try { const entry = JSON.parse(line) as { name?: unknown }; if (typeof entry.name === "string" && entry.name.trim()) name = entry.name.trim(); } catch { continue; }
+      } else if (line.includes(`"customType":"${CHAT_MODE_ENTRY}"`)) {
+        try { if (hasChatMarker([JSON.parse(line)])) return name; } catch { continue; }
+      }
+    }
+    return null;
+  } catch { return null; }
+  finally { lines.close(); }
+}
+
+const CREATE_SESSION = /\brlm\.create_session\s*\(/g;
+const blankStrings = (code: string): string => code.replace(new RegExp(`${PY_STRING.source}|#[^\n]*`, "g"), text => " ".repeat(text.length));
+/** The session names an ipython cell gives `rlm.create_session(..., name="...")` as plain string literals; a computed name is not found. */
+export function createSessionNames(code: string): string[] {
+  const blanked = blankStrings(code);
+  const names: string[] = [];
+  CREATE_SESSION.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CREATE_SESSION.exec(blanked)) !== null) {
+    const args = argumentText(code, match.index + match[0].length - 1);
+    const keyword = /\bname\s*=/.exec(blankStrings(args));
+    if (!keyword) continue;
+    PY_STRING.lastIndex = 0;
+    const rest = args.slice(keyword.index + keyword[0].length).trimStart();
+    const literal = PY_STRING.exec(rest);
+    if (!literal || literal.index !== 0 || (/^[rbuRBU]*[fF]/.test(literal[0]) && literal[0].includes("{"))) continue;
+    const name = unquote(literal[0]).trim();
+    if (name) names.push(name);
+  }
+  return names;
+}
+
+/** Which chat started a root by name. The chat's extension writes it when a cell calls rlm.create_session; the root's extension reads it at start. */
+export interface JobRegistry {
+  add(names: readonly string[], chat: string): Promise<void>;
+  chatOf(name: string): Promise<string | undefined>;
+}
+const REGISTRY_KEEP_MS = 30 * 24 * 60 * 60_000;
+/** `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName]: { chat, at } } }` through locked-json; entries older than 30 days go on the next add. */
+export function jobRegistry(path: string, now: () => number = Date.now): JobRegistry {
+  type Entry = { chat: string; at: number };
+  const file: JsonFile<{ jobs: Record<string, Entry> }> = { path, label: "Chat job registry", initial: () => ({ jobs: {} }), parse(value: unknown) {
+    const jobs = typeof value === "object" && value !== null && "jobs" in value && typeof value.jobs === "object" && value.jobs !== null ? value.jobs as Record<string, unknown> : {};
+    return { jobs: Object.fromEntries(Object.entries(jobs).filter((entry): entry is [string, Entry] => {
+      const job = entry[1] as Partial<Entry> | null;
+      return typeof job === "object" && job !== null && typeof job.chat === "string" && typeof job.at === "number";
+    })) };
+  } };
+  return {
+    async add(names, chat) {
+      const at = now();
+      await transactJsonFile(file, state => {
+        for (const [name, entry] of Object.entries(state.jobs)) if (at - entry.at > REGISTRY_KEEP_MS) delete state.jobs[name];
+        for (const name of names) state.jobs[name] = { chat, at };
+      });
+    },
+    async chatOf(name) { return (await snapshotJsonFile(file)).jobs[name]?.chat; },
+  };
 }
 
 /** The source files a chat session runs as its extension. A change in any of them is a new build; a chat that loaded an older one is reloaded. */
@@ -259,8 +348,11 @@ export interface ChatThreads {
   pin(id: string): boolean;
   unpin(id: string): void;
   setSteeringMode(id: string, mode: "all" | "one-at-a-time"): Promise<void>;
-  setHeartbeat(id: string, schedule: string, instruction: string, deliveryMode: "steer" | "follow_up"): Promise<void>;
-  updateHeartbeat(id: string, action: "pause" | "resume"): Promise<void>;
+  /** The attached session's heartbeat prompt, undefined when it has none. */
+  heartbeat(id: string): Promise<string | undefined>;
+  clearHeartbeat(id: string): Promise<void>;
+  /** Sends text as a steer: it joins the running turn or starts one. */
+  prompt(id: string, input: { message: string; images: []; mode: "steer" }): Promise<void>;
   /** Whether the thread is mid-turn. */
   busy(id: string): boolean;
   /** Re-runs the session's extensions, so it gets the current tools and brief. */
@@ -270,34 +362,55 @@ export interface ChatThreads {
 }
 export type ChatSummary = (id: string) => Promise<{ lifecycle?: string; sessionFile?: string } | undefined>;
 
+/** What the check-in tick reads besides the children: the board, the catalog rows (threads a plan item links), and its memory per chat. */
+export interface CheckInSource {
+  board(id: string): Promise<ChatBoard | null>;
+  rows(): Promise<readonly SessionRow[]>;
+  memory: CheckInRecord;
+  /** The tick period; 0 starts no timer (tests call `checkIn`). Default CHECK_IN_MS. */
+  everyMs?: number;
+  now?: () => number;
+}
+
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
- * state), the check-in heartbeat, paused while no job runs, and the extension build: a chat that last loaded an older build than the one on
- * disk is reloaded when it attaches, at once if idle, else at the end of its turn. Everything converges from the index plus the daemon list,
- * so a restart re-adopts what it finds.
+ * state), the check-in tick, the no-report notice, and the extension build: a chat that last loaded an older build than the one on disk is
+ * reloaded when it attaches, at once if idle, else at the end of its turn. Everything converges from the index plus the daemon list, so a restart
+ * re-adopts what it finds.
  */
 export class Chats {
-  private readonly checkIn = new Map<string, CheckInState>();
   private readonly chatIds = new Set<string>();
-  /** The children last seen per thread; a sync reads these, not its trigger's, so the newest state wins when syncs queue up. */
+  /** The children last seen per thread: the tick reads them, and each change is compared with them to find a job that ended with no report. */
   private readonly children = new Map<string, readonly ChildAgent[]>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
   private readonly syncing = new Map<string, Promise<void>>();
   private loaded: Promise<void> | undefined;
   private readonly unobserve: () => void;
+  private readonly timer: ReturnType<typeof setInterval> | undefined;
+  private readonly now: () => number;
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
    * is the agent side's. `build` is the extension build on disk (`extensionBuild()`), `loads` the one each chat last loaded.
    */
   constructor(readonly index: IdIndex, private readonly threads: ChatThreads, private readonly summary: ChatSummary, private readonly build: string,
-    private readonly loads: LoadRecord, private readonly log: (line: string) => void = () => {}) {
+    private readonly loads: LoadRecord, private readonly source: CheckInSource, private readonly log: (line: string) => void = () => {}) {
+    this.now = source.now ?? Date.now;
     this.unobserve = threads.observe({
-      live: (id, children) => { this.checkIn.delete(id); this.children.set(id, children); this.queueSync(id, true); this.queue(id, () => this.refreshExtension(id)); },
-      children: (id, children) => { this.children.set(id, children); this.queueSync(id, false); },
+      live: (id, children) => { this.children.set(id, children); this.queue(id, () => this.attached(id)); this.queue(id, () => this.refreshExtension(id)); },
+      children: (id, children) => {
+        const before = this.children.get(id);
+        this.children.set(id, children);
+        if (before) for (const child of endedWithoutReport(before, children)) this.queue(id, () => this.noReport(id, childName(child)));
+      },
       idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); },
     });
+    const every = source.everyMs ?? CHECK_IN_MS;
+    if (every > 0) {
+      this.timer = setInterval(() => { void this.load().then(() => { for (const id of this.chatIds) this.queue(id, async () => { await this.checkIn(id); }); }); }, every);
+      this.timer.unref();
+    }
   }
 
   /** Tasks of one thread run one after another; `settled` resolves once every queue is empty, for tests. */
@@ -306,7 +419,6 @@ export class Chats {
     this.syncing.set(id, next);
     void next.finally(() => { if (this.syncing.get(id) === next) this.syncing.delete(id); });
   }
-  private queueSync(id: string, attached: boolean): void { this.queue(id, () => this.sync(id, attached)); }
 
   async settled(): Promise<void> { while (this.syncing.size) await Promise.all([...this.syncing.values()]); }
 
@@ -325,9 +437,6 @@ export class Chats {
     this.chatIds.add(id);
     if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     await this.threads.setSteeringMode(id, "all");
-    await this.threads.setHeartbeat(id, CHECK_IN_SCHEDULE, CHECK_IN, "follow_up");
-    await this.threads.updateHeartbeat(id, "pause");
-    this.checkIn.set(id, "paused");
     await this.loads.set(id, this.build);
     return { id, name };
   }
@@ -350,9 +459,8 @@ export class Chats {
   }
 
   /**
-   * After an unarchive: a session whose file carries the chat_mode entry is a chat again, back in the index, pinned, with steering `all` and its
-   * check-in set, then paused or resumed by whether a job runs. False for a plain thread. Steering and the check-in resume the session; a failure
-   * there is logged, since the pin resumes it again and the attach re-applies steering.
+   * After an unarchive: a session whose file carries the chat_mode entry is a chat again, back in the index, pinned, with steering `all`. False for a
+   * plain thread. Steering resumes the session; a failure there is logged, since the pin resumes it again and the attach re-applies steering.
    */
   async restore(id: string): Promise<boolean> {
     await this.load();
@@ -361,26 +469,62 @@ export class Chats {
     await this.index.add(id);
     this.chatIds.add(id);
     if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
-    try {
-      await this.threads.setSteeringMode(id, "all");
-      await this.threads.setHeartbeat(id, CHECK_IN_SCHEDULE, CHECK_IN, "follow_up");
-    } catch (error) {
-      this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    // The heartbeat state is unknown now; the sync pauses or resumes it from the children last seen.
-    this.checkIn.delete(id);
-    this.queueSync(id, false);
+    try { await this.threads.setSteeringMode(id, "all"); }
+    catch (error) { this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }
     return true;
   }
 
   async forget(id: string): Promise<void> {
     this.threads.unpin(id);
-    this.checkIn.delete(id);
     this.children.delete(id);
     this.reloadWaiting.delete(id);
     this.chatIds.delete(id);
     await this.index.forget(id);
     await this.loads.forget(id);
+    await this.source.memory.forget(id);
+  }
+
+  /**
+   * One check-in tick for a chat: nothing while it has no job at work and no open plan step; else the digest against the last tick, kept as the new
+   * memory, and a `[check-in]` steer only when a line needs the chat. Returns the lines sent.
+   */
+  async checkIn(id: string): Promise<string[]> {
+    await this.load();
+    if (!this.chatIds.has(id)) return [];
+    try {
+      const board = await this.source.board(id);
+      const facts = jobFacts(this.children.get(id) ?? [], board, await this.source.rows());
+      if (!checkInDue(facts, board)) return [];
+      const { memory, lines } = checkInDigest(await this.source.memory.get(id), facts, board, this.now());
+      await this.source.memory.set(id, memory);
+      if (lines.length) await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines), images: [], mode: "steer" });
+      return lines;
+    } catch (error) {
+      this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
+
+  private async noReport(id: string, name: string): Promise<void> {
+    await this.load();
+    if (!this.chatIds.has(id)) return;
+    try { await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${name} ended with no report`, images: [], mode: "steer" }); }
+    catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /** After each attach: steering `all` again (runtime state), and the old daemon check-in heartbeat cleared, since the server tick replaced it. */
+  private async attached(id: string): Promise<void> {
+    await this.load();
+    if (!this.chatIds.has(id)) return;
+    try {
+      await this.threads.setSteeringMode(id, "all");
+      if ((await this.threads.heartbeat(id))?.startsWith(OLD_CHECK_IN)) {
+        await this.threads.clearHeartbeat(id);
+        this.log(`chat ${id.slice(0, 8)}: cleared the old check-in heartbeat`);
+      }
+    } catch (error) {
+      this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** Reloads the chat when the build it last loaded is not the one on disk: now if it is idle, else once its turn ends. */
@@ -400,19 +544,5 @@ export class Chats {
     }
   }
 
-  private async sync(id: string, attached: boolean): Promise<void> {
-    await this.load();
-    if (!this.chatIds.has(id)) return;
-    try {
-      if (attached) await this.threads.setSteeringMode(id, "all");
-      const action = checkInAction(this.checkIn.get(id), checkInWanted(this.children.get(id) ?? []));
-      if (!action) return;
-      await this.threads.updateHeartbeat(id, action);
-      this.checkIn.set(id, action === "pause" ? "paused" : "active");
-    } catch (error) {
-      this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  close(): void { this.unobserve(); }
+  close(): void { clearInterval(this.timer); this.unobserve(); }
 }

@@ -32,18 +32,18 @@ function storedColumns(key = "chat.agentsColumns"): Record<string, boolean> {
     return Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
   } catch { return {}; }
 }
-function storedTree(): Record<string, true> {
+function storedTree(key = "chat.chatTreeOpen"): Record<string, true> {
   try {
-    const saved: unknown = JSON.parse(stored("chat.chatTreeOpen") ?? "null");
+    const saved: unknown = JSON.parse(stored(key) ?? "null");
     return Array.isArray(saved) ? Object.fromEntries(saved.filter((id): id is string => typeof id === "string").map(id => [id, true])) : {};
   } catch { return {}; }
 }
 const clampWidth = (width: number): number => Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)));
-/** The Board / Jobs panel beside a chat: dragged from its left edge, reset by a double click. */
+/** The Board / Jobs panel beside a chat: dragged from its left edge up to 60% of the window, reset by a double click, or expanded to the whole width. */
 export const BOARD_MIN = 280;
-export const BOARD_MAX = 720;
 export const BOARD_DEFAULT = 320;
-export const clampBoardWidth = (width: number): number => Math.round(Math.min(BOARD_MAX, Math.max(BOARD_MIN, width)));
+export const boardMax = (): number => Math.max(BOARD_MIN, Math.floor((typeof window === "undefined" ? 1200 : window.innerWidth) * 0.6));
+export const clampBoardWidth = (width: number): number => Math.round(Math.min(boardMax(), Math.max(BOARD_MIN, width)));
 
 class Ui {
   viewMode = $state<ViewMode>(VIEW_MODES.find(mode => mode === stored("chat.viewMode")) ?? "default");
@@ -72,9 +72,24 @@ class Ui {
     this.boardWidth = clampBoardWidth(width);
     if (persist) store("chat.boardWidth", String(this.boardWidth));
   }
+  /** Expanded: the panel takes the room right of the sidebar and the chat narrows to one column; off again puts the last width back. */
+  boardWide = $state(stored("chat.boardWide") === "1");
+  setBoardWide(wide: boolean): void { this.boardWide = wide; store("chat.boardWide", wide ? "1" : "0"); }
   /** The Plan and Notes cards of the board, folded or open; the choice holds across chats and reloads. For you decides for itself. */
   boardCards = $state.raw<Record<string, boolean>>(storedColumns("chat.boardCards"));
   setBoardCard(card: string, open: boolean): void { this.boardCards = { ...this.boardCards, [card]: open }; store("chat.boardCards", JSON.stringify(this.boardCards)); }
+  /** Plan steps and notes the owner unfolded, keyed `<chat id>/<item id>`; everything with children starts folded. */
+  boardItemsOpen = $state.raw<Record<string, true>>(storedTree("chat.boardItemsOpen"));
+  setBoardItemOpen(chatId: string, itemId: string, open: boolean): void {
+    this.boardItemsOpen = toggled(this.boardItemsOpen, `${chatId}/${itemId}`, open);
+    store("chat.boardItemsOpen", JSON.stringify(Object.keys(this.boardItemsOpen)));
+  }
+  /** Parents (`root` for the top level) whose done and dropped steps the owner shows, keyed `<chat id>/<parent id>`. */
+  boardShowDone = $state.raw<Record<string, true>>(storedTree("chat.boardShowDone"));
+  setBoardShowDone(chatId: string, parent: string, shown: boolean): void {
+    this.boardShowDone = toggled(this.boardShowDone, `${chatId}/${parent}`, shown);
+    store("chat.boardShowDone", JSON.stringify(Object.keys(this.boardShowDone)));
+  }
   /** Chats whose job list is unfolded in the sidebar. */
   chatTreeOpen = $state.raw<Record<string, true>>(storedTree());
   setChatTreeOpen(id: string, open: boolean): void {
@@ -92,5 +107,9 @@ class Ui {
     this.sidebarWidth = clampWidth(width);
     if (persist) store("chat.sidebarWidth", String(this.sidebarWidth));
   }
+}
+function toggled(set: Record<string, true>, key: string, on: boolean): Record<string, true> {
+  const { [key]: _was, ...rest } = set;
+  return on ? { ...rest, [key]: true } : rest;
 }
 export const ui = new Ui();

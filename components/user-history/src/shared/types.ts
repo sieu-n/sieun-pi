@@ -54,6 +54,10 @@ export interface ChildAgent {
   id: string; parentId?: string; sessionName?: string; model?: string; label: string; status: ChildStatus;
   durationMs?: number; recap?: string; error?: string; answerPreview?: string;
   activity?: { kind: "waiting" | "writing" | "executing"; toolName?: string };
+  /** The child messaged its parent since its current task arrived; absent when the daemon cannot tell (a child resumed after a restart). */
+  repliedSinceTask?: boolean;
+  /** Epoch ms of the child's last model, tool or progress-note event. */
+  lastActivityAt?: number;
 }
 /**
  * What a running session is doing, from its native daemon summary. `activityAt` is its latest activity or that of any running subagent under it,
@@ -92,8 +96,8 @@ export interface PlanItem { id: string; text: string; status: PlanStatus; job?: 
  * (`.../#<sessionId>@<timestamp>`) is stored as its `thread:` form.
  */
 export interface ArtifactLink { label: string; target: string }
-/** One scratchpad bullet: a short note, optionally with links to what it is about. */
-export interface ScratchItem { id: string; text: string; links: ArtifactLink[]; at: string }
+/** One scratchpad note: short text, optionally with links to what it is about, and notes nested under it to any depth. */
+export interface ScratchItem { id: string; text: string; links: ArtifactLink[]; at: string; children: ScratchItem[] }
 /**
  * Something only the owner can give: a decision, a login, an approval. `choices` are the answers the agent offers (first one is its
  * recommendation); the owner taps one or writes `reply`.
@@ -107,7 +111,7 @@ export type BoardOp =
   | { op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string }
   | { op: "plan_update"; id: string; text?: string; status?: PlanStatus; job?: string | null; note?: string | null }
   | { op: "plan_remove"; id: string }
-  | { op: "scratch_add"; text: string; links?: ArtifactLink[] }
+  | { op: "scratch_add"; parent?: string; text: string; links?: ArtifactLink[] }
   | { op: "scratch_update"; id: string; text?: string; links?: ArtifactLink[] }
   | { op: "scratch_remove"; id: string }
   | { op: "todo_add"; text: string; choices?: string[] }

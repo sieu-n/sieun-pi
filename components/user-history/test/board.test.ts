@@ -1,9 +1,53 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardActionText, groupTodos, isBoardAction, isEmptyBoard, linkChip, linkLabel, offeredLink, openAgentTodos, planProgress } from "../src/client/board.ts";
-import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
+import { boardActionText, countItems, groupTodos, ID_PALETTE, idColor, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, openAgentTodos, planProgress, planTotals, ROOT, treeRows, type TreeRow } from "../src/client/board.ts";
+import type { ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../src/shared/types.ts";
 
 const item = (id: string, status: PlanItem["status"], children: PlanItem[] = []): PlanItem => ({ id, text: id, status, children });
+const note = (id: string, children: ScratchItem[] = []): ScratchItem => ({ id, text: id, links: [], at: "2026-10-06T00:00:00Z", children });
+const line = (row: TreeRow<{ id: string }>): string => row.kind === "item" ? `${"  ".repeat(row.depth)}${row.item.id}` : `${"  ".repeat(row.depth)}[${row.shown ? "hide" : "show"} done ${row.count} of ${row.parent}]`;
+
+test("treeRows: every parent starts folded; an opened parent shows its children; done and dropped steps hide until Show done is on for their parent", () => {
+  const plan = [
+    item("p1", "doing", [item("p2", "done"), item("p3", "doing", [item("p4", "done"), item("p5", "todo", [item("p6", "todo")])]), item("p7", "dropped")]),
+    item("p8", "done", [item("p9", "done")]),
+    item("p10", "todo"),
+  ];
+  const open = new Set<string>();
+  const shown = new Set<string>();
+  const rows = () => treeRows(plan, { open: id => open.has(id), showDone: parent => shown.has(parent) }, isFinished).map(line);
+  assert.deepEqual(rows(), ["p1", "p10", `[show done 1 of ${ROOT}]`], "folded by default, p8 hidden as done");
+  open.add("p1");
+  assert.deepEqual(rows(), ["p1", "  p3", "  [show done 2 of p1]", "p10", `[show done 1 of ${ROOT}]`], "p2 and p7 hide behind their parent's toggle");
+  open.add("p3").add("p5");
+  assert.deepEqual(rows(), ["p1", "  p3", "    p5", "      p6", "    [show done 1 of p3]", "  [show done 2 of p1]", "p10", `[show done 1 of ${ROOT}]`]);
+  shown.add("p1");
+  assert.deepEqual(rows(), ["p1", "  p2", "  p3", "    p5", "      p6", "    [show done 1 of p3]", "  p7", "  [hide done 2 of p1]", "p10", `[show done 1 of ${ROOT}]`]);
+  shown.add(ROOT);
+  open.add("p8");
+  assert.deepEqual(rows().slice(-4), ["p8", "  [show done 1 of p8]", "p10", `[hide done 1 of ${ROOT}]`], "a shown done goal still folds and hides its own done steps");
+  assert.deepEqual(treeRows([], { open: () => true, showDone: () => true }, isFinished), []);
+});
+
+test("treeRows over notes never hides anything; countItems and planTotals count the whole tree", () => {
+  const notes = [note("s1", [note("s2", [note("s3")])]), note("s4")];
+  const open = new Set(["s1"]);
+  assert.deepEqual(treeRows(notes, { open: id => open.has(id), showDone: () => false }).map(line), ["s1", "  s2", "s4"]);
+  assert.equal(countItems(notes), 4);
+  assert.deepEqual(planTotals([item("p1", "done", [item("p2", "dropped"), item("p3", "todo")]), item("p4", "done")]), { done: 2, total: 3 });
+  assert.deepEqual(planTotals([]), { done: 0, total: 0 });
+});
+
+test("idColor is one of ten muted colors, the same for a chat and item on every call, and differs across items of one chat", () => {
+  assert.equal(ID_PALETTE.length, 10);
+  for (const color of ID_PALETTE) assert.match(color, /^#[0-9a-f]{6}$/);
+  const first = idColor("chat-a", "p1");
+  assert.equal(idColor("chat-a", "p1"), first);
+  assert.ok(ID_PALETTE.includes(first));
+  const colors = new Set(Array.from({ length: 30 }, (_, index) => idColor("chat-a", `p${index + 1}`)));
+  assert.ok(colors.size >= 6, `30 ids of one chat spread over ${colors.size} colors`);
+  assert.ok(Array.from({ length: 30 }, (_, index) => idColor(`chat-${index}`, "p1")).some(color => color !== first), "the chat id is part of the hash");
+});
 
 test("planProgress counts every step below a goal except dropped ones", () => {
   const goal = item("p1", "doing", [
@@ -32,7 +76,7 @@ test("openAgentTodos counts only open asks from the agent, and an empty board is
   assert.equal(openAgentTodos(null), 0);
   assert.equal(isEmptyBoard(null), true);
   assert.equal(isEmptyBoard({ ...board, todos: [] }), true);
-  assert.equal(isEmptyBoard({ ...board, todos: [], scratch: [{ id: "s1", text: "note", links: [], at: "2026-10-06T00:00:00Z" }] }), false);
+  assert.equal(isEmptyBoard({ ...board, todos: [], scratch: [{ id: "s1", text: "note", links: [], at: "2026-10-06T00:00:00Z", children: [] }] }), false);
   assert.equal(isEmptyBoard(board), false);
 });
 

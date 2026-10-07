@@ -66,8 +66,8 @@ test("chat board: scratch bullets with links; ids continue; pasted chat and wiki
     { op: "scratch_add", text: "Next" },
   ]));
   assert.deepEqual(board.scratch, [
-    { id: "s2", text: "Email picks done", links: [{ label: "page", target: "wiki:sessions/a.md" }], at: T1 },
-    { id: "s3", text: "Next", links: [], at: T1 },
+    { id: "s2", text: "Email picks done", links: [{ label: "page", target: "wiki:sessions/a.md" }], at: T1, children: [] },
+    { id: "s3", text: "Next", links: [], at: T1, children: [] },
   ]);
   assert.deepEqual(summaries, ['Added a note s1: "Decision: Resend" with links [w6 report](job:w6)', 'Added a note s2: "Email picks pending"',
     'Edited the note s2 "Email picks pending": rewrote it to "Email picks done", set its links to [page](wiki:sessions/a.md)',
@@ -78,8 +78,69 @@ test("chat board: scratch bullets with links; ids continue; pasted chat and wiki
   assert.match(owner.summaries[0]!, /^Owner added a note: "See this reply" with links \[thread:/);
   throwsKind(() => parseBoardOps([{ op: "scratch_add", text: "x", links: [{ label: "a", target: "ftp://x" }] }]), "invalid");
   throwsKind(() => parseBoardOps([{ op: "scratch_add", text: "x", links: Array.from({ length: 6 }, () => ({ target: "job:a" })) }]), "invalid");
-  const full = { ...emptyBoard(T0), scratch: Array.from({ length: BOARD_LIMITS.scratch }, (_, i) => ({ id: `s${i + 1}`, text: "x", links: [], at: T0 })) };
+  const full = { ...emptyBoard(T0), scratch: Array.from({ length: BOARD_LIMITS.scratch }, (_, i) => ({ id: `s${i + 1}`, text: "x", links: [], at: T0, children: [] })) };
   throwsKind(() => run(full, [{ op: "scratch_add", text: "one more" }]), "invalid");
+});
+
+test("chat board: notes nest under a parent to any depth; remove takes the subtree; the count cap covers nested notes; a bad parent is refused", () => {
+  const { board, summaries } = run(emptyBoard(T0), parseBoardOps([
+    { op: "scratch_add", text: "Email" },
+    { op: "scratch_add", parent: "s1", text: "Resend chosen", links: [{ label: "w6", target: "job:w6" }] },
+    { op: "scratch_add", parent: "s2", text: "key in 1Password" },
+    { op: "scratch_add", text: "Other" },
+    { op: "scratch_update", id: "s3", text: "key in Vault" },
+  ]));
+  assert.deepEqual(board.scratch, [
+    { id: "s1", text: "Email", links: [], at: T1, children: [
+      { id: "s2", text: "Resend chosen", links: [{ label: "w6", target: "job:w6" }], at: T1, children: [
+        { id: "s3", text: "key in Vault", links: [], at: T1, children: [] }] }] },
+    { id: "s4", text: "Other", links: [], at: T1, children: [] },
+  ]);
+  assert.equal(summaries[1], 'Added a note s2: "Resend chosen" with links [w6](job:w6) under s1');
+  assert.equal(summaries[4], 'Edited the note s3 "key in 1Password": rewrote it to "key in Vault"');
+  assert.equal(renderBoard(board).split("Scratchpad:\n")[1], "  - s1 Email\n    - s2 Resend chosen [w6](job:w6)\n      - s3 key in Vault\n  - s4 Other");
+  assert.equal(nextIds(board)("s"), "s5");
+  const removed = run(board, [{ op: "scratch_remove", id: "s2" }], "owner");
+  assert.equal(removed.summaries[0], 'Owner removed the note "Resend chosen" and the 1 under it');
+  assert.deepEqual(removed.board.scratch.map(item => item.id), ["s1", "s4"]);
+  assert.equal(removed.board.scratch[0]!.children.length, 0);
+  throwsKind(() => run(board, [{ op: "scratch_add", parent: "s9", text: "x" }]), "unknown");
+  const nested = { ...emptyBoard(T0), scratch: [{ id: "s1", text: "x", links: [], at: T0,
+    children: Array.from({ length: BOARD_LIMITS.scratch - 1 }, (_, i) => ({ id: `s${i + 2}`, text: "x", links: [], at: T0, children: [] })) }] };
+  throwsKind(() => run(nested, [{ op: "scratch_add", parent: "s1", text: "one more" }]), "invalid");
+});
+
+test("chat board: a step added under a done goal reopens the goal and every done goal above it; a doing or todo goal is left alone", () => {
+  const { board } = run(emptyBoard(T0), [{ op: "plan_set", items: [
+    { text: "Ship", status: "done", children: [{ text: "Build", status: "done", children: [{ text: "Tests", status: "done" }] }] },
+    { text: "Later", status: "doing" },
+  ] }]);
+  const added = run(board, [{ op: "plan_add", parent: "p3", text: "One more case" }]);
+  assert.equal(added.summaries[0], 'Added p5 "One more case" under p3, reopened p1, p2, p3');
+  const statuses = (plan: ChatBoard["plan"]): string[] => plan.flatMap(item => [`${item.id}:${item.status}`, ...statuses(item.children)]);
+  assert.deepEqual(statuses(added.board.plan), ["p1:todo", "p2:todo", "p3:todo", "p5:todo", "p4:doing"]);
+  const under = run(board, [{ op: "plan_add", parent: "p4", text: "Step" }]);
+  assert.equal(under.summaries[0], 'Added p5 "Step" under p4');
+  assert.deepEqual(statuses(under.board.plan), ["p1:done", "p2:done", "p3:done", "p4:doing", "p5:todo"]);
+  const blocked = run(run(board, [{ op: "plan_update", id: "p2", status: "blocked" }]).board, [{ op: "plan_add", parent: "p3", text: "x" }]);
+  assert.deepEqual(statuses(blocked.board.plan), ["p1:todo", "p2:blocked", "p3:todo", "p5:todo", "p4:doing"], "a blocked goal between keeps its status");
+});
+
+test("chat board: the plan nests without a depth cap (a 12-deep chain by plan_add and by plan_set); the item cap is 500", () => {
+  let board = run(emptyBoard(T0), [{ op: "plan_add", text: "root" }]).board;
+  for (let depth = 1; depth < 12; depth++) board = run(board, [{ op: "plan_add", parent: `p${depth}`, text: `level ${depth}` }]).board;
+  let deepest = board.plan[0]!;
+  let depth = 0;
+  while (deepest.children.length) { deepest = deepest.children[0]!; depth++; }
+  assert.equal(depth, 11);
+  assert.equal(deepest.id, "p12");
+  assert.match(renderBoard(board), /\n {24}\[ \] p12 level 11 \(todo\)$/m);
+  const chain = (level: number): { text: string; children?: { text: string }[] } => level === 12 ? { text: "leaf" } : { text: `l${level}`, children: [chain(level + 1)] };
+  const set = run(emptyBoard(T0), parseBoardOps([{ op: "plan_set", items: [chain(1)] }]));
+  assert.equal(set.summaries[0], "Set the plan: 12 items");
+  assert.equal(BOARD_LIMITS.planItems, 500);
+  const full = run(emptyBoard(T0), [{ op: "plan_set", items: Array.from({ length: 500 }, (_, i) => ({ text: `g${i}` })) }]).board;
+  throwsKind(() => run(full, [{ op: "plan_add", text: "501" }]), "invalid");
 });
 
 test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose'; at most 3 open agent asks", () => {
@@ -103,9 +164,15 @@ test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose
 test("chat board: a v1 file migrates to bullets, one per non-empty line; a v2 file passes; anything else throws", () => {
   const v1 = { v: 1, rev: 4, plan: [], todos: [], updatedAt: T0, scratchpad: "- Decision: Resend\n\n* picks pending\nplain line\n" };
   assert.deepEqual(migrateBoard(v1), { v: 2, rev: 4, plan: [], todos: [], updatedAt: T0, scratch: [
-    { id: "s1", text: "Decision: Resend", links: [], at: T0 }, { id: "s2", text: "picks pending", links: [], at: T0 }, { id: "s3", text: "plain line", links: [], at: T0 }] });
+    { id: "s1", text: "Decision: Resend", links: [], at: T0, children: [] }, { id: "s2", text: "picks pending", links: [], at: T0, children: [] },
+    { id: "s3", text: "plain line", links: [], at: T0, children: [] }] });
   const v2 = emptyBoard(T0);
   assert.equal(migrateBoard(v2), v2);
+  const flat = { ...emptyBoard(T0), scratch: [{ id: "s1", text: "old", links: [], at: T0 }, { id: "s2", text: "nested", links: [], at: T0, children: [{ id: "s3", text: "child", links: [], at: T0 }] }] };
+  assert.deepEqual(migrateBoard(flat).scratch, [{ id: "s1", text: "old", links: [], at: T0, children: [] },
+    { id: "s2", text: "nested", links: [], at: T0, children: [{ id: "s3", text: "child", links: [], at: T0, children: [] }] }], "a v2 file written before notes nested reads with children");
+  const nested = migrateBoard(flat);
+  assert.equal(migrateBoard(nested), nested, "a file with children on every note passes through");
   assert.throws(() => migrateBoard({ v: 3, rev: 0, plan: [], todos: [], scratch: [], updatedAt: T0 }), /malformed/);
   assert.throws(() => migrateBoard(null), /malformed/);
   assert.equal(nextIds(migrateBoard(v1))("s"), "s4");

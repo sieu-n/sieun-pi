@@ -8,7 +8,7 @@ export const BOARD_PREFIX = "[board] ";
 export const PLAN_STATUSES: readonly PlanStatus[] = ["todo", "doing", "done", "blocked", "dropped"];
 const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove", "scratch_add", "scratch_update", "scratch_remove"]);
 /** `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. */
-export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, planItems: 300, depth: 6, todos: 100, openAsks: 3, scratch: 200, links: 5, label: 120,
+export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, planItems: 500, todos: 100, openAsks: 3, scratch: 200, links: 5, label: 120,
   choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
 
 export type BoardErrorKind = "invalid" | "forbidden" | "unknown";
@@ -28,42 +28,52 @@ export function nextIds(board: ChatBoard): (kind: IdKind) => string {
   };
   walk(board.plan, item => see(item.id));
   for (const todo of board.todos) see(todo.id);
-  for (const item of board.scratch) see(item.id);
+  walk(board.scratch, item => see(item.id));
   return kind => `${kind}${++top[kind]}`;
 }
 
 /**
- * A board file's content as v2. A v1 file kept the scratchpad as one string; each non-empty line becomes a bullet (a leading "- " or "* " is
- * dropped), with no links. Throws on anything else.
+ * A board file's content as v2. A v1 file kept the scratchpad as one string; each non-empty line becomes a note (a leading "- " or "* " is
+ * dropped), with no links. A v2 file written before notes nested gets `children: []` on each note. Throws on anything else.
  */
 export function migrateBoard(value: unknown): ChatBoard {
   const board = value as Record<string, unknown>;
   if (!isRecord(value) || typeof board.rev !== "number" || !Array.isArray(board.plan) || !Array.isArray(board.todos) || typeof board.updatedAt !== "string") {
     throw new Error("Chat board file is malformed.");
   }
-  if (board.v === 2 && Array.isArray(board.scratch)) return value as unknown as ChatBoard;
+  if (board.v === 2 && Array.isArray(board.scratch)) {
+    const scratch = board.scratch as ScratchItem[];
+    return scratch.every(item => Array.isArray(item.children)) ? value as unknown as ChatBoard : { ...(value as unknown as ChatBoard), scratch: withChildren(scratch) };
+  }
   if (board.v !== 1 || typeof board.scratchpad !== "string") throw new Error("Chat board file is malformed.");
   const { scratchpad, ...rest } = board;
   const lines = (scratchpad as string).split("\n").map(line => line.replace(/^\s*[-*]\s+/, "").trim()).filter(Boolean);
-  const scratch: ScratchItem[] = lines.map((text, index) => ({ id: `s${index + 1}`, text: text.slice(0, BOARD_LIMITS.text), links: [], at: board.updatedAt as string }));
+  const scratch: ScratchItem[] = lines.map((text, index) => ({ id: `s${index + 1}`, text: text.slice(0, BOARD_LIMITS.text), links: [], at: board.updatedAt as string, children: [] }));
   return { ...(rest as unknown as Omit<ChatBoard, "v" | "scratch">), v: 2, scratch };
 }
+const withChildren = (items: readonly ScratchItem[]): ScratchItem[] => items.map(item => ({ ...item, children: withChildren(item.children ?? []) }));
 
-function walk(items: readonly PlanItem[], visit: (item: PlanItem, depth: number) => void, depth = 0): void {
+/** The plan and the scratchpad are both trees of items with an id; these helpers walk, count, find and rewrite either. */
+interface Tree<T> { id: string; children: T[] }
+function walk<T extends Tree<T>>(items: readonly T[], visit: (item: T, depth: number) => void, depth = 0): void {
   for (const item of items) { visit(item, depth); walk(item.children, visit, depth + 1); }
 }
-function countPlan(items: readonly PlanItem[]): number { let count = 0; walk(items, () => { count++; }); return count; }
-function findPlan(items: readonly PlanItem[], id: string): { item: PlanItem; depth: number } | null {
-  let found: { item: PlanItem; depth: number } | null = null;
-  walk(items, (item, depth) => { if (!found && item.id === id) found = { item, depth }; });
-  return found;
+function count<T extends Tree<T>>(items: readonly T[]): number { let total = 0; walk(items, () => { total++; }); return total; }
+/** The item `id` with the chain of items above it, outermost first; null when no item has that id. */
+function find<T extends Tree<T>>(items: readonly T[], id: string, above: T[] = []): { item: T; ancestors: T[] } | null {
+  for (const item of items) {
+    if (item.id === id) return { item, ancestors: above };
+    const below = find(item.children, id, [...above, item]);
+    if (below) return below;
+  }
+  return null;
 }
-/** The plan with the item `id` replaced by `change(item)` (null removes it with its children). */
-function mapPlan(items: readonly PlanItem[], id: string, change: (item: PlanItem) => PlanItem | null): PlanItem[] {
-  const out: PlanItem[] = [];
+/** The tree with the item `id` replaced by `change(item)` (null removes it with its children). */
+function map<T extends Tree<T>>(items: readonly T[], id: string, change: (item: T) => T | null): T[] {
+  const out: T[] = [];
   for (const item of items) {
     if (item.id === id) { const next = change(item); if (next) out.push(next); continue; }
-    out.push(item.children.length ? { ...item, children: mapPlan(item.children, id, change) } : item);
+    out.push(item.children.length ? { ...item, children: map(item.children, id, change) } : item);
   }
   return out;
 }
@@ -86,9 +96,8 @@ function id(value: unknown, field = "id"): string {
   if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,40}$/.test(value)) invalid(`${field} must be an item id such as p1 or t1.`);
   return value;
 }
-function planInput(value: unknown, depth: number): PlanItemInput {
+function planInput(value: unknown): PlanItemInput {
   if (!isRecord(value)) invalid("Each plan item must be an object with text.");
-  if (depth >= BOARD_LIMITS.depth) invalid(`The plan nests at most ${BOARD_LIMITS.depth} levels.`);
   const input: PlanItemInput = { text: str(value.text, "text", BOARD_LIMITS.text) };
   if (value.id !== undefined) input.id = id(value.id);
   const s = status(value.status); if (s) input.status = s;
@@ -96,7 +105,7 @@ function planInput(value: unknown, depth: number): PlanItemInput {
   const note = optStr(value.note, "note", BOARD_LIMITS.note); if (note !== undefined) input.note = note;
   if (value.children !== undefined) {
     if (!Array.isArray(value.children)) invalid("children must be a list of plan items.");
-    input.children = value.children.map(child => planInput(child, depth + 1));
+    input.children = value.children.map(planInput);
   }
   return input;
 }
@@ -126,7 +135,7 @@ export function parseBoardOp(value: unknown): BoardOp {
   switch (value.op) {
     case "plan_set":
       if (!Array.isArray(value.items)) invalid("plan_set needs items, a list of plan items.");
-      return { op: "plan_set", items: value.items.map(item => planInput(item, 0)) };
+      return { op: "plan_set", items: value.items.map(planInput) };
     case "plan_add": {
       const op: BoardOp = { op: "plan_add", text: str(value.text, "text", BOARD_LIMITS.text) };
       if (value.parent !== undefined && value.parent !== null) op.parent = id(value.parent, "parent");
@@ -145,6 +154,7 @@ export function parseBoardOp(value: unknown): BoardOp {
     case "plan_remove": return { op: "plan_remove", id: id(value.id) };
     case "scratch_add": {
       const op: BoardOp = { op: "scratch_add", text: str(value.text, "text", BOARD_LIMITS.text) };
+      if (value.parent !== undefined && value.parent !== null) op.parent = id(value.parent, "parent");
       const list = links(value.links); if (list) op.links = list;
       return op;
     }
@@ -206,20 +216,22 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
           children: (input.children ?? []).map(build) };
       };
       const plan = op.items.map(build);
-      if (countPlan(plan) > BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
-      return done({ plan }, `Set the plan: ${countPlan(plan)} items`);
+      if (count(plan) > BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
+      return done({ plan }, `Set the plan: ${count(plan)} items`);
     }
     case "plan_add": {
-      if (countPlan(board.plan) >= BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
+      if (count(board.plan) >= BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
       const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(op.job ? { job: op.job } : {}), children: [] };
       if (op.parent === undefined) return done({ plan: [...board.plan, item] }, `added ${item.id} ${quote(item.text)}`);
-      const parent = findPlan(board.plan, op.parent) ?? unknown("plan item", op.parent);
-      if (parent.depth + 1 >= BOARD_LIMITS.depth) invalid(`The plan nests at most ${BOARD_LIMITS.depth} levels.`);
-      return done({ plan: mapPlan(board.plan, op.parent, p => ({ ...p, children: [...p.children, item] })) },
-        `added ${item.id} ${quote(item.text)} under ${parent.item.id}`);
+      const parent = find(board.plan, op.parent) ?? unknown("plan item", op.parent);
+      // A step under a finished goal reopens the goal and every finished goal above it: a done parent with open work is a lie.
+      const reopened = [...parent.ancestors, parent.item].filter(above => above.status === "done").map(above => above.id);
+      let plan = map(board.plan, op.parent, p => ({ ...p, children: [...p.children, item] }));
+      for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo" }));
+      return done({ plan }, `added ${item.id} ${quote(item.text)} under ${parent.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
     }
     case "plan_update": {
-      const { item } = findPlan(board.plan, op.id) ?? unknown("plan item", op.id);
+      const { item } = find(board.plan, op.id) ?? unknown("plan item", op.id);
       const next: PlanItem = { ...item };
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== item.text) { next.text = op.text; parts.push(`renamed it ${quote(op.text)}`); }
@@ -228,33 +240,38 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       else if (op.job !== undefined && op.job !== item.job) { next.job = op.job; parts.push(`linked job ${op.job}`); }
       if (op.note === null) { delete next.note; if (item.note) parts.push("cleared its note"); }
       else if (op.note !== undefined && op.note !== item.note) { next.note = op.note; parts.push("updated its note"); }
-      return done({ plan: mapPlan(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
+      return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
     }
     case "plan_remove": {
-      const { item } = findPlan(board.plan, op.id) ?? unknown("plan item", op.id);
-      const removed = countPlan([item]);
-      return done({ plan: mapPlan(board.plan, op.id, () => null) },
+      const { item } = find(board.plan, op.id) ?? unknown("plan item", op.id);
+      const removed = count([item]);
+      return done({ plan: map(board.plan, op.id, () => null) },
         `removed ${item.id} ${quote(item.text)}${removed > 1 ? ` and its ${removed - 1} ${removed === 2 ? "step" : "steps"}` : ""}`);
     }
     case "scratch_add": {
-      if (board.scratch.length >= BOARD_LIMITS.scratch) invalid(`The scratchpad holds at most ${BOARD_LIMITS.scratch} notes; remove old ones first.`);
-      const item: ScratchItem = { id: newId("s"), text: op.text, links: op.links ?? [], at: now };
-      return done({ scratch: [...board.scratch, item] }, `added a note${actor === "owner" ? "" : " " + item.id}: ${quote(item.text)}${linkText(item.links)}`);
+      if (count(board.scratch) >= BOARD_LIMITS.scratch) invalid(`The scratchpad holds at most ${BOARD_LIMITS.scratch} notes; remove old ones first.`);
+      const item: ScratchItem = { id: newId("s"), text: op.text, links: op.links ?? [], at: now, children: [] };
+      const added = `added a note${actor === "owner" ? "" : " " + item.id}: ${quote(item.text)}${linkText(item.links)}`;
+      if (op.parent === undefined) return done({ scratch: [...board.scratch, item] }, added);
+      const parent = find(board.scratch, op.parent) ?? unknown("note", op.parent);
+      return done({ scratch: map(board.scratch, op.parent, p => ({ ...p, children: [...p.children, item] })) }, `${added} under ${parent.item.id}`);
     }
     case "scratch_update": {
-      const item = board.scratch.find(entry => entry.id === op.id) ?? unknown("note", op.id);
+      const { item } = find(board.scratch, op.id) ?? unknown("note", op.id);
       const next: ScratchItem = { ...item };
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== item.text) { next.text = op.text; parts.push(`rewrote it to ${quote(op.text)}`); }
       if (op.links !== undefined && JSON.stringify(op.links) !== JSON.stringify(item.links)) {
         next.links = op.links; parts.push(op.links.length ? `set its links to ${op.links.map(markdownLink).join(" ")}` : "cleared its links");
       }
-      return done({ scratch: board.scratch.map(entry => entry.id === op.id ? next : entry) },
+      return done({ scratch: map(board.scratch, op.id, () => next) },
         `edited the note${actor === "owner" ? "" : " " + item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
     }
     case "scratch_remove": {
-      const item = board.scratch.find(entry => entry.id === op.id) ?? unknown("note", op.id);
-      return done({ scratch: board.scratch.filter(entry => entry.id !== op.id) }, `removed the note ${quote(item.text)}`);
+      const { item } = find(board.scratch, op.id) ?? unknown("note", op.id);
+      const removed = count([item]);
+      return done({ scratch: map(board.scratch, op.id, () => null) },
+        `removed the note ${quote(item.text)}${removed > 1 ? ` and the ${removed - 1} under it` : ""}`);
     }
     case "todo_add": {
       if (board.todos.length >= BOARD_LIMITS.todos) invalid(`The todo list holds at most ${BOARD_LIMITS.todos} items; remove done ones first.`);
@@ -293,7 +310,7 @@ function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInpu
 
 /**
  * The board as compact text for the agent: this chat's own link target, the plan as an indented checklist, the owner's todos with their choices
- * and answers, then the scratchpad bullets with their links.
+ * and answers, then the scratchpad as an indented bullet list with each note's links.
  */
 export function renderBoard(board: ChatBoard | null, sessionId?: string): string {
   const self = sessionId ? [`This chat: thread:${sessionId}`] : [];
@@ -313,6 +330,6 @@ export function renderBoard(board: ChatBoard | null, sessionId?: string): string
   }
   lines.push("Scratchpad:");
   if (!board.scratch.length) lines.push("  (empty)");
-  for (const item of board.scratch) lines.push(`  - ${item.id} ${item.text}${item.links.length ? " " + item.links.map(markdownLink).join(" ") : ""}`);
+  walk(board.scratch, (item, depth) => lines.push(`${"  ".repeat(depth + 1)}- ${item.id} ${item.text}${item.links.length ? " " + item.links.map(markdownLink).join(" ") : ""}`));
   return lines.join("\n");
 }

@@ -171,7 +171,8 @@ export function projectChild(child: NativeChild): ChildAgent {
     ...(child.parentId === undefined ? {} : { parentId: child.parentId }), ...(child.sessionName === undefined ? {} : { sessionName: child.sessionName }),
     ...(child.model === undefined ? {} : { model: child.model }), ...(child.durationMs === undefined ? {} : { durationMs: child.durationMs }),
     ...(child.recap === undefined ? {} : { recap: child.recap }), ...(child.error === undefined ? {} : { error: child.error }),
-    ...(child.answerPreview === undefined ? {} : { answerPreview: child.answerPreview }), ...(child.activity === undefined ? {} : { activity: child.activity }) };
+    ...(child.answerPreview === undefined ? {} : { answerPreview: child.answerPreview }), ...(child.activity === undefined ? {} : { activity: child.activity }),
+    ...(child.repliedSinceTask === undefined ? {} : { repliedSinceTask: child.repliedSinceTask }), ...(child.lastActivityAt === undefined ? {} : { lastActivityAt: child.lastActivityAt }) };
 }
 
 export function sessionUsage(value: unknown): ThreadInfo["usage"] {

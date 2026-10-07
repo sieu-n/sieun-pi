@@ -5,17 +5,60 @@ export const PLAN_STATUS_LABEL: Record<PlanStatus, string> = { todo: "To do", do
 
 export interface PlanProgress { done: number; total: number }
 /** Steps under a goal: every item below it that is not dropped, and how many are done. Null for an item with nothing below it. */
-export function planProgress(item: PlanItem): PlanProgress | null {
-  if (!item.children.length) return null;
+export function planProgress(item: PlanItem): PlanProgress | null { return item.children.length ? planTotals(item.children) : null; }
+/** The same count over a list of goals, for the card header. */
+export function planTotals(items: readonly PlanItem[]): PlanProgress {
   const progress = { done: 0, total: 0 };
-  const walk = (items: readonly PlanItem[]) => {
-    for (const child of items) {
+  const walk = (list: readonly PlanItem[]) => {
+    for (const child of list) {
       if (child.status !== "dropped") { progress.total++; if (child.status === "done") progress.done++; }
       walk(child.children);
     }
   };
-  walk(item.children);
+  walk(items);
   return progress;
+}
+
+/** Every item in a tree, nested ones included. */
+export const countItems = <T extends { children: T[] }>(items: readonly T[]): number => items.reduce((total, item) => total + 1 + countItems(item.children), 0);
+
+/** A plan step the owner is done with: the chat marked it done, or dropped it. Hidden unless "Show done" is on for its parent. */
+export const isFinished = (item: PlanItem): boolean => item.status === "done" || item.status === "dropped";
+
+/** The top level's key in the per-parent "Show done" state. */
+export const ROOT = "root";
+/**
+ * One line of a tree card, flattened in reading order. An `item` row is a plan step or a note with its depth and parent id (`ROOT` at the top).
+ * A `finished` row follows a parent's shown children when some of them are done or dropped: the "Show done (n)" / "Hide done" toggle.
+ */
+export type TreeRow<T> = { kind: "item"; item: T; depth: number; parent: string } | { kind: "finished"; parent: string; depth: number; count: number; shown: boolean };
+export interface TreeView { open: (id: string) => boolean; showDone: (parent: string) => boolean }
+/**
+ * The rows a tree card shows. Every item with children starts folded and opens when `open(id)` says so; finished items (per `finished`) stay off
+ * the list until `showDone(parent)` is on for their parent. Notes pass no `finished` and never hide.
+ */
+export function treeRows<T extends { id: string; children: T[] }>(items: readonly T[], view: TreeView, finished: (item: T) => boolean = () => false): TreeRow<T>[] {
+  const rows: TreeRow<T>[] = [];
+  const visit = (list: readonly T[], depth: number, parent: string) => {
+    const shown = view.showDone(parent);
+    const hidden = list.filter(finished).length;
+    for (const item of list) {
+      if (!shown && finished(item)) continue;
+      rows.push({ kind: "item", item, depth, parent });
+      if (item.children.length && view.open(item.id)) visit(item.children, depth + 1, item.id);
+    }
+    if (hidden) rows.push({ kind: "finished", parent, depth, count: hidden, shown });
+  };
+  visit(items, 0, ROOT);
+  return rows;
+}
+
+/** The dot color of an item's id chip: the same muted color on every reload, from a hash of the chat id and the item id. */
+export const ID_PALETTE: readonly string[] = ["#c56b7c", "#c98a48", "#a89c38", "#67a35b", "#45a48d", "#4b9ac6", "#7b86d0", "#a878c4", "#c26ea7", "#8e8e8e"];
+export function idColor(chatId: string, itemId: string): string {
+  let hash = 0x811c9dc5;
+  for (const char of `${chatId}:${itemId}`) { hash ^= char.codePointAt(0)!; hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return ID_PALETTE[hash % ID_PALETTE.length]!;
 }
 
 /** For you: the open items, newest first, and the done ones behind the "Done (N)" fold, newest first. */

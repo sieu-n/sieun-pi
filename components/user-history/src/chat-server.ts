@@ -477,7 +477,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (!creation) {
           creation = { fingerprint, result: (async () => {
             const input = { cwd, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(thinkingLevel ? { thinkingLevel } : {}) };
-            // A chat is created with its name (a job replies to it by name), pinned, set to steering mode all and given its check-in heartbeat.
+            // A chat is created with its name (a job replies to it by name), pinned and set to steering mode all; the server tick does its check-ins.
             const thread = kind === "chat" ? await backend.chats.create({ ...input, ...(name ? { name } : {}) }) : await backend.threads.create(input);
             // Both kinds go in threads.json: a thread this server created is the person's (origin "user"), whatever its session file says.
             await backend.created.add(thread.id).catch(() => {});

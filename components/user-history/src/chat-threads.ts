@@ -512,15 +512,15 @@ export class ThreadHub {
     await live.connection.setSteeringMode(mode);
   }
 
-  /** Replaces the session's heartbeat. The daemon keeps it with the session file, so it survives a re-create and wakes a saved session. */
-  async setHeartbeat(id: string, schedule: string, instruction: string, deliveryMode: "steer" | "follow_up"): Promise<void> {
-    const { live } = await this.requireResumed(id);
-    await live.connection.setHeartbeat(schedule, instruction, deliveryMode);
+  /** The attached session's heartbeat prompt; undefined when it has none. */
+  async heartbeat(id: string): Promise<string | undefined> {
+    const { live } = await this.requireLive(id);
+    return (await live.connection.getHeartbeat())?.prompt;
   }
 
-  async updateHeartbeat(id: string, action: "pause" | "resume"): Promise<void> {
-    const { live } = await this.requireResumed(id);
-    await live.connection.updateHeartbeat(action);
+  async clearHeartbeat(id: string): Promise<void> {
+    const { live } = await this.requireLive(id);
+    await live.connection.updateHeartbeat("clear");
   }
 
   /**

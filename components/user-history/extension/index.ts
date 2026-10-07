@@ -1,8 +1,9 @@
 import { join, resolve } from "node:path";
-import { getAgentDir, type ExtensionAPI } from "prime-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-agent";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
-import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, hasChatMarker, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool } from "../src/chats.ts";
+import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, fileChatName, hasChatMarker, JOB_REPLY_TOOL, jobOf,
+  jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool } from "../src/chats.ts";
 import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 
@@ -19,9 +20,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: CHAT_BOARD_TOOL,
     label: "Chat board",
-    description: "Read or change this chat's board, which the owner sees next to the chat: the plan (a nested checklist of goals and steps, each step " +
-      "linked to its job), the owner's todo list (asks only the owner can answer, each with choices), and the scratchpad (short bullets, each with " +
-      "links to what it is about). Ops apply in order, all or none. No ops returns the current board. Every result shows the whole board with item " +
+    description: "Read or change this chat's board, which the owner sees next to the chat: the plan (a nested checklist of goals and steps, any depth, each " +
+      "step linked to its job), the owner's todo list (asks only the owner can answer, each with choices), and the scratchpad (short notes, nested to any " +
+      "depth, each with links to what it is about). Ops apply in order, all or none. No ops returns the current board. Every result shows the whole board with item " +
       "ids (p1, t1, s1) and this chat's own link target.",
     promptGuidelines: [...CHAT_BRIEF],
     parameters: {
@@ -31,7 +32,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
           type: "array",
           description: "Board ops. plan_set {items:[{text,status?,job?,note?,children?}]} replaces the plan. plan_add {text,parent?,status?,job?} adds a goal, " +
             "or a step under parent. plan_update {id,text?,status?,job?,note?} (job or note null clears it). plan_remove {id} removes an item and its steps. " +
-            "scratch_add {text,links?} adds one bullet; scratch_update {id,text?,links?} (links replaces the list, [] clears it); scratch_remove {id}. " +
+            "scratch_add {text,parent?,links?} adds one note, or a note under the note parent; scratch_update {id,text?,links?} (links replaces the list, [] clears it); " +
+            "scratch_remove {id} removes a note and the notes under it. " +
             "A link is {label,target}, up to 5 per bullet; target is job:<name> (a job's report), thread:<sessionId> or thread:<sessionId>@<message " +
             "timestamp ms> (a thread or one message in it), wiki:<path under the llm-wiki content>, file:<absolute path to a text file>, or an http(s) URL. " +
             "todo_add {text,choices?} asks the owner one short question; choices are 2 to 4 short answers, your recommendation first. " +
@@ -79,14 +81,39 @@ export default function historyExtension(pi: ExtensionAPI): void {
     },
   });
   // Same directory as the chat server: the agent-chat-data-dir flag, else <agentDir>/browser-chat.
-  const boards = () => {
-    const dataDir = pi.getFlag("agent-chat-data-dir");
-    return new BoardStore(typeof dataDir === "string" && dataDir ? resolve(dataDir) : join(getAgentDir(), "browser-chat"));
+  const dataDir = () => {
+    const flag = pi.getFlag("agent-chat-data-dir");
+    return typeof flag === "string" && flag ? resolve(flag) : join(getAgentDir(), "browser-chat");
   };
+  const boards = () => new BoardStore(dataDir());
+  const jobs = () => jobRegistry(join(dataDir(), "chat-jobs.json"));
   // The marker is written once, at the first session_start of a flagged root, and read back on every later start. Children (depth > 0) inherit
   // the flag and the active tool list through the runtime config, so they drop the tool. Any error fails open.
   let marked = false;
-  pi.on("session_start", (_event, ctx) => {
+  // A job of a chat (a direct subagent, or a root the chat started with rlm.create_session) gets job_reply, whose one guideline puts "how to
+  // report" in its base prompt even when the chat's brief left it out. A root's name may land after session_start, so its first prompt looks
+  // again. Any error fails open: no tool.
+  let job: ChatJobOf | null = null;
+  let rootLooked = false;
+  const findJob = async (ctx: ExtensionContext): Promise<void> => {
+    if (job) return;
+    const header = ctx.sessionManager.getHeader();
+    const depth = depthOf(header);
+    const parentChat = depth === 1 && header?.parentSession ? await fileChatName(header.parentSession) : null;
+    const name = depth === 0 && !marked ? ctx.sessionManager.getSessionName()?.trim() : undefined;
+    job = jobOf({ depth, marked, parentChat, registered: name ? await jobs().chatOf(name) : undefined });
+    if (!job) return;
+    const guideline = jobReplyGuideline(job);
+    pi.registerTool({
+      name: JOB_REPLY_TOOL,
+      label: "Report to the chat",
+      description: "Shows how this job reports to the chat that started it. Calling it is optional; the instruction is already in your guidelines.",
+      promptGuidelines: [guideline],
+      parameters: { type: "object", properties: {} },
+      async execute() { return { content: [{ type: "text", text: guideline }], details: undefined }; },
+    });
+  };
+  pi.on("session_start", async (_event, ctx) => {
     try {
       const depth = depthOf(ctx.sessionManager.getHeader());
       marked = depth === 0 && hasChatMarker(ctx.sessionManager.getEntries());
@@ -95,10 +122,26 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const tools = withChatTool(pi.getActiveTools(), mode.active);
       if (tools) pi.setActiveTools(tools);
     } catch { marked = false; }
+    await findJob(ctx).catch(() => {});
   });
-  pi.on("tool_call", (event, ctx) => {
-    try { return chatGuard({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked }); }
-    catch { return undefined; }
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (job || rootLooked || marked || depthOf(ctx.sessionManager.getHeader()) !== 0) return undefined;
+    rootLooked = true;
+    await findJob(ctx).catch(() => {});
+    if (!job) return undefined;
+    const guideline = jobReplyGuideline(job);
+    return event.systemPrompt.includes(guideline) ? undefined : { systemPrompt: `${event.systemPrompt}\n\n${guideline}` };
+  });
+  pi.on("tool_call", async (event, ctx) => {
+    try {
+      const blocked = chatGuard({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked });
+      if (blocked) return blocked;
+      if (marked && event.toolName === "ipython" && typeof event.input.code === "string") {
+        const names = createSessionNames(event.input.code);
+        if (names.length) await jobs().add(names, ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId());
+      }
+      return undefined;
+    } catch { return undefined; }
   });
   pi.registerFlag("agent-chat-socket", {
     description: "Native daemon socket for browser chat",

@@ -8,6 +8,12 @@ export interface PendingSend { id: string; text: string; images: ImagePart[]; at
 export const TELL_OWNER_TOOL = "tell_owner";
 /** The longest text `tell_owner` accepts; the tool refuses longer with "shorter: one or two sentences". */
 export const TELL_OWNER_LIMIT = 400;
+/** A user message the chat server sends on its own: the check-in digest and the no-report notice. The feed folds them into updates and the turn they start is not the owner's. */
+export const CHECK_IN_PREFIX = "[check-in] ";
+export const JOB_NOTICE_PREFIX = "[job] ";
+const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"]];
+/** Who sent a server note ("check-in", "jobs"), or undefined for a message the owner typed. */
+export function serverNote(text: string): string | undefined { return SERVER_NOTES.find(([prefix]) => text.startsWith(prefix))?.[1]; }
 
 /**
  * One message of a chat as a line, before the feed collapses the quiet ones. Who started the turn decides what the chat's own text is:
@@ -96,7 +102,13 @@ export function chatLines(messages: readonly ThreadMessage[], nameOf: NameOf = (
     const id = "m" + index;
     const starter = track(message);
     switch (message.role) {
-      case "user": lines.push({ kind: "user", id, text: messageText(message).trim(), images: imagesOf(message), at: message.timestamp }); return;
+      case "user": {
+        const text = messageText(message).trim();
+        const from = serverNote(text);
+        if (from) { const body = text.slice(text.indexOf("]") + 1).trim(); lines.push({ kind: "job", id, from, title: firstLine(body), body, at: message.timestamp }); return; }
+        lines.push({ kind: "user", id, text, images: imagesOf(message), at: message.timestamp });
+        return;
+      }
       case "assistant": lines.push(...assistantLines(message, id, starter, false, refused)); return;
       case "custom": lines.push(...customLines(message, id, index, nameOf)); return;
       case "compactionSummary": lines.push({ kind: "notice", id, text: "Older messages were summarized to free space", at: message.timestamp }); return;
@@ -114,7 +126,8 @@ function turnTracker(): (message: ThreadMessage) => TurnStarter {
   let starter: TurnStarter = "owner";
   let settled = true;
   return message => {
-    if (message.role === "user") { starter = "owner"; settled = false; }
+    if (message.role === "user" && serverNote(messageText(message).trim())) { if (settled) starter = "agent"; settled = false; }
+    else if (message.role === "user") { starter = "owner"; settled = false; }
     else if (message.role === "assistant") settled = message.stopReason !== "toolUse";
     else if (message.role === "custom" && isPromptCustom(message)) { if (settled) starter = "agent"; settled = false; }
     return starter;
