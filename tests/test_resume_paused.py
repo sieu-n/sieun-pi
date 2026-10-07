@@ -162,6 +162,10 @@ class ResumePausedTests(unittest.TestCase):
         self.run_resume()
         self.assertEqual([target for target, _ in self.sent], ["hunghunghung"])
 
+    def test_model_refusal_counts(self):
+        self.session("refusedrefus", [assistant(30, "error", "Model refused to respond (refusal) [request_id: req_1]")])
+        self.assertEqual([p["id"] for p in self.run_resume(dry_run=True)["paused"]], ["refusedrefus"])
+
     def test_old_interruptions_are_ignored(self):
         self.session("aaaaaaaaaaaa", [assistant(3000, "error", "Connection error.")], lastActivityAt=at(3000))
         self.assertEqual(self.run_resume(dry_run=True)["paused"], [])

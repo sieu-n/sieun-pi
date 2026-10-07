@@ -17,6 +17,7 @@
     if (run.reason === "empty_reply") return "empty model reply";
     if (run.reason === "hung") return "hung";
     if (/api key/i.test(run.error)) return "sign-in failed";
+    if (/refused to respond/i.test(run.error)) return "model refused";
     return /rate.?limit|429|usage limit/i.test(run.error) ? "rate limited" : /overloaded|529|50[234]|server error/i.test(run.error) ? "provider error" : "network error";
   }
 

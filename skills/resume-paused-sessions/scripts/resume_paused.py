@@ -17,8 +17,9 @@ it is live and idle, and either:
     Resume button does before it runs this script with --unstuck.
 
 Runs that were aborted ("Request was aborted") or archived, for example a
-helper its parent deleted, do not count. Rate limits (429), overloaded (529)
-and 5xx errors count too, but a run is listed only once pi-pool says the
+helper its parent deleted, do not count. Rate limits (429), overloaded (529),
+5xx errors and a model refusal (often a false positive that passes on retry;
+the head decides) count too, but a run is listed only once pi-pool says the
 account its next request gets can serve; resuming earlier fails again at once.
 
 Each interrupted run maps to its head (the top-level root). Idle heads get one
@@ -50,7 +51,7 @@ from pathlib import Path
 INTERRUPTION_ERROR = re.compile(
     r"connection error|fetch failed|econnreset|econnrefused|enotfound|etimedout|eai_again|"
     r"socket hang up|network|terminated|other side closed|timed? ?out|websocket closed|"
-    r"failed to resolve api key|rate.?limit|\b429\b|overloaded|\b529\b|\b50[234]\b|internal server error|usage limit",
+    r"failed to resolve api key|rate.?limit|\b429\b|overloaded|\b529\b|\b50[234]\b|internal server error|usage limit|refused to respond",
     re.IGNORECASE,
 )
 BUSY_FLAGS = ("isStreaming", "isRunningTools", "isBashRunning", "hasRunningRlmChildren", "isCompacting")
