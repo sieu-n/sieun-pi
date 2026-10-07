@@ -2,7 +2,7 @@ import { join, resolve } from "node:path";
 import { getAgentDir, type ExtensionAPI } from "prime-agent";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
-import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, hasChatMarker, withChatTool } from "../src/chats.ts";
+import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, hasChatMarker, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool } from "../src/chats.ts";
 import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 
@@ -15,6 +15,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
   pi.registerFlag(CHAT_FLAG, { description: "Create this session as a browser chat (the chat server sets it; the session entry chat_mode is the durable mark)", type: "boolean" });
   // The chat brief lives in the board tool's promptGuidelines: when the tool is active the base system prompt carries the bullets, so agent-message
   // wakes and heartbeat turns (which skip before_agent_start) read it too. The board file is the one the chat server shows and the owner edits.
+  // tell_owner below is active with it (CHAT_TOOLS).
   pi.registerTool({
     name: CHAT_BOARD_TOOL,
     label: "Chat board",
@@ -57,6 +58,24 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const sessionId = ctx.sessionManager.getSessionId();
       const { board, summaries } = await boards().apply(sessionId, ops, "agent");
       return { content: [{ type: "text", text: [...summaries, renderBoard(board, sessionId)].join("\n") }], details: undefined };
+    },
+  });
+  // The feed shows this call's text as a bubble on any turn; on a turn the owner did not start it is the only text the owner sees.
+  pi.registerTool({
+    name: TELL_OWNER_TOOL,
+    label: "Tell the owner",
+    description: "Say one or two sentences to the owner on a turn the owner did not start (a job report, another thread, a check-in). " +
+      `Up to ${TELL_OWNER_LIMIT} characters; longer is refused. Call it once per wake-up, at the end, only when a goal finished, something failed ` +
+      "or is blocked, or you need a decision. On a turn the owner started, reply with text instead.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string", description: `What the owner reads, one or two sentences, up to ${TELL_OWNER_LIMIT} characters.` } },
+      required: ["text"],
+    },
+    async execute(_toolCallId, params) {
+      const result = tellOwner((params as { text?: unknown }).text);
+      if (!result.ok) throw new Error(result.text);
+      return { content: [{ type: "text", text: result.text }], details: undefined };
     },
   });
   // Same directory as the chat server: the agent-chat-data-dir flag, else <agentDir>/browser-chat.

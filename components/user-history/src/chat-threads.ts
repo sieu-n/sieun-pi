@@ -5,12 +5,12 @@ import type { Catalog } from "./chat-catalog.ts";
 import { CHAT_FLAG } from "./chats.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
-import { applyThreadEvent, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
+import { applyThreadEvent, isThreadBusy, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
 import type { ChatBoard, ChatDefaults, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
-/** What chats watch on the hub: each attach (with the children known then) and every change of a thread's subagent list while attached. */
-export interface ThreadObserver { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void }
+/** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
+export interface ThreadObserver { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void }
 
 /** Native session-owned slash commands (prime-agent SESSION_SLASH_COMMAND_NAMES). The session runs them from prompt text; getCommands does not list them. */
 const SESSION_COMMANDS: Command[] = [
@@ -163,6 +163,22 @@ export class ThreadHub {
     for (const observer of [...this.observers]) observer.children(thread.id, thread.state.children);
   }
 
+  private turnEnded(thread: Thread): void {
+    for (const observer of [...this.observers]) observer.idle(thread.id);
+  }
+
+  /** Whether the thread itself is mid-turn (streaming, a tool or command running, compacting, retrying). Running jobs alone do not count. */
+  busy(id: string): boolean {
+    const state = this.threads.get(id)?.state;
+    return state ? isThreadBusy({ ...state, children: [] }) : false;
+  }
+
+  /** Re-runs the session's extensions and rebuilds its tools and prompt, so a long-lived chat picks up a newer extension build. */
+  async reload(id: string): Promise<void> {
+    const { live } = await this.requireLive(id);
+    await live.connection.reload();
+  }
+
   /**
    * On every catalog update with the daemon up, a pinned thread that lost its attachment (daemon restart, worker exit) is resumed again. One
    * archived outside this server (the terminal agents view) is unpinned instead, so the pin never brings an archived session back.
@@ -306,6 +322,7 @@ export class ThreadHub {
           const projected = this.projector.event(event.event);
           if (projected) thread.coalesce(projected, UPDATE_COALESCE_MS);
           const native = event.event.type;
+          if (native === "agent_end") this.turnEnded(thread);
           if (native === "agent_start" || native === "agent_end" || (native === "message_end" && event.event.message.role === "user")) await this.refreshQueue(thread);
           if (native === "compaction_end" && !event.event.aborted) await this.resnapshot(thread);
           if (native === "agent_end" || native === "compaction_end" || native === "auto_retry_end" || native === "thinking_level_changed" || native === "session_info_changed") await this.refreshInfo(thread);

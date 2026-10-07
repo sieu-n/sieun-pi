@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { briefFor, briefFromCode, findJob, jobName, jobViews, parentChatOf, reportsFor, spawnCalls, treeJobs } from "../src/client/jobs.ts";
-import type { ChatItem } from "../src/shared/chat-feed.ts";
+import type { ChatLine } from "../src/shared/chat-feed.ts";
 import type { ChildAgent, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 
 const child = (id: string, sessionName: string, status: ChildAgent["status"] = "running"): ChildAgent => ({ id, sessionName, label: "brief first line", status });
@@ -25,15 +25,16 @@ test("jobViews lists active jobs first and finds a job by name, key or session i
   assert.equal(findJob(jobs, "nobody"), undefined);
 });
 
-test("reportsFor returns the job's messages newest first", () => {
-  const feed: ChatItem[] = [
-    { kind: "job", id: "m1", from: "child:ux-email", title: "first", body: "first", at: 1 },
-    { kind: "job", id: "m2", from: "child:ux-monitor", title: "other", body: "other", at: 2 },
-    { kind: "job", id: "m3", from: "child:ux-email", title: "second", body: "second", at: 3 },
-    { kind: "agent", id: "m4", text: "ok", at: 4 },
+test("reportsFor returns the job's messages newest first, from the chat's lines", () => {
+  const lines: ChatLine[] = [
+    { kind: "job", id: "m1", from: "ux-email", title: "first", body: "first", at: 1 },
+    { kind: "job", id: "m2", from: "ux-monitor", title: "other", body: "other", at: 2 },
+    { kind: "notes", id: "m3", text: "passing it on", at: 3 },
+    { kind: "job", id: "m4", from: "ux-email", title: "second", body: "second", at: 4 },
+    { kind: "agent", id: "m5", text: "ok", at: 5 },
   ];
-  assert.deepEqual(reportsFor(feed, "ux-email").map(item => item.id), ["m3", "m1"]);
-  assert.deepEqual(reportsFor(feed, "nobody"), []);
+  assert.deepEqual(reportsFor(lines, "child:ux-email").map(item => item.id), ["m4", "m1"]);
+  assert.deepEqual(reportsFor(lines, "nobody"), []);
 });
 
 test("briefFromCode reads the first argument of the spawn call that names the job", () => {

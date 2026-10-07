@@ -1,22 +1,39 @@
-import { isPromptCustom, messageText, triggerSummary } from "./turns.ts";
+import { isPromptCustom, messageText, toolResults, triggerSummary } from "./turns.ts";
 import type { AssistantMessage, CustomMessage, ImagePart, ThreadMessage, ThreadState, UserMessage } from "./types.ts";
 
 /** A message the owner sent from the chat composer that the thread has not echoed back yet. `images` are data URLs for the bubble. */
 export interface PendingSend { id: string; text: string; images: ImagePart[]; at: number }
 
+/** The tool a chat calls to reach the owner on a turn the owner did not start. Its `text` shows as an agent bubble unless the tool refused it. */
+export const TELL_OWNER_TOOL = "tell_owner";
+/** The longest text `tell_owner` accepts; the tool refuses longer with "shorter: one or two sentences". */
+export const TELL_OWNER_LIMIT = 400;
+
 /**
- * One flat line of a chat. The feed never nests: the chat partner talks like a DM, so every message is its own line in order.
+ * One message of a chat as a line, before the feed collapses the quiet ones. Who started the turn decides what the chat's own text is:
  * - user: what the owner typed (right side); `pending` until the thread echoes the message back.
- * - agent: the chat partner's text (left side); `streaming` while the model is still writing it.
- * - job: a worker's agent_message, folded to one line ("from <name>: <first line>") that opens on tap; `clipped` names the message and part
- *   to fetch through `api/threads/:id/part` when the snapshot holds only the first 2 KiB of the body.
- * - notice: an error, a stopped reply, a restart or another event the owner should see, as one muted line.
+ * - agent: what the owner reads from the chat (left side): the chat's text on a turn the owner started, or a `tell_owner` call on any turn;
+ *   `streaming` while the model is still writing it.
+ * - job: a message another agent sent the chat; `from` is its display name. `clipped` names the message and part to fetch through
+ *   `api/threads/:id/part` when the snapshot holds only the first 2 KiB of the body.
+ * - notes: the chat's text on a turn another agent, a check-in or a job notice started. The owner sees it only inside an updates list.
+ * - notice: an error, a stopped reply, a restart or a compaction, as one muted line.
  */
-export type ChatItem =
+export type ChatLine =
   | { kind: "user"; id: string; text: string; images: ImagePart[]; at: number; pending?: true }
   | { kind: "agent"; id: string; text: string; at: number; streaming?: true }
   | { kind: "job"; id: string; from: string; title: string; body: string; at: number; clipped?: { message: number; part: number } }
+  | { kind: "notes"; id: string; text: string; at: number }
   | { kind: "notice"; id: string; text: string; at: number };
+/** The quiet lines: between two visible lines they fold into one updates item. */
+export type Update = Extract<ChatLine, { kind: "job" | "notes" }>;
+/** One item of the feed on screen: a visible line, or a run of quiet lines folded into one. */
+export type ChatItem = Exclude<ChatLine, Update> | { kind: "updates"; id: string; at: number; entries: Update[] };
+
+/** Who started a turn: the owner (a user message, `[board] ` lines included) or something else (an agent message, a check-in, a job notice). */
+export type TurnStarter = "owner" | "agent";
+/** The display name of a session id in an agent-message header; undefined when the catalog does not list it. */
+export type NameOf = (sessionId: string) => string | undefined;
 
 /** A user message echoed by the daemon up to this long before the browser's send time still settles the pending send (clock skew between devices). */
 export const PENDING_SKEW_MS = 5 * 60_000;
@@ -26,46 +43,121 @@ const imagesOf = (message: UserMessage | CustomMessage): ImagePart[] =>
 
 const firstLine = (text: string): string => text.split("\n").map(line => line.trim()).find(Boolean) ?? "";
 
-function assistantItems(message: AssistantMessage, id: string, streaming: boolean): ChatItem[] {
-  const items: ChatItem[] = [];
-  const text = messageText(message).trim();
-  if (text) items.push({ kind: "agent", id, text, at: message.timestamp, ...(streaming ? { streaming: true } : {}) });
-  if (streaming) return items;
-  if (message.stopReason === "aborted") items.push({ kind: "notice", id: id + "-stop", text: "Reply stopped", at: message.timestamp });
-  else if (message.stopReason === "error") items.push({ kind: "notice", id: id + "-error", text: "Error: " + (message.errorMessage?.trim() || "the model returned an error"), at: message.timestamp });
-  return items;
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The display name for an agent-message sender: a job by its name, a session by its catalog name, a raw id nobody lists as "another thread". */
+export function senderName(from: string, nameOf: NameOf = () => undefined): string {
+  const raw = from.replace(/^(?:child|sibling|parent):/, "").trim();
+  if (!raw) return "another thread";
+  if (!SESSION_ID.test(raw)) return raw;
+  return nameOf(raw)?.trim() || "another thread";
 }
 
-function customItems(message: CustomMessage, id: string, index: number): ChatItem[] {
-  if (!isPromptCustom(message)) return [];
-  const summary = triggerSummary(message);
+type Refused = (toolCallId: string) => boolean;
+function assistantLines(message: AssistantMessage, id: string, starter: TurnStarter, streaming: boolean, refused: Refused): ChatLine[] {
+  const lines: ChatLine[] = [];
+  const text = messageText(message).trim();
+  if (text && starter === "owner") lines.push({ kind: "agent", id, text, at: message.timestamp, ...(streaming ? { streaming: true } : {}) });
+  else if (text && !streaming) lines.push({ kind: "notes", id, text, at: message.timestamp });
+  if (streaming) return lines;
+  message.content.forEach((part, index) => {
+    if (part.type !== "toolCall" || part.name !== TELL_OWNER_TOOL || refused(part.id)) return;
+    const told = typeof part.arguments.text === "string" ? part.arguments.text.trim() : "";
+    if (told) lines.push({ kind: "agent", id: `${id}-t${index}`, text: told, at: message.timestamp });
+  });
+  if (message.stopReason === "aborted") lines.push({ kind: "notice", id: id + "-stop", text: "Reply stopped", at: message.timestamp });
+  else if (message.stopReason === "error") lines.push({ kind: "notice", id: id + "-error", text: "Error: " + (message.errorMessage?.trim() || "the model returned an error"), at: message.timestamp });
+  return lines;
+}
+
+function customLines(message: CustomMessage, id: string, index: number, nameOf: NameOf): ChatLine[] {
   if (message.customType === "agent_message") {
-    const from = summary.detail.replace(/^from\s+/, "") || "a worker";
+    const summary = triggerSummary(message);
+    const from = senderName(summary.detail.replace(/^from\s+/, ""), nameOf);
     const part = typeof message.content === "string" ? -1 : message.content.findIndex(entry => entry.type === "text" && entry.truncated);
     return [{ kind: "job", id, from, title: firstLine(summary.body) || "(empty message)", body: summary.body, at: message.timestamp, ...(part >= 0 ? { clipped: { message: index, part } } : {}) }];
   }
-  const text = [summary.label, summary.detail].filter(Boolean).join(", ");
-  return [{ kind: "notice", id, text, at: message.timestamp }];
+  if (message.customType === "prime-agent.update_restart") return [{ kind: "notice", id, text: "Prime Agent restarted", at: message.timestamp }];
+  return [];
 }
 
 /**
- * Message role and custom type to chat lines:
- * user -> user; assistant text -> agent (plus a notice on error or abort; thinking and tool calls produce nothing);
- * custom agent_message -> job; other wake-up customs (heartbeat, background command, subagent exit, restart, goal) -> notice;
- * compactionSummary -> notice; toolResult, bashExecution, branchSummary and non-prompt customs -> nothing.
+ * Every committed message as lines, in order, with the turn tracked the way `buildTurns` does: a user message starts an owner turn; a
+ * wake-up custom (agent message, heartbeat, job notice, background completion) starts an agent turn when the last run had settled, and
+ * joins the running turn otherwise. The chat's text is an agent line on an owner turn and a notes line on an agent turn; a `tell_owner` call
+ * is an agent line on either, unless the tool refused the text. Check-ins, job notices and background completions themselves produce nothing: what the chat told the owner
+ * about them is the line. toolResult, bashExecution, branchSummary and non-prompt customs produce nothing.
  */
-export function chatItemsOf(message: ThreadMessage, index: number): ChatItem[] {
-  const id = "m" + index;
-  switch (message.role) {
-    case "user": return [{ kind: "user", id, text: messageText(message).trim(), images: imagesOf(message), at: message.timestamp }];
-    case "assistant": return assistantItems(message, id, false);
-    case "custom": return customItems(message, id, index);
-    case "compactionSummary": return [{ kind: "notice", id, text: "Older messages were summarized to free space", at: message.timestamp }];
-    case "toolResult":
-    case "bashExecution":
-    case "branchSummary":
-      return [];
+export function chatLines(messages: readonly ThreadMessage[], nameOf: NameOf = () => undefined): ChatLine[] {
+  const lines: ChatLine[] = [];
+  const track = turnTracker();
+  const results = toolResults(messages);
+  const refused: Refused = toolCallId => results.get(toolCallId)?.isError === true;
+  messages.forEach((message, index) => {
+    const id = "m" + index;
+    const starter = track(message);
+    switch (message.role) {
+      case "user": lines.push({ kind: "user", id, text: messageText(message).trim(), images: imagesOf(message), at: message.timestamp }); return;
+      case "assistant": lines.push(...assistantLines(message, id, starter, false, refused)); return;
+      case "custom": lines.push(...customLines(message, id, index, nameOf)); return;
+      case "compactionSummary": lines.push({ kind: "notice", id, text: "Older messages were summarized to free space", at: message.timestamp }); return;
+      case "toolResult":
+      case "bashExecution":
+      case "branchSummary":
+        return;
+    }
+  });
+  return lines;
+}
+
+/** Feeds each message in order and answers who started the turn it belongs to. */
+function turnTracker(): (message: ThreadMessage) => TurnStarter {
+  let starter: TurnStarter = "owner";
+  let settled = true;
+  return message => {
+    if (message.role === "user") { starter = "owner"; settled = false; }
+    else if (message.role === "assistant") settled = message.stopReason !== "toolUse";
+    else if (message.role === "custom" && isPromptCustom(message)) { if (settled) starter = "agent"; settled = false; }
+    return starter;
+  };
+}
+
+/** Who started the turn the thread is on now: the owner until something else wakes a settled chat. */
+export function turnStarter(messages: readonly ThreadMessage[]): TurnStarter {
+  const track = turnTracker();
+  let starter: TurnStarter = "owner";
+  for (const message of messages) starter = track(message);
+  return starter;
+}
+
+const isUpdate = (line: ChatLine): line is Update => line.kind === "job" || line.kind === "notes";
+
+/** The lines with every run of quiet ones (job messages, the chat's notes) folded into one updates item, keyed by its first line. */
+export function collapseUpdates(lines: readonly ChatLine[]): ChatItem[] {
+  const items: ChatItem[] = [];
+  let group: Extract<ChatItem, { kind: "updates" }> | null = null;
+  for (const line of lines) {
+    if (isUpdate(line)) {
+      if (!group) { group = { kind: "updates", id: "u" + line.id, at: line.at, entries: [] }; items.push(group); }
+      group.entries.push(line);
+      continue;
+    }
+    group = null;
+    items.push(line);
   }
+  return items;
+}
+
+/** A session titled by its first message can run long; the folded line clips each name to this. */
+const NAME_LIMIT = 32;
+const clipName = (name: string): string => name.length > NAME_LIMIT ? name.slice(0, NAME_LIMIT - 1).trimEnd() + "\u2026" : name;
+
+/** "4 updates" and the senders in the order they wrote, up to three, for the folded line. */
+export function updatesLabel(item: Extract<ChatItem, { kind: "updates" }>): { count: string; names: string } {
+  const count = item.entries.length === 1 ? "1 update" : `${item.entries.length} updates`;
+  const names = [...new Set(item.entries.flatMap(entry => entry.kind === "job" ? [entry.from] : []))].map(clipName);
+  const shown = names.slice(0, 3);
+  const more = names.length - shown.length;
+  return { count, names: more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ") };
 }
 
 /** Ids of the pending sends a user message in `messages` has settled: same text, and not from before the send (minus clock skew). Each message settles at most one. */
@@ -80,10 +172,14 @@ export function settledPending(messages: readonly ThreadMessage[], pending: read
   return settled;
 }
 
-/** The whole chat, oldest first: every message as lines, then the streaming reply, then the sends the thread has not echoed yet. */
-export function chatFeed(state: Pick<ThreadState, "messages" | "streaming">, pending: readonly PendingSend[] = []): ChatItem[] {
-  const items = state.messages.flatMap(chatItemsOf);
-  if (state.streaming) items.push(...assistantItems(state.streaming, "streaming", true));
+/**
+ * The whole chat, oldest first: every message as lines with the quiet runs folded, then the streaming reply when the owner started the turn,
+ * then the sends the thread has not echoed yet.
+ */
+export function chatFeed(state: Pick<ThreadState, "messages" | "streaming">, pending: readonly PendingSend[] = [], nameOf: NameOf = () => undefined): ChatItem[] {
+  const lines = chatLines(state.messages, nameOf);
+  if (state.streaming) lines.push(...assistantLines(state.streaming, "streaming", turnStarter(state.messages), true, () => true));
+  const items = collapseUpdates(lines);
   const settled = settledPending(state.messages, pending);
   for (const send of pending) {
     if (settled.has(send.id)) continue;

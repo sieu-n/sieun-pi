@@ -1,8 +1,13 @@
-import { randomBytes } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { createReadStream, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
+import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
+import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import type { ChildAgent, ThinkingLevel } from "./shared/types.ts";
+
+export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
 /** The extension flag the chat server sets on `create`. The extension turns it into the session entry at the first session_start. */
 export const CHAT_FLAG = "chat";
@@ -10,6 +15,10 @@ export const CHAT_FLAG = "chat";
 export const CHAT_MODE_ENTRY = "chat_mode";
 /** The board tool. Its promptGuidelines carry the brief, so it is active only in a marked root. */
 export const CHAT_BOARD_TOOL = "chat_board";
+/** The only way the chat reaches the owner on a turn the owner did not start; active with the board tool. The feed reads its calls from the transcript. */
+export const CHAT_TOOLS: readonly string[] = [CHAT_BOARD_TOOL, TELL_OWNER_TOOL];
+export const TELL_OWNER_TOO_LONG = "shorter: one or two sentences";
+export const TELL_OWNER_DONE = "told the owner";
 export const CHECK_IN_SCHEDULE = "every 10m";
 export const CHECK_IN = "Check-in. Read the board (chat_board with no ops) and what each job is doing (rlm.list_subagents, rlm.collect, agent_observe.recent_messages). " +
   "Update the board, re-brief or stop anything stuck. Reply to the owner only if there is something to report, ask, or decide; otherwise end the turn with no text.";
@@ -21,11 +30,15 @@ const SHELL_LIST = "prime-agent, git log/status/diff/show, rg, ls, cat, head, ta
 export const CHAT_BRIEF: readonly string[] = [
   "This session is a chat. The owner is the CTO; you are the VP for this thread's topic. You own the outcome: plan it, staff it with jobs, " +
     "keep the board current, and bring the owner only what needs them.",
-  "Voice: the owner's language, short. Lead with the answer in one or two plain sentences. Markdown renders in the chat: use a short list, " +
+  "Voice: the owner's language, short. Owner replies: one to three sentences, 15 to 60 words, lead with the answer. Markdown renders in the chat: use a short list, " +
     "inline code or a link when it makes the reply easier to scan; no headings, no tables unless asked, no em dashes. Long detail (findings, " +
     "options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
     "diagrams; put one on its own block when it is the point of the reply (it shows as a separate card under your message), keep it inline " +
     "when it is a small aside.",
+  "Quiet: you talk to the owner when the owner writes. On any other wake-up (a job report, another thread, a check-in) say nothing unless a goal " +
+    "finished, something failed or is blocked, or you need a decision; then call tell_owner once with one or two sentences. Several updates in a " +
+    "row get one tell_owner at the end, not one each. Never narrate relays ('I passed X to Y'). Message another thread only when it must act, and " +
+    "tell it no reply is needed unless it needs something.",
   "Do yourself only quick read-only look-ups that answer the owner in about a minute: read a file, `rg`, `git log/status/diff/show`, open a screenshot " +
     "with `attach_image`, read a job's report or wiki page, `await agent_observe.recent_messages(name)`. Any real task, read-only or not " +
     "(research, an audit, implementation, checks, browser work), goes to a job.",
@@ -76,11 +89,19 @@ export function chatModeAt(input: { depth: number; flagged: boolean; marked: boo
   return { mark, active: input.marked || mark };
 }
 
-/** The active tool list with the brief tool added or removed; null when it is already right. Extension tools start active in every session. */
+/** The active tool list with the chat tools (board, tell_owner) added or removed; null when it is already right. Extension tools start active in every session. */
 export function withChatTool(active: readonly string[], on: boolean): string[] | null {
-  const has = active.includes(CHAT_BOARD_TOOL);
-  if (has === on) return null;
-  return on ? [...active, CHAT_BOARD_TOOL] : active.filter(name => name !== CHAT_BOARD_TOOL);
+  const missing = CHAT_TOOLS.filter(name => !active.includes(name));
+  if (on) return missing.length ? [...active, ...missing] : null;
+  return missing.length === CHAT_TOOLS.length ? null : active.filter(name => !CHAT_TOOLS.includes(name));
+}
+
+/** What `tell_owner` answers: the text reaches the owner as a bubble, or it is refused as too long (the feed shows a refused call as nothing). */
+export function tellOwner(text: unknown): { ok: true; text: string } | { ok: false; text: string } {
+  const told = typeof text === "string" ? text.trim() : "";
+  if (!told) return { ok: false, text: "nothing to tell: give text" };
+  if (told.length > TELL_OWNER_LIMIT) return { ok: false, text: TELL_OWNER_TOO_LONG };
+  return { ok: true, text: TELL_OWNER_DONE };
 }
 
 const PY_STRING = /(?:[rbfuRBFU]{0,2})("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/g;
@@ -197,6 +218,40 @@ export function checkInAction(current: CheckInState | undefined, wanted: boolean
   return wanted ? "resume" : "pause";
 }
 
+/** The source files a chat session runs as its extension. A change in any of them is a new build; a chat that loaded an older one is reloaded. */
+const BUILD_FILES = ["../extension/index.ts", "chats.ts", "shared/chat-board.ts", "shared/chat-feed.ts"];
+/** A short hash of the extension sources on disk now. */
+export function extensionBuild(dir: string = import.meta.dirname): string {
+  const hash = createHash("sha256");
+  for (const file of BUILD_FILES) hash.update(readFileSync(join(dir, file)));
+  return hash.digest("hex").slice(0, 16);
+}
+
+/** What to do about a chat that last loaded `loaded` when the build on disk is `build`: reload it now, wait for its turn to end, or nothing. */
+export function reloadAction(loaded: string | undefined, build: string, busy: boolean): "reload" | "wait" | null {
+  if (loaded === build) return null;
+  return busy ? "wait" : "reload";
+}
+
+/** The build each chat last loaded, by session id. */
+export interface LoadRecord {
+  get(id: string): Promise<string | undefined>;
+  set(id: string, build: string): Promise<void>;
+  forget(id: string): Promise<void>;
+}
+/** `<data dir>/extension-loads.json`: `{ builds: { [sessionId]: build } }` through locked-json. */
+export function loadRecord(path: string): LoadRecord {
+  const file: JsonFile<{ builds: Record<string, string> }> = { path, label: "Extension load record", initial: () => ({ builds: {} }), parse(value: unknown) {
+    const builds = typeof value === "object" && value !== null && "builds" in value && typeof value.builds === "object" && value.builds !== null ? value.builds : {};
+    return { builds: Object.fromEntries(Object.entries(builds).filter((entry): entry is [string, string] => typeof entry[1] === "string")) };
+  } };
+  return {
+    async get(id) { return (await snapshotJsonFile(file)).builds[id]; },
+    async set(id, build) { await transactJsonFile(file, state => { state.builds[id] = build; }); },
+    async forget(id) { await transactJsonFile(file, state => { delete state.builds[id]; }); },
+  };
+}
+
 /** What chats need from the thread hub. ThreadHub satisfies it; tests pass a fake. */
 export interface ChatThreads {
   create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name: string; kind: "chat" }): Promise<{ id: string }>;
@@ -206,39 +261,52 @@ export interface ChatThreads {
   setSteeringMode(id: string, mode: "all" | "one-at-a-time"): Promise<void>;
   setHeartbeat(id: string, schedule: string, instruction: string, deliveryMode: "steer" | "follow_up"): Promise<void>;
   updateHeartbeat(id: string, action: "pause" | "resume"): Promise<void>;
-  /** `live` fires after each attach with the children known then; `children` on every change while attached. */
-  observe(observer: { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void }): () => void;
+  /** Whether the thread is mid-turn. */
+  busy(id: string): boolean;
+  /** Re-runs the session's extensions, so it gets the current tools and brief. */
+  reload(id: string): Promise<void>;
+  /** `live` fires after each attach with the children known then; `children` on every change while attached; `idle` at each turn's end. */
+  observe(observer: { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void }): () => void;
 }
 export type ChatSummary = (id: string) => Promise<{ lifecycle?: string; sessionFile?: string } | undefined>;
 
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
- * state), and the check-in heartbeat, paused while no job runs. Everything converges from the index plus the daemon list, so a restart re-adopts
- * what it finds.
+ * state), the check-in heartbeat, paused while no job runs, and the extension build: a chat that last loaded an older build than the one on
+ * disk is reloaded when it attaches, at once if idle, else at the end of its turn. Everything converges from the index plus the daemon list,
+ * so a restart re-adopts what it finds.
  */
 export class Chats {
   private readonly checkIn = new Map<string, CheckInState>();
   private readonly chatIds = new Set<string>();
   /** The children last seen per thread; a sync reads these, not its trigger's, so the newest state wins when syncs queue up. */
   private readonly children = new Map<string, readonly ChildAgent[]>();
+  /** Chats found stale while mid-turn; the end of the turn reloads them. */
+  private readonly reloadWaiting = new Set<string>();
   private readonly syncing = new Map<string, Promise<void>>();
   private loaded: Promise<void> | undefined;
   private readonly unobserve: () => void;
 
-  /** `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry is the agent side's. */
-  constructor(readonly index: IdIndex, private readonly threads: ChatThreads, private readonly summary: ChatSummary, private readonly log: (line: string) => void = () => {}) {
+  /**
+   * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
+   * is the agent side's. `build` is the extension build on disk (`extensionBuild()`), `loads` the one each chat last loaded.
+   */
+  constructor(readonly index: IdIndex, private readonly threads: ChatThreads, private readonly summary: ChatSummary, private readonly build: string,
+    private readonly loads: LoadRecord, private readonly log: (line: string) => void = () => {}) {
     this.unobserve = threads.observe({
-      live: (id, children) => { this.checkIn.delete(id); this.children.set(id, children); this.queueSync(id, true); },
+      live: (id, children) => { this.checkIn.delete(id); this.children.set(id, children); this.queueSync(id, true); this.queue(id, () => this.refreshExtension(id)); },
       children: (id, children) => { this.children.set(id, children); this.queueSync(id, false); },
+      idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); },
     });
   }
 
-  /** Syncs of one thread run one after another; `settled` resolves once the queue is empty, for tests. */
-  private queueSync(id: string, attached: boolean): void {
-    const next = (this.syncing.get(id) ?? Promise.resolve()).then(() => this.sync(id, attached));
+  /** Tasks of one thread run one after another; `settled` resolves once every queue is empty, for tests. */
+  private queue(id: string, task: () => Promise<void>): void {
+    const next = (this.syncing.get(id) ?? Promise.resolve()).then(task);
     this.syncing.set(id, next);
     void next.finally(() => { if (this.syncing.get(id) === next) this.syncing.delete(id); });
   }
+  private queueSync(id: string, attached: boolean): void { this.queue(id, () => this.sync(id, attached)); }
 
   async settled(): Promise<void> { while (this.syncing.size) await Promise.all([...this.syncing.values()]); }
 
@@ -260,6 +328,7 @@ export class Chats {
     await this.threads.setHeartbeat(id, CHECK_IN_SCHEDULE, CHECK_IN, "follow_up");
     await this.threads.updateHeartbeat(id, "pause");
     this.checkIn.set(id, "paused");
+    await this.loads.set(id, this.build);
     return { id, name };
   }
 
@@ -308,8 +377,27 @@ export class Chats {
     this.threads.unpin(id);
     this.checkIn.delete(id);
     this.children.delete(id);
+    this.reloadWaiting.delete(id);
     this.chatIds.delete(id);
     await this.index.forget(id);
+    await this.loads.forget(id);
+  }
+
+  /** Reloads the chat when the build it last loaded is not the one on disk: now if it is idle, else once its turn ends. */
+  private async refreshExtension(id: string): Promise<void> {
+    await this.load();
+    if (!this.chatIds.has(id)) return;
+    try {
+      const action = reloadAction(await this.loads.get(id), this.build, this.threads.busy(id));
+      if (action === "wait") { this.reloadWaiting.add(id); return; }
+      this.reloadWaiting.delete(id);
+      if (!action) return;
+      await this.threads.reload(id);
+      await this.loads.set(id, this.build);
+      this.log(`chat ${id.slice(0, 8)}: extension reloaded, build ${this.build}`);
+    } catch (error) {
+      this.log(`chat ${id.slice(0, 8)}: reload: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async sync(id: string, attached: boolean): Promise<void> {

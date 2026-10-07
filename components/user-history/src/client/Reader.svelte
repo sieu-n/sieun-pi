@@ -6,7 +6,7 @@
   import { renderMarkdown, renderInline } from "./markdown.ts";
   import { diagrams } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
-  import { chatFeed, type ChatItem } from "../shared/chat-feed.ts";
+  import { chatFeed, chatLines, updatesLabel, type ChatItem, type ChatLine, type Update } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { createdSessions } from "./children.ts";
   import { findJob, jobName, jobViews, reportsFor, type JobReport } from "./jobs.ts";
@@ -20,13 +20,14 @@
 
   /**
    * The one place an artifact opens: a job's latest report with its earlier messages behind a fold, a text file (markdown rendered, a diff
-   * with line colors, code with line numbers), a wiki page's text through the service, or one message of a thread. The header names the
-   * source, copies a link that pastes back as a note link, and offers the way to the full thing (the job's thread, the wiki, the message).
+   * with line colors, code with line numbers), a wiki page's text through the service, one message of a thread, or a folded run of a chat's
+   * updates as a list (who wrote, when, the whole text; the chat's own hidden text as "VP notes"). The header names the source, copies a
+   * link that pastes back as a note link, and offers the way to the full thing (the job's thread, the wiki, the message).
    */
   let { view, narrow, onclose }: { view: ReaderView; narrow: boolean; onclose: () => void } = $props();
 
-  const ICON: Record<ReaderView["kind"], IconName> = { job: "bolt", file: "file", wiki: "book", message: "message" };
-  const thread = $derived(view.kind === "job" || view.kind === "message" ? view.thread : null);
+  const ICON: Record<ReaderView["kind"], IconName> = { job: "bolt", file: "file", wiki: "book", message: "message", updates: "list" };
+  const thread = $derived(view.kind === "job" || view.kind === "message" || view.kind === "updates" ? view.thread : null);
   const snapshot = $derived(thread ? store.thread(thread)?.state ?? null : null);
   const entry = $derived(thread ? store.thread(thread) : undefined);
   const cwd = $derived(snapshot?.info.cwd ?? "");
@@ -37,21 +38,29 @@
     untrack(() => store.open(id));
     return () => { if (store.selectedId !== id) store.release(id); };
   });
-  const feed = $derived(snapshot ? chatFeed(snapshot) : []);
+  const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
+  const lines = $derived(snapshot ? chatLines(snapshot.messages, nameOf) : []);
+  /** The folded run the chat line opened, found by the time of its first line. */
+  const updates = $derived.by((): Extract<ChatItem, { kind: "updates" }> | null => {
+    if (view.kind !== "updates" || !snapshot) return null;
+    const at = view.at;
+    return chatFeed(snapshot, [], nameOf).find((item): item is Extract<ChatItem, { kind: "updates" }> => item.kind === "updates" && item.at === at) ?? null;
+  });
 
-  const reports = $derived(view.kind === "job" ? reportsFor(feed, view.name) : []);
+  const reports = $derived(view.kind === "job" ? reportsFor(lines, view.name) : []);
   const latest = $derived(reports[0] ?? null);
   const earlier = $derived(reports.slice(1));
   let earlierOpen = $state(false);
   let usage = $state<ChildUsage[]>([]);
-  const message = $derived.by((): ChatItem | null => {
-    if (view.kind !== "message" || !feed.length) return null;
-    const at = anchorStamp(feed.map(item => item.at), view.at);
-    return feed.find(item => item.at === at) ?? null;
+  const message = $derived.by((): ChatLine | null => {
+    if (view.kind !== "message" || !lines.length) return null;
+    const at = anchorStamp(lines.map(line => line.at), view.at);
+    return lines.find(line => line.at === at) ?? null;
   });
   /** The snapshot clips a job's message at 2 KiB; the full text of each one on screen is fetched once and shown instead. */
   let full = $state.raw<Record<string, string>>({});
-  const shown = $derived.by((): JobReport[] => view.kind === "job" ? [...(latest ? [latest] : []), ...(earlierOpen ? earlier : [])] : message?.kind === "job" ? [message] : []);
+  const shown = $derived.by((): JobReport[] => view.kind === "job" ? [...(latest ? [latest] : []), ...(earlierOpen ? earlier : [])]
+    : view.kind === "updates" ? (updates?.entries ?? []).filter((entry): entry is JobReport => entry.kind === "job") : message?.kind === "job" ? [message] : []);
   const body = (report: JobReport): string => full[report.id] ?? report.body;
   const fetching = new Set<string>();
   $effect(() => {
@@ -103,15 +112,22 @@
       case "job": return jobName(view.name);
       case "file": return fileName(view.path);
       case "wiki": return wiki?.result?.title ?? fileName(view.path);
-      case "message": return message ? (message.kind === "user" ? "You" : message.kind === "job" ? "From " + jobName(message.from) : message.kind === "agent" ? store.session(view.thread)?.name ?? "Chat" : "Notice") + ", " + clockTime(message.at) : "Message";
+      case "message": return message ? (message.kind === "user" ? "You" : message.kind === "job" ? "From " + message.from : message.kind === "agent" ? store.session(view.thread)?.name ?? "Chat" : message.kind === "notes" ? "VP notes" : "Notice") + ", " + clockTime(message.at) : "Message";
+      case "updates": return updates ? updatesLabel(updates).count : "Updates";
     }
   });
+  const span = (entries: readonly Update[]): string => {
+    const first = entries[0];
+    const last = entries.at(-1);
+    return first && last ? (first === last ? clockTime(first.at) : clockTime(first.at) + " to " + clockTime(last.at)) : "";
+  };
   const source = $derived.by(() => {
     switch (view.kind) {
       case "job": return latest ? "Sent to the chat at " + clockTime(latest.at) + (reports.length > 1 ? `, ${reports.length} messages` : "") : "job:" + view.name;
       case "file": return view.path;
       case "wiki": return wikiUrl(view.path);
       case "message": return (store.session(view.thread)?.name ?? view.thread) + (message ? ", " + new Date(message.at).toLocaleString() : "");
+      case "updates": return (store.session(view.thread)?.name ?? view.thread) + (updates ? ", " + span(updates.entries) : "");
     }
   });
   /** What Copy link puts on the clipboard: a form the Add a note field turns back into the same link. */
@@ -121,6 +137,7 @@
       case "file": return view.path;
       case "wiki": return wikiUrl(view.path);
       case "message": return permalink(view.thread, view.at);
+      case "updates": return permalink(view.thread, view.at);
     }
   });
   async function copyLink(): Promise<void> {
@@ -138,6 +155,7 @@
         const { thread: id, at } = view;
         return [...(fullThread ? [fullThread] : []), { label: "Go to message", run: () => { onclose(); store.select(id, at); } }];
       }
+      case "updates": return [];
     }
   });
 
@@ -214,9 +232,21 @@
       {:else if !snapshot}{@render loading()}
       {:else if !message}<p class="snapshot">That link points at a message this thread does not have.</p>
       {:else if message.kind === "user"}<div class="said">{@html renderInline(message.text)}</div>
-      {:else if message.kind === "agent"}{@render prose(message.text, cwd)}
+      {:else if message.kind === "agent" || message.kind === "notes"}{@render prose(message.text, cwd)}
       {:else if message.kind === "job"}{@render prose(body(message), cwd)}
       {:else}<p class="snapshot">{message.text}</p>{/if}
+    {:else if view.kind === "updates"}
+      {#if entry?.error && !snapshot}{@render failure(entry.error)}
+      {:else if !snapshot}{@render loading()}
+      {:else if !updates}<p class="snapshot">These updates are no longer in the chat.</p>
+      {:else}
+        {#each updates.entries as update (update.id)}
+          <article class="update {update.kind}">
+            <div class="update-head"><span class="update-from">{update.kind === "job" ? update.from : "VP notes"}</span><span class="stamp">{clockTime(update.at)}</span></div>
+            {@render prose(update.kind === "job" ? body(update) : update.text, cwd)}
+          </article>
+        {/each}
+      {/if}
     {/if}
   </div>
 </Modal>
@@ -239,6 +269,12 @@
   .chev.open { transform: none; }
   .earlier { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-sunken); }
   .stamp { margin-bottom: 6px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .update { padding: 12px 0 14px; border-top: 1px solid var(--border); }
+  .update:first-child { padding-top: 0; border-top: 0; }
+  .update-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .update-head .stamp { margin: 0; }
+  .update-from { font-size: 13px; font-weight: 600; color: var(--text); }
+  .update.notes .update-from { color: var(--accent-bold); }
   .lines { margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; white-space: pre; overflow-x: auto; tab-size: 4; }
   .line { display: block; }
   .diff .add { background: color-mix(in srgb, var(--success) 14%, transparent); color: light-dark(#0a5a2a, #8fe3ad); }

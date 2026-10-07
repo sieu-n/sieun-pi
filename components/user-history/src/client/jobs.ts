@@ -1,4 +1,4 @@
-import type { ChatItem } from "../shared/chat-feed.ts";
+import type { ChatLine } from "../shared/chat-feed.ts";
 import type { ChildAgent, ChildUsage, SessionRow, ThreadMessage } from "../shared/types.ts";
 import { childName, createdSessions, isActiveChild, type CreatedSession } from "./children.ts";
 
@@ -10,7 +10,7 @@ import { childName, createdSessions, isActiveChild, type CreatedSession } from "
 export type JobView =
   | { kind: "child"; key: string; name: string; child: ChildAgent; sessionId: string | null }
   | { kind: "session"; key: string; name: string; created: CreatedSession; row: SessionRow | undefined; sessionId: string };
-export type JobReport = Extract<ChatItem, { kind: "job" }>;
+export type JobReport = Extract<ChatLine, { kind: "job" }>;
 
 export const isActiveJob = (job: JobView): boolean => job.kind === "child" ? isActiveChild(job.child) : job.row?.working === true;
 
@@ -35,10 +35,10 @@ export function findJob(jobs: readonly JobView[], name: string): JobView | undef
   return jobs.find(job => job.key === raw || job.sessionId === raw) ?? jobs.findLast(job => job.name === jobName(raw));
 }
 
-/** Every message the job sent to the chat, newest first. */
-export function reportsFor(feed: readonly ChatItem[], name: string): JobReport[] {
+/** Every message the job sent to the chat, newest first, from the chat's lines (`chatLines`; the feed folds them into updates). */
+export function reportsFor(lines: readonly ChatLine[], name: string): JobReport[] {
   const wanted = jobName(name);
-  return feed.filter((item): item is JobReport => item.kind === "job" && jobName(item.from) === wanted).reverse();
+  return lines.filter((line): line is JobReport => line.kind === "job" && line.from === wanted).reverse();
 }
 
 const PY_STRING = /^(?:[rbfuRBFU]{0,2})("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')/;

@@ -10,7 +10,7 @@
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobViews, reportsFor, spawnCalls } from "./jobs.ts";
   import { boardActionText, isBoardAction, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { chatFeed, settledPending, type ChatItem } from "../shared/chat-feed.ts";
+  import { chatFeed, chatLines, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { bubbleBlocks, renderInline, renderMarkdown } from "./markdown.ts";
   import { diagrams } from "./diagrams.ts";
@@ -41,10 +41,12 @@
   const row = $derived(store.session(id));
   const EMPTY_SENDS: never[] = [];
   const pendingSends = $derived(store.pendingSends[id] ?? EMPTY_SENDS);
-  const feed = $derived(thread ? chatFeed(thread, pendingSends) : []);
-  /** Three dots while the chat itself takes a turn and no reply text has started. Running jobs alone do not count: they show in the Jobs panel. */
+  /** A sender named by a raw session id in an agent-message header reads as its catalog name. */
+  const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
+  const feed = $derived(thread ? chatFeed(thread, pendingSends, nameOf) : []);
+  /** Three dots while the chat answers the owner and no reply text has started. A turn a job or a check-in started shows nothing until a tell_owner lands. */
   const busy = $derived(thread ? isThreadBusy({ ...thread, children: [] }) : false);
-  const typing = $derived(busy && !feed.some(item => item.kind === "agent" && item.streaming));
+  const typing = $derived(busy && thread !== null && turnStarter(thread.messages) === "owner" && !feed.some(item => item.kind === "agent" && item.streaming));
   const acceptsImages = $derived(thread?.info.model?.input.includes("image") ?? true);
   const minute = $derived(Math.floor(clock.now / 60_000) * 60_000);
   const tick5 = $derived(Math.floor(clock.now / 5000) * 5000);
@@ -96,7 +98,7 @@
   const drawerName = $derived(store.jobDrawer?.chat === id ? store.jobDrawer.job : null);
   const drawerJob = $derived(drawerName === null ? null : findJob(jobs, drawerName) ?? null);
   const drawerTitle = $derived(drawerJob?.name ?? (drawerName === null ? "" : jobName(drawerName)));
-  const drawerReports = $derived(drawerName === null ? [] : reportsFor(feed, drawerTitle));
+  const drawerReports = $derived(drawerName === null || !thread ? [] : reportsFor(chatLines(thread.messages, nameOf), drawerTitle));
   /** The job's brief: from the ipython calls in the snapshot, else from the whole cell of a truncated call (newest first), fetched once per call. */
   let drawerBrief = $state<string | null>(null);
   const fullCode = new Map<string, Promise<string>>();
@@ -138,8 +140,8 @@
     if (click?.kind === "image") lightbox = { images: [{ src: click.src, alt: click.alt }], index: 0 };
     else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, id); }
   }
-  /** A job's message in the feed opens in the reader; the drawer stays for the job's status. */
-  const readReport = (item: Extract<ChatItem, { kind: "job" }>) => store.openArtifact({ kind: "thread", sessionId: id, at: item.at }, id);
+  /** A folded run of updates opens in the reader as a list: who wrote, when, and the whole text. */
+  const readUpdates = (item: Extract<ChatItem, { kind: "updates" }>) => { store.reader = { kind: "updates", thread: id, at: item.at }; };
 
   /** The side panel's left edge: a drag sets its width, a double click puts it back, Left and Right nudge it. The choice holds across chats. */
   let sideNode: HTMLElement | undefined = $state();
@@ -305,13 +307,13 @@
             </div>
             {#if !item.streaming}{@render linkButton(item.at)}{/if}
           </div>
-        {:else if item.kind === "job"}
-          <div class="line report" data-at={item.at}>
-            <button type="button" class="report-line" title="Read this message" onclick={() => readReport(item)} use:longpress={() => void copyLink(item.at)}>
-              <span class="report-mark"><Icon name="chevronRight" size={12} /></span>
-              <span class="report-text"><span class="report-from">from {jobName(item.from)}:</span> {item.title}</span>
+        {:else if item.kind === "updates"}
+          {@const label = updatesLabel(item)}
+          <div class="line updates" data-at={item.at}>
+            <button type="button" class="updates-line" title="Read these updates" onclick={() => readUpdates(item)}>
+              <span class="updates-count">{label.count}</span>{#if label.names}<span class="dot-sep"></span><span class="updates-names">{label.names}</span>{/if}
+              <span class="updates-mark"><Icon name="chevronRight" size={12} /></span>
             </button>
-            {@render linkButton(item.at)}
           </div>
         {:else}
           <div class="notice">{item.text}</div>
@@ -499,13 +501,14 @@
   .typing span:nth-child(2) { animation-delay: 0.2s; }
   .typing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes typing { 0%, 60%, 100% { opacity: 0.35; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
-  .line.report { align-items: flex-start; margin: 2px 0; border-radius: var(--radius-small); }
-  .line.report .link-button { margin: 2px 0 0; }
-  .report-line { display: flex; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; padding: 4px 6px; border-radius: var(--radius-small); text-align: left; font-size: 13px; line-height: 1.45; color: var(--text-muted); }
-  .report-line:hover { background: var(--bg-hover); color: var(--text); }
-  .report-mark { display: inline-flex; flex: none; margin-top: 3px; }
-  .report-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .report-from { font-weight: 600; }
+  /* A folded run of updates: one muted line, centered like a notice, that opens the reader. */
+  .line.updates { justify-content: center; margin: 2px 0; border-radius: 999px; }
+  .updates-line { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 3px 8px 3px 10px; border-radius: 999px; font-size: 12.5px; line-height: 1.4; color: var(--text-faint); transition: background-color 0.12s, color 0.12s; }
+  .updates-line:hover { background: var(--bg-hover); color: var(--text-muted); }
+  .updates-count { flex: none; font-weight: 500; }
+  .updates-names { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .updates-mark { display: inline-flex; flex: none; opacity: 0.7; }
+  .dot-sep { flex: none; width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: 0.6; }
   .notice { align-self: center; max-width: 90%; padding: 2px 10px; text-align: center; font-size: 12.5px; color: var(--text-faint); overflow-wrap: anywhere; }
   .jump { position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; }
   .jump-go { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: 999px 0 0 999px; }

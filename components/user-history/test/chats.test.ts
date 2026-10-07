@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CHECK_IN, CHECK_IN_SCHEDULE, Chats, chatGuard, type ChatThreads, chatModeAt, checkInAction, checkInWanted, fileHasChatMarker, hasChatMarker, judgeChatCode, withChatTool } from "../src/chats.ts";
+import { CHECK_IN, CHECK_IN_SCHEDULE, Chats, chatGuard, type ChatThreads, chatModeAt, checkInAction, checkInWanted, extensionBuild, fileHasChatMarker, hasChatMarker, judgeChatCode, loadRecord, reloadAction, TELL_OWNER_LIMIT, tellOwner, withChatTool } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChildAgent } from "../src/shared/types.ts";
 import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
@@ -90,10 +90,19 @@ test("chat marker: written once in a flagged root, read back later, never in a c
   assert.deepEqual(chatModeAt({ depth: 1, flagged: true, marked: false }), { mark: false, active: false }, "a child inherits the flag and gets nothing");
   assert.equal(hasChatMarker([{ type: "message" }, { type: "custom", customType: "chat_mode" }]), true);
   assert.equal(hasChatMarker([{ type: "custom_message", customType: "chat_mode" }]), false, "a custom message is not the entry");
-  assert.deepEqual(withChatTool(["ipython", "chat_board"], true), null, "already active");
-  assert.deepEqual(withChatTool(["ipython"], true), ["ipython", "chat_board"]);
-  assert.deepEqual(withChatTool(["ipython", "chat_board", "bash"], false), ["ipython", "bash"], "a child drops the inherited tool");
+  assert.deepEqual(withChatTool(["ipython", "chat_board", "tell_owner"], true), null, "already active");
+  assert.deepEqual(withChatTool(["ipython"], true), ["ipython", "chat_board", "tell_owner"]);
+  assert.deepEqual(withChatTool(["ipython", "chat_board"], true), ["ipython", "chat_board", "tell_owner"], "a chat that loaded the pre-tell_owner build gets the new tool on reload");
+  assert.deepEqual(withChatTool(["ipython", "chat_board", "bash", "tell_owner"], false), ["ipython", "bash"], "a child drops the inherited tools");
   assert.deepEqual(withChatTool(["ipython"], false), null);
+});
+
+test("tell_owner takes up to the limit and refuses longer or empty text", () => {
+  assert.deepEqual(tellOwner("The audit is done; nothing failed."), { ok: true, text: "told the owner" });
+  assert.deepEqual(tellOwner("x".repeat(TELL_OWNER_LIMIT)), { ok: true, text: "told the owner" });
+  assert.deepEqual(tellOwner("x".repeat(TELL_OWNER_LIMIT + 1)), { ok: false, text: "shorter: one or two sentences" });
+  assert.equal(tellOwner("   ").ok, false);
+  assert.equal(tellOwner(undefined).ok, false);
 });
 
 const child = (status: ChildAgent["status"]): ChildAgent => ({ id: status, label: status, status });
@@ -116,9 +125,13 @@ function fakeThreads(calls: string[], pinLimit = 8) {
   let observer: Observer | undefined;
   let next = 1;
   const pinned = new Set<string>();
+  const busyIds = new Set<string>();
   return {
     pinned,
+    busyIds,
     fire: () => observer!,
+    busy(id: string) { return busyIds.has(id); },
+    async reload(id: string) { calls.push(`reload ${id}`); },
     async create(input: { cwd: string; name: string; kind: "chat"; thinkingLevel?: string }) { calls.push(`create ${input.kind} ${input.name} ${input.cwd}`); return { id: `s${next++}` }; },
     pin(id: string) { if (!pinned.has(id) && pinned.size >= pinLimit) return false; calls.push(`pin ${id}`); pinned.add(id); return true; },
     unpin(id: string) { calls.push(`unpin ${id}`); pinned.delete(id); },
@@ -134,8 +147,10 @@ test("chats: create names, indexes, pins, sets steering all and a paused check-i
   const calls: string[] = [];
   const threads = fakeThreads(calls);
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }));
+  const loads = loadRecord(join(dir, "extension-loads.json"));
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loads);
   const created = await chats.create({ cwd: "/repo", name: "  " });
+  assert.equal(await loads.get("s1"), "b1", "a new chat loaded the build on disk");
   assert.equal(created.id, "s1");
   assert.match(created.name, /^chat-[0-9a-f]{4}$/, "a blank name becomes a generated one");
   assert.deepEqual(calls, [`create chat ${created.name} /repo`, "pin s1", "steering s1 all", `heartbeat s1 ${CHECK_IN_SCHEDULE} follow_up check-in`, "heartbeat s1 pause"]);
@@ -161,7 +176,7 @@ test("chats: create names, indexes, pins, sets steering all and a paused check-i
   calls.length = 0;
   threads.fire().live("s1", [child("done")]);
   await chats.settled();
-  assert.deepEqual(calls, ["steering s1 all", "heartbeat s1 pause"], "after a re-create the runtime state is unknown: steering and the pause are sent again");
+  assert.deepEqual(calls, ["steering s1 all", "heartbeat s1 pause"], "after a re-create the runtime state is unknown: steering and the pause are sent again; the build matches, no reload");
   calls.length = 0;
   threads.fire().live("s2", [child("running")]);
   await chats.settled();
@@ -188,17 +203,18 @@ test("chats: adopt pins what the daemon still lists, forgets archived and missin
   for (const id of ["gone", "archived", "down", "live"]) await index.add(id);
   const calls: string[] = [];
   const threads = fakeThreads(calls);
+  const loads = loadRecord(join(dir, "extension-loads.json"));
   const chats = new Chats(index, threads, async id => {
     if (id === "gone") return undefined;
     if (id === "archived") return { lifecycle: "archived" };
     if (id === "down") throw new Error("Prime Agent daemon is not reachable.");
     return { lifecycle: "live" };
-  });
+  }, "b1", loads);
   assert.deepEqual(await chats.adopt(), { pinned: ["live", "down"], forgotten: ["archived", "gone"] }, "newest first, as the index lists them");
   assert.deepEqual(calls, ["pin live", "pin down", "unpin archived", "unpin gone"]);
   assert.deepEqual(await index.ids(), ["live", "down"]);
   const lines: string[] = [];
-  const full = new Chats(index, fakeThreads([], 0), async () => ({ lifecycle: "live" }), line => lines.push(line));
+  const full = new Chats(index, fakeThreads([], 0), async () => ({ lifecycle: "live" }), "b1", loads, line => lines.push(line));
   assert.deepEqual(await full.adopt(), { pinned: [], forgotten: [] });
   assert.equal(lines.length, 2, "the live limit is logged, not thrown");
   chats.close(); full.close();
@@ -220,7 +236,7 @@ test("chats: undo after archive brings a chat back as a chat (index, pin, steeri
   const calls: string[] = [];
   const threads = fakeThreads(calls);
   const files: Record<string, string> = { chat1: chatFile, plain: plainFile };
-  const chats = new Chats(index, threads, async id => files[id] ? { lifecycle: "live", sessionFile: files[id] } : undefined);
+  const chats = new Chats(index, threads, async id => files[id] ? { lifecycle: "live", sessionFile: files[id] } : undefined, "b1", loadRecord(join(dir, "extension-loads.json")));
   await chats.forget("chat1");
   assert.deepEqual(await index.ids(), []);
   calls.length = 0;
@@ -236,6 +252,53 @@ test("chats: undo after archive brings a chat back as a chat (index, pin, steeri
   assert.equal(await chats.restore("nofile"), false);
   assert.deepEqual(calls, []);
   assert.deepEqual(await index.ids(), ["chat1"]);
+  chats.close();
+});
+
+test("stale extension: the decision, and the reload once a chat attaches (now when idle, at the end of its turn when busy; never twice for one build)", async () => {
+  assert.equal(reloadAction(undefined, "b2", false), "reload", "no record: the chat may run any build");
+  assert.equal(reloadAction("b1", "b2", false), "reload");
+  assert.equal(reloadAction("b1", "b2", true), "wait");
+  assert.equal(reloadAction("b2", "b2", false), null);
+  assert.equal(reloadAction("b2", "b2", true), null);
+  const build = extensionBuild();
+  assert.match(build, /^[0-9a-f]{16}$/);
+  assert.equal(extensionBuild(), build, "the same sources hash the same");
+
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  for (const id of ["old", "busy", "fresh", "plain"]) if (id !== "plain") await index.add(id);
+  const loads = loadRecord(join(dir, "extension-loads.json"));
+  await loads.set("fresh", "b2");
+  await loads.set("busy", "b1");
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  threads.busyIds.add("busy");
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b2", loads);
+  await chats.adopt();
+  calls.length = 0;
+  for (const id of ["old", "busy", "fresh", "plain"]) threads.fire().live(id, []);
+  await chats.settled();
+  assert.deepEqual(calls.filter(call => call.startsWith("reload")), ["reload old"], "no record reloads; a matching record, a busy chat and a plain thread do not");
+  assert.equal(await loads.get("old"), "b2");
+  assert.equal(await loads.get("busy"), "b1", "still waiting for the turn to end");
+  calls.length = 0;
+  threads.fire().idle("fresh");
+  threads.fire().idle("plain");
+  await chats.settled();
+  assert.equal(calls.length, 0, "a turn ending in a chat that is not waiting does nothing");
+  threads.busyIds.delete("busy");
+  threads.fire().idle("busy");
+  await chats.settled();
+  assert.deepEqual(calls, ["reload busy"]);
+  assert.equal(await loads.get("busy"), "b2");
+  calls.length = 0;
+  threads.fire().live("old", []);
+  threads.fire().live("busy", []);
+  await chats.settled();
+  assert.deepEqual(calls.filter(call => call.startsWith("reload")), [], "a plain restart with the same build reloads nothing");
+  await chats.forget("old");
+  assert.equal(await loads.get("old"), undefined, "a forgotten chat drops its record");
   chats.close();
 });
 

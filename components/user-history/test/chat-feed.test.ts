@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatFeed, chatItemsOf, settledPending, PENDING_SKEW_MS, type PendingSend } from "../src/shared/chat-feed.ts";
+import { chatFeed, chatLines, collapseUpdates, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, CustomMessage, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -8,65 +8,123 @@ const assistant = (parts: AssistantMessage["content"], timestamp: number, stopRe
   ({ role: "assistant", content: parts, provider: "p", model: "m", stopReason, timestamp, ...(errorMessage === undefined ? {} : { errorMessage }) });
 const custom = (customType: string, content: string, timestamp: number): CustomMessage => ({ role: "custom", customType, content, timestamp });
 const send = (id: string, text: string, at: number): PendingSend => ({ id, text, images: [], at });
+const tell = (id: string, text: string): AssistantMessage["content"][number] => ({ type: "toolCall", id, name: "tell_owner", arguments: { text } });
+const call = (id: string): AssistantMessage["content"][number] => ({ type: "toolCall", id, name: "ipython", arguments: {} });
+const result = (toolCallId: string, timestamp: number): ThreadMessage => ({ role: "toolResult", toolCallId, toolName: "ipython", content: [{ type: "text", text: "ok" }], isError: false, timestamp });
+const report = (from: string, text: string, timestamp: number) => custom("agent_message", `[agent-message from ${from}]\n${text}`, timestamp);
+const kinds = (items: readonly (ChatItem | ChatLine)[]) => items.map(item => item.kind);
 
-test("chatFeed maps a chat conversation to flat lines in message order", () => {
+test("an owner turn shows the chat's text as bubbles, with interim text before a tool call too", () => {
   const messages: ThreadMessage[] = [
     user("start two jobs", 1000),
-    assistant([{ type: "thinking", thinking: "plan" }, { type: "toolCall", id: "c1", name: "ipython", arguments: {} }], 1100, "toolUse"),
-    { role: "toolResult", toolCallId: "c1", toolName: "ipython", content: [{ type: "text", text: "ok" }], isError: false, timestamp: 1200 },
+    assistant([{ type: "thinking", thinking: "plan" }, { type: "text", text: "One moment." }, call("c1")], 1100, "toolUse"),
+    result("c1", 1200),
     assistant([{ type: "text", text: "Both started. I will tell you when they report." }], 1300),
-    custom("agent_message", "[agent-message from readme-lines]\nThere is no README.md at the repo root.\nOnly AGENTS.md and CLAUDE.md.", 1400),
-    assistant([{ type: "text", text: "readme-lines says there is no README." }], 1500),
     user("what is running?", 1600),
   ];
   const feed = chatFeed({ messages, streaming: null });
-  assert.deepEqual(feed.map(item => item.kind), ["user", "agent", "job", "agent", "user"]);
-  assert.deepEqual(feed.map(item => item.id), ["m0", "m3", "m4", "m5", "m6"]);
-  const job = feed[2];
-  assert.ok(job?.kind === "job");
-  assert.equal(job.from, "readme-lines");
-  assert.equal(job.title, "There is no README.md at the repo root.");
-  assert.equal(job.body, "There is no README.md at the repo root.\nOnly AGENTS.md and CLAUDE.md.");
+  assert.deepEqual(kinds(feed), ["user", "agent", "agent", "user"]);
+  assert.deepEqual(feed.map(item => item.id), ["m0", "m1", "m3", "m4"]);
+  assert.deepEqual(feed[1], { kind: "agent", id: "m1", text: "One moment.", at: 1100 });
   assert.equal(feed[0]?.kind === "user" ? feed[0].text : "", "start two jobs");
 });
 
-test("assistant messages with no text, tool results and non-prompt customs produce nothing", () => {
-  assert.deepEqual(chatItemsOf(assistant([{ type: "toolCall", id: "c1", name: "ipython", arguments: {} }], 1, "toolUse"), 0), []);
-  assert.deepEqual(chatItemsOf(assistant([{ type: "text", text: "   " }], 1), 0), []);
-  assert.deepEqual(chatItemsOf({ role: "toolResult", toolCallId: "c1", toolName: "ipython", content: [{ type: "text", text: "x" }], isError: false, timestamp: 1 }, 0), []);
-  assert.deepEqual(chatItemsOf(custom("system_note", "ignored", 1), 0), []);
-  assert.deepEqual(chatItemsOf({ role: "bashExecution", command: "ls", output: "", cancelled: false, truncated: false, timestamp: 1 }, 0), []);
-  assert.deepEqual(chatItemsOf({ role: "branchSummary", summary: "s", timestamp: 1 }, 0), []);
+test("a turn another agent started hides the chat's text; only tell_owner reaches the feed, as an agent bubble", () => {
+  const messages: ThreadMessage[] = [
+    user("go", 1000),
+    assistant([{ type: "text", text: "Started." }], 1100),
+    report("child:readme-lines", "There is no README.md at the repo root.\nOnly AGENTS.md and CLAUDE.md.", 1400),
+    assistant([{ type: "text", text: "Reading the report." }, call("c2")], 1500, "toolUse"),
+    result("c2", 1510),
+    assistant([{ type: "text", text: "I passed it on to the docs job." }], 1600),
+    report("child:docs", "Done, README written.", 2000),
+    assistant([tell("t1", "The README is written; both jobs are done."), call("c3")], 2100, "toolUse"),
+    result("c3", 2110),
+    assistant([{ type: "text", text: "Board updated." }], 2200),
+  ];
+  const lines = chatLines(messages);
+  assert.deepEqual(kinds(lines), ["user", "agent", "job", "notes", "notes", "job", "agent", "notes"]);
+  assert.deepEqual(lines[6], { kind: "agent", id: "m7-t0", text: "The README is written; both jobs are done.", at: 2100 });
+  const job = lines[2];
+  assert.ok(job?.kind === "job");
+  assert.deepEqual([job.from, job.title, job.body], ["readme-lines", "There is no README.md at the repo root.", "There is no README.md at the repo root.\nOnly AGENTS.md and CLAUDE.md."]);
+  const feed = chatFeed({ messages, streaming: null });
+  assert.deepEqual(kinds(feed), ["user", "agent", "updates", "agent", "updates"]);
+  const updates = feed[2];
+  assert.ok(updates?.kind === "updates");
+  assert.deepEqual(updates.entries.map(entry => entry.id), ["m2", "m3", "m5", "m6"]);
+  assert.deepEqual(updatesLabel(updates), { count: "4 updates", names: "readme-lines, docs" });
+  assert.equal(updates.at, 1400);
+  assert.equal(updates.id, "um2");
+  const tail = feed[4];
+  assert.ok(tail?.kind === "updates");
+  assert.deepEqual(updatesLabel(tail), { count: "1 update", names: "" });
+  const refused: ThreadMessage[] = [report("child:a", "x", 1), assistant([tell("t9", "way too long")], 2, "toolUse"),
+    { role: "toolResult", toolCallId: "t9", toolName: "tell_owner", content: [{ type: "text", text: "shorter: one or two sentences" }], isError: true, timestamp: 3 },
+    assistant([tell("t10", "Short.")], 4, "toolUse"), { role: "toolResult", toolCallId: "t10", toolName: "tell_owner", content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: 5 }];
+  assert.deepEqual(chatLines(refused).map(line => line.kind === "agent" ? line.text : line.kind), ["job", "Short."], "a refused tell_owner shows nothing");
 });
 
-test("interim assistant text before a tool call is still an agent line", () => {
-  const items = chatItemsOf(assistant([{ type: "text", text: "One moment." }, { type: "toolCall", id: "c1", name: "ipython", arguments: {} }], 5, "toolUse"), 2);
-  assert.deepEqual(items, [{ kind: "agent", id: "m2", text: "One moment.", at: 5 }]);
+test("a wake-up that lands mid-run joins the owner's turn, so the answer the owner waits for still shows", () => {
+  const messages: ThreadMessage[] = [
+    user("how far is the audit?", 1000),
+    assistant([call("c1")], 1100, "toolUse"),
+    report("child:audit", "Half done.", 1150),
+    result("c1", 1200),
+    assistant([{ type: "text", text: "Half done, the audit says." }], 1300),
+  ];
+  assert.deepEqual(kinds(chatFeed({ messages, streaming: null })), ["user", "updates", "agent"]);
+  assert.equal(turnStarter(messages), "owner");
+  assert.equal(turnStarter([...messages, custom("heartbeat_prompt", "[heartbeat: every 10m run#0]\nCheck-in.", 1400)]), "agent");
+  assert.equal(turnStarter([...messages, custom("heartbeat_prompt", "[heartbeat: every 10m run#0]\nCheck-in.", 1400), user("[board] Owner chose \"Yes\" for \"Deploy?\"", 1500)]), "owner");
 });
 
-test("errors and stopped replies become notices, keeping any text as an agent line", () => {
-  assert.deepEqual(chatItemsOf(assistant([{ type: "text", text: "" }], 7, "error", "Model request failed"), 1),
-    [{ kind: "notice", id: "m1-error", text: "Error: Model request failed", at: 7 }]);
-  assert.deepEqual(chatItemsOf(assistant([{ type: "text", text: "Half an ans" }], 8, "aborted"), 2),
-    [{ kind: "agent", id: "m2", text: "Half an ans", at: 8 }, { kind: "notice", id: "m2-stop", text: "Reply stopped", at: 8 }]);
-  assert.deepEqual(chatItemsOf(assistant([], 9, "error"), 3), [{ kind: "notice", id: "m3-error", text: "Error: the model returned an error", at: 9 }]);
-});
-
-test("other wake-up customs and compaction become one notice line each", () => {
-  assert.deepEqual(chatItemsOf(custom("prime-agent.update_restart", "<restart>Prime Agent updated</restart>", 1), 0), [{ kind: "notice", id: "m0", text: "Prime Agent restarted", at: 1 }]);
-  assert.deepEqual(chatItemsOf(custom("async_bash_completion", "[async-bash exit:0]\nCommand: \"ls\"", 2), 1), [{ kind: "notice", id: "m1", text: "Background command finished, exit 0", at: 2 }]);
-  assert.deepEqual(chatItemsOf({ role: "compactionSummary", summary: "s", tokensBefore: 10, timestamp: 3 }, 2), [{ kind: "notice", id: "m2", text: "Older messages were summarized to free space", at: 3 }]);
-  const empty = chatItemsOf(custom("agent_message", "[agent-message from w1]", 4), 3);
+test("check-ins, job notices and background completions produce no line; errors, stops, restarts and compaction stay notices", () => {
+  assert.deepEqual(chatLines([custom("heartbeat_prompt", "[heartbeat: every 10m run#0]\nCheck-in.", 1)]), []);
+  assert.deepEqual(chatLines([custom("rlm_child_terminal_notice", "[child-exited: done child:w1]\nexited", 1)]), []);
+  assert.deepEqual(chatLines([custom("async_bash_completion", "[async-bash exit:0]\nCommand: \"ls\"", 2)]), []);
+  assert.deepEqual(chatLines([custom("system_note", "ignored", 1)]), []);
+  assert.deepEqual(chatLines([custom("prime-agent.update_restart", "<restart>Prime Agent updated</restart>", 1)]), [{ kind: "notice", id: "m0", text: "Prime Agent restarted", at: 1 }]);
+  assert.deepEqual(chatLines([{ role: "compactionSummary", summary: "s", tokensBefore: 10, timestamp: 3 }]), [{ kind: "notice", id: "m0", text: "Older messages were summarized to free space", at: 3 }]);
+  assert.deepEqual(chatLines([assistant([{ type: "text", text: "" }], 7, "error", "Model request failed")]), [{ kind: "notice", id: "m0-error", text: "Error: Model request failed", at: 7 }]);
+  assert.deepEqual(chatLines([assistant([{ type: "text", text: "Half an ans" }], 8, "aborted")]),
+    [{ kind: "agent", id: "m0", text: "Half an ans", at: 8 }, { kind: "notice", id: "m0-stop", text: "Reply stopped", at: 8 }]);
+  assert.deepEqual(chatLines([assistant([], 9, "error")]), [{ kind: "notice", id: "m0-error", text: "Error: the model returned an error", at: 9 }]);
+  assert.deepEqual(chatLines([assistant([call("c1")], 1, "toolUse"), assistant([{ type: "text", text: "   " }], 1), result("c1", 1),
+    { role: "bashExecution", command: "ls", output: "", cancelled: false, truncated: false, timestamp: 1 }, { role: "branchSummary", summary: "s", timestamp: 1 }]), []);
+  const empty = chatLines([report("w1", "", 4)]);
   assert.ok(empty[0]?.kind === "job" && empty[0].title === "(empty message)" && empty[0].from === "w1");
 });
 
-test("a streaming reply is one agent line with streaming set, and no line while it has no text", () => {
+test("sender names: a job by its name, a session by its catalog name, a raw id nobody lists as another thread", () => {
+  const nameOf = (id: string) => id === "01a10810-34b5-710f-88fe-3d369f89a8c9" ? "sep-launch owner" : undefined;
+  assert.equal(senderName("child:env-proxy-cutover"), "env-proxy-cutover");
+  assert.equal(senderName("sibling:seo-todo"), "seo-todo");
+  assert.equal(senderName("tidy instagram api"), "tidy instagram api");
+  assert.equal(senderName("01a10810-34b5-710f-88fe-3d369f89a8c9", nameOf), "sep-launch owner");
+  assert.equal(senderName("01a10810-34b5-710f-88fe-3d369f89a8c9"), "another thread");
+  assert.equal(senderName("01a0cbc3-0000-7000-8000-000000000000", nameOf), "another thread");
+  assert.equal(senderName(""), "another thread");
+  const lines = chatLines([report("01a10810-34b5-710f-88fe-3d369f89a8c9", "State for your job.", 1)], nameOf);
+  assert.equal(lines[0]?.kind === "job" ? lines[0].from : "", "sep-launch owner");
+  const group = collapseUpdates([...lines, ...chatLines([report("child:a", "x", 2), report("b", "y", 3), report("child:a", "z", 4), report("c", "w", 5), report("d", "v", 6)])]);
+  assert.ok(group[0]?.kind === "updates");
+  assert.deepEqual(updatesLabel(group[0]), { count: "6 updates", names: "sep-launch owner, a, b and 2 more" });
+  const long = collapseUpdates(chatLines([report("Look there are a bunch of prime agent threads in the sep launch", "x", 1)]));
+  assert.ok(long[0]?.kind === "updates");
+  assert.equal(updatesLabel(long[0]).names, "Look there are a bunch of prime\u2026", "a session titled by its first message is clipped on the line, whole in the reader");
+});
+
+test("a streaming reply is one agent line on an owner turn and nothing on an agent turn", () => {
   const messages: ThreadMessage[] = [user("hi", 1)];
-  assert.deepEqual(chatFeed({ messages, streaming: assistant([{ type: "text", text: "" }], 2) }).map(item => item.kind), ["user"]);
+  assert.deepEqual(kinds(chatFeed({ messages, streaming: assistant([{ type: "text", text: "" }], 2) })), ["user"]);
   const feed = chatFeed({ messages, streaming: assistant([{ type: "text", text: "Hel" }], 2) });
   assert.deepEqual(feed[1], { kind: "agent", id: "streaming", text: "Hel", at: 2, streaming: true });
   const stopped = chatFeed({ messages, streaming: assistant([{ type: "text", text: "Hel" }], 2, "aborted") });
   assert.equal(stopped.length, 2, "a streaming message never adds a notice; the committed message does");
+  const quiet: ThreadMessage[] = [user("hi", 1), assistant([{ type: "text", text: "Hi." }], 2), report("w1", "Done.", 3)];
+  assert.deepEqual(kinds(chatFeed({ messages: quiet, streaming: assistant([{ type: "text", text: "Reading" }, tell("t", "Done.")], 4) })), ["user", "agent", "updates"],
+    "a tell_owner shows once the message commits");
 });
 
 test("a pending send shows as a pending user line until the thread echoes the same text after it", () => {
@@ -84,6 +142,6 @@ test("a pending send shows as a pending user line until the thread echoes the sa
 
 test("a job message the snapshot clipped names where its full text is", () => {
   const clipped: CustomMessage = { role: "custom", customType: "agent_message", content: [{ type: "text", text: "[agent-message from w10]\nLong report", truncated: true }], timestamp: 1 };
-  assert.deepEqual(chatItemsOf(clipped, 4), [{ kind: "job", id: "m4", from: "w10", title: "Long report", body: "Long report", at: 1, clipped: { message: 4, part: 0 } }]);
-  assert.equal("clipped" in chatItemsOf({ role: "custom", customType: "agent_message", content: "[agent-message from w10]\nShort", timestamp: 1 }, 0)[0]!, false);
+  assert.deepEqual(chatLines([user("x", 0), clipped]).at(-1), { kind: "job", id: "m1", from: "w10", title: "Long report", body: "Long report", at: 1, clipped: { message: 1, part: 0 } });
+  assert.equal("clipped" in chatLines([report("w10", "Short", 1)])[0]!, false);
 });
