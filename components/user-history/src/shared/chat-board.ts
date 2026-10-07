@@ -1,4 +1,4 @@
-import { normalizeArtifactTarget } from "./artifact-link.ts";
+import { normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
 import type { ArtifactLink, BoardActor, BoardOp, ChatBoard, OwnerTodo, PlanItem, PlanItemInput, PlanStatus, ScratchItem } from "./types.ts";
 
 /** The chat board reducer, shared by the `chat_board` tool (agent) and `POST api/threads/<id>/board` (owner). Pure and browser-safe. */
@@ -212,7 +212,8 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const build = (input: PlanItemInput): PlanItem => {
         const itemId = input.id && !used.has(input.id) ? input.id : fresh();
         used.add(itemId);
-        return { id: itemId, text: input.text, status: input.status ?? "todo", ...(input.job ? { job: input.job } : {}), ...(input.note ? { note: input.note } : {}),
+        const job = planJob(input.job);
+        return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(input.note ? { note: input.note } : {}),
           children: (input.children ?? []).map(build) };
       };
       const plan = op.items.map(build);
@@ -221,7 +222,8 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     }
     case "plan_add": {
       if (count(board.plan) >= BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
-      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(op.job ? { job: op.job } : {}), children: [] };
+      const job = planJob(op.job);
+      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), children: [] };
       if (op.parent === undefined) return done({ plan: [...board.plan, item] }, `added ${item.id} ${quote(item.text)}`);
       const parent = find(board.plan, op.parent) ?? unknown("plan item", op.parent);
       // A step under a finished goal reopens the goal and every finished goal above it: a done parent with open work is a lie.
@@ -236,8 +238,9 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== item.text) { next.text = op.text; parts.push(`renamed it ${quote(op.text)}`); }
       if (op.status !== undefined && op.status !== item.status) { next.status = op.status; parts.push(`marked it ${op.status}`); }
-      if (op.job === null) { delete next.job; if (item.job) parts.push("unlinked its job"); }
-      else if (op.job !== undefined && op.job !== item.job) { next.job = op.job; parts.push(`linked job ${op.job}`); }
+      const job = op.job === null ? null : op.job === undefined ? undefined : planJob(op.job) ?? null;
+      if (job === null) { delete next.job; if (item.job) parts.push("unlinked its job"); }
+      else if (job !== undefined && job !== item.job) { next.job = job; parts.push(`linked job ${job}`); }
       if (op.note === null) { delete next.note; if (item.note) parts.push("cleared its note"); }
       else if (op.note !== undefined && op.note !== item.note) { next.note = op.note; parts.push("updated its note"); }
       return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
@@ -302,6 +305,18 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       return done({ todos: board.todos.filter(entry => entry.id !== op.id) }, `removed the todo ${quote(todo.text)}`);
     }
   }
+}
+
+/**
+ * The stored form of a plan item's `job`, its owner: a child name, a session name, or a session id. `thread:<id>`, `thread:<id>@<ms>` and a pasted
+ * chat URL keep only the session id; `job:<name>` keeps the name. Undefined when nothing is left.
+ */
+export function planJob(job: string | undefined): string | undefined {
+  const text = job?.trim();
+  if (!text) return undefined;
+  const target = normalizeArtifactTarget(text);
+  const parsed = target ? parseArtifactTarget(target) : null;
+  return parsed?.kind === "thread" ? parsed.sessionId : parsed?.kind === "job" ? parsed.name : text;
 }
 
 function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInput) => void): void {

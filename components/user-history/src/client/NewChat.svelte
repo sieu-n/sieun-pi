@@ -158,7 +158,7 @@
           <h1 class="greeting">{greeting}</h1>
           <div class="segmented" role="radiogroup" aria-label="Kind of thread">
             <button type="button" role="radio" aria-checked={kind === "thread"} class:on={kind === "thread"} use:tooltip={"A Prime Agent session that does the work itself"} onclick={() => { kind = "thread"; }}>Thread</button>
-            <button type="button" role="radio" aria-checked={kind === "chat"} class:on={kind === "chat"} use:tooltip={"A chat partner for one topic: it starts jobs, reports back and checks in every 10 minutes"} onclick={() => { kind = "chat"; }}>Chat</button>
+            <button type="button" role="radio" aria-checked={kind === "chat"} class:on={kind === "chat"} use:tooltip={"A chat partner for one topic: it starts jobs, reports back and checks in every 5 minutes"} onclick={() => { kind = "chat"; }}>Chat</button>
           </div>
         </div>
         <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder={kind === "chat" ? "Say what this chat is about" : "Ask Prime Agent anything"} />

@@ -119,7 +119,10 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /receiver_role="sibling", receiver_name="realtime layer"/);
   assert.match(brief, /await refine\.run\(\)/);
   assert.match(brief, /never have to give the same correction twice/);
-  assert.match(brief, /A `\[check-in\]` message lists what changed\. Make the board match reality/);
+  assert.match(brief, /A `\[check-in\]` message lists what changed, then every open step with its owner/);
+  assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or another thread as `thread:<id>` or its session name\) and its next action; otherwise mark it blocked with the exact thing that unblocks it\. A step that waits on someone else is still yours to chase\. Before you mark a step done, check the real state \(the commit, the live service, the report\), never an old note\./);
+  assert.match(brief, /On a `\[check-in\]`, act on every open step, not only the one that changed: start what can start, re-brief, replace or unblock a stuck owner, do or assign the commit, restart or check a step waits on, and if a step truly waits on the owner make sure exactly one owner todo exists for it\. Watching and reporting alone is not progress\./);
+  assert.match(brief, /Make the board match reality/);
   assert.match(brief, /send a job only its own plan item, not the whole board/);
   assert.doesNotMatch(brief, /—/, "no em dashes");
 });
@@ -288,8 +291,10 @@ test("chats: the check-in tick steers only what changed, stays quiet with no cha
   await chats.settled();
   now += 60_000;
   const lines = await chats.checkIn("c1");
-  assert.deepEqual(lines, ['job api-audit (p2 "Plan") finished; the board still says doing']);
-  assert.deepEqual(calls, ['steer c1 [check-in] What changed:\n- job api-audit (p2 "Plan") finished; the board still says doing']);
+  assert.deepEqual(lines, ["p2 (job api-audit) finished; the board still says doing"]);
+  assert.deepEqual(calls, ["steer c1 [check-in] What changed:\n- p2 (job api-audit) finished; the board still says doing\n\nOpen steps, oldest change first:\n" +
+    '- p2 "Plan" doing, owner job api-audit (idle), last change 2 min ago\n- p3 "Build" blocked, no owner, last change 2 min ago\n' +
+    '- p1 "Reach chats from Slack" doing, no owner, last change 2 min ago']);
   calls.length = 0;
   assert.deepEqual(await chats.checkIn("c1"), [], "reported once");
   board.plan = [{ ...board.plan[0]!, status: "done", children: board.plan[0]!.children.map(step => ({ ...step, status: "done" as const })) }];
