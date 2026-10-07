@@ -9,7 +9,7 @@ import { Ingest } from "../src/usage/ingest.ts";
 import { claudeCode, codex, piFormat, type ParserSpec } from "../src/usage/parsers.ts";
 import { resolvePrice, toTable } from "../src/usage/prices.ts";
 import { readAppended } from "../src/usage/reader.ts";
-import { parseBucket, parseGroup, parseWindow, UsageService } from "../src/usage/service.ts";
+import { parseBucket, parseGroup, parseMetric, parseWindow, UsageService } from "../src/usage/service.ts";
 import { databaseSources, fileRoots } from "../src/usage/sources.ts";
 import { UsageStore } from "../src/usage/store.ts";
 
@@ -259,6 +259,10 @@ test("service: the worker answers summary, series and models; bad parameters are
   assert.throws(() => parseWindow("2h"), /Use window/);
   assert.throws(() => parseBucket(null), /Use bucket/);
   assert.equal(parseGroup(null), "none");
+  assert.equal(parseGroup("kind"), "kind");
+  assert.equal(parseMetric(null), "output");
+  assert.equal(parseMetric("cacheRead"), "cacheRead");
+  assert.throws(() => parseMetric("reasoning"), (error: Error & { status?: number }) => error.status === 400 && /Use metric output, input, cacheRead, cacheWrite, total/.test(error.message));
   const home = await fixtureHome();
   const dataDir = await mkdtemp(join(tmpdir(), "usage-svc-"));
   const service = new UsageService({ dataDir, home, offline: true, debounceMs: 20 });
@@ -276,19 +280,47 @@ test("service: the worker answers summary, series and models; bad parameters are
     assert.deepEqual(summary.ingest.sources.map(s => s.source).sort(), ["claude-code", "codex", "prime-agent"]);
     const series = await service.series("all", "day", "source");
     assert.ok(series.points.length >= 1);
+    assert.equal(series.metric, "output");
     assert.equal(series.points.reduce((sum, p) => sum + p.tokens.total, 0), 112952 + 110 + 4 + 677 + 514 + 29000 + 4 + 50 + 514 + 29000);
     assert.ok(series.keys.includes("codex"));
+    // byKey carries the metric: output per source, ranked by it (prime-agent 677 + 50, claude-code 10, codex 10).
+    const outBySource = series.points.reduce<Record<string, number>>((sum, p) => { for (const [k, v] of Object.entries(p.byKey ?? {})) sum[k] = (sum[k] ?? 0) + v; return sum; }, {});
+    assert.deepEqual(outBySource, { "prime-agent": 727, "claude-code": 10, codex: 10 });
+    assert.equal(series.keys[0], "prime-agent");
+    const reads = await service.series("all", "day", "source", "cacheRead");
+    assert.equal(reads.metric, "cacheRead");
+    assert.equal(reads.points.reduce((sum, p) => sum + (p.byKey?.["claude-code"] ?? 0), 0), 41170);
+    // Group kind: the four kinds in stack order, output first, and the parts add up to the total.
+    const kinds = await service.series("all", "day", "kind", "cacheWrite");
+    assert.deepEqual(kinds.keys, ["output", "input", "cacheWrite", "cacheRead"]);
+    for (const point of kinds.points) assert.equal(Object.values(point.byKey ?? {}).reduce((a, b) => a + b, 0), point.tokens.total);
+    assert.equal(kinds.points.reduce((sum, p) => sum + (p.byKey?.cacheRead ?? 0), 0), 41170 + 514 + 514);
+    assert.equal(kinds.points.reduce((sum, p) => sum + (p.byKey?.output ?? 0), 0), 747);
+    // The 24 h rates and sparklines are per metric; the fixture calls are old, so they are all zero but complete.
+    assert.deepEqual(Object.keys(summary.perDay).sort(), ["cacheRead", "cacheWrite", "input", "output", "total"]);
+    assert.deepEqual(Object.keys(summary.sparkSeconds).sort(), ["cacheRead", "cacheWrite", "input", "output", "total"]);
+    assert.equal(summary.sparkMinutes.output.length, 60);
     const { models } = await service.models("all");
     assert.equal(models.find(m => m.model === "claude-opus-5-5" && m.source === "prime-agent")?.calls, 2);
     await assert.rejects(service.series("all", "second", "none"), (error: Error & { status?: number }) => error.status === 400);
-    // A new line in a live transcript reaches the summary through fs.watch.
+    // A new line in a live transcript reaches the summary through fs.watch, split by kind: 7 output, 4 input, 514 cache read, 29000 cache write.
     await appendFile(join(home, ".prime/agent/sessions/root.jsonl"), prime.assistant("a9", "msg_9", 7, new Date().toISOString()) + "\n");
-    let seen = false;
-    for (let i = 0; i < 100 && !seen; i++) {
+    let live: Awaited<ReturnType<typeof service.summary>> | null = null;
+    for (let i = 0; i < 100 && !live; i++) {
       await new Promise(resolve => setTimeout(resolve, 100));
-      seen = (await service.summary()).sparkSeconds.some(n => n > 0);
+      const next = await service.summary();
+      if (next.sparkSeconds.total.some(n => n > 0)) live = next;
     }
-    assert.ok(seen, "the appended call shows in the per-second window");
+    assert.ok(live, "the appended call shows in the per-second window");
+    const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+    assert.deepEqual({ output: sum(live.sparkSeconds.output), input: sum(live.sparkSeconds.input), cacheRead: sum(live.sparkSeconds.cacheRead), cacheWrite: sum(live.sparkSeconds.cacheWrite), total: sum(live.sparkSeconds.total) },
+      { output: 7, input: 4, cacheRead: 514, cacheWrite: 29000, total: 29525 });
+    assert.equal(live.perSecond.output, 7 / 60);
+    assert.equal(live.perSecond.cacheRead, 514 / 60);
+    assert.equal(live.perMinute.total, 29525 / 60);
+    // The fixture calls are dated 2026-10-07, so the 24 h window may hold them as well; the kinds still add up to the total.
+    assert.ok(live.perDay.output >= 7);
+    assert.equal(live.perDay.total, live.perDay.output + live.perDay.input + live.perDay.cacheRead + live.perDay.cacheWrite);
   } finally {
     await service.close();
     await rm(home, { recursive: true }); await rm(dataDir, { recursive: true });

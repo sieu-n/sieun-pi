@@ -15,7 +15,7 @@ import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshe
 import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
-import { parseBucket, parseGroup, parseWindow, UsageError } from "./usage/service.ts";
+import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
@@ -416,7 +416,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (!analytics) throw new RequestError(503, "Usage analytics is off in this chat.");
           const query = url.searchParams;
           if (route === "api/usage/summary") { json(res, 200, await analytics.summary()); return; }
-          if (route === "api/usage/series") { json(res, 200, await analytics.series(parseWindow(query.get("window")), parseBucket(query.get("bucket")), parseGroup(query.get("group")))); return; }
+          if (route === "api/usage/series") { json(res, 200, await analytics.series(parseWindow(query.get("window")), parseBucket(query.get("bucket")), parseGroup(query.get("group")), parseMetric(query.get("metric")))); return; }
           if (route === "api/usage/models") { json(res, 200, await analytics.models(parseWindow(query.get("window")))); return; }
         }
         if (route === "api/accounts/login/stream") {

@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
-import type { UsageBucket, UsageGroup, UsageSummary, UsageWindow } from "../shared/usage.ts";
+import { USAGE_METRICS, type UsageBucket, type UsageGroup, type UsageMetric, type UsageRate, type UsageSummary, type UsageWindow } from "../shared/usage.ts";
 import { Ingest } from "./ingest.ts";
 import { databaseSources, fileRoots } from "./sources.ts";
-import { QueryError, UsageStore, type StoredCall } from "./store.ts";
+import { QueryError, UsageStore, type CallTokens, type StoredCall } from "./store.ts";
 
 /**
  * The usage worker thread: it owns usage.duckdb, the ingest and the throughput window, so file reads, JSON parsing
@@ -18,21 +18,28 @@ if (!port) throw new Error("usage worker: no parent port");
 const options = workerData as WorkerOptions;
 const windowMs = 61 * 60_000;
 
-/** Tokens per call that ended in the last 61 minutes, keyed like the store so a merged copy never counts twice. */
-const recent = new Map<bigint, { endedAt: number; total: number; output: number }>();
-function remember(id: bigint, endedAt: number, total: number, output: number): void {
+/** Tokens per kind per call that ended in the last 61 minutes, keyed like the store so a merged copy never counts twice. */
+const recent = new Map<bigint, { endedAt: number } & CallTokens>();
+function remember(id: bigint, endedAt: number, tokens: CallTokens): void {
   if (endedAt < Date.now() - windowMs) return;
   const prior = recent.get(id);
-  recent.set(id, prior ? { endedAt: Math.max(prior.endedAt, endedAt), total: Math.max(prior.total, total), output: Math.max(prior.output, output) } : { endedAt, total, output });
+  // A streamed copy merges up, like the store's upsert: the larger count per kind wins.
+  recent.set(id, prior ? { endedAt: Math.max(prior.endedAt, endedAt), input: Math.max(prior.input, tokens.input), output: Math.max(prior.output, tokens.output),
+    cacheRead: Math.max(prior.cacheRead, tokens.cacheRead), cacheWrite: Math.max(prior.cacheWrite, tokens.cacheWrite) } : { endedAt, ...tokens });
 }
+const zeroRate = (): UsageRate => ({ output: 0, input: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
+const zeroSpark = (): Record<UsageMetric, number[]> => ({ output: new Array<number>(60).fill(0), input: new Array<number>(60).fill(0), cacheRead: new Array<number>(60).fill(0), cacheWrite: new Array<number>(60).fill(0), total: new Array<number>(60).fill(0) });
+const withTotal = (tokens: CallTokens): UsageRate => ({ ...tokens, total: tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite });
+const addRate = (into: UsageRate, tokens: UsageRate): void => { for (const metric of USAGE_METRICS) into[metric] += tokens[metric]; };
+const addSpark = (into: Record<UsageMetric, number[]>, tokens: UsageRate, index: number): void => { for (const metric of USAGE_METRICS) into[metric][index]! += tokens[metric]; };
 
 const store = await UsageStore.open(join(options.dataDir, "usage.duckdb"));
-for (const row of await store.recent(Date.now() - windowMs)) remember(row.id, row.endedAt, row.total, row.output);
+for (const row of await store.recent(Date.now() - windowMs)) remember(row.id, row.endedAt, row);
 const ingest = new Ingest({
   store, roots: fileRoots(options.home), databases: databaseSources(options.home), pricesPath: join(options.dataDir, "litellm-prices.json"),
   ...(options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs }), ...(options.sweepMs === undefined ? {} : { sweepMs: options.sweepMs }),
   ...(options.offline ? { fetchPrices: async () => { throw new Error("offline"); } } : {}),
-  onCalls: (calls: StoredCall[]) => { for (const c of calls) remember(c.id, c.endedAt, c.input + c.output + c.cacheRead + c.cacheWrite + c.reasoning, c.output + c.reasoning); },
+  onCalls: (calls: StoredCall[]) => { for (const c of calls) remember(c.id, c.endedAt, { input: c.input, output: c.output + c.reasoning, cacheRead: c.cacheRead, cacheWrite: c.cacheWrite }); },
   log: line => process.stderr.write(line + "\n"),
 });
 await ingest.start();
@@ -45,23 +52,23 @@ const offsetMs = (now: number) => -new Date(now).getTimezoneOffset() * 60_000;
 
 async function summary(): Promise<UsageSummary> {
   const now = Date.now();
-  const sparkSeconds = new Array<number>(60).fill(0), sparkMinutes = new Array<number>(60).fill(0);
-  let second = { total: 0, output: 0 }, minute = { total: 0, output: 0 };
+  const sparkSeconds = zeroSpark(), sparkMinutes = zeroSpark();
+  const second = zeroRate(), minute = zeroRate();
   for (const [id, call] of recent) {
     const age = now - call.endedAt;
     if (age > windowMs) { recent.delete(id); continue; }
     if (age < 0) continue;
-    if (age < 60_000) { sparkSeconds[59 - Math.floor(age / 1000)]! += call.total; second.total += call.total; second.output += call.output; }
-    if (age < 3_600_000) { sparkMinutes[59 - Math.floor(age / 60_000)]! += call.total; minute.total += call.total; minute.output += call.output; }
+    const tokens = withTotal(call);
+    if (age < 60_000) { addSpark(sparkSeconds, tokens, 59 - Math.floor(age / 1000)); addRate(second, tokens); }
+    if (age < 3_600_000) { addSpark(sparkMinutes, tokens, 59 - Math.floor(age / 60_000)); addRate(minute, tokens); }
   }
   // Cached between ingest passes; a finished pass (a new lastSyncAt) or the age limit reads them again.
   const synced = ingest.status.lastSyncAt;
   if (!totals || totals.synced !== synced || now - totals.at > 5000 || ingest.status.state !== "idle") totals = { at: now, synced, value: await store.totals(now - 86_400_000, localMidnight(now)) };
   if (!sources || sources.synced !== synced || now - sources.at > 10_000) sources = { at: now, synced, value: await store.sources() };
-  second = { total: second.total / 60, output: second.output / 60 };
-  minute = { total: minute.total / 60, output: minute.output / 60 };
+  for (const metric of USAGE_METRICS) { second[metric] /= 60; minute[metric] /= 60; }
   return {
-    at: now, perSecond: second, perMinute: minute, perDay: { total: totals.value.total, output: totals.value.output },
+    at: now, perSecond: second, perMinute: minute, perDay: withTotal(totals.value.tokens),
     sparkSeconds, sparkMinutes, costToday: totals.value.costToday, ingest: { ...ingest.status, sources: sources.value },
   };
 }
@@ -69,7 +76,7 @@ async function summary(): Promise<UsageSummary> {
 async function handle(request: WorkerRequest): Promise<unknown> {
   const now = Date.now();
   if (request.method === "summary") return summary();
-  if (request.method === "series") return store.series(request.args[0] as UsageWindow, request.args[1] as UsageBucket, request.args[2] as UsageGroup, now, offsetMs(now));
+  if (request.method === "series") return store.series(request.args[0] as UsageWindow, request.args[1] as UsageBucket, request.args[2] as UsageGroup, request.args[3] as UsageMetric, now, offsetMs(now));
   if (request.method === "models") return { models: await store.modelRows(request.args[0] as UsageWindow, now) };
   if (request.method === "daily") return store.daily(offsetMs(now));
   if (request.method === "idle") { await ingest.idle(); return null; }

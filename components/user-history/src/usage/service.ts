@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import type { UsageBucket, UsageGroup, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
+import { USAGE_METRICS, type UsageBucket, type UsageGroup, type UsageMetric, type UsageModelRow, type UsageRate, type UsageSeries, type UsageSummary, type UsageWindow } from "../shared/usage.ts";
 import type { WorkerOptions, WorkerRequest } from "./worker.ts";
 
 /**
@@ -13,7 +13,7 @@ export class UsageError extends Error {
 
 const windows: readonly UsageWindow[] = ["1h", "24h", "7d", "30d", "90d", "all"];
 const buckets: readonly UsageBucket[] = ["second", "minute", "hour", "day"];
-const groups: readonly UsageGroup[] = ["none", "source", "model"];
+const groups: readonly UsageGroup[] = ["none", "source", "model", "kind"];
 export const parseWindow = (value: string | null): UsageWindow => {
   if (value !== null && (windows as readonly string[]).includes(value)) return value as UsageWindow;
   throw new UsageError(400, `Use window ${windows.join(", ")}.`);
@@ -26,6 +26,12 @@ export const parseGroup = (value: string | null): UsageGroup => {
   if (value === null) return "none";
   if ((groups as readonly string[]).includes(value)) return value as UsageGroup;
   throw new UsageError(400, `Use group ${groups.join(", ")}.`);
+};
+/** The token kind the series sums per key; output when the query names none. */
+export const parseMetric = (value: string | null): UsageMetric => {
+  if (value === null) return "output";
+  if ((USAGE_METRICS as readonly string[]).includes(value)) return value as UsageMetric;
+  throw new UsageError(400, `Use metric ${USAGE_METRICS.join(", ")}.`);
 };
 
 const feedMs = 2000;
@@ -106,11 +112,12 @@ export class UsageService {
 
   private unavailable(message: string): UsageSummary {
     const starting = this.worker !== null && this.lastError === null;
-    return { at: Date.now(), perSecond: { total: 0, output: 0 }, perMinute: { total: 0, output: 0 }, perDay: { total: 0, output: 0 },
-      sparkSeconds: new Array<number>(60).fill(0), sparkMinutes: new Array<number>(60).fill(0), costToday: null,
+    const zero = (): UsageRate => ({ output: 0, input: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
+    const spark = (): Record<UsageMetric, number[]> => ({ output: new Array<number>(60).fill(0), input: new Array<number>(60).fill(0), cacheRead: new Array<number>(60).fill(0), cacheWrite: new Array<number>(60).fill(0), total: new Array<number>(60).fill(0) });
+    return { at: Date.now(), perSecond: zero(), perMinute: zero(), perDay: zero(), sparkSeconds: spark(), sparkMinutes: spark(), costToday: null,
       ingest: { state: starting ? "building" : "error", filesDone: 0, filesTotal: 0, lastSyncAt: null, error: starting ? null : this.lastError ?? message, sources: [] } };
   }
-  series(window: UsageWindow, bucket: UsageBucket, group: UsageGroup): Promise<UsageSeries> { return this.call("series", [window, bucket, group]); }
+  series(window: UsageWindow, bucket: UsageBucket, group: UsageGroup, metric: UsageMetric = "output"): Promise<UsageSeries> { return this.call("series", [window, bucket, group, metric]); }
   models(window: UsageWindow): Promise<{ models: UsageModelRow[] }> { return this.call("models", [window]); }
   daily(): Promise<unknown> { return this.call("daily"); }
   /** Resolves when the ingest has finished every pass queued so far (tests and measurements). */

@@ -1,7 +1,8 @@
 import type { AccountAction, AccountLogin, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, SdkView, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import { subscribeFeed } from "./feeds.ts";
-import type { UsageBucket, UsageGroup, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
+import { readSummary } from "./usage.ts";
+import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
@@ -84,12 +85,19 @@ export const api = {
     return subscribeFeed({ feed: "refresh" }, (event, data) => { if (event === "refresh") onRefresh(data as UsageRefresh); });
   },
   startRefresh: (provider: string, account: string | null) => post<UsageRefresh>("api/accounts/refresh", { provider, account }),
-  /** Settings > Usage: the rolling throughput summary, pushed about every 2 s while subscribed (`src/shared/usage.ts`). */
-  usageStream(onSummary: (summary: UsageSummary) => void, onError: () => void = () => {}): () => void {
-    return subscribeFeed({ feed: "usage" }, (event, data) => { if (event === "usage") onSummary(data as UsageSummary); }, onError);
+  /**
+   * Settings > Usage: the rolling throughput summary, pushed about every 2 s while subscribed (`src/shared/usage.ts`). `onUnreadable` gets a
+   * summary from a server build whose shape this page does not know (see `readSummary`); a reload fixes it.
+   */
+  usageStream(onSummary: (summary: UsageSummary) => void, onError: () => void = () => {}, onUnreadable: () => void = () => {}): () => void {
+    return subscribeFeed({ feed: "usage" }, (event, data) => {
+      if (event !== "usage") return;
+      const summary = readSummary(data);
+      if (summary) onSummary(summary); else onUnreadable();
+    }, onError);
   },
   usageSummary: () => get<UsageSummary>("api/usage/summary"),
-  usageSeries: (window: UsageWindow, bucket: UsageBucket, group: UsageGroup) => get<UsageSeries>(`api/usage/series?window=${window}&bucket=${bucket}&group=${group}`, 30000),
+  usageSeries: (window: UsageWindow, bucket: UsageBucket, group: UsageGroup, metric: UsageMetric) => get<UsageSeries>(`api/usage/series?window=${window}&bucket=${bucket}&group=${group}&metric=${metric}`, 30000),
   usageModels: (window: UsageWindow) => get<{ models: UsageModelRow[] }>(`api/usage/models?window=${window}`, 30000).then(body => body.models),
   startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),
   pasteLogin: (id: string, code: string) => post<AccountLogin>("api/accounts/login/paste", { id, code }),

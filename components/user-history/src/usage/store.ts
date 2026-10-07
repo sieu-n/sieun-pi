@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
-import type { UsageBucket, UsageCall, UsageGroup, UsageModelRow, UsageSeries, UsageSource, UsageTokens, UsageWindow } from "../shared/usage.ts";
+import type { UsageBucket, UsageCall, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSource, UsageTokens, UsageWindow } from "../shared/usage.ts";
 import type { Price } from "./prices.ts";
 
 /**
@@ -29,6 +29,10 @@ export function callKey(source: string, callId: string): bigint {
 /** Cost in SQL: the source's own cost, else tokens times the joined LiteLLM rates. Reasoning is priced as output. */
 const costSql = "coalesce(c.cost_usd, c.input * p.input + (c.output + c.reasoning) * p.output + c.cache_read * p.cache_read + c.cache_write * p.cache_write)";
 const totalSql = "(c.input + c.output + c.cache_read + c.cache_write + c.reasoning)";
+/** Every token kind of a call for the in-memory throughput window; `output` includes reasoning. */
+export type CallTokens = { input: number; output: number; cacheRead: number; cacheWrite: number };
+/** The stack order of group "kind": the generated tokens first, the cache mass on top. */
+export const KIND_KEYS: readonly Exclude<UsageMetric, "total">[] = ["output", "input", "cacheWrite", "cacheRead"];
 
 const schema = [
   "CREATE TABLE IF NOT EXISTS meta (key VARCHAR PRIMARY KEY, value VARCHAR)",
@@ -180,25 +184,25 @@ export class UsageStore {
     } catch (error) { await this.db.run("ROLLBACK").catch(() => {}); throw error; }
   }); }
 
-  /** Calls that ended at or after `since`: tokens per call for the in-memory throughput window. */
-  recent(since: number): Promise<{ id: bigint; endedAt: number; total: number; output: number }[]> { return this.exclusive(async () => {
-    const reader = await this.db.runAndReadAll(`SELECT id, ended_at, ${totalSql} AS total, c.output + c.reasoning AS out FROM calls c WHERE ended_at >= $since`, { since: BigInt(since) });
-    return reader.getRowsJS().map(row => ({ id: row[0] as bigint, endedAt: num(row[1]), total: num(row[2]), output: num(row[3]) }));
+  /** Calls that ended at or after `since`: tokens per kind per call for the in-memory throughput window. */
+  recent(since: number): Promise<({ id: bigint; endedAt: number } & CallTokens)[]> { return this.exclusive(async () => {
+    const reader = await this.db.runAndReadAll("SELECT id, ended_at, c.input, c.output + c.reasoning, c.cache_read, c.cache_write FROM calls c WHERE ended_at >= $since", { since: BigInt(since) });
+    return reader.getRowsJS().map(row => ({ id: row[0] as bigint, endedAt: num(row[1]), input: num(row[2]), output: num(row[3]), cacheRead: num(row[4]), cacheWrite: num(row[5]) }));
   }); }
 
-  /** Tokens since `since` (the 24 h window) and cost since `costSince` (local midnight). */
-  totals(since: number, costSince: number): Promise<{ total: number; output: number; costToday: number | null }> { return this.exclusive(async () => {
-    const reader = await this.db.runAndReadAll(`SELECT coalesce(sum(${totalSql}), 0), coalesce(sum(c.output + c.reasoning), 0),
-      sum(CASE WHEN c.ended_at >= $costSince THEN ${costSql} END)
+  /** Tokens per kind since `since` (the 24 h window) and cost since `costSince` (local midnight). */
+  totals(since: number, costSince: number): Promise<{ tokens: CallTokens; costToday: number | null }> { return this.exclusive(async () => {
+    const kindsSql = "coalesce(sum(c.input), 0), coalesce(sum(c.output + c.reasoning), 0), coalesce(sum(c.cache_read), 0), coalesce(sum(c.cache_write), 0)";
+    const kinds = (row: unknown[]): CallTokens => ({ input: num(row[0]), output: num(row[1]), cacheRead: num(row[2]), cacheWrite: num(row[3]) });
+    const reader = await this.db.runAndReadAll(`SELECT ${kindsSql}, sum(CASE WHEN c.ended_at >= $costSince THEN ${costSql} END)
       FROM calls c LEFT JOIN prices p ON p.model = c.model WHERE c.ended_at >= $since`, { since: BigInt(Math.min(since, costSince)), costSince: BigInt(costSince) });
     const row = reader.getRowsJS()[0] ?? [];
     // The token sums above include calls since the earlier of the two starts; recount when midnight came first.
     if (costSince < since) {
-      const tokens = await this.db.runAndReadAll(`SELECT coalesce(sum(${totalSql}), 0), coalesce(sum(c.output + c.reasoning), 0) FROM calls c WHERE c.ended_at >= $since`, { since: BigInt(since) });
-      const t = tokens.getRowsJS()[0] ?? [];
-      return { total: num(t[0]), output: num(t[1]), costToday: numOrNull(row[2]) };
+      const tokens = await this.db.runAndReadAll(`SELECT ${kindsSql} FROM calls c WHERE c.ended_at >= $since`, { since: BigInt(since) });
+      return { tokens: kinds(tokens.getRowsJS()[0] ?? []), costToday: numOrNull(row[4]) };
     }
-    return { total: num(row[0]), output: num(row[1]), costToday: numOrNull(row[2]) };
+    return { tokens: kinds(row), costToday: numOrNull(row[4]) };
   }); }
 
   sources(): Promise<{ source: UsageSource; calls: number; firstCallAt: number | null; lastCallAt: number | null }[]> { return this.exclusive(async () => {
@@ -212,8 +216,11 @@ export class UsageStore {
     return numOrNull(reader.getRowsJS()[0]?.[0]) ?? now;
   }
 
-  /** Buckets in local time: `offsetMs` is the local UTC offset, so day buckets start at local midnight. */
-  series(window: UsageWindow, bucket: UsageBucket, group: UsageGroup, now: number, offsetMs: number): Promise<UsageSeries> { return this.exclusive(async () => {
+  /**
+   * Buckets in local time: `offsetMs` is the local UTC offset, so day buckets start at local midnight. `byKey` carries `metric` per
+   * source or model, ranked by it; group "kind" ignores the metric and keys the four token kinds in stack order (KIND_KEYS).
+   */
+  series(window: UsageWindow, bucket: UsageBucket, group: UsageGroup, metric: UsageMetric, now: number, offsetMs: number): Promise<UsageSeries> { return this.exclusive(async () => {
     const size = bucketMs[bucket];
     const from = await this.windowStart(window, now);
     const first = Math.floor((from + offsetMs) / size), last = Math.floor((now + offsetMs) / size);
@@ -226,10 +233,12 @@ export class UsageStore {
       { off: BigInt(offsetMs), size: BigInt(size), from: BigInt(first * size - offsetMs), now: BigInt(now) });
     const rows = reader.getRowsJS().map(row => ({ b: num(row[0]), key: String(row[1]), calls: num(row[2]), input: num(row[3]), output: num(row[4]),
       cacheRead: num(row[5]), cacheWrite: num(row[6]), reasoning: num(row[7]), cost: numOrNull(row[8]) }));
+    const measure = (r: { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number }): number =>
+      metric === "total" ? r.input + r.output + r.cacheRead + r.cacheWrite + r.reasoning : metric === "output" ? r.output + r.reasoning : r[metric];
     const keyTotals = new Map<string, number>();
-    for (const r of rows) keyTotals.set(r.key, (keyTotals.get(r.key) ?? 0) + r.input + r.output + r.cacheRead + r.cacheWrite + r.reasoning);
+    for (const r of rows) keyTotals.set(r.key, (keyTotals.get(r.key) ?? 0) + measure(r));
     const ranked = [...keyTotals.entries()].sort((a, b) => b[1] - a[1]).map(([key]) => key);
-    const keys = group === "none" ? [] : ranked.length > 8 ? [...ranked.slice(0, 7), "other"] : ranked;
+    const keys = group === "none" ? [] : group === "kind" ? [...KIND_KEYS] : ranked.length > 8 ? [...ranked.slice(0, 7), "other"] : ranked;
     const shown = new Set(keys);
     const points = new Map<number, UsageSeries["points"][number]>();
     for (let b = first; b <= last; b++) {
@@ -244,12 +253,17 @@ export class UsageStore {
       t.total += total;
       point.calls += r.calls;
       if (r.cost !== null) point.costUsd = (point.costUsd ?? 0) + r.cost;
-      if (point.byKey) {
+      if (group === "kind" && point.byKey) {
+        point.byKey.output = (point.byKey.output ?? 0) + r.output + r.reasoning;
+        point.byKey.input = (point.byKey.input ?? 0) + r.input;
+        point.byKey.cacheWrite = (point.byKey.cacheWrite ?? 0) + r.cacheWrite;
+        point.byKey.cacheRead = (point.byKey.cacheRead ?? 0) + r.cacheRead;
+      } else if (point.byKey) {
         const key = shown.has(r.key) ? r.key : "other";
-        point.byKey[key] = (point.byKey[key] ?? 0) + total;
+        point.byKey[key] = (point.byKey[key] ?? 0) + measure(r);
       }
     }
-    return { window, bucket, group, keys, points: [...points.values()] };
+    return { window, bucket, group, metric, keys, points: [...points.values()] };
   }); }
 
   modelRows(window: UsageWindow, now: number): Promise<UsageModelRow[]> { return this.exclusive(async () => {

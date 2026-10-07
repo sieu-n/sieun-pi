@@ -33,8 +33,12 @@ export type UsageCall = {
 
 export type UsageTokens = { input: number; output: number; cacheRead: number; cacheWrite: number; reasoning: number; total: number };
 
-/** Rolling throughput for all agents together. `total` counts every token kind; `output` only generated tokens. */
-export type UsageRate = { total: number; output: number };
+/** The token kinds a metric can show. `total` sums the other four (reasoning is counted inside output where the source reports it). */
+export type UsageMetric = "output" | "input" | "cacheRead" | "cacheWrite" | "total";
+export const USAGE_METRICS: readonly UsageMetric[] = ["output", "input", "cacheRead", "cacheWrite", "total"];
+
+/** Rolling throughput for all agents together, one number per metric. */
+export type UsageRate = Record<UsageMetric, number>;
 
 /** GET api/usage/summary, and the `usage` WebSocket feed payload (pushed about every 2 s while subscribed). */
 export type UsageSummary = {
@@ -45,9 +49,9 @@ export type UsageSummary = {
   perMinute: UsageRate;
   /** Tokens over the last 24 h. */
   perDay: UsageRate;
-  /** Last 60 one-second buckets, then last 60 one-minute buckets, oldest first; `total` tokens per bucket. */
-  sparkSeconds: number[];
-  sparkMinutes: number[];
+  /** Last 60 one-second buckets, then last 60 one-minute buckets, oldest first; per metric, tokens per bucket. */
+  sparkSeconds: Record<UsageMetric, number[]>;
+  sparkMinutes: Record<UsageMetric, number[]>;
   costToday: number | null;
   ingest: UsageIngest;
 };
@@ -64,13 +68,15 @@ export type UsageIngest = {
 
 export type UsageWindow = "1h" | "24h" | "7d" | "30d" | "90d" | "all";
 export type UsageBucket = "second" | "minute" | "hour" | "day";
-export type UsageGroup = "none" | "source" | "model";
+/** `kind` stacks the token kinds (output, input, cache write, cache read) in one bar. */
+export type UsageGroup = "none" | "source" | "model" | "kind";
 
-/** GET api/usage/series?window=&bucket=&group= */
+/** GET api/usage/series?window=&bucket=&group=&metric= (metric defaults to output; `byKey` sums that metric; group "kind" ignores it and keys are output, input, cacheWrite, cacheRead). */
 export type UsageSeries = {
   window: UsageWindow;
   bucket: UsageBucket;
   group: UsageGroup;
+  metric: UsageMetric;
   /** Group keys in display order (largest first, at most 8, the rest folded into "other"). Empty for group "none". */
   keys: string[];
   points: { t: number; tokens: UsageTokens; costUsd: number | null; calls: number; byKey?: Record<string, number> }[];
