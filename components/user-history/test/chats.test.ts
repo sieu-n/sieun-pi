@@ -169,7 +169,7 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
 type Observer = Parameters<ChatThreads["observe"]>[0];
 /** A check-in source with no timer: an empty board unless one is given, no catalog rows, and its memory in `dir`. */
 function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () => 0): CheckInSource {
-  return { board: async id => boards[id] ?? null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), everyMs: 0, now };
+  return { board: async id => boards[id] ?? null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")), everyMs: 0, now, noReportGraceMs: 0 };
 }
 function fakeThreads(calls: string[], pinLimit = 8) {
   let observer: Observer | undefined;
@@ -234,37 +234,64 @@ test("chats: create names, indexes, pins and sets steering all; an attach re-app
   chats.close();
 });
 
-test("chats: a follow-up task that ends with no message to the chat steers one [job] line; a report, a first task and a plain thread do not", async () => {
+test("chats: a job that goes quiet with no message is told once per end, after the grace; a job that asked is waiting; a report, a first task, a deleted or cancelled job and a plain thread get nothing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
+  const messages: { role: string; customType?: string; content?: unknown; timestamp?: number }[] = [];
+  let clock = 1000;
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir));
+  const chats = new Chats(index, { ...threads, state: () => ({ messages }) }, async () => ({ lifecycle: "live" }), "b1",
+    loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => clock));
   await chats.adopt();
-  const job = (status: ChildAgent["status"], working: boolean, replied?: boolean): ChildAgent =>
-    ({ id: "k1", label: "audit", sessionName: "api-audit", status, ...(working ? { activity: { kind: "writing" as const } } : {}), ...(replied === undefined ? {} : { repliedSinceTask: replied }) });
+  const flush = async () => { await new Promise(resolve => setTimeout(resolve, 5)); await chats.settled(); };
+  const job = (status: ChildAgent["status"], working: boolean, replied?: boolean, at?: number): ChildAgent =>
+    ({ id: "k1", label: "audit", sessionName: "api-audit", status, ...(working ? { activity: { kind: "writing" as const } } : {}),
+      ...(replied === undefined ? {} : { repliedSinceTask: replied }), ...(at ? { lastActivityAt: at } : {}) });
   threads.fire().live("c1", [job("running", true, false)]);
-  await chats.settled();
+  await flush();
   calls.length = 0;
   threads.fire().children("c1", [job("done", false, false)]);
-  await chats.settled();
+  await flush();
   assert.deepEqual(calls, [], "a first task that ends: the daemon's own notice covers it");
-  threads.fire().children("c1", [job("done", true, false)]);
-  threads.fire().children("c1", [job("done", false, false)]);
-  threads.fire().children("c1", [job("done", false, false)]);
-  await chats.settled();
-  assert.deepEqual(calls, ["steer c1 [job] api-audit ended with no report"], "once per run");
+
+  threads.fire().children("c1", [job("done", true, false, 100)]);
+  threads.fire().children("c1", [job("done", false, false, 100)]);
+  threads.fire().children("c1", [job("done", true, false, 100)]);
+  threads.fire().children("c1", [job("done", false, false, 100)]);
+  await flush();
+  assert.deepEqual(calls, ["steer c1 [job] api-audit ended with no report"], "flicker within one end is one line");
   calls.length = 0;
-  threads.fire().children("c1", [job("done", true, false)]);
-  threads.fire().children("c1", [job("done", false, true)]);
-  threads.fire().children("c1", [job("done", true, false)]);
-  threads.fire().children("c1", [job("done", false)]);
-  await chats.settled();
-  assert.deepEqual(calls, [], "it reported; and an unknown reply state is not reported");
-  threads.fire().children("plain", [job("done", true, false)]);
-  threads.fire().children("plain", [job("done", false, false)]);
-  await chats.settled();
+  threads.fire().children("c1", [job("done", true, false, 100)]);
+  threads.fire().children("c1", [job("done", false, false, 100)]);
+  await flush();
+  assert.deepEqual(calls, [], "the same end is never told twice");
+
+  clock = 5000;
+  threads.fire().children("c1", [job("done", true, false, 200)]);
+  messages.push({ role: "custom", customType: "agent_message", content: "[agent-message from child:api-audit]\n\nTwo questions before I go on: keep the old route?", timestamp: 6000 });
+  threads.fire().children("c1", [job("done", false, false, 200)]);
+  await flush();
+  assert.deepEqual(calls, ['steer c1 [job] api-audit is waiting for you (last message: "Two questions before I go on: keep the old route?")'], "it asked: waiting, not dead");
+  calls.length = 0;
+
+  threads.fire().children("c1", [job("done", true, false, 300)]);
+  threads.fire().children("c1", [job("done", false, false, 300)]);
+  threads.fire().children("c1", []);
+  await flush();
+  assert.deepEqual(calls, [], "deleted before the grace ended");
+  threads.fire().children("c1", [job("done", true, false, 400)]);
+  threads.fire().children("c1", [job("cancelled", false, false, 400)]);
+  threads.fire().children("c1", [job("done", true, false, 500)]);
+  threads.fire().children("c1", [job("done", false, true, 500)]);
+  threads.fire().children("c1", [job("done", true, false, 600)]);
+  threads.fire().children("c1", [job("done", false, undefined, 600)]);
+  await flush();
+  assert.deepEqual(calls, [], "cancelled, reported, or an unknown reply state");
+  threads.fire().children("plain", [job("done", true, false, 700)]);
+  threads.fire().children("plain", [job("done", false, false, 700)]);
+  await flush();
   assert.deepEqual(calls, [], "a plain thread gets nothing");
   chats.close();
 });

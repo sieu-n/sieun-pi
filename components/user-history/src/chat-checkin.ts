@@ -42,7 +42,7 @@ function walk(items: readonly PlanItem[], visit: (item: PlanItem, parent: PlanIt
   items.forEach((item, index) => { visit(item, parent, items, index); walk(item.children, visit, item); });
 }
 
-const childWorking = (child: ChildAgent): boolean => child.status === "running" || child.status === "queued" || child.activity !== undefined;
+export const childWorking = (child: ChildAgent): boolean => child.status === "running" || child.status === "queued" || child.activity !== undefined;
 export const childName = (child: ChildAgent): string => child.sessionName ?? child.label;
 
 /** Who owns a plan item: its `job` (a child name or id, a session name or id, `thread:<id>`), else the first `thread:<id>` link in its note. */
@@ -198,8 +198,31 @@ export function endedWithoutReport(before: readonly ChildAgent[], after: readonl
   const previous = new Map(before.map(child => [child.id, child]));
   return after.filter(child => {
     const was = previous.get(child.id);
-    return was !== undefined && childWorking(was) && !childWorking(child) && was.status === child.status && child.repliedSinceTask === false;
+    return was !== undefined && childWorking(was) && !childWorking(child) && was.status === child.status && child.status !== "cancelled" &&
+      child.repliedSinceTask === false;
   });
+}
+
+/** A job that went quiet is told to the chat once per end: the same child at the same last activity is one end. */
+export const noReportKey = (child: ChildAgent): string => `${child.id}@${child.lastActivityAt ?? ""}`;
+
+/**
+ * The notice for a job that went quiet without a report. A job that messaged the chat during the run that just ended asked something and
+ * waits for an answer; it did not end silently. `messages` is the chat's transcript, `since` when the chat last saw the job start working.
+ */
+export function noReportNotice(name: string, messages: readonly { role: string; customType?: string; content?: unknown; timestamp?: number }[], since: number): string {
+  const header = `[agent-message from child:${name}]`;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if ((message.timestamp ?? 0) < since) break;
+    if (message.role !== "custom" || message.customType !== "agent_message") continue;
+    const text = typeof message.content === "string" ? message.content
+      : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
+    if (!text.startsWith(header)) continue;
+    const first = text.slice(header.length).split("\n").map(line => line.trim()).find(Boolean) ?? "";
+    return `${name} is waiting for you (last message: "${first.length > 140 ? first.slice(0, 139) + "…" : first}")`;
+  }
+  return `${name} ended with no report`;
 }
 
 /** `<data dir>/check-ins.json`: the last tick's memory per chat, through locked-json. */

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { checkInDigest, checkInDue, checkInMessage, CHECK_IN_MS, childName, endedWithoutReport, jobFacts, type CheckInRecord } from "./chat-checkin.ts";
+import { checkInDigest, checkInDue, checkInMessage, CHECK_IN_MS, childName, childWorking, endedWithoutReport, jobFacts, noReportKey, noReportNotice, type CheckInRecord } from "./chat-checkin.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import type { ChatBoard, ChildAgent, SessionRow, ThinkingLevel } from "./shared/types.ts";
 
@@ -22,6 +22,8 @@ export const TELL_OWNER_TOO_LONG = "shorter: one or two sentences";
 export const TELL_OWNER_DONE = "told the owner";
 /** The prompt of the daemon heartbeat that did the check-in before the server tick; an attach clears a heartbeat whose prompt starts with it. */
 export const OLD_CHECK_IN = "Check-in. Read the board";
+/** A job quiet this long with no report is told to the chat; shorter gaps are a job between tool calls or one that a reply woke again. */
+export const NO_REPORT_GRACE_MS = 90_000;
 /** Shell commands a chat may run: prime-agent (stop, send) and quick read-only look-ups. Each entry matches as a whole word at the start. */
 const ALLOWED_SHELL = ["prime-agent", "git log", "git status", "git diff", "git show", "rg", "ls", "cat", "head", "tail", "wc"];
 const SHELL_LIST = "prime-agent, git log/status/diff/show, rg, ls, cat, head, tail, wc";
@@ -68,7 +70,9 @@ export const CHAT_BRIEF: readonly string[] = [
     "restart or check a step waits on, and if a step truly waits on the owner make sure exactly one owner todo exists for it. Watching and reporting " +
     "alone is not progress. Make the board match reality (statuses, notes with links), send a job only its own plan item, not the whole board, and " +
     "stay quiet unless a goal finished, something is blocked, or you need a decision (one tell_owner). `[job] <name> ended with no report` means " +
-    "that job stopped without reporting: read its last messages (`await agent_observe.recent_messages(name)`) and act on what it did.",
+    "that job stopped without reporting: read its last messages (`await agent_observe.recent_messages(name)`) and act on what it did. " +
+    "`[job] <name> is waiting for you` means it asked you something: answer it, do not replace it. Never start a second job on a step whose job " +
+    "may still run: `rlm.list_subagents()` can say completed for a job a reply woke again, so check its activity first.",
   "Corrections stick: when the owner corrects how you work (board shape, tone, what to report), apply it now and make it hold for every future chat. " +
     "If the brief or code must change, send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., " +
     "receiver_role=\"sibling\", receiver_name=\"realtime layer\")`; if a note is enough, record it with `await refine.run()`. The owner should never " +
@@ -363,6 +367,8 @@ export interface ChatThreads {
   reload(id: string): Promise<void>;
   /** `live` fires after each attach with the children known then; `children` on every change while attached; `idle` at each turn's end. */
   observe(observer: { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void }): () => void;
+  /** The chat's transcript as the server holds it; the no-report notice looks for the job's last message there. */
+  state?(id: string): { messages: readonly { role: string; customType?: string; content?: unknown; timestamp?: number }[] } | undefined;
 }
 export type ChatSummary = (id: string) => Promise<{ lifecycle?: string; sessionFile?: string } | undefined>;
 
@@ -374,6 +380,8 @@ export interface CheckInSource {
   /** The tick period; 0 starts no timer (tests call `checkIn`). Default CHECK_IN_MS. */
   everyMs?: number;
   now?: () => number;
+  /** How long a job must stay quiet before the no-report notice; default NO_REPORT_GRACE_MS. Tests pass 0. */
+  noReportGraceMs?: number;
 }
 
 /**
@@ -386,6 +394,9 @@ export class Chats {
   private readonly chatIds = new Set<string>();
   /** The children last seen per thread: the tick reads them, and each change is compared with them to find a job that ended with no report. */
   private readonly children = new Map<string, readonly ChildAgent[]>();
+  /** When each job was last seen starting to work, and which job ends were already told to the chat (`noReportKey`). */
+  private readonly workingSince = new Map<string, number>();
+  private readonly noticed = new Set<string>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
   private readonly syncing = new Map<string, Promise<void>>();
@@ -406,7 +417,8 @@ export class Chats {
       children: (id, children) => {
         const before = this.children.get(id);
         this.children.set(id, children);
-        if (before) for (const child of endedWithoutReport(before, children)) this.queue(id, () => this.noReport(id, childName(child)));
+        for (const child of children) if (childWorking(child) && !before?.some(was => was.id === child.id && childWorking(was))) this.workingSince.set(child.id, this.now());
+        if (before) for (const child of endedWithoutReport(before, children)) this.laterNoReport(id, child.id);
       },
       idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); },
     });
@@ -509,10 +521,25 @@ export class Chats {
     }
   }
 
-  private async noReport(id: string, name: string): Promise<void> {
+  /**
+   * A job that stopped working without a report is checked again after a grace period: a job between two tool calls, resumed by a reply, or
+   * deleted in the meantime is not reported. Each end is reported once.
+   */
+  private laterNoReport(id: string, childId: string): void {
+    const timer = setTimeout(() => this.queue(id, () => this.noReport(id, childId)), this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
+    timer.unref?.();
+  }
+
+  private async noReport(id: string, childId: string): Promise<void> {
     await this.load();
     if (!this.chatIds.has(id)) return;
-    try { await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${name} ended with no report`, images: [], mode: "steer" }); }
+    const child = this.children.get(id)?.find(candidate => candidate.id === childId);
+    if (!child || childWorking(child) || child.status === "cancelled" || child.repliedSinceTask !== false) return;
+    const key = child.lastActivityAt === undefined ? `${child.id}@started:${this.workingSince.get(child.id) ?? 0}` : noReportKey(child);
+    if (this.noticed.has(key)) return;
+    this.noticed.add(key);
+    const text = noReportNotice(childName(child), this.threads.state?.(id)?.messages ?? [], this.workingSince.get(child.id) ?? 0);
+    try { await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${text}`, images: [], mode: "steer" }); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
