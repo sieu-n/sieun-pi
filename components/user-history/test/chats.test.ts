@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
 import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobOf, jobRegistry,
-  jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, withChatTool } from "../src/chats.ts";
+  jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, withChatTool } from "../src/chats.ts";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import { isThreadBusy, isTurnRunning } from "../src/shared/thread-state.ts";
@@ -362,7 +362,7 @@ test("chats: the scheduler runs each chat at its own interval, skips a paused on
   const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now));
   assert.equal(await chats.checkInView("plain"), null, "not a chat");
   assert.equal(await chats.setCheckIn("plain", { everyMs: 60_000 }), null);
-  assert.deepEqual(await chats.checkInView("fast"), { everyMs: 300_000, paused: false, nextAt: now + 300_000, pausedUntil: null, lastAt: null }, "default 5 min from the start");
+  assert.deepEqual(await chats.checkInView("fast"), { everyMs: 900_000, paused: false, nextAt: now + 900_000, pausedUntil: null, lastAt: null }, "default 15 min from the start");
   await chats.setCheckIn("fast", { everyMs: 60_000 });
   await chats.setCheckIn("slow", { everyMs: 15 * 60_000 });
   const ran: Record<string, number> = { fast: 0, slow: 0 };
@@ -643,7 +643,7 @@ test("chats: a check-in waits while an owner turn runs and goes at the first wak
   await chats.adopt();
   threads.transcripts.set("c1", [ownerAsks("hows this doing?", now)]);
   threads.busyIds.add("c1");
-  now += 5 * 60_000;
+  now += 15 * 60_000;
   assert.deepEqual(await chats.tick(), [], "the owner's turn runs: held");
   assert.deepEqual(await chats.checkIn("c1"), [], "a direct call is held too");
   now += 30_000;
@@ -655,7 +655,7 @@ test("chats: a check-in waits while an owner turn runs and goes at the first wak
   await chats.settled();
   threads.transcripts.get("c1")!.push(ownerAsks("[check-in] What changed:\n- p1 ...", now));
   threads.busyIds.add("c1");
-  now += 5 * 60_000;
+  now += 15 * 60_000;
   assert.deepEqual(await chats.tick(), ["c1"], "a turn a check-in started does not hold the next one");
   await chats.settled();
   chats.close();
@@ -731,4 +731,11 @@ test("thread hub: running ignores queued input that busy counts; restart sends t
   await hub.restart("c1", "[check-in] Your last turn failed (429). Re-check the board and continue.");
   assert.deepEqual(calls, ["prompt c1 steer [check-in] Your last turn failed (429). Re-check the board and continue.", "resume c1"]);
   await hub.close();
+});
+
+test("jobs of a chat work in poteto-mode when the skill is installed, and get nothing extra when it is not", () => {
+  const skill = "/home/x/.prime/agent/skills/poteto-mode/SKILL.md";
+  const line = jobPersonaGuideline(skill, path => path === skill);
+  assert.ok(line?.startsWith(`Work in poteto-mode: read ${skill} in full before your first step`), String(line));
+  assert.equal(jobPersonaGuideline(skill, () => false), null, "no skill installed: no persona line");
 });

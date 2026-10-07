@@ -35,7 +35,7 @@ export function checkInButton(state: CheckInState, now: number): { word: string;
 
 /** The board panel line, the same facts in a sentence; `on` is false while paused. Without a state (an older server) it is the default. */
 export function checkInStatus(state: CheckInState | undefined, now: number): { text: string; on: boolean } {
-  if (!state) return { text: "Check-in every 5 min, on changes only", on: true };
+  if (!state) return { text: "Check-in every 15 min, on changes only", on: true };
   const pause = pauseNow(state, now);
   if (pause === null) return { text: `Check-in every ${Math.round(state.everyMs / MINUTE)} min, on changes only`, on: true };
   return { text: pause === "forever" ? "Check-in paused until you resume it" : `Check-in paused until ${clockTime(pause)}`, on: false };

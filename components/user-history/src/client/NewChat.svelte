@@ -35,7 +35,7 @@
   let threadName = $state("");
   /** Thread: a normal Prime Agent session. Chat: a DM-style partner for one topic that runs jobs for you and checks in on them. */
   let kind = $state<"thread" | "chat">("thread");
-  /** Starts a new thread's first message with /skill:poteto-mode. On for every new thread; a message that already starts with "/" is sent as typed. */
+  /** Starts a new thread's or chat's first message with /skill:poteto-mode. On for every new one; a message that already starts with "/" is sent as typed. */
   let poteto = $state(true);
   const closePopover = () => { workspaceOpen = false; };
   let lightbox = $state<number | null>(null);
@@ -112,7 +112,7 @@
     const progress = draftProgress;
     const chosen = activeModel;
     const name = threadName.trim();
-    const message = kind === "thread" && poteto && !text.trimStart().startsWith("/") ? `/skill:poteto-mode ${text}` : text;
+    const message = poteto && !text.trimStart().startsWith("/") ? `/skill:poteto-mode ${text}` : text;
     const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
@@ -158,7 +158,7 @@
           <h1 class="greeting">{greeting}</h1>
           <div class="segmented" role="radiogroup" aria-label="Kind of thread">
             <button type="button" role="radio" aria-checked={kind === "thread"} class:on={kind === "thread"} use:tooltip={"A Prime Agent session that does the work itself"} onclick={() => { kind = "thread"; }}>Thread</button>
-            <button type="button" role="radio" aria-checked={kind === "chat"} class:on={kind === "chat"} use:tooltip={"A chat partner for one topic: it starts jobs, reports back and checks in every 5 minutes"} onclick={() => { kind = "chat"; }}>Chat</button>
+            <button type="button" role="radio" aria-checked={kind === "chat"} class:on={kind === "chat"} use:tooltip={"A chat partner for one topic: it starts jobs, reports back and checks in every 15 minutes"} onclick={() => { kind = "chat"; }}>Chat</button>
           </div>
         </div>
         <Composer draftKey="new" {acceptsImages} focusOnMount={!narrow} {send} placeholder={kind === "chat" ? "Say what this chat is about" : "Ask Prime Agent anything"} />
@@ -191,9 +191,7 @@
               choice={account} onchoose={next => { account = next; }} />
             <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort
               defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
-            {#if kind === "thread"}
-              <label class="bar-button check" use:tooltip={"Start the thread with /skill:poteto-mode"}><input type="checkbox" bind:checked={poteto} /><span>poteto-mode</span></label>
-            {/if}
+            <label class="bar-button check" use:tooltip={"Start with /skill:poteto-mode"}><input type="checkbox" bind:checked={poteto} /><span>poteto-mode</span></label>
           </div>
           <div class="group" role="group" aria-label="Labels for the new thread">
             <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "name"} aria-label={threadName.trim() ? "Thread name: " + threadName.trim() : "Thread name"}

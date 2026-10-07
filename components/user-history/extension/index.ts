@@ -3,7 +3,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-age
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, fileChatName, hasChatMarker, JOB_REPLY_TOOL, jobOf,
-  jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool } from "../src/chats.ts";
+  jobPersonaGuideline, jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool } from "../src/chats.ts";
 import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { checkInLine, checkInSettings } from "../src/chat-checkin.ts";
@@ -106,11 +106,12 @@ export default function historyExtension(pi: ExtensionAPI): void {
     job = jobOf({ depth, marked, parentChat, registered: name ? await jobs().chatOf(name) : undefined });
     if (!job) return;
     const guideline = jobReplyGuideline(job);
+    const persona = jobPersonaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
     pi.registerTool({
       name: JOB_REPLY_TOOL,
       label: "Report to the chat",
       description: "Shows how this job reports to the chat that started it. Calling it is optional; the instruction is already in your guidelines.",
-      promptGuidelines: [guideline],
+      promptGuidelines: persona ? [persona, guideline] : [guideline],
       parameters: { type: "object", properties: {} },
       async execute() { return { content: [{ type: "text", text: guideline }], details: undefined }; },
     });
@@ -132,7 +133,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
     await findJob(ctx).catch(() => {});
     if (!job) return undefined;
     const guideline = jobReplyGuideline(job);
-    return event.systemPrompt.includes(guideline) ? undefined : { systemPrompt: `${event.systemPrompt}\n\n${guideline}` };
+    const persona = jobPersonaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
+    const add = [persona, guideline].filter((line): line is string => line !== null && !event.systemPrompt.includes(line));
+    return add.length ? { systemPrompt: `${event.systemPrompt}\n\n${add.join("\n")}` } : undefined;
   });
   pi.on("tool_call", async (event, ctx) => {
     try {

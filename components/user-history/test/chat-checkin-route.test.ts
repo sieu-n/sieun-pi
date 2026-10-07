@@ -32,7 +32,7 @@ test("api/threads/:id/check-in: GET reads a chat's setting, POST sets the interv
     return { status: res.status, body: await res.json() as CheckInView };
   };
   try {
-    assert.deepEqual(await get("chat1"), { status: 200, body: { everyMs: 300_000, paused: false, nextAt: now + 300_000, pausedUntil: null, lastAt: null } });
+    assert.deepEqual(await get("chat1"), { status: 200, body: { everyMs: 900_000, paused: false, nextAt: now + 900_000, pausedUntil: null, lastAt: null } });
     assert.equal((await get("plain")).status, 404);
     const set = await post("chat1", { everyMs: 15 * 60_000 });
     assert.equal(set.status, 200, JSON.stringify(set.body));

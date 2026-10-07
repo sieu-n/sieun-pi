@@ -81,7 +81,7 @@
   const runningCount = $derived(jobs.filter(isActiveJob).length);
   const pulses = $derived(new Map<string, ChildPulse>((row?.pulse?.subagents ?? []).map(pulse => [pulse.rlmChildId, pulse])));
   const hasOpenStep = (items: readonly PlanItem[]): boolean => items.some(item => item.status === "todo" || item.status === "doing" || item.status === "blocked" || hasOpenStep(item.children));
-  /** The server's check-in tick runs every 5 minutes while a job runs or a plan step is open (todo, doing, blocked), and steers the chat only on a change. */
+  /** The server's check-in tick runs every 15 minutes by default while a job runs or a plan step is open (todo, doing, blocked), and steers the chat only on a change. */
   const checkIn = $derived.by(() => {
     if (runningCount || hasOpenStep(board?.plan ?? [])) return checkInStatus(row?.checkIn, clock.now);
     return { text: "Check-in paused, nothing open", on: false };

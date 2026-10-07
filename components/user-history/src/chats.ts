@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
@@ -240,6 +240,16 @@ export function jobReplyGuideline(job: ChatJobOf): string {
   const send = job.root ? `await agent_message.send(report, receiver_role="sibling", receiver_name="${job.chat}")` : `await agent_message.send(report, receiver_role="parent")`;
   return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you are done, failed or blocked, send it one report with \`${send}\`. ` +
     "Send at most one progress message before that.";
+}
+
+/**
+ * The poteto-agent persona every job of a chat works in (owner, 10-08: "i want poteto-mode on by default"): the poteto-agent skill's own rule,
+ * pointing at the installed poteto-mode skill. Null when that skill is not installed, so a profile without it gets nothing.
+ */
+export function jobPersonaGuideline(potetoModeSkill: string, exists: (path: string) => boolean = existsSync): string | null {
+  if (!exists(potetoModeSkill)) return null;
+  return `Work in poteto-mode: read ${potetoModeSkill} in full before your first step, including its Principles index, follow its playbooks, ` +
+    "and open a leaf principle-* skill whenever you apply that principle.";
 }
 
 /**

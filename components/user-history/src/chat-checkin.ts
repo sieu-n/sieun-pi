@@ -8,7 +8,7 @@ import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckI
  * owner) and the board, compares them with what it saw last time, and steers the chat only with the changes that need the VP. No change, no
  * model call.
  */
-export const CHECK_IN_MS = 5 * 60_000;
+export const CHECK_IN_MS = 15 * 60_000;
 /** A job that runs with no activity for this long is reported once as stale, until its activity moves again. */
 export const STALE_MS = 30 * 60_000;
 /** An open step with no board change and no owner activity for this long is reported, once per stretch of this length. */

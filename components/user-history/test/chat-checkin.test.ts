@@ -259,7 +259,7 @@ test("check-in setting: the interval range, the pause ends, the next run, the bo
 
   const path = join(await mkdtemp(join(tmpdir(), "check-in-settings-")), "check-in-settings.json");
   const settings = checkInSettings(path);
-  assert.deepEqual(await settings.get("c1"), every5, "default 5 min");
+  assert.deepEqual(await settings.get("c1"), { everyMs: 15 * 60_000 }, "default 15 min");
   await settings.update("c1", setting => ({ ...setting, everyMs: 15 * 60_000, pausedUntil: "forever" }));
   assert.deepEqual(await checkInSettings(path).get("c1"), { everyMs: 15 * 60_000, pausedUntil: "forever" });
   assert.deepEqual(await checkInSettings(path).all(), { c1: { everyMs: 15 * 60_000, pausedUntil: "forever" } });
