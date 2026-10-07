@@ -128,6 +128,7 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /Make the board match reality/);
   assert.match(brief, /send a job only its own plan item, not the whole board/);
   assert.match(brief, /Refer to board items by their id \(p7, s3\); the page turns them into links\./);
+  assert.ok(brief.includes("No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works."), "plain board notes (owner correction 10-08)");
   // Audit 2026-10-08 (0409-chat-usage-audit): each line names the counter it should lower at the next audit.
   // Stalls and owner corrections: one chase, then a job.
   assert.ok(brief.includes("A stuck owner gets at most one message. If it has not moved by the next check-in, or its last turn ended in an error, replace it with a job in that check-in. " +

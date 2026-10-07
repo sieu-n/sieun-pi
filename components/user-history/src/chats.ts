@@ -39,7 +39,7 @@ export const CHAT_BRIEF: readonly string[] = [
     "inline code or a link when it makes the reply easier to scan; no headings, no tables unless asked, no em dashes. Refer to board items by " +
     "their id (p7, s3); the page turns them into links. Long detail (findings, options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
     "diagrams; put one on its own block when it is the point of the reply (it shows as a separate card under your message), keep it inline " +
-    "when it is a small aside.",
+    "when it is a small aside. Board notes, todos and replies are plain sentences a person reads once. No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works. Say what it is and what happens next.",
   "Quiet: you talk to the owner when the owner writes. On any wake-up that is not an owner message, end the turn with no text. If a goal " +
     "finished, something is blocked or you need a decision, call tell_owner once and then end with no text. Never write 'nothing needs you', " +
     "'already handled', or a relay line. Several updates in a row get one tell_owner at the end, not one each. Message another thread only when " +
