@@ -1,5 +1,6 @@
 import { api, ApiError, requestId } from "./api.ts";
 import { hasUnsentDrafts } from "./drafts.ts";
+import { retryFeeds } from "./feeds.ts";
 import { applyThreadEvent } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
@@ -63,6 +64,7 @@ class Store {
   retry(): void {
     this.sessionsStop?.();
     this.start();
+    retryFeeds();
   }
 
   private readHash(): void {
@@ -106,7 +108,10 @@ class Store {
 
   open(id: string): void {
     const entry = this.threads[id];
-    if (entry?.close) return;
+    if (entry?.close && !entry.error) return;
+    // Retry after an error: drop the failed subscription and start a fresh one on a socket that reconnects now.
+    entry?.close?.();
+    if (entry?.error) retryFeeds();
     this.patch(id, { loading: true, error: null });
     performance.mark("thread-open:" + id);
     const close = api.threadStream(id, event => {

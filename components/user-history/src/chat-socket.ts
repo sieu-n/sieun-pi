@@ -16,10 +16,13 @@ export type FeedSend = (event: string, data: unknown) => void;
 export type FeedSubscriber = (feed: Feed, send: FeedSend) => (() => void) | Promise<() => void>;
 
 const maxSubscriptions = 256;
+/** Every socket the server ends or feed it refuses gets a timestamped line in service.log, so a dropped page can be traced. */
+const log = (line: string) => { process.stderr.write(`${new Date().toISOString()} feeds: ${line}\n`); };
 /** A tab that stops reading (a sleeping phone) gets dropped instead of holding megabytes; it reconnects and gets fresh snapshots. */
 const maxBufferedBytes = 32 * 1024 * 1024;
 
-function parseMessage(raw: RawData): { type: "subscribe"; sub: number; feed: Feed } | { type: "unsubscribe"; sub: number } | null {
+/** `null` for a frame with no usable `sub`, which closes the socket. A subscribe the server cannot serve is a `reject` for that `sub` only. */
+function parseMessage(raw: RawData): { type: "subscribe"; sub: number; feed: Feed } | { type: "unsubscribe"; sub: number } | { type: "reject"; sub: number; message: string } | null {
   let value: unknown;
   try { value = JSON.parse(raw.toString()); } catch { return null; }
   if (typeof value !== "object" || value === null) return null;
@@ -27,10 +30,10 @@ function parseMessage(raw: RawData): { type: "subscribe"; sub: number; feed: Fee
   const sub = message.sub;
   if (typeof sub !== "number" || !Number.isSafeInteger(sub) || sub < 0) return null;
   if (message.type === "unsubscribe") return { type: "unsubscribe", sub };
-  if (message.type !== "subscribe") return null;
+  if (message.type !== "subscribe") return { type: "reject", sub, message: "Unknown message type." };
   if (message.feed === "sessions" || message.feed === "login" || message.feed === "refresh") return { type: "subscribe", sub, feed: { feed: message.feed } };
   if (message.feed === "thread" && typeof message.id === "string" && message.id.length <= 512) return { type: "subscribe", sub, feed: { feed: "thread", id: message.id } };
-  return null;
+  return { type: "reject", sub, message: `Unknown feed: ${String(message.feed).slice(0, 40)}.` };
 }
 
 export class FeedSockets {
@@ -38,7 +41,7 @@ export class FeedSockets {
   private readonly sockets = new Set<WebSocket>();
   private readonly ping: ReturnType<typeof setInterval>;
 
-  constructor(private readonly subscribe: FeedSubscriber, pingMs = 25_000) {
+  constructor(private readonly subscribe: FeedSubscriber, private readonly pingMs = 25_000) {
     this.ping = setInterval(() => this.heartbeat(), pingMs);
     this.ping.unref();
   }
@@ -60,7 +63,7 @@ export class FeedSockets {
   private heartbeat(): void {
     for (const ws of this.sockets) {
       const state = ws as WebSocket & { alive?: boolean };
-      if (state.alive === false) { ws.terminate(); continue; }
+      if (state.alive === false) { log("closed a socket that missed a pong for " + this.pingMs + " ms"); ws.terminate(); continue; }
       state.alive = false;
       ws.ping();
       this.write(ws, '{"event":"ping"}');
@@ -69,7 +72,7 @@ export class FeedSockets {
 
   private write(ws: WebSocket, text: string): void {
     if (ws.readyState !== ws.OPEN) return;
-    if (ws.bufferedAmount > maxBufferedBytes) { ws.terminate(); return; }
+    if (ws.bufferedAmount > maxBufferedBytes) { log(`closed a socket with ${ws.bufferedAmount} bytes unread`); ws.terminate(); return; }
     ws.send(text);
   }
 
@@ -88,9 +91,16 @@ export class FeedSockets {
     ws.on("message", raw => {
       state.alive = true;
       const message = parseMessage(raw);
-      if (!message) { ws.close(1008, "Unexpected message."); return; }
+      if (!message) { log("closed a socket that sent a malformed frame"); ws.close(1008, "Unexpected message."); return; }
       if (message.type === "unsubscribe") { stop(message.sub); return; }
-      if (subscriptions.has(message.sub) || subscriptions.size >= maxSubscriptions) { ws.close(1008, "Too many feeds."); return; }
+      const reject = message.type === "reject" ? message.message
+        : subscriptions.has(message.sub) ? `Feed ${message.sub} is already subscribed.`
+        : subscriptions.size >= maxSubscriptions ? "Too many feeds." : null;
+      if (message.type === "reject" || reject !== null) {
+        log(`rejected feed ${message.sub}: ${reject}`);
+        this.write(ws, JSON.stringify({ sub: message.sub, event: "error", data: { message: reject } }));
+        return;
+      }
       const { sub } = message;
       subscriptions.set(sub, null);
       const send: FeedSend = (event, data) => { if (subscriptions.has(sub)) this.write(ws, JSON.stringify({ sub, event, data })); };

@@ -10,19 +10,35 @@ type Listener = { feed: Feed; onEvent: (event: string, data: unknown) => void; o
 const token = document.body.dataset.chatToken ?? "";
 /** The server pings every 25 s; a socket silent this long is dead even if the browser has not noticed. */
 const silenceMs = 70_000;
+const stableMs = 10_000;
+const hiddenMs = 30_000;
 
 class FeedSocket {
   private socket: WebSocket | null = null;
   private readonly listeners = new Map<number, Listener>();
   private nextSub = 1;
   private attempt = 0;
+  /** When the current socket opened. The backoff resets only for a socket that stayed open, so a server that accepts and then closes is not retried every half second. */
+  private openedAt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * A background tab reads its socket so rarely that it misses the server's pings and gets dropped about once a minute, then
+   * reconnects and pulls every snapshot again. So a tab hidden for `hiddenMs` closes its socket, and showing it reconnects.
+   */
+  private paused = false;
+  private hideTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
-    const wake = () => { if (document.visibilityState === "visible") this.reconnectNow(); };
-    window.addEventListener("online", wake);
-    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", () => { if (document.visibilityState === "visible") this.reconnectNow(); });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        if (this.hideTimer) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+        this.reconnectNow();
+        return;
+      }
+      this.hideTimer ??= setTimeout(() => { this.hideTimer = null; if (document.visibilityState === "hidden") this.pause(); }, hiddenMs);
+    });
   }
 
   subscribe(feed: Feed, onEvent: Listener["onEvent"], onError: Listener["onError"]): () => void {
@@ -39,14 +55,14 @@ class FeedSocket {
   private send(message: unknown): void { this.socket?.send(JSON.stringify(message)); }
 
   private connect(): void {
-    if (this.socket || this.retryTimer) return;
+    if (this.paused || this.socket || this.retryTimer) return;
     const url = new URL("api/ws", document.baseURI);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("token", token);
     const socket = new WebSocket(url);
     this.socket = socket;
     socket.onopen = () => {
-      this.attempt = 0;
+      this.openedAt = Date.now();
       this.listen();
       for (const [sub, listener] of this.listeners) this.send({ type: "subscribe", sub, ...listener.feed });
     };
@@ -55,7 +71,10 @@ class FeedSocket {
       let parsed: { sub?: number; event?: string; data?: unknown };
       try { parsed = JSON.parse(String(message.data)) as typeof parsed; } catch { return; }
       if (parsed.sub === undefined || parsed.event === undefined) return;
-      this.listeners.get(parsed.sub)?.onEvent(parsed.event, parsed.data);
+      const listener = this.listeners.get(parsed.sub);
+      // The server refused this one feed and keeps the socket for the rest; do not send it again after a reconnect.
+      if (parsed.event === "error" && listener) { this.listeners.delete(parsed.sub); listener.onError(); return; }
+      listener?.onEvent(parsed.event, parsed.data);
     };
     socket.onclose = () => { if (this.socket === socket) this.lost(); };
   }
@@ -67,15 +86,30 @@ class FeedSocket {
 
   /** Forget the current socket without waiting for its close handshake, which never ends on a dead network. */
   private drop(): void {
+    if (this.forget()) this.lost();
+  }
+
+  private forget(): boolean {
     const socket = this.socket;
-    if (!socket) return;
+    if (!socket) return false;
     socket.onopen = socket.onmessage = socket.onclose = null;
     socket.close();
-    this.lost();
+    return true;
+  }
+
+  /** Hidden long enough: close quietly, with no error for the feeds, and stay closed until the tab shows again. */
+  private pause(): void {
+    this.paused = true;
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    if (this.silenceTimer) { clearTimeout(this.silenceTimer); this.silenceTimer = null; }
+    this.forget();
+    this.socket = null;
   }
 
   private lost(): void {
     this.socket = null;
+    if (this.openedAt && Date.now() - this.openedAt >= stableMs) this.attempt = 0;
+    this.openedAt = 0;
     if (this.silenceTimer) { clearTimeout(this.silenceTimer); this.silenceTimer = null; }
     for (const listener of [...this.listeners.values()]) listener.onError();
     if (!this.listeners.size || this.retryTimer) return;
@@ -83,8 +117,9 @@ class FeedSocket {
     this.retryTimer = setTimeout(() => { this.retryTimer = null; if (this.listeners.size) this.connect(); }, delay);
   }
 
-  /** Back from sleep or offline: try at once instead of waiting out the backoff. */
-  private reconnectNow(): void {
+  /** Back from sleep or offline, or a Retry: try at once instead of waiting out the backoff. */
+  reconnectNow(): void {
+    this.paused = false;
     if (this.socket || !this.listeners.size) return;
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     this.attempt = 0;
@@ -93,6 +128,9 @@ class FeedSocket {
 }
 
 let shared: FeedSocket | null = null;
+
+/** A Retry button: reconnect now instead of waiting out the backoff. */
+export function retryFeeds(): void { shared?.reconnectNow(); }
 
 export function subscribeFeed(feed: Feed, onEvent: Listener["onEvent"], onError: Listener["onError"] = () => {}): () => void {
   shared ??= new FeedSocket();
