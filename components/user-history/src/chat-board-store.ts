@@ -2,18 +2,11 @@ import { watch as watchDir, type FSWatcher } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { applyBoardOp, emptyBoard, nextIds } from "./shared/chat-board.ts";
+import { applyBoardOp, emptyBoard, migrateBoard, nextIds } from "./shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "./shared/types.ts";
 
 const sessionIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
 const WATCH_DEBOUNCE_MS = 60;
-
-function parseBoard(value: unknown): ChatBoard {
-  const board = value as ChatBoard;
-  if (typeof value !== "object" || value === null || board.v !== 1 || typeof board.rev !== "number" || !Array.isArray(board.plan) || !Array.isArray(board.todos) ||
-    typeof board.scratchpad !== "string") throw new Error("Chat board file is malformed.");
-  return board;
-}
 
 /**
  * The chat boards, one file per chat at `<dataDir>/boards/<sessionId>.json`. The chat server (owner) and the extension's `chat_board` tool (agent)
@@ -25,10 +18,10 @@ export class BoardStore {
 
   private file(id: string): JsonFile<ChatBoard> {
     if (!sessionIdPattern.test(id)) throw new Error(`Not a session id: ${id}`);
-    return { path: join(this.dir, id + ".json"), label: "Chat board", parse: parseBoard, initial: () => emptyBoard(new Date().toISOString()) };
+    return { path: join(this.dir, id + ".json"), label: "Chat board", parse: migrateBoard, initial: () => emptyBoard(new Date().toISOString()) };
   }
 
-  /** The board, or null before its first op. Writes replace the file by rename, so a read without the lock sees a whole board. */
+  /** The board (a v1 file reads as v2), or null before its first op. Writes replace the file by rename, so a read without the lock sees a whole board. */
   async read(id: string): Promise<ChatBoard | null> {
     try { return await readJsonFile(this.file(id)); }
     catch (error) { if (missing(error)) return null; throw error; }

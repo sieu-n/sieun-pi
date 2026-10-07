@@ -85,9 +85,21 @@ export interface RetryState { attempt: number; maxAttempts: number; delayMs: num
  */
 export type PlanStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
 export interface PlanItem { id: string; text: string; status: PlanStatus; job?: string; note?: string; children: PlanItem[] }
-/** Something the agent needs from the owner (or a note the owner added). The owner checks it, edits it, or answers in `reply`. */
-export interface OwnerTodo { id: string; text: string; done: boolean; reply?: string; from: "agent" | "owner"; at: string }
-export interface ChatBoard { v: 1; rev: number; plan: PlanItem[]; scratchpad: string; todos: OwnerTodo[]; updatedAt: string }
+/**
+ * Where an artifact link points. Stored as a string, resolved by the page (src/shared/artifact-link.ts):
+ * `job:<name>` opens that job's drawer in this chat; `thread:<sessionId>` opens a thread, `thread:<sessionId>@<timestamp>` jumps to one message
+ * in it (the message's `timestamp`, ms); `wiki:<path>` opens an llm-wiki page on :5176; `http(s)://...` opens in a new tab. A pasted chat URL
+ * (`.../#<sessionId>@<timestamp>`) is stored as its `thread:` form.
+ */
+export interface ArtifactLink { label: string; target: string }
+/** One scratchpad bullet: a short note, optionally with links to what it is about. */
+export interface ScratchItem { id: string; text: string; links: ArtifactLink[]; at: string }
+/**
+ * Something only the owner can give: a decision, a login, an approval. `choices` are the answers the agent offers (first one is its
+ * recommendation); the owner taps one or writes `reply`.
+ */
+export interface OwnerTodo { id: string; text: string; done: boolean; reply?: string; choices?: string[]; from: "agent" | "owner"; at: string }
+export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; scratch: ScratchItem[]; todos: OwnerTodo[]; updatedAt: string }
 export type BoardActor = "agent" | "owner";
 export type PlanItemInput = { id?: string; text: string; status?: PlanStatus; job?: string; note?: string; children?: PlanItemInput[] };
 export type BoardOp =
@@ -95,8 +107,10 @@ export type BoardOp =
   | { op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string }
   | { op: "plan_update"; id: string; text?: string; status?: PlanStatus; job?: string | null; note?: string | null }
   | { op: "plan_remove"; id: string }
-  | { op: "scratchpad"; text: string; mode: "replace" | "append" }
-  | { op: "todo_add"; text: string }
+  | { op: "scratch_add"; text: string; links?: ArtifactLink[] }
+  | { op: "scratch_update"; id: string; text?: string; links?: ArtifactLink[] }
+  | { op: "scratch_remove"; id: string }
+  | { op: "todo_add"; text: string; choices?: string[] }
   | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null }
   | { op: "todo_remove"; id: string };
 

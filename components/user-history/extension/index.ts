@@ -19,8 +19,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
     name: CHAT_BOARD_TOOL,
     label: "Chat board",
     description: "Read or change this chat's board, which the owner sees next to the chat: the plan (a nested checklist of goals and steps, each step " +
-      "linked to its job), the owner's todo list, and the scratchpad. Ops apply in order, all or none. No ops returns the current board. Every result " +
-      "shows the whole board with item ids (p1, t1).",
+      "linked to its job), the owner's todo list (asks only the owner can answer, each with choices), and the scratchpad (short bullets, each with " +
+      "links to what it is about). Ops apply in order, all or none. No ops returns the current board. Every result shows the whole board with item " +
+      "ids (p1, t1, s1) and this chat's own link target.",
     promptGuidelines: [...CHAT_BRIEF],
     parameters: {
       type: "object",
@@ -29,14 +30,20 @@ export default function historyExtension(pi: ExtensionAPI): void {
           type: "array",
           description: "Board ops. plan_set {items:[{text,status?,job?,note?,children?}]} replaces the plan. plan_add {text,parent?,status?,job?} adds a goal, " +
             "or a step under parent. plan_update {id,text?,status?,job?,note?} (job or note null clears it). plan_remove {id} removes an item and its steps. " +
-            "scratchpad {text,mode:replace|append}. todo_add {text} asks the owner for something. todo_update {id,text?,done?,reply?}. todo_remove {id}.",
+            "scratch_add {text,links?} adds one bullet; scratch_update {id,text?,links?} (links replaces the list, [] clears it); scratch_remove {id}. " +
+            "A link is {label,target}, up to 5 per bullet; target is job:<name> (a job's report), thread:<sessionId> or thread:<sessionId>@<message " +
+            "timestamp ms> (a thread or one message in it), wiki:<path under the llm-wiki content>, file:<absolute path to a text file>, or an http(s) URL. " +
+            "todo_add {text,choices?} asks the owner one short question; choices are 2 to 4 short answers, your recommendation first. " +
+            "todo_update {id,text?,done?,reply?}. todo_remove {id}.",
           items: {
             type: "object",
             properties: {
-              op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratchpad", "todo_add", "todo_update", "todo_remove"] },
+              op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratch_add", "scratch_update", "scratch_remove", "todo_add", "todo_update", "todo_remove"] },
               id: { type: "string" }, parent: { type: "string" }, text: { type: "string" },
               status: { type: "string", enum: [...PLAN_STATUSES] }, job: { type: ["string", "null"] }, note: { type: ["string", "null"] },
-              mode: { type: "string", enum: ["replace", "append"] }, done: { type: "boolean" }, reply: { type: ["string", "null"] },
+              done: { type: "boolean" }, reply: { type: ["string", "null"] },
+              links: { type: "array", items: { type: "object", properties: { label: { type: "string" }, target: { type: "string" } }, required: ["target"] } },
+              choices: { type: "array", items: { type: "string" } },
               items: { type: "array", items: { type: "object" } },
             },
             required: ["op"],
@@ -47,8 +54,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const ops = parseBoardOps((params as { ops?: unknown }).ops ?? []);
-      const { board, summaries } = await boards().apply(ctx.sessionManager.getSessionId(), ops, "agent");
-      return { content: [{ type: "text", text: [...summaries, renderBoard(board)].join("\n") }], details: undefined };
+      const sessionId = ctx.sessionManager.getSessionId();
+      const { board, summaries } = await boards().apply(sessionId, ops, "agent");
+      return { content: [{ type: "text", text: [...summaries, renderBoard(board, sessionId)].join("\n") }], details: undefined };
     },
   });
   // Same directory as the chat server: the agent-chat-data-dir flag, else <agentDir>/browser-chat.

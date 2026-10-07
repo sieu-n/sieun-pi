@@ -22,7 +22,9 @@
   import Icon from "./Icon.svelte";
   import Lightbox from "./ui/Lightbox.svelte";
   import { tooltip } from "./ui/tooltip.ts";
+  import { longpress } from "./ui/longpress.ts";
   import { labels } from "./labels.ts";
+  import { copyPermalink, revealMessage } from "./permalink.ts";
 
   /**
    * The chat view of one thread whose row has `chat`: a DM-style feed and a box that always sends at once, with the board and the jobs
@@ -154,7 +156,7 @@
     if (!hasState) return;
     untrack(() => {
       let frames = 0;
-      const step = () => { scrollToBottom(); if (++frames < 8) requestAnimationFrame(step); };
+      const step = () => { if (pinned) scrollToBottom(); if (++frames < 8) requestAnimationFrame(step); };
       requestAnimationFrame(step);
     });
   });
@@ -178,8 +180,30 @@
     return () => { document.removeEventListener("visibilitychange", onHidden); store.markRead(id); };
   });
 
+  /** A link to a message in this chat (`#<id>@<ms>`): scroll to it and flash it once the feed shows; a link to nothing says so. */
+  $effect(() => {
+    const target = store.jump;
+    const node = scroller;
+    if (!target || target.id !== id || !feed.length || !node) return;
+    untrack(() => {
+      pinned = false;
+      void tick().then(() => {
+        if (store.jump !== target) return;
+        if (!revealMessage(node, target.at)) store.toast("That link points at a message this chat does not have.", "info");
+        store.jump = null;
+      });
+    });
+  });
+  async function copyLink(at: number): Promise<void> {
+    store.toast(await copyPermalink(id, at) ? "Link copied" : "Could not copy the link", "info");
+  }
+
   const send = (text: string, images: ImageInput[]) => { pinned = true; return store.sendChat(id, text, images); };
 </script>
+
+{#snippet linkButton(at: number)}
+  <button type="button" class="icon-button small link-button" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(at)}><Icon name="link" size={13} /></button>
+{/snippet}
 
 {#snippet setup()}
   {#if thread}
@@ -204,8 +228,9 @@
         {#if item.kind === "user" && !item.images.length && isBoardAction(item.text)}
           <div class="owner-action" class:pending={item.pending}><Icon name="check" size={12} /><span>{boardActionText(item.text)}</span></div>
         {:else if item.kind === "user"}
-          <div class="line user">
-            <div class="bubble mine" class:pending={item.pending}>
+          <div class="line user" data-at={item.at}>
+            {#if !item.pending}{@render linkButton(item.at)}{/if}
+            <div class="bubble mine" class:pending={item.pending} use:longpress={() => void copyLink(item.at)}>
               {#if item.images.length}
                 <div class="images">
                   {#each item.images as image, position (image.url + position)}
@@ -217,17 +242,19 @@
             </div>
           </div>
         {:else if item.kind === "agent"}
-          <div class="line agent">
-            <div class="bubble theirs">
+          <div class="line agent" data-at={item.at}>
+            <div class="bubble theirs" use:longpress={() => void copyLink(item.at)}>
               <div class="text">{#each textRuns(item.text) as run, position (position)}{#if run.kind === "link"}<a href={run.href} target="_blank" rel="noopener noreferrer">{run.href}</a>{:else}{run.text}{/if}{/each}{#if item.streaming}<span class="caret"></span>{/if}</div>
             </div>
+            {#if !item.streaming}{@render linkButton(item.at)}{/if}
           </div>
         {:else if item.kind === "job"}
-          <div class="line report">
-            <button type="button" class="report-line" title="Open job {jobName(item.from)}" onclick={() => openJob(item.from)}>
+          <div class="line report" data-at={item.at}>
+            <button type="button" class="report-line" title="Open job {jobName(item.from)}" onclick={() => openJob(item.from)} use:longpress={() => void copyLink(item.at)}>
               <span class="report-mark"><Icon name="chevronRight" size={12} /></span>
               <span class="report-text"><span class="report-from">from {jobName(item.from)}:</span> {item.title}</span>
             </button>
+            {@render linkButton(item.at)}
           </div>
         {:else}
           <div class="notice">{item.text}</div>
@@ -254,7 +281,7 @@
 {/snippet}
 
 {#snippet boardView()}
-  <BoardPanel {board} {cwd} onjob={openJob} apply={applyBoard} />
+  <BoardPanel {board} {cwd} {narrow} onjob={openJob} apply={applyBoard} />
 {/snippet}
 {#snippet jobsView()}
   <JobList {jobs} {pulses} now={tick5} {checkIn} onopen={job => openJob(job.key)} />
@@ -322,7 +349,7 @@
         </aside>
       {/if}
       {#if drawerName !== null}
-        <JobDrawer name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} {cwd} onclose={closeJob} />
+        <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} {cwd} onclose={closeJob} />
       {/if}
     </div>
   {/if}
@@ -362,9 +389,13 @@
   .column { width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
   .empty { padding: 48px 0; text-align: center; }
   .stamp { align-self: center; margin: 10px 0 4px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-  .line { display: flex; }
+  .line { display: flex; align-items: flex-end; gap: 4px; border-radius: 20px; }
   .line.user { justify-content: flex-end; }
   .line.agent { justify-content: flex-start; }
+  .link-button { flex: none; margin-bottom: 4px; color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
+  .line:hover .link-button, .link-button:focus-visible { opacity: 1; }
+  .line:global(.linked) { animation: linked 2s ease-out; }
+  @keyframes linked { from { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } to { background: transparent; box-shadow: none; } }
   .bubble { max-width: min(82%, 560px); padding: 8px 14px; border-radius: 18px; font-size: 15.5px; line-height: 1.45; }
   .bubble.mine { background: var(--accent-fill); color: var(--accent-text); border-bottom-right-radius: 5px; transition: opacity 0.2s; }
   .bubble.mine.pending { opacity: 0.55; }
@@ -380,8 +411,9 @@
   .typing span:nth-child(2) { animation-delay: 0.2s; }
   .typing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes typing { 0%, 60%, 100% { opacity: 0.35; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
-  .line.report { flex-direction: column; align-items: stretch; margin: 2px 0; }
-  .report-line { display: flex; align-items: flex-start; gap: 6px; width: 100%; padding: 4px 6px; border-radius: var(--radius-small); text-align: left; font-size: 13px; line-height: 1.45; color: var(--text-muted); }
+  .line.report { align-items: flex-start; margin: 2px 0; border-radius: var(--radius-small); }
+  .line.report .link-button { margin: 2px 0 0; }
+  .report-line { display: flex; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; padding: 4px 6px; border-radius: var(--radius-small); text-align: left; font-size: 13px; line-height: 1.45; color: var(--text-muted); }
   .report-line:hover { background: var(--bg-hover); color: var(--text); }
   .report-mark { display: inline-flex; flex: none; margin-top: 3px; }
   .report-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

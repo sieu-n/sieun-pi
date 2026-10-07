@@ -7,7 +7,7 @@ import historyExtension from "../extension/index.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { applyThreadEvent } from "../src/shared/thread-state.ts";
 import type { ThreadState } from "../src/shared/types.ts";
-import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderBoard } from "../src/shared/chat-board.ts";
+import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, migrateBoard, nextIds, parseBoardOps, renderBoard } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "../src/shared/types.ts";
 
 const T0 = "2026-10-06T00:00:00.000Z";
@@ -57,13 +57,58 @@ test("chat board: plan_set keeps given ids, fills the rest without collisions, d
   assert.equal(summaries[0], "Set the plan: 4 items");
 });
 
-test("chat board: scratchpad replace and append", () => {
-  const { board, summaries } = run(emptyBoard(T0), [
-    { op: "scratchpad", text: "Decision: Resend", mode: "replace" },
-    { op: "scratchpad", text: "Email picks pending", mode: "append" },
+test("chat board: scratch bullets with links; ids continue; pasted chat and wiki URLs are stored as targets", () => {
+  const { board, summaries } = run(emptyBoard(T0), parseBoardOps([
+    { op: "scratch_add", text: "Decision: Resend", links: [{ label: "w6 report", target: "job:w6" }] },
+    { op: "scratch_add", text: "Email picks pending" },
+    { op: "scratch_update", id: "s2", text: "Email picks done", links: [{ label: "page", target: "http://localhost:5176/page/sessions/a.md" }] },
+    { op: "scratch_remove", id: "s1" },
+    { op: "scratch_add", text: "Next" },
+  ]));
+  assert.deepEqual(board.scratch, [
+    { id: "s2", text: "Email picks done", links: [{ label: "page", target: "wiki:sessions/a.md" }], at: T1 },
+    { id: "s3", text: "Next", links: [], at: T1 },
   ]);
-  assert.equal(board.scratchpad, "Decision: Resend\nEmail picks pending");
-  assert.deepEqual(summaries, ["Rewrote the scratchpad", "Added to the scratchpad"]);
+  assert.deepEqual(summaries, ['Added a note s1: "Decision: Resend" with links [w6 report](job:w6)', 'Added a note s2: "Email picks pending"',
+    'Edited the note s2 "Email picks pending": rewrote it to "Email picks done", set its links to [page](wiki:sessions/a.md)',
+    'Removed the note "Decision: Resend"', 'Added a note s3: "Next"']);
+  const owner = run(board, parseBoardOps([{ op: "scratch_add", text: "See this reply",
+    links: [{ label: "", target: "http://127.0.0.1:5182/x/#01a112e2-f720-75db-b51a-84cfbdbcffa0@1759800000000" }] }]), "owner");
+  assert.deepEqual(owner.board.scratch.at(-1)!.links, [{ label: "thread:01a112e2-f720-75db-b51a-84cfbdbcffa0@1759800000000", target: "thread:01a112e2-f720-75db-b51a-84cfbdbcffa0@1759800000000" }]);
+  assert.match(owner.summaries[0]!, /^Owner added a note: "See this reply" with links \[thread:/);
+  throwsKind(() => parseBoardOps([{ op: "scratch_add", text: "x", links: [{ label: "a", target: "ftp://x" }] }]), "invalid");
+  throwsKind(() => parseBoardOps([{ op: "scratch_add", text: "x", links: Array.from({ length: 6 }, () => ({ target: "job:a" })) }]), "invalid");
+  const full = { ...emptyBoard(T0), scratch: Array.from({ length: BOARD_LIMITS.scratch }, (_, i) => ({ id: `s${i + 1}`, text: "x", links: [], at: T0 })) };
+  throwsKind(() => run(full, [{ op: "scratch_add", text: "one more" }]), "invalid");
+});
+
+test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose'; at most 3 open agent asks", () => {
+  const { board, summaries } = run(emptyBoard(T0), [{ op: "todo_add", text: "Deploy now?", choices: ["Yes", "Wait for QA"] }]);
+  assert.deepEqual(board.todos[0], { id: "t1", text: "Deploy now?", done: false, choices: ["Yes", "Wait for QA"], from: "agent", at: T1 });
+  assert.equal(summaries[0], 'Added a todo t1 "Deploy now?" with choices "Yes" / "Wait for QA"');
+  const tapped = run(board, [{ op: "todo_update", id: "t1", reply: "Wait for QA", done: true }], "owner");
+  assert.deepEqual(tapped.summaries, ['Owner chose "Wait for QA" for "Deploy now?"']);
+  assert.equal(tapped.board.todos[0]!.done, true);
+  assert.equal(run(board, [{ op: "todo_update", id: "t1", reply: "Only staging" }], "owner").summaries[0], 'Owner answered "Deploy now?": Only staging');
+  for (const choices of [["one"], ["a", "b", "c", "d", "e"], ["a", "a"], ["a", "x".repeat(81)], ["a", " "]]) {
+    throwsKind(() => parseBoardOps([{ op: "todo_add", text: "q", choices }]), "invalid");
+  }
+  const three = run(emptyBoard(T0), [{ op: "todo_add", text: "a" }, { op: "todo_add", text: "b" }, { op: "todo_add", text: "c" }]).board;
+  throwsKind(() => run(three, [{ op: "todo_add", text: "d" }]), "invalid");
+  assert.equal(run(three, [{ op: "todo_add", text: "mine" }], "owner").board.todos.length, 4, "the owner's own todos are not capped");
+  const oneDone = run(three, [{ op: "todo_update", id: "t1", done: true }], "owner").board;
+  assert.equal(run(oneDone, [{ op: "todo_add", text: "d" }]).board.todos.length, 4, "a checked ask frees a slot");
+});
+
+test("chat board: a v1 file migrates to bullets, one per non-empty line; a v2 file passes; anything else throws", () => {
+  const v1 = { v: 1, rev: 4, plan: [], todos: [], updatedAt: T0, scratchpad: "- Decision: Resend\n\n* picks pending\nplain line\n" };
+  assert.deepEqual(migrateBoard(v1), { v: 2, rev: 4, plan: [], todos: [], updatedAt: T0, scratch: [
+    { id: "s1", text: "Decision: Resend", links: [], at: T0 }, { id: "s2", text: "picks pending", links: [], at: T0 }, { id: "s3", text: "plain line", links: [], at: T0 }] });
+  const v2 = emptyBoard(T0);
+  assert.equal(migrateBoard(v2), v2);
+  assert.throws(() => migrateBoard({ v: 3, rev: 0, plan: [], todos: [], scratch: [], updatedAt: T0 }), /malformed/);
+  assert.throws(() => migrateBoard(null), /malformed/);
+  assert.equal(nextIds(migrateBoard(v1))("s"), "s4");
 });
 
 test("chat board: todos from the agent, checked and answered by the owner in plain words", () => {
@@ -86,10 +131,10 @@ test("chat board: todos from the agent, checked and answered by the owner in pla
   assert.equal(cleared.summaries[0], 'Owner cleared the answer on "Pick a provider"');
 });
 
-test("chat board: the owner may change only todos; unknown ids and bad input are refused", () => {
+test("chat board: the owner may change todos and the scratchpad, never the plan; unknown ids and bad input are refused", () => {
   const board = run(emptyBoard(T0), [{ op: "plan_add", text: "A" }]).board;
   for (const op of [{ op: "plan_add", text: "x" }, { op: "plan_update", id: "p1", status: "done" }, { op: "plan_remove", id: "p1" },
-    { op: "plan_set", items: [] }, { op: "scratchpad", text: "x", mode: "replace" }] as BoardOp[]) {
+    { op: "plan_set", items: [] }] as BoardOp[]) {
     throwsKind(() => applyBoardOp(board, op, "owner", T1, nextIds(board)), "forbidden");
   }
   throwsKind(() => run(board, [{ op: "plan_update", id: "p9", status: "done" }]), "unknown");
@@ -100,22 +145,26 @@ test("chat board: the owner may change only todos; unknown ids and bad input are
   throwsKind(() => parseBoardOps([{ op: "todo_add", text: "  " }]), "invalid");
   throwsKind(() => parseBoardOps([{ op: "nope" }]), "invalid");
   throwsKind(() => parseBoardOps({ op: "todo_add", text: "x" }), "invalid");
-  assert.deepEqual(parseBoardOps([{ op: "scratchpad", text: "" }, { op: "plan_add", text: "a", parent: null }]),
-    [{ op: "scratchpad", text: "", mode: "replace" }, { op: "plan_add", text: "a" }]);
+  throwsKind(() => parseBoardOps([{ op: "scratchpad", text: "x" }]), "invalid");
+  throwsKind(() => run(board, [{ op: "scratch_remove", id: "s9" }], "owner"), "unknown");
+  assert.deepEqual(parseBoardOps([{ op: "scratch_add", text: "n", links: [{ label: "r", target: "/Users/me/r.md" }] }, { op: "plan_add", text: "a", parent: null }]),
+    [{ op: "scratch_add", text: "n", links: [{ label: "r", target: "file:/Users/me/r.md" }] }, { op: "plan_add", text: "a" }]);
 });
 
-test("chat board: render shows the nested checklist, todos with answers, and the scratchpad", () => {
-  assert.match(renderBoard(null), /empty/);
+test("chat board: render shows this chat's target, the nested checklist, todos with choices and answers, and the scratch bullets with links", () => {
+  assert.match(renderBoard(null), /^The board is empty/);
+  assert.match(renderBoard(null, "s-1"), /^This chat: thread:s-1\nThe board is empty/);
   const { board } = run(emptyBoard(T0), [
     { op: "plan_add", text: "Goal", status: "doing" },
     { op: "plan_add", parent: "p1", text: "Step", status: "done", job: "w6" },
-    { op: "todo_add", text: "Approve" },
-    { op: "scratchpad", text: "note one", mode: "replace" },
+    { op: "todo_add", text: "Approve", choices: ["Yes", "No"] },
+    { op: "scratch_add", text: "note one", links: [{ label: "report", target: "job:w6" }, { label: "doc", target: "wiki:a/b.md" }] },
   ]);
-  const answered = run(board, [{ op: "todo_update", id: "t1", done: true, reply: "yes" }], "owner").board;
-  assert.equal(renderBoard(answered), [
-    `Board rev 5, updated ${T1}`, "Plan:", "  [~] p1 Goal (doing)", "    [x] p2 Step (done, job w6)",
-    "Owner todos:", "  [x] t1 Approve (from agent), answer: yes", "Scratchpad:", "note one"].join("\n"));
+  const answered = run(board, [{ op: "todo_update", id: "t1", done: true, reply: "Yes" }], "owner").board;
+  assert.equal(renderBoard(answered, "s-1"), [
+    "This chat: thread:s-1", `Board rev 5, updated ${T1}`, "Plan:", "  [~] p1 Goal (doing)", "    [x] p2 Step (done, job w6)",
+    "Owner todos:", '  [x] t1 Approve (from agent), choices: "Yes" (recommended) / "No", answer: Yes',
+    "Scratchpad:", "  - s1 note one [report](job:w6) [doc](wiki:a/b.md)"].join("\n"));
 });
 
 test("board store: read is null before the first op, apply writes all ops or none, watch reports each writer's change", async () => {
@@ -157,8 +206,8 @@ test("extension: chat_board writes the chat's board under agent-chat-data-dir an
   assert.ok(tool.promptGuidelines?.some(line => line.includes("CTO")));
   const ctx = { sessionManager: { getSessionId: () => "s-1" } };
   const added = await tool.execute("c1", { ops: [{ op: "plan_add", text: "Goal", status: "doing" }, { op: "todo_add", text: "Approve" }] }, undefined, undefined, ctx);
-  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nBoard rev 2/);
+  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nThis chat: thread:s-1\nBoard rev 2/);
   assert.equal((await new BoardStore(dataDir).read("s-1"))?.rev, 2);
-  assert.match((await tool.execute("c2", { ops: [] }, undefined, undefined, ctx)).content[0]!.text, /^Board rev 2/);
+  assert.match((await tool.execute("c2", { ops: [] }, undefined, undefined, ctx)).content[0]!.text, /^This chat: thread:s-1\nBoard rev 2/);
   await assert.rejects(tool.execute("c3", { ops: [{ op: "plan_update", id: "p7", status: "done" }] }, undefined, undefined, ctx), /No plan item p7/);
 });

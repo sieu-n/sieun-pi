@@ -11,7 +11,9 @@
   import TurnView from "./Turn.svelte";
   import Icon from "./Icon.svelte";
   import { tooltip } from "./ui/tooltip.ts";
+  import { longpress } from "./ui/longpress.ts";
   import Lightbox from "./ui/Lightbox.svelte";
+  import { copyPermalink } from "./permalink.ts";
 
   /**
    * `nested` marks an exchange: an agent message or background completion shown below the reply it followed.
@@ -71,13 +73,20 @@
       setTimeout(() => { copied = false; }, 1200);
     });
   }
+  async function copyLink(at: number): Promise<void> {
+    store.toast(await copyPermalink(threadId, at) ? "Link copied" : "Could not copy the link", "info");
+  }
 </script>
+
+{#snippet linkButton(at: number)}
+  <button type="button" class="icon-button small link-button" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(at)}><Icon name="link" size={13} /></button>
+{/snippet}
 
 <article class="turn" class:triggered={turn.trigger !== null} class:nested id={turn.key}>
   {#if prompt}
-    <div class="prompt-row">
+    <div class="prompt-row" data-at={prompt.message.timestamp}>
       {#if prompt.message.skill}<div class="skill-tag"><Icon name="sparkle" size={12} />{prompt.message.skill}</div>{/if}
-      <div class="bubble">
+      <div class="bubble" use:longpress={() => void copyLink(prompt.message.timestamp)}>
         {#if promptImages.length}
           <div class="images">
             {#each promptImages as image, index (image.url + index)}
@@ -87,22 +96,23 @@
         {/if}
         {#if promptText}<div class="prompt-text">{promptText}</div>{/if}
       </div>
-      <div class="stamp">{promptAt}</div>
+      <div class="stamp">{@render linkButton(prompt.message.timestamp)}{promptAt}</div>
     </div>
   {/if}
   {#if (turn.trigger || own.work.length) && !(ui.viewMode === "read" && prompt)}
     <WorkRow turn={own} {threadId} {nested} />
   {/if}
   {#if reply && (shownText || replyLive)}
-    <div class="reply fade-in">
+    <div class="reply fade-in" data-at={reply.message.timestamp}>
       <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-      <div class="prose" onclick={onProseClick} onerrorcapture={onImageError} use:diagrams={{ html: replyHtml, live: replyLive }}>{@html replyHtml}{#if replyLive}<span class="caret"></span>{/if}</div>
+      <div class="prose" onclick={onProseClick} onerrorcapture={onImageError} use:diagrams={{ html: replyHtml, live: replyLive }} use:longpress={() => void copyLink(reply.message.timestamp)}>{@html replyHtml}{#if replyLive}<span class="caret"></span>{/if}</div>
       {#if replyTruncated && fullReply === null}
         <button class="more" onclick={() => void store.run(loadFullReply())}>Show the full reply</button>
       {/if}
       {#if !replyLive && shownText}
         <div class="reply-actions">
           <button type="button" class="icon-button" aria-label={copied ? "Copied" : "Copy reply"} use:tooltip={copied ? "Copied" : "Copy reply"} onclick={copyReply}><Icon name={copied ? "check" : "copy"} size={15} /></button>
+          {@render linkButton(reply.message.timestamp)}
           {#if reply.message.model}<span class="model faint">{reply.message.model}</span>{/if}
         </div>
       {/if}
@@ -149,8 +159,10 @@
   .images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
   .view { display: block; cursor: zoom-in; border-radius: var(--radius-small); }
   .images img { max-width: 240px; max-height: 240px; border-radius: var(--radius-small); display: block; }
-  .stamp { margin-top: 4px; font-size: 11px; color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
-  .prompt-row:hover .stamp { opacity: 1; }
+  .stamp { display: flex; align-items: center; gap: 2px; margin-top: 2px; font-size: 11px; color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
+  .prompt-row:hover .stamp, .stamp:focus-within { opacity: 1; }
+  .link-button { color: var(--text-faint); }
+  .reply-actions .link-button { width: 30px; height: 30px; }
   .reply { position: relative; margin-top: 6px; }
   .reply-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; opacity: 0; transition: opacity 0.15s; font-size: 12px; }
   .reply:hover .reply-actions, .reply-actions:focus-within { opacity: 1; }

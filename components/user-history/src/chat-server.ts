@@ -6,7 +6,7 @@ import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
 import { BOARD_PREFIX, BoardError, parseBoardOps } from "./shared/chat-board.ts";
-import { buildRenderBundle, LocalImageError, readLocalImage, renderPage, renderPolicy } from "./chat-render.ts";
+import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, renderPage, renderPolicy } from "./chat-render.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
@@ -396,11 +396,17 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "api/local-image") {
           let image: Awaited<ReturnType<typeof readLocalImage>>;
           try { image = await readLocalImage(url.searchParams.get("path") ?? ""); }
-          catch (error) { throw error instanceof LocalImageError ? new RequestError(error.status, error.message) : error; }
+          catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
           // An SVG opened on its own is a document; the sandbox keeps any script in it from running as this page.
           if (image.mimeType === "image/svg+xml") res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
           res.writeHead(200, { "Content-Type": image.mimeType, "Content-Length": image.bytes.length });
           res.end(image.bytes);
+          return;
+        }
+        if (route === "api/local-file") {
+          // A `file:` artifact link on the board: read-only text under the chat's allowed folders (readLocalText).
+          try { json(res, 200, await readLocalText(url.searchParams.get("path") ?? "")); }
+          catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
           return;
         }
         const image = /^api\/images\/([a-f0-9]{64})$/.exec(route);
@@ -567,10 +573,14 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           await backend.threads.archive(id);
           if ((await backend.chats.ids()).has(id)) await backend.chats.forget(id);
           break;
-        case "unarchive": await backend.threads.unarchive(id); break;
+        case "unarchive":
+          // Undo keeps a chat a chat: its session file still carries the chat_mode entry, so it goes back into the index, pinned, with its check-in.
+          await backend.threads.unarchive(id);
+          if (await backend.chats.restore(id)) await backend.catalog.notify();
+          break;
         case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;
         case "board": {
-          // The owner's side of the chat board: todo ops only. The chat then gets a steer that says in plain words what the owner did.
+          // The owner's side of the chat board: todo and scratchpad ops. The chat then gets a steer that says in plain words what the owner did.
           if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
           let applied: Awaited<ReturnType<typeof backend.boards.apply>>;
           try {

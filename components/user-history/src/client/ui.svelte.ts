@@ -25,9 +25,9 @@ function storedFilter(): RowFilter {
   } catch { /* A broken saved filter starts empty. */ }
   return filter;
 }
-function storedColumns(): Record<string, boolean> {
+function storedColumns(key = "chat.agentsColumns"): Record<string, boolean> {
   try {
-    const saved: unknown = JSON.parse(stored("chat.agentsColumns") ?? "null");
+    const saved: unknown = JSON.parse(stored(key) ?? "null");
     if (typeof saved !== "object" || saved === null) return {};
     return Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
   } catch { return {}; }
@@ -62,6 +62,9 @@ class Ui {
   /** The Board panel beside a chat on a wide window; open unless folded, and the choice holds across chats and reloads. */
   boardOpen = $state(stored("chat.boardOpen") !== "0");
   setBoardOpen(open: boolean): void { this.boardOpen = open; store("chat.boardOpen", open ? "1" : "0"); }
+  /** The Plan and Notes cards of the board, folded or open; the choice holds across chats and reloads. For you decides for itself. */
+  boardCards = $state.raw<Record<string, boolean>>(storedColumns("chat.boardCards"));
+  setBoardCard(card: string, open: boolean): void { this.boardCards = { ...this.boardCards, [card]: open }; store("chat.boardCards", JSON.stringify(this.boardCards)); }
   /** Chats whose job list is unfolded in the sidebar. */
   chatTreeOpen = $state.raw<Record<string, true>>(storedTree());
   setChatTreeOpen(id: string, open: boolean): void {

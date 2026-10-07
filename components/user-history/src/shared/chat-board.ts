@@ -1,30 +1,52 @@
-import type { BoardActor, BoardOp, ChatBoard, OwnerTodo, PlanItem, PlanItemInput, PlanStatus } from "./types.ts";
+import { normalizeArtifactTarget } from "./artifact-link.ts";
+import type { ArtifactLink, BoardActor, BoardOp, ChatBoard, OwnerTodo, PlanItem, PlanItemInput, PlanStatus, ScratchItem } from "./types.ts";
 
 /** The chat board reducer, shared by the `chat_board` tool (agent) and `POST api/threads/<id>/board` (owner). Pure and browser-safe. */
 
 /** A user message that starts with this is the owner acting on the board (the server's steer); the client shows it as a small action line. */
 export const BOARD_PREFIX = "[board] ";
 export const PLAN_STATUSES: readonly PlanStatus[] = ["todo", "doing", "done", "blocked", "dropped"];
-const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove"]);
-export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, scratchpad: 20000, planItems: 300, depth: 6, todos: 100, ops: 50 } as const;
+const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove", "scratch_add", "scratch_update", "scratch_remove"]);
+/** `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. */
+export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, planItems: 300, depth: 6, todos: 100, openAsks: 3, scratch: 200, links: 5, label: 120,
+  choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
 
 export type BoardErrorKind = "invalid" | "forbidden" | "unknown";
 export class BoardError extends Error {
   constructor(readonly kind: BoardErrorKind, message: string) { super(message); }
 }
 
-export function emptyBoard(now: string): ChatBoard { return { v: 1, rev: 0, plan: [], scratchpad: "", todos: [], updatedAt: now }; }
+export function emptyBoard(now: string): ChatBoard { return { v: 2, rev: 0, plan: [], scratch: [], todos: [], updatedAt: now }; }
 
-/** A `newId` that continues after the highest `p<n>` / `t<n>` already on the board. */
-export function nextIds(board: ChatBoard): (kind: "p" | "t") => string {
-  const top = { p: 0, t: 0 };
+export type IdKind = "p" | "t" | "s";
+/** A `newId` that continues after the highest `p<n>` (plan) / `t<n>` (todo) / `s<n>` (scratch) already on the board. */
+export function nextIds(board: ChatBoard): (kind: IdKind) => string {
+  const top = { p: 0, t: 0, s: 0 };
   const see = (id: string) => {
-    const match = /^([pt])(\d+)$/.exec(id);
-    if (match) top[match[1] as "p" | "t"] = Math.max(top[match[1] as "p" | "t"], Number(match[2]));
+    const match = /^([pts])(\d+)$/.exec(id);
+    if (match) top[match[1] as IdKind] = Math.max(top[match[1] as IdKind], Number(match[2]));
   };
   walk(board.plan, item => see(item.id));
   for (const todo of board.todos) see(todo.id);
+  for (const item of board.scratch) see(item.id);
   return kind => `${kind}${++top[kind]}`;
+}
+
+/**
+ * A board file's content as v2. A v1 file kept the scratchpad as one string; each non-empty line becomes a bullet (a leading "- " or "* " is
+ * dropped), with no links. Throws on anything else.
+ */
+export function migrateBoard(value: unknown): ChatBoard {
+  const board = value as Record<string, unknown>;
+  if (!isRecord(value) || typeof board.rev !== "number" || !Array.isArray(board.plan) || !Array.isArray(board.todos) || typeof board.updatedAt !== "string") {
+    throw new Error("Chat board file is malformed.");
+  }
+  if (board.v === 2 && Array.isArray(board.scratch)) return value as unknown as ChatBoard;
+  if (board.v !== 1 || typeof board.scratchpad !== "string") throw new Error("Chat board file is malformed.");
+  const { scratchpad, ...rest } = board;
+  const lines = (scratchpad as string).split("\n").map(line => line.replace(/^\s*[-*]\s+/, "").trim()).filter(Boolean);
+  const scratch: ScratchItem[] = lines.map((text, index) => ({ id: `s${index + 1}`, text: text.slice(0, BOARD_LIMITS.text), links: [], at: board.updatedAt as string }));
+  return { ...(rest as unknown as Omit<ChatBoard, "v" | "scratch">), v: 2, scratch };
 }
 
 function walk(items: readonly PlanItem[], visit: (item: PlanItem, depth: number) => void, depth = 0): void {
@@ -79,6 +101,25 @@ function planInput(value: unknown, depth: number): PlanItemInput {
   return input;
 }
 
+const TARGET_FORMS = "job:<name>, thread:<sessionId> or thread:<sessionId>@<ms>, wiki:<path>, file:<absolute path>, or an http(s) URL";
+function links(value: unknown): ArtifactLink[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > BOARD_LIMITS.links) invalid(`links must be a list of up to ${BOARD_LIMITS.links} {label, target}.`);
+  return value.map(link => {
+    if (!isRecord(link)) invalid("Each link must be an object with a target.");
+    const target = normalizeArtifactTarget(str(link.target, "link target", 2048)) ?? invalid(`A link target must be ${TARGET_FORMS}.`);
+    const label = link.label === undefined || link.label === "" ? target : str(link.label, "link label", BOARD_LIMITS.label);
+    return { label: label.slice(0, BOARD_LIMITS.label), target };
+  });
+}
+function choices(value: unknown): string[] {
+  const { min, max, text } = BOARD_LIMITS.choices;
+  if (!Array.isArray(value) || value.length < min || value.length > max) invalid(`choices must be a list of ${min} to ${max} answers, your recommendation first.`);
+  const list = value.map(choice => str(choice, "choice", text).trim());
+  if (new Set(list).size !== list.length) invalid("choices must differ from each other.");
+  return list;
+}
+
 /** Parses one untrusted op (an HTTP body or a tool call). The reducer trusts its input after this. */
 export function parseBoardOp(value: unknown): BoardOp {
   if (!isRecord(value)) invalid("Each op must be an object with an op field.");
@@ -102,12 +143,23 @@ export function parseBoardOp(value: unknown): BoardOp {
       return op;
     }
     case "plan_remove": return { op: "plan_remove", id: id(value.id) };
-    case "scratchpad": {
-      const mode = value.mode ?? "replace";
-      if (mode !== "replace" && mode !== "append") invalid("scratchpad mode must be replace or append.");
-      return { op: "scratchpad", text: str(value.text, "text", BOARD_LIMITS.scratchpad, false), mode };
+    case "scratch_add": {
+      const op: BoardOp = { op: "scratch_add", text: str(value.text, "text", BOARD_LIMITS.text) };
+      const list = links(value.links); if (list) op.links = list;
+      return op;
     }
-    case "todo_add": return { op: "todo_add", text: str(value.text, "text", BOARD_LIMITS.text) };
+    case "scratch_update": {
+      const op: BoardOp = { op: "scratch_update", id: id(value.id) };
+      const text = optStr(value.text, "text", BOARD_LIMITS.text); if (text !== undefined) op.text = text;
+      const list = links(value.links); if (list) op.links = list;
+      return op;
+    }
+    case "scratch_remove": return { op: "scratch_remove", id: id(value.id) };
+    case "todo_add": {
+      const op: BoardOp = { op: "todo_add", text: str(value.text, "text", BOARD_LIMITS.text) };
+      if (value.choices !== undefined) op.choices = choices(value.choices);
+      return op;
+    }
     case "todo_update": {
       const op: BoardOp = { op: "todo_update", id: id(value.id) };
       const text = optStr(value.text, "text", BOARD_LIMITS.text); if (text !== undefined) op.text = text;
@@ -117,7 +169,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       return op;
     }
     case "todo_remove": return { op: "todo_remove", id: id(value.id) };
-    default: return invalid("op must be one of plan_set, plan_add, plan_update, plan_remove, scratchpad, todo_add, todo_update, todo_remove.");
+    default: return invalid("op must be one of plan_set, plan_add, plan_update, plan_remove, scratch_add, scratch_update, scratch_remove, todo_add, todo_update, todo_remove.");
   }
 }
 
@@ -127,13 +179,15 @@ export function parseBoardOps(value: unknown): BoardOp[] {
 }
 
 const quote = (text: string) => `"${text.length > 80 ? text.slice(0, 79) + "…" : text}"`;
+const markdownLink = (link: ArtifactLink) => `[${link.label}](${link.target})`;
+const linkText = (list: readonly ArtifactLink[]) => list.length ? ` with links ${list.map(markdownLink).join(" ")}` : "";
 
 /**
  * Applies one op. The board is not mutated; the result has `rev + 1` and `updatedAt: now`. `summary` is one plain sentence in the actor's
  * voice ("Owner checked ..." for the owner, "Added p3 ..." for the agent), used as the steer text and the tool result.
  */
-export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: "p" | "t") => string): { board: ChatBoard; summary: string } {
-  if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes only the todo list; the agent keeps the plan and the scratchpad.");
+export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: IdKind) => string): { board: ChatBoard; summary: string } {
+  if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos and the scratchpad; the agent keeps the plan.");
   // Summaries are written lowercase ("checked ...") and voiced here: "Owner checked ..." for the owner, "Checked ..." for the agent.
   const voice = (sentence: string) => actor === "owner" ? `Owner ${sentence}` : sentence[0]!.toUpperCase() + sentence.slice(1);
   const done = (next: Partial<ChatBoard>, summary: string) => ({ board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: voice(summary) });
@@ -182,15 +236,34 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       return done({ plan: mapPlan(board.plan, op.id, () => null) },
         `removed ${item.id} ${quote(item.text)}${removed > 1 ? ` and its ${removed - 1} ${removed === 2 ? "step" : "steps"}` : ""}`);
     }
-    case "scratchpad": {
-      const scratchpad = op.mode === "append" && board.scratchpad ? board.scratchpad.replace(/\n*$/, "\n") + op.text : op.text;
-      if (scratchpad.length > BOARD_LIMITS.scratchpad) invalid(`The scratchpad holds at most ${BOARD_LIMITS.scratchpad} characters; replace it with a shorter version.`);
-      return done({ scratchpad }, op.mode === "append" ? "added to the scratchpad" : "rewrote the scratchpad");
+    case "scratch_add": {
+      if (board.scratch.length >= BOARD_LIMITS.scratch) invalid(`The scratchpad holds at most ${BOARD_LIMITS.scratch} notes; remove old ones first.`);
+      const item: ScratchItem = { id: newId("s"), text: op.text, links: op.links ?? [], at: now };
+      return done({ scratch: [...board.scratch, item] }, `added a note${actor === "owner" ? "" : " " + item.id}: ${quote(item.text)}${linkText(item.links)}`);
+    }
+    case "scratch_update": {
+      const item = board.scratch.find(entry => entry.id === op.id) ?? unknown("note", op.id);
+      const next: ScratchItem = { ...item };
+      const parts: string[] = [];
+      if (op.text !== undefined && op.text !== item.text) { next.text = op.text; parts.push(`rewrote it to ${quote(op.text)}`); }
+      if (op.links !== undefined && JSON.stringify(op.links) !== JSON.stringify(item.links)) {
+        next.links = op.links; parts.push(op.links.length ? `set its links to ${op.links.map(markdownLink).join(" ")}` : "cleared its links");
+      }
+      return done({ scratch: board.scratch.map(entry => entry.id === op.id ? next : entry) },
+        `edited the note${actor === "owner" ? "" : " " + item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
+    }
+    case "scratch_remove": {
+      const item = board.scratch.find(entry => entry.id === op.id) ?? unknown("note", op.id);
+      return done({ scratch: board.scratch.filter(entry => entry.id !== op.id) }, `removed the note ${quote(item.text)}`);
     }
     case "todo_add": {
       if (board.todos.length >= BOARD_LIMITS.todos) invalid(`The todo list holds at most ${BOARD_LIMITS.todos} items; remove done ones first.`);
-      const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, from: actor, at: now };
-      return done({ todos: [...board.todos, todo] }, `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}`);
+      if (actor === "agent" && board.todos.filter(todo => todo.from === "agent" && !todo.done).length >= BOARD_LIMITS.openAsks) {
+        invalid(`The owner already has ${BOARD_LIMITS.openAsks} open asks. Decide this yourself and note it in the scratchpad, or remove an ask first.`);
+      }
+      const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), from: actor, at: now };
+      return done({ todos: [...board.todos, todo] },
+        `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}${todo.choices ? ` with choices ${todo.choices.map(quote).join(" / ")}` : ""}`);
     }
     case "todo_update": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
@@ -199,8 +272,11 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (op.text !== undefined && op.text !== todo.text) { next.text = op.text; parts.push(`renamed ${quote(todo.text)} to ${quote(op.text)}`); }
       // The first part names the todo, later parts say "it".
       const label = () => parts.length ? "it" : quote(next.text);
-      if (op.done !== undefined && op.done !== todo.done) { next.done = op.done; parts.push(`${op.done ? "checked" : "unchecked"} ${label()}`); }
+      // A reply that is one of the offered choices is a tap: "chose X for Q", which also covers the check that comes with it.
+      const chose = op.reply !== undefined && op.reply !== null && op.reply !== todo.reply && todo.choices?.includes(op.reply) === true;
+      if (op.done !== undefined && op.done !== todo.done) { next.done = op.done; if (!(chose && op.done)) parts.push(`${op.done ? "checked" : "unchecked"} ${label()}`); }
       if (op.reply === null) { delete next.reply; if (todo.reply) parts.push(`cleared the answer on ${label()}`); }
+      else if (chose) { next.reply = op.reply!; parts.push(`chose ${quote(op.reply!)} for ${quote(next.text)}`); }
       else if (op.reply !== undefined && op.reply !== todo.reply) { next.reply = op.reply; parts.push(parts.length ? `answered: ${op.reply}` : `answered ${label()}: ${op.reply}`); }
       return done({ todos: board.todos.map(entry => entry.id === op.id ? next : entry) }, parts.length ? parts.join(" and ") : `left ${quote(todo.text)} as it was`);
     }
@@ -215,11 +291,15 @@ function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInpu
   for (const item of items) { visit(item); walkInputs(item.children ?? [], visit); }
 }
 
-/** The board as compact text for the agent: the plan as an indented checklist, then the owner's todos, then the scratchpad. */
-export function renderBoard(board: ChatBoard | null): string {
-  if (!board) return "The board is empty: no plan, no todos, no scratchpad.";
+/**
+ * The board as compact text for the agent: this chat's own link target, the plan as an indented checklist, the owner's todos with their choices
+ * and answers, then the scratchpad bullets with their links.
+ */
+export function renderBoard(board: ChatBoard | null, sessionId?: string): string {
+  const self = sessionId ? [`This chat: thread:${sessionId}`] : [];
+  if (!board) return [...self, "The board is empty: no plan, no todos, no scratchpad."].join("\n");
   const mark: Record<PlanStatus, string> = { todo: "[ ]", doing: "[~]", done: "[x]", blocked: "[!]", dropped: "[-]" };
-  const lines = [`Board rev ${board.rev}, updated ${board.updatedAt}`, "Plan:"];
+  const lines = [...self, `Board rev ${board.rev}, updated ${board.updatedAt}`, "Plan:"];
   if (!board.plan.length) lines.push("  (empty)");
   walk(board.plan, (item, depth) => {
     lines.push(`${"  ".repeat(depth + 1)}${mark[item.status]} ${item.id} ${item.text} (${item.status}${item.job ? `, job ${item.job}` : ""})`);
@@ -228,8 +308,11 @@ export function renderBoard(board: ChatBoard | null): string {
   lines.push("Owner todos:");
   if (!board.todos.length) lines.push("  (empty)");
   for (const todo of board.todos) {
-    lines.push(`  ${todo.done ? "[x]" : "[ ]"} ${todo.id} ${todo.text} (from ${todo.from})${todo.reply !== undefined ? `, answer: ${todo.reply}` : ""}`);
+    const offered = todo.choices ? `, choices: ${todo.choices.map((choice, index) => quote(choice) + (index === 0 ? " (recommended)" : "")).join(" / ")}` : "";
+    lines.push(`  ${todo.done ? "[x]" : "[ ]"} ${todo.id} ${todo.text} (from ${todo.from})${offered}${todo.reply !== undefined ? `, answer: ${todo.reply}` : ""}`);
   }
-  lines.push("Scratchpad:", board.scratchpad ? board.scratchpad : "  (empty)");
+  lines.push("Scratchpad:");
+  if (!board.scratch.length) lines.push("  (empty)");
+  for (const item of board.scratch) lines.push(`  - ${item.id} ${item.text}${item.links.length ? " " + item.links.map(markdownLink).join(" ") : ""}`);
   return lines.join("\n");
 }

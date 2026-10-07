@@ -10,13 +10,15 @@
   import { renderMarkdown, copyFromClick } from "./markdown.ts";
   import StatusMark from "./StatusMark.svelte";
   import Icon from "./Icon.svelte";
+  import { tooltip } from "./ui/tooltip.ts";
+  import { copyPermalink } from "./permalink.ts";
 
   /**
    * One job of a chat, over the side panel: what it is, what it is doing, every message it sent the chat in full (newest first), the brief
    * it got, and the way into its own thread. Esc closes.
    */
-  let { name, job, reports, brief, pulses, now, cwd = "", onclose }: {
-    name: string; job: JobView | null; reports: readonly JobReport[]; brief: string | null; pulses: ReadonlyMap<string, ChildPulse>; now: number; cwd?: string; onclose: () => void;
+  let { chatId, name, job, reports, brief, pulses, now, cwd = "", onclose }: {
+    chatId: string; name: string; job: JobView | null; reports: readonly JobReport[]; brief: string | null; pulses: ReadonlyMap<string, ChildPulse>; now: number; cwd?: string; onclose: () => void;
   } = $props();
 
   const reading = $derived(job?.kind === "child" && job.child.status === "running" ? (pulses.get(job.child.id) ? readPulse(pulses.get(job.child.id)!, now) : null) : null);
@@ -55,6 +57,10 @@
     onclose();
   }
   let briefOpen = $state(false);
+  /** A report's link opens the job's own thread at the moment it sent the message; with no thread listed yet it opens the line in the chat. */
+  async function copyLink(report: JobReport): Promise<void> {
+    store.toast(await copyPermalink(sessionId ?? chatId, report.at) ? "Link copied" : "Could not copy the link", "info");
+  }
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -90,7 +96,7 @@
       <h3>Messages to the chat{#if reports.length}<span class="count">{reports.length}</span>{/if}</h3>
       {#each reports as report (report.id)}
         <article class="report">
-          <div class="stamp">{clockTime(report.at)}</div>
+          <div class="stamp">{clockTime(report.at)}<button type="button" class="icon-button small link-button" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(report)}><Icon name="link" size={13} /></button></div>
           <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
           <div class="prose small" onclick={copyFromClick}>{@html renderMarkdown(report.body, cwd)}</div>
         </article>
@@ -136,7 +142,9 @@
   .chev { display: inline-flex; transform: rotate(-90deg); transition: transform 0.12s; }
   .chev.open { transform: none; }
   .report { padding: 10px 12px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); }
-  .stamp { margin-bottom: 6px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .stamp { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .link-button { color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
+  .report:hover .link-button, .link-button:focus-visible { opacity: 1; }
   .prose.small { font-size: 13.5px; line-height: 1.55; }
   .prose.small :global(h1), .prose.small :global(h2), .prose.small :global(h3), .prose.small :global(h4) { font-size: 1.06em; margin: 1em 0 0.4em; }
   .none { margin: 0; font-size: 12.5px; color: var(--text-faint); }

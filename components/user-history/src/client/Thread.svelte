@@ -23,6 +23,7 @@
   import { clock } from "./clock.svelte.ts";
   import { readPulse } from "../shared/pulse.ts";
   import { parentChatOf } from "./jobs.ts";
+  import { revealMessage } from "./permalink.ts";
 
   let { id, narrow }: { id: string; narrow: boolean } = $props();
   /** A job of a chat (its session is listed under a chat row, or an open chat started it) gets a way back to the chat with its drawer open. */
@@ -113,7 +114,7 @@
     untrack(() => {
       requestAnimationFrame(() => { if (performance.getEntriesByName("thread-open:" + id, "mark").length) performance.measure("thread-paint:" + id, "thread-open:" + id); });
       let frames = 0;
-      const step = () => { scrollToBottom(); if (++frames < 8) requestAnimationFrame(step); };
+      const step = () => { if (pinned) scrollToBottom(); if (++frames < 8) requestAnimationFrame(step); };
       requestAnimationFrame(step);
     });
   });
@@ -127,6 +128,22 @@
   $effect(() => {
     void shown;
     if (untrack(() => pinned)) void tick().then(scrollToBottom);
+  });
+
+  /** A link to a message in this thread (`#<id>@<ms>`): leave Questions for Default, scroll to it and flash it; a link to nothing says so. */
+  $effect(() => {
+    const target = store.jump;
+    const node = scroller;
+    if (!target || target.id !== id || !messages.length || !node) return;
+    untrack(() => {
+      if (ui.viewMode === "questions") ui.setViewMode("default");
+      pinned = false;
+      void tick().then(() => {
+        if (store.jump !== target) return;
+        if (!revealMessage(node, target.at)) store.toast("That link points at a message this thread does not have.", "info");
+        store.jump = null;
+      });
+    });
   });
 
   /** An open thread keeps its Needs response place while you read it; leaving it (another thread, or the tab going hidden) marks it read. */
@@ -293,6 +310,8 @@
   .question-meta { flex: none; font-size: 12px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .column :global(.turn.flash) { animation: flash 1.2s ease-out; }
   @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
+  .column :global(.linked) { animation: linked 2s ease-out; border-radius: var(--radius); }
+  @keyframes linked { from { background: var(--accent-soft); box-shadow: 0 0 0 8px var(--accent-soft); } to { background: transparent; box-shadow: none; } }
   .controls { display: flex; align-items: center; gap: 6px; flex: none; }
   .thin-bar { padding: 3px 12px; font-size: 12px; text-align: center; color: var(--accent); background: var(--accent-soft); }
   .error-bar { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px 12px; font-size: 13px; color: var(--danger); background: var(--danger-soft); }

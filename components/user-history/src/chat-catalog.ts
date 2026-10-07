@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import { basename } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import type { Chats } from "./chats.ts";
@@ -9,17 +10,77 @@ import type { ChatJob, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, 
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
+const FIRST_MESSAGE_SCAN_BYTES = 4 * 1024 * 1024;
+
+function userText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.flatMap((part: unknown) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n");
+}
+
 /**
- * The title the terminal agents view shows (`getAgentsViewSessionTitle`): the native session name, else the native first message, else the folder name. This server stores
- * no title of its own. The one display change: a skill invocation shows what the user typed instead of the raw `<skill>` block.
+ * The first user message stored in a session file. Undefined when the file is missing or has no user message yet; an empty string when none
+ * appears in the first FIRST_MESSAGE_SCAN_BYTES.
  */
-export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMessage"> & { cwd?: string }): string {
-  const name = row.sessionName?.replace(/\s+/g, " ").trim();
-  if (name) return name;
-  const first = row.firstMessage ?? "";
+export function fileFirstMessage(sessionFile: string): string | undefined {
+  let fd: number;
+  try { fd = openSync(sessionFile, "r"); } catch { return undefined; }
+  try {
+    const decoder = new StringDecoder("utf8");
+    const chunk = Buffer.alloc(64 * 1024);
+    let pending = "";
+    let scanned = 0;
+    while (scanned < FIRST_MESSAGE_SCAN_BYTES) {
+      const read = readSync(fd, chunk, 0, chunk.length, scanned);
+      if (read === 0) return undefined;
+      scanned += read;
+      pending += decoder.write(chunk.subarray(0, read));
+      let newline = pending.indexOf("\n");
+      while (newline >= 0) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf("\n");
+        if (!line.includes('"user"')) continue;
+        try {
+          const entry: unknown = JSON.parse(line);
+          if (isRecord(entry) && entry.type === "message" && isRecord(entry.message) && entry.message.role === "user") return userText(entry.message.content);
+        } catch { /* a torn last line is still being written */ }
+      }
+    }
+    return "";
+  } finally { closeSync(fd); }
+}
+
+function messageTitle(first: string): string {
   const skill = parseSkillBlock(first);
   const text = skill ? skill.userMessage ?? "" : /^\s*<(?:skill|system|instructions)(?:\s|>)/i.test(first) ? "" : first;
-  return text.replace(/\s+/g, " ").trim().slice(0, 100) || (row.cwd ? basename(row.cwd) : "") || "New chat";
+  return text.replace(/\s+/g, " ").trim().slice(0, 100);
+}
+
+/** Title text of each session file's first user message. A session file only grows at its end, so a found entry never changes. */
+const fileTitles = new Map<string, string>();
+
+function storedTitle(sessionFile: string | undefined): string | undefined {
+  if (!sessionFile) return undefined;
+  const cached = fileTitles.get(sessionFile);
+  if (cached !== undefined) return cached;
+  const first = fileFirstMessage(sessionFile);
+  if (first === undefined) return undefined;
+  const title = messageTitle(first);
+  fileTitles.set(sessionFile, title);
+  return title;
+}
+
+/**
+ * A thread's title: the native session name, else the first user message stored in the session file, else the folder name. The daemon's
+ * `firstMessage` is used only until the file has a user message: for a live thread it is the first user message still in memory, which after a
+ * compaction or a resume is a later message, so a title built from it changes.
+ */
+export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMessage"> & { cwd?: string; sessionFile?: string }): string {
+  const name = row.sessionName?.replace(/\s+/g, " ").trim();
+  if (name) return name;
+  const text = storedTitle(row.sessionFile) ?? messageTitle(row.firstMessage ?? "");
+  return text || (row.cwd ? basename(row.cwd) : "") || "New chat";
 }
 
 export function isTopLevel(row: SessionSummary): boolean {

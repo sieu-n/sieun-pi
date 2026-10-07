@@ -34,6 +34,11 @@
     bolt: "M13 3L5 13h6l-1 8 8-10h-6z",
     list: "M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01",
     filter: "M4 6h16M7 12h10M10 18h4",
+    link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.5 1.5M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.5-1.5",
+    message: "M4 5h16v11H9l-5 4z",
+    book: "M4 5a2 2 0 0 1 2-2h14v16H6a2 2 0 0 0-2 2zM4 5v16M8 7h8",
+    file: "M6 3h8l4 4v14H6zM14 3v4h4",
+    globe: "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18",
   } as const;
   export type IconName = keyof typeof PATHS;
 </script>

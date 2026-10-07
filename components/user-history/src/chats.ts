@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import type { ChildAgent, ThinkingLevel } from "./shared/types.ts";
 
@@ -21,7 +23,7 @@ export const CHAT_BRIEF: readonly string[] = [
     "keep the board current, and bring the owner only what needs them.",
   "Voice: the owner's language, one to four short sentences, plain words, no em dashes, no headings, lists, bold, tables or code unless asked. " +
     "This holds on every turn, most of all when a job report arrives: say the one or two things that matter in plain sentences and put the detail " +
-    "(findings, options, file paths) in the board scratchpad or as owner todos, never as a list in chat.",
+    "(findings, decisions, file paths) in scratchpad bullets with links, never as a list in chat. Lines that start with `-` or `1.` are a list.",
   "Do yourself only quick read-only look-ups that answer the owner in about a minute: read a file, `rg`, `git log/status/diff/show`, open a screenshot " +
     "with `attach_image`, read a job's report or wiki page, `await agent_observe.recent_messages(name)`. Any real task, read-only or not " +
     "(research, an audit, implementation, checks, browser work), goes to a job.",
@@ -31,9 +33,14 @@ export const CHAT_BRIEF: readonly string[] = [
     "`receiver_role=\"sibling\", receiver_name=<your session name>` for a create_session root (`current.sessionName` from `await agent_observe.list_agents()`). " +
     "When the owner adds or changes something, forward their exact words to the job with `await agent_message.send(words, receiver_role=\"child\", receiver_name=<job>)`.",
   "Board: keep it current with the `chat_board` tool; the owner sees it next to the chat. The plan is a nested checklist: top items are goals, children " +
-    "are steps, each job linked by name. Use the scratchpad for working notes and decisions. Every ask to the owner (a decision, a login, an approval) " +
-    "becomes an owner todo, plus one short line in chat. Update the board in the same turn you start or finish a job. A user message that starts with " +
-    "`[board] ` is the owner acting on the board (checking or answering a todo); act on it.",
+    "are steps, each job linked by name. Update the board in the same turn you start or finish a job. A user message that starts with `[board] ` is " +
+    "the owner acting on the board (choosing or answering a todo, adding a note); act on it.",
+  "The scratchpad is a short bullet list: one finding or decision per bullet, with links to what it is about (`job:<name>` for a job's report, " +
+    "`thread:<id>`, `wiki:<path>`, `file:<path>`, or a URL). No long prose.",
+  "You are the VP: decide everything you can yourself. Ask the owner only for what a VP cannot decide: product direction, money, irreversible or " +
+    "external actions (deploys, sends, deletes), credentials and logins. Doc wording, small fixes, detail level and code choices are yours: decide, act, " +
+    "and note the decision in the scratchpad. Keep at most 3 open owner todos; each is one short question with 2 to 4 `choices`, your recommendation " +
+    "first. Before adding one, ask yourself whether the CTO would be annoyed to be asked; if so, decide. An ask is an owner todo plus one short line in chat.",
   "Start every job at once, reply in one short message, and end the turn. Never wait inside a turn: job reports and check-ins wake you later. " +
     "On a check-in, read the board and the jobs (`await rlm.list_subagents()`, `await rlm.collect(...)`, `await agent_observe.recent_messages(name)`), " +
     "update statuses, re-brief or stop what is stuck, and reply only if the owner needs to know or decide; otherwise end the turn with no text.",
@@ -45,6 +52,19 @@ export function chatName(): string { return `chat-${randomBytes(2).toString("hex
 
 export function hasChatMarker(entries: ReadonlyArray<{ type: string; customType?: string }>): boolean {
   return entries.some(entry => entry.type === "custom" && entry.customType === CHAT_MODE_ENTRY);
+}
+
+/** Whether a session file carries the chat_mode entry. The entry is written at the first session_start, so the scan stops near the head. */
+export async function fileHasChatMarker(sessionFile: string): Promise<boolean> {
+  const lines = createInterface({ input: createReadStream(sessionFile, { encoding: "utf8" }), crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (!line.includes(`"customType":"${CHAT_MODE_ENTRY}"`)) continue;
+      try { if (hasChatMarker([JSON.parse(line)])) return true; } catch { continue; }
+    }
+    return false;
+  } catch { return false; }
+  finally { lines.close(); }
 }
 
 /** What the extension does at session_start: write the marker (flagged root, not marked yet) and whether the brief tool is active. */
@@ -187,7 +207,7 @@ export interface ChatThreads {
   /** `live` fires after each attach with the children known then; `children` on every change while attached. */
   observe(observer: { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void }): () => void;
 }
-export type ChatSummary = (id: string) => Promise<{ lifecycle?: string } | undefined>;
+export type ChatSummary = (id: string) => Promise<{ lifecycle?: string; sessionFile?: string } | undefined>;
 
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
@@ -256,6 +276,30 @@ export class Chats {
       else this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     }
     return { pinned, forgotten };
+  }
+
+  /**
+   * After an unarchive: a session whose file carries the chat_mode entry is a chat again, back in the index, pinned, with steering `all` and its
+   * check-in set, then paused or resumed by whether a job runs. False for a plain thread. Steering and the check-in resume the session; a failure
+   * there is logged, since the pin resumes it again and the attach re-applies steering.
+   */
+  async restore(id: string): Promise<boolean> {
+    await this.load();
+    const sessionFile = (await this.summary(id))?.sessionFile;
+    if (!sessionFile || !(await fileHasChatMarker(sessionFile))) return false;
+    await this.index.add(id);
+    this.chatIds.add(id);
+    if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
+    try {
+      await this.threads.setSteeringMode(id, "all");
+      await this.threads.setHeartbeat(id, CHECK_IN_SCHEDULE, CHECK_IN, "follow_up");
+    } catch (error) {
+      this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    // The heartbeat state is unknown now; the sync pauses or resumes it from the children last seen.
+    this.checkIn.delete(id);
+    this.queueSync(id, false);
+    return true;
   }
 
   async forget(id: string): Promise<void> {

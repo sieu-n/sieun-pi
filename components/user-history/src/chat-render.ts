@@ -1,6 +1,6 @@
 import { realpath, stat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { extname, isAbsolute, join } from "node:path";
+import { extname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { hasImageSignature } from "./chat-images.ts";
@@ -54,24 +54,58 @@ const IMAGE_TYPES: Record<string, string> = {
 };
 export const MAX_LOCAL_IMAGE_BYTES = 25 * 1024 * 1024;
 
-export class LocalImageError extends Error {
+export class LocalFileError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
 /** An image file an agent wrote on this Mac and linked in a reply as `![alt](/abs/path.png)` or `~/path.png`. */
 export async function readLocalImage(path: string): Promise<{ bytes: Buffer; mimeType: string }> {
   const expanded = path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
-  if (!isAbsolute(expanded) || expanded.includes("\0")) throw new LocalImageError(400, "Give an absolute image path.");
+  if (!isAbsolute(expanded) || expanded.includes("\0")) throw new LocalFileError(400, "Give an absolute image path.");
   let file: string;
-  try { file = await realpath(expanded); } catch { throw new LocalImageError(404, "Image file not found."); }
+  try { file = await realpath(expanded); } catch { throw new LocalFileError(404, "Image file not found."); }
   const mimeType = IMAGE_TYPES[extname(file).toLowerCase()];
-  if (!mimeType) throw new LocalImageError(415, "Only PNG, JPEG, GIF, WebP and SVG files show as images.");
+  if (!mimeType) throw new LocalFileError(415, "Only PNG, JPEG, GIF, WebP and SVG files show as images.");
   const info = await stat(file);
-  if (!info.isFile()) throw new LocalImageError(404, "Image file not found.");
-  if (info.size > MAX_LOCAL_IMAGE_BYTES) throw new LocalImageError(413, "Image files over 25 MiB do not show.");
+  if (!info.isFile()) throw new LocalFileError(404, "Image file not found.");
+  if (info.size > MAX_LOCAL_IMAGE_BYTES) throw new LocalFileError(413, "Image files over 25 MiB do not show.");
   const bytes = await readFile(file);
   if (mimeType !== "image/svg+xml" && !hasImageSignature(bytes, mimeType as Parameters<typeof hasImageSignature>[1])) {
-    throw new LocalImageError(415, "The file is not the image type its name says.");
+    throw new LocalFileError(415, "The file is not the image type its name says.");
   }
   return { bytes, mimeType };
+}
+
+const TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".log", ".csv"]);
+export const MAX_LOCAL_TEXT_BYTES = 2 * 1024 * 1024;
+/** Where a `file:` artifact link may point: job reports and session artifacts, chat data, and the repositories. */
+export const LOCAL_TEXT_ROOTS = ["~/.prime/agent/session-artifacts", "~/.prime/agent/browser-chat", "~/Documents/Github"];
+/** The chat service's own secrets (capability, write and stop tokens) live in browser-chat; the route never serves them. */
+const SECRET_FILES = new Set(["configuration.json"]);
+
+/**
+ * A text file a `file:` artifact link points at, read-only. Only .md .txt .json .log .csv up to 2 MiB of UTF-8, whose real path (symlinks
+ * resolved) is inside one of `roots` and has no hidden part (.git, .env, ...) below the root.
+ */
+export async function readLocalText(path: string, roots: readonly string[] = LOCAL_TEXT_ROOTS): Promise<{ path: string; text: string }> {
+  const home = (value: string) => value === "~" || value.startsWith("~/") ? join(homedir(), value.slice(1)) : value;
+  const expanded = home(path);
+  if (!isAbsolute(expanded) || expanded.includes("\0")) throw new LocalFileError(400, "Give an absolute file path.");
+  if (!TEXT_EXTENSIONS.has(extname(expanded).toLowerCase())) throw new LocalFileError(415, "Only .md, .txt, .json, .log and .csv files open here.");
+  let file: string;
+  try { file = await realpath(expanded); } catch { throw new LocalFileError(404, "File not found."); }
+  if (!TEXT_EXTENSIONS.has(extname(file).toLowerCase())) throw new LocalFileError(415, "Only .md, .txt, .json, .log and .csv files open here.");
+  const realRoots = await Promise.all(roots.map(root => realpath(home(root)).catch(() => null)));
+  const inside = realRoots.some(root => {
+    if (!root || !file.startsWith(root + sep)) return false;
+    const parts = file.slice(root.length + 1).split(sep);
+    return !parts.some(part => part.startsWith(".")) && !(parts.length === 1 && SECRET_FILES.has(parts[0]!));
+  });
+  if (!inside) throw new LocalFileError(403, "That file is outside the folders the chat may open.");
+  const info = await stat(file);
+  if (!info.isFile()) throw new LocalFileError(404, "File not found.");
+  if (info.size > MAX_LOCAL_TEXT_BYTES) throw new LocalFileError(413, "Files over 2 MiB do not open here.");
+  const bytes = await readFile(file);
+  try { return { path: file, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) }; }
+  catch { throw new LocalFileError(415, "The file is not UTF-8 text."); }
 }

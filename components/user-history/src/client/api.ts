@@ -96,4 +96,6 @@ export const api = {
   labels: (action: LabelAction) => post<{ ok: true; tagId?: string }>("api/labels", action),
   read: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/read", {}),
   board: (id: string, ops: BoardOp[]) => post<ChatBoard>("api/threads/" + encodeURIComponent(id) + "/board", { ops }),
+  /** A text or markdown file on this Mac, for a `file:` artifact link (readLocalText: .md, .txt, .json, .log, .csv under the allowed folders). */
+  localFile: (path: string) => get<{ path: string; text: string }>("api/local-file?path=" + encodeURIComponent(path)),
 };

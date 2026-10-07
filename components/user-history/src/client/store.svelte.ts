@@ -3,6 +3,7 @@ import { hasUnsentDrafts } from "./drafts.ts";
 import { applyThreadEvent } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
+import { hashFor, parseHash } from "./permalink.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
 /** `kind` "chat" creates a chat thread (the server marks the session and lists it under Chats); absent means a normal thread. */
@@ -30,12 +31,14 @@ class Store {
   pendingSends = $state.raw<Record<string, PendingSend[]>>({});
   /** The job drawer: a job of a chat, by the name the chat gave it (a job key or session id also works). Null when closed. */
   jobDrawer = $state.raw<{ chat: string; job: string } | null>(null);
+  /** A message link to land on (`#<id>@<ms>`): the open thread scrolls to it and clears this. */
+  jump = $state.raw<{ id: string; at: number } | null>(null);
   private toastId = 0;
   private sessionsStop: (() => void) | null = null;
 
   start(): void {
-    this.selectedId = decodeURIComponent(location.hash.slice(1)) || null;
-    window.addEventListener("hashchange", () => { this.selectedId = decodeURIComponent(location.hash.slice(1)) || null; });
+    this.readHash();
+    window.addEventListener("hashchange", () => this.readHash());
     this.sessionsStop = api.sessionsStream(event => {
       this.sessions = event.sessions;
       this.tags = event.tags;
@@ -58,10 +61,18 @@ class Store {
     this.start();
   }
 
-  select(id: string | null): void {
-    const next = id ? "#" + encodeURIComponent(id) : "";
+  private readHash(): void {
+    const target = parseHash(location.hash);
+    this.selectedId = target?.id ?? null;
+    this.jump = target && target.at !== null ? { id: target.id, at: target.at } : null;
+  }
+
+  /** Opens a thread, and with `at` lands on the message with that `timestamp` once the thread shows. */
+  select(id: string | null, at: number | null = null): void {
+    const next = id ? hashFor(id, at) : "";
     if (location.hash !== next) history.pushState(null, "", location.pathname + location.search + next);
     this.selectedId = id;
+    this.jump = id && at !== null ? { id, at } : null;
   }
 
   /** Opens the job drawer in its chat, switching to the chat first when another thread is open. */

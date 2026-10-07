@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CHECK_IN, CHECK_IN_SCHEDULE, Chats, chatGuard, type ChatThreads, chatModeAt, checkInAction, checkInWanted, hasChatMarker, judgeChatCode, withChatTool } from "../src/chats.ts";
+import { CHECK_IN, CHECK_IN_SCHEDULE, Chats, chatGuard, type ChatThreads, chatModeAt, checkInAction, checkInWanted, fileHasChatMarker, hasChatMarker, judgeChatCode, withChatTool } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChildAgent } from "../src/shared/types.ts";
 import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
@@ -202,6 +202,41 @@ test("chats: adopt pins what the daemon still lists, forgets archived and missin
   assert.deepEqual(await full.adopt(), { pinned: [], forgotten: [] });
   assert.equal(lines.length, 2, "the live limit is logged, not thrown");
   chats.close(); full.close();
+});
+
+test("chats: undo after archive brings a chat back as a chat (index, pin, steering, check-in from its children); a plain thread stays plain", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const lines = (entries: object[]) => entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
+  const chatFile = join(dir, "chat.jsonl");
+  const plainFile = join(dir, "plain.jsonl");
+  await writeFile(chatFile, lines([{ type: "session", id: "c" }, { type: "custom", customType: "chat_mode", data: { v: 1 } }, { type: "message", id: "m" }]));
+  await writeFile(plainFile, lines([{ type: "session", id: "p" },
+    { type: "message", id: "m", message: { role: "user", content: '{"type":"custom","customType":"chat_mode"}' } }]));
+  assert.equal(await fileHasChatMarker(chatFile), true);
+  assert.equal(await fileHasChatMarker(plainFile), false, "the entry quoted inside a message is not the entry");
+  assert.equal(await fileHasChatMarker(join(dir, "missing.jsonl")), false);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("chat1");
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const files: Record<string, string> = { chat1: chatFile, plain: plainFile };
+  const chats = new Chats(index, threads, async id => files[id] ? { lifecycle: "live", sessionFile: files[id] } : undefined);
+  await chats.forget("chat1");
+  assert.deepEqual(await index.ids(), []);
+  calls.length = 0;
+  threads.fire().children("chat1", [child("running")]);
+  assert.equal(await chats.restore("chat1"), true);
+  await chats.settled();
+  assert.deepEqual(calls, ["pin chat1", "steering chat1 all", `heartbeat chat1 ${CHECK_IN_SCHEDULE} follow_up check-in`, "heartbeat chat1 resume"],
+    "a job still runs, so the check-in resumes");
+  assert.deepEqual(await index.ids(), ["chat1"]);
+  assert.ok((await chats.ids()).has("chat1"));
+  calls.length = 0;
+  assert.equal(await chats.restore("plain"), false);
+  assert.equal(await chats.restore("nofile"), false);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await index.ids(), ["chat1"]);
+  chats.close();
 });
 
 const header = JSON.stringify({ type: "session", version: 3, id: "x", timestamp: "2026-10-03T10:23:48Z", cwd: "/repo", rlmDepth: 0 });
