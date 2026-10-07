@@ -1,6 +1,7 @@
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { planJob } from "./shared/chat-board.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type PlanItem, type PlanStatus, type SessionRow } from "./shared/types.ts";
+import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
+import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type PlanItem, type PlanStatus, type SessionRow, type ThreadMessage } from "./shared/types.ts";
 
 /**
  * The server's check-in for a chat: at its own interval (CHECK_IN_MS unless the owner set another, see CheckInSetting) it reads the chat's jobs (its subagents, and every thread an open plan step names as its
@@ -12,6 +13,11 @@ export const CHECK_IN_MS = 5 * 60_000;
 export const STALE_MS = 30 * 60_000;
 /** An open step with no board change and no owner activity for this long is reported, once per stretch of this length. */
 export const STEP_STALE_MS = 2 * 60 * 60_000;
+/** A failed turn (the chat's own, or a step owner's) is acted on again after these waits, then every 20 min while it stays failed. */
+export const RETRY_BACKOFF_MS: readonly number[] = [5 * 60_000, 10 * 60_000, 20 * 60_000];
+/** Whether retry number `attempts` (0 for the first) is due: its wait has passed since `since` (the failure, or the last retry). */
+export const retryDue = (attempts: number, since: number, now: number): boolean =>
+  now - since >= RETRY_BACKOFF_MS[Math.min(attempts, RETRY_BACKOFF_MS.length - 1)]!;
 const MAX_LINES = 6;
 /** The open steps listed under the changes when a tick wakes the chat, oldest change first. */
 const MAX_OPEN = 30;
@@ -23,17 +29,27 @@ export type JobState = "working" | "ended" | "failed";
  */
 export interface JobFact {
   key: string; name: string; state: JobState; activityAt?: number; replied?: boolean; error?: string; messages?: number;
+  /** A subagent the chat cancelled or deleted: it ended, and no line reports it. */
+  cancelled?: true;
   /** The plan item this owner works on, an open one when it has several. */
   item?: { id: string; text: string; status: PlanStatus };
 }
-export interface JobMemo { state: JobState; activityAt?: number; messages?: number; stale?: true }
+/** `failedAt`/`retries`/`retriedAt`: an owner of an open step that stays failed is reported again on the RETRY_BACKOFF_MS schedule. */
+export interface JobMemo { state: JobState; activityAt?: number; messages?: number; stale?: true; failedAt?: number; retries?: number; retriedAt?: number }
 /** One plan item as last seen: what it said, when that last changed, and when it was last reported as quiet. */
 export interface StepMemo { sig: string; at: number; nudged?: number }
+/** A condition reported once when it starts or changes (`key`), then again every STEP_STALE_MS while it holds. */
+export interface Reminder { key: string; at: number }
 /**
  * What the last tick saw for one chat: each job, each plan item, the agent todos the owner had answered, the plan steps already reported as
- * ready.
+ * ready, and the board read error and the open-ask overflow last reported.
  */
-export interface CheckInMemory { at: number; jobs: Record<string, JobMemo>; steps: Record<string, StepMemo>; answered: string[]; ready: string[] }
+export interface CheckInMemory {
+  at: number; jobs: Record<string, JobMemo>; steps: Record<string, StepMemo>; answered: string[]; ready: string[];
+  boardError?: Reminder; asks?: Reminder;
+}
+/** What the digest needs besides the facts and the board: the chat's own id and name (a step it owns says "you"), and a board read error. */
+export interface CheckInContext { self?: readonly string[]; boardError?: string }
 
 const OPEN: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 const CLOSED: ReadonlySet<PlanStatus> = new Set(["done", "dropped"]);
@@ -57,15 +73,17 @@ const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | undefined
 
 /**
  * The chat's jobs now: every subagent directly under it (one whose parent is not another listed subagent), plus every thread an open plan step
- * names as its owner (`stepOwner`) that is not one of them. An owner that names nothing known is left out.
+ * names as its owner (`stepOwner`) that is not one of them. An owner that names nothing known, or the chat itself (`self`, its session id), is
+ * left out. A cancelled subagent ended; only an error is a failure.
  */
-export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | null, rows: readonly SessionRow[]): JobFact[] {
+export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | null, rows: readonly SessionRow[], self?: string): JobFact[] {
   const ids = new Set(children.map(child => child.id));
   const facts = new Map<string, JobFact>();
   for (const child of children) {
     if (child.parentId !== undefined && ids.has(child.parentId)) continue;
-    const state: JobState = childWorking(child) ? "working" : child.status === "error" || child.status === "cancelled" ? "failed" : "ended";
-    facts.set(child.id, { key: child.id, name: childName(child), state, ...(child.lastActivityAt !== undefined ? { activityAt: child.lastActivityAt } : {}),
+    const state: JobState = childWorking(child) ? "working" : child.status === "error" ? "failed" : "ended";
+    facts.set(child.id, { key: child.id, name: childName(child), state, ...(state === "ended" && child.status === "cancelled" ? { cancelled: true as const } : {}),
+      ...(child.lastActivityAt !== undefined ? { activityAt: child.lastActivityAt } : {}),
       ...(child.repliedSinceTask !== undefined ? { replied: child.repliedSinceTask } : {}), ...(child.error ? { error: child.error } : {}) });
   }
   walk(board?.plan ?? [], item => {
@@ -76,7 +94,7 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
     if (known) { if (!known.item || (CLOSED.has(known.item.status) && OPEN.has(item.status))) known.item = link; return; }
     if (!OPEN.has(item.status)) return;
     const row = rows.find(candidate => candidate.id === owner || candidate.name === owner);
-    if (!row) return;
+    if (!row || row.id === self) return;
     const at = Date.parse(row.lastActivityAt ?? "");
     facts.set("thread:" + row.id, { key: "thread:" + row.id, name: row.name, state: row.working ? "working" : row.failure ? "failed" : "ended",
       ...(Number.isFinite(at) ? { activityAt: at } : {}), ...(row.failure ? { error: row.failure } : {}), messages: row.messageCount, item: link });
@@ -84,9 +102,15 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
   return [...facts.values()];
 }
 
-/** The tick runs for a chat with a job at work or an open plan step (todo, doing, blocked); otherwise it is paused. */
-export function checkInDue(facts: readonly JobFact[], board: ChatBoard | null): boolean {
-  if (facts.some(fact => fact.state === "working")) return true;
+/** The agent's todos the owner has not answered yet; the board refuses a new one past BOARD_LIMITS.openAsks, but older ones stay. */
+export const openAsks = (board: ChatBoard | null): number => (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done).length;
+
+/**
+ * The tick runs for a chat with a job at work, an open plan step (todo, doing, blocked), a board it cannot read, or more open owner asks than
+ * the limit; otherwise it is paused.
+ */
+export function checkInDue(facts: readonly JobFact[], board: ChatBoard | null, boardError?: string): boolean {
+  if (boardError || openAsks(board) > BOARD_LIMITS.openAsks || facts.some(fact => fact.state === "working")) return true;
   let open = false;
   walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) open = true; });
   return open;
@@ -115,15 +139,20 @@ function ago(ms: number): string {
   return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
 }
 
+/** Whether a reminder for `key` is due: a new or changed condition at once, the same one again after STEP_STALE_MS. */
+const reminderDue = (before: Reminder | undefined, key: string, now: number): boolean => before?.key !== key || now - before.at >= STEP_STALE_MS;
+
 /**
- * One tick: the memory to keep, the lines that need the VP, and every open plan item as a line (oldest change first) to list under them. With
- * no memory (the first tick) only conditions are reported (a stale job or step, a ready step); transitions need a before. A job counts as
- * finished when it was working last tick, or when it is new since then and its last activity came after it. A thread owner also counts when
- * it stayed idle but posted messages since the last tick. A plan item's last change is when its status, text, owner or note last differed
- * (the board's `updatedAt` for one never seen before); an open item with no open child that had no change, no change below it and no owner
- * activity for STEP_STALE_MS is reported, once per stretch of that length.
+ * One tick: the memory to keep, the lines that need the VP, and every open leaf step (an open item with no open child) as a line, oldest change
+ * first, to list under them. With no memory (the first tick) only conditions are reported (a stale job or step, a ready step); transitions need
+ * a before. A job counts as finished when it was working last tick, or when it is new since then and its last activity came after it; a
+ * cancelled one gives no line. A thread owner also counts when it stayed idle but posted messages since the last tick. An owner of an open step
+ * that stays failed is reported again on the RETRY_BACKOFF_MS schedule. A plan item's last change is when its status, text or owner last
+ * differed (the board's `updatedAt` for one never seen before); a note edit is no change. An open item with no open child that had no change,
+ * no change below it and no owner activity for STEP_STALE_MS is reported, once per stretch of that length. A board read error keeps the last
+ * steps and is reported, and so are more open owner asks than BOARD_LIMITS.openAsks; each again every STEP_STALE_MS while it holds.
  */
-export function checkInDigest(previous: CheckInMemory | undefined, facts: readonly JobFact[], board: ChatBoard | null, now: number):
+export function checkInDigest(previous: CheckInMemory | undefined, facts: readonly JobFact[], board: ChatBoard | null, now: number, context: CheckInContext = {}):
   { memory: CheckInMemory; lines: string[]; open: string[] } {
   const lines: string[] = [];
   const jobs: Record<string, JobMemo> = {};
@@ -133,10 +162,10 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     const thread = fact.key.startsWith("thread:");
     const stale = fact.item && !CLOSED.has(fact.item.status) && fact.item.status !== "blocked" ? `; the board still says ${fact.item.status}` : "";
     const wasWorking = before ? before.state === "working" : previous !== undefined && (fact.activityAt ?? 0) > previous.at;
-    if (fact.state !== "working" && (wasWorking || (before !== undefined && before.state !== fact.state))) {
-      if (fact.state === "failed") lines.push(`${label} failed${fact.error ? `: ${clip(fact.error, 120)}` : ""}${stale}`);
-      else lines.push(`${label} ${thread ? "went idle" : "finished"}${fact.replied === false ? " with no report" : ""}${stale}`);
-    } else if (fact.state !== "working" && before && before.messages !== undefined && fact.messages !== undefined && fact.messages > before.messages) {
+    const ended = fact.state !== "working" && (wasWorking || (before !== undefined && before.state !== fact.state));
+    if (ended && fact.state === "failed") lines.push(`${label} failed${fact.error ? `: ${clip(fact.error, 120)}` : ""}${stale}`);
+    else if (ended && !fact.cancelled) lines.push(`${label} ${thread ? "went idle" : "finished"}${fact.replied === false ? " with no report" : ""}${stale}`);
+    else if (!ended && fact.state !== "working" && before && before.messages !== undefined && fact.messages !== undefined && fact.messages > before.messages) {
       const added = fact.messages - before.messages;
       lines.push(`${label} has ${added} new ${added === 1 ? "message" : "messages"} and is ${STATE_WORD[fact.state]}${stale}`);
     }
@@ -145,28 +174,41 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
       memo.stale = true;
       if (!(before?.stale && before.activityAt === fact.activityAt)) lines.push(`${label}: no activity for ${Math.round((now - fact.activityAt) / 60_000)} min`);
     }
+    if (fact.state === "failed" && fact.item && OPEN.has(fact.item.status)) {
+      const failedAt = before?.state === "failed" ? before.failedAt ?? now : now;
+      let retries = before?.state === "failed" ? before.retries ?? 0 : 0;
+      let retriedAt = before?.state === "failed" ? before.retriedAt : undefined;
+      if (retryDue(retries, retriedAt ?? failedAt, now)) {
+        lines.push(`${label} is still stopped: its last turn failed ${ago(now - failedAt)} ago${fact.error ? `: ${clip(fact.error, 120)}` : ""}`);
+        retries++;
+        retriedAt = now;
+      }
+      Object.assign(memo, { failedAt, ...(retries ? { retries } : {}), ...(retriedAt !== undefined ? { retriedAt } : {}) });
+    }
     jobs[fact.key] = memo;
   }
 
+  const self = new Set(context.self ?? []);
   const firstSeen = Math.min(now, Date.parse(board?.updatedAt ?? "") || now);
-  const steps: Record<string, StepMemo> = {};
+  const steps: Record<string, StepMemo> = context.boardError ? { ...previous?.steps } : {};
   const open: { at: number; line: string }[] = [];
   /** Visits an item after its children; returns when it or anything below it last moved (a board change or owner activity). */
   const visit = (item: PlanItem): { moved: number; open: boolean } => {
     let moved = 0, openBelow = false;
     for (const child of item.children) { const below = visit(child); moved = Math.max(moved, below.moved); openBelow ||= below.open; }
-    const sig = JSON.stringify([item.status, item.text, planJob(item.job) ?? "", item.note ?? ""]);
+    const sig = JSON.stringify([item.status, item.text, planJob(item.job) ?? ""]);
     const before = previous?.steps[item.id];
     const memo: StepMemo = { sig, at: before ? before.sig === sig ? before.at : now : firstSeen, ...(before?.nudged !== undefined ? { nudged: before.nudged } : {}) };
-    const owner = ownerOf(item, facts);
+    const mine = self.has(stepOwner(item) ?? "");
+    const owner = mine ? undefined : ownerOf(item, facts);
     moved = Math.max(moved, memo.at, owner?.activityAt ?? 0);
     const isOpen = OPEN.has(item.status);
     if (isOpen && !openBelow && now - Math.max(moved, memo.nudged ?? 0) >= STEP_STALE_MS) {
       lines.push(`${item.id} ${quote(item.text)} is ${item.status} with no board change and no owner activity for ${ago(now - moved)}`);
       memo.nudged = now;
     }
-    if (isOpen) {
-      const who = owner ? `owner ${ownerLabel(owner)} (${STATE_WORD[owner.state]})` : item.job ? `owner ${item.job} (not found)` : "no owner";
+    if (isOpen && !openBelow) {
+      const who = mine ? "owner you" : owner ? `owner ${ownerLabel(owner)} (${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? `owner ${item.job} (not found)` : "no owner";
       open.push({ at: memo.at, line: `${item.id} ${quote(item.text)} ${item.status}, ${who}, last change ${ago(now - memo.at)} ago` });
     }
     steps[item.id] = memo;
@@ -174,14 +216,26 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   };
   for (const item of board?.plan ?? []) visit(item);
 
-  const answered = (board?.todos ?? []).filter(todo => todo.from === "agent" && todo.reply !== undefined);
-  if (previous) for (const todo of answered) if (!previous.answered.includes(todo.id)) lines.push(`owner answered ${todo.id} ${quote(todo.text)}: ${clip(todo.reply!, 120)}`);
-  const ready = readySteps(board);
-  for (const step of ready) if (!previous?.ready.includes(step.id)) lines.push(`${step.id} ${quote(step.text)} can start: the steps before it are done and it has no job`);
+  /** The reminder to keep for a condition that holds now; `line` is added when it is due. */
+  const remind = (before: Reminder | undefined, key: string, line: string): Reminder => {
+    if (!reminderDue(before, key, now)) return before!;
+    lines.push(line);
+    return { key, at: now };
+  };
+  const boardError = context.boardError ? remind(previous?.boardError, context.boardError, `the board cannot be read: ${clip(context.boardError, 160)}; call chat_board again`) : undefined;
+  const askCount = openAsks(board);
+  const asks = context.boardError ? previous?.asks : askCount > BOARD_LIMITS.openAsks
+    ? remind(previous?.asks, String(askCount), `${askCount} open owner todos; keep ${BOARD_LIMITS.openAsks}: decide or remove the rest`) : undefined;
+
+  const answered = context.boardError ? undefined : (board?.todos ?? []).filter(todo => todo.from === "agent" && todo.reply !== undefined);
+  if (previous && answered) for (const todo of answered) if (!previous.answered.includes(todo.id)) lines.push(`owner answered ${todo.id} ${quote(todo.text)}: ${clip(todo.reply!, 120)}`);
+  const ready = context.boardError ? undefined : readySteps(board);
+  if (ready) for (const step of ready) if (!previous?.ready.includes(step.id)) lines.push(`${step.id} ${quote(step.text)} can start: the steps before it are done and it has no job`);
   const shown = lines.length > MAX_LINES ? [...lines.slice(0, MAX_LINES - 1), `and ${lines.length - MAX_LINES + 1} more`] : lines;
   const sorted = open.sort((a, b) => a.at - b.at).map(entry => entry.line);
   const listed = sorted.length > MAX_OPEN ? [...sorted.slice(0, MAX_OPEN - 1), `and ${sorted.length - MAX_OPEN + 1} more`] : sorted;
-  return { memory: { at: now, jobs, steps, answered: answered.map(todo => todo.id), ready: ready.map(step => step.id) }, lines: shown, open: listed };
+  return { memory: { at: now, jobs, steps, answered: answered?.map(todo => todo.id) ?? previous?.answered ?? [], ready: ready?.map(step => step.id) ?? previous?.ready ?? [],
+    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}) }, lines: shown, open: listed };
 }
 
 /** The steer text for a tick that wakes the chat: what changed, then every open plan item so none is skipped. */
@@ -224,6 +278,25 @@ export function noReportNotice(name: string, messages: readonly { role: string; 
   }
   return `${name} ended with no report`;
 }
+
+/**
+ * How the thread's last turn ended, when it ended in a failure: the last assistant reply, if no owner or server message came after it, stopped
+ * with `error` or `aborted` (a 429, a connection error, a Stop). `at` is when it failed. Null for a turn that ended well or one still to run.
+ */
+export function turnFailure(messages: readonly ThreadMessage[]): { error: string; at: number } | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role === "user") return null;
+    if (message.role !== "assistant") continue;
+    if (message.stopReason !== "error" && message.stopReason !== "aborted") return null;
+    const error = message.errorMessage?.trim() || (message.stopReason === "aborted" ? "aborted" : "error");
+    return { error: clip(error.replace(/\s+/g, " "), 160), at: message.timestamp };
+  }
+  return null;
+}
+
+/** The new turn the server starts in a chat whose last turn failed. */
+export const revivalMessage = (error: string): string => `${CHECK_IN_PREFIX}Your last turn failed (${error}). Re-check the board and continue.`;
 
 /** `<data dir>/check-ins.json`: the last tick's memory per chat, through locked-json. */
 export interface CheckInRecord {

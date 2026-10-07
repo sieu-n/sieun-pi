@@ -3,7 +3,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { activePause, checkInDigest, checkInDue, checkInLine, checkInMessage, checkInRecord, checkInSettings, endedWithoutReport, nextCheckIn, pauseEnd, validCheckInEvery, jobFacts, readySteps, STALE_MS, STEP_STALE_MS, stepOwner, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
+import { activePause, checkInDigest, checkInDue, checkInLine, checkInMessage, checkInRecord, checkInSettings, endedWithoutReport, nextCheckIn, pauseEnd, validCheckInEvery, jobFacts, readySteps,
+  retryDue, revivalMessage, STALE_MS, STEP_STALE_MS, stepOwner, turnFailure, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
 import { applyBoardOp, emptyBoard, nextIds, renderBoard } from "../src/shared/chat-board.ts";
 import { chatLines, turnStarter } from "../src/shared/chat-feed.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow, ThreadMessage } from "../src/shared/types.ts";
@@ -13,12 +14,13 @@ const board = (plan: PlanItem[], todos: ChatBoard["todos"] = []): ChatBoard => (
 const row = (id: string, name: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name, cwd: "/repo", kind: "live", status: "idle", archived: false, messageCount: 1,
   working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", ...extra });
 
-test("job facts: direct subagents, a plan link to a subagent or to another thread by name or id; nested subagents and unknown links are left out", () => {
+test("job facts: direct subagents, a plan link to a subagent or to another thread by name or id; nested subagents and unknown links are left out; a cancelled job ended", () => {
   const children: ChildAgent[] = [
     { id: "k1", parentId: "chat", label: "a", sessionName: "api-audit", status: "running", lastActivityAt: 5, repliedSinceTask: false },
     { id: "k2", parentId: "k1", label: "nested", status: "running" },
     { id: "k3", parentId: "chat", label: "docs", status: "done", activity: { kind: "waiting" } },
     { id: "k4", parentId: "chat", label: "broken", status: "error", error: "model failed" },
+    { id: "k5", parentId: "chat", label: "removed", status: "cancelled", error: "Deleted by parent orchestrator" },
   ];
   const plan = board([step("p1", "Reach chats from Slack", "doing", { children: [
     step("p2", "Plan", "doing", { job: "api-audit" }), step("p3", "Build", "doing", { job: "slack-bridge" }), step("p4", "Verify", "todo", { job: "s-9" }),
@@ -28,6 +30,7 @@ test("job facts: direct subagents, a plan link to a subagent or to another threa
     { key: "k1", name: "api-audit", state: "working", activityAt: 5, replied: false, item: { id: "p2", text: "Plan", status: "doing" } },
     { key: "k3", name: "docs", state: "working" },
     { key: "k4", name: "broken", state: "failed", error: "model failed" },
+    { key: "k5", name: "removed", state: "ended", cancelled: true, error: "Deleted by parent orchestrator" },
     { key: "thread:s-1", name: "slack-bridge", state: "working", activityAt: Date.parse("2026-10-07T10:00:00Z"), messages: 1, item: { id: "p3", text: "Build", status: "doing" } },
     { key: "thread:s-9", name: "verify-run", state: "failed", error: "429 rate limited", messages: 1, item: { id: "p4", text: "Verify", status: "todo" } },
   ]);
@@ -145,7 +148,8 @@ test("check-in digest: a linked thread that went idle, posted while idle, or fai
   const failed = checkInDigest(idle.memory, [{ ...usage, state: "failed", error: "429", activityAt: t2, messages: 13 }, { ...favicon, state: "working", messages: 9, activityAt: t2 }], plan, t2);
   assert.deepEqual(failed.lines, ["p7 (usage backend thread) failed: 429; the board still says doing"], "a working thread's new messages wait for it to go idle");
   const back = checkInDigest(failed.memory, [{ ...usage, state: "failed", error: "429", activityAt: t2, messages: 13 }, { ...favicon, state: "ended", messages: 11, activityAt: t2 + 1 }], plan, t2 + 300_000);
-  assert.deepEqual(back.lines, ["p8 (favicon thread) went idle"], "one line for a thread that worked and went idle, not one more for its messages");
+  assert.deepEqual(back.lines, ["p7 (usage backend thread) is still stopped: its last turn failed 5 min ago: 429", "p8 (favicon thread) went idle"],
+    "one line for a thread that worked and went idle, not one more for its messages; the failed owner of an open step again after 5 min");
 });
 
 test("check-in digest: an open step with no board change and no owner activity for 2 hours, once per 2-hour stretch", () => {
@@ -164,7 +168,7 @@ test("check-in digest: an open step with no board change and no owner activity f
   assert.deepEqual(later.lines, ['p4 "Verify" is blocked with no board change and no owner activity for 4 h'], "owner activity restarts p3's stretch; p4 is due again");
   const edited = goal([step("p2", "Plan", "done"), step("p3", "Build", "doing", { job: "s-1" }), step("p4", "Verify", "blocked", { note: "waits on the owner's login" })]);
   const changed = checkInDigest(later.memory, [owner], edited, quiet + STEP_STALE_MS + 60_000);
-  assert.equal(changed.memory.steps.p4!.at, quiet + STEP_STALE_MS + 60_000, "a note edit is a change");
+  assert.equal(changed.memory.steps.p4!.at, later.memory.steps.p4!.at, "a note edit is no change: a chase note does not reset the step's clock");
   const doneSteps = goal([step("p2", "Plan", "done"), step("p3", "Build", "done"), step("p4", "Verify", "done")]);
   const closed = checkInDigest(changed.memory, [], doneSteps, quiet + 2 * STEP_STALE_MS);
   assert.deepEqual(closed.lines, [], "the goal moved with its steps");
@@ -184,7 +188,7 @@ test("check-in message: what changed, then every open step with owner and age, o
     step("p5", "Old", "done")] })]);
   const tick = checkInDigest(first.memory, [{ ...audit, state: "ended" }], moved, now + 3 * 60_000);
   assert.deepEqual(tick.open, ['p2 "Build" doing, owner job api-audit (idle), last change 3 min ago', 'p4 "Ghost" todo, owner nobody (not found), last change 3 min ago',
-    'p1 "Goal" doing, no owner, last change 3 min ago', 'p3 "Verify" blocked, no owner, last change 0 min ago']);
+    'p3 "Verify" blocked, no owner, last change 0 min ago'], "leaf steps only: the goal p1 has open steps below it");
   assert.equal(checkInMessage("[check-in] ", tick.lines, tick.open),
     "[check-in] What changed:\n- p2 (job api-audit) finished; the board still says doing\n\nOpen steps, oldest change first:\n" + tick.open.map(line => `- ${line}`).join("\n"));
   const many = board(Array.from({ length: 35 }, (_, index) => step(`p${index + 1}`, `Step ${index + 1}`, "todo")));
@@ -259,4 +263,90 @@ test("check-in setting: the interval range, the pause ends, the next run, the bo
   await settings.update("c1", setting => ({ ...setting, everyMs: 15 * 60_000, pausedUntil: "forever" }));
   assert.deepEqual(await checkInSettings(path).get("c1"), { everyMs: 15 * 60_000, pausedUntil: "forever" });
   assert.deepEqual(await checkInSettings(path).all(), { c1: { everyMs: 15 * 60_000, pausedUntil: "forever" } });
+});
+
+const MIN = 60_000;
+const reply = (stopReason: "stop" | "error" | "aborted" | "toolUse", timestamp: number, errorMessage?: string): ThreadMessage =>
+  ({ role: "assistant", content: [], provider: "p", model: "m", stopReason, timestamp, ...(errorMessage ? { errorMessage } : {}) });
+
+test("turn failure: the last reply stopped on an error or an abort with nothing after it; the revival text; the 5, 10, 20 min schedule", () => {
+  const owner: ThreadMessage = { role: "user", content: "hows this doing?", timestamp: 1 };
+  assert.deepEqual(turnFailure([owner, reply("error", 5, "Provider rate limit exceeded (rate_limit_error, 429)")]), { error: "Provider rate limit exceeded (rate_limit_error, 429)", at: 5 });
+  assert.deepEqual(turnFailure([owner, reply("aborted", 6)]), { error: "aborted", at: 6 });
+  assert.deepEqual(turnFailure([owner, reply("error", 7, "Connection error."), { role: "custom", customType: "refinement_notice", content: "x", timestamp: 8 }]),
+    { error: "Connection error.", at: 7 }, "a display-only entry after the failure changes nothing");
+  assert.equal(turnFailure([reply("error", 5, "429"), owner]), null, "the owner wrote after it: a new turn");
+  assert.equal(turnFailure([owner, reply("stop", 5)]), null);
+  assert.equal(turnFailure([owner, reply("toolUse", 5)]), null, "mid-turn");
+  assert.equal(turnFailure([]), null);
+  assert.equal(revivalMessage("429"), "[check-in] Your last turn failed (429). Re-check the board and continue.");
+  assert.deepEqual([retryDue(0, 0, 5 * MIN - 1), retryDue(0, 0, 5 * MIN), retryDue(1, 0, 10 * MIN - 1), retryDue(1, 0, 10 * MIN), retryDue(2, 0, 20 * MIN), retryDue(7, 0, 20 * MIN)],
+    [false, true, false, true, true, true], "5 min, then 10, then every 20");
+});
+
+test("check-in digest: a failed owner of an open step is reported again 5, 10 and 20 min apart, then every 20; a working or closed one is not", () => {
+  const start = 10 * STEP_STALE_MS;
+  const plan = board([step("p1", "Goal", "doing", { children: [step("p37", "Usage change", "doing", { job: "s-1" })] })]);
+  const tps: JobFact = { key: "thread:s-1", name: "TPS", state: "working", activityAt: start, messages: 5, item: { id: "p37", text: "Usage change", status: "doing" } };
+  const dead: JobFact = { ...tps, state: "failed", error: "429 rate_limit_error" };
+  let memory = checkInDigest(undefined, [tps], plan, start).memory;
+  const at = (minutes: number) => { const tick = checkInDigest(memory, [dead], plan, start + minutes * MIN); memory = tick.memory; return tick.lines; };
+  assert.deepEqual(at(1), ["p37 (TPS thread) failed: 429 rate_limit_error; the board still says doing"]);
+  const reminded: number[] = [];
+  for (let minute = 2; minute <= 80; minute++) if (at(minute).some(line => line.includes("still stopped"))) reminded.push(minute);
+  assert.deepEqual(reminded, [6, 16, 36, 56, 76], "5 min after the failure, then 10, then every 20");
+  assert.equal(checkInDigest(memory, [dead], plan, start + 96 * MIN).lines[0], "p37 (TPS thread) is still stopped: its last turn failed 95 min ago: 429 rate_limit_error");
+  const closed = board([step("p1", "Goal", "doing", { children: [step("p37", "Usage change", "done", { job: "s-1" })] })]);
+  assert.deepEqual(checkInDigest(memory, [{ ...dead, item: { id: "p37", text: "Usage change", status: "done" } }], closed, start + 200 * MIN).lines.filter(line => line.includes("still")), [],
+    "a closed step's owner is left alone");
+  const back = checkInDigest(memory, [{ ...tps, activityAt: start + 97 * MIN }], plan, start + 97 * MIN);
+  assert.equal(back.memory.jobs["thread:s-1"]!.failedAt, undefined, "working again: the count starts over at the next failure");
+});
+
+test("check-in digest: a note-only edit is no change, a cancelled job ends with no line, a step the chat owns says you, only leaf steps are listed", () => {
+  const now = 10 * STEP_STALE_MS;
+  const plan = (note: string) => board([step("p1", "Goal", "doing", { children: [
+    step("p2", "Build", "doing", { job: "fixer", note }), step("p3", "Verify", "todo", { job: "chat-6394" }), step("p4", "Docs", "doing", { job: "thread:c-self" })] })]);
+  const fixer: JobFact = { key: "k1", name: "fixer", state: "working", activityAt: now, item: { id: "p2", text: "Build", status: "doing" } };
+  const first = checkInDigest(undefined, [fixer], plan("started"), now, { self: ["c-self", "chat-6394"] });
+  const later = now + 30 * MIN;
+  const tick = checkInDigest(first.memory, [{ ...fixer, state: "ended", cancelled: true, activityAt: later }], plan("chased the owner again"), later, { self: ["c-self", "chat-6394"] });
+  assert.deepEqual(tick.lines, [], "the chat cancelled the job itself, and a chase note is no board change");
+  assert.equal(tick.memory.steps.p2!.at, now);
+  assert.deepEqual(tick.open, ['p2 "Build" doing, owner job fixer (ended), last change 30 min ago', 'p3 "Verify" todo, owner you, last change 30 min ago',
+    'p4 "Docs" doing, owner you, last change 30 min ago'], "no goal line, no '(working)' for the chat's own steps");
+  const rows = [row("c-self", "chat-6394", { working: true }), row("s-2", "other", { working: true })];
+  const own = board([step("p1", "Goal", "doing", { children: [step("p3", "Verify", "todo", { job: "chat-6394" }), step("p5", "Ask", "doing", { job: "other" })] })]);
+  assert.deepEqual(jobFacts([], own, rows, "c-self").map(fact => fact.key), ["thread:s-2"], "the chat's own row is no job");
+  const status = checkInDigest(undefined, jobFacts([], own, rows, "c-self"), own, now, { self: ["c-self", "chat-6394"] });
+  assert.equal(status.open.find(line => line.startsWith("p3")), 'p3 "Verify" todo, owner you, last change 0 min ago');
+});
+
+test("check-in digest: a board read error and more than 3 open owner asks are lines, once per change and again every 2 hours; the error keeps the steps", () => {
+  const now = 10 * STEP_STALE_MS;
+  const asks = (count: number) => Array.from({ length: count }, (_, index) => ({ id: `t${index + 1}`, text: `ask ${index + 1}`, done: false, from: "agent" as const, at: "" }));
+  const plan = board([step("p1", "Goal", "doing", { children: [step("p2", "Plan", "doing")] })], asks(3));
+  const first = checkInDigest(undefined, [], plan, now);
+  assert.deepEqual(first.lines, [], "3 open asks is the limit, not past it");
+  const broken = checkInDigest(first.memory, [], null, now + MIN, { boardError: "Chat board file is malformed." });
+  assert.deepEqual(broken.lines, ["the board cannot be read: Chat board file is malformed.; call chat_board again"]);
+  assert.deepEqual(Object.keys(broken.memory.steps), ["p2", "p1"], "the steps stay for when the board reads again");
+  assert.deepEqual(broken.open, []);
+  const still = checkInDigest(broken.memory, [], null, now + 30 * MIN, { boardError: "Chat board file is malformed." });
+  assert.deepEqual(still.lines, [], "once per error");
+  assert.equal(checkInDigest(still.memory, [], null, now + MIN + STEP_STALE_MS, { boardError: "Chat board file is malformed." }).lines.length, 1, "again after 2 hours");
+  const fixed = checkInDigest(still.memory, [], plan, now + 40 * MIN);
+  assert.equal(fixed.memory.steps.p2!.at, first.memory.steps.p2!.at, "the board reads again: no step looks new");
+  assert.deepEqual(fixed.lines, []);
+
+  const nine = board(plan.plan, [...asks(9), { id: "t10", text: "done one", done: true, from: "agent", at: "" }, { id: "t11", text: "mine", done: false, from: "owner", at: "" }]);
+  const over = checkInDigest(fixed.memory, [], nine, now + 50 * MIN);
+  assert.deepEqual(over.lines, ["9 open owner todos; keep 3: decide or remove the rest"], "the agent's open asks only");
+  assert.deepEqual(checkInDigest(over.memory, [], nine, now + 60 * MIN).lines, [], "once per count");
+  assert.deepEqual(checkInDigest(over.memory, [], board(plan.plan, asks(5)), now + 60 * MIN).lines, ["5 open owner todos; keep 3: decide or remove the rest"], "a new count");
+  assert.deepEqual(checkInDigest(over.memory, [], nine, now + 50 * MIN + STEP_STALE_MS).lines.filter(line => line.includes("owner todos")),
+    ["9 open owner todos; keep 3: decide or remove the rest"], "again after 2 hours");
+  assert.equal(checkInDue([], board([], asks(4))), true, "an ask overflow wakes a chat with no open step");
+  assert.equal(checkInDue([], board([], asks(3))), false);
+  assert.equal(checkInDue([], null, "Chat board file is malformed."), true, "so does a board it cannot read");
 });

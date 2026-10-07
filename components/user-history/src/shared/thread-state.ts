@@ -91,8 +91,12 @@ export function applyThreadEvent(state: ThreadState, event: ThreadEvent, now = D
   }
 }
 
+/** Whether the session runs something now: a turn, a compaction, a command, a retry, a session action. Queued input alone does not count. */
+export function isTurnRunning(info: ThreadState["info"]): boolean {
+  return info.isStreaming || info.isCompacting || info.isBashRunning || info.retryAttempt > 0 || info.sessionAction !== null;
+}
+
 export function isThreadBusy(state: Pick<ThreadState, "info" | "queue" | "children" | "tools">): boolean {
-  const { info } = state;
-  return info.isStreaming || info.isCompacting || info.isBashRunning || info.retryAttempt > 0 || info.sessionAction !== null || info.queuedActions > 0 ||
+  return isTurnRunning(state.info) || state.info.queuedActions > 0 ||
     state.tools.some(tool => tool.status === "running") || state.children.some(child => child.status === "running" || child.status === "queued");
 }

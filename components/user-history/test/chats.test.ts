@@ -6,8 +6,11 @@ import { test } from "node:test";
 import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
 import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobOf, jobRegistry,
   jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, withChatTool } from "../src/chats.ts";
+import type { Catalog } from "../src/chat-catalog.ts";
+import { ThreadHub } from "../src/chat-threads.ts";
+import { isThreadBusy, isTurnRunning } from "../src/shared/thread-state.ts";
 import { IdIndex } from "../src/id-index.ts";
-import type { ChatBoard, ChildAgent } from "../src/shared/types.ts";
+import type { ChatBoard, ChildAgent, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
 import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
 
 test("id index: add puts the newest first once, forget removes", async () => {
@@ -125,6 +128,16 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /Make the board match reality/);
   assert.match(brief, /send a job only its own plan item, not the whole board/);
   assert.match(brief, /Refer to board items by their id \(p7, s3\); the page turns them into links\./);
+  // Audit 2026-10-08 (0409-chat-usage-audit): each line names the counter it should lower at the next audit.
+  // Stalls and owner corrections: one chase, then a job.
+  assert.ok(brief.includes("A stuck owner gets at most one message. If it has not moved by the next check-in, or its last turn ended in an error, replace it with a job in that check-in. " +
+    "A takeover you promised for the next check-in is due at that check-in: do it, do not restate it. Never ask the owner to relay a message to another thread."));
+  // Plain text on non-owner wakes, tell_owner repeats and relay lines (the job notices counter's noise).
+  assert.ok(brief.includes("On any wake-up that is not an owner message, end the turn with no text. If a goal finished, something is blocked or you need a decision, call tell_owner once " +
+    "and then end with no text. Never write 'nothing needs you', 'already handled', or a relay line."));
+  // Replies over 60 words.
+  assert.ok(brief.includes("Owner replies: at most 60 words including bullets; a status answer is one line per goal."));
+  assert.doesNotMatch(brief, /15 to 60 words/, "the old count, which bullets slipped past, is gone");
   assert.doesNotMatch(brief, /—/, "no em dashes");
 });
 
@@ -169,8 +182,8 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
 
 type Observer = Parameters<ChatThreads["observe"]>[0];
 /** A check-in source with no timer: an empty board unless one is given, no catalog rows, and its memory in `dir`. */
-function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () => 0): CheckInSource {
-  return { board: async id => boards[id] ?? null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")),
+function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () => 0, rows: () => SessionRow[] = () => []): CheckInSource {
+  return { board: async id => boards[id] ?? null, rows: async () => rows(), memory: checkInRecord(join(dir, "check-ins.json")),
     settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now, noReportGraceMs: 0 };
 }
 function fakeThreads(calls: string[], pinLimit = 8) {
@@ -178,11 +191,19 @@ function fakeThreads(calls: string[], pinLimit = 8) {
   let next = 1;
   const pinned = new Set<string>();
   const busyIds = new Set<string>();
+  /** Threads with input queued and nothing running: `busy` but not `running`. */
+  const queuedIds = new Set<string>();
+  const transcripts = new Map<string, ThreadMessage[]>();
   return {
     pinned,
     busyIds,
+    queuedIds,
+    transcripts,
+    state(id: string) { const messages = transcripts.get(id); return messages ? { messages } : undefined; },
+    async restart(id: string, message: string) { calls.push(`restart ${id} ${message}`); },
     fire: () => observer!,
-    busy(id: string) { return busyIds.has(id); },
+    busy(id: string) { return busyIds.has(id) || queuedIds.has(id); },
+    running(id: string) { return busyIds.has(id); },
     async reload(id: string) { calls.push(`reload ${id}`); },
     async create(input: { cwd: string; name: string; kind: "chat"; thinkingLevel?: string }) { calls.push(`create ${input.kind} ${input.name} ${input.cwd}`); return { id: `s${next++}` }; },
     pin(id: string) { if (!pinned.has(id) && pinned.size >= pinLimit) return false; calls.push(`pin ${id}`); pinned.add(id); return true; },
@@ -240,7 +261,7 @@ test("chats: a job that goes quiet with no message is told once per end, after t
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
-  const messages: { role: string; customType?: string; content?: unknown; timestamp?: number }[] = [];
+  const messages: ThreadMessage[] = [];
   let clock = 1000;
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
@@ -322,8 +343,7 @@ test("chats: the check-in tick steers only what changed, stays quiet with no cha
   const lines = await chats.checkIn("c1");
   assert.deepEqual(lines, ["p2 (job api-audit) finished; the board still says doing"]);
   assert.deepEqual(calls, ["steer c1 [check-in] What changed:\n- p2 (job api-audit) finished; the board still says doing\n\nOpen steps, oldest change first:\n" +
-    '- p2 "Plan" doing, owner job api-audit (idle), last change 2 min ago\n- p3 "Build" blocked, no owner, last change 2 min ago\n' +
-    '- p1 "Reach chats from Slack" doing, no owner, last change 2 min ago']);
+    '- p2 "Plan" doing, owner job api-audit (idle), last change 2 min ago\n- p3 "Build" blocked, no owner, last change 2 min ago'], "the goal p1 has open steps below it and is not listed");
   calls.length = 0;
   assert.deepEqual(await chats.checkIn("c1"), [], "reported once");
   board.plan = [{ ...board.plan[0]!, status: "done", children: board.plan[0]!.children.map(step => ({ ...step, status: "done" as const })) }];
@@ -406,12 +426,12 @@ test("chats: adopt pins what the daemon still lists, forgets archived and missin
     if (id === "down") throw new Error("Prime Agent daemon is not reachable.");
     return { lifecycle: "live" };
   }, "b1", loads, source(dir));
-  assert.deepEqual(await chats.adopt(), { pinned: ["live", "down"], forgotten: ["archived", "gone"] }, "newest first, as the index lists them");
+  assert.deepEqual(await chats.adopt(), { pinned: ["live", "down"], forgotten: ["archived", "gone"], adopted: [] }, "newest first, as the index lists them");
   assert.deepEqual(calls, ["pin live", "pin down", "unpin archived", "unpin gone"]);
   assert.deepEqual(await index.ids(), ["live", "down"]);
   const lines: string[] = [];
   const full = new Chats(index, fakeThreads([], 0), async () => ({ lifecycle: "live" }), "b1", loads, source(dir), line => lines.push(line));
-  assert.deepEqual(await full.adopt(), { pinned: [], forgotten: [] });
+  assert.deepEqual(await full.adopt(), { pinned: [], forgotten: [], adopted: [] });
   assert.equal(lines.length, 2, "the live limit is logged, not thrown");
   chats.close(); full.close();
 });
@@ -535,4 +555,179 @@ test("origin: a root named at create (rlm.create_session) is the agent's; one na
   assert.equal(resolve({ sessionId: "a", sessionFile: agent }), "agent", "a final decision is kept; the head of a session file does not change");
   assert.equal(resolve({ sessionId: "f", sessionFile: fresh }), "agent", "an open decision is read again");
   assert.deepEqual(fileOrigin(fresh), { origin: "agent", final: true });
+});
+
+const row = (id: string, lastActivityAt: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name: id, cwd: "/repo", kind: "live", status: "idle", archived: false,
+  messageCount: 3, working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", origin: "user", lastActivityAt, ...extra });
+const ownerAsks = (text: string, at: number): ThreadMessage => ({ role: "user", content: text, timestamp: at });
+const reply = (stopReason: "stop" | "error", at: number, errorMessage?: string): ThreadMessage =>
+  ({ role: "assistant", content: [], provider: "p", model: "m", stopReason, timestamp: at, ...(errorMessage ? { errorMessage } : {}) });
+
+test("chats: a chat whose last turn failed gets a new turn 5, 10, then every 20 min, even with nothing open; a good turn resets; a busy or paused chat waits; no check-in or notice queues behind it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = 1_000_000_000;
+  const lines: string[] = [];
+  const memory = checkInRecord(join(dir, "check-ins.json"));
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [] }] };
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now), line => lines.push(line));
+  await chats.adopt();
+  threads.transcripts.set("c1", [ownerAsks("write the article", now), reply("error", now, "Provider rate limit exceeded (rate_limit_error, 429)")]);
+  // The check-ins sent so far sit in its queue with nothing running: `busy`, not `running`. Waiting on `busy` is how 453e stayed dead for 2.6 h.
+  threads.queuedIds.add("c1");
+  const restarted: number[] = [];
+  const run = async (minutes: number) => {
+    for (let half = 0; half < minutes * 2; half++) {
+      now += 30_000;
+      const before = calls.length;
+      await chats.tick();
+      await chats.settled();
+      if (calls.slice(before).some(call => call.startsWith("restart c1"))) restarted.push(Math.round((now - start) / 60_000));
+    }
+  };
+  const start = now;
+  await run(60);
+  assert.deepEqual(restarted, [5, 15, 35, 55], "5 min after the failure, then 10, then 20, then 20");
+  assert.equal(calls.find(call => call.startsWith("restart")), "restart c1 [check-in] Your last turn failed (Provider rate limit exceeded (rate_limit_error, 429)). Re-check the board and continue.");
+  assert.deepEqual(calls.filter(call => call.startsWith("steer")), [], "no check-in steer queues into the failed chat");
+  assert.match(lines.join("\n"), /chat c1: last turn failed \(Provider rate limit exceeded \(rate_limit_error, 429\)\); started a new turn, try 4/);
+
+  const withBoard = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, { c1: board }, () => now), memory }, line => lines.push(line));
+  assert.deepEqual(await withBoard.checkIn("c1"), [], "the digest waits for the restart");
+  assert.equal(await memory.get("c1"), undefined, "its memory is not moved, so the changes are told after the restart");
+  const job = (working: boolean, at: number): ChildAgent => ({ id: "k1", label: "a", sessionName: "ai-risk-blog", status: "done", ...(working ? { activity: { kind: "writing" as const } } : {}),
+    repliedSinceTask: false, lastActivityAt: at });
+  threads.fire().live("c1", [job(true, 1)]);
+  await withBoard.settled();
+  calls.length = 0;
+  threads.fire().children("c1", [job(false, 1)]);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await withBoard.settled();
+  assert.deepEqual(calls.filter(call => call.startsWith("steer")), [], "no [job] notice piles up behind the failure");
+  assert.match(lines.join("\n"), /no notice for ai-risk-blog: the chat's last turn failed/);
+  withBoard.close();
+
+  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] Your last turn failed (429). Re-check the board and continue.", now), reply("stop", now + 1));
+  restarted.length = 0;
+  await run(10);
+  assert.deepEqual(restarted, [], "the new turn ended well");
+  const failedAgain = now;
+  threads.transcripts.get("c1")!.push(ownerAsks("continue", now), reply("error", now, "Connection error."));
+  threads.busyIds.add("c1");
+  await run(30);
+  assert.deepEqual(restarted, [], "a turn still running is not restarted");
+  threads.busyIds.delete("c1");
+  await run(1);
+  assert.deepEqual(restarted, [Math.round((failedAgain - start) / 60_000) + 31], "the count started over: the first wait (5 min) has long passed");
+  await chats.setCheckIn("c1", { pause: "forever" });
+  restarted.length = 0;
+  await run(60);
+  assert.deepEqual(restarted, [], "the owner paused the chat");
+  chats.close();
+});
+
+test("chats: a check-in waits while an owner turn runs and goes at the first wake after it; an agent turn does not hold it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = 1_000_000_000;
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [] }] };
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now));
+  await chats.adopt();
+  threads.transcripts.set("c1", [ownerAsks("hows this doing?", now)]);
+  threads.busyIds.add("c1");
+  now += 5 * 60_000;
+  assert.deepEqual(await chats.tick(), [], "the owner's turn runs: held");
+  assert.deepEqual(await chats.checkIn("c1"), [], "a direct call is held too");
+  now += 30_000;
+  assert.deepEqual(await chats.tick(), [], "still held");
+  threads.busyIds.delete("c1");
+  threads.transcripts.get("c1")!.push(reply("stop", now));
+  now += 30_000;
+  assert.deepEqual(await chats.tick(), ["c1"], "the turn ended: the held check-in goes at the next wake, not a whole interval later");
+  await chats.settled();
+  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] What changed:\n- p1 ...", now));
+  threads.busyIds.add("c1");
+  now += 5 * 60_000;
+  assert.deepEqual(await chats.tick(), ["c1"], "a turn a check-in started does not hold the next one");
+  await chats.settled();
+  chats.close();
+});
+
+test("chats: a board the server cannot read is a check-in line", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  const lines: string[] = [];
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir), board: async () => { throw new Error("Chat board file is malformed."); } }, line => lines.push(line));
+  await chats.adopt();
+  assert.deepEqual(await chats.checkIn("c1"), ["the board cannot be read: Chat board file is malformed.; call chat_board again"], "with no job and no step it still runs");
+  assert.deepEqual(calls.filter(call => call.startsWith("steer")), ["steer c1 [check-in] What changed:\n- the board cannot be read: Chat board file is malformed.; call chat_board again"]);
+  assert.deepEqual(await chats.checkIn("c1"), [], "once per error");
+  assert.match(lines.join("\n"), /check-in board: Chat board file is malformed\./);
+  chats.close();
+});
+
+test("chats: adopt and the scheduler's scan bring back a recent unarchived thread with the chat_mode entry that the index lost, and log it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const jsonl = (entries: object[]) => entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
+  const marked = jsonl([{ type: "session", id: "c" }, { type: "session_info", id: "i", name: "chat-6394" }, { type: "custom", customType: "chat_mode", data: { v: 1 } },
+    { type: "session_state", id: "s", state: { status: "archived" } }, { type: "session_state", id: "t", state: { status: "active" } }, { type: "message", id: "m" }]);
+  const files: Record<string, string> = {};
+  for (const id of ["lost", "archived", "old", "later"]) { files[id] = join(dir, `${id}.jsonl`); await writeFile(files[id]!, marked); }
+  files.plain = join(dir, "plain.jsonl");
+  await writeFile(files.plain, jsonl([{ type: "session", id: "p" }, { type: "message", id: "m" }, { type: "custom", customType: "chat_mode", data: { v: 1 } }]));
+  let now = Date.parse("2026-10-08T04:00:00Z");
+  const recent = new Date(now - 60 * 60_000).toISOString();
+  const rows = [row("lost", recent), row("plain", recent), row("archived", recent, { archived: true }), row("old", new Date(now - 8 * 24 * 3_600_000).toISOString()), row("kept", recent)];
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("kept");
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const read: string[] = [];
+  const chats = new Chats(index, fakeThreads(calls), async id => { read.push(id); return { lifecycle: "live", ...(files[id] ? { sessionFile: files[id] } : {}) }; }, "b1",
+    loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now, () => rows), line => lines.push(line));
+  assert.equal(await fileHasChatMarker(files.plain), false, "an entry after the first message is not the marker: the scan reads only the head");
+  const adopted = await chats.adopt();
+  assert.deepEqual(adopted, { pinned: ["kept"], forgotten: [], adopted: ["lost"] }, "archived, plain and older than 7 days stay out");
+  assert.deepEqual(await index.ids(), ["lost", "kept"]);
+  assert.ok(calls.includes("pin lost") && calls.includes("steering lost all"));
+  assert.match(lines.join("\n"), /chat lost: re-adopted: its session file has the chat_mode entry, the chat index did not/);
+
+  rows.push(row("later", new Date(now).toISOString()));
+  read.length = 0;
+  now += 9 * 60_000;
+  await chats.tick();
+  await chats.settled();
+  assert.equal((await index.ids()).includes("later"), false, "the scan runs every 10 min");
+  now += 60_000;
+  await chats.tick();
+  await chats.settled();
+  assert.deepEqual(await index.ids(), ["later", "lost", "kept"], "the scheduler's scan finds it without a restart");
+  assert.equal(read.includes("plain"), false, "a thread found plain is not read again");
+  chats.close();
+});
+
+test("thread hub: running ignores queued input that busy counts; restart sends the text, then resumes the session's queued input", async () => {
+  const info = { isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0, sessionAction: null, queuedActions: 2 } as unknown as ThreadState["info"];
+  assert.equal(isTurnRunning(info), false, "two steers queued behind a failed turn, nothing running");
+  assert.equal(isThreadBusy({ info, queue: { steering: [], followUp: [] }, children: [], tools: [] }), true);
+  assert.equal(isTurnRunning({ ...info, retryAttempt: 1 }), true, "an auto-retry of a 429 is still the turn");
+  assert.equal(isTurnRunning({ ...info, isStreaming: true }), true);
+  const hub = new ThreadHub("/nonexistent.sock", {} as Catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  const calls: string[] = [];
+  hub.prompt = async (id, input) => { calls.push(`prompt ${id} ${input.mode} ${input.message}`); };
+  hub.resumeQueue = async id => { calls.push(`resume ${id}`); };
+  await hub.restart("c1", "[check-in] Your last turn failed (429). Re-check the board and continue.");
+  assert.deepEqual(calls, ["prompt c1 steer [check-in] Your last turn failed (429). Re-check the board and continue.", "resume c1"]);
+  await hub.close();
 });

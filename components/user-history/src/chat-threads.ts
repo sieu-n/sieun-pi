@@ -5,7 +5,7 @@ import type { Catalog } from "./chat-catalog.ts";
 import { CHAT_FLAG } from "./chats.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
-import { applyThreadEvent, isThreadBusy, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
+import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
 import type { ChatBoard, ChatDefaults, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
@@ -171,6 +171,15 @@ export class ThreadHub {
   busy(id: string): boolean {
     const state = this.threads.get(id)?.state;
     return state ? isThreadBusy({ ...state, children: [] }) : false;
+  }
+
+  /**
+   * Whether the thread runs a turn now. Unlike `busy`, input waiting in its queue does not count: after a failed turn that input can sit there
+   * with nothing running, and the chat then needs a restart, not more waiting.
+   */
+  running(id: string): boolean {
+    const state = this.threads.get(id)?.state;
+    return state ? isTurnRunning(state.info) : false;
   }
 
   /** Re-runs the session's extensions and rebuilds its tools and prompt, so a long-lived chat picks up a newer extension build. */
@@ -484,6 +493,16 @@ export class ThreadHub {
     }
     await live.connection.prompt(input.message, { source: "interactive", streamingBehavior: input.mode, queueIfBusy: true, ...(input.images.length ? { images: input.images } : {}) });
     void this.refreshQueue(thread).catch(() => {});
+  }
+
+  /**
+   * A new turn for a chat whose last turn failed. After a failed turn a steer can sit in the session's queue with its input pump stopped, so the
+   * check-ins and notices sent to it wait unseen until the owner writes. This sends the text as a steer, then resumes the queued input, so the
+   * text (and anything queued before it) starts a turn now.
+   */
+  async restart(id: string, message: string): Promise<void> {
+    await this.prompt(id, { message, images: [], mode: "steer" });
+    await this.resumeQueue(id);
   }
 
   async abort(id: string): Promise<void> {
