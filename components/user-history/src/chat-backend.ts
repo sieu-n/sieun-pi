@@ -12,6 +12,7 @@ import { IdIndex } from "./id-index.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { UsageService } from "./usage/service.ts";
+import { startUsagePublisher } from "./usage/publish.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
 export interface ChatDefaultsStore {
@@ -82,6 +83,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const usage = new UsageService({ dataDir, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   usage.start();
   let closed = false;
+  // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
+  const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   return {
     catalog, threads, readState, labels, notes, defaults, chats, boards, created, usage,
     async close() {
@@ -89,6 +92,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       closed = true;
       unwatchBoards();
       await usage.close();
+      stopPublish();
       chats.close();
       await threads.close();
       await catalog.close();
