@@ -18,8 +18,9 @@ import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace
 import { parseBucket, parseGroup, parseWindow, UsageError } from "./usage/service.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
+import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
-import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type ThinkingLevel } from "./shared/types.ts";
+import { isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
@@ -224,6 +225,17 @@ function fixedRemote(publicOrigin: string | null, capability: string): RemoteCon
   };
 }
 
+function parseSlackInput(body: Record<string, unknown>): SlackInput {
+  const input: SlackInput = {};
+  if (body.enabled !== undefined) { if (typeof body.enabled !== "boolean") throw new RequestError(400, "enabled must be true or false."); input.enabled = body.enabled; }
+  if (body.ownerUserId !== undefined) {
+    if (body.ownerUserId !== null && typeof body.ownerUserId !== "string") throw new RequestError(400, "ownerUserId must be a member id or null.");
+    input.ownerUserId = typeof body.ownerUserId === "string" ? body.ownerUserId.trim() || null : null;
+  }
+  if (input.enabled === undefined && input.ownerUserId === undefined) throw new RequestError(400, "Choose enabled or ownerUserId.");
+  return input;
+}
+
 function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   const input: RemoteAccessInput = {};
   if (body.tailscale !== undefined) { if (typeof body.tailscale !== "boolean") throw new RequestError(400, "tailscale must be true or false."); input.tailscale = body.tailscale; }
@@ -232,11 +244,13 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   return input;
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes() }: {
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes() }: {
   backend: ChatBackend; bundle: ClientBundle; port: number; capability: string; csrfToken: string;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
   remote?: RemoteControl;
+  /** Settings > Slack; null for instances that run no Slack bridge (tests, extra data dirs). */
+  slack?: SlackControl | null;
   /** Settings > Versions and the SDK auto-update; null for instances that do not manage their packages. */
   sdk?: SdkSync | null;
   onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins; refreshes?: UsageRefreshes;
@@ -395,6 +409,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
         if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
         if (route === "api/remote") { json(res, 200, remote.view(origin === `http://${host}`)); return; }
+        if (route === "api/slack") { json(res, 200, slack ? slack.view(origin === `http://${host}`) : null); return; }
         if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
         if (route.startsWith("api/usage/")) {
           const analytics = backend.usage;
@@ -556,6 +571,14 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           await backend.threads.resumeQueue(sessionId).catch(() => {});
         }));
         return;
+      }
+      if (route === "api/slack" || route === "api/slack/check") {
+        // Like phone access: a leaked link must not be able to connect this Mac's agents to Slack or cut them off.
+        if (!slack) throw new RequestError(409, "This chat instance runs no Slack bridge.");
+        if (origin !== `http://${host}`) throw new RequestError(403, "Change Slack on the Mac that runs the chat.");
+        if (route === "api/slack") await slack.set(parseSlackInput(body)).catch(error => { throw new RequestError(400, error instanceof Error ? error.message : String(error)); });
+        else await slack.check();
+        json(res, 200, slack.view(true)); return;
       }
       if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }

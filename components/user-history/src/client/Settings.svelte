@@ -5,11 +5,12 @@
   import UsageSettings from "./UsageSettings.svelte";
   import DefaultsSettings from "./DefaultsSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
+  import SlackSettings from "./SlackSettings.svelte";
   import VersionsSettings from "./VersionsSettings.svelte";
 
   type Section = NonNullable<typeof store.drawer>;
   let { section }: { section: Section } = $props();
-  const SECTIONS: { id: Section; label: string }[] = [{ id: "accounts", label: "Accounts" }, { id: "usage", label: "Usage" }, { id: "defaults", label: "Defaults" }, { id: "remote", label: "Phone access" }, { id: "versions", label: "Versions" }];
+  const SECTIONS: { id: Section; label: string }[] = [{ id: "accounts", label: "Accounts" }, { id: "usage", label: "Usage" }, { id: "defaults", label: "Defaults" }, { id: "remote", label: "Phone access" }, { id: "slack", label: "Slack" }, { id: "versions", label: "Versions" }];
 </script>
 
 <Modal title="Settings" width="920px" onclose={() => { store.drawer = null; }}>
@@ -20,7 +21,7 @@
       {/each}
     </nav>
     <div class="content">
-      {#if section === "accounts"}<AccountsSettings />{:else if section === "usage"}<UsageSettings />{:else if section === "defaults"}<DefaultsSettings />{:else if section === "remote"}<RemoteSettings />{:else if section === "versions"}<VersionsSettings />{/if}
+      {#if section === "accounts"}<AccountsSettings />{:else if section === "usage"}<UsageSettings />{:else if section === "defaults"}<DefaultsSettings />{:else if section === "remote"}<RemoteSettings />{:else if section === "slack"}<SlackSettings />{:else if section === "versions"}<VersionsSettings />{/if}
     </div>
   </div>
 </Modal>

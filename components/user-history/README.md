@@ -150,6 +150,32 @@ The listener stays on `127.0.0.1`. Only the current remote host is allowed, with
 
 Keep the full URL private. Anyone who can reach the service and has that URL can read chats and control agents. Tailscale Serve limits network access to devices on the tailnet; do not use Funnel or an unauthenticated public proxy. Other HTTPS reverse proxies must preserve Host, pass WebSocket upgrades on the chat path, and restrict who can connect. Keep the Mac awake.
 
+## Slack
+
+The main instance can link each chat to a private Slack channel `#vp-<chat name>`. It uses Socket Mode: one outbound WebSocket from this Mac, no public URL.
+The bridge is off by default. With no tokens it stays off and the service runs as before.
+
+- In: a message you write in a chat's channel is a steer to that chat, the same call as the browser composer. An hourglass reaction stays on it until the turn ends.
+- Out: the lines the browser feed shows on the left: replies on turns you started and `tell_owner` pings. Job reports and the chat's own notes stay quiet. Messages you type in the browser are not copied to Slack.
+- Only your member id, in the team the bot token belongs to, is accepted. Bot posts, edits and deletes are dropped.
+- Each line is posted once, keyed by message timestamp plus `toolCallId`, so compaction does not repost. Lines from before a chat was linked are never posted.
+- After a reconnect (the Mac slept) the bridge reads each channel with `conversations.history` since the last handled message, because Socket Mode does not replay missed events.
+- A new chat gets its channel within a few seconds; an archived chat's channel is archived. State lives in `<data dir>/slack.json`.
+- Text only for now: files you attach in Slack are not forwarded.
+
+Setup: create the app from [`slack-app-manifest.yaml`](slack-app-manifest.yaml) (the file lists the steps), install it, and add an app-level token with `connections:write`.
+Save both tokens in the Keychain, never in the repository:
+
+```sh
+security add-generic-password -U -s sieun-pi-slack -a bot-token -w   # xoxb-
+security add-generic-password -U -s sieun-pi-slack -a app-token -w   # xapp-
+```
+
+`SIEUN_PI_SLACK_BOT_TOKEN` and `SIEUN_PI_SLACK_APP_TOKEN` work instead, for example through `dotenvx run -- sieun-pi chat serve`.
+Then open Settings > Slack on the Mac, enter your member id and turn the bridge on. The refresh button reads the tokens again without a restart.
+Only the main instance runs the bridge, so a test instance never opens a second Socket Mode connection; `SIEUN_PI_SLACK=1` or `0` overrides that.
+Anyone who can post as your Slack account can drive agents with full access to this Mac, and workspace admins can read the channels. Use 2FA on that account.
+
 ## Keep running
 
 On macOS the main instance runs as the LaunchAgent `com.sieun.agent-chat` (`~/Library/LaunchAgents/com.sieun.agent-chat.plist`). The first `chat start` or `/agent-chat` writes and loads it, so there is nothing to install by hand.

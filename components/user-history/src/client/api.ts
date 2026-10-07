@@ -1,4 +1,4 @@
-import type { AccountAction, AccountLogin, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, SdkView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, SdkView, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import { subscribeFeed } from "./feeds.ts";
 import type { UsageBucket, UsageGroup, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
@@ -58,6 +58,9 @@ export const api = {
   remote: () => get<RemoteAccessView>("api/remote"),
   setRemote: (input: RemoteAccessInput) => post<RemoteAccessView>("api/remote", input, 60000),
   checkRemote: () => post<RemoteAccessView>("api/remote/check", {}, 60000),
+  slack: () => get<SlackView | null>("api/slack"),
+  setSlack: (input: SlackInput) => post<SlackView>("api/slack", input, 60000),
+  checkSlack: () => post<SlackView>("api/slack/check", {}, 60000),
   sdk: () => get<SdkView | null>("api/sdk"),
   updateSdk: () => post<SdkView>("api/sdk", { action: "update" }),
   setSdkAuto: (auto: boolean) => post<SdkView>("api/sdk", { action: "auto", auto }),

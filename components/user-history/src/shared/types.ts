@@ -310,6 +310,26 @@ export interface RemoteAccessView {
 }
 export interface RemoteAccessInput { tailscale?: boolean; keepRunning?: boolean }
 
+/** Settings > Slack: the bridge that links each chat to a private Slack channel. */
+export interface SlackView {
+  state: "off" | "no-tokens" | "no-owner" | "connecting" | "on" | "problem";
+  message: string;
+  enabled: boolean;
+  /** The one Slack member id whose messages reach the chats. */
+  ownerUserId: string | null;
+  /** The bot's team from auth.test; events from any other team are dropped. */
+  teamId: string | null;
+  teamName: string | null;
+  /** Chats linked to a channel. */
+  channels: number;
+  tokenSource: "keychain" | "environment" | null;
+  /** The Keychain service the tokens are read from. */
+  keychainService: string;
+  /** False on a remote origin: the switch changes only from the Mac that runs the chat. */
+  editable: boolean;
+}
+export interface SlackInput { enabled?: boolean; ownerUserId?: string | null }
+
 /** A chat-client SDK update. `failed` comes back after a restart until the daemon version changes or Retry succeeds. */
 export interface SdkUpdateState { state: "idle" | "running" | "failed" | "restarting"; target?: string; message: string; log: string[]; at?: string }
 /** Settings > Versions: the Prime Agent daemon, the prime-agent package this chat loaded, and the chat build. */

@@ -27,7 +27,7 @@ class Store {
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
   sidebarOpen = $state(window.innerWidth >= 900);
-  drawer = $state<"accounts" | "usage" | "defaults" | "remote" | "versions" | null>(null);
+  drawer = $state<"accounts" | "usage" | "defaults" | "remote" | "slack" | "versions" | null>(null);
   /** Bumped when Settings saves new defaults, so the new-chat screen reads them again. */
   defaultsRevision = $state(0);
   /** Chat sends each thread has not echoed back yet, by thread id, oldest first. */

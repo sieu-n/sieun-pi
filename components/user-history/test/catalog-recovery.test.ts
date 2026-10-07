@@ -12,7 +12,7 @@ function catalog(t: TestContext) {
   t.mock.method(reads, "snapshot", async () => ({ baseline: 0, sessions: {} }));
   t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
   const ids = { ids: async () => new Set<string>() };
-  const result = new Catalog("unused", reads, labels, ids, new ThreadOrigins(ids));
+  const result = new Catalog("unused", reads, labels, ids, new ThreadOrigins({ ids: async () => [] }));
   Object.defineProperty(result.client, "isConnected", { get: () => true });
   t.mock.method(result.client, "reconnect", async () => {});
   t.mock.method(result.client, "waitForHello", async () => ({ appVersion: "0.9.8" }));

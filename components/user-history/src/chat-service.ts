@@ -11,6 +11,7 @@ import { KeepRunning } from "./chat-autostart.ts";
 import { daemonAnswers, DaemonKeeper } from "./chat-daemon.ts";
 import { openChat } from "./chat-open.ts";
 import { RemoteAccess, type RemoteControl } from "./chat-remote.ts";
+import { runsSlack, SlackBridge, slackChats } from "./chat-slack.ts";
 import type { RemoteMode } from "./shared/types.ts";
 
 type Options = { port?: number; socketPath?: string; dataDir?: string; remote?: RemoteSetting; supervised?: boolean };
@@ -231,6 +232,10 @@ async function serve(options: Options): Promise<void> {
     import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts")]);
   const [bundle, { SdkSync, loadedClientVersion }] = await Promise.all([buildClientBundle(), import("./chat-sdk.ts")]);
   const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory });
+  // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
+  const slack = runsSlack(service.primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
+    log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
+  void slack?.start().catch(error => { process.stderr.write(`slack: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Every chat in the index is pinned again, so a saved one resumes on the first catalog update. The daemon may be down here; the pin waits for it.
   void backend.chats.adopt().then(({ pinned, forgotten }) => { if (pinned.length || forgotten.length) process.stderr.write(`chats: pinned ${pinned.length}, forgot ${forgotten.length}\n`); },
     error => { process.stderr.write(`chats: ${error instanceof Error ? error.message : String(error)}\n`); });
@@ -246,7 +251,7 @@ async function serve(options: Options): Promise<void> {
     closing = (async () => {
       try { if (instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
-      finally { keeper?.close(); remote.stop(); await server.close(); }
+      finally { keeper?.close(); remote.stop(); slack?.close(); await server.close(); }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
   }
@@ -275,7 +280,7 @@ async function serve(options: Options): Promise<void> {
     check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile()]); },
   };
   const server = await startChatServer({ backend, bundle, port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken,
-    identity, identityReady, remote: control, sdk, stopToken: service.config.stopToken, onStop: close }).catch(error => {
+    identity, identityReady, remote: control, slack, sdk, stopToken: service.config.stopToken, onStop: close }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
       throw error;
     });
