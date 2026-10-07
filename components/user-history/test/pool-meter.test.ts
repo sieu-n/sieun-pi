@@ -6,7 +6,7 @@ import type { PoolAccount, PoolProvider } from "../src/shared/types.ts";
 const NOW = 1_791_300_000_000;
 const account = (id: string, five: number | null, week: number, extra: Partial<PoolAccount> = {}): PoolAccount => ({
   id, email: id, usage: "", session_pct: five, weekly_pct: week, usable: true, reason: null, current: false, pinned: false, force: false, live: false, seat: false,
-  score: null, tier: null, usageAt: NOW, cooldownUntil: null, cooldownReason: null, disabled: false,
+  score: null, tier: null, usageAt: NOW, cooldownUntil: null, cooldownReason: null, limitedUntil: null, disabled: false,
   windows: [...(five === null ? [] : [{ kind: "session" as const, label: "5h", pct: five, resetsAt: NOW + 3_600_000 }]),
     { kind: "weekly" as const, label: "week", pct: week, resetsAt: NOW + 7 * 3_600_000 }], ...extra });
 const pool = (rows: PoolAccount[], provider: PoolProvider["provider"] = "anthropic"): PoolProvider => ({ provider, rows, resolution: null });
@@ -23,6 +23,12 @@ test("pool meter: blocked and week-depleted accounts count as full, turned-off a
   assert.equal(summary.usable, 1);
   assert.equal(summary.total, 4);
   assert.equal(summary.nextFree, NOW + 3_600_000);
+});
+
+test("pool meter: a 429-limited account counts as full and frees at its limit end", () => {
+  const summary = poolSummary(pool([account("ok", 20, 40), account("limited", 10, 10, { usable: false, reason: "limited 30m", limitedUntil: NOW + 1_800_000 })]), NOW);
+  assert.deepEqual(summary.meters.map(meter => [meter.key, meter.pct]), [["5h", 60], ["week", 70]]);
+  assert.equal(summary.nextFree, NOW + 1_800_000);
 });
 
 test("pool meter: Codex has no 5h window, and the next free time is the depleted window's reset", () => {

@@ -184,13 +184,99 @@ class PoolPin(unittest.TestCase):
         r = resolved(state_v2(pins={"anthropic": {"account_id": "a", "at": NOW}}, pool_pin="c"))
         self.assertEqual((r.account.id, r.reason), ("a", "session_pin"))
 
-    def test_a_pool_pin_holds_a_depleted_account(self):
+    def test_a_pool_pin_yields_when_its_account_is_depleted(self):
         r = resolved(state_v2(pool_pin="d", seat="b"))
-        self.assertEqual((r.account.id, r.reason), ("d", "pool_pin"))
+        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "seat", ("d", "depleted")))
 
     def test_a_pool_pin_yields_on_needs_reauth(self):
         r = resolved(state_v2(pool_pin="e", seat="b"))
         self.assertEqual((r.account.id, r.reason), ("b", "seat"))
+
+    def test_a_pool_pin_yields_when_its_account_is_in_cooldown(self):
+        r = resolved(state_v2(pool_pin="c", seat="b", cooldowns={"c": NOW + 60}))
+        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "seat", ("c", "cooldown")))
+
+    def test_a_pool_pin_yields_when_its_account_is_limited(self):
+        r = resolved(state_v2(pool_pin="c", seat="b"), limited({"c": NOW + 3600}))
+        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "seat", ("c", "limited")))
+
+    def test_a_depleted_session_pin_falls_through_to_a_usable_pool_pin(self):
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW}}, pool_pin="c", seat="b"))
+        self.assertEqual((r.account.id, r.reason, r.shadowed), ("c", "pool_pin", ("d", "depleted")))
+
+
+def limited(limits, accounts=ALL):
+    """ALL with `pi-pool limited` records applied, as vend() applies them."""
+    state = {"providers": {"anthropic": {"limits": {k: {"until": t, "at": NOW} for k, t in limits.items()}}}}
+    return vend.with_pool_state(accounts, state, "anthropic")
+
+
+class LimitedByThe429(unittest.TestCase):
+    """A 429 recorded by `pi-pool limited` makes every pin yield until it expires.
+    Fall-through order: session pin, pool pin, seat, best score, last resort."""
+
+    def test_a_limited_account_reports_limited_with_its_countdown(self):
+        a = limited({"a": NOW + 7200})[0]
+        self.assertEqual(vend.unusable_reason(a, {}, CFG, NOW), "limited")
+        self.assertEqual(vend.format_reason(a, {}, CFG, NOW), "limited 2h0m")
+
+    def test_an_expired_limit_does_not_block(self):
+        a = limited({"a": NOW - 1})[0]
+        self.assertIsNone(vend.unusable_reason(a, {}, CFG, NOW))
+
+    def test_a_limited_session_pin_yields_to_the_pool_pin(self):
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "a", "at": NOW}}, pool_pin="c", seat="b"),
+                     limited({"a": NOW + 60}))
+        self.assertEqual((r.account.id, r.reason, r.shadowed), ("c", "pool_pin", ("a", "limited")))
+
+    def test_a_forced_session_pin_yields_to_limited(self):
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "a", "at": NOW, "force": True}}, seat="b"),
+                     limited({"a": NOW + 60}))
+        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "seat", ("a", "limited")))
+
+    def test_a_forced_session_pin_still_holds_a_depleted_account(self):
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW, "force": True}}, seat="b"),
+                     limited({"a": NOW + 60}))
+        self.assertEqual((r.account.id, r.reason), ("d", "session_pin"))
+
+    def test_a_limited_seat_moves_to_the_best_score(self):
+        r = resolved(state_v2(seat="a"), limited({"a": NOW + 60}))
+        self.assertEqual((r.account.id, r.reason), ("b", "seat_move"))
+
+    def test_session_pin_then_pool_pin_then_seat_then_best_score(self):
+        state = state_v2(pins={"anthropic": {"account_id": "a", "at": NOW}}, pool_pin="b", seat="c")
+        steps = [({}, "a", "session_pin"), ({"a": NOW + 60}, "b", "pool_pin"),
+                 ({"a": NOW + 60, "b": NOW + 60}, "c", "seat")]
+        for limits, want, reason in steps:
+            r = resolved(state, limited(limits))
+            self.assertEqual((r.account.id, r.reason), (want, reason), limits)
+        accounts = limited({"a": NOW + 60, "b": NOW + 60, "c": NOW + 60}) + [account("f", "f@x", session_pct=50)]
+        r = resolved(state, accounts)
+        self.assertEqual((r.account.id, r.reason, r.shadowed), ("f", "seat_move", ("a", "limited")))
+
+    def test_with_everything_limited_the_last_resort_is_the_soonest_reset(self):
+        accounts = limited({"a": NOW + 7200, "b": NOW + 600, "c": NOW + 3600}, [A, B, C])
+        self.assertIsNone(resolved(state_v2(seat="a"), accounts))
+        self.assertEqual(vend.last_resort(accounts, {}, CFG, NOW).id, "b")
+
+    def test_set_limit_keeps_the_latest_reset_and_prune_drops_it_when_it_passes(self):
+        state = state_v2()
+        writer = vend.HookWriter(state)
+        writer.set_limit("anthropic", "a", NOW + 600, KEY, NOW)
+        writer.set_limit("anthropic", "a", NOW + 60, KEY, NOW)
+        self.assertEqual(state["providers"]["anthropic"]["limits"]["a"]["until"], NOW + 600)
+        self.assertFalse(writer.prune(CFG, NOW + 599))
+        self.assertTrue(writer.prune(CFG, NOW + 600))
+        self.assertEqual(state["providers"]["anthropic"]["limits"], {})
+
+    def test_an_ls_row_carries_the_limit(self):
+        row = vend.build_rows(limited({"a": NOW + 600}, [A]), vend.Intent(), {}, {}, CFG, NOW, None, None)[0]
+        self.assertEqual((row["usable"], row["reason"], row["limited_until"]), (False, "limited 10m", NOW + 600))
+
+    def test_a_v2_state_without_limits_gains_an_empty_map(self):
+        raw = {"version": 2, "providers": {"anthropic": {"pin": None, "seat": None, "cooldowns": {}}}, "sessions": {}}
+        out = vend.migrate(raw, {}, NOW)
+        self.assertEqual((out["providers"]["anthropic"]["limits"], out["providers"]["openai-codex"]["limits"]), ({}, {}))
 
 
 class Fallbacks(unittest.TestCase):
@@ -991,9 +1077,9 @@ class DisabledAccountsNeverServe(unittest.TestCase):
             res = vend.resolve(intent, [self.OFF, B], {}, {}, CFG, NOW)
             self.assertEqual(res.account.id, "b", intent)
 
-    def test_with_disabled_marks_only_the_named_accounts(self):
+    def test_with_pool_state_marks_only_the_named_accounts(self):
         state = {"providers": {"anthropic": {"disabled": {"a": NOW}}}}
-        marked = vend.with_disabled([A, B], state, "anthropic")
+        marked = vend.with_pool_state([A, B], state, "anthropic")
         self.assertEqual([a.disabled for a in marked], [True, False])
         self.assertEqual(vend.unusable_reason(marked[0], {}, CFG, NOW), "disabled")
 

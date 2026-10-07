@@ -650,6 +650,9 @@ class Account:
     # True when every model the session runs is outside the gated families, so
     # a spent per-model cap (Fable) does not stop this account serving it.
     gate_off: bool = False
+    # Epoch seconds until which the provider refused this account with a 429
+    # (`pi-pool limited`). 0 when no limit is on file.
+    limited_until: float = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -823,14 +826,23 @@ def find_account(accounts, email_or_id):
 
 # ---------------------------------------------------------------- state.json
 def empty_provider_state():
-    return {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}}
+    return {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}, "limits": {}}
 
 
-def with_disabled(accounts, state, provider):
-    """Mark the accounts `pi-pool off` took out of the pool. Disabled lives in
-    state.json, not in tokenmaxxing's index, so it is applied after both reads."""
-    off = state["providers"][provider].get("disabled") or {}
-    return [dataclasses.replace(a, disabled=True) if a.id in off else a for a in accounts]
+def with_pool_state(accounts, state, provider):
+    """Apply what state.json knows about each account and tokenmaxxing's index
+    does not: `pi-pool off` and the provider's own 429 (`pi-pool limited`)."""
+    prov = state["providers"][provider]
+    off = prov.get("disabled") or {}
+    limits = prov.get("limits") or {}
+    out = []
+    for a in accounts:
+        if a.id in off:
+            a = dataclasses.replace(a, disabled=True)
+        if a.id in limits:
+            a = dataclasses.replace(a, limited_until=limits[a.id]["until"])
+        out.append(a)
+    return out
 
 
 def migrate(raw, by_email, now):
@@ -844,7 +856,7 @@ def migrate(raw, by_email, now):
     """
     if raw.get("version") == 2:
         for provider in PROVIDERS:
-            raw.setdefault("providers", {}).setdefault(provider, empty_provider_state())
+            raw.setdefault("providers", {}).setdefault(provider, empty_provider_state()).setdefault("limits", {})
         raw.setdefault("sessions", {})
         return raw
     anthropic = empty_provider_state()
@@ -900,6 +912,8 @@ def unusable_reason(a, cooldowns, cfg, now):
         return "needs-reauth"
     if cooldowns.get(a.id, 0) > now:
         return "cooldown"
+    if a.limited_until > now:
+        return "limited"
     if a.session_pct >= cfg["five_hour_max_pct"] or a.weekly_pct >= cfg["seven_day_max_pct"]:
         return "depleted"
     if a.gated_pct >= cfg["seven_day_max_pct"] and not a.gate_off:
@@ -914,6 +928,8 @@ def format_reason(a, cooldowns, cfg, now):
     reason = unusable_reason(a, cooldowns, cfg, now)
     if reason == "cooldown":
         return f"cooldown {fmt_dur(max(60.0, cooldowns.get(a.id, now) - now))}"
+    if reason == "limited":
+        return f"limited {fmt_dur(max(60.0, a.limited_until - now))}"
     return reason
 
 
@@ -947,7 +963,8 @@ def window_free_at(window, cfg, now):
 
 
 def account_free_at(a, cfg, now):
-    """When every blocking window of this account has reset."""
+    """When every blocking window of this account has reset, and the
+    provider's own 429 reset when that is later."""
     families = [f.lower() for f in cfg["switch_models"]]
 
     def counts(w):
@@ -958,6 +975,8 @@ def account_free_at(a, cfg, now):
 
     blocking = [t for t in (window_free_at(w, cfg, now) for w in a.windows if counts(w))
                 if t is not None]
+    if a.limited_until > now:
+        blocking.append(a.limited_until)
     return max(blocking) if blocking else now
 
 
@@ -971,7 +990,7 @@ def last_resort(accounts, cooldowns, cfg, now):
     request (dead login, disabled, API refusal cooldown) are never offered.
     """
     pool = [a for a in accounts
-            if unusable_reason(a, cooldowns, cfg, now) in ("depleted", "live-elsewhere")]
+            if unusable_reason(a, cooldowns, cfg, now) in ("depleted", "limited", "live-elsewhere")]
     return min(pool, key=lambda a: (account_free_at(a, cfg, now), a.email)) if pool else None
 
 
@@ -994,12 +1013,12 @@ def resolve(intent, accounts, in_use, cooldowns, cfg, now):
     paid one was depleted would hold every unpinned session after the paid
     window resets, and the API refuses several models on a free plan.
 
-    A session pin yields when
-    its account cannot serve (nothing is written, so it re-applies the moment
-    the window resets) unless it was set with --force, which yields only when
-    the credential itself cannot serve. A pool pin is an operator override with
-    machine-wide blast radius and keeps its v1 meaning: skipped on needs-reauth
-    only.
+    Every pin yields when its account cannot serve. Nothing is written, so the
+    pin re-applies the moment the window resets or the limit expires. A session
+    pin set with --force holds a depleted account, and yields only when the
+    credential cannot serve (dead login, disabled, refusal cooldown) or the
+    provider itself answered 429 ("limited"). `shadowed` names the first pin
+    that yielded and why.
     """
     by_id = {a.id: a for a in accounts}
     shadowed = None
@@ -1007,18 +1026,17 @@ def resolve(intent, accounts, in_use, cooldowns, cfg, now):
     if intent.session_pin:
         a = by_id.get(intent.session_pin)
         why = "missing" if a is None else unusable_reason(a, cooldowns, cfg, now)
-        # --force outranks usage, never a dead login or an account the API refused
-        # (the only thing that sets a cooldown), since both fail every request.
-        forced = (intent.session_pin_force and not a.disabled and not a.needs_reauth
-                  and cooldowns.get(a.id, 0) <= now) if a else False
+        forced = intent.session_pin_force and why in ("depleted", "live-elsewhere")
         if a is not None and (why is None or forced):
             return Resolution(a, "session_pin", None)
         shadowed = (intent.session_pin, why)
 
     if intent.pool_pin:
         a = by_id.get(intent.pool_pin)
-        if a is not None and not a.needs_reauth and not a.disabled:
+        why = "missing" if a is None else unusable_reason(a, cooldowns, cfg, now)
+        if why is None:
             return Resolution(a, "pool_pin", shadowed)
+        shadowed = shadowed or (intent.pool_pin, why)
 
     if intent.seat:
         a = by_id.get(intent.seat)
@@ -1078,8 +1096,16 @@ class HookWriter:
         if reason:
             prov.setdefault("cooldown_reasons", {})[account_id] = reason
 
+    def set_limit(self, provider, account_id, until, key, now):
+        """The provider answered 429 for this account until `until`. Several
+        sessions can report one limit; the latest reset wins."""
+        limits = self._state["providers"][provider].setdefault("limits", {})
+        prev = limits.get(account_id) or {}
+        limits[account_id] = {"until": max(until, prev.get("until", 0)), "at": now,
+                              "session": key.key if key else None}
+
     def prune(self, cfg, now):
-        """Drop expired cooldowns, and sessions that have not vended for
+        """Drop expired cooldowns and limits, and sessions that have not vended for
         pin_ttl_sec. Returns whether anything changed, so a request that prunes
         nothing does not rewrite the file. Liveness is NOT a pid test: a session
         resumed in a new worker keeps its pin, which is the whole point of
@@ -1093,6 +1119,10 @@ class HookWriter:
                 dropped += 1
             for account_id in [u for u in reasons if u not in cd]:
                 del reasons[account_id]
+                dropped += 1
+            limits = self._state["providers"][provider].get("limits") or {}
+            for account_id in [u for u, rec in limits.items() if rec["until"] <= now]:
+                del limits[account_id]
                 dropped += 1
         ttl = cfg["pin_ttl_sec"]
         for key in list(self._state["sessions"]):
@@ -1148,7 +1178,7 @@ class IntentWriter:
             prov["pin"] = None
         if (prov.get("seat") or {}).get("account_id") == account_id:
             prov["seat"] = None
-        for key in ("disabled", "cooldowns", "cooldown_reasons"):
+        for key in ("disabled", "cooldowns", "cooldown_reasons", "limits"):
             (prov.get(key) or {}).pop(account_id, None)
         for rec in self._state["sessions"].values():
             pins = rec.get("pins") or {}
@@ -1428,7 +1458,7 @@ def vend(provider):
         now = time.time()
         if HookWriter(state).prune(cfg, now):
             save_json(STATE, state)
-        accounts = with_disabled(accounts, state, provider)
+        accounts = with_pool_state(accounts, state, provider)
         accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
         intent = intent_for(state, key, provider)
         in_use = in_use_counts(state, provider)
@@ -1470,14 +1500,18 @@ def vend(provider):
             writer = HookWriter(state)
             if reason in ("seat_move", "seat_upgrade"):
                 writer.move_seat(provider, account, now)
+            prev = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
             vended = writer.record_vend(key, provider, account, source, reason,
                                         res.shadowed, now) if key else None
             save_json(STATE, state)
         # The hook runs on every provider request, so a line per vend would be a log of
         # thousands. Log the transitions only: a session changing account, and a seat move.
+        # `why` says why the pin in `shadowed` did not serve (depleted, limited, ...).
         if vended is None or vended["n"] == 1 or reason in ("seat_move", "seat_upgrade", "last_resort"):
             log("vend", provider=provider, account=account.email, source=source,
-                reason=reason, shadowed=res.shadowed and res.shadowed[0])
+                reason=reason, shadowed=res.shadowed and res.shadowed[0],
+                why=res.shadowed and res.shadowed[1],
+                previous=(prev or {}).get("email"), session=key and key.key)
         sys.stdout.write(token)
         return
 
@@ -1487,7 +1521,7 @@ def vend(provider):
 # ------------------------------------------------------------------------ CLI
 def parse_flags(rest, provider_default="anthropic"):
     provider, session, as_json, force, follow, new_session, positional = provider_default, None, False, False, False, False, []
-    model, source, clear = None, None, False
+    model, source, clear, until = None, None, False, None
     i = 0
     while i < len(rest):
         tok = rest[i]
@@ -1513,12 +1547,15 @@ def parse_flags(rest, provider_default="anthropic"):
             source = rest[i]
         elif tok == "--clear":
             clear = True
+        elif tok == "--until":
+            i += 1
+            until = float(rest[i])
         else:
             positional.append(tok)
         i += 1
     return {"provider": provider, "session": session, "json": as_json,
             "force": force, "follow": follow, "new_session": new_session, "positional": positional,
-            "model": model, "source": source, "clear": clear}
+            "model": model, "source": source, "clear": clear, "until": until}
 
 
 def session_key_for(session_arg, state):
@@ -1557,6 +1594,7 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_i
         if a.plan:
             row["plan"] = a.plan
         cooling = cooldowns.get(a.id, 0) > now
+        limited = a.limited_until > now
         row.update({
             "tier": a.tier or None,
             "windows": usage_windows(a, now),
@@ -1565,6 +1603,7 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_i
             "sessions": in_use.get(a.id, 0),
             "cooldown_until": round(cooldowns[a.id]) if cooling else None,
             "cooldown_reason": cooldown_reasons.get(a.id) if cooling else None,
+            "limited_until": round(a.limited_until) if limited else None,
         })
         rows.append(row)
     return rows
@@ -1752,7 +1791,7 @@ def status_lines(providers, p, term_width, now=None):
         except Exception as e:
             out += [p.red(f"{title}: {e}"), ""]
             continue
-        accounts = with_disabled(accounts, state, provider)
+        accounts = with_pool_state(accounts, state, provider)
         prov = state["providers"][provider]
         in_use = in_use_counts(state, provider, now)
         cooldowns = prov["cooldowns"]
@@ -2533,7 +2572,7 @@ def cmd_ls(rest):
         print(json.dumps({"error": msg}) if f["json"] else msg)
         return 1
     state = load_state()
-    accounts = with_disabled(accounts, state, provider)
+    accounts = with_pool_state(accounts, state, provider)
     key = session_key_for(f["session"], state)
     if f["session"] is not None and key is None:
         msg = f"--session {f['session']} matches no known session"
@@ -2617,6 +2656,39 @@ def cmd_model(rest):
     return 0
 
 
+def cmd_limited(rest):
+    """The provider answered 429 for the account this session tree last vended.
+    Record the limit until `--until` (epoch seconds), so every pin and the seat
+    yield to it, and print what the tree's next request gets:
+    {"account", "until", "next"}. `next` is null when no other account can
+    serve; the caller then waits for the provider's own reset."""
+    f = parse_flags(rest)
+    provider, until = f["provider"], f["until"]
+    if until is None:
+        raise SystemExit("usage: pi-pool limited --until <epoch sec> [--provider <p>] [--session <id>]")
+    cfg, now = config(), time.time()
+    accounts = load_index(provider)
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        key = session_key_for(f["session"], state)
+        rec = state["sessions"].get(key.key) if key else None
+        last = ((rec or {}).get("vends") or {}).get(provider)
+        if not last:
+            print(json.dumps({"error": f"no {provider} vend on file for this session"}))
+            return 2
+        HookWriter(state).set_limit(provider, last["account_id"], until, key, now)
+        save_json(STATE, state)
+        accounts = with_pool_state(accounts, state, provider)
+        accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
+        res = resolve(intent_for(state, key, provider), accounts, in_use_counts(state, provider),
+                      state["providers"][provider]["cooldowns"], cfg, now)
+    out = {"account": last["email"], "until": round(until), "next": res.account.email if res else None}
+    log("limited", provider=provider, account=last["email"], session=key.key,
+        until=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(until)), next=out["next"])
+    print(json.dumps(out))
+    return 0
+
+
 def cmd_who(rest):
     f = parse_flags(rest)
     state = load_state()
@@ -2629,7 +2701,7 @@ def cmd_who(rest):
     providers_out = {}
     for provider in PROVIDERS:
         try:
-            accounts = with_disabled(load_index(provider), state, provider)
+            accounts = with_pool_state(load_index(provider), state, provider)
         except Exception as e:
             providers_out[provider] = {"error": str(e)}
             continue
@@ -3036,6 +3108,9 @@ USAGE = """usage: pi-pool [command]
                                   for that model instead of the session's recorded ones
   who [--json] [--session <id>] [--model <id>]
                                   what this session resolves to now, per provider
+  limited --until <epoch sec> [--provider <p>] [--session <id>]
+                                  the provider answered 429 for this session's account; every
+                                  pin yields to it until then. Prints the next account or null
   model (<id> --provider <p> | --clear) --source <session id>
                                   record the model one session of this tree runs; the
                                   /account extension calls it on session start and model change
@@ -3072,7 +3147,7 @@ def cli(args):
         "adopt-logins": cmd_adopt_logins, "probe": cmd_probe, "refresh": cmd_refresh,
         "resets": cmd_resets, "reset": cmd_reset,
         "off": lambda rest: cmd_toggle(rest, True), "on": lambda rest: cmd_toggle(rest, False),
-        "rm": cmd_rm, "login": cmd_login, "model": cmd_model,
+        "rm": cmd_rm, "login": cmd_login, "model": cmd_model, "limited": cmd_limited,
     }
     if cmd in handlers:
         return handlers[cmd](rest)

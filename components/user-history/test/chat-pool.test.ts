@@ -31,6 +31,13 @@ test("a refused row keeps its cooldown end and reason", () => {
   assert.equal(row!.cooldownReason, "oauth not allowed for organization");
 });
 
+test("a 429-limited row keeps its limit end", () => {
+  const [row] = parsePoolRows({ provider: "anthropic", rows: [{ ...base, reason: "limited 2h0m", limited_until: 1790186635, windows: [] }] }, "anthropic");
+  assert.equal(row!.limitedUntil, 1790186635000);
+  const [plain] = parsePoolRows({ provider: "anthropic", rows: [{ ...base, windows: [] }] }, "anthropic");
+  assert.equal(plain!.limitedUntil, null);
+});
+
 test("refresh stream lines become events with epoch ms", () => {
   assert.deepEqual(parseRefreshEvent('{"event":"accounts","accounts":[{"id":"a","email":"a@x"},{"bad":1}],"provider":"anthropic"}'),
     { event: "accounts", accounts: [{ id: "a", email: "a@x" }] });

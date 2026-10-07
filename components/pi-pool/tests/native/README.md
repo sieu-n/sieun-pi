@@ -17,6 +17,8 @@ node tests/native/recovery.mjs
 node tests/native/abort-hook.mjs --warm
 node tests/native/registry.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 node tests/native/retry.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+FIXTURE_EXPECT=baseline node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 ```
 
 `recovery.mjs` runs 38 cases across Codex and Claude. Add case names to select a subset.
@@ -31,4 +33,7 @@ It checks two distinct slice IDs, two attempts per slice, and one compaction com
 `abort-hook.mjs --warm` checks no provider submission after abort while an in-flight credential owner completes.
 `registry.mjs` checks lazy fallback, source fingerprints, a native API-key candidate marked stale, and failed-hook abort before fallback.
 It does not test real OAuth rotation. `retry.mjs` checks the native completion retry function with synthetic request/provider/lifecycle messages.
+`swap.mjs` runs the real pool hook and the real `/account` extension over RPC with two synthetic Codex accounts.
+Request 1 gets a 429 with a one-hour reset; request 2 of the same turn must use the other account within seconds.
+A second Prime process then must go straight to the other account. `FIXTURE_EXPECT=baseline` runs without the extension and checks that Prime sleeps until the reset.
 Those boundary tests complement RPC tests. They do not replace end-to-end provider requests.

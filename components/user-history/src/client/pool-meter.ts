@@ -15,8 +15,8 @@ export interface PoolSummary {
 
 const windowPct = (row: PoolAccount, key: PoolWindowKey): number | undefined => row.windows.find(window => window.label === key)?.pct;
 
-/** needs a new login, or refused by the API: blocked until a person acts or the cooldown ends, whatever its usage says. */
-const blocked = (row: PoolAccount): boolean => row.reason === "needs-reauth" || Boolean(row.reason?.startsWith("cooldown"));
+/** needs a new login, refused by the API, or limited by a 429: blocked until a person acts or the cooldown or limit ends, whatever its usage says. */
+const blocked = (row: PoolAccount): boolean => row.reason === "needs-reauth" || Boolean(row.reason?.startsWith("cooldown") || row.reason?.startsWith("limited"));
 
 /**
  * How much of a provider's pool is spent, per window: the mean over the accounts that are not turned off. A blocked account
@@ -38,7 +38,7 @@ export function poolSummary(provider: PoolProvider, now = Date.now()): PoolSumma
   let nextFree: number | null = null;
   for (const row of rows) {
     if (row.usable || row.reason === "needs-reauth") continue;
-    const at = row.reason?.startsWith("cooldown") ? row.cooldownUntil
+    const at = row.reason?.startsWith("cooldown") ? row.cooldownUntil : row.reason?.startsWith("limited") ? row.limitedUntil
       : Math.max(0, ...row.windows.filter(window => window.pct >= (window.label === "5h" ? CAP["5h"] : CAP.week) && window.resetsAt).map(window => window.resetsAt!)) || null;
     if (at && at > now && (nextFree === null || at < nextFree)) nextFree = at;
   }

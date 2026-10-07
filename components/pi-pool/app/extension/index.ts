@@ -3,12 +3,17 @@
  * names the account this session's requests use, and adoption of a stored
  * /login that would otherwise bypass the pool.
  *
+ * A provider 429 on a pooled provider is reported to the pool (`limited`); when
+ * another account can serve, the failed message loses its reset time, so Prime
+ * retries in about a second and the hook vends that account in the same turn.
+ *
  * Every judgement lives in `pi-pool-token --cli`. This file parses JSON and
  * formats strings, so the precedence rules and the usage math exist once, in
  * Python. Everything here goes through the public extension API, so it keeps
  * working across Prime Agent updates with nothing to re-apply.
  */
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "prime-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -156,6 +161,42 @@ async function recordModel(ctx: ExtensionContext, model = ctx.model): Promise<vo
 	await pool(model && POOLED_PROVIDERS.has(model.provider) ? ["model", model.id, "--provider", model.provider, "--source", sid] : ["model", "--clear", "--source", sid]);
 }
 
+/** Prime's parseProviderResetMs pattern. A reset phrase left in the text would bring the long wait back. */
+const RESET_PHRASE = /(?:try again|resets?|available)[^.]{0,80}?(?:~\s*)?\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b\.?/gi;
+
+/** `pi-pool-token --cli limited` answer. `next` is null when no other account can serve. */
+interface LimitedReply { account: string; until: number; next: string | null }
+
+/**
+ * A 429 on a pooled provider: tell the pool the account is limited until the
+ * provider's reset. With another account free, return the message without the
+ * reset, so Prime's usage wait pings after about 1s instead of sleeping until
+ * the reset, and that ping's hook call vends the other account. With none free,
+ * leave the message alone and Prime waits for the real reset.
+ */
+async function swapOn429(message: AgentMessage): Promise<AgentMessage | undefined> {
+	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
+	const failure = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
+	const details = (failure?.details ?? {}) as Record<string, unknown>;
+	if (details.status !== 429 || typeof details.retryAfterMs !== "number") return undefined;
+	const until = (Date.now() + details.retryAfterMs) / 1000;
+	const res = await pool(["limited", "--provider", message.provider, "--until", String(until)]);
+	let reply: LimitedReply;
+	try {
+		reply = JSON.parse(res.out) as LimitedReply;
+	} catch {
+		return undefined;
+	}
+	if (!res.ok || !reply.next) return undefined;
+	const { retryAfterMs: _reset, ...rest } = details;
+	const original = (message.errorMessage ?? "").replace(RESET_PHRASE, "").trim();
+	return {
+		...message,
+		errorMessage: `${original} pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}; the retry uses ${reply.next}.`.trim(),
+		diagnostics: message.diagnostics?.map((diagnostic) => (diagnostic === failure ? { ...diagnostic, details: rest } : diagnostic)),
+	};
+}
+
 /** Moves a stored /login for a pooled provider into the pool's fallback, so it cannot shadow the pool. */
 async function adoptLogins(ctx: ExtensionContext): Promise<void> {
 	const res = await pool(["adopt-logins"]);
@@ -193,6 +234,10 @@ export default function (pi: ExtensionAPI): void {
 		await refreshStatus(ctx);
 	});
 	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
+	pi.on("message_end", async (event) => {
+		const message = await swapOn429(event.message);
+		return message ? { message } : undefined;
+	});
 
 	pi.registerCommand("account", {
 		description: "Switch the pooled account for this session",

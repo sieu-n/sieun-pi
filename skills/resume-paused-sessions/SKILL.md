@@ -20,7 +20,7 @@ The script:
 
 1. Runs `prime-agent list --json` (it also finds `~/.local/share/prime-agent/bin/prime-agent` when `prime-agent` is not on `PATH`, or uses `PRIME_AGENT_BIN`).
 2. For each live, idle session active in the window (`--since-minutes`, default 1440 = 24 h), reads the tail of `sessionFile` and takes the last `type == "message"` entry. The run is interrupted when that entry is an assistant error whose text names a network or sign-in failure, or when it is a tool result, user message or tool call with no reply (older than 2 minutes).
-3. Drops a run when its head got a user message after the interruption, or when this script already resumed it. The script records resumed runs by full session id in `~/.prime/agent/resume-paused-sessions.json`. Rate limits (429), overloaded (529) and 5xx errors also count. Every run waits until `pi-pool who` says the account its tree's next request gets can serve; resuming earlier fails again at once.
+3. Drops a run when its head got a user message after the interruption, or when this script already resumed it. The script records resumed runs by full session id in `~/.prime/agent/resume-paused-sessions.json`. Rate limits (429), overloaded (529) and 5xx errors also count. Every run waits until `pi-pool who` says the account its tree's next request gets can serve; resuming earlier fails again at once. The pool extension records each 429 (`pi-pool limited`), so `who` skips the limited account until its reset.
 4. Walks `parentActiveSessionId` up to the root. That root is the head.
 5. Sends each idle head `continue`, followed by the list of stopped runs below it. A working head gets the list as a steer note. A working head with no stopped children is skipped.
 6. Prints the interrupted runs, the heads, and each delivery status.
@@ -38,7 +38,7 @@ Run `prime-agent list` again after 30 to 60 seconds. The heads and their childre
 ## Do not
 
 - Do not send `continue` to sessions whose last message is a normal `stopReason: "stop"`, or `aborted` (the user pressed stop). They are not interrupted.
-- Do not resume errors that are not interruptions: usage limits, 400 request errors, 429 rate limits.
+- Do not resume errors that are not interruptions, such as 400 request errors. A 429 or usage-limit stop is the exception in step 3: it is resumed, but only once `pi-pool who` names an account that can serve.
 - Do not resume old errors. A run that stopped days ago is dead. The 24-hour window filters these.
 - Do not use `agent_message` or `agent_observe` from a fresh root session for this. They only reach parent, siblings, and direct children. The `prime-agent send` CLI reaches any session by id.
 

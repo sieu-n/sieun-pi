@@ -131,6 +131,8 @@ until the session's next provider request runs the hook.
     pi-pool resets [<email|id> ...] [--json]   read each Claude account's banked usage-limit resets (spends nothing)
     pi-pool reset <email|id> [--grant <id>] [--json]   spend one banked reset
     pi-pool probe [--force]       check every Claude account for an API refusal (no token refresh)
+    pi-pool limited --until <epoch sec> [--provider p] [--session id]
+                                  the provider answered 429 for this session's account; prints the next account or null
     pi-pool log [n]               last n pool events
     pi-pool config / set <k> <v>
 
@@ -139,8 +141,8 @@ until the session's next provider request runs the hook.
 `ls --json` names the pool `pin` next to the `seat`. Its rows also carry what `status` draws: `tier` (`max 20x`, `pro`), `windows`
 (one entry per usage window in display order, each with `kind` session, weekly or model,
 `label`, live `pct`, `resets_at` in epoch seconds or null, `window_sec`, `sampled_at`),
-`usage_at` and `usage_age_sec`, `sessions` (vends in the last hour), and `cooldown_until`
-and `cooldown_reason` for a refused account.
+`usage_at` and `usage_age_sec`, `sessions` (vends in the last hour), `cooldown_until`
+and `cooldown_reason` for a refused account, and `limited_until` for an account with a 429 on file.
 
 `refresh` reads usage now for every account, or the named ones. `tokenmaxxing status`
 cannot do this: it skips a Claude account read in the last 90 s to 15 min and reports it
@@ -196,15 +198,38 @@ First match wins, per provider:
 
 | # | source | set by | yields when |
 |---|---|---|---|
-| 1 | session pin | `/account`, `pi-pool use` | the account cannot serve. With `--force`, only when its credential cannot be read |
-| 2 | pool pin | `pi-pool pin` | the account needs re-auth |
+| 1 | session pin | `/account`, `pi-pool use` | the account cannot serve. With `--force`, only when its credential cannot serve (needs re-auth, off, refusal cooldown) or the provider answered 429 (`limited`) |
+| 2 | pool pin | `pi-pool pin` | the account cannot serve: depleted, limited, in cooldown, needs re-auth, or off |
 | 3 | codex plan upgrade | plan tiers `free < plus < pro < team` | no usable codex account sits on a higher plan than the seat |
 | 4 | seat | the pool itself | the seat cannot serve |
 | 5 | best candidate | score | never |
-| 6 | last resort | no account is usable | the depleted account whose limits reset first is vended anyway, so the request gets the provider's 429 and reset time instead of an auth error. Dead logins, disabled accounts and refusal cooldowns are never vended. No account left is an error |
+| 6 | last resort | no account is usable | the depleted or limited account whose limits reset first is vended anyway, so the request gets the provider's 429 and reset time instead of an auth error. Dead logins, disabled accounts and refusal cooldowns are never vended. No account left is an error |
 
-A session pin that yields writes nothing, so it re-applies by itself the moment the
-window resets. `pi-pool who` names the pin it is shadowing.
+A pin that yields writes nothing, so it re-applies by itself the moment the window
+resets or the limit expires. `pi-pool who` names the pin it is shadowing and why. Every
+vend that changes a session's account logs one `vend` line with `reason`, the yielded pin
+in `shadowed`, the cause in `why` (`depleted`, `limited`, ...) and the `previous` account.
+
+## A 429 moves the session in the same turn
+
+Usage figures come from tokenmaxxing samples that can be 15 minutes old, so the provider's
+own 429 is the first sign that an account is used up. The extension handles it on
+`message_end`:
+
+1. An assistant error with status 429 and a `retryAfterMs` on a pooled provider runs
+   `pi-pool limited --provider <p> --until <now + retryAfterMs>`.
+2. `limited` finds the account the session tree last vended, writes
+   `providers.<p>.limits.<account> = {until, at, session}` to `state.json` under the flock,
+   logs a `limited` line, and prints `{"account", "until", "next"}`.
+3. When `next` names an account, the extension returns the message without `retryAfterMs`
+   and without the "Try again in" phrase. Prime's usage wait then pings after about one
+   second instead of sleeping until the reset, and that ping's hook call vends `next`.
+4. When `next` is null, the message stays as it is and Prime waits for the provider's reset.
+
+The limit lives in `state.json`, so a restarted worker or daemon still skips the account.
+The hook prunes it when it expires. `tests/native/swap.mjs` runs this against a copied
+Prime install: request 1 gets a 429 on one Codex account, request 2 of the same turn uses
+the other one, and a restarted Prime process goes straight to the other account.
 
 Step 3 exists because the seat otherwise moves only when it cannot serve. A free codex
 account taken while the paid one was depleted would hold every unpinned session after
@@ -215,7 +240,7 @@ step never fires there.
 
 Score, lowest wins: `max(5h%, 7d%) + 8 per session that vended from it in the last
 hour + 15 if a tokenmaxxing-supervised session runs on it`. Excluded: needs-reauth,
-depleted (>=95% 5h or >=98% 7d or the Fable cap), and accounts in cooldown. The Fable cap
+depleted (>=95% 5h or >=98% 7d or the Fable cap), limited (a 429 on file), and accounts in cooldown. The Fable cap
 only counts for a session tree that runs Fable: the `/account` extension records each
 session's model (`pi-pool model`) at session start and on every model change, and a tree
 with no Fable model ignores the cap. A tree with no recorded model keeps it. A cooldown
@@ -277,6 +302,7 @@ the tray line. Prime 0.9.5 ships as one compiled binary, so that patch is gone.
 | `/account` | pick this session's account, or follow the pool. Usable accounts are listed first |
 | account line | one widget line by the editor: `account <email> 5h 25% · week 7% · fable 12%`, plus `→ <email>` when the next request switches. Refreshed at session start, on model change, after every turn, and every 60 seconds |
 | login adoption | at session start it runs `pi-pool adopt-logins` (next section) and tells you if it moved a login |
+| 429 swap | on a 429 it runs `pi-pool limited` and, when another account can serve, drops the reset from the message so Prime retries in about a second on that account (see "A 429 moves the session in the same turn") |
 | refusal probe | at session start it runs `pi-pool probe`, which sends one free `count_tokens` request per account with a valid token, at most every 6 hours. A refused account gets a 24h cooldown in the pool and `enforcedUntil` in tokenmaxxing's index, so supervised `claude` sessions avoid it too |
 
 Prime 0.9.5 keeps `setStatus` text but its footer never draws it, which is why the account

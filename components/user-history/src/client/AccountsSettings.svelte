@@ -107,7 +107,7 @@
   const shownRefresh = $derived(refresh && watchedRefreshes.includes(refresh.id) ? refresh : null);
   const refreshEntry = (row: PoolAccount): UsageRefreshAccount | undefined => shownRefresh?.accounts.find(entry => entry.id === row.id);
   const columns = $derived(current ? windowColumns(current.rows) : []);
-  const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, cooldown: 4, refused: 4, "needs-login": 5, off: 6 };
+  const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, limited: 3, cooldown: 4, refused: 4, "needs-login": 5, off: 6 };
   const rows = $derived([...(current?.rows ?? [])].sort((a, b) => rank(a) - rank(b) || a.email.localeCompare(b.email)));
 
   function rank(row: PoolAccount): number {
@@ -232,6 +232,8 @@
       const left = row.cooldownUntil && row.cooldownUntil > now ? ` The pool tries it again in ${span(row.cooldownUntil - now)}.` : "";
       out.push((row.cooldownReason ? `Refused: ${row.cooldownReason}.` : "Cooling down after a failure.") + left);
     }
+    else if (state === "limited" && row.limitedUntil && row.limitedUntil > now)
+      out.push(`The provider answered 429. The pool skips it for ${span(row.limitedUntil - now)}, pins included.`);
     out.push(...unread);
     const stale = staleText(row, now);
     if (stale && state !== "needs-login") out.push(stale + ".");
@@ -247,7 +249,7 @@
     menu = null;
     if (!threadId || !pickable(row)) return;
     if (row.usable) { void run({ action: "use", provider, account: row.id, id: threadId, force: false }, row.id); return; }
-    confirm = { title: `Use ${row.email} anyway?`, body: `${row.email} cannot serve right now (${row.reason ?? "not usable"}). This thread keeps it until you follow the pool again.`, label: "Use anyway",
+    confirm = { title: `Use ${row.email} anyway?`, body: `${row.email} cannot serve right now (${row.reason ?? "not usable"}). This thread keeps it, used up or not, until you follow the pool again. A 429 from the provider still moves it to another account until the reset.`, label: "Use anyway",
       action: { action: "use", provider, account: row.id, id: threadId, force: true } };
   }
   function rowClick(event: MouseEvent, provider: Provider, row: PoolAccount): void {
@@ -255,7 +257,7 @@
     useForThread(provider, row);
   }
   function ask(next: Confirm): void { menu = null; typed = ""; confirm = next; }
-  const askPin = (provider: Provider, row: PoolAccount) => ask({ title: `Pin ${row.email} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session uses this account until you unpin it.`, label: "Pin",
+  const askPin = (provider: Provider, row: PoolAccount) => ask({ title: `Pin ${row.email} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session uses this account until you unpin it. While it is used up, limited by a 429 or cooling down, sessions use another account and come back when it can serve.`, label: "Pin",
     action: { action: "pin", provider, account: row.id } });
   const askUnpin = (provider: Provider) => ask({ title: `Unpin ${PROVIDER_LABEL[provider]}?`, body: "Sessions go back to the pool's own choice.", label: "Unpin", action: { action: "unpin", provider } });
   const askDropSeat = (provider: Provider, row: PoolAccount) => ask({ title: `Drop the seat on ${row.email}?`, body: "The next request moves the seat to the best account. Running sessions keep their connection.",

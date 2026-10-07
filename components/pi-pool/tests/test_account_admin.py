@@ -119,6 +119,58 @@ class PoolFixture(unittest.TestCase):
             return f.read().splitlines()
 
 
+class LimitedSurvivesARestart(PoolFixture):
+    """`pi-pool limited` writes the 429 to state.json; a later process, which is
+    what the next request's hook is, reads it back and moves the session."""
+    C, D = "cccc3333-0000-0000-0000-000000000000", "dddd4444-0000-0000-0000-000000000000"
+    SESSION = "01a1-limited-session"
+
+    def setUp(self):
+        super().setUp()
+        index = {"version": 2, "accounts": CODEX_INDEX["accounts"] + [
+            {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus", "windows": []}]}
+        with open(os.path.join(self.tm, "codex-accounts.json"), "w") as f:
+            json.dump(index, f)
+        now = time.time()
+        self.write_state({"version": 2, "providers": {
+            "anthropic": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}},
+            "openai-codex": {"pin": self.C, "seat": {"account_id": self.C, "since": now}, "cooldowns": {}, "disabled": {}}},
+            "sessions": {self.SESSION: {"uuid": self.SESSION, "active_id": None, "last_seen": now, "pins": {},
+                                        "vends": {"openai-codex": {"account_id": self.C, "email": "c@x", "at": now, "n": 3}}}}})
+
+    def test_a_429_moves_the_pool_pin_until_the_reset_and_a_new_process_still_sees_it(self):
+        until = time.time() + 3600
+        code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x"})
+        self.assertEqual(self.state()["providers"]["openai-codex"]["limits"][self.C]["session"], self.SESSION)
+        code, out = self.cli("who", "--json", "--session", self.SESSION)
+        self.assertEqual(code, 0, out)
+        who = json.loads(out)["providers"]["openai-codex"]
+        self.assertEqual((who["email"], who["reason"], who["shadowed"]), ("d@x", "seat_move", [self.C, "limited"]))
+        row = self.rows("openai-codex")["c@x"]
+        self.assertEqual((row["usable"], row["limited_until"]), (False, round(until)))
+        self.assertTrue(row["reason"].startswith("limited "), row["reason"])
+        with open(os.path.join(self.pool, "pi-pool.log")) as f:
+            events = [json.loads(line) for line in f]
+        self.assertEqual([(e["event"], e["account"], e["next"]) for e in events if e["event"] == "limited"],
+                         [("limited", "c@x", "d@x")])
+
+    def test_with_no_other_account_next_is_null(self):
+        until = time.time() + 3600
+        state = self.state()
+        state["providers"]["openai-codex"]["limits"] = {self.D: {"until": until, "at": time.time(), "session": None}}
+        self.write_state(state)
+        code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(json.loads(out)["next"])
+
+    def test_a_session_with_no_vend_is_refused(self):
+        code, out = self.cli("limited", "--provider", "anthropic", "--session", self.SESSION, "--until", str(time.time() + 60))
+        self.assertEqual(code, 2)
+        self.assertIn("no anthropic vend", json.loads(out)["error"])
+
+
 class OffAndOn(PoolFixture):
     def test_off_keeps_the_account_listed_but_never_usable(self):
         self.assertEqual(self.cli("off", "a@x"), (0, "a@x is off; the pool never picks it until pi-pool on"))
