@@ -235,9 +235,8 @@
 <aside class="sidebar" class:open={store.sidebarOpen} class:narrow class:resizing aria-label="Threads" bind:this={aside}>
   <div class="inner">
     <div class="top">
-      <button type="button" class="new" use:tooltip={"New chat ⌘N"} onclick={() => store.select(null)}><Icon name="plus" size={15} /><span>New chat</span></button>
-      <button type="button" class="icon-button" aria-label="Agents view" use:tooltip={"Agents view ⌘K"} onclick={() => { ui.agentsOpen = true; }}><Icon name="list" /></button>
-      <button type="button" class="icon-button" aria-label="Settings" use:tooltip={"Settings"} onclick={() => { store.drawer = "accounts"; }}><Icon name="settings" /></button>
+      <img class="mark" src="favicon-64.png" alt="Prime Agent" width="24" height="24" />
+      <button type="button" class="new" use:tooltip={"New chat ⌘N"} onclick={() => store.select(null)}><Icon name="plus" size={15} /><span>New chat</span><kbd>⌘N</kbd></button>
       <button type="button" class="icon-button" aria-label="Hide sidebar" use:tooltip={"Hide sidebar ⌘B"} onclick={() => { store.sidebarOpen = false; }}><Icon name="sidebar" /></button>
     </div>
     <div class="find">
@@ -256,7 +255,6 @@
         <Icon name="filter" size={14} />{#if filterCount}<span class="filter-count">{filterCount}</span>{/if}
       </button>
     </div>
-    <InterruptedRuns />
     <div class="list" bind:this={list}>
       {#if chats.length}
         <div class="group-label chats-label">Chats <span class="count">{chats.length}</span>{#if chatsNeeding}<span class="dot small" role="img" aria-label="{chatsNeeding} need a response"></span>{/if}</div>
@@ -291,6 +289,11 @@
       {/if}
     </div>
     <PoolMeters />
+    <div class="foot">
+      <button type="button" class="foot-button" use:tooltip={"Settings"} onclick={() => { store.drawer = "accounts"; }}><Icon name="settings" size={15} /><span>Settings</span></button>
+      <button type="button" class="icon-button small" aria-label="Agents view" use:tooltip={"Agents view ⌘K"} onclick={() => { ui.agentsOpen = true; }}><Icon name="list" /></button>
+      <InterruptedRuns />
+    </div>
   </div>
 </aside>
 {#if !narrow}
@@ -344,10 +347,18 @@
   .resize:focus-visible { outline: none; }
   :global(body:has(.resize.resizing)) { cursor: col-resize; user-select: none; }
   .inner { display: flex; flex-direction: column; height: 100%; width: var(--sidebar); max-width: 100%; }
-  .top { display: flex; align-items: center; gap: 2px; padding: 10px 10px 6px; }
-  .new { display: inline-flex; align-items: center; gap: 7px; flex: 1; height: 32px; margin-right: 4px; padding: 0 10px; border-radius: var(--radius-small); background: var(--bg-elevated);
+  .top { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px; }
+  .mark { flex: none; width: 26px; height: 26px; margin: 0 1px; border-radius: 7px; box-shadow: 0 1px 3px rgba(79, 60, 229, 0.35); }
+  .new { display: flex; flex: 1; min-width: 0; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border-radius: var(--radius-small); background: var(--bg-elevated);
     border: 1px solid var(--border-strong); font-size: 13px; font-weight: 500; box-shadow: var(--shadow-small); transition: border-color 0.12s; }
+  .new span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .new:hover { border-color: var(--text-faint); }
+  .new kbd { margin-left: auto; font: 500 11.5px var(--font); color: var(--text-faint); }
+  .foot { display: flex; flex: none; align-items: center; gap: 2px; padding: 0 8px 8px; }
+  .foot-button { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; border-radius: var(--radius-small); font-size: 12.5px; font-weight: 500; color: var(--text-muted); }
+  .foot-button:hover, .icon-button.small:hover { background: var(--bg-hover); color: var(--text); }
+  .foot :global(.interrupted) { margin-left: auto; }
+  .foot:has(:global(.interrupted)) .foot-button span { display: none; }
   .find { display: flex; align-items: center; gap: 4px; margin: 2px 10px 8px; }
   .search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0 8px; height: 30px; border-radius: var(--radius-small); background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-faint); }
   .search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

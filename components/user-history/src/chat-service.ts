@@ -8,6 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { defaultDaemonSocketPath, getAgentDir } from "prime-agent";
 import { parsePublicOrigin, parseRemoteFlag, type RemoteSetting } from "./chat-origin.ts";
 import { KeepRunning } from "./chat-autostart.ts";
+import { daemonAnswers, DaemonKeeper } from "./chat-daemon.ts";
+import { openChat } from "./chat-open.ts";
 import { RemoteAccess, type RemoteControl } from "./chat-remote.ts";
 import type { RemoteMode } from "./shared/types.ts";
 
@@ -37,6 +39,14 @@ async function isPrimary(directory: string): Promise<boolean> {
   if (process.env.SIEUN_PI_CHAT_AUTOMATIC === "0") return false;
   const main = await realpath(join(userInfo().homedir, ".prime", "agent", "browser-chat")).catch(() => null);
   return main === directory;
+}
+/**
+ * The main instance starts the Prime Agent daemon when its socket does not answer (after a reboot nothing else starts it). Test and extra
+ * instances leave the daemon alone. SIEUN_PI_CHAT_START_DAEMON=1 or 0 overrides that for one process.
+ */
+function startsDaemon(primary: boolean): boolean {
+  const flag = process.env.SIEUN_PI_CHAT_START_DAEMON;
+  return flag === "1" ? true : flag === "0" ? false : primary;
 }
 function configuration(value: unknown, primary: boolean): Configuration {
   if (!isRecord(value) || typeof value.port !== "number" || typeof value.socketPath !== "string" || !value.socketPath.startsWith("/") ||
@@ -213,6 +223,10 @@ async function serve(options: Options): Promise<void> {
   const existing = await running(service);
   if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
+  // Started before the bundle build, so the daemon boots while esbuild runs. The catalog and threads reconnect on their own once it answers.
+  const keeper = startsDaemon(service.primary)
+    ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
+  void keeper?.start();
   const [{ buildClientBundle }, { createChatBackend }, { startChatServer }] = await Promise.all([
     import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts")]);
   const [bundle, { SdkSync, loadedClientVersion }] = await Promise.all([buildClientBundle(), import("./chat-sdk.ts")]);
@@ -232,7 +246,7 @@ async function serve(options: Options): Promise<void> {
     closing = (async () => {
       try { if (instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
-      finally { remote.stop(); await server.close(); }
+      finally { keeper?.close(); remote.stop(); await server.close(); }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
   }
@@ -293,10 +307,18 @@ export async function runChatCommand(args: string[]): Promise<void> {
   if (options.remote !== undefined && command !== "start" && command !== "serve") throw new Error("Use --public-origin with chat start or serve.");
   if (options.supervised && command !== "serve") throw new Error("Use --supervised with chat serve.");
   if (command === "start") { process.stdout.write((await ensureChatService(options)).url + "\n"); return; }
+  if (command === "open") {
+    const record = await ensureChatService(options);
+    const opened = await openChat(record.url);
+    process.stdout.write(opened?.opened === "app" ? `Opened the installed app ${opened.target}.\n`
+      : opened ? `Opened ${record.url} in the default browser. Install it as an app from the browser menu (Install page as app, or Open in app) for a Dock icon.\n`
+      : record.url + "\n");
+    return;
+  }
   if (command === "serve") { await serve(options); process.exit(process.exitCode ?? 0); }
   if (!["url", "status", "stop"].includes(command)) {
     if (!["help", "--help", "-h"].includes(command)) throw new Error("Unknown chat command: " + command);
-    process.stdout.write("sieun-pi chat start|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none]\nNo browser opens. Keep the URL private: it grants chat access.\n"); return;
+    process.stdout.write("sieun-pi chat start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none]\nOnly open starts a window: the installed app, else the default browser. Keep the URL private: it grants chat access.\n"); return;
   }
   const service = await loadService(options, false);
   if (!service) {
@@ -307,7 +329,9 @@ export async function runChatCommand(args: string[]): Promise<void> {
   const record = await running(service);
   if (command === "status") {
     const phone = phoneUrl(service);
-    process.stdout.write((record ? `Chat is running (PID ${record.pid}).` : "Chat is stopped.") + "\n" + service.url + "\n" + (phone ? `Phone: ${phone}\n` : "")); return;
+    const daemon = await daemonAnswers(service.config.socketPath) ? "answering" : "not running";
+    process.stdout.write((record ? `Chat is running (PID ${record.pid}).` : "Chat is stopped.") + "\n" + service.url + "\n" + (phone ? `Phone: ${phone}\n` : "") +
+      `Daemon: ${daemon} on ${service.config.socketPath}\n`); return;
   }
   if (record) {
     const response = await fetch(service.url + "api/service-stop", { method: "POST", signal: AbortSignal.timeout(3000), redirect: "error",

@@ -160,3 +160,8 @@ export function sortBy(rows: readonly SessionRow[], key: SortKey, descending: bo
   const sorted = [...rows].sort(compare);
   return descending ? sorted.reverse() : sorted;
 }
+
+/** The browser tab title: tag names, then the thread name, or "New chat" when no thread is open. */
+export function pageTitle(tagNames: readonly string[], threadName: string | null): string {
+  return [tagNames.join(", "), threadName ?? "New chat"].filter(Boolean).join(" - ");
+}

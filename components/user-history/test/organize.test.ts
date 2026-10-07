@@ -7,7 +7,7 @@ import { childrenByParent, parseSchedules, projectRow, runningByParent, sessionP
 import { applyLabelAction, ChatLabels, LabelError, type LabelsState } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { readPulse } from "../src/shared/pulse.ts";
-import { activeFilters, bucketOf, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, inSidebar, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, originOf, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
+import { activeFilters, bucketOf, compareRows, createdAge, elapsed, emptyFilter, emptyRowFilter, groupRows, inSidebar, matchesRowFilter, matchesFilter, modelShort, money, needsResponse, originOf, pageTitle, sortBy, statusOf, tabOf } from "../src/client/organize.ts";
 import type { SessionRow, Tag } from "../src/shared/types.ts";
 
 const artifacts = () => process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(import.meta.dirname, "../.test-artifacts");
@@ -231,4 +231,11 @@ test("catalog subtree: cost adds every subagent below a thread, live or saved, a
   assert.equal(bucketOf(settled), "needs");
   assert.equal(bucketOf(projectRow(parent, Date.parse("2026-01-03T00:00:00Z"), 0, { subtree: subtreeOf(parent, new Map()) })), "idle", "read and not working is idle");
   assert.equal(subtreeOf(summary("lonely"), new Map()).cost, undefined, "no usage anywhere stays unknown");
+});
+
+test("the tab title is the tag names, then the thread name or New chat", () => {
+  assert.equal(pageTitle([], null), "New chat");
+  assert.equal(pageTitle(["personal-env"], null), "personal-env - New chat");
+  assert.equal(pageTitle(["ops", "personal-env"], "realtime layer"), "ops, personal-env - realtime layer");
+  assert.equal(pageTitle([], "realtime layer"), "realtime layer");
 });

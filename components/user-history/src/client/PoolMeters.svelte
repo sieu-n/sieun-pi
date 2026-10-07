@@ -4,6 +4,7 @@
   import { poolSummary } from "./pool-meter.ts";
   import { store } from "./store.svelte.ts";
   import type { AccountsView } from "../shared/types.ts";
+  import ThroughputLine from "./ThroughputLine.svelte";
 
   /** The whole pool's spent share per provider, at the bottom of the sidebar. A click opens account settings. */
   let view = $state<AccountsView | null>(null);
@@ -23,8 +24,9 @@
   });
 </script>
 
-{#if rows.length}
-  <div class="pool">
+<div class="pool">
+  <ThroughputLine />
+  {#if rows.length}
     {#each rows as { provider, summary } (provider.provider)}
       {@const label = PROVIDER_LABEL[provider.provider]}
       <button type="button" class="line" class:empty={summary.usable === 0} title={title(label, summary)} onclick={() => { store.drawer = "accounts"; }}>
@@ -39,8 +41,8 @@
         <span class="usable">{summary.usable}/{summary.total}</span>
       </button>
     {/each}
-  </div>
-{/if}
+  {/if}
+</div>
 
 <style>
   .pool { flex: none; display: flex; flex-direction: column; gap: 2px; padding: 6px 6px 8px; border-top: 1px solid var(--border); }

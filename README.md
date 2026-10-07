@@ -53,7 +53,7 @@ sieun-pi chat stop     # leaves native workers running
 sieun-pi chat serve   # foreground server
 ```
 
-The URL and port survive restarts. No browser opens automatically. The main instance also opens on your Tailscale devices at a fixed `https://<mac>.<tailnet>.ts.net/<secret>/` link, set up without manual steps; Settings > Phone access shows it with a QR code. The service stays separate from pi-pool's CLI/token hook. Custom instances accept `--port`, `--socket` and `--data-dir`. The extension accepts `--agent-chat-port`, `--agent-chat-socket` and `--agent-chat-data-dir`. See the component README for the private capability model and lifecycle rules.
+The URL and port survive restarts. No browser opens automatically; `sieun-pi open` starts the chat if needed and opens it, in the installed app window when you installed it from Chrome or Aside, else in the default browser. The main instance also opens on your Tailscale devices at a fixed `https://<mac>.<tailnet>.ts.net/<secret>/` link, set up without manual steps; Settings > Phone access shows it with a QR code. The service stays separate from pi-pool's CLI/token hook. Custom instances accept `--port`, `--socket` and `--data-dir`. The extension accepts `--agent-chat-port`, `--agent-chat-socket` and `--agent-chat-data-dir`. See the component README for the private capability model and lifecycle rules.
 Do not register this package through Prime's package settings as well as the source installer.
 The `pi.extensions` and `pi.skills` metadata support resource discovery; they do not install pool tools or migrate old links.
 

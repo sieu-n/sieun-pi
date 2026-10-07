@@ -5,6 +5,7 @@
   import { ui } from "./ui.svelte.ts";
   import { syncSpinners } from "./clock.svelte.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
+  import { pageTitle } from "./organize.ts";
   import Sidebar from "./Sidebar.svelte";
   import Thread from "./Thread.svelte";
   import Chat from "./Chat.svelte";
@@ -35,6 +36,15 @@
   /** The selected row, once the sessions stream has listed it: a chat renders Chat.svelte, anything else Thread.svelte. */
   const selectedRow = $derived(store.session(store.selectedId));
   const isChat = $derived(selectedRow?.chat === true);
+
+  /** The tab names the sidebar's tag filter, else the open thread's own tags, then the thread, so several chat tabs stay apart in the tab strip. */
+  $effect(() => {
+    const filterTag = ui.sidebarFilter.tag;
+    const tagIds = filterTag !== "any" && filterTag !== "none" ? [filterTag] : (selectedRow?.tags ?? []);
+    const names = tagIds.flatMap(id => store.tags.find(tag => tag.id === id)?.name ?? []);
+    const id = store.selectedId;
+    document.title = pageTitle(names, id ? (selectedRow?.name ?? store.thread(id)?.state?.info.name ?? "Prime Agent chat") : null);
+  });
 
   let previous: string | null = null;
   $effect(() => {

@@ -4,7 +4,7 @@
  * The socket opens on the first subscription, reconnects with backoff while any feed is subscribed, and subscribes again
  * after each reconnect. The server answers a new subscription with a fresh snapshot, so nothing is lost across a reconnect.
  */
-export type Feed = { feed: "sessions" } | { feed: "login" } | { feed: "refresh" } | { feed: "thread"; id: string };
+export type Feed = { feed: "sessions" } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string };
 type Listener = { feed: Feed; onEvent: (event: string, data: unknown) => void; onError: () => void };
 
 const token = document.body.dataset.chatToken ?? "";

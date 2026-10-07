@@ -4,11 +4,13 @@
   import { store } from "./store.svelte.ts";
   import type { InterruptedReport, InterruptedRun } from "../shared/interrupted.ts";
   import Icon from "./Icon.svelte";
+  import Floating from "./ui/Floating.svelte";
 
   /** Runs a wifi drop, sleep or shutdown stopped. The resume-paused-sessions skill decides which runs count; this only shows its answer. */
   let report = $state<InterruptedReport | null>(null);
   let busy = $state(false);
   let open = $state(false);
+  let summary: HTMLButtonElement | undefined = $state();
   const runs = $derived(report?.paused ?? []);
   const heads = $derived(new Set(runs.map(run => run.head)).size);
 
@@ -58,40 +60,35 @@
 
 {#if runs.length}
   <div class="interrupted" role="status">
-    <div class="line">
-      <button type="button" class="summary" title="Stopped by a network drop, sleep or shutdown" aria-expanded={open} onclick={() => { open = !open; }}>
-        <span class="icon"><Icon name="alert" size={14} /></span>
-        <span class="text">{runs.length} interrupted</span>
-        <span class="chev" class:open><Icon name="chevronDown" size={11} /></span>
-      </button>
-      <button type="button" class="resume" disabled={busy} onclick={resume}>
-        <Icon name="refresh" size={13} /><span>{busy ? "Resuming" : "Resume"}</span>
-      </button>
-    </div>
-    {#if open}
+    <button type="button" class="summary" bind:this={summary} title="Stopped by a network drop, sleep or shutdown" aria-haspopup="dialog" aria-expanded={open} onclick={() => { open = !open; }}>
+      <Icon name="alert" size={13} /><span>{runs.length} interrupted</span>
+    </button>
+    <button type="button" class="resume" disabled={busy} onclick={resume}>
+      <Icon name="refresh" size={12} /><span>{busy ? "Resuming" : "Resume"}</span>
+    </button>
+  </div>
+  {#if open && summary}
+    <Floating anchor={summary} width={300} maxHeight={360} label="Interrupted runs" onclose={() => { open = false; }}>
       <ul>
         {#each runs as run (run.id)}<li title={run.error}><span class="name">{run.name}</span><span class="why">{why(run)}</span></li>{/each}
       </ul>
       <p class="hint">Resume sends continue to {heads} head thread{heads === 1 ? "" : "s"}; each one re-drives its own runs.</p>
-    {/if}
-  </div>
+    </Floating>
+  {/if}
 {/if}
 
 <style>
-  .interrupted { margin: 0 10px 8px; padding: 4px; border-radius: var(--radius-small); border: 1px solid var(--border-strong); background: var(--bg-elevated); font-size: 12.5px; }
-  .line { display: flex; align-items: center; gap: 4px; }
-  .summary { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: var(--radius-small); text-align: left; color: var(--text); }
-  .summary:hover { background: var(--bg-hover); }
-  .icon { display: inline-flex; color: var(--warning); }
-  .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .chev { display: inline-flex; color: var(--text-faint); transform: rotate(-90deg); transition: transform 0.12s; }
-  .chev.open { transform: none; }
-  .resume { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border-radius: var(--radius-small); background: var(--accent); color: white; font-weight: 500; }
-  .resume:hover:not(:disabled) { background: var(--accent-bold); }
+  .interrupted { display: inline-flex; align-items: center; flex: none; height: 26px; border-radius: var(--radius-small); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+    background: color-mix(in srgb, var(--warning) 9%, var(--bg-elevated)); font-size: 12px; font-weight: 500; overflow: hidden; }
+  .summary { display: inline-flex; align-items: center; gap: 5px; height: 100%; padding: 0 7px; color: var(--warning); }
+  .summary span { color: var(--text); white-space: nowrap; }
+  .summary:hover, .summary[aria-expanded="true"] { background: var(--bg-hover); }
+  .resume { display: inline-flex; align-items: center; gap: 4px; height: 100%; padding: 0 8px; border-left: 1px solid color-mix(in srgb, var(--warning) 35%, transparent); color: var(--accent-bold); }
+  .resume:hover:not(:disabled) { background: var(--accent-soft); }
   .resume:disabled { opacity: 0.6; }
-  ul { list-style: none; margin: 4px 0 0; padding: 0 4px; }
-  li { display: flex; gap: 8px; justify-content: space-between; padding: 2px 0; }
+  ul { list-style: none; margin: 0; padding: 4px 6px 0; font-size: 12.5px; }
+  li { display: flex; gap: 8px; justify-content: space-between; padding: 3px 0; }
   .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .why { flex: none; color: var(--text-faint); }
-  .hint { margin: 4px 4px 2px; color: var(--text-faint); font-size: 11.5px; }
+  .hint { margin: 4px 6px 4px; color: var(--text-faint); font-size: 11.5px; }
 </style>

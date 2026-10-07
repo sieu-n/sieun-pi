@@ -15,6 +15,7 @@ import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshe
 import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
+import { parseBucket, parseGroup, parseWindow, UsageError } from "./usage/service.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SdkSync } from "./chat-sdk.ts";
@@ -24,7 +25,7 @@ const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
 const requestIdPattern = /^[a-zA-Z0-9_-]{16,100}$/;
 const idPattern = /^[a-zA-Z0-9_.:-]{1,256}$/;
-export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; frame-src 'self'; connect-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -40,6 +41,12 @@ export function renderShell(csrfToken: string, version: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Prime Agent chat</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8f9fb">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#17181c">
 <link rel="stylesheet" href="app.css">
 </head>
 <body data-chat-token="${escapeAttribute(csrfToken)}" data-build="${escapeAttribute(version)}">
@@ -254,6 +261,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
     }
     if (feed.feed === "login") return logins.subscribe(login => send("login", login));
     if (feed.feed === "refresh") return refreshes.subscribe(refresh => send("refresh", refresh));
+    if (feed.feed === "usage") {
+      if (!backend.usage) throw new Error("Usage analytics is off in this chat.");
+      return backend.usage.subscribe(summary => send("usage", summary));
+    }
     try { return await backend.threads.subscribe(threadId(feed.id), event => send("thread", event)); }
     catch (error) {
       send("thread", { type: "status", connection: "closed", error: error instanceof Error ? error.message : String(error) });
@@ -363,6 +374,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(shell); return; }
         if (route === "app.js") { serveAsset(req, res, bundle.js); return; }
         if (route === "app.css") { serveAsset(req, res, bundle.css); return; }
+        const appFile = bundle.app?.(route);
+        if (appFile) { serveAsset(req, res, appFile); return; }
         if (route === "api/sessions/stream") {
           const stream = openStream(req, res);
           stream.send("build", { version: bundle.version });
@@ -383,6 +396,14 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
         if (route === "api/remote") { json(res, 200, remote.view(origin === `http://${host}`)); return; }
         if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
+        if (route.startsWith("api/usage/")) {
+          const analytics = backend.usage;
+          if (!analytics) throw new RequestError(503, "Usage analytics is off in this chat.");
+          const query = url.searchParams;
+          if (route === "api/usage/summary") { json(res, 200, await analytics.summary()); return; }
+          if (route === "api/usage/series") { json(res, 200, await analytics.series(parseWindow(query.get("window")), parseBucket(query.get("bucket")), parseGroup(query.get("group")))); return; }
+          if (route === "api/usage/models") { json(res, 200, await analytics.models(parseWindow(query.get("window")))); return; }
+        }
         if (route === "api/accounts/login/stream") {
           const stream = openStream(req, res);
           const unsubscribe = logins.subscribe(login => stream.send("login", login));
@@ -635,7 +656,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       }
       json(res, 200, { ok: true });
     } catch (error) {
-      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError || error instanceof PoolError ? error.status : error instanceof WorkspaceError ? 400 : 502;
+      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError || error instanceof PoolError || error instanceof UsageError ? error.status : error instanceof WorkspaceError ? 400 : 502;
       if (!res.headersSent && !res.destroyed) json(res, status, { error: error instanceof Error ? error.message : "Prime Agent is unavailable." });
     }
   }
