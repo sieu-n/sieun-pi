@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { briefFor, briefFromCode, findJob, jobName, jobViews, parentChatOf, reportsFor, spawnCalls, treeJobs } from "../src/client/jobs.ts";
+import { briefFor, briefFromCode, findJob, jobName, jobNames, jobStatusText, jobViews, parentChatOf, reportsFor, spawnCalls, treeJobs, updatesJob } from "../src/client/jobs.ts";
 import type { ChatLine } from "../src/shared/chat-feed.ts";
 import type { ChildAgent, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 
@@ -90,6 +90,20 @@ test("treeJobs and parentChatOf read a chat's jobs from its row and from the ses
   assert.deepEqual(parentChatOf("s1", rows, messagesOf), { chat, open: "ux-email" });
   assert.deepEqual(parentChatOf("01a1-root", rows, messagesOf), { chat, open: "session:01a1-root" });
   assert.equal(parentChatOf("nobody", rows, messagesOf), null);
+  assert.deepEqual(jobNames(chat, { children: [child("c1", "ux-monitor"), child("c2", "ux-review")], messages }, rowOf), ["ux-monitor", "seo-todo", "ux-email", "ux-review"], "row jobs and started sessions as the sidebar lists them, then the daemon's children, once each");
+  assert.deepEqual(jobNames(undefined, { children: [], messages }, rowOf), ["seo-todo"], "no row yet: the started sessions by their catalog name");
+  assert.deepEqual(jobNames(undefined, null, rowOf), []);
+  assert.deepEqual(tree.map(jobStatusText), ["Reading routes", "queued", "Finished"]);
+  assert.equal(jobStatusText({ ...tree[0]!, activity: "" }), "Running");
+  assert.equal(jobStatusText({ ...tree[2]!, saved: false }), "Idle");
+  assert.equal(jobStatusText({ ...tree[2]!, failed: true }), "Failed");
+});
+
+test("updatesJob previews the sender of the last job message in a folded run", () => {
+  const job = (from: string, at: number): ChatLine => ({ kind: "job", id: "m" + at, from, title: "t", body: "b", at });
+  const notes: ChatLine = { kind: "notes", id: "n", text: "note", at: 3 };
+  assert.equal(updatesJob({ kind: "updates", id: "u", at: 1, entries: [job("ux-email", 1), job("ux-monitor", 2), notes] as never }), "ux-monitor");
+  assert.equal(updatesJob({ kind: "updates", id: "u", at: 3, entries: [notes] as never }), null);
 });
 
 test("spawnCalls keeps every truncated cell, since the call may sit past the head", () => {

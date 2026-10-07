@@ -9,11 +9,11 @@
   import { chatFeed, chatLines, updatesLabel, type ChatItem, type ChatLine, type Update } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { createdSessions } from "./children.ts";
-  import { findJob, jobName, jobViews, reportsFor, type JobReport } from "./jobs.ts";
+  import { findJob, jobName, jobNames, jobViews, reportsFor, type JobReport } from "./jobs.ts";
   import { triggerBody } from "../shared/turns.ts";
   import { anchorStamp, permalink } from "./permalink.ts";
   import { diffLines, wikiBlocks, wikiUrl, type ReaderView } from "./reader.ts";
-  import { boardIndex } from "./board.ts";
+  import { mentionIndex } from "./board.ts";
   import type { ChildUsage } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
   import Icon, { type IconName } from "./Icon.svelte";
@@ -32,8 +32,8 @@
   const snapshot = $derived(thread ? store.thread(thread)?.state ?? null : null);
   const entry = $derived(thread ? store.thread(thread) : undefined);
   const cwd = $derived(snapshot?.info.cwd ?? "");
-  /** Board ids in a chat's messages render as mention chips that open the chat's plan view. */
-  const mentions = $derived(thread ? boardIndex(thread, snapshot?.board) : null);
+  /** Board ids and job names in a chat's messages render as mention chips: the plan view for an id, this reader for a job. */
+  const mentions = $derived(thread ? mentionIndex(thread, snapshot?.board, jobNames(store.session(thread), snapshot, id => store.session(id))) : null);
   /** A message of another thread needs that thread open; it is let go on close unless it is the one on screen. */
   $effect(() => {
     const id = thread;
@@ -168,6 +168,7 @@
     if (click?.kind === "image") image = { src: click.src, alt: click.alt };
     else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, thread ?? store.selectedId ?? ""); }
     else if (click?.kind === "mention" && thread) { const chat = thread; onclose(); store.openPlan(chat, click.id); }
+    else if (click?.kind === "job" && thread) store.openArtifact({ kind: "job", name: click.name }, thread);
   }
   const dirOf = (path: string) => path.replace(/\/[^/]*$/, "");
 </script>

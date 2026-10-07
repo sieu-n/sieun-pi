@@ -55,17 +55,23 @@ export function treeRows<T extends { id: string; children: T[] }>(items: readonl
 }
 
 /**
- * The board's ids with a short title each, for the mention chips in chat text (`p<n>` plan steps, `s<n>` notes). `key` changes with every
- * board op, so a render cache can key on it. Null for a chat with no board yet.
+ * What a chat's text turns into chips: the board's ids with a short title each (`p<n>` plan steps, `s<n>` notes) and the names of its jobs.
+ * `jobs` matches one job name written as a whole word (`at` at the start of the text, `start` anywhere; neither matches inside a word or
+ * a hyphenated word). `key` changes with every board op and every new job, so a render cache can key on it. Null when the chat has
+ * neither a board nor a job.
  */
-export interface BoardIndex { chatId: string; key: string; titles: Map<string, string> }
-export function boardIndex(chatId: string, board: ChatBoard | null | undefined): BoardIndex | null {
-  if (!board) return null;
+export interface MentionIndex { chatId: string; key: string; titles: Map<string, string>; jobs: { at: RegExp; start: RegExp } | null }
+const NAME_LIMIT = 80;
+export function mentionIndex(chatId: string, board: ChatBoard | null | undefined, jobNames: readonly string[] = []): MentionIndex | null {
+  const names = [...new Set(jobNames.filter(name => name.length > 1 && name.length <= NAME_LIMIT && !/\n/.test(name)))].sort((a, b) => b.length - a.length);
+  if (!board && !names.length) return null;
   const titles = new Map<string, string>();
   const add = (item: { id: string; text: string }) => titles.set(item.id, shortTitle(item.text));
-  walkItems(board.plan, add);
-  walkItems(board.scratch, add);
-  return { chatId, key: `${chatId}:${board.rev}`, titles };
+  walkItems(board?.plan ?? [], add);
+  walkItems(board?.scratch ?? [], add);
+  const alternatives = names.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const jobs = names.length ? { at: new RegExp(`^(?:${alternatives})(?![\\w-])`), start: new RegExp(`(^|[^\\w-])(?:${alternatives})(?![\\w-])`) } : null;
+  return { chatId, key: `${chatId}:${board?.rev ?? 0}:${names.join("\0")}`, titles, jobs };
 }
 /** An item's text cut for a tooltip: the first 60 characters. */
 export const shortTitle = (text: string): string => text.length > 60 ? text.slice(0, 59).trimEnd() + "\u2026" : text;

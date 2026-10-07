@@ -154,6 +154,8 @@ button.link-chip:hover { border-color: var(--accent); color: var(--accent-bold);
 .mention-chip { display: inline-flex; align-items: center; gap: 4px; vertical-align: baseline; padding: 0 6px 0 5px; margin: 0 1px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--dot) 45%, transparent); background: color-mix(in srgb, var(--dot) 12%, transparent); font-family: var(--mono); font-size: 0.8em; line-height: 1.5; color: inherit; font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color 0.12s, border-color 0.12s; }
 .mention-chip:hover, .mention-chip:focus-visible { background: color-mix(in srgb, var(--dot) 26%, transparent); border-color: var(--dot); }
 .mention-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot); flex: none; }
+.mention-chip.job-chip { --dot: var(--accent); gap: 3px; padding-left: 4px; font-family: inherit; font-size: 0.86em; font-weight: 500; }
+.mention-chip.job-chip svg { flex: none; color: var(--accent-bold); }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elevated); font-size: 13px; color: var(--text-muted); white-space: nowrap; max-width: 100%; }
 .chip:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
 .chip.active { background: var(--accent-soft); border-color: transparent; color: var(--accent-bold); }

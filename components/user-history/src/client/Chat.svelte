@@ -6,8 +6,8 @@
   import { clock } from "./clock.svelte.ts";
   import { clockTime } from "./format.ts";
   import { createdSessions } from "./children.ts";
-  import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobViews, reportsFor, spawnCalls } from "./jobs.ts";
-  import { boardActionText, boardIndex, isBoardAction, openAgentTodos } from "./board.ts";
+  import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobNames, jobViews, reportsFor, spawnCalls, updatesJob } from "./jobs.ts";
+  import { boardActionText, isBoardAction, mentionIndex, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
   import { chatFeed, chatLines, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
@@ -92,8 +92,8 @@
   const board = $derived(thread?.board ?? null);
   const asks = $derived(openAgentTodos(board));
   const cwd = $derived(thread?.info.cwd ?? row?.cwd ?? "");
-  /** The board's ids and titles, for the mention chips in every bubble; a new board rev re-renders the feed once. */
-  const mentions = $derived(boardIndex(id, board));
+  /** The board's ids and titles and the jobs' names, for the mention chips in every bubble; a new board rev or job re-renders the feed once. */
+  const mentions = $derived(mentionIndex(id, board, jobNames(row, thread, sessionId => store.session(sessionId))));
   const planView = $derived(store.planView?.chat === id ? store.planView : null);
   const closePlan = () => { if (store.planView?.chat === id) store.planView = null; };
   const applyBoard = (next: ChatBoard, ops: BoardOp[]) => store.boardOps(id, next, ops);
@@ -143,6 +143,8 @@
   }
   /** The owner's name for the plan view: the job's name, the session's name, or the first 8 characters of a bare id. */
   const ownerName = (owner: string): string => findJob(jobs, owner)?.name ?? store.session(owner)?.name ?? (/^[0-9a-f]{8}-/.test(owner) ? owner.slice(0, 8) : jobName(owner));
+  /** The job a step's owner previews, by the name its reports carry; a step owned by a thread (this chat, another chat) has no report card. */
+  const previewJob = (owner: string): string | undefined => findJob(jobs, owner)?.name;
 
   let lightbox = $state<{ images: { src: string; alt: string }[]; index: number } | null>(null);
   function viewImage(item: Extract<ChatItem, { kind: "user" }>, index: number): void {
@@ -154,6 +156,7 @@
     if (click?.kind === "image") lightbox = { images: [{ src: click.src, alt: click.alt }], index: 0 };
     else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, id); }
     else if (click?.kind === "mention") store.openPlan(id, click.id);
+    else if (click?.kind === "job") store.openArtifact({ kind: "job", name: click.name }, id);
   }
   /** A folded run of updates opens in the reader as a list: who wrote, when, and the whole text. */
   const readUpdates = (item: Extract<ChatItem, { kind: "updates" }>) => { store.reader = { kind: "updates", thread: id, at: item.at }; };
@@ -318,7 +321,7 @@
         {:else if item.kind === "updates"}
           {@const label = updatesLabel(item)}
           <div class="line updates" data-at={item.at}>
-            <button type="button" class="updates-line" title="Read these updates" onclick={() => readUpdates(item)}>
+            <button type="button" class="updates-line" title="Read these updates" data-preview-chat={id} data-preview-job={updatesJob(item)} onclick={() => readUpdates(item)}>
               <span class="updates-count">{label.count}</span>{#if label.names}<span class="dot-sep"></span><span class="updates-names">{label.names}</span>{/if}
               <span class="updates-mark"><Icon name="chevronRight" size={12} /></span>
             </button>
@@ -348,7 +351,7 @@
 {/snippet}
 
 {#snippet boardView()}
-  <BoardPanel {id} {board} {checkIn} onjob={openStep} apply={applyBoard} />
+  <BoardPanel {id} {board} {checkIn} onjob={openStep} {previewJob} apply={applyBoard} />
 {/snippet}
 
 <div class="chat">
@@ -415,7 +418,7 @@
         <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />
       {/if}
       {#if planView}
-        <PlanView chat={id} {board} focus={planView.focus} {narrow} onjob={openStep} {ownerName} onclose={closePlan} />
+        <PlanView chat={id} {board} focus={planView.focus} {narrow} onjob={openStep} {ownerName} {previewJob} onclose={closePlan} />
       {/if}
     </div>
   {/if}

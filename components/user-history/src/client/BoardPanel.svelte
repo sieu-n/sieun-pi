@@ -23,8 +23,8 @@
    * server's 5-minute tick line under the cards. `apply` gets the board after the owner's ops and the ops themselves; it resolves false when
    * the server refused them.
    */
-  let { id, board, checkIn, onjob, apply }: {
-    id: string; board: ChatBoard | null; checkIn: { text: string; on: boolean }; onjob: (name: string) => void; apply: (next: ChatBoard, ops: BoardOp[]) => Promise<boolean>;
+  let { id, board, checkIn, onjob, previewJob, apply }: {
+    id: string; board: ChatBoard | null; checkIn: { text: string; on: boolean }; onjob: (name: string) => void; previewJob: (owner: string) => string | undefined; apply: (next: ChatBoard, ops: BoardOp[]) => Promise<boolean>;
   } = $props();
 
   const todos = $derived(groupTodos(board?.todos ?? []));
@@ -159,7 +159,8 @@
         <IdChip chat={id} id={item.id} />
         {#if item.job}
           {@const job = item.job}
-          <span class="plan-text linked" role="button" tabindex="0" title="Open {job}" onclick={() => onjob(job)} onkeydown={onStepKey(job)}>{item.text}</span>
+          {@const preview = previewJob(job)}
+          <span class="plan-text linked" role="button" tabindex="0" title={preview ? undefined : "Open " + job} data-preview-chat={id} data-preview-job={preview} onclick={() => onjob(job)} onkeydown={onStepKey(job)}>{item.text}</span>
         {:else}<span class="plan-text">{item.text}</span>{/if}
         {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
         {@render openRow(item.id)}
@@ -220,7 +221,7 @@
               {@const chip = linkChip(link)}
               {#if chip.target}
                 {@const target = chip.target}
-                <button type="button" class="link-chip {chip.kind}" title={link.target} onclick={() => store.openArtifact(target, id)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
+                <button type="button" class="link-chip {chip.kind}" title={target.kind === "job" ? undefined : link.target} data-preview-chat={id} data-preview-job={target.kind === "job" ? target.name : undefined} onclick={() => store.openArtifact(target, id)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
               {:else}
                 <span class="link-chip broken" title="This link cannot be opened: {link.target}"><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></span>
               {/if}

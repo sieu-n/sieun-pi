@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bubbleBlocks, renderInline, renderMarkdown } from "../src/client/markdown.ts";
-import { boardIndex, idClass } from "../src/client/board.ts";
+import { bubbleBlocks, renderInline, renderMarkdown, reportExcerpt } from "../src/client/markdown.ts";
+import { idClass, mentionIndex } from "../src/client/board.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 import { diffLineKind, diffLines, readerAction, wikiBlocks } from "../src/client/reader.ts";
 import { parseArtifactTarget } from "../src/shared/artifact-link.ts";
@@ -57,7 +57,7 @@ test("board mentions: a whole-word id on the board becomes a chip in prose, list
   const board: ChatBoard = { v: 2, rev: 5, updatedAt: "", todos: [],
     plan: [{ id: "p1", text: "Goal one", status: "doing", children: [{ id: "p7", text: "Build: " + "x".repeat(80), status: "todo", children: [] }] }],
     scratch: [{ id: "s3", text: "Note three", links: [], at: "", children: [] }] };
-  const index = boardIndex("chat-1", board)!;
+  const index = mentionIndex("chat-1", board)!;
   const chips = (html: string): string[] => [...html.matchAll(/data-mention="([^"]+)"/g)].map(match => match[1]!);
   const chip = (id: string) => `<button type="button" class="mention-chip ${idClass("chat-1", id)}" data-mention="${id}" title="${index.titles.get(id)}"><span class="dot" aria-hidden="true"></span>${id}</button>`;
   assert.equal(renderMarkdown("p7 is done, see s3 and p99.", "", index), `<p>${chip("p7")} is done, see ${chip("s3")} and p99.</p>\n`);
@@ -67,6 +67,42 @@ test("board mentions: a whole-word id on the board becomes a chip in prose, list
   assert.deepEqual(chips(renderMarkdown("xp7 sp7 p7a 3p7 p7's (p7) p7. ~~p7~~ p7: end", "", index)), ["p7", "p7", "p7", "p7", "p7"], "only whole words");
   assert.deepEqual(chips(renderInline("hi p7 and s3\nnext line p1", index)), ["p7", "s3", "p1"], "the owner's bubble gets chips too");
   assert.deepEqual(chips(renderMarkdown("p7 s3")), [], "no board, no chips");
-  assert.deepEqual(chips(renderMarkdown("p7 s3", "", boardIndex("chat-1", { ...board, rev: 6, scratch: [] }))), ["p7"], "a new board rev renders again without the removed note");
-  assert.equal(boardIndex("chat-1", null), null);
+  assert.deepEqual(chips(renderMarkdown("p7 s3", "", mentionIndex("chat-1", { ...board, rev: 6, scratch: [] }))), ["p7"], "a new board rev renders again without the removed note");
+  assert.equal(mentionIndex("chat-1", null), null);
+  assert.equal(mentionIndex("chat-1", null, []), null);
+});
+
+test("job mentions: a whole-word job name, bare or alone in a code span, becomes a bolt chip with the preview attributes; other code, links, parts of words and unknown names stay text", () => {
+  const index = mentionIndex("chat-1", null, ["w20", "w20-preview", "api.reviewer", "", "x", "a\nb", "w20"])!;
+  const chips = (html: string): string[] => [...html.matchAll(/data-job="([^"]+)"/g)].map(match => match[1]!);
+  const html = renderMarkdown("Ask w20-preview, then w20.", "", index);
+  assert.match(html, /<button type="button" class="mention-chip job-chip" data-job="w20-preview" data-preview-chat="chat-1" data-preview-job="w20-preview"><svg [^>]+><path d="[^"]+"\/><\/svg>w20-preview<\/button>, then /);
+  assert.deepEqual(chips(html), ["w20-preview", "w20"], "the longest name wins where one starts another");
+  assert.deepEqual(chips(renderMarkdown("api.reviewer and api-reviewer and apixreviewer", "", index)), ["api.reviewer"], "a dot in a name is literal");
+  assert.deepEqual(chips(renderMarkdown("`w20 x` `w20-probe` in code\n```\nw20 block\n```\n[w20](https://x.com/w20) https://x.com/w20 xw20 w20x w20-probe w20s job:w20 (w20) w20's", "", index)), ["w20", "w20", "w20"], "code, links, words and hyphenated words keep the name");
+  assert.equal(renderMarkdown("`w20` ran", "", index), renderMarkdown("w20 ran", "", index), "a code span that is one job name is the same chip");
+  assert.deepEqual(chips(renderMarkdown("`w20` and `w20-preview` and `api.reviewer`", "", index)), ["w20", "w20-preview", "api.reviewer"]);
+  assert.match(renderMarkdown("`w20`"), /<code>w20<\/code>/, "no index: the code span stays code");
+  assert.deepEqual(chips(renderInline("w20 said so", index)), ["w20"], "the owner's bubble gets job chips too");
+  assert.deepEqual(chips(renderMarkdown("w20 and x", "", mentionIndex("chat-1", null, ["x"]))), [], "a one-letter name is never a chip; an unknown name stays text");
+  assert.deepEqual(chips(renderMarkdown("w20")), [], "no index, no chips");
+  assert.equal(mentionIndex("chat-1", null, ["w20"])!.titles.size, 0);
+  assert.notEqual(mentionIndex("chat-1", null, ["w20"])!.key, mentionIndex("chat-1", null, ["w20", "w21"])!.key, "a new job changes the cache key");
+  assert.match(renderMarkdown("[report](job:w20)", "", index), /class="artifact-link" data-target="job:w20" data-preview-chat="chat-1" data-preview-job="w20"/, "a job link carries the preview too");
+  assert.doesNotMatch(renderMarkdown("[report](job:w20)"), /data-preview/, "no index, no preview on a link");
+});
+
+test("reportExcerpt keeps the first 12 blocks whole (a fence or a table is one block) and says whether more followed", () => {
+  const fence = "```mermaid\ngraph TD; A-->B\n```";
+  const text = "# Title\n\nOne.\n\n" + fence + "\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n- x\n- y\n";
+  assert.deepEqual(reportExcerpt(text), { text: "# Title\n\nOne.\n\n" + fence + "\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n- x\n- y", cut: false });
+  assert.deepEqual(reportExcerpt(text, 3), { text: "# Title\n\nOne.\n\n" + fence, cut: true });
+  assert.deepEqual(reportExcerpt(text, 4).text.split("\n\n").length, 4);
+  const paragraphs = Array.from({ length: 20 }, (_, index) => "p" + index).join("\n\n");
+  const cut = reportExcerpt(paragraphs);
+  assert.equal(cut.cut, true);
+  assert.equal(cut.text.split("\n\n").length, 12);
+  assert.deepEqual(reportExcerpt(""), { text: "", cut: false });
+  assert.equal(reportExcerpt("Files:\n\n    apps/x.ts  the route\n    apps/y.ts  the lib\n\nDone.", 2).text, "Files:\n\n    apps/x.ts  the route\n    apps/y.ts  the lib", "an indented code block keeps its indent");
+  assert.match(renderMarkdown(reportExcerpt(text, 3).text), /diagram-block/, "the cut text still renders the fence as a diagram");
 });

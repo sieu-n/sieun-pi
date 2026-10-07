@@ -77,10 +77,11 @@ function unmount(root: HTMLElement): void {
   for (const [window, entry] of frames) if (!entry.block.isConnected || root.contains(entry.block)) frames.delete(window);
 }
 
-/** Svelte action for a reply's `.prose` element. `live` holds drawing back while the reply still streams. */
-export function diagrams(node: HTMLElement, params: { html: string; live: boolean }) {
+/** Svelte action for a reply's `.prose` element. `live` holds drawing back while the reply still streams; `eager` draws every block at once (a small card that scrolls inside) instead of as each nears the screen. */
+export function diagrams(node: HTMLElement, params: { html: string; live: boolean; eager?: boolean }) {
   listen();
   let live = params.live;
+  const eager = params.eager === true;
   const observer = new IntersectionObserver(entries => {
     for (const item of entries) {
       if (!item.isIntersecting) continue;
@@ -91,11 +92,11 @@ export function diagrams(node: HTMLElement, params: { html: string; live: boolea
   const scan = () => {
     for (const [window, entry] of frames) if (!entry.block.isConnected) frames.delete(window);
     if (live) return;
-    for (const block of node.querySelectorAll<HTMLElement>(".diagram-block:not([data-mounted])")) observer.observe(block);
+    for (const block of node.querySelectorAll<HTMLElement>(".diagram-block:not([data-mounted])")) { if (eager) mount(block); else observer.observe(block); }
   };
   requestAnimationFrame(scan);
   return {
-    update(next: { html: string; live: boolean }) { live = next.live; requestAnimationFrame(scan); },
+    update(next: { html: string; live: boolean; eager?: boolean }) { live = next.live; requestAnimationFrame(scan); },
     destroy() { observer.disconnect(); unmount(node); },
   };
 }

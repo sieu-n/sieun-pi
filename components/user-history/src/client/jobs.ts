@@ -1,4 +1,4 @@
-import type { ChatLine } from "../shared/chat-feed.ts";
+import type { ChatItem, ChatLine } from "../shared/chat-feed.ts";
 import type { ChildAgent, ChildUsage, SessionRow, ThreadMessage } from "../shared/types.ts";
 import { childName, createdSessions, isActiveChild, type CreatedSession } from "./children.ts";
 
@@ -168,6 +168,24 @@ export function treeJobs(chat: SessionRow, messages: readonly ThreadMessage[] | 
       at: atOf(row?.lastActivityAt ?? row?.created), open: "session:" + created.sessionId });
   }
   return [...jobs.filter(job => job.running), ...jobs.filter(job => !job.running)];
+}
+
+/** What a sidebar row says about a job without a report: what it is doing while it runs, else how it ended. */
+export const jobStatusText = (job: TreeJob): string => job.running ? job.activity || "Running" : job.failed ? "Failed" : job.saved ? "Finished" : "Idle";
+
+/**
+ * Every job name the page knows for a chat, unique: the catalog row's jobs and the sessions the chat started (as the sidebar lists them), plus
+ * the subagents the daemon reports in the snapshot. These are the names that read as job chips in the chat's text.
+ */
+export function jobNames(row: SessionRow | undefined, snapshot: { children: readonly ChildAgent[]; messages: readonly ThreadMessage[] } | null, rowOf: (id: string) => SessionRow | undefined): string[] {
+  const listed = row ? treeJobs(row, snapshot?.messages, rowOf).map(job => job.name)
+    : createdSessions(snapshot?.messages ?? []).map(created => rowOf(created.sessionId)?.name || created.name);
+  return [...new Set([...listed, ...(snapshot?.children ?? []).map(childName)].filter(Boolean))];
+}
+
+/** The job a folded updates line previews: the sender of its last job message, or null when the run holds only the chat's own notes. */
+export function updatesJob(item: Extract<ChatItem, { kind: "updates" }>): string | null {
+  return item.entries.findLast(entry => entry.kind === "job")?.from ?? null;
 }
 
 /** The chat a session is a job of, for the breadcrumb on its thread: a chat row that lists it, or an open chat whose transcript started it. */

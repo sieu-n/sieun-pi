@@ -14,6 +14,7 @@
   import Settings from "./Settings.svelte";
   import AgentsDialog from "./AgentsDialog.svelte";
   import Reader from "./Reader.svelte";
+  import ReportCard from "./ReportCard.svelte";
   import Icon from "./Icon.svelte";
 
   const NARROW_BELOW = 900;
@@ -130,6 +131,7 @@
     {#if store.reader}
       <Reader view={store.reader} {narrow} onclose={() => { store.reader = null; }} />
     {/if}
+    <ReportCard />
   </div>
   {#if store.toasts.length}
     <div class="toasts" aria-live="polite">

@@ -16,8 +16,8 @@
    * steps stay hidden until "Show done" is on; one control folds or unfolds every parent. `focus` is the item the view opened on: its
    * parents unfold, done items show when it is one, and the row scrolls into view and lights up for 2 s. The board prop is live.
    */
-  let { chat, board, focus, narrow, onjob, ownerName, onclose }: {
-    chat: string; board: ChatBoard | null; focus: string | null; narrow: boolean; onjob: (owner: string) => void; ownerName: (owner: string) => string; onclose: () => void;
+  let { chat, board, focus, narrow, onjob, ownerName, previewJob, onclose }: {
+    chat: string; board: ChatBoard | null; focus: string | null; narrow: boolean; onjob: (owner: string) => void; ownerName: (owner: string) => string; previewJob: (owner: string) => string | undefined; onclose: () => void;
   } = $props();
 
   const EMPTY_PLAN: PlanItem[] = [];
@@ -92,7 +92,8 @@
                 {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
                 {#if item.job}
                   {@const owner = item.job}
-                  <button type="button" class="owner" title="Open {ownerName(owner)}" onclick={() => { onclose(); onjob(owner); }}><Icon name="bolt" size={11} /><span class="owner-name">{ownerName(owner)}</span></button>
+                  {@const preview = previewJob(owner)}
+                  <button type="button" class="owner" title={preview ? undefined : "Open " + ownerName(owner)} data-preview-chat={chat} data-preview-job={preview} onclick={() => { onclose(); onjob(owner); }}><Icon name="bolt" size={11} /><span class="owner-name">{ownerName(owner)}</span></button>
                 {/if}
               </p>
               {#if item.note}<p class="note">{item.note}</p>{/if}
@@ -121,7 +122,7 @@
                     {@const chip = linkChip(link)}
                     {#if chip.target}
                       {@const target = chip.target}
-                      <button type="button" class="link-chip {chip.kind}" title={link.target} onclick={() => store.openArtifact(target, chat)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
+                      <button type="button" class="link-chip {chip.kind}" title={target.kind === "job" ? undefined : link.target} data-preview-chat={chat} data-preview-job={target.kind === "job" ? target.name : undefined} onclick={() => store.openArtifact(target, chat)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
                     {:else}
                       <span class="link-chip broken" title="This link cannot be opened: {link.target}"><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></span>
                     {/if}
