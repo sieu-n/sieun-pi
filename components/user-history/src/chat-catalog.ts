@@ -11,6 +11,8 @@ import type { ChatJob, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 const FIRST_MESSAGE_SCAN_BYTES = 4 * 1024 * 1024;
+/** cron_list fans out to every worker; roster activity must not repeat that work. */
+const SCHEDULE_REFRESH_MS = 30_000;
 
 function userText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -288,6 +290,8 @@ export class Catalog {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private connecting: Promise<void> | undefined;
   private refreshing: Promise<void> | undefined;
+  private schedulesRefreshing: Promise<void> | undefined;
+  private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
   constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids">,
@@ -295,9 +299,12 @@ export class Catalog {
     this.client = new DaemonClient(socketPath);
     this.client.onMessage(message => {
       if (message.type === "roster_update") this.scheduleRefresh();
+      if (message.type === "heartbeats_changed") this.scheduleSchedulesRefresh();
     });
     this.client.onClose(error => {
       this.subscribed = false;
+      clearTimeout(this.schedulesTimer);
+      this.schedulesTimer = undefined;
       this.setDaemon("down", error.message);
       this.scheduleReconnect();
     });
@@ -328,6 +335,7 @@ export class Catalog {
         if (!response.success) throw new Error(response.error);
         this.subscribed = true;
         this.setDaemon("up");
+        this.scheduleSchedulesRefresh(0);
       } catch (error) {
         this.client.resetTransportForReconnect();
         const message = "Prime Agent daemon is not reachable. " + (error instanceof Error ? error.message : String(error));
@@ -344,16 +352,41 @@ export class Catalog {
     this.refreshTimer = setTimeout(() => { this.refreshTimer = undefined; void this.refresh().catch(() => {}); }, 150);
   }
 
+  /** Schedules are a separate native projection: a slow worker never gates session delivery. */
+  private scheduleSchedulesRefresh(delay = SCHEDULE_REFRESH_MS): void {
+    if (this.closed || this.schedulesTimer || !this.subscribed) return;
+    this.schedulesTimer = setTimeout(() => {
+      this.schedulesTimer = undefined;
+      void this.refreshSchedules();
+    }, delay);
+    this.schedulesTimer.unref();
+  }
+
+  private async refreshSchedules(): Promise<void> {
+    if (this.schedulesRefreshing) return this.schedulesRefreshing;
+    this.schedulesRefreshing = (async () => {
+      try {
+        const jobs = await this.client.request({ type: "cron_list" }, 10000, { recoverable: false });
+        if (!jobs.success) throw new Error(jobs.error);
+        if (this.closed || !this.subscribed) return;
+        this.schedules = parseSchedules(jobs.data);
+        await this.emit();
+      } catch (error) {
+        if (!this.closed) process.stderr.write(`catalog schedules: ${error instanceof Error ? error.message : String(error)}\n`);
+      } finally {
+        this.schedulesRefreshing = undefined;
+        this.scheduleSchedulesRefresh();
+      }
+    })();
+    return this.schedulesRefreshing;
+  }
+
   async refresh(): Promise<void> {
     if (this.refreshing) return this.refreshing;
     this.refreshing = (async () => {
       await this.connect();
-      const [response, jobs] = await Promise.all([
-        this.client.request({ type: "list", all: true }, 30000, { recoverable: false }),
-        this.client.request({ type: "cron_list" }, 10000, { recoverable: false }).catch(() => null),
-      ]);
+      const response = await this.client.request({ type: "list", all: true }, 30000, { recoverable: false });
       if (!response.success) throw new Error(response.error);
-      if (jobs?.success) this.schedules = parseSchedules(jobs.data);
       const next = new Map<string, SessionSummary>();
       const children: SessionSummary[] = [];
       for (const row of parseSummaries(response.data)) {
@@ -363,8 +396,15 @@ export class Catalog {
       }
       this.summaries = next;
       this.childSummaries = children;
+      this.setDaemon("up");
       await this.emit();
-    })().finally(() => { this.refreshing = undefined; });
+    })().catch(error => {
+      if (!this.closed) {
+        this.setDaemon("down", error instanceof Error ? error.message : String(error));
+        this.scheduleReconnect();
+      }
+      throw error;
+    }).finally(() => { this.refreshing = undefined; });
     return this.refreshing;
   }
 
@@ -466,6 +506,7 @@ export class Catalog {
     this.closed = true;
     clearTimeout(this.refreshTimer);
     clearTimeout(this.reconnectTimer);
+    clearTimeout(this.schedulesTimer);
     this.listeners.clear();
     this.client.close();
   }
