@@ -440,7 +440,8 @@
   .error-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--danger); }
   .body { position: relative; display: flex; flex: 1; min-height: 0; }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
-  .side { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--bg-sunken); }
+  /* No fill, no overlay: the panel sits on the page background next to the chat, and the chat always keeps at least 360 px. */
+  .side { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; max-width: calc(100% - 360px); border-left: 1px solid var(--border); background: var(--bg); }
   .side.wide { flex: 1; min-width: 0; }
   .body:has(> .side.wide) > .main { flex: none; width: 380px; }
   .resize { position: absolute; top: 0; bottom: 0; left: -5px; z-index: 20; width: 10px; cursor: col-resize; touch-action: none; }
@@ -454,7 +455,7 @@
   :global(body:has(.side .resize.resizing)) { cursor: col-resize; user-select: none; }
   .pane { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .switch { display: flex; flex: none; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--bg); }
-  .side-tabs { background: var(--bg-sunken); }
+  .side-tabs { background: var(--bg); }
   .switch > button { position: relative; display: inline-flex; align-items: center; gap: 5px; flex: 1; height: 28px; padding: 0 10px; border-radius: var(--radius-small); justify-content: center; font-size: 12.5px; font-weight: 500; color: var(--text-muted); transition: background-color 0.12s, color 0.12s; }
   .side-tabs > button { flex: 0 1 auto; }
   .switch > button:hover:not(.on) { background: var(--bg-hover); color: var(--text); }
