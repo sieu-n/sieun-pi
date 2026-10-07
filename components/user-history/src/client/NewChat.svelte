@@ -35,6 +35,8 @@
   let threadName = $state("");
   /** Thread: a normal Prime Agent session. Chat: a DM-style partner for one topic that runs jobs for you and checks in on them. */
   let kind = $state<"thread" | "chat">("thread");
+  /** Starts a new thread's first message with /skill:poteto-mode. On for every new thread; a message that already starts with "/" is sent as typed. */
+  let poteto = $state(true);
   const closePopover = () => { workspaceOpen = false; };
   let lightbox = $state<number | null>(null);
 
@@ -110,10 +112,12 @@
     const progress = draftProgress;
     const chosen = activeModel;
     const name = threadName.trim();
-    const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), message: text, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
+    const message = kind === "thread" && poteto && !text.trimStart().startsWith("/") ? `/skill:poteto-mode ${text}` : text;
+    const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
     threadName = "";
+    poteto = true;
     draftTags = filterTags();
     draftPriority = 0;
     draftProgress = "none";
@@ -187,6 +191,9 @@
               choice={account} onchoose={next => { account = next; }} />
             <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort
               defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
+            {#if kind === "thread"}
+              <label class="bar-button check" use:tooltip={"Start the thread with /skill:poteto-mode"}><input type="checkbox" bind:checked={poteto} /><span>poteto-mode</span></label>
+            {/if}
           </div>
           <div class="group" role="group" aria-label="Labels for the new thread">
             <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "name"} aria-label={threadName.trim() ? "Thread name: " + threadName.trim() : "Thread name"}
@@ -250,6 +257,8 @@
   .options-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-top: 8px; padding: 0 4px; }
   .group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
   .group .bar-button { gap: 6px; }
+  .check { cursor: pointer; user-select: none; }
+  .check input { margin: 0; accent-color: var(--accent, currentColor); cursor: pointer; }
   .options-row :global(.bar-button), .options-row :global(.account) { height: 26px; font-size: 12.5px; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--mono); font-size: 12px; }
   .custom { display: flex; gap: 6px; padding: 6px 4px 2px; }
