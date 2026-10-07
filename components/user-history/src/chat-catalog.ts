@@ -285,6 +285,8 @@ export class Catalog {
   private daemon: "up" | "down" = "down";
   private lastError: string | undefined;
   private subscribed = false;
+  /** A session list arrived on the present daemon connection. Until it does, an "up" frame would show an empty sidebar. */
+  private listed = false;
   private readonly heldLifecycle = new Map<string, "archived" | "active">();
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -303,6 +305,7 @@ export class Catalog {
     });
     this.client.onClose(error => {
       this.subscribed = false;
+      this.listed = false;
       clearTimeout(this.schedulesTimer);
       this.schedulesTimer = undefined;
       this.setDaemon("down", error.message);
@@ -396,6 +399,7 @@ export class Catalog {
       }
       this.summaries = next;
       this.childSummaries = children;
+      this.listed = true;
       this.setDaemon("up");
       await this.emit();
     })().catch(error => {
@@ -435,8 +439,9 @@ export class Catalog {
     return { type: "sessions", sessions: rows, tags, daemon: this.daemon, ...(this.lastError && this.daemon === "down" ? { error: this.lastError } : {}) };
   }
 
+  /** Frames wait for the first session list of a connection: a schedule reply or a notify that lands before it would report "up" with no rows. */
   private async emit(): Promise<void> {
-    if (this.listeners.size === 0) return;
+    if (this.listeners.size === 0 || (this.daemon === "up" && !this.listed)) return;
     const event = await this.event();
     for (const listener of [...this.listeners]) listener(event);
   }

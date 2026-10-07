@@ -45,7 +45,11 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
   const data = join(directory, "browser-chat");
   const socket = join(directory, "absent.sock");
   const port = await unusedChatPort();
-  const env = { ...process.env, PRIME_AGENT_CODING_AGENT_DIR: join(directory, "profile") };
+  // Every chat instance starts a usage worker that ingests the transcripts under HOME (src/usage/sources.ts); with the owner's HOME each start
+  // re-read ~/.codex, ~/.claude and ~/.prime/agent, tens of GB, and a full test run starved for CPU.
+  const home = join(directory, "home");
+  await mkdir(home);
+  const env = { ...process.env, HOME: home, PRIME_AGENT_CODING_AGENT_DIR: join(directory, "profile") };
   const run = async (command: string, extra: string[] = []) => (await execute(process.execPath,
     [join(root, "scripts/cli.mjs"), "chat", command, "--data-dir", data, ...extra], { env, timeout: 25000 })).stdout.trim();
   const flags = ["--port", String(port), "--socket", socket];

@@ -59,7 +59,6 @@ test("a chat that finds no daemon starts one through the installed launcher, onc
   const temporary = `/tmp/wdt-${id}`, socket = `${temporary}/d.sock`;
   await Promise.all([config, sessions, cwd, join(install, "bin"), nativeTemp].map(path => mkdir(path, { recursive: true })));
   await symlink(nativeTemp, temporary);
-  context.after(async () => { await unlink(temporary).catch(() => {}); });
   // The official install layout, `<PRIME_AGENT_INSTALL_DIR>/bin/prime-agent`, here running the locked prime-agent package with this node.
   await writeFile(join(install, "bin", "prime-agent"), `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(join(primeRoot, "dist/bundle/cli.js"))} "$@"\n`);
   await chmod(join(install, "bin", "prime-agent"), 0o755);
@@ -83,6 +82,8 @@ test("a chat that finds no daemon starts one through the installed launcher, onc
     const daemon = new DaemonClient(socket);
     await stopChatNativeDaemon(daemon, socket).catch(() => {});
     daemon.close();
+    // Last: a chat still running finds its daemon socket gone once the link is removed, and its keeper starts a daemon in a new /tmp folder.
+    await unlink(temporary).catch(() => {});
   });
 
   assert.equal(await daemons(socket), 0, "no daemon before the chat starts");
