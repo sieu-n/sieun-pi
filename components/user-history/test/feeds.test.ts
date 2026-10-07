@@ -85,7 +85,9 @@ test("a tab hidden for 30 s closes its socket without an error, and showing it a
   subscribeFeed({ feed: "thread", id: "t1" }, () => {}, () => errors.push("thread"));
   setVisibility("hidden");
   timers.sort((a, b) => a.at - b.at);
-  while (timers.length && timers[0]!.at - now <= 30_000) nextTimer();
+  // Compare with the deadline itself: the clock is fractional after the jittered retries, and `at - now` can come out as 30000.000000000007.
+  const deadline = now + 30_000;
+  while (timers.length && timers[0]!.at <= deadline) nextTimer();
   assert.equal(socket.readyState, 3, "the hidden tab closed its socket");
   const count = FakeSocket.all.length;
   for (let i = 0; i < 5 && timers.length; i++) nextTimer();
