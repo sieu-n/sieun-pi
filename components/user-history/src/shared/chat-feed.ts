@@ -8,13 +8,14 @@ export interface PendingSend { id: string; text: string; images: ImagePart[]; at
  * One flat line of a chat. The feed never nests: the chat partner talks like a DM, so every message is its own line in order.
  * - user: what the owner typed (right side); `pending` until the thread echoes the message back.
  * - agent: the chat partner's text (left side); `streaming` while the model is still writing it.
- * - job: a worker's agent_message, folded to one line ("from <name>: <first line>") that opens on tap.
+ * - job: a worker's agent_message, folded to one line ("from <name>: <first line>") that opens on tap; `clipped` names the message and part
+ *   to fetch through `api/threads/:id/part` when the snapshot holds only the first 2 KiB of the body.
  * - notice: an error, a stopped reply, a restart or another event the owner should see, as one muted line.
  */
 export type ChatItem =
   | { kind: "user"; id: string; text: string; images: ImagePart[]; at: number; pending?: true }
   | { kind: "agent"; id: string; text: string; at: number; streaming?: true }
-  | { kind: "job"; id: string; from: string; title: string; body: string; at: number }
+  | { kind: "job"; id: string; from: string; title: string; body: string; at: number; clipped?: { message: number; part: number } }
   | { kind: "notice"; id: string; text: string; at: number };
 
 /** A user message echoed by the daemon up to this long before the browser's send time still settles the pending send (clock skew between devices). */
@@ -35,12 +36,13 @@ function assistantItems(message: AssistantMessage, id: string, streaming: boolea
   return items;
 }
 
-function customItems(message: CustomMessage, id: string): ChatItem[] {
+function customItems(message: CustomMessage, id: string, index: number): ChatItem[] {
   if (!isPromptCustom(message)) return [];
   const summary = triggerSummary(message);
   if (message.customType === "agent_message") {
     const from = summary.detail.replace(/^from\s+/, "") || "a worker";
-    return [{ kind: "job", id, from, title: firstLine(summary.body) || "(empty message)", body: summary.body, at: message.timestamp }];
+    const part = typeof message.content === "string" ? -1 : message.content.findIndex(entry => entry.type === "text" && entry.truncated);
+    return [{ kind: "job", id, from, title: firstLine(summary.body) || "(empty message)", body: summary.body, at: message.timestamp, ...(part >= 0 ? { clipped: { message: index, part } } : {}) }];
   }
   const text = [summary.label, summary.detail].filter(Boolean).join(", ");
   return [{ kind: "notice", id, text, at: message.timestamp }];
@@ -57,7 +59,7 @@ export function chatItemsOf(message: ThreadMessage, index: number): ChatItem[] {
   switch (message.role) {
     case "user": return [{ kind: "user", id, text: messageText(message).trim(), images: imagesOf(message), at: message.timestamp }];
     case "assistant": return assistantItems(message, id, false);
-    case "custom": return customItems(message, id);
+    case "custom": return customItems(message, id, index);
     case "compactionSummary": return [{ kind: "notice", id, text: "Older messages were summarized to free space", at: message.timestamp }];
     case "toolResult":
     case "bashExecution":
@@ -88,23 +90,4 @@ export function chatFeed(state: Pick<ThreadState, "messages" | "streaming">, pen
     items.push({ kind: "user", id: "p" + send.id, text: send.text, images: send.images, at: send.at, pending: true });
   }
   return items;
-}
-
-/** Plain text split so a view can render web links as anchors with everything else as text, with no other markdown. */
-export type TextRun = { kind: "text"; text: string } | { kind: "link"; href: string };
-const LINK = /\bhttps?:\/\/[^\s<>"')\]]+/g;
-
-export function textRuns(text: string): TextRun[] {
-  const runs: TextRun[] = [];
-  let last = 0;
-  for (const match of text.matchAll(LINK)) {
-    let href = match[0];
-    while (/[.,;:!?]$/.test(href)) href = href.slice(0, -1);
-    const start = match.index;
-    if (start > last) runs.push({ kind: "text", text: text.slice(last, start) });
-    runs.push({ kind: "link", href });
-    last = start + href.length;
-  }
-  if (last < text.length) runs.push({ kind: "text", text: text.slice(last) });
-  return runs;
 }

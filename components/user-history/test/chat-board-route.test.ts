@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { BoardStore } from "../src/chat-board-store.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
-import { LocalFileError, readLocalText } from "../src/chat-render.ts";
+import { LocalFileError, readLocalText, textKind } from "../src/chat-render.ts";
+import { readWikiPage } from "../src/chat-wiki.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
@@ -60,29 +61,60 @@ test("POST api/threads/:id/board: owner todo and scratch ops apply, a tapped cho
   } finally { await server.close(); }
 });
 
-test("readLocalText: text files under a root only, no hidden parts, no service secrets, symlinks resolved, size and UTF-8 checked", async () => {
+test("readLocalText: any UTF-8 text file under a root, with its kind; no hidden parts, no service secrets, symlinks resolved, size, NUL and UTF-8 checked", async () => {
   const dir = await mkdtemp(join(tmpdir(), "local-text-"));
   const root = join(dir, "root");
   await mkdir(join(root, ".git"), { recursive: true });
   await writeFile(join(root, "report.md"), "# Report\n");
+  await writeFile(join(root, "readme.diff"), "--- a\n+++ b\n");
+  await writeFile(join(root, "main.py"), "print(1)\n");
+  await writeFile(join(root, "Makefile"), "all:\n");
   await writeFile(join(root, ".git", "config.txt"), "x");
   await writeFile(join(root, "configuration.json"), "{}");
   await writeFile(join(root, "bin.txt"), Buffer.from([0xff, 0xfe, 0x00]));
   await writeFile(join(root, "big.log"), Buffer.alloc(2 * 1024 * 1024 + 1, 97));
-  await writeFile(join(root, "image.png"), "x");
+  await writeFile(join(root, "image.png"), Buffer.concat([Buffer.from("\x89PNG\r\n"), Buffer.alloc(16, 0)]));
   await writeFile(join(dir, "outside.md"), "secret");
   await symlink(join(dir, "outside.md"), join(root, "link.md"));
   const read = (path: string) => readLocalText(path, [root]);
   const status = (path: string) => read(path).then(() => 200, (error: unknown) => error instanceof LocalFileError ? error.status : 500);
-  assert.equal((await read(join(root, "report.md"))).text, "# Report\n");
+  const report = await read(join(root, "report.md"));
+  assert.deepEqual({ text: report.text, kind: report.kind }, { text: "# Report\n", kind: "markdown" });
+  assert.equal((await read(join(root, "readme.diff"))).kind, "diff");
+  const script = await read(join(root, "main.py"));
+  assert.deepEqual({ text: script.text, kind: script.kind, language: script.kind === "code" ? script.language : null }, { text: "print(1)\n", kind: "code", language: "py" });
+  assert.deepEqual(textKind(join(root, "Makefile")), { kind: "code", language: "" });
   assert.equal(await status(join(root, ".git", "config.txt")), 403);
   assert.equal(await status(join(root, "configuration.json")), 403);
   assert.equal(await status(join(root, "link.md")), 403, "a symlink out of the root is refused");
-  assert.equal(await status(join(root, "bin.txt")), 415);
+  assert.equal(await status(join(root, "bin.txt")), 415, "a NUL byte marks a binary file");
   assert.equal(await status(join(root, "big.log")), 413);
   assert.equal(await status(join(root, "image.png")), 415);
   assert.equal(await status(join(root, "missing.md")), 404);
   assert.equal(await status("report.md"), 400);
+  assert.deepEqual(textKind("/x/notes.patch"), { kind: "diff" });
+  assert.deepEqual(textKind("/x/README.MD"), { kind: "markdown" });
+  assert.deepEqual(textKind("/x/app.svelte"), { kind: "code", language: "svelte" });
+});
+
+test("readWikiPage: the page text through the dev server API; the wiki's refusal and silence become reader errors", async () => {
+  const calls: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("missing")) return new Response(JSON.stringify({ error: "Page not found" }), { status: 404 });
+    if (url.includes("slow")) await new Promise(resolve => setTimeout(resolve, 50));
+    if (url.includes("down")) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify({ path: "sessions/a/report.html", title: "Chats build", headings: ["Chats", "Proof"], render: "text", content: "Chats\n\nA chat is\nProof\n" }), { status: 200 });
+  }) as typeof fetch;
+  const page = await readWikiPage("/sessions/a/report.html", fetchImpl, "http://wiki.test");
+  assert.deepEqual(page, { path: "sessions/a/report.html", title: "Chats build", url: "http://wiki.test/page/sessions/a/report.html", text: "Chats\n\nA chat is\nProof\n", headings: ["Chats", "Proof"] });
+  assert.equal(calls[0], "http://wiki.test/api/agent/page?path=sessions%2Fa%2Freport.html&render=text");
+  const status = (path: string) => readWikiPage(path, fetchImpl, "http://wiki.test").then(() => 200, (error: unknown) => error instanceof LocalFileError ? error.status : 500);
+  assert.equal(await status("sessions/missing.html"), 404);
+  assert.equal(await status("down/page.html"), 502);
+  assert.equal(await status("../etc/passwd"), 400);
+  assert.equal(await status(""), 400);
 });
 
 test("GET api/local-file serves an allowed text file as {path, text}; POST unarchive restores a chat", async () => {

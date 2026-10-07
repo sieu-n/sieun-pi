@@ -4,6 +4,8 @@ import { applyThreadEvent } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
 import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
 import { hashFor, parseHash } from "./permalink.ts";
+import { readerAction, type ReaderView } from "./reader.ts";
+import type { ArtifactTarget } from "../shared/artifact-link.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
 /** `kind` "chat" creates a chat thread (the server marks the session and lists it under Chats); absent means a normal thread. */
@@ -33,6 +35,8 @@ class Store {
   jobDrawer = $state.raw<{ chat: string; job: string } | null>(null);
   /** A message link to land on (`#<id>@<ms>`): the open thread scrolls to it and clears this. */
   jump = $state.raw<{ id: string; at: number } | null>(null);
+  /** The reader modal: a job's report, a file, a wiki page or one message. Null when closed. */
+  reader = $state.raw<ReaderView | null>(null);
   private toastId = 0;
   private sessionsStop: (() => void) | null = null;
 
@@ -79,6 +83,14 @@ class Store {
   openJob(chat: string, job: string): void {
     if (this.selectedId !== chat) this.select(chat);
     this.jobDrawer = { chat, job };
+  }
+
+  /** Opens an artifact link from `thread`: a web URL in a new tab, a bare thread link as the thread, everything else in the reader. */
+  openArtifact(target: ArtifactTarget, thread: string): void {
+    const action = readerAction(target, thread);
+    if (action.open === "tab") window.open(action.url, "_blank", "noopener");
+    else if (action.open === "thread") { this.reader = null; this.select(action.sessionId); }
+    else this.reader = action.view;
   }
 
   session(id: string | null): SessionRow | undefined {

@@ -3,8 +3,10 @@
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
   import { clockTime } from "./format.ts";
-  import { renderMarkdown, copyFromClick } from "./markdown.ts";
-  import { diagrams, diagramSwitchFromClick, expandFromClick } from "./diagrams.ts";
+  import { renderMarkdown } from "./markdown.ts";
+  import { diagrams } from "./diagrams.ts";
+  import { brokenImage, proseClick } from "./prose.ts";
+  import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { exchangesOf, messageText, ownRun, type Turn } from "../shared/turns.ts";
   import type { ImagePart } from "../shared/types.ts";
   import WorkRow from "./WorkRow.svelte";
@@ -44,18 +46,9 @@
   let replyImage = $state<{ src: string; alt: string } | null>(null);
 
   function onProseClick(event: MouseEvent): void {
-    if (copyFromClick(event) || diagramSwitchFromClick(event) || expandFromClick(event)) return;
-    const target = event.target;
-    if (target instanceof HTMLImageElement && target.classList.contains("reply-image")) replyImage = { src: target.src, alt: target.alt || "Image" };
-  }
-  /** A reply image that fails to load becomes a line naming what it pointed at. */
-  function onImageError(event: Event): void {
-    const target = event.target;
-    if (!(target instanceof HTMLImageElement) || !target.classList.contains("reply-image")) return;
-    const note = document.createElement("span");
-    note.className = "inert-image";
-    note.textContent = "Image not found: " + (target.dataset.source ?? target.alt);
-    target.replaceWith(note);
+    const click = proseClick(event);
+    if (click?.kind === "image") replyImage = { src: click.src, alt: click.alt };
+    else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, threadId); }
   }
   let copied = $state(false);
   let lightbox = $state<number | null>(null);
@@ -105,7 +98,7 @@
   {#if reply && (shownText || replyLive)}
     <div class="reply fade-in" data-at={reply.message.timestamp}>
       <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-      <div class="prose" onclick={onProseClick} onerrorcapture={onImageError} use:diagrams={{ html: replyHtml, live: replyLive }} use:longpress={() => void copyLink(reply.message.timestamp)}>{@html replyHtml}{#if replyLive}<span class="caret"></span>{/if}</div>
+      <div class="prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html: replyHtml, live: replyLive }} use:longpress={() => void copyLink(reply.message.timestamp)}>{@html replyHtml}{#if replyLive}<span class="caret"></span>{/if}</div>
       {#if replyTruncated && fullReply === null}
         <button class="more" onclick={() => void store.run(loadFullReply())}>Show the full reply</button>
       {/if}

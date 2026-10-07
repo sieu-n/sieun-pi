@@ -7,18 +7,17 @@
   import { readPulse } from "../shared/pulse.ts";
   import type { ChildPulse } from "../shared/types.ts";
   import { isActiveJob, type JobReport, type JobView } from "./jobs.ts";
-  import { renderMarkdown, copyFromClick } from "./markdown.ts";
   import StatusMark from "./StatusMark.svelte";
   import Icon from "./Icon.svelte";
   import { tooltip } from "./ui/tooltip.ts";
   import { copyPermalink } from "./permalink.ts";
 
   /**
-   * One job of a chat, over the side panel: what it is, what it is doing, every message it sent the chat in full (newest first), the brief
-   * it got, and the way into its own thread. Esc closes.
+   * One job of a chat, over the side panel: what it is, what it is doing, every message it sent the chat as a short line (newest first,
+   * each opening in the reader), the brief it got, and the way into its own thread. Esc closes.
    */
-  let { chatId, name, job, reports, brief, pulses, now, cwd = "", onclose }: {
-    chatId: string; name: string; job: JobView | null; reports: readonly JobReport[]; brief: string | null; pulses: ReadonlyMap<string, ChildPulse>; now: number; cwd?: string; onclose: () => void;
+  let { chatId, name, job, reports, brief, pulses, now, onclose }: {
+    chatId: string; name: string; job: JobView | null; reports: readonly JobReport[]; brief: string | null; pulses: ReadonlyMap<string, ChildPulse>; now: number; onclose: () => void;
   } = $props();
 
   const reading = $derived(job?.kind === "child" && job.child.status === "running" ? (pulses.get(job.child.id) ? readPulse(pulses.get(job.child.id)!, now) : null) : null);
@@ -61,6 +60,9 @@
   async function copyLink(report: JobReport): Promise<void> {
     store.toast(await copyPermalink(sessionId ?? chatId, report.at) ? "Link copied" : "Could not copy the link", "info");
   }
+  const readReport = () => store.openArtifact({ kind: "job", name }, chatId);
+  const readMessage = (report: JobReport) => store.openArtifact({ kind: "thread", sessionId: chatId, at: report.at }, chatId);
+  const preview = (report: JobReport): string => report.body.replace(/\s+/g, " ").trim().slice(0, 240);
 </script>
 
 <svelte:window onkeydown={onKey} />
@@ -86,6 +88,7 @@
       </div>
     </div>
     <div class="actions">
+      {#if reports.length}<button type="button" class="button small" onclick={readReport}>Read report</button>{/if}
       {#if sessionId}<button type="button" class="button small" onclick={() => store.select(sessionId)}>Open full thread</button>{/if}
       {#if active && sessionId}<button type="button" class="button small danger" disabled={stopping} onclick={() => void stop()}><Icon name="stop" size={12} />Stop</button>{/if}
     </div>
@@ -97,8 +100,7 @@
       {#each reports as report (report.id)}
         <article class="report">
           <div class="stamp">{clockTime(report.at)}<button type="button" class="icon-button small link-button" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(report)}><Icon name="link" size={13} /></button></div>
-          <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-          <div class="prose small" onclick={copyFromClick}>{@html renderMarkdown(report.body, cwd)}</div>
+          <button type="button" class="preview" title="Read the full message" onclick={() => readMessage(report)}>{preview(report)}</button>
         </article>
       {/each}
       {#if !reports.length}<p class="none">{active ? "Nothing sent yet." : "It sent nothing to the chat."}</p>{/if}
@@ -145,8 +147,8 @@
   .stamp { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .link-button { color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
   .report:hover .link-button, .link-button:focus-visible { opacity: 1; }
-  .prose.small { font-size: 13.5px; line-height: 1.55; }
-  .prose.small :global(h1), .prose.small :global(h2), .prose.small :global(h3), .prose.small :global(h4) { font-size: 1.06em; margin: 1em 0 0.4em; }
+  .preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; width: 100%; text-align: left; font-size: 13px; line-height: 1.5; color: var(--text-muted); overflow-wrap: anywhere; border-radius: 4px; }
+  .preview:hover { color: var(--text); }
   .none { margin: 0; font-size: 12.5px; color: var(--text-faint); }
   .brief { margin: 0; padding: 10px 12px; border-radius: var(--radius); background: var(--bg-sunken); border: 1px solid var(--border); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); color: var(--text-muted); }
   @container app (max-width: 899px) {

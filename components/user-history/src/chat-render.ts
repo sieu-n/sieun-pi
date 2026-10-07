@@ -76,25 +76,33 @@ export async function readLocalImage(path: string): Promise<{ bytes: Buffer; mim
   return { bytes, mimeType };
 }
 
-const TEXT_EXTENSIONS = new Set([".md", ".txt", ".json", ".log", ".csv"]);
 export const MAX_LOCAL_TEXT_BYTES = 2 * 1024 * 1024;
+/** How the reader shows a text file: markdown rendered, a diff with line colors, anything else as code named by its extension. */
+export type TextKind = { kind: "markdown" } | { kind: "diff" } | { kind: "code"; language: string };
+export function textKind(path: string): TextKind {
+  const extension = extname(path).toLowerCase();
+  if (extension === ".md" || extension === ".markdown") return { kind: "markdown" };
+  if (extension === ".diff" || extension === ".patch") return { kind: "diff" };
+  return { kind: "code", language: extension.slice(1) };
+}
+/** A file whose first 8 KiB hold a NUL byte is binary, whatever its name says. */
+const TEXT_PROBE_BYTES = 8 * 1024;
+export const isTextBytes = (bytes: Uint8Array): boolean => !bytes.subarray(0, TEXT_PROBE_BYTES).includes(0);
 /** Where a `file:` artifact link may point: job reports and session artifacts, chat data, and the repositories. */
 export const LOCAL_TEXT_ROOTS = ["~/.prime/agent/session-artifacts", "~/.prime/agent/browser-chat", "~/Documents/Github"];
 /** The chat service's own secrets (capability, write and stop tokens) live in browser-chat; the route never serves them. */
 const SECRET_FILES = new Set(["configuration.json"]);
 
 /**
- * A text file a `file:` artifact link points at, read-only. Only .md .txt .json .log .csv up to 2 MiB of UTF-8, whose real path (symlinks
- * resolved) is inside one of `roots` and has no hidden part (.git, .env, ...) below the root.
+ * A text file a `file:` artifact link points at, read-only. Any UTF-8 text file (no NUL byte in its first 8 KiB) up to 2 MiB, whose real
+ * path (symlinks resolved) is inside one of `roots` and has no hidden part (.git, .env, ...) below the root. `kind` says how to show it.
  */
-export async function readLocalText(path: string, roots: readonly string[] = LOCAL_TEXT_ROOTS): Promise<{ path: string; text: string }> {
+export async function readLocalText(path: string, roots: readonly string[] = LOCAL_TEXT_ROOTS): Promise<{ path: string; text: string } & TextKind> {
   const home = (value: string) => value === "~" || value.startsWith("~/") ? join(homedir(), value.slice(1)) : value;
   const expanded = home(path);
   if (!isAbsolute(expanded) || expanded.includes("\0")) throw new LocalFileError(400, "Give an absolute file path.");
-  if (!TEXT_EXTENSIONS.has(extname(expanded).toLowerCase())) throw new LocalFileError(415, "Only .md, .txt, .json, .log and .csv files open here.");
   let file: string;
   try { file = await realpath(expanded); } catch { throw new LocalFileError(404, "File not found."); }
-  if (!TEXT_EXTENSIONS.has(extname(file).toLowerCase())) throw new LocalFileError(415, "Only .md, .txt, .json, .log and .csv files open here.");
   const realRoots = await Promise.all(roots.map(root => realpath(home(root)).catch(() => null)));
   const inside = realRoots.some(root => {
     if (!root || !file.startsWith(root + sep)) return false;
@@ -106,6 +114,7 @@ export async function readLocalText(path: string, roots: readonly string[] = LOC
   if (!info.isFile()) throw new LocalFileError(404, "File not found.");
   if (info.size > MAX_LOCAL_TEXT_BYTES) throw new LocalFileError(413, "Files over 2 MiB do not open here.");
   const bytes = await readFile(file);
-  try { return { path: file, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) }; }
+  if (!isTextBytes(bytes)) throw new LocalFileError(415, "The file is not text.");
+  try { return { path: file, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), ...textKind(file) }; }
   catch { throw new LocalFileError(415, "The file is not UTF-8 text."); }
 }

@@ -7,6 +7,7 @@ import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
 import { BOARD_PREFIX, BoardError, parseBoardOps } from "./shared/chat-board.ts";
 import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, renderPage, renderPolicy } from "./chat-render.ts";
+import { readWikiPage } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
@@ -406,6 +407,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "api/local-file") {
           // A `file:` artifact link on the board: read-only text under the chat's allowed folders (readLocalText).
           try { json(res, 200, await readLocalText(url.searchParams.get("path") ?? "")); }
+          catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
+          return;
+        }
+        if (route === "api/wiki-page") {
+          // A `wiki:` artifact link: the page's text through the llm-wiki dev server, so a phone on the tailnet can read it too.
+          try { json(res, 200, await readWikiPage(url.searchParams.get("path") ?? "")); }
           catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
           return;
         }

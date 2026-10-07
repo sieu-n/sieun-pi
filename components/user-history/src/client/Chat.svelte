@@ -2,7 +2,7 @@
   import { tick, untrack } from "svelte";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
-  import { ui } from "./ui.svelte.ts";
+  import { ui, BOARD_DEFAULT, BOARD_MAX, BOARD_MIN } from "./ui.svelte.ts";
   import { clock } from "./clock.svelte.ts";
   import { clockTime } from "./format.ts";
   import { nextRun } from "./organize.ts";
@@ -10,7 +10,11 @@
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobViews, reportsFor, spawnCalls } from "./jobs.ts";
   import { boardActionText, isBoardAction, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { chatFeed, settledPending, textRuns, type ChatItem } from "../shared/chat-feed.ts";
+  import { chatFeed, settledPending, type ChatItem } from "../shared/chat-feed.ts";
+  import { parseArtifactTarget } from "../shared/artifact-link.ts";
+  import { bubbleBlocks, renderInline, renderMarkdown } from "./markdown.ts";
+  import { diagrams } from "./diagrams.ts";
+  import { brokenImage, proseClick } from "./prose.ts";
   import type { BoardOp, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, ThinkingLevel } from "../shared/types.ts";
   import ChatComposer from "./ChatComposer.svelte";
   import BoardPanel from "./BoardPanel.svelte";
@@ -128,6 +132,44 @@
   function viewImage(item: Extract<ChatItem, { kind: "user" }>, index: number): void {
     lightbox = { images: item.images.map((image, position) => ({ src: image.url, alt: `Image ${position + 1}` })), index };
   }
+  /** Inside a reply: a reply image opens large, an artifact link opens the reader (a web link is a plain anchor and opens its tab). */
+  function onProseClick(event: MouseEvent): void {
+    const click = proseClick(event);
+    if (click?.kind === "image") lightbox = { images: [{ src: click.src, alt: click.alt }], index: 0 };
+    else if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, id); }
+  }
+  /** A job's message in the feed opens in the reader; the drawer stays for the job's status. */
+  const readReport = (item: Extract<ChatItem, { kind: "job" }>) => store.openArtifact({ kind: "thread", sessionId: id, at: item.at }, id);
+
+  /** The side panel's left edge: a drag sets its width, a double click puts it back, Left and Right nudge it. The choice holds across chats. */
+  let sideNode: HTMLElement | undefined = $state();
+  let resizing = $state(false);
+  function startResize(event: PointerEvent): void {
+    if (event.button !== 0 || !sideNode) return;
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLElement;
+    const right = sideNode.getBoundingClientRect().right;
+    handle.setPointerCapture(event.pointerId);
+    resizing = true;
+    const move = (next: PointerEvent) => ui.setBoardWidth(right - next.clientX, false);
+    const end = () => {
+      resizing = false;
+      ui.setBoardWidth(ui.boardWidth, true);
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  }
+  function resizeKey(event: KeyboardEvent): void {
+    const next = event.key === "ArrowLeft" ? ui.boardWidth + 16 : event.key === "ArrowRight" ? ui.boardWidth - 16
+      : event.key === "Home" ? BOARD_MAX : event.key === "End" ? BOARD_MIN : null;
+    if (next === null) return;
+    event.preventDefault();
+    ui.setBoardWidth(next, true);
+  }
 
   let catalog = $state<ModelCatalog | null>(null);
   let catalogError = $state<string | null>(null);
@@ -238,19 +280,34 @@
                   {/each}
                 </div>
               {/if}
-              {#if item.text}<div class="text">{item.text}</div>{/if}
+              <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+              {#if item.text}<div class="text said" onclick={onProseClick}>{@html renderInline(item.text)}</div>{/if}
             </div>
           </div>
         {:else if item.kind === "agent"}
+          {@const blocks = bubbleBlocks(item.text)}
           <div class="line agent" data-at={item.at}>
-            <div class="bubble theirs" use:longpress={() => void copyLink(item.at)}>
-              <div class="text">{#each textRuns(item.text) as run, position (position)}{#if run.kind === "link"}<a href={run.href} target="_blank" rel="noopener noreferrer">{run.href}</a>{:else}{run.text}{/if}{/each}{#if item.streaming}<span class="caret"></span>{/if}</div>
+            <div class="blocks">
+              {#each blocks as block, position (position)}
+                {@const html = renderMarkdown(block.text, cwd)}
+                {@const streaming = item.streaming ?? false}
+                {#if block.kind === "prose"}
+                  <div class="bubble theirs" use:longpress={() => void copyLink(item.at)}>
+                    <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+                    <div class="prose bubble-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming }}>{@html html}{#if streaming && position === blocks.length - 1}<span class="caret"></span>{/if}</div>
+                  </div>
+                {:else}
+                  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+                  <div class="card prose {block.kind}" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming && block.kind === "diagram" && !block.closed }} use:longpress={() => void copyLink(item.at)}>{@html html}</div>
+                {/if}
+              {/each}
+              {#if !blocks.length && item.streaming}<div class="bubble theirs"><span class="caret"></span></div>{/if}
             </div>
             {#if !item.streaming}{@render linkButton(item.at)}{/if}
           </div>
         {:else if item.kind === "job"}
           <div class="line report" data-at={item.at}>
-            <button type="button" class="report-line" title="Open job {jobName(item.from)}" onclick={() => openJob(item.from)} use:longpress={() => void copyLink(item.at)}>
+            <button type="button" class="report-line" title="Read this message" onclick={() => readReport(item)} use:longpress={() => void copyLink(item.at)}>
               <span class="report-mark"><Icon name="chevronRight" size={12} /></span>
               <span class="report-text"><span class="report-from">from {jobName(item.from)}:</span> {item.title}</span>
             </button>
@@ -281,7 +338,7 @@
 {/snippet}
 
 {#snippet boardView()}
-  <BoardPanel {board} {cwd} {narrow} onjob={openJob} apply={applyBoard} />
+  <BoardPanel {id} {board} onjob={openJob} apply={applyBoard} />
 {/snippet}
 {#snippet jobsView()}
   <JobList {jobs} {pulses} now={tick5} {checkIn} onopen={job => openJob(job.key)} />
@@ -340,7 +397,11 @@
         {/if}
       </div>
       {#if !narrow && ui.boardOpen}
-        <aside class="side" aria-label="Board and jobs">
+        <aside class="side" class:resizing aria-label="Board and jobs" bind:this={sideNode} style:width="{ui.boardWidth}px">
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+          <div class="resize" class:resizing role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the board panel"
+            aria-valuemin={BOARD_MIN} aria-valuemax={BOARD_MAX} aria-valuenow={ui.boardWidth} use:tooltip={"Drag to resize, double-click to reset"}
+            onpointerdown={startResize} ondblclick={() => ui.setBoardWidth(BOARD_DEFAULT, true)} onkeydown={resizeKey}></div>
           <div class="switch side-tabs" role="tablist" aria-label="Side panel">
             {@render boardTab(side === "board", () => { side = "board"; })}
             {@render jobsTab(side === "jobs", () => { side = "jobs"; })}
@@ -349,7 +410,7 @@
         </aside>
       {/if}
       {#if drawerName !== null}
-        <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} {cwd} onclose={closeJob} />
+        <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />
       {/if}
     </div>
   {/if}
@@ -374,7 +435,12 @@
   .error-title { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--danger); }
   .body { position: relative; display: flex; flex: 1; min-height: 0; }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
-  .side { flex: none; display: flex; flex-direction: column; width: 320px; min-height: 0; border-left: 1px solid var(--border); background: var(--bg-sunken); }
+  .side { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--bg-sunken); }
+  .resize { position: absolute; top: 0; bottom: 0; left: -4px; z-index: 20; width: 8px; cursor: col-resize; touch-action: none; }
+  .resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background-color 0.12s 0.1s; }
+  .resize:hover::after, .resize:focus-visible::after, .resize.resizing::after { background: var(--accent); }
+  .resize:focus-visible { outline: none; }
+  :global(body:has(.side .resize.resizing)) { cursor: col-resize; user-select: none; }
   .pane { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .switch { display: flex; flex: none; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--bg); }
   .side-tabs { background: var(--bg-sunken); }
@@ -396,11 +462,33 @@
   .line:hover .link-button, .link-button:focus-visible { opacity: 1; }
   .line:global(.linked) { animation: linked 2s ease-out; }
   @keyframes linked { from { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } to { background: transparent; box-shadow: none; } }
-  .bubble { max-width: min(82%, 560px); padding: 8px 14px; border-radius: 18px; font-size: 15.5px; line-height: 1.45; }
+  .bubble { max-width: min(82%, 560px); min-width: 0; padding: 8px 14px; border-radius: 18px; font-size: 15.5px; line-height: 1.45; }
   .bubble.mine { background: var(--accent-fill); color: var(--accent-text); border-bottom-right-radius: 5px; transition: opacity 0.2s; }
   .bubble.mine.pending { opacity: 0.55; }
   .bubble.theirs { background: var(--user-bubble); border-bottom-left-radius: 5px; }
   .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .said :global(a) { color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
+  .said :global(code) { font-family: var(--mono); font-size: 0.88em; padding: 0.05em 0.3em; border-radius: 4px; background: color-mix(in srgb, currentColor 16%, transparent); }
+  .said :global(.artifact-link) { font: inherit; color: inherit; text-decoration: underline; padding: 0; }
+  .blocks { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; }
+  .blocks > .bubble { max-width: min(82%, 560px); }
+  /* Bubble typography: paragraphs and lists sit tight, headings read as bold lines, blocks scroll sideways inside the bubble. */
+  .bubble-prose { line-height: 1.45; }
+  .bubble-prose :global(p), .bubble-prose :global(ul), .bubble-prose :global(ol), .bubble-prose :global(blockquote), .bubble-prose :global(.table-wrap), .bubble-prose :global(.code-block) { margin: 0 0 0.55em; }
+  .bubble-prose :global(h1), .bubble-prose :global(h2), .bubble-prose :global(h3), .bubble-prose :global(h4) { font-size: 1em; margin: 0.7em 0 0.25em; }
+  .bubble-prose :global(li + li) { margin-top: 0.15em; }
+  .bubble-prose :global(li > ul), .bubble-prose :global(li > ol) { margin-top: 0.15em; }
+  .bubble-prose :global(.code-block), .bubble-prose :global(.table-wrap) { max-width: 100%; background: var(--bg-elevated); }
+  .bubble-prose :global(pre) { padding: 0.7em 0.9em; }
+  .bubble-prose :global(.reply-image) { display: inline-block; vertical-align: middle; max-height: 180px; margin: 0.2em 0; }
+  .bubble-prose :global(.artifact-link) { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.18em; font: inherit; padding: 0; }
+  .bubble-prose :global(.artifact-link:hover), .bubble-prose :global(a:hover) { text-decoration-color: currentColor; }
+  /* A standalone image or diagram: a wide card under the bubble, up to the feed width. */
+  .card { align-self: stretch; max-width: 100%; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-elevated); overflow: hidden; }
+  .card :global(p) { margin: 0; }
+  .card.image :global(.reply-image) { display: block; max-width: 100%; max-height: 560px; margin: 0; border: 0; border-radius: 0; }
+  .card.image :global(.inert-image) { display: block; padding: 10px 14px; }
+  .card.diagram :global(.code-block) { margin: 0; border: 0; border-radius: 0; background: var(--bg-elevated); }
   .owner-action { display: flex; align-items: center; justify-content: flex-end; gap: 5px; padding: 1px 6px; font-size: 12.5px; color: var(--text-faint); overflow-wrap: anywhere; }
   .owner-action.pending { opacity: 0.55; }
   .images { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
@@ -429,6 +517,6 @@
   @container app (max-width: 899px) {
     .column { padding: 10px 10px 12px; }
     .foot .column { padding: 4px 8px 8px; }
-    .bubble { max-width: 86%; }
+    .bubble, .blocks > .bubble { max-width: 86%; }
   }
 </style>

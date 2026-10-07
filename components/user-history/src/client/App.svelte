@@ -12,6 +12,7 @@
   import NewChat from "./NewChat.svelte";
   import Settings from "./Settings.svelte";
   import AgentsDialog from "./AgentsDialog.svelte";
+  import Reader from "./Reader.svelte";
   import Icon from "./Icon.svelte";
 
   const NARROW_BELOW = 900;
@@ -115,6 +116,9 @@
     {/if}
     {#if ui.agentsOpen}
       <AgentsDialog onclose={() => { ui.agentsOpen = false; }} />
+    {/if}
+    {#if store.reader}
+      <Reader view={store.reader} {narrow} onclose={() => { store.reader = null; }} />
     {/if}
   </div>
   {#if store.toasts.length}

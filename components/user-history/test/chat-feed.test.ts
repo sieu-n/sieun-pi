@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatFeed, chatItemsOf, settledPending, textRuns, PENDING_SKEW_MS, type PendingSend } from "../src/shared/chat-feed.ts";
+import { chatFeed, chatItemsOf, settledPending, PENDING_SKEW_MS, type PendingSend } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, CustomMessage, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -82,10 +82,8 @@ test("a pending send shows as a pending user line until the thread echoes the sa
   assert.deepEqual([...settledPending([user("other", 5100)], [send("a", "ok", 5000)])], []);
 });
 
-test("textRuns splits web links out of plain text and leaves trailing punctuation", () => {
-  assert.deepEqual(textRuns("see https://example.com/a?b=1, then http://x.y/z."), [
-    { kind: "text", text: "see " }, { kind: "link", href: "https://example.com/a?b=1" }, { kind: "text", text: ", then " }, { kind: "link", href: "http://x.y/z" }, { kind: "text", text: "." },
-  ]);
-  assert.deepEqual(textRuns("no links **here**"), [{ kind: "text", text: "no links **here**" }]);
-  assert.deepEqual(textRuns(""), []);
+test("a job message the snapshot clipped names where its full text is", () => {
+  const clipped: CustomMessage = { role: "custom", customType: "agent_message", content: [{ type: "text", text: "[agent-message from w10]\nLong report", truncated: true }], timestamp: 1 };
+  assert.deepEqual(chatItemsOf(clipped, 4), [{ kind: "job", id: "m4", from: "w10", title: "Long report", body: "Long report", at: 1, clipped: { message: 4, part: 0 } }]);
+  assert.equal("clipped" in chatItemsOf({ role: "custom", customType: "agent_message", content: "[agent-message from w10]\nShort", timestamp: 1 }, 0)[0]!, false);
 });

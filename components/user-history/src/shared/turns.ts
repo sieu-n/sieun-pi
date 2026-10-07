@@ -65,12 +65,19 @@ export function ownRun(turn: Turn): Turn {
   return { ...turn, work, live: false };
 }
 
+/** The body of a trigger's text without its native "[kind detail]" header line. */
+export function triggerBody(text: string): string {
+  const trimmed = text.trim();
+  const match = /^\[([^\]\n]+)\]\s*/.exec(trimmed);
+  return (match ? trimmed.slice(match[0].length) : trimmed).trim();
+}
+
 /** One-line label and body for a trigger, from the native "[kind detail]" header line. */
 export function triggerSummary(message: CustomMessage): { label: string; detail: string; body: string } {
   const text = messageText(message).trim();
   const match = /^\[([^\]\n]+)\]\s*/.exec(text);
   const header = match?.[1] ?? "";
-  const body = (match ? text.slice(match[0].length) : text).trim();
+  const body = triggerBody(text);
   if (message.customType === "agent_message") {
     const from = /^agent-message from\s+(.+)$/i.exec(header)?.[1] ?? "";
     return { label: "Message", detail: from ? "from " + from : "", body };

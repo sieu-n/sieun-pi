@@ -69,7 +69,7 @@ export class Projector {
     return { role: "user", content: [...(typed ? [textPart(typed, USER_TEXT_LIMIT)] : []), ...images], timestamp, skill: skill.name };
   }
   private userContent(content: unknown, limit: number): string | (TextPart | ImagePart)[] {
-    if (typeof content === "string") return clip(content, limit).text;
+    if (typeof content === "string") { const clipped = clip(content, limit); return clipped.truncated ? [{ type: "text", text: clipped.text, truncated: true }] : content; }
     if (!Array.isArray(content)) return "";
     return content.flatMap((part: unknown): (TextPart | ImagePart)[] => {
       if (!isRecord(part)) return [];

@@ -1,24 +1,21 @@
 <script lang="ts">
   import { untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, nextIds } from "../shared/chat-board.ts";
-  import { WIKI_ORIGIN, type ArtifactTarget } from "../shared/artifact-link.ts";
   import type { ArtifactLink, BoardOp, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../shared/types.ts";
   import { groupTodos, isEmptyBoard, linkChip, linkLabel, offeredLink, planProgress, PLAN_STATUS_LABEL } from "./board.ts";
-  import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
-  import { renderMarkdown, copyFromClick } from "./markdown.ts";
   import Checkbox from "./ui/Checkbox.svelte";
-  import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
 
   /**
    * The chat's board as three cards: the plan the chat keeps (read-only here), For you (the chat's asks, answered by a tap on a choice
    * or a typed reply), and Notes (bullets with links to jobs, messages, wiki pages, files and web pages; the owner adds and removes bullets).
+   * A note's link opens through `store.openArtifact` (the reader, the thread, or a tab); a plan step's job chip opens the job drawer.
    * `apply` gets the board after the owner's ops and the ops themselves; it resolves false when the server refused them.
    */
-  let { board, cwd = "", narrow = false, onjob, apply }: {
-    board: ChatBoard | null; cwd?: string; narrow?: boolean; onjob: (name: string) => void; apply: (next: ChatBoard, ops: BoardOp[]) => Promise<boolean>;
+  let { id, board, onjob, apply }: {
+    id: string; board: ChatBoard | null; onjob: (name: string) => void; apply: (next: ChatBoard, ops: BoardOp[]) => Promise<boolean>;
   } = $props();
 
   const todos = $derived(groupTodos(board?.todos ?? []));
@@ -85,25 +82,6 @@
   }
   function clearNote(): void { noteDraft = ""; noteLinks = []; }
 
-  /** A `file:` link opens in a dialog: markdown rendered, anything else as text. */
-  let file = $state.raw<{ path: string; text: string | null; error: string | null } | null>(null);
-  function openLink(target: ArtifactTarget): void {
-    switch (target.kind) {
-      case "job": onjob(target.name); return;
-      case "thread": store.select(target.sessionId, target.at ?? null); return;
-      case "wiki": window.open(WIKI_ORIGIN + "/page/" + target.path, "_blank", "noopener"); return;
-      case "url": window.open(target.url, "_blank", "noopener"); return;
-      case "file": {
-        const view = { path: target.path, text: null, error: null };
-        file = view;
-        api.localFile(target.path).then(result => { if (file === view) file = { ...view, text: result.text }; },
-          error => { if (file === view) file = { ...view, error: error instanceof Error ? error.message : String(error) }; });
-        return;
-      }
-    }
-  }
-  const fileName = $derived(file?.path.split("/").filter(Boolean).at(-1) ?? "");
-  const fileHtml = $derived(file?.text !== null && file?.text !== undefined && /\.md$/i.test(file.path) ? renderMarkdown(file.text, file.path.replace(/\/[^/]*$/, "")) : "");
   const todoLabel = (todo: OwnerTodo) => todo.from === "owner" ? "Your note" : "Ask from the chat";
 </script>
 
@@ -186,7 +164,7 @@
             {@const chip = linkChip(link)}
             {#if chip.target}
               {@const target = chip.target}
-              <button type="button" class="link-chip {chip.kind}" title={link.target} onclick={() => openLink(target)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
+              <button type="button" class="link-chip {chip.kind}" title={link.target} onclick={() => store.openArtifact(target, id)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
             {:else}
               <span class="link-chip broken" title="This link cannot be opened: {link.target}"><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></span>
             {/if}
@@ -247,20 +225,6 @@
     {@render card("notes", "Notes", scratch.length ? String(scratch.length) : "", notesOpen, () => ui.setBoardCard("notes", !notesOpen), notesBody)}
   {/if}
 </div>
-
-{#if file}
-  <Modal title={fileName} width="760px" full={narrow} onclose={() => { file = null; }}>
-    <div class="file-view">
-      <div class="file-path">{file.path}</div>
-      {#if file.error}<p class="file-error">{file.error}</p>
-      {:else if file.text === null}<p class="none"><span class="spinner tiny"></span> Opening</p>
-      {:else if fileHtml}
-        <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-        <div class="prose file-prose" onclick={copyFromClick}>{@html fileHtml}</div>
-      {:else}<pre class="file-text">{file.text}</pre>{/if}
-    </div>
-  </Modal>
-{/if}
 
 <style>
   .board { display: flex; flex-direction: column; gap: 10px; padding: 10px 10px 20px; font-size: 13px; }
@@ -336,13 +300,7 @@
   .offer { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-strong); font-size: 12px; color: var(--text-muted); }
   .offer:hover { color: var(--accent-bold); border-color: var(--accent); background: var(--accent-soft); }
   .offer-target { font-weight: 600; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .file-view { padding: 14px 20px 24px; }
-  .file-path { margin-bottom: 12px; font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); overflow-wrap: anywhere; }
-  .file-error { margin: 0; color: var(--danger); font-size: 13px; }
-  .file-prose { font-size: 14px; }
-  .file-text { margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
   @container app (max-width: 899px) {
     .board { padding: 10px 8px 20px; }
-    .file-view { padding: 12px 14px 24px; }
   }
 </style>

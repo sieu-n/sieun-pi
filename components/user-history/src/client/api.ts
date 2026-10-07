@@ -4,6 +4,9 @@ import { subscribeFeed } from "./feeds.ts";
 
 const token = document.body.dataset.chatToken ?? "";
 
+export type LocalFile = { path: string; text: string } & ({ kind: "markdown" } | { kind: "diff" } | { kind: "code"; language: string });
+export interface WikiPage { path: string; title: string; url: string; text: string; headings: string[] }
+
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -96,6 +99,8 @@ export const api = {
   labels: (action: LabelAction) => post<{ ok: true; tagId?: string }>("api/labels", action),
   read: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/read", {}),
   board: (id: string, ops: BoardOp[]) => post<ChatBoard>("api/threads/" + encodeURIComponent(id) + "/board", { ops }),
-  /** A text or markdown file on this Mac, for a `file:` artifact link (readLocalText: .md, .txt, .json, .log, .csv under the allowed folders). */
-  localFile: (path: string) => get<{ path: string; text: string }>("api/local-file?path=" + encodeURIComponent(path)),
+  /** A text file on this Mac, for a `file:` artifact link (readLocalText: any UTF-8 text under the allowed folders), with how to show it. */
+  localFile: (path: string) => get<LocalFile>("api/local-file?path=" + encodeURIComponent(path)),
+  /** An llm-wiki page's text, fetched by the service from the wiki dev server, for a `wiki:` artifact link. */
+  wikiPage: (path: string) => get<WikiPage>("api/wiki-page?path=" + encodeURIComponent(path), 8000),
 };
