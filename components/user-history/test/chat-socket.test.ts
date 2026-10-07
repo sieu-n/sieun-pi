@@ -105,6 +105,25 @@ test("the socket needs the page origin and token, and drops a malformed message"
   } finally { await server.close(); }
 });
 
+test("a feed the server cannot serve fails alone; the socket and its other feeds stay up", async () => {
+  const { server, origin, wsUrl } = await serve();
+  try {
+    const { ws, next } = await connect(wsUrl(), { Origin: origin });
+    let closed = false;
+    ws.once("close", () => { closed = true; });
+    ws.send(JSON.stringify({ type: "subscribe", sub: 1, feed: "sessions" }));
+    ws.send(JSON.stringify({ type: "subscribe", sub: 2, feed: "weather" }));
+    ws.send(JSON.stringify({ type: "subscribe", sub: 1, feed: "login" }));
+    assert.deepEqual(await next(frame => frame.sub === 2), { sub: 2, event: "error", data: { message: "Unknown feed: weather." } });
+    assert.deepEqual(await next(frame => frame.sub === 1 && frame.event === "error"), { sub: 1, event: "error", data: { message: "Feed 1 is already subscribed." } });
+    assert.equal((await next(frame => frame.sub === 1 && frame.event === "sessions")).event, "sessions");
+    ws.send(JSON.stringify({ type: "subscribe", sub: 3, feed: "thread", id: "t1" }));
+    assert.deepEqual((await next(frame => frame.sub === 3)).data, { type: "snapshot", snapshot: { kind: "saved", id: "t1" } });
+    assert.equal(closed, false);
+    ws.close();
+  } finally { await server.close(); }
+});
+
 test("closing the server ends open sockets", async () => {
   const { server, origin, wsUrl } = await serve();
   const { ws } = await connect(wsUrl(), { Origin: origin });
