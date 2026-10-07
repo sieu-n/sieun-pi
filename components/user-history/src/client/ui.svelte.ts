@@ -39,7 +39,7 @@ function storedTree(key = "chat.chatTreeOpen"): Record<string, true> {
   } catch { return {}; }
 }
 const clampWidth = (width: number): number => Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width)));
-/** The Board / Jobs panel beside a chat: dragged from its left edge up to 60% of the window, reset by a double click, or expanded to the whole width. */
+/** The board panel beside a chat: dragged from its left edge up to 60% of the window, reset by a double click. */
 export const BOARD_MIN = 280;
 export const BOARD_DEFAULT = 320;
 export const boardMax = (): number => Math.max(BOARD_MIN, Math.floor((typeof window === "undefined" ? 1200 : window.innerWidth) * 0.6));
@@ -72,9 +72,6 @@ class Ui {
     this.boardWidth = clampBoardWidth(width);
     if (persist) store("chat.boardWidth", String(this.boardWidth));
   }
-  /** Expanded: the panel takes the room right of the sidebar and the chat narrows to one column; off again puts the last width back. */
-  boardWide = $state(stored("chat.boardWide") === "1");
-  setBoardWide(wide: boolean): void { this.boardWide = wide; store("chat.boardWide", wide ? "1" : "0"); }
   /** The Plan and Notes cards of the board, folded or open; the choice holds across chats and reloads. For you decides for itself. */
   boardCards = $state.raw<Record<string, boolean>>(storedColumns("chat.boardCards"));
   setBoardCard(card: string, open: boolean): void { this.boardCards = { ...this.boardCards, [card]: open }; store("chat.boardCards", JSON.stringify(this.boardCards)); }

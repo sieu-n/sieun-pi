@@ -17,7 +17,6 @@
   import type { BoardOp, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
   import ChatComposer from "./ChatComposer.svelte";
   import BoardPanel from "./BoardPanel.svelte";
-  import JobList from "./JobList.svelte";
   import JobDrawer from "./JobDrawer.svelte";
   import ThreadTitle from "./ThreadTitle.svelte";
   import AccountChip from "./AccountChip.svelte";
@@ -30,8 +29,9 @@
   import { copyPermalink, revealMessage } from "./permalink.ts";
 
   /**
-   * The chat view of one thread whose row has `chat`: a DM-style feed and a box that always sends at once, with the board and the jobs
-   * in a side panel on a wide window and behind a Chat / Board / Jobs switch on a phone. A job opens in a drawer over the panel.
+   * The chat view of one thread whose row has `chat`: a DM-style feed and a box that always sends at once, with the board in a side
+   * panel on a wide window and behind a Chat / Board switch on a phone. The chat's jobs are rows under it in the sidebar; a job opens in
+   * a drawer over the panel, from the sidebar, the feed, or a plan step that links it.
    */
   let { id, narrow }: { id: string; narrow: boolean } = $props();
 
@@ -84,10 +84,8 @@
     return { text: "Check-in paused, nothing open", on: false };
   });
 
-  /** The side panel (wide) and the phone switch share the Board and Jobs views; the phone adds Chat. */
-  type View = "chat" | "board" | "jobs";
-  let view = $state<View>("chat");
-  let side = $state<Exclude<View, "chat">>("board");
+  /** The phone switch: the feed or the board. A wide window shows the board in the side panel. */
+  let view = $state<"chat" | "board">("chat");
   const board = $derived(thread?.board ?? null);
   const asks = $derived(openAgentTodos(board));
   const cwd = $derived(thread?.info.cwd ?? row?.cwd ?? "");
@@ -128,6 +126,14 @@
   });
   const openJob = (name: string) => store.openJob(id, name);
   const closeJob = () => { if (store.jobDrawer?.chat === id) store.jobDrawer = null; };
+  /** A plan step's owner: a subagent of this chat opens in the drawer; a session (one this chat started, or any thread by id or name) opens as its thread. */
+  function openStep(owner: string): void {
+    const job = findJob(jobs, owner);
+    if (job?.kind === "session") { store.select(job.sessionId); return; }
+    const session = job ? null : store.session(owner) ?? store.sessions.find(row => row.name === owner);
+    if (session) store.select(session.id);
+    else openJob(owner);
+  }
 
   let lightbox = $state<{ images: { src: string; alt: string }[]; index: number } | null>(null);
   function viewImage(item: Extract<ChatItem, { kind: "user" }>, index: number): void {
@@ -256,13 +262,6 @@
   {/if}
 {/snippet}
 
-{#snippet boardTab(on: boolean, pick: () => void)}
-  <button type="button" role="tab" aria-selected={on} class:on onclick={pick}>Board{#if asks}<span class="dot" role="img" aria-label="{asks} waiting on you"></span>{/if}</button>
-{/snippet}
-{#snippet jobsTab(on: boolean, pick: () => void)}
-  <button type="button" role="tab" aria-selected={on} class:on onclick={pick}>Jobs{#if runningCount}<span class="count">{runningCount}</span>{/if}</button>
-{/snippet}
-
 {#snippet feedView()}
   <div class="scroller" bind:this={scroller} onscroll={onScroll}>
     <div class="column" bind:this={column}>
@@ -339,10 +338,7 @@
 {/snippet}
 
 {#snippet boardView()}
-  <BoardPanel {id} {board} onjob={openJob} apply={applyBoard} />
-{/snippet}
-{#snippet jobsView()}
-  <JobList {jobs} {pulses} now={tick5} {checkIn} onopen={job => openJob(job.key)} />
+  <BoardPanel {id} {board} {checkIn} onjob={openStep} apply={applyBoard} />
 {/snippet}
 
 <div class="chat">
@@ -387,31 +383,21 @@
         {#if narrow}
           <div class="switch" role="tablist" aria-label="Chat view">
             <button type="button" role="tab" aria-selected={view === "chat"} class:on={view === "chat"} onclick={() => { view = "chat"; }}>Chat</button>
-            {@render boardTab(view === "board", () => { view = "board"; })}
-            {@render jobsTab(view === "jobs", () => { view = "jobs"; })}
+            <button type="button" role="tab" aria-selected={view === "board"} class:on={view === "board"} onclick={() => { view = "board"; }}>Board{#if asks}<span class="dot" role="img" aria-label="{asks} waiting on you"></span>{/if}</button>
           </div>
           {#if view === "chat"}{@render feedView()}
-          {:else if view === "board"}<div class="pane">{@render boardView()}</div>
-          {:else}<div class="pane">{@render jobsView()}</div>{/if}
+          {:else}<div class="pane">{@render boardView()}</div>{/if}
         {:else}
           {@render feedView()}
         {/if}
       </div>
       {#if !narrow && ui.boardOpen}
-        <aside class="side" class:resizing class:wide={ui.boardWide} aria-label="Board and jobs" bind:this={sideNode} style:width={ui.boardWide ? undefined : `${ui.boardWidth}px`}>
-          {#if !ui.boardWide}
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-            <div class="resize" class:resizing role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the board panel"
-              aria-valuemin={BOARD_MIN} aria-valuemax={boardMax()} aria-valuenow={ui.boardWidth} use:tooltip={"Drag to resize, double-click to reset"}
-              onpointerdown={startResize} ondblclick={() => ui.setBoardWidth(BOARD_DEFAULT, true)} onkeydown={resizeKey}><span class="grip"><Icon name="grip" size={14} /></span></div>
-          {/if}
-          <div class="switch side-tabs" role="tablist" aria-label="Side panel">
-            {@render boardTab(side === "board", () => { side = "board"; })}
-            {@render jobsTab(side === "jobs", () => { side = "jobs"; })}
-            <button type="button" class="icon-button small expand" class:on={ui.boardWide} aria-pressed={ui.boardWide} aria-label={ui.boardWide ? "Back to the chat" : "Expand the panel"}
-              use:tooltip={ui.boardWide ? "Back to the chat" : "Expand the panel"} onclick={() => ui.setBoardWide(!ui.boardWide)}><Icon name={ui.boardWide ? "collapse" : "expand"} size={14} /></button>
-          </div>
-          <div class="pane">{#if side === "board"}{@render boardView()}{:else}{@render jobsView()}{/if}</div>
+        <aside class="side" class:resizing aria-label="Board" bind:this={sideNode} style:width="{ui.boardWidth}px">
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+          <div class="resize" class:resizing role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize the board panel"
+            aria-valuemin={BOARD_MIN} aria-valuemax={boardMax()} aria-valuenow={ui.boardWidth} use:tooltip={"Drag to resize, double-click to reset"}
+            onpointerdown={startResize} ondblclick={() => ui.setBoardWidth(BOARD_DEFAULT, true)} onkeydown={resizeKey}><span class="grip"><Icon name="grip" size={14} /></span></div>
+          <div class="pane">{@render boardView()}</div>
         </aside>
       {/if}
       {#if drawerName !== null}
@@ -442,25 +428,18 @@
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
   /* No fill, no overlay: the panel sits on the page background next to the chat, and the chat always keeps at least 360 px. */
   .side { position: relative; flex: none; display: flex; flex-direction: column; min-height: 0; max-width: calc(100% - 360px); border-left: 1px solid var(--border); background: var(--bg); }
-  .side.wide { flex: 1; min-width: 0; }
-  .body:has(> .side.wide) > .main { flex: none; width: 380px; }
   .resize { position: absolute; top: 0; bottom: 0; left: -5px; z-index: 20; width: 10px; cursor: col-resize; touch-action: none; }
   .resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 4px; border-radius: 2px; background: transparent; transition: background-color 0.12s; }
   .grip { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); display: inline-flex; padding: 6px 0; border-radius: 999px; color: var(--text-faint); background: var(--bg-elevated); border: 1px solid var(--border); opacity: 0.7; transition: opacity 0.12s, color 0.12s; }
   .resize:hover::after, .resize:focus-visible::after, .resize.resizing::after { background: color-mix(in srgb, var(--accent) 55%, transparent); }
   .resize:hover .grip, .resize:focus-visible .grip, .resize.resizing .grip { opacity: 1; color: var(--accent-bold); border-color: var(--accent); }
   .resize:focus-visible { outline: none; }
-  .side-tabs .expand { flex: none; margin-left: auto; width: 26px; height: 26px; padding: 0; color: var(--text-muted); }
-  .side-tabs .expand.on { color: var(--accent-bold); background: var(--accent-soft); }
   :global(body:has(.side .resize.resizing)) { cursor: col-resize; user-select: none; }
   .pane { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .switch { display: flex; flex: none; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--bg); }
-  .side-tabs { background: var(--bg); }
   .switch > button { position: relative; display: inline-flex; align-items: center; gap: 5px; flex: 1; height: 28px; padding: 0 10px; border-radius: var(--radius-small); justify-content: center; font-size: 12.5px; font-weight: 500; color: var(--text-muted); transition: background-color 0.12s, color 0.12s; }
-  .side-tabs > button { flex: 0 1 auto; }
   .switch > button:hover:not(.on) { background: var(--bg-hover); color: var(--text); }
   .switch > button.on { background: var(--accent-soft); color: var(--accent-bold); font-weight: 600; }
-  .count { font-size: 11px; font-weight: 500; color: var(--accent-bold); font-variant-numeric: tabular-nums; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .dot.corner { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; }
   .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }

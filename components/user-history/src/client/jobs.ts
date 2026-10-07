@@ -150,8 +150,9 @@ export function briefFor(messages: readonly ThreadMessage[], name: string): stri
   return found;
 }
 
-/** One line of a chat's job tree in the sidebar. `open` is what `store.openJob` takes for it. */
-export interface TreeJob { key: string; name: string; running: boolean; saved: boolean; failed: boolean; activity: string; open: string }
+/** One line of a chat's job tree in the sidebar. `at` is its last activity in ms (0 when unknown); `open` is what `store.openJob` takes for it. */
+export interface TreeJob { key: string; name: string; running: boolean; saved: boolean; failed: boolean; activity: string; at: number; open: string }
+const atOf = (value: string | undefined): number => Date.parse(value ?? "") || 0;
 
 /**
  * A chat's jobs for the sidebar tree, running first: the subagent sessions its row carries, then the sessions it started with
@@ -159,11 +160,12 @@ export interface TreeJob { key: string; name: string; running: boolean; saved: b
  */
 export function treeJobs(chat: SessionRow, messages: readonly ThreadMessage[] | undefined, rowOf: (id: string) => SessionRow | undefined): TreeJob[] {
   const jobs: TreeJob[] = (chat.jobs ?? []).map(job => ({ key: "job:" + job.id, name: job.name, running: job.status === "running", saved: job.status === "saved",
-    failed: job.failed === true, activity: job.activity ?? "", open: job.name }));
+    failed: job.failed === true, activity: job.activity ?? "", at: atOf(job.lastActivityAt), open: job.name }));
   for (const created of createdSessions(messages ?? [])) {
     const row = rowOf(created.sessionId);
     jobs.push({ key: "session:" + created.sessionId, name: row?.name || created.name || created.sessionId.slice(0, 8), running: row?.working === true,
-      saved: row?.kind === "saved", failed: !row?.working && Boolean(row?.failure), activity: row?.working ? row.statusLabel ?? "" : row?.failure ?? "", open: "session:" + created.sessionId });
+      saved: row?.kind === "saved", failed: !row?.working && Boolean(row?.failure), activity: row?.working ? row.statusLabel ?? "" : row?.failure ?? "",
+      at: atOf(row?.lastActivityAt ?? row?.created), open: "session:" + created.sessionId });
   }
   return [...jobs.filter(job => job.running), ...jobs.filter(job => !job.running)];
 }

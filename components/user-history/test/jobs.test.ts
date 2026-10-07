@@ -72,7 +72,7 @@ test("treeJobs and parentChatOf read a chat's jobs from its row and from the ses
   const row = (over: Partial<SessionRow>): SessionRow => ({ id: "r", name: "row", cwd: "/r", kind: "live", status: "idle", archived: false, messageCount: 1, working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", ...over });
   const chat = row({ id: "chat", name: "ux", chat: true, jobs: [
     { id: "s1", childId: "sub-1", name: "ux-email", status: "saved" },
-    { id: "s2", childId: "sub-2", name: "ux-monitor", status: "running", activity: "Reading routes" },
+    { id: "s2", childId: "sub-2", name: "ux-monitor", status: "running", activity: "Reading routes", lastActivityAt: "2026-10-08T09:00:00.000Z" },
   ] });
   const created = row({ id: "01a1-root", name: "seo-todo", working: true, statusLabel: "queued", origin: "agent" });
   const messages: ThreadMessage[] = [{ role: "toolResult", toolCallId: "t", toolName: "ipython", content: [{ type: "text", text: "RLMCreateSessionHandle(active_session_id='a', session_id='01a1-root', name='seo-todo', session_file=PosixPath('/x'))" }], isError: false, timestamp: 1 }];
@@ -84,6 +84,7 @@ test("treeJobs and parentChatOf read a chat's jobs from its row and from the ses
     ["session:01a1-root", true, "queued", "session:01a1-root"],
     ["job:s1", false, "", "ux-email"],
   ]);
+  assert.deepEqual(tree.map(job => job.at), [Date.parse("2026-10-08T09:00:00.000Z"), 0, 0]);
   assert.deepEqual(treeJobs(chat, undefined, rowOf).map(job => job.key), ["job:s2", "job:s1"]);
   const messagesOf = (id: string) => id === "chat" ? messages : undefined;
   assert.deepEqual(parentChatOf("s1", rows, messagesOf), { chat, open: "ux-email" });

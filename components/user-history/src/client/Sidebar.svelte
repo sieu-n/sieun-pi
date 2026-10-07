@@ -3,7 +3,7 @@
   import { store } from "./store.svelte.ts";
   import { labels, threadTags } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
-  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, emptyRowFilter, groupRows, inSidebar, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, originOf, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, compareRows, type SidebarSort, type SidebarView } from "./organize.ts";
+  import { activeFilters, pulseOf, BUCKET_LABEL, createdAge, elapsed, emptyRowFilter, groupRows, inSidebar, matchesQuery, matchesRowFilter, modelShort, money, needsResponse, nextRun, originOf, SIDEBAR_SORT_LABEL, SIDEBAR_VIEW_LABEL, tabOf, compareRows, type SidebarSort, type SidebarView } from "./organize.ts";
   import type { SessionRow } from "../shared/types.ts";
   import { treeJobs } from "./jobs.ts";
   import type { Anchor } from "./ui/floating.ts";
@@ -84,6 +84,8 @@
   function archive(row: SessionRow): void { void labels.archive([row.id]); }
   /** A chat's jobs under its row: from the row, plus the sessions it started once its transcript is loaded here. */
   const jobsOf = (row: SessionRow) => treeJobs(row, store.thread(row.id)?.state?.messages, id => store.session(id));
+  /** How long since the job last did anything, on the minute. */
+  const jobAge = (at: number): string => at ? elapsed(Math.max(0, minute * 60_000 - at)) : "";
   const treeOpen = (row: SessionRow): boolean => ui.chatTreeOpen[row.id] === true;
   $effect(() => { ui.sidebarOrder = [...chats.map(row => row.id), ...(ui.heartbeatsOpen ? beats.map(row => row.id) : []), ...groups.flatMap(group => group.rows.map(row => row.id))]; });
 
@@ -224,6 +226,7 @@
               <span class="tree-state">{#if job.running}<span class="spinner tiny"></span>{:else}<span class="tree-mark" class:saved={job.saved} class:failed={job.failed}></span>{/if}</span>
               <span class="tree-name">{job.name}</span>
               {#if job.activity}<span class="tree-activity" class:failed={job.failed}>{job.activity}</span>{/if}
+              {#if jobAge(job.at)}<span class="tree-age">{jobAge(job.at)}</span>{/if}
             </button>
           </li>
         {/each}
@@ -404,6 +407,7 @@
   .tree-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tree-activity { flex: 1; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-faint); }
   .tree-activity.failed { color: var(--danger); }
+  .tree-age { flex: none; margin-left: auto; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .tree-none { padding: 2px 8px; font-size: 12px; color: var(--text-faint); }
   .link:focus-visible { outline-offset: -2px; }
   .line { display: flex; align-items: center; gap: 6px; min-width: 0; }
