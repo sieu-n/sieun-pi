@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applyThreadEvent, isThreadBusy, threadStateFromSnapshot } from "../src/shared/thread-state.ts";
 import { allTurns, buildTurns, currentRun, exchangesOf, liveTurn, ownRun, toolDurationMs, triggerSummary, workCounts } from "../src/shared/turns.ts";
 import { CACHE_COLD_GAP_MS, cacheHealth } from "../src/shared/cache-health.ts";
@@ -136,6 +139,16 @@ test("catalog rows hide empty drafts and saved rows whose file is gone", () => {
   assert.equal(sessionTitle({ firstMessage: "", cwd: "/w/auto-sns-agent" }), "auto-sns-agent", "no name and no first message: the folder, as in the terminal agents view");
   assert.equal(sessionTitle({ sessionName: "  spec\n work ", firstMessage: "ignored" }), "spec work", "the native name wins, as in the terminal agents view");
   assert.equal(sessionTitle({ firstMessage: "(large message)" }), "(large message)", "the native first message is shown as the daemon sends it");
+});
+
+test("a thread's title stays its first stored user message after a compaction or a resume", () => {
+  const dir = mkdtempSync(join(tmpdir(), "title-"));
+  const file = join(dir, "s.jsonl");
+  const user = (text: string) => JSON.stringify({ type: "message", id: text.slice(0, 4), parentId: null, timestamp: "2026-10-01T00:00:00Z", message: { role: "user", content: [{ type: "text", text }], timestamp: 1 } });
+  writeFileSync(file, [JSON.stringify({ type: "session", version: 3, id: "s" }), user("Real   first\nquestion"), JSON.stringify({ type: "compaction", id: "c1" }), user("continue there was wifi break"), ""].join("\n"));
+  assert.equal(sessionTitle({ firstMessage: "continue there was wifi break", sessionFile: file }), "Real first question", "the daemon's in-memory first message never replaces the stored one");
+  assert.equal(sessionTitle({ firstMessage: "draft", sessionFile: join(dir, "missing.jsonl") }), "draft", "no file yet: the daemon's first message");
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("durations never show 0s for a timed call", () => {
