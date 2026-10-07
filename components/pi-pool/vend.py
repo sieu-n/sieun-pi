@@ -931,6 +931,50 @@ def rank(accounts, in_use, cooldowns, cfg, now):
     return sorted(usable, key=lambda a: (account_score(a, in_use, cfg), a.email))
 
 
+def window_free_at(window, cfg, now):
+    """When this window stops blocking, epoch seconds; None when it does not
+    block now. Mirrors unusable_reason's cutoffs: the session window against
+    five_hour_max_pct, every other window against seven_day_max_pct."""
+    cutoff = cfg["five_hour_max_pct"] if is_session_window(window) else cfg["seven_day_max_pct"]
+    if live_pct(window, now) < cutoff:
+        return None
+    if window.get("resetsAt") is not None:
+        return window["resetsAt"] / 1000
+    secs = window.get("windowSeconds")
+    if secs is not None:
+        return (window.get("sampledAt") or 0) / 1000 + secs
+    return float("inf")
+
+
+def account_free_at(a, cfg, now):
+    """When every blocking window of this account has reset."""
+    families = [f.lower() for f in cfg["switch_models"]]
+
+    def counts(w):
+        name = w.get("name")
+        if name is None:
+            return True
+        return not a.gate_off and any(f in family_tokens(name) for f in families)
+
+    blocking = [t for t in (window_free_at(w, cfg, now) for w in a.windows if counts(w))
+                if t is not None]
+    return max(blocking) if blocking else now
+
+
+def last_resort(accounts, cooldowns, cfg, now):
+    """When nothing is usable: the depleted account whose limits reset first.
+
+    The hook vends it anyway, so the request reaches the provider and comes
+    back as the provider's own 429 with its reset time. Prime Agent waits on
+    that (retry.provider.waitForUsage); a hook that returns no token is an
+    auth error to it, which it never waits on. Accounts that fail every
+    request (dead login, disabled, API refusal cooldown) are never offered.
+    """
+    pool = [a for a in accounts
+            if unusable_reason(a, cooldowns, cfg, now) in ("depleted", "live-elsewhere")]
+    return min(pool, key=lambda a: (account_free_at(a, cfg, now), a.email)) if pool else None
+
+
 PLAN_TIERS = {"free": 0, "plus": 1, "pro": 2, "team": 3}
 
 
@@ -1392,7 +1436,12 @@ def vend(provider):
         res = resolve(intent, accounts, in_use, cooldowns, cfg, now)
 
     if res is None:
-        raise RuntimeError(f"no usable {provider} account")
+        # Vend the soonest-to-reset account rather than nothing, so the caller
+        # gets the provider's 429 and its reset time instead of an auth error.
+        fallback = last_resort(accounts, cooldowns, cfg, now)
+        if fallback is None:
+            raise RuntimeError(f"no usable {provider} account")
+        res = Resolution(fallback, "last_resort", None)
 
     order = [res.account] + [a for a in rank(accounts, in_use, cooldowns, cfg, now)
                              if a.id != res.account.id]
@@ -1426,7 +1475,7 @@ def vend(provider):
             save_json(STATE, state)
         # The hook runs on every provider request, so a line per vend would be a log of
         # thousands. Log the transitions only: a session changing account, and a seat move.
-        if vended is None or vended["n"] == 1 or reason in ("seat_move", "seat_upgrade"):
+        if vended is None or vended["n"] == 1 or reason in ("seat_move", "seat_upgrade", "last_resort"):
             log("vend", provider=provider, account=account.email, source=source,
                 reason=reason, shadowed=res.shadowed and res.shadowed[0])
         sys.stdout.write(token)

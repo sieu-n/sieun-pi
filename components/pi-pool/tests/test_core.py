@@ -205,6 +205,25 @@ class Fallbacks(unittest.TestCase):
     def test_no_usable_account_resolves_to_nothing(self):
         self.assertIsNone(resolved(state_v2(), [DEPLETED, BROKEN]))
 
+    def test_last_resort_is_the_depleted_account_that_resets_first(self):
+        def win(pct, secs, resets_at):
+            return {"usedPercentage": pct, "windowSeconds": secs, "resetsAt": resets_at * 1000,
+                    "sampledAt": NOW * 1000}
+        late = dataclasses.replace(DEPLETED, id="late", email="late@x",
+                                   windows=(win(99, 18000, NOW + 7000),))
+        soon = dataclasses.replace(DEPLETED, id="soon", email="soon@x",
+                                   windows=(win(99, 18000, NOW + 600),))
+        weekly = dataclasses.replace(DEPLETED, id="wk", email="wk@x", session_pct=0, weekly_pct=100,
+                                     windows=(win(0, 18000, NOW + 100), win(100, 604800, NOW + 90000)))
+        refused = dataclasses.replace(DEPLETED, id="ref", email="ref@x",
+                                      windows=(win(99, 18000, NOW + 10),))
+        pool = [late, soon, weekly, refused, BROKEN]
+        pick = vend.last_resort(pool, {"ref": NOW + 3600}, CFG, NOW)
+        self.assertEqual(pick.id, "soon")
+        self.assertEqual(vend.account_free_at(weekly, CFG, NOW), NOW + 90000)
+        self.assertIsNone(vend.last_resort([BROKEN], {}, CFG, NOW))
+        self.assertIsNone(vend.last_resort([refused], {"ref": NOW + 3600}, CFG, NOW))
+
     def test_sessions_already_on_an_account_lose_to_a_fresh_one(self):
         r = resolved(state_v2(), in_use={"a": 3})
         self.assertEqual(r.account.id, "b")

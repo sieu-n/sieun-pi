@@ -200,7 +200,8 @@ First match wins, per provider:
 | 2 | pool pin | `pi-pool pin` | the account needs re-auth |
 | 3 | codex plan upgrade | plan tiers `free < plus < pro < team` | no usable codex account sits on a higher plan than the seat |
 | 4 | seat | the pool itself | the seat cannot serve |
-| 5 | best candidate | score | never; no candidate is an error |
+| 5 | best candidate | score | never |
+| 6 | last resort | no account is usable | the depleted account whose limits reset first is vended anyway, so the request gets the provider's 429 and reset time instead of an auth error. Dead logins, disabled accounts and refusal cooldowns are never vended. No account left is an error |
 
 A session pin that yields writes nothing, so it re-applies by itself the moment the
 window resets. `pi-pool who` names the pin it is shadowing.
