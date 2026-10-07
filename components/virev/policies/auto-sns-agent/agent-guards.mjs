@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { isInsideRepo } from '../../repo-hooks/project.mjs';
 import { lex, effective, parseGit } from './agent-git-guard.mjs';
@@ -50,11 +51,14 @@ export function canonical(eff) {
     return eff.slice(k).join(' ');
   }
   if (PKG_MANAGERS.has(eff[k])) {
+    // auto-sns-agent is a pnpm workspace, so only pnpm scripts are its checks. `npm test` and
+    // `npm run typecheck` belong to other repos (sieun-pi) and stay allowed (owner, 2026-10-08).
+    const manager = eff[k];
     k++;
     if (eff[k] === 'exec' || eff[k] === 'dlx') { k++; while (k < eff.length && eff[k].startsWith('-')) k++; return eff.slice(k).join(' '); }
     while (k < eff.length && eff[k].startsWith('-')) k += /^(--filter|--dir|-C|--workspace)$/.test(eff[k]) ? 2 : 1;
     if (eff[k] === 'run') k++;
-    return eff[k] ? `pnpm ${eff[k]}` : 'pnpm';
+    return eff[k] ? `${manager} ${eff[k]}` : manager;
   }
   return eff.join(' ');
 }
@@ -163,7 +167,7 @@ export function judge(command, opts) {
     const eff = skipFlagResidue(effective(argv));
     if (!eff.length) continue;
     if (basename(eff[0]) === 'cd' && eff[1] && !eff[1].startsWith('-')) {
-      cwd = resolve(cwd, eff[1]);
+      cwd = resolve(cwd, eff[1].replace(/^~(?=\/|$)/, homedir()));
       continue;
     }
 

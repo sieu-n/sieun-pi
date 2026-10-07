@@ -138,6 +138,11 @@ test("unrelated repositories get no company Git, Convex, or local-check rules", 
   }
 });
 
+test("npm and yarn scripts are not auto-sns-agent checks (it is a pnpm workspace)", async () => {
+  for (const command of ["npm test", "npm run typecheck", "yarn test"]) assert.equal(await call(first, command), undefined);
+  assert.equal((await call(first, "pnpm test"))?.block, true);
+});
+
 test("Convex duplicate-watcher checks remain policy-scoped", () => {
   const options = { repoRoot: first, cwd: first, convexWatchers: 1 };
   assert.match(judge("npx convex dev", options).deny, /ALREADY running/);
