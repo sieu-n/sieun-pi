@@ -1,5 +1,6 @@
 import { policyFor } from "../../policies/index.mjs";
 import { findProject } from "../../repo-hooks/project.mjs";
+import { judgeGrep } from "./grep-guard.mjs";
 import { faultInject, featureEnabled, log } from "./log.mjs";
 
 const MAX_CODE_BYTES = 200000;
@@ -89,14 +90,17 @@ export function extractShellCandidates(code) {
 	return out;
 }
 
-export function judgeShellText(text, project) {
-	return policyFor(project.policy)?.judgeShellText(text, project) ?? [];
+/** Global rules first, then the policy of the configured project that owns `cwd`, if any. */
+export function judgeShellText(text, cwd, project) {
+	const verdicts = judgeGrep(text, project?.cwd ?? cwd);
+	if (project) verdicts.push(...(policyFor(project.policy)?.judgeShellText(text, project) ?? []));
+	return verdicts;
 }
 
-export function judgeCell(code, project) {
+export function judgeCell(code, cwd, project) {
 	const verdicts = [];
 	for (const candidate of extractShellCandidates(code)) {
-		for (const v of judgeShellText(candidate.text, project)) {
+		for (const v of judgeShellText(candidate.text, cwd, project)) {
 			verdicts.push({ ...v, command: `${v.command}  (${candidate.source})` });
 		}
 	}
@@ -110,18 +114,19 @@ export async function onToolCall(event, ctx) {
 		faultInject("git-guard", "inner");
 		if (!featureEnabled("VIREV_GIT_GUARD")) return undefined;
 		if (event.toolName !== "bash" && event.toolName !== "ipython") return undefined;
-		const project = findProject(ctx?.cwd ?? process.cwd());
-		if (!project || !policyFor(project.policy)) return undefined;
+		const cwd = ctx?.cwd ?? process.cwd();
+		const found = findProject(cwd);
+		const project = found && policyFor(found.policy) ? found : null;
 
 		let verdicts;
 		switch (event.toolName) {
 			case "bash":
 				if (typeof event.input.command !== "string") return undefined;
-				verdicts = judgeShellText(event.input.command, project);
+				verdicts = judgeShellText(event.input.command, cwd, project);
 				break;
 			case "ipython":
 				if (typeof event.input.code !== "string") return undefined;
-				verdicts = judgeCell(event.input.code, project);
+				verdicts = judgeCell(event.input.code, cwd, project);
 				break;
 		}
 		for (const v of verdicts) log("git-guard", `${v.level}: ${v.command} :: ${v.reason.slice(0, 160)}`);

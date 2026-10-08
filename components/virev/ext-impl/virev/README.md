@@ -41,16 +41,23 @@ The policy receives `{ repoRoot, cwd, policy }`. It never derives the protected 
 Literal `cd`, `git -C`, and Git directory options select the command target inside that scope.
 A session outside configured roots receives no company policy. Writing rules and report-only lint stay global.
 
+The recursive grep rule in `grep-guard.mjs` is global and runs before any project check.
+It refuses `grep -r`, `-R`, `--recursive`, and `-d recurse` when a target is `~/.prime/agent`, a folder above it, or a tree a configured policy lists in `heavyTrees(repoRoot)`.
+For auto-sns-agent that is `apps/llm-wiki/content` and its direct children, `content/sessions/YYYY/MM`, and every folder above them, so `.` and `apps` at the repo root.
+A missing path means `.`. The refusal prints an `rg -n` command with the same pattern and an example narrow path.
+Narrow targets, such as one file, `apps/search/src/lib`, or one session day folder, still run.
+
 ```text
 tool_call
   -> bash or ipython?
        no  -> unchanged
-       yes -> configured cwd and known policy?
-                no  -> unchanged
-                yes -> extract literal shell commands
-                       -> policies/auto-sns-agent
-                       -> check target remains inside configured checkout
-                       -> block reason, warning, or unchanged
+       yes -> extract literal shell commands
+              -> grep-guard (every session)
+              -> configured cwd and known policy?
+                   no  -> grep verdicts only
+                   yes -> policies/auto-sns-agent
+                          -> check target remains inside configured checkout
+              -> block reason, warning, or unchanged
 ```
 
 Project-specific Git rules, Convex checks, workflow paths, and branch names live in `policies/auto-sns-agent/`.

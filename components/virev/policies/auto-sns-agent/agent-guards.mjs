@@ -3,27 +3,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { isInsideRepo } from '../../repo-hooks/project.mjs';
-import { lex, effective, parseGit } from './agent-git-guard.mjs';
-
-export function stripHeredocs(str) {
-  const lines = str.split('\n');
-  const out = [];
-  let endTag = null;
-  for (const line of lines) {
-    if (endTag !== null) {
-      if (line.trim() === endTag || line.trim() === `\t${endTag}`) endTag = null;
-      continue;
-    }
-    const m = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
-    if (m) endTag = m[2];
-    out.push(line);
-  }
-  return out.join('\n');
-}
+import { SHELLS, effective, lex, stripHeredocs } from '../../repo-hooks/shell.mjs';
+import { parseGit } from './agent-git-guard.mjs';
 
 const isConvex = (w) => w === 'convex' || w.endsWith('/convex') || w.endsWith('/convex.mjs');
 const RUNNERS = new Set(['npx', 'pnpx', 'bunx']);
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'ash']);
 const PKG_MANAGERS = new Set(['pnpm', 'npm', 'yarn']);
 
 export const CHECKS_RUN_IN_CI =

@@ -1,17 +1,16 @@
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import * as gitGuard from "./agent-git-guard.mjs";
-import { judge, stripHeredocs } from "./agent-guards.mjs";
+import { judge } from "./agent-guards.mjs";
+import { SHELLS, effective, lex, stripHeredocs } from "../../repo-hooks/shell.mjs";
 import { log } from "../../ext-impl/virev/log.mjs";
-
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"]);
 
 /** Collect every git invocation the repo guard objects to, with its argv. */
 function collectGitVerdicts(command, project, depth, out) {
 	if (depth > 4) return;
-	const { commands, nested } = gitGuard.lex(command);
+	const { commands, nested } = lex(command);
 	let running = project.cwd;
 	for (const argv of commands) {
-		const eff = gitGuard.effective(argv);
+		const eff = effective(argv);
 		if (!eff.length) continue;
 		const name = basename(eff[0]);
 		if (name === "cd" && eff[1] && !eff[1].startsWith("-")) {
@@ -91,3 +90,15 @@ export function judgeShellText(text, project) {
 	return verdicts;
 }
 
+/**
+ * Trees a recursive grep must not walk. llm-wiki content holds about 57 GB of gitignored session
+ * data (2026-10-08), filed as sessions/YYYY/MM/DD/<folder>; grep ignores .gitignore, rg skips it.
+ */
+export function heavyTrees(repoRoot) {
+	const content = join(repoRoot, "apps/llm-wiki/content");
+	const examples = ["apps/search/src/lib", "apps/llm-wiki/content/sessions/2026/10/08/<session-folder>"];
+	return [
+		{ path: content, depth: 1, examples },
+		{ path: join(content, "sessions"), depth: 2, examples },
+	];
+}
