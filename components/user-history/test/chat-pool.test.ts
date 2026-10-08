@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parsePoolRows, parseRefreshEvent, parseResets, resetsNotice, UsageRefreshes } from "../src/chat-pool.ts";
+import { parsePoolRows, parseRefreshEvent, parseResets, poolExecutable, resetsNotice, UsageRefreshes } from "../src/chat-pool.ts";
 import type { UsageRefresh } from "../src/shared/types.ts";
 
 const base = { id: "a", email: "a@x", usage: "7%/61%", session_pct: 7, weekly_pct: 61, gated_pct: 100, usable: false, reason: "depleted",
@@ -123,4 +123,10 @@ test("the resets notice counts the reads and names the failures", () => {
   assert.equal(resetsNotice({ accounts: [{ email: "a@x", status: {} }, { email: "b@x", error: "rate limited" }] }), "Resets read for 1 of 2 accounts. b@x: rate limited.");
   assert.equal(resetsNotice({ accounts: [{ email: "a@x", status: {} }] }), "Resets read for a@x.");
   assert.equal(resetsNotice({ error: "only Claude accounts have resets" }), "only Claude accounts have resets");
+});
+
+test("the chat runs the installed pi-pool, never the checkout's copy; PI_POOL_BIN overrides it", () => {
+  assert.equal(poolExecutable({}, "/Users/x"), "/Users/x/.local/bin/pi-pool");
+  assert.equal(poolExecutable({ PI_POOL_BIN: "/tmp/fake-pool" }, "/Users/x"), "/tmp/fake-pool");
+  assert.ok(!poolExecutable({}, "/Users/x").includes("components/pi-pool"), "not the sieun-pi checkout");
 });

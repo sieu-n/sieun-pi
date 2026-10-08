@@ -1,11 +1,18 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ClaudeState } from "./chat-fallback.ts";
 import type { AccountAction, AccountLogin, AccountResets, AccountsView, PoolAccount, PoolProvider, PoolResolution, PoolWindow, UsageRefresh, UsageRefreshAccount } from "./shared/types.ts";
 
-/** The pi-pool CLI next to this component; PI_POOL_BIN names another one (the native test runs a recording fake). */
-const executable = process.env.PI_POOL_BIN ?? fileURLToPath(new URL("../../pi-pool/bin/pi-pool", import.meta.url));
+/**
+ * The installed pi-pool CLI (`~/.local/bin/pi-pool`, a link into ~/.local/share/pi-pool/current), never the copy in this checkout: the chat
+ * must not run uncommitted pool edits (10-08: a half-written vend.py broke every session). PI_POOL_BIN names another one (tests run fakes).
+ */
+export function poolExecutable(env: Record<string, string | undefined> = process.env, home: string = homedir()): string {
+  return env.PI_POOL_BIN || join(home, ".local", "bin", "pi-pool");
+}
+const executable = poolExecutable();
 export const pooledProviders = ["anthropic", "openai-codex"] as const;
 type PooledProvider = typeof pooledProviders[number];
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
