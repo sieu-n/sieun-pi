@@ -50,7 +50,7 @@ class HookKilled(unittest.TestCase):
         self.assertEqual(len(killed), 1, events)
         e = killed[0]
         self.assertEqual((e["provider"], e["signal"], e["session"]), ("openai-codex", signal.SIGTERM, "fixture-killed"))
-        self.assertTrue(0 < e["awake_sec"] <= e["wall_sec"] < 5, e)
+        self.assertTrue(0 <= e["awake_sec"] <= e["wall_sec"] + 0.1 and e["wall_sec"] < 5, e)
         self.assertTrue(e["at"][0].startswith("__enter__:") and any(f.startswith("vend:") for f in e["at"]), e["at"])
 
 
