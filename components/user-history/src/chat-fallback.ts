@@ -1,4 +1,4 @@
-import { RETRY_BACKOFF_MS } from "./chat-checkin.ts";
+import { clockTime, RETRY_BACKOFF_MS } from "./chat-checkin.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { CHECK_IN_PREFIX, OWNER_RETRY_MARK, serverNote, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
@@ -94,10 +94,10 @@ export function turnStall(view: TurnView, now: number): Stall | null {
   return { error, at: failed?.at ?? now, owner, aborted: failed?.aborted ?? false, retrying: view.retrying, queued: view.queued };
 }
 
-/** The new turn the server starts for a stall; an owner turn quotes the owner's message so the chat answers it first. */
-export function revivalMessage(error: string, owner: string | null = null): string {
-  return owner === null ? `${CHECK_IN_PREFIX}Your last turn failed (${error}). Re-check the board and continue.`
-    : `${CHECK_IN_PREFIX}Your last turn failed (${error}). ${OWNER_RETRY_MARK}"${owner}". Answer it first.`;
+/** The new turn the server starts for a stall, with the failure's local time; an owner turn quotes the owner's message so the chat answers it first. */
+export function revivalMessage(stall: Pick<Stall, "error" | "at" | "owner">): string {
+  const failed = `${CHECK_IN_PREFIX}Your last turn failed at ${clockTime(stall.at)} (${stall.error}).`;
+  return stall.owner === null ? `${failed} Re-check the board and continue.` : `${failed} ${OWNER_RETRY_MARK}"${stall.owner}". Answer it first.`;
 }
 
 /**
@@ -109,7 +109,7 @@ export function stallAction(input: { stall: Stall; down: boolean; claude: Claude
   { kind: "restart"; message: string; abort: boolean } | { kind: "wait"; wait: ChatWait | null } | { kind: "none" } {
   const { stall, attempts, since, now } = input;
   const transient = !stall.aborted && failureCause(stall.error) === "transient";
-  const restart = { kind: "restart" as const, message: revivalMessage(stall.error, stall.owner), abort: stall.retrying };
+  const restart = { kind: "restart" as const, message: revivalMessage(stall), abort: stall.retrying };
   if (input.woke && transient) return restart;
   if (stall.retrying && stall.queued === 0 && !input.down) return { kind: "none" };
   const schedule = transient ? TRANSIENT_RETRY_BACKOFF_MS : stall.owner !== null ? OWNER_RETRY_BACKOFF_MS : RETRY_BACKOFF_MS;

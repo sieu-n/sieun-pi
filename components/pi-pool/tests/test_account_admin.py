@@ -133,8 +133,8 @@ class LimitedSurvivesARestart(PoolFixture):
             json.dump(index, f)
         now = time.time()
         self.write_state({"version": 2, "providers": {
-            "anthropic": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}},
-            "openai-codex": {"pin": self.C, "seat": {"account_id": self.C, "since": now}, "cooldowns": {}, "disabled": {}}},
+            "anthropic": {"pin": None, "cooldowns": {}, "disabled": {}},
+            "openai-codex": {"pin": self.C, "cooldowns": {}, "disabled": {}}},
             "sessions": {self.SESSION: {"uuid": self.SESSION, "active_id": None, "last_seen": now, "pins": {},
                                         "vends": {"openai-codex": {"account_id": self.C, "email": "c@x", "at": now, "n": 3}}}}})
 
@@ -147,7 +147,7 @@ class LimitedSurvivesARestart(PoolFixture):
         code, out = self.cli("who", "--json", "--session", self.SESSION)
         self.assertEqual(code, 0, out)
         who = json.loads(out)["providers"]["openai-codex"]
-        self.assertEqual((who["email"], who["reason"], who["shadowed"]), ("d@x", "seat_move", [self.C, "limited"]))
+        self.assertEqual((who["email"], who["reason"], who["shadowed"]), ("d@x", "switch", [self.C, "limited"]))
         row = self.rows("openai-codex")["c@x"]
         self.assertEqual((row["usable"], row["limited_until"]), (False, round(until)))
         self.assertTrue(row["reason"].startswith("limited "), row["reason"])
@@ -200,8 +200,8 @@ class TermsRefusalTakesTheAccountOut(PoolFixture):
         super().setUp()
         now = time.time()
         self.write_state({"version": 2, "providers": {
-            "anthropic": {"pin": None, "seat": {"account_id": A, "since": now}, "cooldowns": {}, "disabled": {}},
-            "openai-codex": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}}},
+            "anthropic": {"pin": None, "cooldowns": {}, "disabled": {}},
+            "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}},
             "sessions": {self.SESSION: {"uuid": self.SESSION, "active_id": None, "last_seen": now, "pins": {},
                                         "vends": {"anthropic": {"account_id": A, "email": "a@x", "at": now, "n": 3}}}}})
 
@@ -277,7 +277,7 @@ class Remove(PoolFixture):
         self.cli("off", "a@x")
         state = self.state()
         prov = state["providers"]["anthropic"]
-        prov.update(pin=A, seat={"account_id": A, "since": 1}, cooldowns={A: 9e12, B: 9e12})
+        prov.update(pin=A, cooldowns={A: 9e12, B: 9e12})
         state["sessions"]["s1"] = {"uuid": "s1", "active_id": "s1", "pins": {"anthropic": {"account_id": A}, "openai-codex": {"account_id": "cccc"}}, "vends": {}, "last_seen": 1}
         self.write_state(state)
 
@@ -285,7 +285,7 @@ class Remove(PoolFixture):
 
         self.assertEqual(self.ran(), ["rm " + A])
         prov = self.state()["providers"]["anthropic"]
-        self.assertEqual((prov["pin"], prov["seat"], prov["disabled"], prov["cooldowns"]), (None, None, {}, {B: 9e12}))
+        self.assertEqual((prov["pin"], prov["disabled"], prov["cooldowns"]), (None, {}, {B: 9e12}))
         self.assertEqual(self.state()["sessions"]["s1"]["pins"], {"openai-codex": {"account_id": "cccc"}})
 
     def test_rm_passes_the_codex_flag(self):
@@ -390,8 +390,8 @@ class Login(PoolFixture):
         limits = {A: {"until": until, "at": time.time(), "session": None},
                   B: {"until": until, "at": time.time(), "session": None}}
         self.write_state({"version": 2, "providers": {
-            "anthropic": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}, "limits": limits},
-            "openai-codex": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
+            "anthropic": {"pin": None, "cooldowns": {}, "disabled": {}, "limits": limits},
+            "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
         run = LoginRun(self, ["b@x"], "claude")
         self.assertEqual(run.event()["event"], "url")
         run.send("good\n")
@@ -402,9 +402,9 @@ class Login(PoolFixture):
     def test_a_new_sign_in_drops_that_accounts_terms_refusal_only(self):
         until = time.time() + 3600
         self.write_state({"version": 2, "providers": {
-            "anthropic": {"pin": None, "seat": None, "disabled": {}, "limits": {},
+            "anthropic": {"pin": None, "disabled": {}, "limits": {},
                           "cooldowns": {A: until, B: until}, "cooldown_reasons": {A: "needs terms", B: "needs terms"}},
-            "openai-codex": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
+            "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
         run = LoginRun(self, ["b@x"], "claude")
         self.assertEqual(run.event()["event"], "url")
         run.send("good\n")

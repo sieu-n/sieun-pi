@@ -44,6 +44,7 @@
     grip: "M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01",
     expandBox: "M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7",
     external: "M14 4h6v6M20 4l-9 9M11 6H5v13h13v-6",
+    slack: "M9.5 3.5v7M14.5 13.5v7M3.5 14.5h7M13.5 9.5h7M14.5 4.5v1M9.5 18.5v1M4.5 9.5h1M18.5 14.5h1",
   } as const;
   export type IconName = keyof typeof PATHS;
 </script>

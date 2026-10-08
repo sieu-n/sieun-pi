@@ -20,6 +20,7 @@
   async function load(): Promise<void> {
     try {
       view = await api.slack();
+      store.slack = view;
       error = null;
       if (view && !ownerTouched) owner = view.ownerUserId ?? "";
     } catch (reason) { error = reason instanceof Error ? reason.message : String(reason); }
@@ -27,7 +28,7 @@
   async function apply(request: Promise<SlackView>): Promise<void> {
     busy = true;
     const next = await store.run(request);
-    if (next) { view = next; ownerTouched = false; owner = next.ownerUserId ?? ""; }
+    if (next) { view = next; store.slack = next; ownerTouched = false; owner = next.ownerUserId ?? ""; }
     busy = false;
   }
   const set = (input: SlackInput) => apply(api.setSlack(input));
@@ -64,8 +65,8 @@
     <button type="button" class="toggle" role="switch" aria-checked={view.enabled} disabled={!view.editable || busy} onclick={() => void set({ enabled: !view?.enabled })}>
       <Checkbox visual checked={view.enabled} />
       <span class="text">
-        <span class="label">Link chats to Slack</span>
-        <span class="note">Each chat gets a private channel #vp-&lt;chat name&gt;. What you write there goes to the chat; its replies and pings come back. Messages you type here are not copied to Slack.</span>
+        <span class="label">Connect Slack</span>
+        <span class="note">No chat is synced until you turn on Sync to Slack in its header or when you create it. A synced chat gets a private channel #vp-&lt;chat name&gt;: what you write there goes to the chat, its replies and pings come back. Archiving the chat archives the channel. Messages you type here are not copied to Slack.</span>
       </span>
     </button>
 
@@ -80,7 +81,7 @@
 
     <dl class="facts">
       <dt>Workspace</dt><dd>{view.teamName ? `${view.teamName} (${view.teamId})` : "Not connected yet"}</dd>
-      <dt>Linked chats</dt><dd>{view.channels}</dd>
+      <dt>Synced chats</dt><dd>{view.channels}</dd>
       <dt>Tokens</dt><dd>{view.tokenSource === "keychain" ? "Keychain" : view.tokenSource === "environment" ? "Environment" : "Not found"}</dd>
     </dl>
     {#if !view.tokenSource}

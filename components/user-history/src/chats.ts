@@ -4,12 +4,12 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
+import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, clockTime, DEFAULT_CHECK_IN,
   endedWithoutReport, jobFacts, jobReport, lastJobMessages, nextCheckIn, retryDue } from "./chat-checkin.ts";
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
-import type { ChatBoard, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -40,13 +40,15 @@ export const CHAT_BRIEF: readonly string[] = [
     "blocked with the exact thing that unblocks it. A step that waits on someone else is still yours to chase. Before you mark a step done, check " +
     "the real state (the commit, the live service, the report), never an old note. Plan it, staff it with jobs, and bring the owner only what needs them.",
   "Call a feature live only for what you saw on the real screen, and say what you checked.",
-  "Voice: the owner's language, short. Owner replies: at most 60 words including bullets; a status answer is one line per goal. Lead with the answer. Markdown renders in the chat: use a short list, " +
+  "Voice: the owner's language, short. Owner reply: at most 3 short sentences or 60 words, bullets included; a status answer is one line per goal. " +
+    "If the owner asks you to explain, or the answer needs more, write a wiki article page (a job, or a scratch note with a link if one exists) and reply " +
+    "with one or two lines and the link. Lead with the answer. Markdown renders in the chat: use a short list, " +
     "inline code or a link when it makes the reply easier to scan; no headings, no tables unless asked, no em dashes. " +
     "Write like a text message from a coworker: short, casual, a few lines, spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence. Commit hashes are fine. Write so the message reads straight through as plain text: no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides, plain words over internal names; at most one board id per message, at the end, only when it helps (the page turns it into a link). Long detail (findings, options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
     "diagrams; put one on its own block when it is the point of the reply (it shows as a separate card under your message), keep it inline " +
     "when it is a small aside. Board notes, todos and replies are plain sentences a person reads once. No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works. Say what it is and what happens next.",
-  "Quiet: you talk to the owner when the owner writes. On any wake-up that is not an owner message, end the turn with no text. If a goal " +
-    "finished, something is blocked or you need a decision, call tell_owner once and then end with no text. Never write 'nothing needs you', " +
+  "Quiet: you talk to the owner when the owner writes. On a wake-up the owner did not start, your text is only your notes (the owner sees it folded); " +
+    "reach the owner only through tell_owner. If a goal finished, something is blocked or you need a decision, call tell_owner once. Never write 'nothing needs you', " +
     "'already handled', or a relay line. Several updates in a row get one tell_owner at the end, not one each. Message another thread only when " +
     "it must act, and tell it no reply is needed unless it needs something.",
   "Do yourself only quick read-only look-ups that answer the owner in about a minute: read a file, `rg`, `git log/status/diff/show`, open a screenshot " +
@@ -82,12 +84,13 @@ export const CHAT_BRIEF: readonly string[] = [
     "alone is not progress. A stuck owner gets at most one message. If it has not moved by the next check-in, or its last turn ended in an error, " +
     "replace it with a job in that check-in. A takeover you promised for the next check-in is due at that check-in: do it, do not restate it. " +
     "Never ask the owner to relay a message to another thread. Make the board match reality (statuses, notes with links), send a job only its own plan item, not the whole board, and " +
-    "stay quiet unless a goal finished, something is blocked, or you need a decision (one tell_owner). `[job] <name> ended with no report` means " +
+    "stay quiet unless a goal finished, something is blocked, or you need a decision (one tell_owner). `[job] <name> ended at <time> with no report` means " +
     "that job stopped without reporting: read its last messages (`await agent_observe.recent_messages(name)`) and act on what it did. " +
     "A check-in line `<step> (job <name>) waits: \"...\"` means the job waits on you or on something you can get it (a slot, a go, an answer): " +
     "answer it or get it, do not replace it. Never start a second job on a step whose job " +
     "may still run: `rlm.list_subagents()` can say completed for a job a reply woke again, so check its activity first.",
   "Never wait on the owner for a choice you can make yourself; a step you own moves every check-in or you start a job for it.",
+  "A step stalled 2 h or more must change at this check-in: chase the blocker, start a job, add one owner todo, or set waitUntil/waitFor.",
   "If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it.",
   "When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
     "instead of leaving the step blocked with a note.",
@@ -366,6 +369,54 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
   };
 }
 
+/** The brief a chat runs: the bullets its board tool puts in the base prompt, and their version (8 hex of a sha256 over the bullets). */
+export interface Brief { version: string; lines: readonly string[] }
+export function chatBrief(lines: readonly string[] = CHAT_BRIEF): Brief {
+  return { version: createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 8), lines };
+}
+
+/** How many changed or added rules a brief note quotes, and how long each quote may be. */
+export const BRIEF_NOTE_LINES = 6;
+export const BRIEF_NOTE_CHARS = 160;
+export const BRIEF_PREFIX = "[brief] ";
+const sentences = (lines: readonly string[]): string[] =>
+  lines.flatMap(line => line.split(/(?<=[.!?])\s+(?=[A-Z`"])/)).map(sentence => sentence.trim()).filter(Boolean);
+const words = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+/** Shared words over all words; a new sentence this close to a gone one is that rule changed, not a new one. */
+const similar = (a: Set<string>, b: Set<string>): number => {
+  let shared = 0;
+  for (const word of a) if (b.has(word)) shared++;
+  return shared / Math.max(1, a.size + b.size - shared);
+};
+const CHANGED_SIMILARITY = 0.5;
+
+/**
+ * What changed between two briefs, sentence by sentence (a bullet holds several rules): `changed` are the new sentences, in brief order, that
+ * are not in the old one, whether they edit an old rule or add one; `removed` counts old sentences with no close new one.
+ */
+export function briefChanges(before: readonly string[], after: readonly string[]): { changed: string[]; removed: number } {
+  const old = sentences(before);
+  const next = sentences(after);
+  const oldSet = new Set(old);
+  const nextSet = new Set(next);
+  const changed = next.filter(sentence => !oldSet.has(sentence));
+  const gone = old.filter(sentence => !nextSet.has(sentence));
+  const changedWords = changed.map(words);
+  const removed = gone.filter(sentence => { const own = words(sentence); return !changedWords.some(other => similar(own, other) >= CHANGED_SIMILARITY); }).length;
+  return { changed, removed };
+}
+
+const clipRule = (text: string): string => text.length > BRIEF_NOTE_CHARS ? text.slice(0, BRIEF_NOTE_CHARS - 1).trimEnd() + "\u2026" : text;
+/** The one line a chat gets in its transcript after it reloads onto a changed brief; null when no rule changed. */
+export function briefNote(before: readonly string[], after: readonly string[]): string | null {
+  const { changed, removed } = briefChanges(before, after);
+  if (!changed.length && !removed) return null;
+  const shown = changed.slice(0, BRIEF_NOTE_LINES).map(clipRule);
+  const more = changed.length - shown.length;
+  const parts = [...shown, ...(more > 0 ? [`and ${more} more`] : []), `${removed} removed`];
+  return `${BRIEF_PREFIX}Your chat rules changed: ${parts.join("; ")}. Jobs you started keep their old instructions: re-brief a long-running job if this matters.`;
+}
+
 /** The source files a chat session runs as its extension. A change in any of them is a new build; a chat that loaded an older one is reloaded. */
 const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts"];
 /** A short hash of the extension sources on disk now. */
@@ -375,28 +426,60 @@ export function extensionBuild(dir: string = import.meta.dirname): string {
   return hash.digest("hex").slice(0, 16);
 }
 
-/** What to do about a chat that last loaded `loaded` when the build on disk is `build`: reload it now, wait for its turn to end, or nothing. */
-export function reloadAction(loaded: string | undefined, build: string, busy: boolean): "reload" | "wait" | null {
-  if (loaded === build) return null;
+/**
+ * What to do about a chat that last loaded `loaded` when the build on disk is `build`: reload it now, wait for its turn to end, or nothing.
+ * `force` (the owner's Update all chats) reloads a chat on the current build too.
+ */
+export function reloadAction(loaded: string | undefined, build: string, busy: boolean, force = false): "reload" | "wait" | null {
+  if (loaded === build && !force) return null;
   return busy ? "wait" : "reload";
 }
 
-/** The build each chat last loaded, by session id. */
+/** The build and the brief each chat last loaded, by session id. */
 export interface LoadRecord {
   get(id: string): Promise<string | undefined>;
-  set(id: string, build: string): Promise<void>;
+  /** Records what a chat just loaded. Returns the brief it ran before when that one differs from `brief` and its text is on record, else null. */
+  set(id: string, build: string, brief?: Brief): Promise<readonly string[] | null>;
+  /** The brief version each chat last loaded; a chat loaded before versions were recorded is absent. */
+  briefs(): Promise<Record<string, string>>;
   forget(id: string): Promise<void>;
 }
-/** `<data dir>/extension-loads.json`: `{ builds: { [sessionId]: build } }` through locked-json. */
+type Loads = { builds: Record<string, string>; briefs: Record<string, string>; texts: Record<string, string[]> };
+const stringMap = (value: unknown): Record<string, string> => typeof value === "object" && value !== null
+  ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+/** Drops the brief texts no chat runs any more. */
+const pruneTexts = (state: Loads): void => {
+  const used = new Set(Object.values(state.briefs));
+  for (const version of Object.keys(state.texts)) if (!used.has(version)) delete state.texts[version];
+};
+/**
+ * `<data dir>/extension-loads.json` through locked-json: `{ builds: { [sessionId]: build }, briefs: { [sessionId]: version }, texts: { [version]: bullets } }`.
+ * The text of each brief a chat runs is kept, so the next change can tell the chat what changed.
+ */
 export function loadRecord(path: string): LoadRecord {
-  const file: JsonFile<{ builds: Record<string, string> }> = { path, label: "Extension load record", initial: () => ({ builds: {} }), parse(value: unknown) {
-    const builds = typeof value === "object" && value !== null && "builds" in value && typeof value.builds === "object" && value.builds !== null ? value.builds : {};
-    return { builds: Object.fromEntries(Object.entries(builds).filter((entry): entry is [string, string] => typeof entry[1] === "string")) };
+  const file: JsonFile<Loads> = { path, label: "Extension load record", initial: () => ({ builds: {}, briefs: {}, texts: {} }), parse(value: unknown) {
+    const record = typeof value === "object" && value !== null ? value as Partial<Record<keyof Loads, unknown>> : {};
+    const texts = typeof record.texts === "object" && record.texts !== null ? Object.entries(record.texts)
+      .filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(line => typeof line === "string")) : [];
+    return { builds: stringMap(record.builds), briefs: stringMap(record.briefs), texts: Object.fromEntries(texts) };
   } };
   return {
     async get(id) { return (await snapshotJsonFile(file)).builds[id]; },
-    async set(id, build) { await transactJsonFile(file, state => { state.builds[id] = build; }); },
-    async forget(id) { await transactJsonFile(file, state => { delete state.builds[id]; }); },
+    async set(id, build, brief) {
+      const { result } = await transactJsonFile(file, state => {
+        state.builds[id] = build;
+        if (!brief) return null;
+        const was = state.briefs[id];
+        const before = was !== undefined && was !== brief.version ? state.texts[was] ?? null : null;
+        state.briefs[id] = brief.version;
+        state.texts[brief.version] = [...brief.lines];
+        pruneTexts(state);
+        return before;
+      });
+      return result;
+    },
+    async briefs() { return { ...(await snapshotJsonFile(file)).briefs }; },
+    async forget(id) { await transactJsonFile(file, state => { delete state.builds[id]; delete state.briefs[id]; pruneTexts(state); }); },
   };
 }
 
@@ -502,6 +585,12 @@ export class Chats {
   private readonly mergeWaiting = new Set<string>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
+  /** Chats the owner's Update all chats reloads even on the current build; each leaves the set once its reload ran. */
+  private readonly forced = new Set<string>();
+  /** The brief this service's chats load (CHAT_BRIEF): what a chat on an older one is updated to. */
+  private readonly brief = chatBrief();
+  /** Told when a chat's brief state changes (a reload queued, waiting or done), so the sessions stream sends the rows again. */
+  briefChanged: () => void = () => {};
   private readonly syncing = new Map<string, Promise<void>>();
   private loaded: Promise<void> | undefined;
   private readonly unobserve: () => void;
@@ -577,7 +666,7 @@ export class Chats {
     this.chatIds.add(id);
     if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     await this.threads.setSteeringMode(id, "all");
-    await this.loads.set(id, this.build);
+    await this.loads.set(id, this.build, this.brief);
     return { id, name };
   }
 
@@ -649,6 +738,7 @@ export class Chats {
     this.threads.unpin(id);
     this.children.delete(id);
     this.reloadWaiting.delete(id);
+    this.forced.delete(id);
     this.chatIds.delete(id);
     await this.index.forget(id);
     await this.loads.forget(id);
@@ -838,7 +928,7 @@ export class Chats {
       await this.threads.notice(id, switchedNotice(to.name));
       this.threads.setWait(id, null);
       this.revivals.set(id, { attempts: 1, at: this.now() });
-      await this.threads.restart(id, revivalMessage(stall.error, stall.owner));
+      await this.threads.restart(id, revivalMessage(stall));
       this.steeredAt.set(id, this.now());
       this.log(`chat ${id.slice(0, 8)}: Claude cannot serve (${stall.error}); switched ${model.provider}/${model.id} to ${to.provider}/${to.id} and started a new turn`);
       return true;
@@ -915,7 +1005,7 @@ export class Chats {
         if (chat) {
           this.revivals.set(id, { attempts: 1, at: this.now() });
           this.threads.setWait(id, null);
-          await this.threads.restart(id, revivalMessage(stall.error, stall.owner), stall.retrying);
+          await this.threads.restart(id, revivalMessage(stall), stall.retrying);
           this.log(`chat ${id.slice(0, 8)}: the owner changed its model or account; started a new turn`);
         } else if (stall.retrying || stall.queued > 0) {
           await this.threads.abort(id);
@@ -1038,7 +1128,7 @@ export class Chats {
     if (told !== undefined && Math.abs(end - told) < NO_REPORT_SAME_END_MS) return;
     this.noticedEnd.set(child.id, end);
     if (this.stall(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the check-in after its restart tells it`); return; }
-    try { await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${childName(child)} ended with no report`, images: [], mode: "steer" }); }
+    try { await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${childName(child)} ended at ${clockTime(end)} with no report`, images: [], mode: "steer" }); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
@@ -1057,21 +1147,47 @@ export class Chats {
     }
   }
 
-  /** Reloads the chat when the build it last loaded is not the one on disk: now if it is idle, else once its turn ends. */
+  /**
+   * Reloads the chat when the build it last loaded is not the one on disk, or the owner asked to update every chat: now if it is idle, else once
+   * its turn ends. A reload onto a changed brief leaves one notice line in the transcript saying what changed; the model reads it on its next
+   * turn, whatever starts that turn, and it starts no turn itself.
+   */
   private async refreshExtension(id: string): Promise<void> {
     await this.load();
     if (!this.chatIds.has(id)) return;
+    const forced = this.forced.has(id);
+    let action: "reload" | "wait" | null = null;
     try {
-      const action = reloadAction(await this.loads.get(id), this.build, this.threads.busy(id));
+      action = reloadAction(await this.loads.get(id), this.build, this.threads.busy(id), forced);
       if (action === "wait") { this.reloadWaiting.add(id); return; }
       this.reloadWaiting.delete(id);
       if (!action) return;
       await this.threads.reload(id);
-      await this.loads.set(id, this.build);
-      this.log(`chat ${id.slice(0, 8)}: extension reloaded, build ${this.build}`);
+      const before = await this.loads.set(id, this.build, this.brief);
+      this.log(`chat ${id.slice(0, 8)}: extension reloaded, build ${this.build}, brief ${this.brief.version}`);
+      const note = before && briefNote(before, this.brief.lines);
+      if (note) await this.threads.notice(id, note);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: reload: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      if (!this.reloadWaiting.has(id)) this.forced.delete(id);
+      if (action !== null || forced) this.briefChanged();
     }
+  }
+
+  /** The owner's Update all chats: every chat reloads onto the current extension and brief, an idle one now, a busy one at the end of its turn. */
+  async updateAll(): Promise<number> {
+    await this.load();
+    for (const id of this.chatIds) { this.forced.add(id); this.queue(id, () => this.refreshExtension(id)); }
+    this.briefChanged();
+    return this.chatIds.size;
+  }
+
+  /** The sessions stream's brief field for every chat: the version it last loaded, the current one, and whether a reload is due or under way. */
+  async briefs(): Promise<ReadonlyMap<string, ChatBriefState>> {
+    await this.load();
+    const loaded = await this.loads.briefs();
+    return new Map([...this.chatIds].map(id => [id, { version: loaded[id] ?? null, current: this.brief.version, updating: this.forced.has(id) || this.reloadWaiting.has(id) }]));
   }
 
   close(): void { clearInterval(this.timer); this.unobserve(); }

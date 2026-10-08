@@ -34,8 +34,10 @@ export default function historyExtension(pi: ExtensionAPI): void {
       properties: {
         ops: {
           type: "array",
-          description: "Board ops. plan_set {items:[{text,status?,job?,note?,children?}]} replaces the plan. plan_add {text,parent?,status?,job?} adds a goal, " +
-            "or a step under parent. plan_update {id,text?,status?,job?,note?} (job or note null clears it). plan_remove {id} removes an item and its steps. " +
+          description: "Board ops. plan_set {items:[{text,status?,job?,note?,waitUntil?,waitFor?,children?}]} replaces the plan. plan_add {text,parent?,status?,job?,waitUntil?,waitFor?} " +
+            "adds a goal, or a step under parent. plan_update {id,text?,status?,job?,note?,waitUntil?,waitFor?} (null clears job, note, waitUntil or waitFor). " +
+            "waitUntil (an ISO date-time) or waitFor (the event, in a few words) marks a step that waits on purpose: the check-in skips it until that time, " +
+            "or for 24 h after you last changed it. plan_remove {id} removes an item and its steps. " +
             "scratch_add {text,parent?,links?} adds one note, or a note under the note parent; scratch_update {id,text?,links?} (links replaces the list, [] clears it); " +
             "scratch_remove {id} removes a note and the notes under it. " +
             "A link is {label,target}, up to 5 per bullet; target is job:<name> (a job's report), thread:<sessionId> or thread:<sessionId>@<message " +
@@ -48,6 +50,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
               op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratch_add", "scratch_update", "scratch_remove", "todo_add", "todo_update", "todo_remove"] },
               id: { type: "string" }, parent: { type: "string" }, text: { type: "string" },
               status: { type: "string", enum: [...PLAN_STATUSES] }, job: { type: ["string", "null"] }, note: { type: ["string", "null"] },
+              waitUntil: { type: ["string", "null"] }, waitFor: { type: ["string", "null"] },
               done: { type: "boolean" }, reply: { type: ["string", "null"] },
               links: { type: "array", items: { type: "object", properties: { label: { type: "string" }, target: { type: "string" } }, required: ["target"] } },
               choices: { type: "array", items: { type: "string" } },

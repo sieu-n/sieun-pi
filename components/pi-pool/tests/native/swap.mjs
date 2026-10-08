@@ -60,7 +60,7 @@ for (const [id, label] of [[C, 'c'], [D, 'd']]) {
   mkdirSync(join(tm, 'codex-stores', id.slice(0, 8)), { recursive: true });
   writeFileSync(join(tm, 'codex-stores', id.slice(0, 8), 'auth.json'), JSON.stringify({ tokens: { access_token: jwt(id, label), refresh_token: 'synthetic' } }));
 }
-const emptyProvider = { pin: null, seat: null, cooldowns: {}, disabled: {} };
+const emptyProvider = { pin: null, cooldowns: {}, disabled: {} };
 writeFileSync(join(pool, 'state.json'), JSON.stringify({ version: 2, providers: { anthropic: emptyProvider, 'openai-codex': { ...emptyProvider, pin: C } }, sessions: {} }));
 
 const requests = [];

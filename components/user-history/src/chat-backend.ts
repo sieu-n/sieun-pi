@@ -81,7 +81,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   let chats: Chats;
   // While a chat or one of its jobs works, the service keeps the Mac from idle sleep (10-05: a battery sleep stopped every chat and job).
   const awake = new IdleSleepHold(line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
-  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: id => chats.links(id) }, new ThreadOrigins(created));
+  const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: id => chats.links(id), briefs: () => chats.briefs() }, new ThreadOrigins(created));
   const boards = new BoardStore(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
@@ -89,6 +89,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       settings: checkInSettings(join(dataDir, "check-in-settings.json")), claude: claudeReader(), fallbacks: fallbackRecord(join(dataDir, "chat-fallbacks.json")),
       awake: working => awake.update(working) },
     line => process.stderr.write(line + "\n"));
+  chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   // The usage worker thread reads the transcripts and owns usage.duckdb; its first build runs in the background.

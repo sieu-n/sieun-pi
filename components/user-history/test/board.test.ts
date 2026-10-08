@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardActionText, countItems, focusPlan, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, openAgentTodos, parentIds, planProgress, planTotals, ROOT, shortTitle, treeRows, type TreeRow } from "../src/client/board.ts";
+import { boardActionText, countItems, focusPlan, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, openAgentTodos, parentIds, planProgress, planTotals, planWait, ROOT, shortTitle, treeRows, type TreeRow } from "../src/client/board.ts";
 import type { ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../src/shared/types.ts";
 
 const item = (id: string, status: PlanItem["status"], children: PlanItem[] = []): PlanItem => ({ id, text: id, status, children });
@@ -122,4 +122,15 @@ test("parentIds and focusPlan: collapse-all folds every parent; a focus unfolds 
   assert.equal(shortTitle("short"), "short");
   assert.equal(shortTitle("a".repeat(60)), "a".repeat(60));
   assert.equal(shortTitle("a".repeat(61)), "a".repeat(59) + "\u2026");
+});
+
+test("planWait: nothing for a plain step; a local time for waitUntil with the year only when it differs; the text for waitFor; both joined", () => {
+  const now = Date.parse("2026-10-08T12:00:00Z");
+  const local = (iso: string, year: boolean) => new Date(iso).toLocaleString(undefined, { ...(year ? { year: "numeric" } : {}), month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  assert.equal(planWait(item("p1", "todo"), now), null);
+  assert.equal(planWait({ ...item("p1", "todo"), waitFor: " the owner's Slack click " }, now), "waits for the owner's Slack click");
+  assert.equal(planWait({ ...item("p1", "todo"), waitUntil: "2026-10-09T05:30:00Z" }, now), `waits until ${local("2026-10-09T05:30:00Z", false)}`);
+  assert.equal(planWait({ ...item("p1", "todo"), waitUntil: "2027-01-02T05:30:00Z" }, now), `waits until ${local("2027-01-02T05:30:00Z", true)}`);
+  assert.equal(planWait({ ...item("p1", "todo"), waitUntil: "not a time", waitFor: "" }, now), null);
+  assert.equal(planWait({ ...item("p1", "todo"), waitUntil: "2026-10-09T05:30:00Z", waitFor: "land 25" }, now), `waits for land 25 until ${local("2026-10-09T05:30:00Z", false)}`);
 });

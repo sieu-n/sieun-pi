@@ -88,7 +88,11 @@ export interface RetryState { attempt: number; maxAttempts: number; delayMs: num
  * through `POST api/threads/<id>/board`; both go through `applyBoardOp` (src/shared/chat-board.ts). `rev` rises by one per applied op.
  */
 export type PlanStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
-export interface PlanItem { id: string; text: string; status: PlanStatus; job?: string; note?: string; children: PlanItem[] }
+/**
+ * `waitUntil` (an ISO date-time) and `waitFor` (a short text naming an event) mark a step that waits on purpose: the check-in leaves it alone
+ * until that time, or for STEP_WAIT_FOR_MS after the chat last changed it.
+ */
+export interface PlanItem { id: string; text: string; status: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string; children: PlanItem[] }
 /**
  * Where an artifact link points. Stored as a string, resolved by the page (src/shared/artifact-link.ts):
  * `job:<name>` opens that job's drawer in this chat; `thread:<sessionId>` opens a thread, `thread:<sessionId>@<timestamp>` jumps to one message
@@ -105,11 +109,11 @@ export interface ScratchItem { id: string; text: string; links: ArtifactLink[]; 
 export interface OwnerTodo { id: string; text: string; done: boolean; reply?: string; choices?: string[]; from: "agent" | "owner"; at: string }
 export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; scratch: ScratchItem[]; todos: OwnerTodo[]; updatedAt: string }
 export type BoardActor = "agent" | "owner";
-export type PlanItemInput = { id?: string; text: string; status?: PlanStatus; job?: string; note?: string; children?: PlanItemInput[] };
+export type PlanItemInput = { id?: string; text: string; status?: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string; children?: PlanItemInput[] };
 export type BoardOp =
   | { op: "plan_set"; items: PlanItemInput[] }
-  | { op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string }
-  | { op: "plan_update"; id: string; text?: string; status?: PlanStatus; job?: string | null; note?: string | null }
+  | { op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string; waitUntil?: string; waitFor?: string }
+  | { op: "plan_update"; id: string; text?: string; status?: PlanStatus; job?: string | null; note?: string | null; waitUntil?: string | null; waitFor?: string | null }
   | { op: "plan_remove"; id: string }
   | { op: "scratch_add"; parent?: string; text: string; links?: ArtifactLink[] }
   | { op: "scratch_update"; id: string; text?: string; links?: ArtifactLink[] }
@@ -212,6 +216,8 @@ export interface SessionRow {
   plan?: { done: number; total: number };
   /** Chats only: the check-in schedule the owner set (`<dataDir>/check-in-settings.json`). */
   checkIn?: CheckInState;
+  /** Chats only: the brief it last loaded against the current one (Settings > Chats). */
+  brief?: ChatBriefState;
   /**
    * Who started the thread: a person through this chat (`threads.json`, `chats.json`) or an agent through `rlm.create_session` (its name precedes
    * `session_state` in the session file). The sidebar hides agent-created rows by default. Absent reads as user.
@@ -225,6 +231,11 @@ export interface SessionRow {
 export interface CheckInState { everyMs: number; paused: boolean; pausedUntil: number | "forever" | null; nextAt: number | null }
 /** `GET api/threads/<id>/check-in`: the state and the last check-in this service ran (null before its first). */
 export interface CheckInView extends CheckInState { lastAt: number | null }
+/**
+ * A chat's brief in the sessions stream: the version it last loaded (null when it loaded before versions were recorded), the version the service
+ * runs now, and whether a reload onto it is queued or waits for the chat's turn to end.
+ */
+export interface ChatBriefState { version: string | null; current: string; updating: boolean }
 /** The pause the owner picks: an hour, until the next 09:00 local, or until resumed. */
 export type CheckInPause = "1h" | "tomorrow" | "forever";
 export const CHECK_IN_PAUSES: readonly CheckInPause[] = ["1h", "tomorrow", "forever"];
@@ -366,7 +377,7 @@ export interface RemoteAccessView {
 }
 export interface RemoteAccessInput { tailscale?: boolean; keepRunning?: boolean; openAppAtLogin?: boolean }
 
-/** Settings > Slack: the bridge that links each chat to a private Slack channel. */
+/** Settings > Slack: the workspace connection, and the chats the owner synced to a private Slack channel each. */
 export interface SlackView {
   state: "off" | "no-tokens" | "no-owner" | "connecting" | "on" | "problem";
   message: string;
@@ -376,8 +387,10 @@ export interface SlackView {
   /** The bot's team from auth.test; events from any other team are dropped. */
   teamId: string | null;
   teamName: string | null;
-  /** Chats linked to a channel. */
+  /** Chats synced to a channel now. */
   channels: number;
+  /** Each synced chat's channel name (without #), by chat id. A chat not listed is not synced; sync is off until the owner turns it on. */
+  chats: Record<string, string>;
   tokenSource: "keychain" | "environment" | null;
   /** The Keychain service the tokens are read from. */
   keychainService: string;

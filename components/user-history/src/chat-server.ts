@@ -281,7 +281,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   const base = "/" + capability + "/";
   const shell = renderShell(csrfToken, bundle.version);
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
-  const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string }> }>(200);
+  const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
   const streams = new Set<EventStream>();
   let host = "";
   let closing: Promise<void> | undefined;
@@ -546,7 +546,9 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const account = parseNewChatAccount(body.account);
         const name = typeof body.name === "string" ? text(body.name, "name", 200).trim() : "";
         const kind = parseKind(body.kind);
-        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account, name, kind])).digest("hex");
+        if (body.slack !== undefined && typeof body.slack !== "boolean") throw new RequestError(400, "slack must be true or false.");
+        const syncSlack = body.slack === true && kind === "chat";
+        const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account, name, kind, syncSlack])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
         if (!creation) {
@@ -569,6 +571,11 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             if (name && kind !== "chat") await backend.threads.rename(thread.id, name).catch(() => {});
             // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
             await backend.threads.prompt(thread.id, { message, images, mode: kind === "chat" ? "steer" : "followUp" });
+            // The chat exists either way; a Slack refusal comes back as a notice and the header switch can try again.
+            if (syncSlack) {
+              const failure = !slack ? "This chat instance runs no Slack bridge." : await slack.setChat(thread.id, true).then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
+              if (failure) return { id: thread.id, notice: `Not synced to Slack: ${failure}` };
+            }
             return { id: thread.id };
           })() };
           creations.set(id, creation);
@@ -602,6 +609,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         else if (body.action === "auto" && typeof body.auto === "boolean") await sdk.setAuto(body.auto);
         else throw new RequestError(400, "Use action update, or action auto with auto true or false.");
         json(res, 200, await sdk.view()); return;
+      }
+      if (route === "api/chats/update") {
+        // Settings > Chats: every chat reloads onto the current brief, an idle one now, a busy one when its turn ends; the rows show the progress.
+        json(res, 200, { chats: await backend.chats.updateAll() }); return;
       }
       if (route === "api/interrupted") {
         json(res, 200, await interruptedRuns.resume(async sessionId => {
@@ -663,13 +674,26 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         }
         case "archive":
           await backend.threads.archive(id);
-          if ((await backend.chats.ids()).has(id)) await backend.chats.forget(id);
+          if ((await backend.chats.ids()).has(id)) {
+            await backend.chats.forget(id);
+            // The Slack bridge watches the catalog: this update archives a synced chat's channel without waiting for its minute sync.
+            await backend.catalog.notify();
+          }
           break;
         case "unarchive":
           // Undo keeps a chat a chat: its session file still carries the chat_mode entry, so it goes back into the index, pinned, with its check-in.
           await backend.threads.unarchive(id);
           if (await backend.chats.restore(id)) await backend.catalog.notify();
           break;
+        case "slack": {
+          // A chat's own sync switch, like archive: any page with the write token may flip it. Connecting the workspace stays Mac-only (api/slack).
+          if (!slack) throw new RequestError(409, "This chat instance runs no Slack bridge.");
+          if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+          if (typeof body.on !== "boolean") throw new RequestError(400, "on must be true or false.");
+          if (slack.view(false).state !== "on") throw new RequestError(409, "Slack is not connected. Connect it in Settings > Slack.");
+          await slack.setChat(id, body.on);
+          json(res, 200, slack.view(origin === `http://${host}`)); return;
+        }
         case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;
         case "board": {
           // The owner's side of the chat board: todo and scratchpad ops. The chat then gets a steer that says in plain words what the owner did.

@@ -37,6 +37,9 @@
   let kind = $state<"thread" | "chat">("thread");
   /** Starts a new thread's or chat's first message with /skill:poteto-mode. On for every new one; a message that already starts with "/" is sent as typed. */
   let poteto = $state(true);
+  /** Syncs a new chat to its own private Slack channel. Off by default; offered only for a chat while Slack is connected. */
+  let slack = $state(false);
+  const slackOffered = $derived(kind === "chat" && store.slack?.state === "on");
   const closePopover = () => { workspaceOpen = false; };
   let lightbox = $state<number | null>(null);
 
@@ -113,11 +116,12 @@
     const chosen = activeModel;
     const name = threadName.trim();
     const message = poteto && !text.trimStart().startsWith("/") ? `/skill:poteto-mode ${text}` : text;
-    const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
+    const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), ...(slack && slackOffered ? { slack: true } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
     threadName = "";
     poteto = true;
+    slack = false;
     draftTags = filterTags();
     draftPriority = 0;
     draftProgress = "none";
@@ -192,6 +196,9 @@
             <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort
               defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
             <label class="bar-button check" use:tooltip={"Start with /skill:poteto-mode"}><input type="checkbox" bind:checked={poteto} /><span>poteto-mode</span></label>
+            {#if slackOffered}
+              <label class="bar-button check" use:tooltip={"Give this chat a private Slack channel: write there to steer it, its replies come back"}><input type="checkbox" bind:checked={slack} /><span>Sync to Slack</span></label>
+            {/if}
           </div>
           <div class="group" role="group" aria-label="Labels for the new thread">
             <button type="button" class="bar-button" aria-haspopup="dialog" aria-expanded={labelPicker?.field === "name"} aria-label={threadName.trim() ? "Thread name: " + threadName.trim() : "Thread name"}

@@ -8,7 +8,7 @@ export const BOARD_PREFIX = "[board] ";
 export const PLAN_STATUSES: readonly PlanStatus[] = ["todo", "doing", "done", "blocked", "dropped"];
 const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove", "scratch_add", "scratch_update", "scratch_remove"]);
 /** `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. */
-export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, planItems: 500, todos: 100, openAsks: 3, scratch: 200, links: 5, label: 120,
+export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openAsks: 3, scratch: 200, links: 5, label: 120,
   choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
 
 export type BoardErrorKind = "invalid" | "forbidden" | "unknown";
@@ -98,6 +98,18 @@ function id(value: unknown, field = "id"): string {
   if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,40}$/.test(value)) invalid(`${field} must be an item id such as p1 or t1.`);
   return value;
 }
+/** A step's `waitUntil`: an ISO date-time (a date alone is its midnight UTC), stored in the `toISOString` form. */
+function waitUntil(value: unknown): string {
+  const at = typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value) ? Date.parse(value) : NaN;
+  if (!Number.isFinite(at)) invalid("waitUntil must be an ISO date-time such as 2026-10-09T09:00:00+09:00.");
+  return new Date(at).toISOString();
+}
+const optWaitUntil = (value: unknown): string | undefined => value === undefined ? undefined : waitUntil(value);
+const nullableWaitUntil = (value: unknown): string | null | undefined => value === null ? null : optWaitUntil(value);
+/** The wait fields a plan item keeps from an input: only the ones set. */
+const waits = (input: { waitUntil?: string; waitFor?: string }): Pick<PlanItem, "waitUntil" | "waitFor"> =>
+  ({ ...(input.waitUntil ? { waitUntil: input.waitUntil } : {}), ...(input.waitFor ? { waitFor: input.waitFor } : {}) });
+
 function planInput(value: unknown): PlanItemInput {
   if (!isRecord(value)) invalid("Each plan item must be an object with text.");
   const input: PlanItemInput = { text: str(value.text, "text", BOARD_LIMITS.text) };
@@ -105,6 +117,8 @@ function planInput(value: unknown): PlanItemInput {
   const s = status(value.status); if (s) input.status = s;
   const job = optStr(value.job, "job", 200); if (job !== undefined) input.job = job;
   const note = optStr(value.note, "note", BOARD_LIMITS.note); if (note !== undefined) input.note = note;
+  const until = optWaitUntil(value.waitUntil); if (until !== undefined) input.waitUntil = until;
+  const event = optStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) input.waitFor = event;
   if (value.children !== undefined) {
     if (!Array.isArray(value.children)) invalid("children must be a list of plan items.");
     input.children = value.children.map(planInput);
@@ -143,6 +157,8 @@ export function parseBoardOp(value: unknown): BoardOp {
       if (value.parent !== undefined && value.parent !== null) op.parent = id(value.parent, "parent");
       const s = status(value.status); if (s) op.status = s;
       const job = optStr(value.job, "job", 200); if (job !== undefined) op.job = job;
+      const until = optWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
+      const event = optStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) op.waitFor = event;
       return op;
     }
     case "plan_update": {
@@ -151,6 +167,8 @@ export function parseBoardOp(value: unknown): BoardOp {
       const s = status(value.status); if (s) op.status = s;
       const job = nullableStr(value.job, "job", 200); if (job !== undefined) op.job = job;
       const note = nullableStr(value.note, "note", BOARD_LIMITS.note); if (note !== undefined) op.note = note;
+      const until = nullableWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
+      const event = nullableStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) op.waitFor = event;
       return op;
     }
     case "plan_remove": return { op: "plan_remove", id: id(value.id) };
@@ -215,7 +233,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         const itemId = input.id && !used.has(input.id) ? input.id : fresh();
         used.add(itemId);
         const job = planJob(input.job);
-        return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(input.note ? { note: input.note } : {}),
+        return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
           children: (input.children ?? []).map(build) };
       };
       const plan = op.items.map(build);
@@ -225,7 +243,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     case "plan_add": {
       if (count(board.plan) >= BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
       const job = planJob(op.job);
-      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), children: [] };
+      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...waits(op), children: [] };
       if (op.parent === undefined) return done({ plan: [...board.plan, item] }, `added ${item.id} ${quote(item.text)}`);
       const parent = find(board.plan, op.parent) ?? unknown("plan item", op.parent);
       // A step under a finished goal reopens the goal and every finished goal above it: a done parent with open work is a lie.
@@ -245,6 +263,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       else if (job !== undefined && job !== item.job) { next.job = job; parts.push(`linked job ${job}`); }
       if (op.note === null) { delete next.note; if (item.note) parts.push("cleared its note"); }
       else if (op.note !== undefined && op.note !== item.note) { next.note = op.note; parts.push("updated its note"); }
+      if (op.waitUntil === null) { delete next.waitUntil; if (item.waitUntil) parts.push("cleared its wait time"); }
+      else if (op.waitUntil !== undefined && op.waitUntil !== item.waitUntil) { next.waitUntil = op.waitUntil; parts.push(`set it to wait until ${op.waitUntil}`); }
+      if (op.waitFor === null) { delete next.waitFor; if (item.waitFor) parts.push("cleared what it waits for"); }
+      else if (op.waitFor !== undefined && op.waitFor !== item.waitFor) { next.waitFor = op.waitFor; parts.push(`set it to wait for ${quote(op.waitFor)}`); }
       return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
     }
     case "plan_remove": {
@@ -325,18 +347,22 @@ function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInpu
   for (const item of items) { visit(item); walkInputs(item.children ?? [], visit); }
 }
 
+/** The first line of every board the agent reads, so the reply cap is in its context each turn. */
+export const REPLY_RULE = "Reply rule: at most 60 words; explain in an article and link it.";
+
 /**
- * The board as compact text for the agent: this chat's own link target and its check-in line, the plan as an indented checklist, the owner's todos
+ * The board as compact text for the agent: the reply rule, this chat's own link target and its check-in line, the plan as an indented checklist, the owner's todos
  * with their choices and answers, then the scratchpad as an indented bullet list with each note's links.
  */
 export function renderBoard(board: ChatBoard | null, sessionId?: string, checkIn?: string): string {
-  const self = [...(sessionId ? [`This chat: thread:${sessionId}`] : []), ...(checkIn ? [checkIn] : [])];
+  const self = [REPLY_RULE, ...(sessionId ? [`This chat: thread:${sessionId}`] : []), ...(checkIn ? [checkIn] : [])];
   if (!board) return [...self, "The board is empty: no plan, no todos, no scratchpad."].join("\n");
   const mark: Record<PlanStatus, string> = { todo: "[ ]", doing: "[~]", done: "[x]", blocked: "[!]", dropped: "[-]" };
   const lines = [...self, `Board rev ${board.rev}, updated ${board.updatedAt}`, "Plan:"];
   if (!board.plan.length) lines.push("  (empty)");
   walk(board.plan, (item, depth) => {
-    lines.push(`${"  ".repeat(depth + 1)}${mark[item.status]} ${item.id} ${item.text} (${item.status}${item.job ? `, job ${item.job}` : ""})`);
+    const waiting = `${item.waitUntil ? `, waits until ${item.waitUntil}` : ""}${item.waitFor ? `, waits for ${quote(item.waitFor)}` : ""}`;
+    lines.push(`${"  ".repeat(depth + 1)}${mark[item.status]} ${item.id} ${item.text} (${item.status}${item.job ? `, job ${item.job}` : ""}${waiting})`);
     if (item.note) lines.push(`${"  ".repeat(depth + 2)}note: ${item.note}`);
   });
   lines.push("Owner todos:");

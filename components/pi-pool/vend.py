@@ -18,7 +18,7 @@ Private rotation journals live under the pool state directory.
 
 stdout = the token, and nothing else. All diagnostics go to the log file.
 """
-import base64, collections, concurrent.futures, dataclasses, datetime, fcntl, hashlib, json, os, queue, re, shlex, shutil, signal, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error, uuid
+import base64, collections, concurrent.futures, dataclasses, datetime, fcntl, hashlib, json, os, queue, random, re, shlex, shutil, signal, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error, uuid
 
 HOME = os.path.expanduser("~")
 TM = os.environ.get("TOKENMAXXING_HOME") or os.path.join(HOME, ".config", "tokenmaxxing")
@@ -61,11 +61,20 @@ DEFAULTS = {
     "seven_day_max_pct": 98,
     # cooldown applied to an account after a vend-failure signal
     "cooldown_sec": 1200,
-    # picker smoothing: usage-% equivalent charged per session already on an
-    # account, and for an account a tokenmaxxing-supervised claude/codex
-    # session is running on right now
-    "session_penalty": 8,
-    "active_account_penalty": 15,
+    # the switch picker's runway model (runway_hours): what one active session
+    # burns per hour, in percentage points of the 5h window and of the weekly
+    # window. Measured 2026-10-08 on Max 20x accounts: 18 sessions took
+    # sieunpark77 to 43% of its 5h window in 1.6 h, 6 took sieun@virev.ai to 22%
+    # in 1.45 h; claude7 spent 87% of a 5h window for 16% of its week, and
+    # sieunpark77 43% for 12%, so one 5h point costs about a fifth of a week point.
+    "burn_5h_pct_per_hour": 2.5,
+    "burn_week_pct_per_hour": 0.5,
+    # runway beyond this many hours counts as this many: past a day, a longer
+    # runway saves no switch
+    "runway_horizon_hours": 24,
+    # a switch skips an account with less runway than this, unless every usable
+    # account is under it
+    "min_runway_hours": 1,
     # allow an account a supervised session is running on
     "allow_active_account": True,
     # anthropic-only per-model weekly caps that also count toward depletion
@@ -668,7 +677,7 @@ def reset_in(window, now):
 
 # ============================================================ v2 domain model
 # state.json v2. One file, one writer per key space: intent (pins) is written
-# only by the CLI, observation (vends, seat, cooldowns) only by the hook, and
+# only by the CLI, observation (vends, cooldowns) only by the hook, and
 # truth (usage, needs-reauth) is never written here at all - it is read from
 # tokenmaxxing's indexes on every request. "A pin exists but its account cannot
 # serve" is derived per request and never stored, so it heals itself.
@@ -708,7 +717,10 @@ class Intent:
     session_pin: "str | None" = None
     session_pin_force: bool = False
     pool_pin: "str | None" = None
-    seat: "str | None" = None
+    # The account this session was last vended (its own record, never another
+    # session's), and the account it asked to leave with `pi-pool switch`.
+    current: "str | None" = None
+    leave: "str | None" = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -716,6 +728,10 @@ class Resolution:
     account: Account
     reason: str
     shadowed: "tuple | None" = None
+    # On a switch: (account id the session left, why), and the weights the
+    # pick drew from as ((email, runway hours), ...).
+    left: "tuple | None" = None
+    weights: tuple = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -873,7 +889,7 @@ def find_account(accounts, email_or_id):
 
 # ---------------------------------------------------------------- state.json
 def empty_provider_state():
-    return {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}, "limits": {}}
+    return {"pin": None, "cooldowns": {}, "disabled": {}, "limits": {}}
 
 
 def with_pool_state(accounts, state, provider):
@@ -903,7 +919,10 @@ def migrate(raw, by_email, now):
     """
     if raw.get("version") == 2:
         for provider in PROVIDERS:
-            raw.setdefault("providers", {}).setdefault(provider, empty_provider_state()).setdefault("limits", {})
+            prov = raw.setdefault("providers", {}).setdefault(provider, empty_provider_state())
+            prov.setdefault("limits", {})
+            # The shared seat ended 2026-10-08: each session keeps its own account.
+            prov.pop("seat", None)
         raw.setdefault("sessions", {})
         return raw
     anthropic = empty_provider_state()
@@ -913,9 +932,6 @@ def migrate(raw, by_email, now):
             anthropic["pin"] = hit
         else:
             log("migrate_pin_dropped", email=raw["pin"])
-    seat = raw.get("seat") or {}
-    if seat.get("uuid"):
-        anthropic["seat"] = {"account_id": seat["uuid"], "since": seat.get("assigned_at", now)}
     anthropic["cooldowns"] = {u: t for u, t in (raw.get("cooldowns") or {}).items() if t > now}
     out = {"version": 2, "providers": {"anthropic": anthropic,
                                        "openai-codex": empty_provider_state()}, "sessions": {}}
@@ -939,15 +955,15 @@ def load_state():
 
 
 def intent_for(state, key, provider):
-    """Project state.json down to the three facts the resolver needs."""
+    """Project state.json down to the facts the resolver needs."""
     prov = state["providers"].get(provider) or empty_provider_state()
-    rec = state["sessions"].get(key.key) if key else None
-    pin = ((rec or {}).get("pins") or {}).get(provider) or {}
-    seat = prov.get("seat") or {}
+    rec = (state["sessions"].get(key.key) if key else None) or {}
+    pin = (rec.get("pins") or {}).get(provider) or {}
     return Intent(session_pin=pin.get("account_id"),
                   session_pin_force=bool(pin.get("force")),
                   pool_pin=prov.get("pin"),
-                  seat=seat.get("account_id"))
+                  current=((rec.get("vends") or {}).get(provider) or {}).get("account_id"),
+                  leave=((rec.get("leave") or {}).get(provider) or {}).get("account_id"))
 
 
 # ---------------------------------------------------------------- the pure core
@@ -980,18 +996,60 @@ def format_reason(a, cooldowns, cfg, now):
     return reason
 
 
-def account_score(a, in_use, cfg):
-    """Lower is better. Usage headroom leads; sessions already on the account
-    and the account another tool is live on are smoothing penalties."""
-    return (max(a.session_pct, a.weekly_pct)
-            + in_use.get(a.id, 0) * cfg["session_penalty"]
-            + (cfg["active_account_penalty"] if a.is_live else 0))
+def runway_hours(a, sessions, cfg, now):
+    """Hours until this account crosses a pool cutoff (five_hour_max_pct on the
+    5h window, seven_day_max_pct on the weekly window and a gated model cap)
+    if `sessions` sessions each burn the configured rate on it, capped at
+    runway_horizon_hours. A window that resets before it reaches its cutoff
+    stops binding: a weekly reset frees the account up to the cap, and a 5h
+    reset starts a fresh window that binds only if the sessions fill it to the
+    cutoff inside its own 5 hours."""
+    horizon = cfg["runway_horizon_hours"]
+    families = [f.lower() for f in cfg["switch_models"]]
+    # (used %, is the 5h window, seconds to its reset or None, window hours)
+    windows = [(live_pct(w, now), w.get("name") is None and is_session_window(w),
+                reset_in(w, now), (w.get("windowSeconds") or 0) / 3600)
+               for w in a.windows if w.get("name") is None
+               or (not a.gate_off and any(f in family_tokens(w["name"]) for f in families))]
+    if not a.windows:
+        windows = [(a.session_pct, True, None, 5),
+                   (max(a.weekly_pct, 0 if a.gate_off else a.gated_pct), False, None, 168)]
+    hours = horizon
+    for pct, short, left, length in windows:
+        cutoff = cfg["five_hour_max_pct"] if short else cfg["seven_day_max_pct"]
+        rate = sessions * (cfg["burn_5h_pct_per_hour"] if short else cfg["burn_week_pct_per_hour"])
+        until_cut = max(0.0, cutoff - pct) / rate
+        if left is not None and left / 3600 <= until_cut:
+            fresh = cutoff / rate
+            until_cut = left / 3600 + fresh if short and fresh < length else horizon
+        hours = min(hours, until_cut)
+    return hours
 
 
-def rank(accounts, in_use, cooldowns, cfg, now):
-    """Usable accounts, best first."""
-    usable = [a for a in accounts if unusable_reason(a, cooldowns, cfg, now) is None]
-    return sorted(usable, key=lambda a: (account_score(a, in_use, cfg), a.email))
+def switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=()):
+    """[(account, weight)] a switching session draws from, heaviest first. The
+    weight is runway_hours with the sessions already on the account plus the
+    one switching, and one more for an account a supervised claude/codex
+    session runs on. An account under min_runway_hours is left out unless
+    every usable account is, so a switch lands where it will last."""
+    weights = [(a, runway_hours(a, in_use.get(a.id, 0) + 1 + int(a.is_live), cfg, now))
+               for a in accounts
+               if a.id not in exclude and unusable_reason(a, cooldowns, cfg, now) is None]
+    lasting = [p for p in weights if p[1] >= cfg["min_runway_hours"]]
+    return sorted(lasting or weights, key=lambda p: (-p[1], p[0].email))
+
+
+def weighted_pick(weights, rng):
+    """One account from switch_weights, with chance proportional to its weight."""
+    total = sum(w for _, w in weights)
+    if total <= 0:
+        return weights[0][0]
+    x = rng.random() * total
+    for a, w in weights:
+        x -= w
+        if x < 0:
+            return a
+    return weights[-1][0]
 
 
 def window_free_at(window, cfg, now):
@@ -1039,9 +1097,11 @@ def provider_serves(a, now):
     return a.limited_until <= now and used_pct(a) < 100
 
 
-def last_resort(accounts, cooldowns, cfg, now):
-    """When nothing is usable: the depleted account that still has headroom,
-    least used first; when none has any, the account whose limits reset first.
+def last_resort(accounts, cooldowns, cfg, now, current=None):
+    """When nothing is usable: the session's `current` account while the
+    provider still serves it (a move would drop its prompt cache for nothing),
+    else the depleted account that still has headroom, least used first; when
+    none has any, the account whose limits reset first.
 
     An account past our cutoff but under 100% still serves requests, so it
     beats any account the provider already answered 429 for (verified
@@ -1057,6 +1117,9 @@ def last_resort(accounts, cooldowns, cfg, now):
     pool = [a for a in accounts
             if unusable_reason(a, cooldowns, cfg, now) in ("depleted", "limited", "live-elsewhere")]
     serving = [a for a in pool if provider_serves(a, now)]
+    stay = next((a for a in serving if a.id == current), None)
+    if stay is not None:
+        return stay
     if serving:
         return min(serving, key=lambda a: (used_pct(a), account_free_at(a, cfg, now), a.email))
     return min(pool, key=lambda a: (account_free_at(a, cfg, now), a.email)) if pool else None
@@ -1072,21 +1135,30 @@ def plan_tier(a):
     return PLAN_TIERS.get(a.plan, 0)
 
 
-def resolve(intent, accounts, in_use, cooldowns, cfg, now):
+def resolve(intent, accounts, in_use, cooldowns, cfg, now, rng=random):
     """The precedence table, and the only place it exists.
 
-    session pin > pool pin > seat > best candidate. The seat alone also yields to
-    a usable account on a strictly higher codex plan ("seat_upgrade"): the seat
-    otherwise only moves when it cannot serve, so a free account taken while the
-    paid one was depleted would hold every unpinned session after the paid
-    window resets, and the API refuses several models on a free plan.
+    session pin > pool pin > the session's current account > a weighted pick.
+
+    A session stays on the account it was last vended while that account is
+    usable ("stay"), whatever other sessions do. A move drops the prompt cache
+    (cache_read and cache_write start over), so a session moves only when it
+    must: its account turned unusable, `pi-pool switch` asked it to leave
+    (intent.leave), or a usable codex account sits on a strictly higher plan
+    ("upgrade"; a free account taken while the paid one was depleted would
+    otherwise keep the session after the paid window resets, and the API
+    refuses several models on a free plan). The move, and the first account of
+    a new session ("new"), is one weighted random draw over switch_weights, so
+    sessions that leave one account together spread out instead of all
+    landing on, and draining, the same one.
 
     Every pin yields when its account cannot serve. Nothing is written, so the
     pin re-applies the moment the window resets or the limit expires. A session
     pin set with --force holds a depleted account, and yields only when the
     credential cannot serve (dead login, disabled, refusal cooldown) or the
     provider itself answered 429 ("limited"). `shadowed` names the first pin
-    that yielded and why.
+    that yielded and why; `left` names the current account a switch left and
+    why.
     """
     by_id = {a.id: a for a in accounts}
     shadowed = None
@@ -1106,17 +1178,31 @@ def resolve(intent, accounts, in_use, cooldowns, cfg, now):
             return Resolution(a, "pool_pin", shadowed)
         shadowed = shadowed or (intent.pool_pin, why)
 
-    if intent.seat:
-        a = by_id.get(intent.seat)
-        if a is not None and unusable_reason(a, cooldowns, cfg, now) is None:
-            better = [c for c in rank(accounts, in_use, cooldowns, cfg, now)
-                      if plan_tier(c) > plan_tier(a)]
-            if better:
-                return Resolution(better[0], "seat_upgrade", shadowed)
-            return Resolution(a, "seat", shadowed)
+    left = None
+    if intent.current:
+        a = by_id.get(intent.current)
+        why = "missing" if a is None else unusable_reason(a, cooldowns, cfg, now)
+        if why is None and intent.leave != a.id:
+            better = [p for p in switch_weights(accounts, in_use, cooldowns, cfg, now)
+                      if plan_tier(p[0]) > plan_tier(a)]
+            if not better:
+                return Resolution(a, "stay", shadowed)
+            return Resolution(weighted_pick(better, rng), "upgrade", shadowed,
+                              (a.id, "plan"), weight_view(better))
+        left = (intent.current, why or "asked")
 
-    pool = rank(accounts, in_use, cooldowns, cfg, now)
-    return Resolution(pool[0], "seat_move", shadowed) if pool else None
+    weights = switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=(intent.current,))
+    if not weights:
+        if left and left[1] == "asked":
+            return Resolution(by_id[intent.current], "stay", shadowed)
+        return None
+    return Resolution(weighted_pick(weights, rng), "switch" if left else "new", shadowed,
+                      left, weight_view(weights))
+
+
+def weight_view(weights):
+    """switch_weights as ((email, runway hours), ...), for the log and `who`."""
+    return tuple((a.email, round(w, 1)) for a, w in weights)
 
 
 def in_use_counts(state, provider, now=None, window_sec=None):
@@ -1155,9 +1241,6 @@ class HookWriter:
             "at": now, "n": (prev.get("n", 0) + 1) if same else 1,
         }
         return rec["vends"][provider]
-
-    def move_seat(self, provider, account, now):
-        self._state["providers"][provider]["seat"] = {"account_id": account.id, "since": now}
 
     def set_cooldown(self, provider, account_id, until, reason=None):
         prov = self._state["providers"][provider]
@@ -1229,8 +1312,14 @@ class IntentWriter:
     def clear_pool_pin(self, provider):
         self._state["providers"][provider]["pin"] = None
 
-    def clear_seat(self, provider):
-        self._state["providers"][provider]["seat"] = None
+    def leave(self, key, provider, account_id, now):
+        """`pi-pool switch`: the session's next request moves off `account_id`.
+        Inert once the session is on another account, so nothing clears it."""
+        rec = self._state["sessions"].setdefault(key.key, {})
+        rec["uuid"], rec["active_id"] = key.uuid, key.active_id
+        rec.setdefault("vends", {})
+        rec.setdefault("last_seen", now)
+        rec.setdefault("leave", {})[provider] = {"account_id": account_id, "at": now}
 
     def set_disabled(self, provider, account_id, off, now):
         disabled = self._state["providers"][provider].setdefault("disabled", {})
@@ -1245,8 +1334,6 @@ class IntentWriter:
         prov = self._state["providers"][provider]
         if prov.get("pin") == account_id:
             prov["pin"] = None
-        if (prov.get("seat") or {}).get("account_id") == account_id:
-            prov["seat"] = None
         for key in ("disabled", "cooldowns", "cooldown_reasons", "limits"):
             (prov.get(key) or {}).pop(account_id, None)
         for rec in self._state["sessions"].values():
@@ -1512,6 +1599,21 @@ def cmd_probe(rest=()):
 
 
 # ---------------------------------------------------------------------- vend
+# Resolution reasons that put a session on an account it did not use before.
+MOVES = ("switch", "new", "upgrade")
+
+
+def switch_why(res, account, reason):
+    """Why a session left its account, for the switch log line."""
+    if account.id != res.account.id:
+        return "credential"
+    if res.left:
+        return res.left[1]
+    if reason in ("session_pin", "pool_pin"):
+        return "pin"
+    return reason
+
+
 def last_vend_account(state, key, provider, accounts, now):
     """The account this session was last vended, for a request that cannot take
     the pool flock. None when the session has no vend on file, or that account
@@ -1572,14 +1674,14 @@ def vend(provider):
         return
 
     if res is None:
-        # Vend the soonest-to-reset account rather than nothing, so the caller
-        # gets the provider's 429 and its reset time instead of an auth error.
-        fallback = last_resort(accounts, cooldowns, cfg, now)
+        # Vend a depleted account rather than nothing, so the caller gets the
+        # provider's 429 and its reset time instead of an auth error.
+        fallback = last_resort(accounts, cooldowns, cfg, now, intent.current)
         if fallback is None:
             raise RuntimeError(f"no usable {provider} account")
         res = Resolution(fallback, "last_resort", None)
 
-    order = [res.account] + [a for a in rank(accounts, in_use, cooldowns, cfg, now)
+    order = [res.account] + [a for a, _ in switch_weights(accounts, in_use, cooldowns, cfg, now)
                              if a.id != res.account.id]
     errors = []
     for account in order:
@@ -1589,11 +1691,11 @@ def vend(provider):
             errors.append(f"{account.email}: {e}")
             log("account_unusable", provider=provider, account=account.email, error=str(e))
             continue
-        reason = res.reason if account.id == res.account.id else "seat_move"
-        # A seat move or a fresh rotation is rare (hours apart), so it can afford
-        # one no-spend probe; that is where an organization-level OAuth refusal
-        # shows up, which usage figures and needsReauth never reflect.
-        if provider == "anthropic" and (source == "refreshed" or reason in ("seat_move", "seat_upgrade")):
+        reason = res.reason if account.id == res.account.id else "switch"
+        # A switch or a fresh rotation is rare (hours apart per session), so it
+        # can afford one no-spend probe; that is where an organization-level
+        # OAuth refusal shows up, which usage figures and needsReauth never reflect.
+        if provider == "anthropic" and (source == "refreshed" or reason in MOVES):
             refusal = anthropic_refusal(token)
             if refusal:
                 errors.append(f"{account.email}: {refusal}")
@@ -1605,24 +1707,27 @@ def vend(provider):
         try:
             with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
                 state = load_state()
-                writer = HookWriter(state)
-                if reason in ("seat_move", "seat_upgrade"):
-                    writer.move_seat(provider, account, now)
                 prev = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
-                vended = writer.record_vend(key, provider, account, source, reason,
-                                            res.shadowed, now, parent) if key else None
+                vended = HookWriter(state).record_vend(key, provider, account, source, reason,
+                                                       res.shadowed, now, parent) if key else None
                 save_json(STATE, state)
         except TimeoutError:
             # The token is valid; a vend left off the record only skews the next pick.
             log("vend_unrecorded", provider=provider, account=account.email, session=key and key.key)
         # The hook runs on every provider request, so a line per vend would be a log of
-        # thousands. Log the transitions only: a session changing account, and a seat move.
+        # thousands. Log the transitions only: a session changing account, and a last resort.
         # `why` says why the pin in `shadowed` did not serve (depleted, limited, ...).
-        if vended is None or vended["n"] == 1 or reason in ("seat_move", "seat_upgrade", "last_resort"):
+        if vended is None or vended["n"] == 1 or reason == "last_resort":
             log("vend", provider=provider, account=account.email, source=source,
                 reason=reason, shadowed=res.shadowed and res.shadowed[0],
                 why=res.shadowed and res.shadowed[1],
                 previous=(prev or {}).get("email"), session=key and key.key)
+        if prev and prev.get("account_id") != account.id:
+            # One line per move of one session: `pi-pool status` and the chat
+            # health review count these.
+            log("switch", provider=provider, session=key.key, previous=prev.get("email"),
+                account=account.email, reason=reason, why=switch_why(res, account, reason),
+                weights=dict(res.weights))
         sys.stdout.write(token)
         return
 
@@ -1684,9 +1789,10 @@ def session_key_for(session_arg, state):
     return None
 
 
-def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_id, cooldown_reasons=None):
+def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, cooldown_reasons=None):
     """The rows /account renders. Pure: no I/O, no clock reads beyond `now`."""
     cooldown_reasons = cooldown_reasons or {}
+    weights = {a.id: w for a, w in switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=(current_id,))}
     rows = []
     for a in accounts:
         reason = format_reason(a, cooldowns, cfg, now)
@@ -1699,8 +1805,9 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_i
             "session_pct": a.session_pct, "weekly_pct": a.weekly_pct, "gated_pct": a.gated_pct,
             "usable": usable, "reason": reason,
             "current": a.id == current_id, "pinned": pinned, "force": force,
-            "live": a.is_live, "seat": a.id == seat_id, "disabled": a.disabled,
-            "score": round(account_score(a, in_use, cfg)) if usable else None,
+            # user-history's parsePoolRows requires a boolean `seat`; false until it drops the field.
+            "live": a.is_live, "seat": False, "disabled": a.disabled,
+            "weight": round(weights[a.id], 1) if a.id in weights else None,
         }
         if a.plan:
             row["plan"] = a.plan
@@ -1722,8 +1829,8 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_i
 
 # ------------------------------------------------------------------ rendering
 # `status` and `watch` draw one card per account in a grid, the same layout as
-# `tokenmaxxing status`, plus what only the pool knows: the seat, pins, the
-# sessions on each account, cooldowns, and which account the pool picks next.
+# `tokenmaxxing status`, plus what only the pool knows: pins, the
+# sessions on each account, cooldowns, and each account's chance in a switch.
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 CARD_GAP = 3
 NOTE_INDENT = "    "
@@ -1801,15 +1908,13 @@ def window_rows(p, a, now):
 def account_card(p, a, ctx):
     """(lines, notes) for one account. Notes wrap to the cell width later."""
     now, reason = ctx["now"], ctx["reasons"].get(a.id)
-    seat, sessions = ctx["seat_id"] == a.id, ctx["in_use"].get(a.id, 0)
-    marker = p.green("\u25cf") if seat else p.dim("\u25cb")
+    sessions = ctx["in_use"].get(a.id, 0)
+    marker = p.green("\u25cf") if sessions else p.dim("\u25cb")
     badges = []
-    if seat:
-        badges.append(p.green("seat"))
     if ctx["pool_pin"] == a.id:
         badges.append(p.cyan("pool pin"))
-    if a.id == ctx["next_id"]:
-        badges.append(p.cyan("next"))
+    if a.id in ctx["chances"]:
+        badges.append(p.cyan(f"pick {ctx['chances'][a.id]:.0%}"))
     if sessions:
         badges.append(p.green(f"{sessions} session{'s' if sessions != 1 else ''}"))
     if a.is_live:
@@ -1885,9 +1990,32 @@ def render_grid(cards, term_width):
 
 def card_order(a, ctx):
     reason = ctx["reasons"].get(a.id)
-    rank = (0 if ctx["seat_id"] == a.id else 1 if reason is None
-            else 4 if reason == "disabled" else 3 if reason == "needs-reauth" else 2)
-    return (rank, ctx["scores"].get(a.id, 1e9), a.email)
+    rank = (0 if reason is None else 3 if reason == "disabled" else 2 if reason == "needs-reauth" else 1)
+    return (rank, -ctx["chances"].get(a.id, 0), a.email)
+
+
+def switches_today(provider, now):
+    """(switches, sessions that switched) in today's log, local time. Scans
+    backward and stops at the first line from an earlier day."""
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    moves, sessions = 0, set()
+    try:
+        with open(LOG) as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return 0, 0
+    for line in reversed(lines):
+        if not line.startswith('{"ts": "' + day):
+            if line[8:18] < day:
+                break
+            continue
+        if '"event": "switch"' not in line:
+            continue
+        e = json.loads(line)
+        if e.get("provider") == provider:
+            moves += 1
+            sessions.add(e.get("session"))
+    return moves, len(sessions)
 
 
 def status_lines(providers, p, term_width, now=None):
@@ -1906,25 +2034,21 @@ def status_lines(providers, p, term_width, now=None):
         prov = state["providers"][provider]
         in_use = in_use_counts(state, provider, now)
         cooldowns = prov["cooldowns"]
-        seat_id = (prov.get("seat") or {}).get("account_id")
-        ranked = rank(accounts, in_use, cooldowns, cfg, now)
+        weights = switch_weights(accounts, in_use, cooldowns, cfg, now)
+        total = sum(w for _, w in weights) or 1
         reasons = {a.id: format_reason(a, cooldowns, cfg, now) for a in accounts}
-        ctx = {"now": now, "in_use": in_use, "seat_id": seat_id, "pool_pin": prov.get("pin"),
-               "next_id": next((a.id for a in ranked if a.id != seat_id), None),
-               "reasons": reasons, "cooldown_reasons": prov.get("cooldown_reasons") or {},
-               "scores": {a.id: account_score(a, in_use, cfg) for a in ranked}}
-        seat = next((a for a in accounts if a.id == seat_id), None)
+        ctx = {"now": now, "in_use": in_use, "pool_pin": prov.get("pin"),
+               "chances": {a.id: w / total for a, w in weights},
+               "reasons": reasons, "cooldown_reasons": prov.get("cooldown_reasons") or {}}
         head = [f"{title}  ({len(accounts)} accounts)"]
         if prov.get("pin"):
             pinned = next((a.email for a in accounts if a.id == prov["pin"]), prov["pin"])
             head.append(f"pool pinned to {pinned}")
-        elif seat:
-            head.append(f"seat {seat.email} for {fmt_dur(now - (prov['seat'].get('since') or now))}")
-        else:
-            head.append("no seat yet")
+        moves, movers = switches_today(provider, now)
+        head.append(f"{moves} switches today ({movers} sessions)")
         fallback = (load_fallback().get(provider) or {}).get("type") == "oauth"
-        if ranked:
-            head.append(f"{len(ranked)} usable")
+        if weights:
+            head.append(f"{len(weights)} usable")
         else:
             head.append(p.yellow("0 usable, requests use your own login (fallback.json)" if fallback
                                  else "0 usable, requests will fail"))
@@ -2012,21 +2136,26 @@ def cmd_unpin(rest):
         IntentWriter(state).clear_pool_pin(provider)
         save_json(STATE, state)
     log("unpin", provider=provider, account=was)
-    print(f"unpinned {was}; seat rules take over for {provider}")
+    print(f"unpinned {was}; each session keeps its own account again ({provider})")
     return 0
 
 
 def cmd_switch(rest):
+    """This session's next request leaves the account it is on, by the same
+    weighted pick a session makes when its account runs out."""
     f = parse_flags(rest)
     provider = f["provider"]
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
-        was = state["providers"][provider].get("seat")
-        IntentWriter(state).clear_seat(provider)
+        key = session_key_for(f["session"], state)
+        current = intent_for(state, key, provider).current if key else None
+        if current is None:
+            print(f"no {provider} account on file for this session; nothing to switch from")
+            return 2
+        IntentWriter(state).leave(key, provider, current, time.time())
         save_json(STATE, state)
-    log("seat_cleared", provider=provider, account=was and was.get("account_id"))
-    print(f"seat cleared for {provider} (was {was['account_id'] if was else 'unset'}); "
-          f"the next request re-picks the best account")
+    log("switch_asked", provider=provider, session=key.key, account=current)
+    print(f"the next {provider} request of this session moves off {current}")
     return 0
 
 
@@ -2233,7 +2362,7 @@ def cmd_refresh(rest):
     """Read usage now for every account, or for the named ones, through
     tokenmaxxing's own read (app/usage-read.ts). It skips no account for having
     been read recently, but it waits out a rate limit the usage endpoint set.
-    It writes only tokenmaxxing's usage figures and moves no seat or pin.
+    It writes only tokenmaxxing's usage figures and moves no session or pin.
     --stream prints each event as one JSON line while the reads run; --json
     prints one report at the end. Never prints a credential."""
     stream = "--stream" in rest
@@ -2697,31 +2826,24 @@ def cmd_ls(rest):
     if key:
         rec = state["sessions"].get(key.key) or {}
         current_id = ((rec.get("vends") or {}).get(provider) or {}).get("account_id")
-    seat_id = (state["providers"][provider].get("seat") or {}).get("account_id")
-    rows = build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, seat_id,
+    rows = build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id,
                       state["providers"][provider].get("cooldown_reasons"))
     if provider == "anthropic":
         resets = reset_rows(accounts)
         for row in rows:
             row["resets"] = resets.get(row["id"])
-    seat_account = next((a for a in accounts if a.id == seat_id), None) if seat_id else None
     pin_account = next((a for a in accounts if a.id == state["providers"][provider].get("pin")), None)
     out = {"provider": provider, "session": key.key if key else None,
-           "seat": {"id": seat_account.id, "email": seat_account.email} if seat_account else None,
            "pin": {"id": pin_account.id, "email": pin_account.email} if pin_account else None,
            "rows": rows}
     if f["json"]:
         print(json.dumps(out, indent=2))
         return 0
     print(f"{provider}  session {out['session'] or '-'}")
-    if out["seat"]:
-        print(f"seat: {out['seat']['email']}")
     width = max([len("account")] + [len(r["email"]) for r in rows])
     print(f"{'account':{width}s} {'usage':>9}  flags")
     for r in rows:
         flags = []
-        if r["seat"]:
-            flags.append("seat")
         if r["pinned"]:
             flags.append("pinned+force" if r["force"] else "pinned")
         if r["current"]:
@@ -2769,8 +2891,8 @@ def cmd_model(rest):
 
 def cmd_limited(rest):
     """The provider answered 429 for the account this session tree last vended.
-    Record the limit until `--until` (epoch seconds), so every pin and the seat
-    yield to it, and print what the tree's next request gets:
+    Record the limit until `--until` (epoch seconds), so every pin and every
+    session on that account yield to it, and print what the tree's next request gets:
     {"account", "until", "next"}. `next` is null when no other account can
     serve; the caller then waits for the provider's own reset."""
     f = parse_flags(rest)
@@ -2804,10 +2926,11 @@ def next_account(state, key, provider, accounts, cfg, now):
     accounts = with_pool_state(accounts, state, provider)
     accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
     cooldowns = state["providers"][provider]["cooldowns"]
-    res = resolve(intent_for(state, key, provider), accounts, in_use_counts(state, provider), cooldowns, cfg, now)
+    intent = intent_for(state, key, provider)
+    res = resolve(intent, accounts, in_use_counts(state, provider), cooldowns, cfg, now)
     if res:
         return res.account
-    nxt = last_resort(accounts, cooldowns, cfg, now)
+    nxt = last_resort(accounts, cooldowns, cfg, now, intent.current)
     return nxt if nxt is not None and provider_serves(nxt, now) else None
 
 
@@ -2954,7 +3077,7 @@ def cmd_toggle(rest, off):
 
 def cmd_rm(rest):
     """Remove an account the way tokenmaxxing does (`tokenmaxxing rm`, which
-    deletes its credential store), then drop every pin, seat and flag that
+    deletes its credential store), then drop every pin and flag that
     names it here."""
     f = parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
@@ -3285,11 +3408,11 @@ def drop_login_blocks(provider, account):
 
 
 USAGE = """usage: pi-pool [command]
-  status [--provider <p>]        one card per account: usage bars, seat, sessions, next pick
+  status [--provider <p>]        one card per account: usage bars, sessions, pick chance, switches today
   watch [sec] [--provider <p>]   full-screen status, redrawn every sec seconds (default 5)
   pin <email> [--provider <p>]   force EVERY request onto one account until unpin
-  unpin [--provider <p>]         release the pool pin (seat rules take over again)
-  switch [--provider <p>]        drop the seat; the next request re-picks the best account
+  unpin [--provider <p>]         release the pool pin (each session keeps its own account again)
+  switch [--provider <p>] [--session <id>]  this session's next request moves to another account
   use <email|id> [--force] [--follow] [--provider <p>] [--session <id>] [--new-session]
                                   pin (or, with --follow, unpin) this session tree
   ls [--json] [--provider <p>] [--session <id>] [--model <id>]
@@ -3311,7 +3434,7 @@ USAGE = """usage: pi-pool [command]
   off <email|id> [--provider <p>]
                                   keep an account pooled but never pick it
   on <email|id> [--provider <p>] let the pool pick it again
-  rm <email|id> [--provider <p>] tokenmaxxing rm, then drop its pins and seat here
+  rm <email|id> [--provider <p>] tokenmaxxing rm, then drop its pins here
   login [<email|id>] [--provider <p>] [--timeout <sec>]
                                   tokenmaxxing add (or auth <account>) driven as JSON lines
   refresh [<email|id> ...] [--provider <p>] [--json | --stream]

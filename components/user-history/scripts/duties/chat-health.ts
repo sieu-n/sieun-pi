@@ -7,6 +7,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 import { CHECK_IN_PREFIX, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
+import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 
 const HOUR = 60 * 60_000;
 const WINDOW_MS = 24 * HOUR;
@@ -33,12 +34,12 @@ const STALL_TAIL = " with no board change";
 const STALL_STATUS = / is \w+$/;
 
 type Metrics = { corrections: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number };
-type Kind = keyof Metrics;
+type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
 /** The duty's state between runs: each watched signature, when a run first flagged it, and the window end of the last run that did. */
 type Watch = Record<string, { firstAt: number; lastRun: number }>;
-interface Turn { starter: TurnStarter; wake: boolean; at: number; lastText: string; lastTextAt: number; wroteText: boolean }
+interface Turn { starter: TurnStarter; at: number; lastText: string; lastTextAt: number }
 interface Failure { at: number; reason: string }
 interface Tally { metrics: Metrics; deadMs: number; ownerTurns: number; longTurns: number; flagged: Map<Kind, FlaggedSlice[]>; seen: Seen[] }
 
@@ -90,9 +91,8 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       const count = words(turn.lastText);
       if (count > LONG_WORDS) { tally.longTurns++; flag("long_replies", turn.lastTextAt, `${count} words: ${turn.lastText}`); }
     }
-    if (turn.wake && turn.wroteText) { tally.metrics.off_brief++; flag("off_brief", turn.lastTextAt, `text on a wake: ${turn.lastText}`, `wake_text:${chat}`); }
   };
-  const openTurn = (starter: TurnStarter, wake: boolean, at: number) => { closeTurn(); turn = { starter, wake, at, lastText: "", lastTextAt: at, wroteText: false }; };
+  const openTurn = (starter: TurnStarter, at: number) => { closeTurn(); turn = { starter, at, lastText: "", lastTextAt: at }; };
   const settleFailure = (nextAt: number | undefined) => {
     if (!failure) return;
     const end = nextAt ?? now;
@@ -114,7 +114,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       settleFailure(at);
       const text = messageText(message).trim();
       if (serverNote(text)) {
-        if (settled) openTurn("agent", true, at);
+        if (settled) openTurn("agent", at);
         settled = false;
         if (!inWindow(at)) continue;
         if (seen.has(text)) { tally.metrics.off_brief++; flag("off_brief", at, `repeated line: ${text}`, signature("repeat", text)); }
@@ -127,7 +127,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
         }
         continue;
       }
-      openTurn("owner", false, at);
+      openTurn("owner", at);
       settled = false;
       const own = ownerWords(text);
       if (inWindow(at) && own && CORRECTION.test(own.replace(QUOTED, ""))) { tally.metrics.corrections++; flag("corrections", at, own); }
@@ -135,14 +135,14 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       failure = undefined;
       settled = message.stopReason !== "toolUse";
       const text = messageText(message).trim();
-      if (turn && text) { turn.lastText = text; turn.lastTextAt = at; turn.wroteText = true; }
+      if (turn && text) { turn.lastText = text; turn.lastTextAt = at; }
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         failure = { at, reason: message.errorMessage?.trim() || `stopReason ${message.stopReason}` };
         if (inWindow(at) && SIEUN_PI.test(failure.reason.replace(POOL_RETRY_NOTE, ""))) { tally.metrics.sieun_pi_breaks++; flag("sieun_pi_breaks", at, failure.reason, signature("error", failure.reason)); }
       }
     } else if (message.role === "custom" && isPromptCustom(message)) {
       settleFailure(at);
-      if (settled) openTurn("agent", message.customType === "agent_message", at);
+      if (settled) openTurn("agent", at);
       settled = false;
     }
   }
@@ -180,10 +180,10 @@ async function readWatch(file: string | undefined): Promise<Watch> {
   catch { return {}; }
 }
 
-/** Recurrences and corrections first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
+/** Yesterday's fixes to recheck, recurrences and corrections first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
-  const picked = [...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
+  const picked = [...newest("recheck"), ...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
   const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("off_brief", 2 * FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
     for (const queue of queues) { const next = queue.shift(); if (next && picked.length < MAX_FLAGGED) picked.push(next); }
@@ -206,6 +206,8 @@ async function main(): Promise<void> {
   tally.metrics.dead_hours = tenth(tally.deadMs / HOUR);
   tally.metrics.long_replies = tally.ownerTurns ? tenth(100 * tally.longTurns / tally.ownerTurns) : 0;
   const watch = watchRecurrences(tally.seen, await readWatch(process.env.STATE_FILE), now, tally);
+  const fixes = fixCommits(process.env.CHAT_HEALTH_GIT_DIR || join(import.meta.dirname, "..", ".."), now - 2 * WINDOW_MS, now - WINDOW_MS);
+  tally.flagged.set("recheck", recheckSlices(fixes, tally.metrics).map(slice => ({ ...slice, excerpt: clip(slice.excerpt) })));
   const result: PrecheckOutput = { metrics: { ...tally.metrics }, flagged: pickFlagged(tally.flagged) };
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

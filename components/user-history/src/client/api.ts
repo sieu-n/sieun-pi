@@ -66,9 +66,11 @@ export const api = {
   slack: () => get<SlackView | null>("api/slack"),
   setSlack: (input: SlackInput) => post<SlackView>("api/slack", input, 60000),
   checkSlack: () => post<SlackView>("api/slack/check", {}, 60000),
+  setChatSlack: (id: string, on: boolean) => post<SlackView>("api/threads/" + encodeURIComponent(id) + "/slack", { on }, 60000),
   sdk: () => get<SdkView | null>("api/sdk"),
   updateSdk: () => post<SdkView>("api/sdk", { action: "update" }),
   setSdkAuto: (auto: boolean) => post<SdkView>("api/sdk", { action: "auto", auto }),
+  updateChats: () => post<{ chats: number }>("api/chats/update", {}),
   commands: (id: string | null) => get<{ commands: Command[] }>(id ? "api/threads/" + encodeURIComponent(id) + "/commands" : "api/commands", 30000).then(body => body.commands),
   childUsage: (id: string) => get<{ children: ChildUsage[] }>("api/threads/" + encodeURIComponent(id) + "/child-usage").then(body => body.children),
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
@@ -106,8 +108,8 @@ export const api = {
   startLogin: (provider: string, account: string | null) => post<AccountLogin>("api/accounts/login", { provider, account }),
   pasteLogin: (id: string, code: string) => post<AccountLogin>("api/accounts/login/paste", { id, code }),
   cancelLogin: (id: string) => post<AccountLogin>("api/accounts/login/cancel", { id }),
-  createThread: (input: { cwd: string; name?: string; kind?: "chat"; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; message: string; images: ImageInput[]; requestId: string }) =>
-    post<{ id: string }>("api/threads", input, 120000),
+  createThread: (input: { cwd: string; name?: string; kind?: "chat"; slack?: boolean; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; message: string; images: ImageInput[]; requestId: string }) =>
+    post<{ id: string; notice?: string }>("api/threads", input, 120000),
   warm: (id: string) => post<{ ok: true }>("api/warm", { id }),
   prompt: (id: string, input: { message: string; images: ImageInput[]; mode: SendMode; requestId: string }) =>
     post<{ accepted: true }>("api/threads/" + encodeURIComponent(id) + "/prompt", input, 120000),

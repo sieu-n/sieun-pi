@@ -40,13 +40,14 @@ const STATUS_REFRESH_MS = 60_000;
 interface AccountRow {
 	id: string; email: string; usage: string; session_pct: number; weekly_pct: number; gated_pct: number;
 	usable: boolean; reason: string | null; current: boolean; pinned: boolean;
-	force: boolean; live: boolean; seat: boolean; score: number | null;
+	force: boolean; live: boolean;
+	/** Runway hours a switch of this session would weigh this account by; null when it is no switch target. */
+	weight: number | null;
 	/** openai-codex only: free | plus | pro | team. The pool sends no plan for anthropic. */
 	plan?: string;
 }
 interface CliListing {
-	provider: string; session: string | null;
-	seat: { id: string; email: string } | null; rows: AccountRow[];
+	provider: string; session: string | null; rows: AccountRow[];
 }
 /** Every CLI verb answers with a listing or with `{"error": "..."}`. */
 type CliReply = CliListing | { error: string };
@@ -80,16 +81,16 @@ function sessionId(ctx: ExtensionContext): string | undefined {
 }
 
 function rowLabel(row: AccountRow, provider: string): string {
-	const tags = [row.current && "current", row.seat && "seat", row.pinned && (row.force ? "pinned+force" : "pinned"), row.reason, row.live && "supervised"]
+	const tags = [row.current && "current", row.pinned && (row.force ? "pinned+force" : "pinned"), row.reason, row.live && "supervised"]
 		.filter((tag): tag is string => Boolean(tag));
 	const usage = [`5h ${pct(row.session_pct)}`, `week ${pct(row.weekly_pct)}`];
 	if (provider === "anthropic") usage.push(`fable ${pct(row.gated_pct)}`);
 	return `${row.email}${row.plan ? ` ${row.plan}` : ""}  ${usage.join(" · ")}${tags.length ? `  ${tags.join(", ")}` : ""}`;
 }
 
-/** Usable accounts first, then the rest; the picker reads top down. */
+/** Usable accounts first, longest runway first, then the rest; the picker reads top down. */
 function pickerRows(rows: AccountRow[]): AccountRow[] {
-	return [...rows].sort((a, b) => Number(b.usable) - Number(a.usable) || (a.score ?? 1e9) - (b.score ?? 1e9) || a.email.localeCompare(b.email));
+	return [...rows].sort((a, b) => Number(b.usable) - Number(a.usable) || (b.weight ?? -1) - (a.weight ?? -1) || a.email.localeCompare(b.email));
 }
 
 type Listed = { ok: true; out: string; data: CliListing } | { ok: false; out: string };
@@ -319,7 +320,7 @@ export default function (pi: ExtensionAPI): void {
 					return;
 				}
 				const data = listed.data;
-				const followLabel = `Follow the pool (${data.seat ? data.seat.email : "no seat"})`;
+				const followLabel = "Follow the pool (stay on the current account until it runs out)";
 				const trimmed = args.trim();
 				let target: string;
 				if (trimmed) {

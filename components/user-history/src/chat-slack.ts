@@ -6,7 +6,8 @@ import { chatLines } from "./shared/chat-feed.ts";
 import type { SlackInput, SlackView, ThreadEvent, ThreadMessage } from "./shared/types.ts";
 
 /**
- * The Slack bridge: one private channel `#vp-<chat name>` per chat, through Socket Mode (one outbound WebSocket, no public URL).
+ * The Slack bridge: one private channel `#vp-<chat name>` per chat the owner syncs, through Socket Mode (one outbound WebSocket, no public URL).
+ * Sync is off for every chat until the owner turns it on in the chat's header or on the new-chat screen; archiving the chat archives its channel.
  * In: an owner message in a chat's channel is a steer to that chat, the same call the browser composer makes.
  * Out: the agent lines of `chatLines()` (owner-turn replies and `tell_owner` pings), the lines the browser feed shows on the left.
  * Browser-typed owner messages are not mirrored. Only the configured owner member id in the bot's own team is accepted.
@@ -23,6 +24,15 @@ export const WORKING_REACTION = "hourglass_flowing_sand";
 export const MARKDOWN_LIMIT = 12_000;
 /** Lines already posted per chat; older keys are dropped and `since` moves up to the oldest kept one. */
 const POSTED_KEEP = 400;
+/** A chat whose feed does not open (its session is gone) is tried again after this gap, doubling up to PARK_MAX_MS, and logged once. */
+const PARK_MIN_MS = 60_000;
+const PARK_MAX_MS = 30 * 60_000;
+/**
+ * 2026-10-08: sync became opt-in per chat. Once, every channel the bridge had linked by then is unlinked and archived, except the probe's.
+ * The id goes into `migrations` in slack.json after it ran, so it never runs again.
+ */
+export const OPT_IN_MIGRATION = "opt-in-2026-10-08";
+export const OPT_IN_KEEP = "vp-slack-bridge-probe";
 
 export type SlackTokens = { bot: string; app: string; source: "keychain" | "environment" };
 /** A Web API call with the bot token. Resolves the response body when `ok`, rejects with SlackApiError otherwise. */
@@ -156,18 +166,29 @@ export interface SlackChats {
   watch(listener: () => void): () => void;
 }
 
-/** One chat's channel. `since` is when the link started: older lines are never posted. `seen` is the newest owner message ts handled. */
-export interface SlackLink { channel: string; name: string; since: number; seen: string; posted: string[] }
-export interface SlackState { enabled: boolean; ownerUserId: string | null; teamId: string | null; teamName: string | null; links: Record<string, SlackLink> }
+/**
+ * A chat the owner synced: its channel (id and name), the chat name at link time, `since` (older lines are never posted), `seen` (the newest owner
+ * message ts handled) and the posted line keys. `archived` is true while the chat is archived: the channel is archived too, and an unarchive opens it again.
+ */
+export interface SlackLink { channel: string; channelName: string; name: string; since: number; seen: string; posted: string[]; archived: boolean }
+/** `enabled` connects the workspace; `links` holds only the chats the owner synced. `migrations` lists the one-time changes already applied. */
+export interface SlackState { enabled: boolean; ownerUserId: string | null; teamId: string | null; teamName: string | null; links: Record<string, SlackLink>; migrations: string[] }
 
-const isLink = (value: unknown): value is SlackLink => isRecord(value) && typeof value.channel === "string" && typeof value.name === "string" &&
-  typeof value.since === "number" && typeof value.seen === "string" && Array.isArray(value.posted) && value.posted.every(key => typeof key === "string");
+function parseLink(id: string, value: unknown): SlackLink | null {
+  if (!isRecord(value) || typeof value.channel !== "string" || typeof value.name !== "string" || typeof value.since !== "number" || typeof value.seen !== "string" ||
+    !Array.isArray(value.posted) || !value.posted.every(key => typeof key === "string")) return null;
+  // Links written before opt-in carry no channel name or archived flag: the name is the one the bridge gave the channel then.
+  return { channel: value.channel, channelName: typeof value.channelName === "string" ? value.channelName : channelName(value.name, id), name: value.name, since: value.since,
+    seen: value.seen, posted: value.posted as string[], archived: value.archived === true };
+}
 export function slackStateFile(path: string): JsonFile<SlackState> {
-  return { path, label: "Slack bridge state", initial: () => ({ enabled: false, ownerUserId: null, teamId: null, teamName: null, links: {} }), parse(value) {
+  return { path, label: "Slack bridge state", initial: () => ({ enabled: false, ownerUserId: null, teamId: null, teamName: null, links: {}, migrations: [] }), parse(value) {
     const state = isRecord(value) ? value : {};
-    const links = isRecord(state.links) ? Object.fromEntries(Object.entries(state.links).filter((entry): entry is [string, SlackLink] => isLink(entry[1]))) : {};
+    const links: Record<string, SlackLink> = {};
+    if (isRecord(state.links)) for (const [id, entry] of Object.entries(state.links)) { const link = parseLink(id, entry); if (link) links[id] = link; }
     const text = (key: string) => typeof state[key] === "string" ? state[key] as string : null;
-    return { enabled: state.enabled === true, ownerUserId: text("ownerUserId"), teamId: text("teamId"), teamName: text("teamName"), links };
+    const migrations = Array.isArray(state.migrations) ? state.migrations.filter((entry): entry is string => typeof entry === "string") : [];
+    return { enabled: state.enabled === true, ownerUserId: text("ownerUserId"), teamId: text("teamId"), teamName: text("teamName"), links, migrations };
   } };
 }
 
@@ -242,8 +263,8 @@ export function tsAfter(a: string, b: string): boolean {
 }
 const nowTs = (now: number): string => (now / 1000).toFixed(6);
 
-/** What the HTTP server needs: the Settings view, the switch and owner id, and a token re-check. */
-export type SlackControl = Pick<SlackBridge, "view" | "set" | "check">;
+/** What the HTTP server needs: the Settings view, the switch and owner id, a token re-check, and a chat's sync switch. */
+export type SlackControl = Pick<SlackBridge, "view" | "set" | "check" | "setChat">;
 
 /**
  * The bridge runs in the main instance only, so a test or extra instance never opens a second Socket Mode connection (Slack would split the
@@ -305,6 +326,10 @@ export class SlackBridge {
   /** Owner messages with the working reaction, per chat, until its turn ends. */
   private readonly working = new Map<string, { channel: string; ts: string }[]>();
   private readonly lastPost = new Map<string, number>();
+  /** The work after the last hello: the opt-in migration, then a full sync with catch-up. */
+  private greeted: Promise<void> = Promise.resolve();
+  /** Synced chats whose feed did not open, with when to try again; see PARK_MIN_MS. */
+  private readonly parked = new Map<string, { until: number; gapMs: number }>();
   private unwatch: (() => void) | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -349,7 +374,7 @@ export class SlackBridge {
       hello: () => {
         if (generation !== this.generation) return;
         this.status = { state: "on", message: `On in ${this.state?.teamName ?? "Slack"}.` };
-        void this.sync(true);
+        this.greeted = this.migrate().catch(error => { this.log(`slack: opt-in migration: ${errorText(error)}`); }).then(() => this.sync(true));
       },
       event: payload => { if (generation === this.generation) this.inbound(payload); },
       state: (state, message) => { if (generation === this.generation) this.status = { state, message }; },
@@ -370,6 +395,7 @@ export class SlackBridge {
     this.timer = this.syncTimer = null;
     for (const unsubscribe of this.subscriptions.values()) unsubscribe();
     this.subscriptions.clear();
+    this.parked.clear();
     this.working.clear();
   }
 
@@ -377,8 +403,25 @@ export class SlackBridge {
 
   view(editable: boolean): SlackView {
     const state = this.state;
+    const chats = Object.fromEntries(Object.entries(state?.links ?? {}).filter(([, link]) => !link.archived).map(([id, link]) => [id, link.channelName]));
     return { ...this.status, enabled: state?.enabled ?? false, ownerUserId: state?.ownerUserId ?? null, teamId: state?.teamId ?? null, teamName: state?.teamName ?? null,
-      channels: Object.keys(state?.links ?? {}).length, tokenSource: this.tokenSource, keychainService: KEYCHAIN_SERVICE, editable };
+      channels: Object.keys(chats).length, chats, tokenSource: this.tokenSource, keychainService: KEYCHAIN_SERVICE, editable };
+  }
+
+  /**
+   * A chat's sync switch. On creates its private channel (or opens its archived one again); off archives the channel and drops the link.
+   * Both need a live connection; the error says so otherwise.
+   */
+  async setChat(id: string, on: boolean): Promise<void> {
+    if (!this.connection || this.status.state !== "on") throw new Error("Slack is not connected. Connect it in Settings > Slack.");
+    await this.queue(id, async () => {
+      const link = this.state!.links[id];
+      if (!on) { if (link) await this.unlink(id, "sync turned off"); return; }
+      this.parked.delete(id);
+      if (!link) await this.link(id);
+      else if (link.archived) await this.reopen(id);
+      await this.watchChat(id);
+    }, true);
   }
 
   /** Settings: the switch and the owner id. Any change, and `check`, reads the tokens again and reconnects. */
@@ -397,16 +440,23 @@ export class SlackBridge {
     this.state = (await transactJsonFile(this.file, change)).state;
   }
 
-  /** Tasks of one key (a chat id) run one after another, so a live event and the catch-up never handle one message twice. */
-  private queue(key: string, task: () => Promise<void>): Promise<void> {
-    const next = (this.queues.get(key) ?? Promise.resolve()).then(task).catch(error => { this.log(`slack ${key.slice(0, 8)}: ${errorText(error)}`); });
+  /**
+   * Tasks of one key (a chat id) run one after another, so a live event and the catch-up never handle one message twice. A failed task is logged,
+   * or with `rethrow` handed to the caller instead.
+   */
+  private queue(key: string, task: () => Promise<void>, rethrow = false): Promise<void> {
+    const run = (this.queues.get(key) ?? Promise.resolve()).then(task);
+    const next = run.catch(error => { if (!rethrow) this.log(`slack ${key.slice(0, 8)}: ${errorText(error)}`); });
     this.queues.set(key, next);
     void next.finally(() => { if (this.queues.get(key) === next) this.queues.delete(key); });
-    return next;
+    return rethrow ? run : next;
   }
 
-  /** For tests: resolves once every queued task finished. */
-  async settled(): Promise<void> { while (this.queues.size) await Promise.all([...this.queues.values()]); }
+  /** For tests: resolves once the hello work and every queued task finished. */
+  async settled(): Promise<void> {
+    await this.greeted;
+    while (this.queues.size) await Promise.all([...this.queues.values()]);
+  }
 
   private scheduleSync(): void {
     if (this.syncTimer) return;
@@ -415,66 +465,140 @@ export class SlackBridge {
   }
 
   /**
-   * Converges Slack on the chat list: a channel for each new chat, the channel archived for a chat that left the list, a feed subscription per chat,
-   * and every unsent line posted. After a (re)connect it also reads each channel's history since the last handled owner message: Socket Mode
-   * does not replay events sent while the Mac slept.
+   * Converges each synced chat's channel on the chat list: a chat that left the list (archived) gets its channel archived and its link kept,
+   * a chat back on the list (unarchived) gets the channel opened again. Each open link gets a feed subscription and every unsent line posted.
+   * After a (re)connect it also reads each channel's history since the last handled owner message: Socket Mode does not replay events sent while
+   * the Mac slept. Chats nobody synced are never touched.
    */
   async sync(catchUp: boolean): Promise<void> {
     const connection = this.connection;
     if (!connection || !this.state) return;
     let ids: ReadonlySet<string>;
     try { ids = await this.options.chats.ids(); } catch (error) { this.log(`slack: chat list: ${errorText(error)}`); return; }
-    for (const id of Object.keys(this.state.links)) if (!ids.has(id)) await this.queue(id, () => this.unlink(id));
-    await Promise.all([...ids].map(id => this.queue(id, async () => {
-      if (this.connection !== connection) return;
-      if (!this.state!.links[id]) await this.link(id);
+    await Promise.all(Object.keys(this.state.links).map(id => this.queue(id, async () => {
+      const link = this.state!.links[id];
+      if (this.connection !== connection || !link) return;
+      if (!ids.has(id)) { if (!link.archived) await this.archive(id); return; }
+      if (link.archived) await this.reopen(id);
       await this.watchChat(id);
       if (catchUp) await this.catchUp(id);
       await this.flush(id);
     })));
   }
 
-  private async link(id: string): Promise<void> {
+  /** Once per slack.json: the links made before sync was opt-in are dropped and their channels archived, except OPT_IN_KEEP's. */
+  private async migrate(): Promise<void> {
+    if (!this.state || this.state.migrations.includes(OPT_IN_MIGRATION)) return;
+    for (const [id, link] of Object.entries(this.state.links)) {
+      if (link.channelName !== OPT_IN_KEEP) await this.queue(id, () => this.unlink(id, "sync is opt-in now"), true);
+    }
+    await this.save(next => { if (!next.migrations.includes(OPT_IN_MIGRATION)) next.migrations.push(OPT_IN_MIGRATION); });
+    this.log(`slack: opt-in migration done, ${Object.keys(this.state.links).length} chat(s) still synced`);
+  }
+
+  /** A new private channel for the chat, invited the owner; a taken name gets the chat id's first four characters. */
+  private async createChannel(id: string): Promise<{ channel: string; channelName: string; chatName: string }> {
     const api = this.connection!.api;
-    const owner = this.state!.ownerUserId!;
     const chatName = (await this.options.chats.name(id))?.trim() || id.slice(0, 8);
     const base = channelName(chatName, id);
-    let channel: string | undefined;
     for (const name of [base, `${base.slice(0, 75)}-${id.slice(0, 4)}`]) {
-      try {
-        const created = await api("conversations.create", { name, is_private: true });
-        channel = isRecord(created.channel) && typeof created.channel.id === "string" ? created.channel.id : undefined;
-        break;
-      } catch (error) { if (!(error instanceof SlackApiError && error.code === "name_taken")) throw error; }
+      let created: Record<string, unknown>;
+      try { created = await api("conversations.create", { name, is_private: true }); }
+      catch (error) { if (error instanceof SlackApiError && error.code === "name_taken") continue; throw error; }
+      const channel = isRecord(created.channel) ? created.channel : {};
+      if (typeof channel.id !== "string") throw new Error("conversations.create returned no channel.");
+      await this.invite(channel.id);
+      return { channel: channel.id, channelName: typeof channel.name === "string" ? channel.name : name, chatName };
     }
-    if (!channel) throw new Error(`No channel name left for ${base}.`);
-    await api("conversations.invite", { channel, users: owner }).catch(error => { if (!(error instanceof SlackApiError && error.code === "already_in_channel")) throw error; });
-    const now = this.now();
-    await this.save(next => { next.links[id] = { channel: channel!, name: chatName, since: now, seen: nowTs(now), posted: [] }; });
-    await this.post(channel, `Linked to the chat *${chatName}*. What you write here goes to the chat; its replies and pings come back here.`);
-    this.log(`slack ${id.slice(0, 8)}: linked to ${channel}`);
+    throw new Error(`No channel name left for ${base}.`);
   }
 
-  private async unlink(id: string): Promise<void> {
-    const link = this.state!.links[id];
-    if (!link) return;
-    this.subscriptions.get(id)?.();
-    this.subscriptions.delete(id);
-    await this.connection?.api("conversations.archive", { channel: link.channel }).catch(error => {
+  private invite(channel: string): Promise<unknown> {
+    return this.connection!.api("conversations.invite", { channel, users: this.state!.ownerUserId! })
+      .catch(error => { if (!(error instanceof SlackApiError && error.code === "already_in_channel")) throw error; });
+  }
+
+  private async link(id: string): Promise<void> {
+    const { channel, channelName: name, chatName } = await this.createChannel(id);
+    const now = this.now();
+    await this.save(next => { next.links[id] = { channel, channelName: name, name: chatName, since: now, seen: nowTs(now), posted: [], archived: false }; });
+    await this.post(channel, `Linked to the chat *${chatName}*. What you write here goes to the chat; its replies and pings come back here.`);
+    this.log(`slack ${id.slice(0, 8)}: linked to ${channel} #${name}`);
+  }
+
+  /** The chat is back from the archive: its channel is unarchived, or replaced by a new one when Slack refuses (the bot left it on archive). */
+  private async reopen(id: string): Promise<void> {
+    const link = this.state!.links[id]!;
+    let target: { channel: string; channelName: string };
+    try {
+      await this.connection!.api("conversations.unarchive", { channel: link.channel })
+        .catch(error => { if (!(error instanceof SlackApiError && error.code === "not_archived")) throw error; });
+      await this.invite(link.channel);
+      target = link;
+    } catch (error) {
+      if (!(error instanceof SlackApiError) || error.code === "ratelimited") throw error;
+      target = await this.createChannel(id);
+    }
+    await this.save(next => { const entry = next.links[id]; if (entry) Object.assign(entry, { channel: target.channel, channelName: target.channelName, archived: false }); });
+    await this.post(target.channel, `The chat *${link.name}* is back from the archive. What you write here goes to the chat again.`);
+    this.log(`slack ${id.slice(0, 8)}: chat unarchived, ${target.channel} #${target.channelName} open again`);
+  }
+
+  private async archiveChannel(channel: string): Promise<void> {
+    await this.connection?.api("conversations.archive", { channel }).catch(error => {
       if (!(error instanceof SlackApiError && (error.code === "already_archived" || error.code === "channel_not_found"))) throw error;
     });
-    await this.save(next => { delete next.links[id]; });
-    this.log(`slack ${id.slice(0, 8)}: chat gone, archived ${link.channel}`);
   }
 
-  /** One feed subscription per chat: each committed message and each turn end posts the new lines; a turn end clears the working reactions. */
+  private dropFeed(id: string): void {
+    this.subscriptions.get(id)?.();
+    this.subscriptions.delete(id);
+    this.parked.delete(id);
+  }
+
+  /** The chat was archived: the channel is archived, the link stays (marked archived) so an unarchive opens it again. */
+  private async archive(id: string): Promise<void> {
+    const link = this.state!.links[id]!;
+    this.dropFeed(id);
+    await this.archiveChannel(link.channel);
+    await this.save(next => { const entry = next.links[id]; if (entry) entry.archived = true; });
+    this.log(`slack ${id.slice(0, 8)}: chat archived, archived ${link.channel} #${link.channelName}`);
+  }
+
+  /** Sync turned off: the channel is archived and the link dropped. */
+  private async unlink(id: string, reason: string): Promise<void> {
+    const link = this.state!.links[id];
+    if (!link) return;
+    this.dropFeed(id);
+    if (!link.archived) await this.archiveChannel(link.channel);
+    await this.save(next => { delete next.links[id]; });
+    this.log(`slack ${id.slice(0, 8)}: ${reason}, archived ${link.channel} #${link.channelName}`);
+  }
+
+  /**
+   * One feed subscription per synced chat: each committed message and each turn end posts the new lines; a turn end clears the working reactions.
+   * A feed that does not open (the session is gone) parks the chat: one log line, then a quiet retry after PARK_MIN_MS, doubling up to PARK_MAX_MS,
+   * so a dead session costs no daemon attach on every catalog change.
+   */
   private async watchChat(id: string): Promise<void> {
     if (this.subscriptions.has(id)) return;
-    const unsubscribe = await this.options.chats.subscribe(id, event => {
-      if (event.type === "status" && event.connection === "closed") { this.subscriptions.get(id)?.(); this.subscriptions.delete(id); this.scheduleSync(); return; }
-      if (event.type === "snapshot" || (event.type === "event" && event.event.type === "message_end" && event.event.message.role === "assistant")) void this.queue(id, () => this.flush(id));
-      if (event.type === "event" && event.event.type === "agent_end") void this.queue(id, async () => { await this.flush(id); await this.idle(id); });
-    });
+    const park = this.parked.get(id);
+    if (park && this.now() < park.until) return;
+    let unsubscribe: () => void;
+    try {
+      unsubscribe = await this.options.chats.subscribe(id, event => {
+        if (event.type === "status" && event.connection === "closed") { this.subscriptions.get(id)?.(); this.subscriptions.delete(id); this.scheduleSync(); return; }
+        if (event.type === "snapshot" || (event.type === "event" && event.event.type === "message_end" && event.event.message.role === "assistant")) void this.queue(id, () => this.flush(id));
+        if (event.type === "event" && event.event.type === "agent_end") void this.queue(id, async () => { await this.flush(id); await this.idle(id); });
+      });
+    } catch (error) {
+      const gapMs = park ? Math.min(PARK_MAX_MS, park.gapMs * 2) : PARK_MIN_MS;
+      this.parked.set(id, { until: this.now() + gapMs, gapMs });
+      if (!park) this.log(`slack ${id.slice(0, 8)}: the chat's feed did not open (${errorText(error)}); parked, tried again quietly every ${PARK_MIN_MS / 60_000} to ${PARK_MAX_MS / 60_000} min`);
+      return;
+    }
+    if (park) this.log(`slack ${id.slice(0, 8)}: the chat's feed is open again`);
+    this.parked.delete(id);
     this.subscriptions.set(id, unsubscribe);
   }
 

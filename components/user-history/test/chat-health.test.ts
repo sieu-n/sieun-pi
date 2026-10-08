@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
+import { fixTargets, recheckSlices } from "../scripts/duties/chat-health-recheck.ts";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const MIN = 60_000;
@@ -88,7 +89,7 @@ const chatB: Line[] = [
 
 const script = join(import.meta.dirname, "..", "scripts", "duties", "chat-health.ts");
 const run = (env: Record<string, string>) => spawnSync(process.execPath, ["--import", "tsx", script], { cwd: join(import.meta.dirname, ".."), encoding: "utf8",
-  env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", ...env } });
+  env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", CHAT_HEALTH_GIT_DIR: "/nonexistent", ...env } });
 
 test("chat health: each metric over two fixture chats in the last 24 h; a missing transcript is skipped", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
@@ -100,7 +101,7 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, stalls_2h: 6, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 5, sieun_pi_breaks: 1, recurred: 0 });
+    assert.deepEqual(health.metrics, { corrections: 3, stalls_2h: 6, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 2, sieun_pi_breaks: 1, recurred: 0 });
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 3).map(slice => [slice.chat, slice.excerpt]), [["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]]);
     const kinds = (kind: string) => flagged.filter(slice => slice.kind === kind);
@@ -110,8 +111,8 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     assert.ok(kinds("stalls_2h").some(slice => slice.chat === "chat-a" && slice.excerpt.includes("p8") && slice.at === ago(3 * HOUR)), "a step counts once, at its latest check-in row");
     assert.ok(kinds("stalls_2h").every(slice => !slice.excerpt.includes("90 min")));
     assert.deepEqual(kinds("sieun_pi_breaks").map(slice => slice.excerpt), [API_KEY_ERROR]);
-    assert.deepEqual(kinds("off_brief").map(slice => slice.excerpt), ["text on a wake: x", "repeated line: [job] build-x finished; don't wait", `repeated line: ${CHECK_IN}`.slice(0, 300),
-      "text on a wake: Checked the board.", "text on a wake: Noted, filing it."]);
+    assert.deepEqual(kinds("off_brief").map(slice => slice.excerpt), ["repeated line: [job] build-x finished; don't wait", `repeated line: ${CHECK_IN}`.slice(0, 300)],
+      "text on a wake is the chat's notes (the brief allows it since W27); only repeated server lines are off brief");
     assert.ok(flagged.length <= 40);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -198,6 +199,46 @@ test("chat health: owner directions and status questions are not corrections, a 
     assert.equal(health.metrics.sieun_pi_breaks, 0);
     assert.equal(health.metrics.unretried_errors, 0);
     assert.equal(health.metrics.stalls_2h, 1, "a step that moved from doing to blocked is one stalled step");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat health recheck: each fix names the metrics its subject targets, with today's value; one that names none is for a person to judge", () => {
+  assert.deepEqual(fixTargets("fix(user-history): long owner replies get a reply rule; text on wake-ups is notes; a stalled step sets waitUntil"), ["long_replies", "off_brief", "stalls_2h"]);
+  assert.deepEqual(fixTargets("fix(user-history): plain derived thread names"), []);
+  const metrics = { corrections: 4, stalls_2h: 3, dead_hours: 0, unretried_errors: 0, long_replies: 82.8, off_brief: 21, sieun_pi_breaks: 0, recurred: 0 };
+  assert.deepEqual(recheckSlices([
+    { sha: "abc1234", at: 5, subject: "fix(user-history): owner replies stay under 60 words" },
+    { sha: "def5678", at: 6, subject: "fix(user-history): plain derived thread names" },
+  ], metrics), [
+    { at: 5, kind: "recheck", excerpt: "fixed yesterday, recheck today: long_replies 82.8 today; abc1234 owner replies stay under 60 words" },
+    { at: 6, kind: "recheck", excerpt: "fixed yesterday, recheck today: no metric named; judge it by hand; def5678 plain derived thread names" },
+  ]);
+});
+
+test("chat health recheck: the run lists yesterday's fix(user-history) commits first in flagged, not today's or older ones, nor other subjects", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    const git = (args: string[], at?: number) => {
+      const date = at === undefined ? {} : { GIT_AUTHOR_DATE: new Date(at).toISOString(), GIT_COMMITTER_DATE: new Date(at).toISOString() };
+      const result = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: dir, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@x",
+        GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@x", ...date } });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    git(["init", "-q"]);
+    const commit = async (subject: string, at: number) => { await writeFile(join(dir, "file.txt"), subject); git(["add", "file.txt"]); git(["commit", "-q", "-m", subject], at); };
+    await commit("fix(user-history): too old, a stalled step", ago(50 * HOUR));
+    await commit("fix(user-history): text on wakes is notes", ago(30 * HOUR));
+    await commit("feat(user-history): a new card", ago(28 * HOUR));
+    await commit("fix(user-history): today's fix to long replies", ago(2 * HOUR));
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: [] }));
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir, CHAT_HEALTH_GIT_DIR: dir });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.deepEqual((health.flagged ?? []).map(slice => [slice.kind, slice.at, slice.excerpt.replace(/; \w{7,} /, "; <sha> ")]),
+      [["recheck", Math.floor(ago(30 * HOUR) / 1000) * 1000, "fixed yesterday, recheck today: off_brief 0 today; <sha> text on wakes is notes"]]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

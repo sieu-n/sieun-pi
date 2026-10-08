@@ -8,7 +8,7 @@ import { BoardStore } from "../src/chat-board-store.ts";
 import { checkInSettings } from "../src/chat-checkin.ts";
 import { applyThreadEvent } from "../src/shared/thread-state.ts";
 import type { ThreadState } from "../src/shared/types.ts";
-import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, migrateBoard, nextIds, parseBoardOps, renderBoard } from "../src/shared/chat-board.ts";
+import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, migrateBoard, nextIds, parseBoardOps, renderBoard, REPLY_RULE } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "../src/shared/types.ts";
 
 const T0 = "2026-10-06T00:00:00.000Z";
@@ -42,6 +42,29 @@ test("chat board: plan add, nest, update, remove by id at any depth; rev rises p
   assert.deepEqual(removed.board.plan, [{ id: "p1", text: "Ship the board", status: "todo", children: [] }]);
   assert.equal(removed.summaries[0], 'Removed p2 "Reducer" and its 1 step');
   assert.equal(run(removed.board, [{ op: "plan_add", text: "Next" }]).board.plan[1]!.id, "p2", "ids continue after the highest left");
+});
+
+test("chat board: a step waits until a time or for an event; plan_add, plan_update and plan_set carry it, null clears it, and the agent's board shows it", () => {
+  const ops = parseBoardOps([
+    { op: "plan_add", text: "Renew", status: "blocked", waitUntil: "2026-10-09T09:00:00+09:00" },
+    { op: "plan_add", text: "Ship", waitFor: "the vendor's reply" },
+    { op: "plan_update", id: "p1", waitFor: "the registrar email" },
+    { op: "plan_update", id: "p2", waitFor: null, waitUntil: "2026-10-10" },
+  ]);
+  assert.deepEqual(ops[0], { op: "plan_add", text: "Renew", status: "blocked", waitUntil: "2026-10-09T00:00:00.000Z" }, "stored as an ISO string in UTC");
+  const { board, summaries } = run(emptyBoard(T0), ops);
+  assert.deepEqual(board.plan.map(item => [item.id, item.waitUntil, item.waitFor]),
+    [["p1", "2026-10-09T00:00:00.000Z", "the registrar email"], ["p2", "2026-10-10T00:00:00.000Z", undefined]]);
+  assert.deepEqual(summaries.slice(2), ['Updated p1 "Renew": set it to wait for "the registrar email"',
+    'Updated p2 "Ship": set it to wait until 2026-10-10T00:00:00.000Z, cleared what it waits for']);
+  assert.match(renderBoard(board), /\[!\] p1 Renew \(blocked, waits until 2026-10-09T00:00:00.000Z, waits for "the registrar email"\)/);
+  const cleared = run(board, parseBoardOps([{ op: "plan_update", id: "p1", waitUntil: null, waitFor: null }]));
+  assert.deepEqual(cleared.board.plan[0], { id: "p1", text: "Renew", status: "blocked", children: [] });
+  assert.equal(cleared.summaries[0], 'Updated p1 "Renew": cleared its wait time, cleared what it waits for');
+  const set = run(emptyBoard(T0), parseBoardOps([{ op: "plan_set", items: [{ text: "Goal", children: [{ text: "Step", waitFor: "a slot" }] }] }]));
+  assert.equal(set.board.plan[0]!.children[0]!.waitFor, "a slot");
+  for (const bad of ["tomorrow", "09:00", 1, ""]) throwsKind(() => parseBoardOps([{ op: "plan_update", id: "p1", waitUntil: bad }]), "invalid");
+  throwsKind(() => parseBoardOps([{ op: "plan_add", text: "x", waitFor: "x".repeat(BOARD_LIMITS.waitFor + 1) }]), "invalid");
 });
 
 test("chat board: plan_set keeps given ids, fills the rest without collisions, defaults status", () => {
@@ -220,8 +243,9 @@ test("chat board: the owner may change todos and the scratchpad, never the plan;
 });
 
 test("chat board: render shows this chat's target, the nested checklist, todos with choices and answers, and the scratch bullets with links", () => {
-  assert.match(renderBoard(null), /^The board is empty/);
-  assert.match(renderBoard(null, "s-1"), /^This chat: thread:s-1\nThe board is empty/);
+  assert.match(renderBoard(null), new RegExp(`^${REPLY_RULE.replace(/[.;]/g, "\\$&")}\nThe board is empty`), "the reply rule leads every board the agent reads");
+  assert.equal(REPLY_RULE, "Reply rule: at most 60 words; explain in an article and link it.");
+  assert.match(renderBoard(null, "s-1"), /^Reply rule: .*\nThis chat: thread:s-1\nThe board is empty/);
   const { board } = run(emptyBoard(T0), [
     { op: "plan_add", text: "Goal", status: "doing" },
     { op: "plan_add", parent: "p1", text: "Step", status: "done", job: "w6" },
@@ -230,7 +254,7 @@ test("chat board: render shows this chat's target, the nested checklist, todos w
   ]);
   const answered = run(board, [{ op: "todo_update", id: "t1", done: true, reply: "Yes" }], "owner").board;
   assert.equal(renderBoard(answered, "s-1"), [
-    "This chat: thread:s-1", `Board rev 5, updated ${T1}`, "Plan:", "  [~] p1 Goal (doing)", "    [x] p2 Step (done, job w6)",
+    REPLY_RULE, "This chat: thread:s-1", `Board rev 5, updated ${T1}`, "Plan:", "  [~] p1 Goal (doing)", "    [x] p2 Step (done, job w6)",
     "Owner todos:", '  [x] t1 Approve (from agent), choices: "Yes" (recommended) / "No", answer: Yes',
     "Scratchpad:", "  - s1 note one [report](job:w6) [doc](wiki:a/b.md)"].join("\n"));
 });
@@ -274,10 +298,10 @@ test("extension: chat_board writes the chat's board under agent-chat-data-dir an
   assert.ok(tool.promptGuidelines?.some(line => line.includes("CTO")));
   const ctx = { sessionManager: { getSessionId: () => "s-1" } };
   const added = await tool.execute("c1", { ops: [{ op: "plan_add", text: "Goal", status: "doing" }, { op: "todo_add", text: "Approve" }] }, undefined, undefined, ctx);
-  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nThis chat: thread:s-1\nCheck-in: every 15 min\nBoard rev 2/);
+  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nReply rule: at most 60 words; explain in an article and link it\.\nThis chat: thread:s-1\nCheck-in: every 15 min\nBoard rev 2/);
   assert.equal((await new BoardStore(dataDir).read("s-1"))?.rev, 2);
   await checkInSettings(join(dataDir, "check-in-settings.json")).update("s-1", () => ({ everyMs: 15 * 60_000, pausedUntil: "forever" }));
-  assert.match((await tool.execute("c2", { ops: [] }, undefined, undefined, ctx)).content[0]!.text, /^This chat: thread:s-1\nCheck-in: paused until the owner resumes it\nBoard rev 2/,
+  assert.match((await tool.execute("c2", { ops: [] }, undefined, undefined, ctx)).content[0]!.text, /^Reply rule: .*\nThis chat: thread:s-1\nCheck-in: paused until the owner resumes it\nBoard rev 2/,
     "the chat reads the owner's setting from the data dir");
   await assert.rejects(tool.execute("c3", { ops: [{ op: "plan_update", id: "p7", status: "done" }] }, undefined, undefined, ctx), /No plan item p7/);
 });

@@ -3,14 +3,14 @@ import { hasUnsentDrafts } from "./drafts.ts";
 import { retryFeeds } from "./feeds.ts";
 import { applyThreadEvent } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
-import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, Tag, ThreadState } from "../shared/types.ts";
+import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackView, Tag, ThreadState } from "../shared/types.ts";
 import { hashFor, parseHash } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
 /** `kind` "chat" creates a chat thread (the server marks the session and lists it under Chats); absent means a normal thread. */
-export interface PendingChat { cwd: string; name?: string; kind?: "chat"; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
+export interface PendingChat { cwd: string; name?: string; kind?: "chat"; slack?: boolean; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
 /** How long `createChat` waits for the sessions stream to list a new chat before showing it, so the chat view opens instead of the thread view. */
 const NEW_ROW_WAIT_MS = 3000;
 
@@ -27,7 +27,7 @@ class Store {
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
   sidebarOpen = $state(window.innerWidth >= 900);
-  drawer = $state<"accounts" | "usage" | "defaults" | "remote" | "slack" | "versions" | null>(null);
+  drawer = $state<"accounts" | "usage" | "defaults" | "remote" | "slack" | "chats" | "versions" | null>(null);
   /** Bumped when Settings saves new defaults, so the new-chat screen reads them again. */
   defaultsRevision = $state(0);
   /** Chat sends each thread has not echoed back yet, by thread id, oldest first. */
@@ -40,10 +40,13 @@ class Store {
   reader = $state.raw<ReaderView | null>(null);
   /** The plan view modal of a chat: its whole board as a tree, scrolled to `focus` (a plan step or note id) when set. Null when closed. */
   planView = $state.raw<{ chat: string; focus: string | null } | null>(null);
+  /** The Slack bridge as the chat header and the new-chat screen show it; null when this instance runs none, undefined until read. */
+  slack = $state.raw<SlackView | null | undefined>(undefined);
   private toastId = 0;
   private sessionsStop: (() => void) | null = null;
 
   start(): void {
+    void this.loadSlack();
     this.readHash();
     window.addEventListener("hashchange", () => this.readHash());
     this.sessionsStop = api.sessionsStream(event => {
@@ -221,11 +224,24 @@ class Store {
     this.pendingSends = left.length ? { ...rest, [id]: left } : rest;
   }
 
+  async loadSlack(): Promise<void> {
+    try { this.slack = await api.slack(); } catch { /* the header keeps its last view; Settings shows the error */ }
+  }
+
+  /** A chat's Slack sync switch; false when the server refused (the error is a toast). */
+  async setChatSlack(id: string, on: boolean): Promise<boolean> {
+    const view = await this.run(api.setChatSlack(id, on));
+    if (view) this.slack = view;
+    return view !== undefined;
+  }
+
   /** Creates the native session, opens it, and returns its id; null when the create failed (the error is a toast). */
   async createChat(input: Omit<PendingChat, "startedAt">): Promise<string | null> {
     this.pending = { ...input, startedAt: Date.now() };
     const result = await this.run(api.createThread({ ...input, requestId: requestId() }));
     if (!result) { this.pending = null; return null; }
+    if (result.notice) this.toast(result.notice);
+    if (input.slack) void this.loadSlack();
     this.open(result.id);
     if (input.kind === "chat") await this.awaitRow(result.id);
     this.select(result.id);

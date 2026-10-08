@@ -87,9 +87,9 @@ class RelocatedSource(unittest.TestCase):
             [sys.executable, "-B", str(self.state / "vend.py"), "--cli"],
         ]
         for value, command in enumerate(commands, 10):
-            self.run_command([*command, "set", "session_penalty", str(value)])
+            self.run_command([*command, "set", "min_runway_hours", str(value)])
             self.assertEqual(json.loads((self.state / "config.json").read_text()),
-                             {"session_penalty": value})
+                             {"min_runway_hours": value})
         self.assertEqual(self.snapshot(), before)
 
     def test_default_state_root_is_under_home_not_source(self):
@@ -97,9 +97,9 @@ class RelocatedSource(unittest.TestCase):
         default_state.mkdir(parents=True)
         env = {key: value for key, value in self.env.items() if key != "PI_POOL_DIR"}
         before = self.snapshot()
-        self.run_command([str(self.source / "bin" / "pi-pool"), "set", "session_penalty", "17"], env)
+        self.run_command([str(self.source / "bin" / "pi-pool"), "set", "min_runway_hours", "17"], env)
         self.assertEqual(json.loads((default_state / "config.json").read_text()),
-                         {"session_penalty": 17})
+                         {"min_runway_hours": 17})
         self.assertFalse((self.state / "config.json").exists())
         self.assertEqual(self.snapshot(), before)
 
@@ -164,7 +164,7 @@ assert.deepEqual(await command.getArgumentCompletions(''), [
             env = {**self.env, "PI_POOL_DIR": str(state)}
             before = self.snapshot()
             for command in (
-                [str(self.source / "bin" / "pi-pool"), "set", "session_penalty", "17"],
+                [str(self.source / "bin" / "pi-pool"), "set", "min_runway_hours", "17"],
             ):
                 result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
                 self.assertNotEqual(result.returncode, 0)

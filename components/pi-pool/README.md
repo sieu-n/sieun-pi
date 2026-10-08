@@ -19,7 +19,7 @@ checkout/components/pi-pool/
   bin/                     executable, relocatable Python wrappers
 
 PI_POOL_DIR or ~/.config/pi-pool/
-  config.json, state.json   configuration, pins, seats and session records
+  config.json, state.json   configuration, pins and session records
   lock, pi-pool.log         lock and event log
   rotations/, fallback.json, backups/   private runtime data
 ```
@@ -103,7 +103,7 @@ This repository does not install or seed those stores.
 
 A dead refresh token (`invalid_grant`, `refresh_token_reused`) sets `needsReauth`
 on that account in tokenmaxxing's index, so `tokenmaxxing auth --all` offers it.
-On a seat move or a fresh rotation, pi-pool also sends one free
+On a switch or a fresh rotation, pi-pool also sends one free
 `/v1/messages/count_tokens` request. A 401 or a 403 such as
 `oauth_not_allowed_for_organization` puts the account on a
 `refused_cooldown_sec` cooldown (24 hours by default) and sets tokenmaxxing's own
@@ -141,7 +141,7 @@ until the session's next provider request runs the hook.
 
 ## Commands
 
-    pi-pool                       one card per account: usage bars, seat, sessions, next pick
+    pi-pool                       one card per account: usage bars, sessions, pick chance; switches today
     pi-pool status --provider openai-codex
     pi-pool watch [sec]           the same cards full screen, redrawn every sec seconds (default 5)
     pi-pool use <email|id> [--force] [--follow] [--provider p] [--session id] [--new-session]
@@ -150,14 +150,14 @@ until the session's next provider request runs the hook.
     pi-pool ls [--json] [--provider p] [--session id]
     pi-pool pin <email>           force EVERY session onto one account
     pi-pool unpin
-    pi-pool switch                drop the seat; the next request re-picks
+    pi-pool switch [--session id] this session's next request moves to another account (weighted pick)
     pi-pool enable openai-codex   wire the codex provider into models.json
     pi-pool adopt-logins          move a stored /login that would bypass the pool into fallback.json
     pi-pool refresh [<email|id> ...] [--provider p] [--json | --stream]
                                   read usage now for every account, or the named ones (needs --provider)
     pi-pool off <email|id> [--provider <p>]   keep an account pooled but never pick it (`ls --json` shows `disabled`)
     pi-pool on <email|id> [--provider <p>]    let the pool pick it again
-    pi-pool rm <email|id> [--provider <p>]    `tokenmaxxing rm`, then drop its pins and seat here
+    pi-pool rm <email|id> [--provider <p>]    `tokenmaxxing rm`, then drop its pins here
     pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>]
                                   add an account (`tokenmaxxing add`) or sign one in again (`tokenmaxxing auth`)
                                   for a browser: stdout is JSON lines ({"event":"url"} with the link and the
@@ -175,7 +175,9 @@ until the session's next provider request runs the hook.
 
 `--session` takes a session uuid, a uuid prefix, or the short active id.
 
-`ls --json` names the pool `pin` next to the `seat`. Its rows also carry what `status` draws: `tier` (`max 20x`, `pro`), `windows`
+`ls --json` names the pool `pin`. Its rows also carry what `status` draws, and `weight`, the
+runway hours a switch of this session would weigh the account by (null for its own account
+and for an account that cannot serve): `tier` (`max 20x`, `pro`), `windows`
 (one entry per usage window in display order, each with `kind` session, weekly or model,
 `label`, live `pct`, `resets_at` in epoch seconds or null, `window_sec`, `sampled_at`),
 `usage_at` and `usage_age_sec`, `sessions` (vends in the last hour), `cooldown_until`
@@ -190,7 +192,7 @@ each result under tokenmaxxing's pool lock. It still waits out a rate limit the 
 endpoint set, and reports it with the time of the next read. If an auto-update renames a
 function it calls, it fails with the missing name, and the contract test in
 `tests/test_core.py` fails too. It writes only tokenmaxxing's usage figures and moves no
-seat or pin. tokenmaxxing may refresh an expiring store under its own lock while it reads.
+session or pin. tokenmaxxing may refresh an expiring store under its own lock while it reads.
 
 `--stream` prints one JSON line per event while the reads run: `accounts` (the list),
 `reading`, `read` with `ok` and `usage_at` or `reason` and `retry_at` (epoch seconds),
@@ -231,21 +233,66 @@ comes from the CLIProxyAPI Management Center (`src/services/api/claudeResetGrant
 
 ## Which account a request gets
 
+Each session keeps the account it was last vended while that account is usable. A move
+drops the provider's prompt cache (cache_read and cache_write start over), so a session
+moves only when it must, and never because another session moved. Before 2026-10-08 every
+unpinned session shared one "seat" and moved together to the one best-scored account.
+
 First match wins, per provider:
 
 | # | source | set by | yields when |
 |---|---|---|---|
 | 1 | session pin | `/account`, `pi-pool use` | the account cannot serve. With `--force`, only when its credential cannot serve (needs re-auth, off, refusal cooldown) or the provider answered 429 (`limited`) |
 | 2 | pool pin | `pi-pool pin` | the account cannot serve: depleted, limited, in cooldown, needs re-auth, or off |
-| 3 | codex plan upgrade | plan tiers `free < plus < pro < team` | no usable codex account sits on a higher plan than the seat |
-| 4 | seat | the pool itself | the seat cannot serve |
-| 5 | best candidate | score | never |
-| 6 | last resort | no account is usable | a depleted account the provider still serves (no 429 on file, every window under 100%) is vended, least used first; `pi-pool limited` names it as `next`. When none serves, the account whose limits reset first is vended anyway, so the request gets the provider's 429 and reset time instead of an auth error. Dead logins, disabled accounts and refusal cooldowns are never vended. No account left is an error |
+| 3 | the session's account (`stay`) | its own last vend | the account cannot serve, `pi-pool switch` asked it to leave, or a usable codex account sits on a higher plan (`upgrade`) |
+| 4 | weighted pick (`switch`, or `new` for a session's first request) | `switch_weights` | no usable account is left |
+| 5 | last resort | no account is usable | the session's own account while the provider still serves it; else a depleted account the provider still serves (no 429 on file, every window under 100%), least used first; `pi-pool limited` names it as `next`. When none serves, the account whose limits reset first is vended anyway, so the request gets the provider's 429 and reset time instead of an auth error. Dead logins, disabled accounts and refusal cooldowns are never vended. No account left is an error |
 
 A pin that yields writes nothing, so it re-applies by itself the moment the window
 resets or the limit expires. `pi-pool who` names the pin it is shadowing and why. Every
 vend that changes a session's account logs one `vend` line with `reason`, the yielded pin
-in `shadowed`, the cause in `why` (`depleted`, `limited`, ...) and the `previous` account.
+in `shadowed`, the cause in `why` (`depleted`, `limited`, ...) and the `previous` account,
+and one `switch` line with `previous`, `account`, `reason`, `why` (the old account's
+unusable reason, `asked`, `plan`, `pin`, `credential` or `last_resort`) and the `weights`
+the pick drew from. `pi-pool status` counts today's `switch` lines per provider.
+
+### The weighted pick
+
+A switch draws one usable account at random, with chance proportional to its weight. The
+weight is the account's runway: how many hours until it crosses a pool cutoff
+(`five_hour_max_pct` on the 5h window, `seven_day_max_pct` on the weekly window and the
+Fable cap) if the sessions already on it plus the switching one each burn
+`burn_5h_pct_per_hour` (2.5) of the 5h window and `burn_week_pct_per_hour` (0.5) of the
+week per hour. A supervised claude/codex session on the account counts as one more.
+
+    runway = min over the counting windows of (cutoff - used%) / (sessions x rate)
+
+A window that resets before it gets there stops binding. A weekly reset frees the account
+up to the cap. A 5h reset starts a fresh window, which binds only if the sessions can fill
+it to the cutoff within its 5 hours. So an account at 80% whose 5h window resets in 10
+minutes weighs more than one at 60% that resets in 4 hours. Runway is capped at
+`runway_horizon_hours` (24): past a day, more runway saves no switch. An account with less
+than `min_runway_hours` (1) is left out unless every usable account is under it, so a switch
+lands where it will last.
+
+The draw is random so that the sessions that leave one account at the same moment spread
+over several accounts instead of all landing on, and draining, the same one. The rates
+came from 2026-10-08: 18 sessions took one Max 20x account to 43% of its 5h window in 1.6
+hours, and one account spent 87% of a 5h window for 16% of its week.
+
+Excluded from the pick: needs-reauth, depleted (at or over the 5h or weekly cutoff or the
+Fable cap), limited (a 429 on file), and accounts in cooldown. The Fable cap only counts
+for a session tree that runs Fable: the `/account` extension records each session's model
+(`pi-pool model`) at session start and on every model change, and a tree with no Fable
+model ignores the cap. A tree with no recorded model keeps it. A cooldown comes from a
+refusal probe (see the dependency section) and also overrides a `--force` pin.
+
+The codex plan upgrade exists because a session otherwise moves only when its account
+cannot serve. A free codex account taken while the paid one was depleted would hold the
+session after the paid window resets, and the API refuses several models on a free plan
+with a 400 "not supported when using Codex with a ChatGPT account". The upgrade draws
+among the usable accounts on a higher plan (reason `upgrade`) and touches no pin.
+Anthropic accounts carry no plan, so it never fires there.
 
 ## A 429 moves the session in the same turn
 
@@ -293,21 +340,6 @@ in to claude.ai as that account, accept the terms, then choose Check again (`pi-
 --force`, which sends that account a one-token message) or sign it in again (`pi-pool
 login`). `FIXTURE_FAILURE=terms node tests/native/swap.mjs` runs this against a copied Prime
 install, and with `FIXTURE_EXPECT=baseline` it shows the turn failing without the extension.
-
-Step 3 exists because the seat otherwise moves only when it cannot serve. A free codex
-account taken while the paid one was depleted would hold every unpinned session after
-the paid window resets, and the API refuses several models on a free plan with a 400
-"not supported when using Codex with a ChatGPT account". The upgrade moves the seat
-(reason `seat_upgrade`) and touches no pin. Anthropic accounts carry no plan, so the
-step never fires there.
-
-Score, lowest wins: `max(5h%, 7d%) + 8 per session that vended from it in the last
-hour + 15 if a tokenmaxxing-supervised session runs on it`. Excluded: needs-reauth,
-depleted (>=95% 5h or >=98% 7d or the Fable cap), limited (a 429 on file), and accounts in cooldown. The Fable cap
-only counts for a session tree that runs Fable: the `/account` extension records each
-session's model (`pi-pool model`) at session start and on every model change, and a tree
-with no Fable model ignores the cap. A tree with no recorded model keeps it. A cooldown
-comes from a refusal probe (see the dependency section) and also overrides a `--force` pin.
 
 ## A pin covers the whole session tree
 

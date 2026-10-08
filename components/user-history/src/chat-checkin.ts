@@ -17,6 +17,8 @@ export const THREAD_IDLE_MS = 60 * 60_000;
 export const CHECK_IN_MERGE_MS = 60_000;
 /** An open step with no board change and no owner activity for this long is reported, once per stretch of this length. */
 export const STEP_STALE_MS = 2 * 60 * 60_000;
+/** A step with `waitFor` is left alone for this long after the chat last changed it; then it counts as quiet like any other. */
+export const STEP_WAIT_FOR_MS = 24 * 60 * 60_000;
 /** A todo or doing step the chat itself owns that has not moved for this long is pushed, once per stretch of this length. */
 export const OWN_STEP_MS = 60 * 60_000;
 /**
@@ -58,8 +60,11 @@ export interface JobMemo {
   /** The time of the job message last reported as waiting, and the activity time of the thread owner last reported as idle. */
   waited?: number; idle?: number;
 }
-/** One plan item as last seen: what it said, when that last changed, when it was last reported as quiet, and the `sig` at which it was reported as waiting on the owner with no ask. */
-export interface StepMemo { sig: string; at: number; nudged?: number; asked?: string }
+/**
+ * One plan item as last seen: what it said, when that last changed, when it was last reported as quiet, the `sig` at which it was reported as
+ * waiting on the owner with no ask, and the `waitUntil` already reported as come.
+ */
+export interface StepMemo { sig: string; at: number; nudged?: number; asked?: string; due?: string }
 
 /** The words of a text that can tell one step from another: five letters or more, not a common word. */
 const distinctiveWords = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{4,}/g)?.filter(word => !STOP_WORDS.has(word)) ?? []);
@@ -172,6 +177,9 @@ function ago(ms: number): string {
   return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
 }
 
+/** What a quiet-step line asks of the chat. */
+export const STALL_ACT = ": change it at this check-in (chase the blocker, start a job, add one owner todo, or set waitUntil or waitFor)";
+
 /** Whether a reminder for `key` is due: a new or changed condition at once, the same one again after STEP_STALE_MS. */
 const reminderDue = (before: Reminder | undefined, key: string, now: number): boolean => before?.key !== key || now - before.at >= STEP_STALE_MS;
 
@@ -184,7 +192,9 @@ const reminderDue = (before: Reminder | undefined, key: string, now: number): bo
  * stretch when it owns a todo or doing step and stays idle THREAD_IDLE_MS. An owner of an open step
  * that stays failed is reported again on the RETRY_BACKOFF_MS schedule. A plan item's last change is when its status, text or owner last
  * differed (the board's `updatedAt` for one never seen before); a note edit is no change. An open item with no open child that had no change,
- * no change below it and no owner activity for STEP_STALE_MS is reported, once per stretch of that length. A board read error keeps the last
+ * no change below it and no owner activity for STEP_STALE_MS is reported, once per stretch of that length, as a line the chat must act on. A
+ * step that waits on purpose is not: one with `waitUntil` still ahead, or with `waitFor` for STEP_WAIT_FOR_MS after its last change. When its
+ * `waitUntil` passes, that is reported once, and the quiet count starts again from then. A board read error keeps the last
  * steps and is reported, and so are more open owner asks than BOARD_LIMITS.openAsks; each again every STEP_STALE_MS while it holds.
  */
 export function checkInDigest(previous: CheckInMemory | undefined, facts: readonly JobFact[], board: ChatBoard | null, now: number, context: CheckInContext = {}):
@@ -246,18 +256,25 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   const visit = (item: PlanItem): { moved: number; open: boolean } => {
     let moved = 0, openBelow = false;
     for (const child of item.children) { const below = visit(child); moved = Math.max(moved, below.moved); openBelow ||= below.open; }
-    const sig = JSON.stringify([item.status, item.text, planJob(item.job) ?? ""]);
+    const sig = JSON.stringify([item.status, item.text, planJob(item.job) ?? "", ...(item.waitUntil || item.waitFor ? [item.waitUntil ?? "", item.waitFor ?? ""] : [])]);
     const before = previous?.steps[item.id];
-    const memo: StepMemo = { sig, at: before ? before.sig === sig ? before.at : now : firstSeen, ...(before?.nudged !== undefined ? { nudged: before.nudged } : {}) };
+    const memo: StepMemo = { sig, at: before ? before.sig === sig ? before.at : now : firstSeen, ...(before?.nudged !== undefined ? { nudged: before.nudged } : {}),
+      ...(before?.due !== undefined && before.due === item.waitUntil ? { due: before.due } : {}) };
     const mine = self.has(stepOwner(item) ?? "");
     const owner = mine ? undefined : ownerOf(item, facts);
     moved = Math.max(moved, memo.at, owner?.activityAt ?? 0);
     const isOpen = OPEN.has(item.status);
-    if (mine && !openBelow && (item.status === "todo" || item.status === "doing") && now - Math.max(moved, memo.nudged ?? 0) >= OWN_STEP_MS) {
+    const until = Date.parse(item.waitUntil ?? "");
+    const waiting = (Number.isFinite(until) && until > now) || (item.waitFor !== undefined && now - memo.at < STEP_WAIT_FOR_MS);
+    if (isOpen && !openBelow && Number.isFinite(until) && until <= now && memo.due !== item.waitUntil) {
+      lines.push(`${item.id} was waiting until ${localTime(until)}; that time has come`);
+      memo.due = item.waitUntil!;
+      memo.nudged = now;
+    } else if (!waiting && mine && !openBelow && (item.status === "todo" || item.status === "doing") && now - Math.max(moved, memo.nudged ?? 0) >= OWN_STEP_MS) {
       lines.push(`${item.id} is yours and has not moved for ${ago(now - moved)}: act now, start a job or decide`);
       memo.nudged = now;
-    } else if (isOpen && !openBelow && now - Math.max(moved, memo.nudged ?? 0) >= STEP_STALE_MS) {
-      if (!idleSteps.has(item.id)) lines.push(`${item.id} ${quote(item.text)} is ${item.status} with no board change and no owner activity for ${ago(now - moved)}`);
+    } else if (!waiting && isOpen && !openBelow && now - Math.max(moved, memo.nudged ?? 0) >= STEP_STALE_MS) {
+      if (!idleSteps.has(item.id)) lines.push(`${item.id} ${quote(item.text)} is ${item.status} with no board change and no owner activity for ${ago(now - moved)}${STALL_ACT}`);
       memo.nudged = now;
     }
     if (isOpen && !openBelow && waitsOnOwner(item) && !todoForStep(item, openTodos) && !todoForStep(item, answeredTodos)) {
@@ -266,7 +283,8 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     }
     if (isOpen && !openBelow) {
       const who = mine ? "owner you" : owner ? `owner ${ownerLabel(owner)} (${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? `owner ${item.job} (not found)` : "no owner";
-      open.push({ at: memo.at, line: `${item.id} ${quote(item.text)} ${item.status}, ${who}, last change ${ago(now - memo.at)} ago` });
+      const waits = `${Number.isFinite(until) ? `, waits until ${localTime(until)}` : ""}${item.waitFor ? `, waits for ${quote(item.waitFor)}` : ""}`;
+      open.push({ at: memo.at, line: `${item.id} ${quote(item.text)} ${item.status}, ${who}${waits}, last change ${ago(now - memo.at)} ago` });
     }
     steps[item.id] = memo;
     return { moved, open: isOpen || openBelow };
@@ -393,11 +411,14 @@ export function nextCheckIn(setting: CheckInSetting, lastAt: number, now: number
   return Math.max(lastAt + setting.everyMs, pause ?? 0);
 }
 
-const localTime = (at: number): string => {
+/** A time as the owner's local "YYYY-MM-DD HH:MM". */
+export const localTime = (at: number): string => {
   const date = new Date(at);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 };
+/** A time as the owner's local "HH:MM", for a notice about one event today. */
+export const clockTime = (at: number): string => localTime(at).slice(11);
 /** The line the chat_board tool shows the chat about its own check-in. */
 export function checkInLine(setting: CheckInSetting, now: number): string {
   const pause = activePause(setting, now);

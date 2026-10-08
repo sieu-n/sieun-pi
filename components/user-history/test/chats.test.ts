@@ -14,6 +14,9 @@ import { IdIndex } from "../src/id-index.ts";
 import type { ChatAgent, ChatBoard, ChatWait, ChildAgent, ModelInfo, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
 import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
 
+// Notice times are the owner's local HH:MM; the expected strings are written for Seoul.
+process.env.TZ = "Asia/Seoul";
+
 test("id index: add puts the newest first once, forget removes", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
@@ -160,11 +163,16 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   // Stalls and owner corrections: one chase, then a job.
   assert.ok(brief.includes("A stuck owner gets at most one message. If it has not moved by the next check-in, or its last turn ended in an error, replace it with a job in that check-in. " +
     "A takeover you promised for the next check-in is due at that check-in: do it, do not restate it. Never ask the owner to relay a message to another thread."));
-  // Plain text on non-owner wakes, tell_owner repeats and relay lines (the job notices counter's noise).
-  assert.ok(brief.includes("On any wake-up that is not an owner message, end the turn with no text. If a goal finished, something is blocked or you need a decision, call tell_owner once " +
-    "and then end with no text. Never write 'nothing needs you', 'already handled', or a relay line."));
-  // Replies over 60 words.
-  assert.ok(brief.includes("Owner replies: at most 60 words including bullets; a status answer is one line per goal."));
+  // Wake turns (chat health off_brief, 470 wake turns with text on 10-08): the brief matches the feed, which folds that text as notes.
+  assert.ok(brief.includes("On a wake-up the owner did not start, your text is only your notes (the owner sees it folded); reach the owner only through tell_owner. " +
+    "If a goal finished, something is blocked or you need a decision, call tell_owner once. Never write 'nothing needs you', 'already handled', or a relay line."));
+  assert.doesNotMatch(brief, /end the turn with no text|end with no text/, "the old no-text rule is gone");
+  // Replies over 60 words (chat health long_replies, 19 of 21 over 60 words after 22c3ba4): a concrete cap, and longer answers go to an article.
+  assert.ok(brief.includes("Owner reply: at most 3 short sentences or 60 words, bullets included; a status answer is one line per goal. If the owner asks you to explain, " +
+    "or the answer needs more, write a wiki article page (a job, or a scratch note with a link if one exists) and reply with one or two lines and the link."));
+  // Stalled steps (chat health stalls_2h, 24 steps quiet 2 h or more after 7f24e91).
+  assert.ok(CHAT_BRIEF.includes("A step stalled 2 h or more must change at this check-in: chase the blocker, start a job, add one owner todo, or set waitUntil/waitFor."));
+  assert.match(brief, /`\[job\] <name> ended at <time> with no report` means/);
   assert.doesNotMatch(brief, /15 to 60 words/, "the old count, which bullets slipped past, is gone");
   assert.doesNotMatch(brief, /—/, "no em dashes");
 });
@@ -332,7 +340,7 @@ test("chats: a job that goes quiet with no message since its wake is told once p
   threads.fire().children("c1", [job("done", true, false, 100)]);
   threads.fire().children("c1", [job("done", false, false, 100)]);
   await flush();
-  assert.deepEqual(calls, ["steer c1 [job] api-audit ended with no report"], "flicker within one end is one line");
+  assert.deepEqual(calls, ["steer c1 [job] api-audit ended at 09:00 with no report"], "flicker within one end is one line");
   calls.length = 0;
   threads.fire().children("c1", [job("done", true, false, 100)]);
   threads.fire().children("c1", [job("done", false, false, 100)]);
@@ -351,7 +359,7 @@ test("chats: a job that goes quiet with no message since its wake is told once p
   threads.fire().children("c1", [job("done", true, false, 9_003_000)]);
   threads.fire().children("c1", [job("done", false, false, 9_003_000)]);
   await flush();
-  assert.deepEqual(calls, ["steer c1 [job] api-audit ended with no report"], "two ends 3 s apart are one end: one line, and a message before the wake is no report");
+  assert.deepEqual(calls, ["steer c1 [job] api-audit ended at 11:30 with no report"], "two ends 3 s apart are one end: one line, and a message before the wake is no report");
   calls.length = 0;
 
   threads.fire().children("c1", [job("done", true, false, 300)]);
@@ -678,7 +686,7 @@ test("chats: a chat whose last turn failed gets a new turn 5, 10, then every 20 
   const start = now;
   await run(60);
   assert.deepEqual(restarted, [5, 15, 35, 55], "5 min after the failure, then 10, then 20, then 20");
-  assert.equal(calls.find(call => call.startsWith("restart")), "restart c1 [check-in] Your last turn failed (Provider rate limit exceeded (rate_limit_error, 429)). Re-check the board and continue.");
+  assert.equal(calls.find(call => call.startsWith("restart")), "restart c1 [check-in] Your last turn failed at 22:46 (Provider rate limit exceeded (rate_limit_error, 429)). Re-check the board and continue.");
   assert.deepEqual(calls.filter(call => call.startsWith("steer")), [], "no check-in steer queues into the failed chat");
   assert.match(lines.join("\n"), /chat c1: last turn failed \(Provider rate limit exceeded \(rate_limit_error, 429\)\); started a new turn, try 4/);
 
@@ -860,7 +868,7 @@ test("chats: Claude cannot serve (the pool token failed): the chat moves to GPT-
   assert.deepEqual(await step(), [
     "model c1 openai-codex/gpt-6-sol",
     "notice c1 Claude has no free account; switched to GPT-6 Sol. I switch back when one frees up.",
-    `restart c1 [check-in] Your last turn failed (${TOKEN_FAILURE}). The owner's message is still unanswered: "what was the response to t5 question???". Answer it first.`,
+    `restart c1 [check-in] Your last turn failed at 22:46 (${TOKEN_FAILURE}). The owner's message is still unanswered: "what was the response to t5 question???". Answer it first.`,
   ], "30 s after the failure, not 5 min");
   assert.deepEqual(await fallbacks.get("c1"), { original: { provider: "anthropic", id: "claude-opus-5-5", thinkingLevel: "high" }, fallback: { provider: "openai-codex", id: "gpt-6-sol" }, at: clock.now });
   assert.match(lines.join("\n"), /Claude cannot serve .*; switched anthropic\/claude-opus-5-5 to openai-codex\/gpt-6-sol/);
@@ -882,7 +890,7 @@ test("chats: the switch keeps the thinking level the new model supports; a 429 s
   const served = await fallbackChat({ serves: true, freeAt: null });
   served.info(OPUS);
   served.threads.transcripts.set("c1", [ownerAsks("hi", served.clock.now), reply("error", served.clock.now, RATE_LIMITED)]);
-  assert.deepEqual(await served.step(), [`restart c1 [check-in] Your last turn failed (${RATE_LIMITED}). The owner's message is still unanswered: "hi". Answer it first.`],
+  assert.deepEqual(await served.step(), [`restart c1 [check-in] Your last turn failed at 22:46 (${RATE_LIMITED}). The owner's message is still unanswered: "hi". Answer it first.`],
     "another account serves: a plain restart after 30 s");
   served.chats.close();
 
@@ -933,7 +941,7 @@ test("chats: a provider retry that holds queued input is aborted and restarted; 
   for (let minute = 0; minute < 10; minute++) assert.deepEqual(await step(60), [], "no queue: the native retry runs");
   info(OPUS, { retryAttempt: 3, queuedActions: 2 });
   threads.extras.get("c1")!.queue = { steering: ["can you use gpt-sol subagents"], followUp: [] };
-  assert.deepEqual(await step(), ["restart c1 [check-in] Your last turn failed (Connection error.). Re-check the board and continue. (abort)"],
+  assert.deepEqual(await step(), ["restart c1 [check-in] Your last turn failed at 22:46 (Connection error.). Re-check the board and continue. (abort)"],
     "5 min after the failure, the stranded input runs");
   chats.close();
 });
@@ -971,7 +979,7 @@ test("chats: after the owner changes the model or account, a stalled chat restar
   threads.transcripts.set("c1", [ownerAsks("hi", clock.now), reply("error", clock.now, RATE_LIMITED)]);
   lastCalls();
   await chats.retryNow("c1");
-  assert.deepEqual(lastCalls(), [`restart c1 [check-in] Your last turn failed (${RATE_LIMITED}). The owner's message is still unanswered: "hi". Answer it first.`]);
+  assert.deepEqual(lastCalls(), [`restart c1 [check-in] Your last turn failed at 22:46 (${RATE_LIMITED}). The owner's message is still unanswered: "hi". Answer it first.`]);
   threads.views.set("t9", { messages: [ownerAsks("hi", 1), reply("error", 2, RATE_LIMITED)], info: { retryAttempt: 2 } });
   threads.busyIds.add("t9");
   await chats.retryNow("t9");
@@ -1008,7 +1016,7 @@ test("chats: a token-command timeout restarts after 30 s, 1 min, 2 min with an u
   for (let half = 0; half < 20; half++) if ((await step()).some(call => call.startsWith("restart c1"))) restarts.push((clock.now - start) / 1000);
   assert.deepEqual(restarts, [30, 90, 210, 510], "30 s, then 1 min, 2 min, 5 min after each restart");
   assert.equal(await fallbacks.get("c1"), undefined, "never switched: the pool could not be read");
-  assert.deepEqual(await step(40 * 60), [`restart c1 [check-in] Your last turn failed (${TOKEN_FAILURE}). Re-check the board and continue.`], "the Mac slept 40 min: at once");
+  assert.deepEqual(await step(40 * 60), [`restart c1 [check-in] Your last turn failed at 22:46 (${TOKEN_FAILURE}). Re-check the board and continue.`], "the Mac slept 40 min: at once");
   assert.match(lines.join("\n"), /chats: woke after 2400 s; transient failures restart now/);
   assert.match(lines.join("\n"), /started a new turn, try 1 after a sleep/);
   assert.deepEqual(await step(), [], "the schedule starts over: 1 min after the wake restart");

@@ -54,11 +54,11 @@ test("transient stalls: 30 s, 1 min, 2 min, then 5, 10, 20 min; an owner turn st
   assert.deepEqual(due(null), TRANSIENT_RETRY_BACKOFF_MS.map(() => ["wait", "restart"]));
   assert.deepEqual(due("hi"), TRANSIENT_RETRY_BACKOFF_MS.map(() => ["wait", "restart"]));
   assert.deepEqual(act(stall("hi"), 2, 0, MIN), { kind: "wait", wait: { kind: "retry", error: TOKEN_ERROR, at: 2 * MIN } });
-  assert.deepEqual(act(stall("hi"), 0, 0, 30_000), { kind: "restart", message: revivalMessage(TOKEN_ERROR, "hi"), abort: false });
+  assert.deepEqual(act(stall("hi"), 0, 0, 30_000), { kind: "restart", message: revivalMessage(stall("hi")), abort: false });
   assert.equal(act(stall(null, { error: "Connection error." }), 1, 0, MIN).kind, "restart", "a dropped connection is on the fast schedule too");
   assert.equal(act(stall(null, { error: "429" }), 1, 0, MIN).kind, "wait", "a 429 stays on the 5, 10, 20 min schedule");
-  assert.deepEqual(act(stall("hi"), 5, 0, 1, true), { kind: "restart", message: revivalMessage(TOKEN_ERROR, "hi"), abort: false }, "after a sleep: at once, whatever the count");
-  assert.deepEqual(act(stall(null, { error: "Connection error.", retrying: true }), 0, 0, 1, true), { kind: "restart", message: revivalMessage("Connection error."), abort: true },
+  assert.deepEqual(act(stall("hi"), 5, 0, 1, true), { kind: "restart", message: revivalMessage(stall("hi")), abort: false }, "after a sleep: at once, whatever the count");
+  assert.deepEqual(act(stall(null, { error: "Connection error.", retrying: true }), 0, 0, 1, true), { kind: "restart", message: revivalMessage(stall(null, { error: "Connection error." })), abort: true },
     "a provider retry left over from before the sleep is stopped");
   assert.equal(act(stall(null, { error: "429" }), 0, 0, 1, true).kind, "wait", "a wake does not hurry a 429");
   assert.equal(act(stall(null, { error: "aborted", aborted: true }), 0, 0, 1, true).kind, "wait", "a Stop is not transient");
@@ -114,11 +114,12 @@ test("turn stall: a failed reply with nothing after it; the owner's unanswered m
   assert.equal(turnStall(view([owner, reply("stop", 5)]), 99), null);
   assert.equal(turnStall(view([owner, reply("error", 5, "429")], { running: true }), 99), null, "a turn runs now");
   assert.equal(turnStall(view([]), 99), null);
-  const retry = revivalMessage("429", asked);
-  assert.equal(retry, `[check-in] Your last turn failed (429). The owner's message is still unanswered: "what was the response to t5 question???". Answer it first.`);
+  const at = new Date(2026, 9, 8, 21, 14).getTime();
+  const retry = revivalMessage({ error: "429", at, owner: asked });
+  assert.equal(retry, `[check-in] Your last turn failed at 21:14 (429). The owner's message is still unanswered: "what was the response to t5 question???". Answer it first.`);
   assert.equal(turnStall(view([owner, reply("error", 5, "429"), user(retry, 40), reply("error", 45, RATE_LIMIT)]), 99)?.owner, asked,
     "a failed owner retry quotes the same message again, not the retry text");
-  assert.equal(revivalMessage("429"), "[check-in] Your last turn failed (429). Re-check the board and continue.");
+  assert.equal(revivalMessage({ error: "429", at, owner: null }), "[check-in] Your last turn failed at 21:14 (429). Re-check the board and continue.", "the failure time tells two failures apart");
 });
 
 test("turn stall: a provider retry holds the turn; its queued input is stranded", () => {
@@ -139,13 +140,13 @@ test("stall action: an owner turn restarts after 30 s, then 5, 10, 20 min; other
     stallAction({ stall: s, down, claude: down ? { serves: false, freeAt } : { serves: true, freeAt: null }, attempts, since, now });
   assert.deepEqual(OWNER_RETRY_BACKOFF_MS, [30_000, 5 * MIN, 10 * MIN, 20 * MIN]);
   assert.deepEqual(act(stall("hi"), 0, 0, 29_999), { kind: "wait", wait: { kind: "retry", error: "429", at: 30_000 } });
-  assert.deepEqual(act(stall("hi"), 0, 0, 30_000), { kind: "restart", message: revivalMessage("429", "hi"), abort: false });
+  assert.deepEqual(act(stall("hi"), 0, 0, 30_000), { kind: "restart", message: revivalMessage(stall("hi")), abort: false });
   assert.equal(act(stall("hi"), 1, 30_000, 30_000 + 5 * MIN - 1).kind, "wait");
   assert.equal(act(stall("hi"), 1, 30_000, 30_000 + 5 * MIN).kind, "restart");
   assert.deepEqual(act(stall(null), 0, 0, 5 * MIN - 1), { kind: "wait", wait: null }, "no line under a turn the owner did not start");
   assert.equal(act(stall(null), 0, 0, 5 * MIN).kind, "restart");
   assert.deepEqual(act(stall("hi", { retrying: true }), 0, 0, 10 * MIN), { kind: "none" }, "the session's own retry runs");
-  assert.deepEqual(act(stall(null, { retrying: true, queued: 2 }), 0, 0, 5 * MIN), { kind: "restart", message: revivalMessage("429"), abort: true });
+  assert.deepEqual(act(stall(null, { retrying: true, queued: 2 }), 0, 0, 5 * MIN), { kind: "restart", message: revivalMessage(stall(null)), abort: true });
   assert.deepEqual(act(stall("hi"), 0, 0, 10_000, true, 45 * MIN), { kind: "wait", wait: { kind: "account", until: 45 * MIN } }, "no fallback: wait for the pool's reset");
   assert.deepEqual(act(stall("hi"), 0, 0, 10_000, true, null), { kind: "wait", wait: { kind: "account", until: 30_000 } }, "no reset known: the next try");
 });
@@ -197,9 +198,9 @@ test("pool: Claude serves when an account that is on is usable; it frees up at t
 test("feed: an owner retry keeps the owner's turn; a server notice is one muted line; the wait shows under the owner's message", () => {
   const owner = user("can you use gpt-sol subagents", 1);
   const failed = reply("error", 2, RATE_LIMIT);
-  const retry = user(revivalMessage("429", "can you use gpt-sol subagents"), 3);
+  const retry = user(revivalMessage({ error: "429", at: 2, owner: "can you use gpt-sol subagents" }), 3);
   assert.equal(turnStarter([owner, failed, retry]), "owner", "the chat answers the owner in a bubble, and check-ins wait");
-  assert.equal(turnStarter([owner, failed, user(revivalMessage("429"), 3)]), "agent");
+  assert.equal(turnStarter([owner, failed, user(revivalMessage({ error: "429", at: 2, owner: null }), 3)]), "agent");
   const notice: ThreadMessage = { role: "custom", customType: CHAT_NOTICE, content: "Claude has no free account; switched to GPT-6 Sol. I switch back when one frees up.", timestamp: 4 };
   const items = chatFeed({ messages: [owner, failed, notice], streaming: null, wait: null });
   assert.deepEqual(items.at(-1), { kind: "notice", id: "m2", text: "Claude has no free account; switched to GPT-6 Sol. I switch back when one frees up.", at: 4 });

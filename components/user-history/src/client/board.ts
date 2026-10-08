@@ -23,6 +23,19 @@ export function planTotals(items: readonly PlanItem[]): PlanProgress {
   return progress;
 }
 
+/**
+ * What a step waits on, for the muted words after its text: `waitUntil` (an ISO time) reads "waits until Oct 9, 2:30 PM" in local time (the
+ * year shows when it is not this year), `waitFor` reads "waits for <text>", and a step with both reads "waits for <text> until Oct 9, 2:30 PM".
+ * Null when the step waits on nothing or its time does not parse.
+ */
+export function planWait(item: PlanItem, now = Date.now()): string | null {
+  const text = item.waitFor?.trim();
+  const at = item.waitUntil ? Date.parse(item.waitUntil) : NaN;
+  const when = Number.isFinite(at) ? new Date(at).toLocaleString(undefined, { ...(new Date(at).getFullYear() === new Date(now).getFullYear() ? {} : { year: "numeric" }), month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+  if (!text && !when) return null;
+  return `waits${text ? ` for ${text}` : ""}${when ? ` until ${when}` : ""}`;
+}
+
 /** Every item in a tree, nested ones included. */
 export const countItems = <T extends { children: T[] }>(items: readonly T[]): number => items.reduce((total, item) => total + 1 + countItems(item.children), 0);
 

@@ -8,7 +8,7 @@ import { planCounts } from "./shared/chat-board.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
-import type { ChatAgent, CheckInState, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChatAgent, ChatBriefState, CheckInState, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -215,7 +215,7 @@ export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, Ses
   return { ...(cost !== undefined ? { cost } : {}), running };
 }
 
-export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin; agents?: ChatAgent[]; checkIn?: CheckInState }
+export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin; agents?: ChatAgent[]; checkIn?: CheckInState; brief?: ChatBriefState }
 
 /** A chat's direct subagent sessions as `chatAgents` takes them: the daemon status, the failure, and the first task text for a derived display name. */
 export function subagentSessions(children: readonly SessionSummary[]): SubagentSession[] {
@@ -269,7 +269,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     ...(cost !== undefined ? { cost } : {}),
     ...(working && extras.pulse ? { pulse: extras.pulse } : {}),
     ...(extras.schedule ? { schedule: extras.schedule } : {}),
-    ...(extras.chat ? { chat: true, agents: extras.agents ?? [], ...(extras.checkIn ? { checkIn: extras.checkIn } : {}) } : {}),
+    ...(extras.chat ? { chat: true, agents: extras.agents ?? [], ...(extras.checkIn ? { checkIn: extras.checkIn } : {}), ...(extras.brief ? { brief: extras.brief } : {}) } : {}),
     origin: extras.origin ?? "user",
   };
 }
@@ -328,7 +328,7 @@ export class Catalog {
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links">,
+  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs">>,
     private readonly origins: ThreadOrigins) {
     this.client = new DaemonClient(socketPath);
     this.client.onMessage(message => {
@@ -445,8 +445,8 @@ export class Catalog {
   }
 
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
-    const [state, labels, chats, checkIns] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null), this.chats.ids().catch(() => null),
-      this.chats.checkIns().catch(() => null)]);
+    const [state, labels, chats, checkIns, briefs] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null), this.chats.ids().catch(() => null),
+      this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null]);
     const originOf = await this.origins.resolver(chats ?? new Set());
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
@@ -457,9 +457,10 @@ export class Catalog {
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
         const subtree = subtreeOf(row, children);
         const checkIn = checkIns?.get(row.sessionId);
+        const brief = briefs?.get(row.sessionId);
         return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
           ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
-          ...(chats?.has(row.sessionId) ? { chat: true, ...(checkIn ? { checkIn } : {}) } : {}),
+          ...(chats?.has(row.sessionId) ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
           ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));

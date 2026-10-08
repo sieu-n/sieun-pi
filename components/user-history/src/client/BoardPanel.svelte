@@ -4,10 +4,9 @@
   import type { ArtifactLink, BoardOp, ChatAgent, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../shared/types.ts";
   import { AGENT_LINK_LABEL, AGENT_STATE_LABEL } from "./board.ts";
   import { elapsed } from "./organize.ts";
-  import { countItems, groupTodos, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, planProgress, planTotals, treeRows, type TreeRow, type TreeView } from "./board.ts";
+  import { countItems, groupTodos, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, planProgress, planTotals, planWait, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
-  import Checkbox from "./ui/Checkbox.svelte";
   import { ChatDuties, dutiesCount } from "./duties.svelte.ts";
   import DutyList from "./DutyList.svelte";
   import Icon from "./Icon.svelte";
@@ -16,15 +15,16 @@
   import { tooltip } from "./ui/tooltip.ts";
 
   /**
-   * The chat's board as four cards: the plan the chat keeps (read-only here), For you (the chat's asks, answered by a tap on a choice
-   * or a typed reply), Agents (every thread the server links to the chat, `SessionRow.agents`: a status dot, the name, one line of activity
-   * and the age; a click opens the job drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card),
-   * and Notes (nested notes with links to jobs, messages, wiki pages, files and web pages; the owner adds and removes notes).
+   * The chat's board as cards, in this order: the plan the chat keeps (read-only here), For you (the chat's asks, each a question with its
+   * choices in a row under it, answered by a tap on a choice or a typed reply; owner notes look the same), Duties (DutyList), Agents (every
+   * thread the server links to the chat, `SessionRow.agents`: a status dot, the name, one line of activity and the age; a click opens the job
+   * drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card), and Notes (nested notes with links to
+   * jobs, messages, wiki pages, files and web pages; the owner adds and removes notes).
    * Plan steps and notes are trees: everything with children starts folded, done and dropped steps hide behind "Show done" per parent, and
    * each item carries its id chip (the id the chat uses, with a color hashed from the chat and item ids; a click copies the id).
-   * A row reads as one paragraph: the fold, the status mark and the chip sit inline before the text, and a wrapped line comes back to the row's
-   * left edge. A note's link opens through `store.openArtifact` (the reader, the thread, or a tab); the text of a plan step with an owner
-   * (`item.job`) is a link that `onjob` resolves (the job drawer, or the owner's own thread). The Plan and Notes headers carry an "Open plan"
+   * A row is a fixed lead (the fold, the status mark and the chip) and a text block beside it, so a wrapped line, a counter, a wait and a note
+   * line up under the start of the text (a hanging indent at every depth). A note's link opens through `store.openArtifact` (the reader, the
+   * thread, or a tab); the text of a plan step with an owner (`item.job`) is a link that `onjob` resolves (the job drawer, or the owner's own thread). The Plan and Notes headers carry an "Open plan"
    * button, and a double click on a row or its hover "open" button opens the plan view (`store.openPlan`) on that item. `checkIn` is the
    * server's 5-minute tick line under the cards. `apply` gets the board after the owner's ops and the ops themselves; it resolves false when
    * the server refused them.
@@ -134,7 +134,7 @@
 </script>
 
 {#snippet card(key: "plan" | "foryou" | "agents" | "duties" | "notes", title: string, count: string, open: boolean, toggle: () => void, body: Snippet, expandable = false)}
-  <section class="island {key}" class:open>
+  <section class="island" data-card={key} class:open>
     <div class="island-head">
       <button type="button" class="island-toggle" aria-expanded={open} onclick={toggle}>
         <span class="island-title">{title}</span>
@@ -172,56 +172,62 @@
   {:else}
     {@const item = row.item}
     {@const progress = planProgress(item)}
+    {@const wait = planWait(item, now)}
     {@const open = view.open(item.id)}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <li class="plan-item {item.status}" style:--depth={row.depth} ondblclick={onRowDblClick(item.id)}>
-      <p class="plan-line">
+      <span class="row-lead">
         {@render foldButton(item, open)}
         <PlanMark status={item.status} />
         <IdChip chat={id} id={item.id} />
-        {#if item.job}
-          {@const job = item.job}
-          {@const preview = previewJob(job)}
-          <span class="plan-text linked" role="button" tabindex="0" title={preview ? undefined : "Open " + job} data-preview-chat={id} data-preview-job={preview} onclick={() => onjob(job)} onkeydown={onStepKey(job)}>{item.text}</span>
-        {:else}<span class="plan-text">{item.text}</span>{/if}
-        {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
-        {@render openRow(item.id)}
-      </p>
-      {#if item.note}<p class="plan-note">{item.note}</p>{/if}
+      </span>
+      <div class="row-body">
+        <p class="plan-line">
+          {#if item.job}
+            {@const job = item.job}
+            {@const preview = previewJob(job)}
+            <span class="plan-text linked" role="button" tabindex="0" title={preview ? undefined : "Open " + job} data-preview-chat={id} data-preview-job={preview} onclick={() => onjob(job)} onkeydown={onStepKey(job)}>{item.text}</span>
+          {:else}<span class="plan-text">{item.text}</span>{/if}
+          {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
+          {#if wait}<span class="wait">{wait}</span>{/if}
+        </p>
+        {#if item.note}<p class="plan-note">{item.note}</p>{/if}
+      </div>
+      {@render openRow(item.id)}
     </li>
   {/if}
 {/snippet}
 
 {#snippet todoRow(todo: OwnerTodo)}
-  <li class="todo" class:done={todo.done} class:mine={todo.from === "owner"}>
-    <div class="todo-line">
-      <Checkbox checked={todo.done} label="{todo.done ? 'Reopen' : 'Done'}: {todo.text}" onchange={done => void send([{ op: "todo_update", id: todo.id, done }])} />
-      {#if editing?.id === todo.id}
-        <input class="field inline" bind:value={editing.text} aria-label="Edit {todo.text}" use:focusEnd onkeydown={onKey(saveEdit, () => { editing = null; })} onblur={saveEdit} />
-      {:else}
-        <button type="button" class="todo-text" title="{todoLabel(todo)}. Click to edit" onclick={() => { editing = { id: todo.id, text: todo.text }; }}>{todo.text}</button>
-      {/if}
-      {#if todo.from === "owner"}
-        <button type="button" class="icon-button small remove" aria-label="Remove note {todo.text}" onclick={() => void send([{ op: "todo_remove", id: todo.id }])}><Icon name="x" /></button>
-      {/if}
-    </div>
-    {#if !todo.done && todo.choices?.length}
-      <div class="choices">
-        {#each todo.choices as choice, index (index)}
-          <button type="button" class="choice" class:recommended={index === 0} onclick={() => answer(todo, choice)}>{choice}{#if index === 0}<span class="rec">recommended</span>{/if}</button>
-        {/each}
-      </div>
+  {@const setDone = (done: boolean) => void send([{ op: "todo_update", id: todo.id, done }])}
+  <li class="ask" class:done={todo.done} class:mine={todo.from === "owner"}>
+    {#if editing?.id === todo.id}
+      <input class="field inline" bind:value={editing.text} aria-label="Edit {todo.text}" use:focusEnd onkeydown={onKey(saveEdit, () => { editing = null; })} onblur={saveEdit} />
+    {:else}
+      <button type="button" class="ask-text" title="{todoLabel(todo)}. Click to edit" onclick={() => { editing = { id: todo.id, text: todo.text }; }}>{todo.text}</button>
     {/if}
     {#if answering?.id === todo.id}
-      <div class="answer-row">
-        <input class="field inline" bind:value={answering.text} placeholder="Your reply, Enter sends" aria-label="Reply to {todo.text}" use:focusEnd
-          onkeydown={onKey(() => { if (answering) answer(todo, answering.text); }, () => { answering = null; })} />
-      </div>
+      <input class="field inline" bind:value={answering.text} placeholder="Your reply, Enter sends" aria-label="Reply to {todo.text}" use:focusEnd
+        onkeydown={onKey(() => { if (answering) answer(todo, answering.text); }, () => { answering = null; })} />
     {:else if todo.reply}
       <button type="button" class="reply" title="Click to change your answer" onclick={() => { answering = { id: todo.id, text: todo.reply ?? "" }; }}><span class="reply-lead">You:</span> {todo.reply}</button>
-    {:else if !todo.done && todo.from === "agent"}
-      <button type="button" class="reply-link" onclick={() => { answering = { id: todo.id, text: "" }; }}>Reply…</button>
     {/if}
+    <div class="ask-actions">
+      {#if !todo.done}
+        {#each todo.choices ?? [] as choice, index (index)}
+          <button type="button" class="choice" class:recommended={index === 0} title={index === 0 ? "The chat recommends this one" : undefined} onclick={() => answer(todo, choice)}>{choice}{#if index === 0}<span class="rec">recommended</span>{/if}</button>
+        {/each}
+      {/if}
+      <span class="quiet-actions">
+        {#if todo.done}
+          <button type="button" class="quiet" onclick={() => setDone(false)}>Reopen</button>
+        {:else}
+          {#if todo.from === "agent" && answering?.id !== todo.id}<button type="button" class="quiet" onclick={() => { answering = { id: todo.id, text: "" }; }}>Reply</button>{/if}
+          <button type="button" class="quiet" onclick={() => setDone(true)}>{todo.from === "agent" ? "Dismiss" : "Done"}</button>
+        {/if}
+        {#if todo.from === "owner"}<button type="button" class="quiet" onclick={() => void send([{ op: "todo_remove", id: todo.id }])}>Remove</button>{/if}
+      </span>
+    </div>
   </li>
 {/snippet}
 
@@ -231,12 +237,12 @@
     {@const open = view.open(item.id)}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <li class="note" style:--depth={row.depth} ondblclick={onRowDblClick(item.id)}>
+      <span class="row-lead">
+        {@render foldButton(item, open)}
+        <IdChip chat={id} id={item.id} />
+      </span>
       <div class="note-body">
-        <p class="note-text">
-          {@render foldButton(item, open)}
-          <IdChip chat={id} id={item.id} />
-          {item.text}{#if item.children.length && !open}<span class="progress">{item.children.length} under it</span>{/if}
-        </p>
+        <p class="note-text">{item.text}{#if item.children.length && !open}<span class="progress">{item.children.length} under it</span>{/if}</p>
         {#if item.links.length}
           <div class="chips">
             {#each item.links as link, index (link.target + index)}
@@ -253,8 +259,8 @@
       </div>
       <span class="note-actions">
         {@render openRow(item.id)}
-        <button type="button" class="icon-button small remove" aria-label="Add a note under {item.text}" use:tooltip={"Add a note under this"} onclick={() => addUnder(item)}><Icon name="plus" /></button>
-        <button type="button" class="icon-button small remove" aria-label="Remove note {item.text}" onclick={() => void send([{ op: "scratch_remove", id: item.id }])}><Icon name="x" /></button>
+        <button type="button" class="icon-button small" aria-label="Add a note under {item.text}" use:tooltip={"Add a note under this"} onclick={() => addUnder(item)}><Icon name="plus" /></button>
+        <button type="button" class="icon-button small" aria-label="Remove note {item.text}" onclick={() => void send([{ op: "scratch_remove", id: item.id }])}><Icon name="x" /></button>
       </span>
     </li>
   {/if}
@@ -285,7 +291,7 @@
 
 {#snippet planBody()}
   {#if board?.plan.length}
-    <ul class="plan">{#each planRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render planRow(row)}{/each}</ul>
+    <ul class="plan-list">{#each planRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render planRow(row)}{/each}</ul>
   {:else}<p class="none">No plan yet.</p>{/if}
 {/snippet}
 {#snippet forYouBody()}
@@ -300,7 +306,7 @@
 {/snippet}
 {#snippet agentsBody()}
   {#if agents.length}
-    <ul class="agents">
+    <ul class="agent-list">
       {#each agents as agent (agent.key)}
         <li>
           <button type="button" class="agent" title={agentTitle(agent)} data-preview-chat={id} data-preview-job={agent.job} onclick={() => onagent(agent)}>
@@ -316,7 +322,7 @@
   {:else}<p class="none">No agents yet.</p>{/if}
 {/snippet}
 {#snippet notesBody()}
-  {#if scratch.length}<ul class="notes">{#each noteRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render noteRow(row)}{/each}</ul>{/if}
+  {#if scratch.length}<ul class="note-list">{#each noteRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render noteRow(row)}{/each}</ul>{/if}
   {@render addNoteField()}
 {/snippet}
 
@@ -328,14 +334,14 @@
 <div class="board">
   {#if isEmptyBoard(board)}
     <p class="empty">The plan, the chat's questions and its notes show up here once it starts work.</p>
-    {#if agents.length}{@render card("agents", "Agents", agentsCount, agentsOpen, () => ui.setBoardCard("agents", !agentsOpen), agentsBody)}{/if}
     {@render dutiesCard()}
+    {#if agents.length}{@render card("agents", "Agents", agentsCount, agentsOpen, () => ui.setBoardCard("agents", !agentsOpen), agentsBody)}{/if}
     {@render addNoteField()}
   {:else}
     {@render card("plan", "Plan", totals.total ? `${totals.done} of ${totals.total} done` : "", planOpen, () => ui.setBoardCard("plan", !planOpen), planBody, true)}
     {@render card("foryou", "For you", openCount ? `${openCount} open` : "", forYouOpen, () => { forYouOpen = !forYouOpen; }, forYouBody)}
-    {@render card("agents", "Agents", agentsCount, agentsOpen, () => ui.setBoardCard("agents", !agentsOpen), agentsBody)}
     {@render dutiesCard()}
+    {@render card("agents", "Agents", agentsCount, agentsOpen, () => ui.setBoardCard("agents", !agentsOpen), agentsBody)}
     {@render card("notes", "Notes", noteCount ? String(noteCount) : "", notesOpen, () => ui.setBoardCard("notes", !notesOpen), notesBody, true)}
   {/if}
   <p class="check-in" class:on={checkIn.on}><Icon name="bolt" size={12} /><span>{checkIn.text}</span></p>
@@ -362,59 +368,69 @@
   .chev.open { transform: none; }
   .empty, .none { margin: 0; padding: 4px 0; color: var(--text-faint); font-size: 12.5px; line-height: 1.5; }
   .empty { padding: 24px 8px; text-align: center; }
-  .plan { list-style: none; margin: 0; padding: 0; }
+  .plan-list, .note-list { list-style: none; margin: 0; padding: 0; }
+  .note-list { margin-bottom: 8px; display: flex; flex-direction: column; gap: 4px; }
   /*
-   * A row is a paragraph: the fold, the status mark and the id chip are 18 px inline boxes at the start of the text, so a wrapped line
-   * comes back to the row's left edge. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
+   * A row: a fixed lead (the fold, the status mark, the id chip; 18 px inline boxes) and the text block beside it, so a wrapped line and the
+   * note under it start where the text starts. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
    */
-  .plan-line { margin: 0; padding: 3px 0 3px min(calc(var(--depth) * 14px), 25%); line-height: 18px; overflow-wrap: anywhere; }
+  .plan-item, .note { position: relative; display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
+  .plan-item { padding-top: 3px; padding-bottom: 3px; }
+  .row-lead { display: inline-flex; flex: none; align-items: center; height: 18px; gap: 2px; }
+  .row-body { flex: 1; min-width: 0; }
+  .plan-line { margin: 0; line-height: 18px; overflow-wrap: anywhere; }
   .fold { display: inline-flex; vertical-align: top; width: 14px; height: 18px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
   .plan-text.linked { cursor: pointer; border-radius: 3px; }
   .plan-text.linked:hover, .plan-text.linked:focus-visible { text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); text-underline-offset: 0.16em; }
-  .plan-item.done > .plan-line > .plan-text { color: var(--text-muted); }
-  .plan-item.dropped > .plan-line > .plan-text { color: var(--text-faint); text-decoration: line-through; }
-  .progress { margin-left: 4px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .plan-item.done .plan-text { color: var(--text-muted); }
+  .plan-item.dropped .plan-text { color: var(--text-faint); text-decoration: line-through; }
+  /* The counter and the wait follow the text after a space; no margin, so a wrapped counter starts under the text. */
+  .progress, .wait { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .wait { white-space: normal; }
   /*
-   * The "open in plan view" button: on a plan row it sits over the row's top right corner, out of the text flow (an inline box that is
-   * invisible still wraps onto an empty line when the text fills the row), with a fade so it reads over a long first line; on a note it is
-   * one of the row's action buttons. Both show on hover and focus.
+   * The row's buttons (open in plan view; on a note also add under and remove) sit over the row's top right corner, out of the text flow, with
+   * a fade so they read over a long first line. They show on hover and focus.
    */
-  .plan-item { position: relative; }
-  .plan-item > .plan-line > .row-open { position: absolute; top: 3px; right: -4px; width: 20px; height: 18px; padding-left: 2px; border-radius: 4px; color: var(--text-faint); background: var(--bg-elevated); box-shadow: -8px 0 6px -2px var(--bg-elevated); opacity: 0; }
+  .plan-item > .row-open, .note-actions { position: absolute; top: 3px; right: -4px; height: 18px; border-radius: 4px; color: var(--text-faint); background: var(--bg-elevated); box-shadow: -8px 0 6px -2px var(--bg-elevated); opacity: 0; }
+  .plan-item > .row-open { width: 20px; padding-left: 2px; }
   .icon-button.row-open :global(svg) { width: 12px; height: 12px; }
-  .note-actions > .row-open { opacity: 0; }
-  .plan-item:hover > .plan-line > .row-open, .note:hover > .note-actions > .row-open, .plan-line > .row-open:focus-visible, .note-actions > .row-open:focus-visible { opacity: 1; }
+  .note-actions { top: 0; display: inline-flex; align-items: center; }
+  .note-actions .icon-button { height: 18px; }
+  .plan-item:hover > .row-open, .plan-item > .row-open:focus-visible, .note:hover > .note-actions, .note-actions:focus-within { opacity: 1; }
   .finished { list-style: none; padding-left: calc(min(calc(var(--depth) * 14px), 25%) + 14px); }
   .finished .done-fold { margin-top: 2px; }
-  .plan-note { margin: 0; padding: 0 0 4px min(calc(var(--depth) * 14px), 25%); font-size: 12px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
-  .todos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-  .todo { padding: 3px 0; }
-  .todo-line { display: flex; align-items: flex-start; gap: 6px; }
-  .todo-line :global(.checkbox) { flex: none; margin-top: -1px; }
-  .todo-text { flex: 1; min-width: 0; text-align: left; line-height: 18px; overflow-wrap: anywhere; border-radius: 4px; padding: 0 3px; margin: 0 -3px; }
-  .todo-text:hover { background: var(--bg-hover); }
-  .todo.done .todo-text { color: var(--text-faint); text-decoration: line-through; }
-  .todo.mine .todo-text { color: var(--text-muted); }
-  .remove { flex: none; opacity: 0; }
-  .todo:hover .remove, .note:hover .remove, .remove:focus-visible { opacity: 1; }
-  .field.inline { flex: 1; min-width: 0; height: 26px; font-size: 13px; padding: 0 8px; }
-  .choices { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px 0 2px 26px; }
-  .choice { display: inline-block; max-width: 100%; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--bg); font-size: 12px; line-height: 16px; text-align: left; overflow-wrap: anywhere; }
+  .plan-note { margin: 0; padding: 0 0 2px; font-size: 12px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
+  /*
+   * For you: each ask is its question in the plan's type, the chat's choices in one wrapping row under it (the first one tinted and marked
+   * recommended, all 24 px tall), and the quiet text actions (Reply, Dismiss or Done, Remove, Reopen) at the end of that row.
+   */
+  .todos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  /* `.ask`, not `.todo`: a plan row carries its status as a class, and "todo" is one of them. */
+  .ask { display: flex; flex-direction: column; gap: 6px; padding: 5px 0; }
+  .ask + .ask { border-top: 1px solid var(--border); padding-top: 9px; }
+  .ask-text { display: block; width: 100%; text-align: left; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 0 3px; margin: 0 -3px; }
+  .ask-text:hover { background: var(--bg-hover); }
+  .ask.done .ask-text { color: var(--text-muted); }
+  .ask.done.mine .ask-text { color: var(--text-faint); text-decoration: line-through; }
+  .field.inline { width: 100%; min-width: 0; height: 26px; font-size: 13px; padding: 0 8px; }
+  .ask-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .choice { display: inline-block; max-width: 100%; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--bg); font-size: 12px; line-height: 16px; text-align: left; overflow-wrap: anywhere; }
   .choice:hover { border-color: var(--accent); color: var(--accent-bold); background: var(--accent-soft); }
-  .choice.recommended { border-color: color-mix(in srgb, var(--accent) 50%, var(--border-strong)); }
-  .rec { margin-left: 6px; font-size: 10px; font-weight: 500; color: var(--accent-bold); text-transform: uppercase; letter-spacing: 0.04em; }
-  .answer-row { padding: 4px 0 2px 26px; display: flex; }
-  .reply-link { margin: 2px 0 0 26px; padding: 1px 3px; border-radius: 4px; font-size: 12px; color: var(--text-faint); }
-  .reply-link:hover { color: var(--accent-bold); background: var(--bg-hover); }
-  .reply { display: block; margin: 2px 0 0 26px; padding: 2px 6px; border-radius: 4px; text-align: left; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
+  .choice.recommended { border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong)); background: color-mix(in srgb, var(--accent-soft) 60%, var(--bg)); }
+  .rec { margin-left: 6px; font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
+  .quiet-actions { display: inline-flex; gap: 2px; margin-left: auto; }
+  .choice:hover .rec { color: var(--accent-bold); }
+  .quiet { padding: 2px 4px; border-radius: 4px; font-size: 12px; color: var(--text-faint); }
+  .quiet:hover { color: var(--accent-bold); background: var(--bg-hover); }
+  .reply { display: block; align-self: flex-start; max-width: 100%; margin: -2px 0 0; padding: 2px 6px; border-radius: 4px; text-align: left; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
   .reply:hover { background: var(--bg-hover); }
   .reply-lead { font-weight: 600; }
   .done-fold { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; padding: 2px 4px; border-radius: 4px; font-size: 12px; color: var(--text-faint); }
   .done-fold:hover { color: var(--text); background: var(--bg-hover); }
   .done-fold + .todos { margin-top: 4px; }
   /* An agent row reads like a sidebar job row: the dot column, the name, the activity fading out, the age at the right edge. */
-  .agents { list-style: none; margin: 0 -6px; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+  .agent-list { list-style: none; margin: 0 -6px; padding: 0; display: flex; flex-direction: column; gap: 1px; }
   .agent { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 3px 6px; border-radius: var(--radius-small); text-align: left; line-height: 18px; }
   .agent:hover { background: var(--bg-hover); }
   .agent-state { display: inline-flex; flex: none; width: 12px; justify-content: center; }
@@ -429,9 +445,6 @@
   .agent-rate.live { color: var(--accent-bold); }
   .agent-rate + .agent-age { margin-left: 0; }
   .agent-age { flex: none; margin-left: auto; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-  .notes { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-  .note { display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
-  .note-actions { display: inline-flex; flex: none; }
   .link-chip.under { gap: 2px; padding-right: 4px; }
   .link-chip.under :global(.id-chip) { opacity: 1; }
   .note-body { flex: 1; min-width: 0; }

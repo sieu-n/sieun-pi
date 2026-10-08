@@ -23,6 +23,7 @@
   import ThreadTitle from "./ThreadTitle.svelte";
   import AccountChip from "./AccountChip.svelte";
   import CheckInControl, { checkInStatus } from "./CheckInControl.svelte";
+  import SlackSync from "./SlackSync.svelte";
   import ModelPicker from "./ModelPicker.svelte";
   import Icon from "./Icon.svelte";
   import Lightbox from "./ui/Lightbox.svelte";
@@ -372,6 +373,7 @@
       <CheckInControl {id} />
       {#if !narrow}{@render setup()}{/if}
       {#if row && !row.archived}
+        <SlackSync {id} {narrow} />
         <button type="button" class="icon-button" aria-label="Archive chat" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
       {/if}
       {#if !narrow}
