@@ -10,7 +10,7 @@ folder, runs the pool's Python tests there, renames it to releases/<tree id>,
 points every runtime link at <root>/current, flips `current` in one rename, and
 runs both token hooks through the runtime links. A hook that fails puts the
 previous release back. rollback swaps `current` and `previous` and runs the same
-check. State (state.json, pi-pool.log, config.json, accounts) never moves.
+check; after the first install it puts back the links that install replaced. State (state.json, pi-pool.log, config.json, accounts) never moves.
 """
 import argparse, json, os, shutil, stat, subprocess, sys, tarfile, tempfile, time
 from pathlib import Path
@@ -97,10 +97,13 @@ def check_hooks(home):
     for args in PROVIDERS:
         started = time.monotonic()
         # HOME stays the caller's: the macOS Keychain the anthropic stores live in follows it.
-        done = subprocess.run([str(hook), *args], capture_output=True, text=True, timeout=10,
-                              env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool")))
-        ok = done.returncode == 0 and len(done.stdout.strip()) > 20
-        results[args[1]] = {"ok": ok, "exit": done.returncode, "token_chars": len(done.stdout.strip()),
+        try:
+            done = subprocess.run([str(hook), *args], capture_output=True, text=True, timeout=10,
+                                  env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool")))
+            exit_code, chars = done.returncode, len(done.stdout.strip())
+        except (OSError, subprocess.TimeoutExpired) as e:
+            exit_code, chars = type(e).__name__, 0
+        results[args[1]] = {"ok": exit_code == 0 and chars > 20, "exit": exit_code, "token_chars": chars,
                             "sec": round(time.monotonic() - started, 2)}
     return results
 
@@ -186,6 +189,9 @@ def install(home, ref):
                 shutil.rmtree(staging)
             raise
     links_before = link_targets(home)
+    if current_id(root) is None:
+        # The first install keeps the links it replaced, so `rollback` can put them back.
+        (root / "links-before-install.json").write_text(json.dumps(links_before, indent=2) + "\n")
     # `current` first, so no link ever names a path that does not exist yet.
     before = flip(root, release_id)
     linked = link_runtime(home)
@@ -196,6 +202,12 @@ def install(home, ref):
 
 def rollback(home):
     root = root_of(home)
+    saved = root / "links-before-install.json"
+    if not (root / "previous").is_symlink() and saved.exists():
+        before = current_id(root)
+        restore_links(home, json.loads(saved.read_text()))
+        (root / "current").unlink()
+        return {"current": None, "links": link_targets(home), "uninstalled": before, "hooks": check_hooks(home)}
     if not (root / "previous").is_symlink():
         raise InstallError("no previous release to roll back to")
     target = os.readlink(root / "previous").split("/")[-1]

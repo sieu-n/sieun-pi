@@ -91,6 +91,18 @@ class Install(unittest.TestCase):
         self.assertEqual((code, back["current"], back["previous"]), (0, first, second))
         self.assertEqual((self.home / ".config/pi-pool/vend.py").read_text(), "VERSION = 1\n")
 
+    def test_rollback_after_the_first_install_puts_the_old_links_back(self):
+        (self.home / ".config/pi-pool").mkdir(parents=True)
+        checkout_bin = self.repo / "components/pi-pool/bin"
+        (self.home / ".config/pi-pool/bin").symlink_to(checkout_bin)
+        self.run_installer()
+        code, back = self.run_installer("rollback")
+        self.assertEqual((code, back["current"]), (0, None), back)
+        self.assertEqual({p: h["ok"] for p, h in back["hooks"].items()}, {"anthropic": True, "openai-codex": True})
+        self.assertEqual(os.readlink(self.home / ".config/pi-pool/bin"), str(checkout_bin))
+        self.assertFalse((self.home / ".config/pi-pool/app").is_symlink())
+        self.assertFalse((self.home / ".local/share/pi-pool/current").is_symlink())
+
     def test_failing_tests_change_nothing(self):
         first = self.git("rev-parse", "HEAD:components/pi-pool")[:12]
         self.run_installer()
@@ -121,6 +133,16 @@ class Install(unittest.TestCase):
         self.assertEqual(os.readlink(self.home / ".config/pi-pool/bin"), "/checkout/bin")
         self.assertFalse((self.home / ".config/pi-pool/app").is_symlink())
         self.assertFalse((self.home / ".local/share/pi-pool/current").is_symlink())
+
+    def test_a_release_without_the_hook_puts_the_previous_one_back(self):
+        first = self.git("rev-parse", "HEAD:components/pi-pool")[:12]
+        self.run_installer()
+        (self.repo / "components/pi-pool/bin/pi-pool-token").unlink()
+        self.commit("hook deleted")
+        code, err = self.run_installer()
+        self.assertEqual(code, 1)
+        self.assertIn('"exit": "FileNotFoundError"', err)
+        self.assertEqual(self.current(), f"releases/{first}")
 
     def test_a_real_file_at_a_runtime_path_is_refused(self):
         (self.home / ".local/bin").mkdir(parents=True)
