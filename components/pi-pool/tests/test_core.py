@@ -259,6 +259,20 @@ class LimitedByThe429(unittest.TestCase):
         self.assertIsNone(resolved(state_v2(seat="a"), accounts))
         self.assertEqual(vend.last_resort(accounts, {}, CFG, NOW).id, "b")
 
+    def test_the_last_resort_prefers_a_depleted_account_the_provider_still_serves(self):
+        # 2026-10-08: sieun@virev.ai 429'd until 19:30, sieunpark77 at 85% of its 5h
+        # window (cutoff 85) resetting 20:10. The 429'd account must not win.
+        cfg = dict(CFG, five_hour_max_pct=85)
+        win = {"usedPercentage": 85, "windowSeconds": 18000, "resetsAt": (NOW + 9000) * 1000,
+               "sampledAt": NOW * 1000}
+        near = dataclasses.replace(account("n", "n@x", session_pct=85, weekly_pct=86), windows=(win,))
+        full = dataclasses.replace(account("w", "w@x", weekly_pct=100),
+                                   windows=(dict(win, usedPercentage=100, windowSeconds=604800,
+                                                 resetsAt=(NOW + 90000) * 1000),))
+        [hit] = limited({"a": NOW + 600}, [account("a", "a@x", session_pct=100)])
+        self.assertEqual(vend.last_resort([hit, near, full], {}, cfg, NOW).id, "n")
+        self.assertEqual(vend.last_resort([hit, full], {}, cfg, NOW).id, "a")
+
     def test_set_limit_keeps_the_latest_reset_and_prune_drops_it_when_it_passes(self):
         state = state_v2()
         writer = vend.HookWriter(state)

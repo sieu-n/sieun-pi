@@ -203,7 +203,7 @@ First match wins, per provider:
 | 3 | codex plan upgrade | plan tiers `free < plus < pro < team` | no usable codex account sits on a higher plan than the seat |
 | 4 | seat | the pool itself | the seat cannot serve |
 | 5 | best candidate | score | never |
-| 6 | last resort | no account is usable | the depleted or limited account whose limits reset first is vended anyway, so the request gets the provider's 429 and reset time instead of an auth error. Dead logins, disabled accounts and refusal cooldowns are never vended. No account left is an error |
+| 6 | last resort | no account is usable | a depleted account the provider still serves (no 429 on file, every window under 100%) is vended, least used first; `pi-pool limited` names it as `next`. When none serves, the account whose limits reset first is vended anyway, so the request gets the provider's 429 and reset time instead of an auth error. Dead logins, disabled accounts and refusal cooldowns are never vended. No account left is an error |
 
 A pin that yields writes nothing, so it re-applies by itself the moment the window
 resets or the limit expires. `pi-pool who` names the pin it is shadowing and why. Every
@@ -227,7 +227,8 @@ own 429 is the first sign that an account is used up. The extension handles it o
 4. When `next` is null, the message stays as it is and Prime waits for the provider's reset.
 
 The limit lives in `state.json`, so a restarted worker or daemon still skips the account.
-The hook prunes it when it expires. `tests/native/swap.mjs` runs this against a copied
+The hook prunes it when it expires. A successful `pi-pool login` for the account drops it,
+since the 429 belonged to the replaced credential. `tests/native/swap.mjs` runs this against a copied
 Prime install: request 1 gets a 429 on one Codex account, request 2 of the same turn uses
 the other one, and a restarted Prime process goes straight to the other account.
 

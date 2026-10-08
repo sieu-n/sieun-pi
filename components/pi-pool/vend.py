@@ -980,17 +980,38 @@ def account_free_at(a, cfg, now):
     return max(blocking) if blocking else now
 
 
-def last_resort(accounts, cooldowns, cfg, now):
-    """When nothing is usable: the depleted account whose limits reset first.
+def used_pct(a):
+    """The fullest window that counts for this session, 0-100."""
+    return max(a.session_pct, a.weekly_pct, 0 if a.gate_off else a.gated_pct)
 
-    The hook vends it anyway, so the request reaches the provider and comes
-    back as the provider's own 429 with its reset time. Prime Agent waits on
-    that (retry.provider.waitForUsage); a hook that returns no token is an
-    auth error to it, which it never waits on. Accounts that fail every
-    request (dead login, disabled, API refusal cooldown) are never offered.
+
+def provider_serves(a, now):
+    """True while the provider itself would still answer: no 429 on file and
+    every counting window under 100%. A depleted account is only past our own
+    cutoff (five_hour_max_pct, seven_day_max_pct) and still serves."""
+    return a.limited_until <= now and used_pct(a) < 100
+
+
+def last_resort(accounts, cooldowns, cfg, now):
+    """When nothing is usable: the depleted account that still has headroom,
+    least used first; when none has any, the account whose limits reset first.
+
+    An account past our cutoff but under 100% still serves requests, so it
+    beats any account the provider already answered 429 for (verified
+    2026-10-08: 16 sessions waited 2.5 h on a 429'd account while another sat
+    at 85% of its 5h window).
+
+    The hook vends the pick anyway, so a request on a full account comes back
+    as the provider's own 429 with its reset time. Prime Agent waits on that
+    (retry.provider.waitForUsage); a hook that returns no token is an auth
+    error to it, which it never waits on. Accounts that fail every request
+    (dead login, disabled, API refusal cooldown) are never offered.
     """
     pool = [a for a in accounts
             if unusable_reason(a, cooldowns, cfg, now) in ("depleted", "limited", "live-elsewhere")]
+    serving = [a for a in pool if provider_serves(a, now)]
+    if serving:
+        return min(serving, key=lambda a: (used_pct(a), account_free_at(a, cfg, now), a.email))
     return min(pool, key=lambda a: (account_free_at(a, cfg, now), a.email)) if pool else None
 
 
@@ -2680,9 +2701,15 @@ def cmd_limited(rest):
         save_json(STATE, state)
         accounts = with_pool_state(accounts, state, provider)
         accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
+        cooldowns = state["providers"][provider]["cooldowns"]
         res = resolve(intent_for(state, key, provider), accounts, in_use_counts(state, provider),
-                      state["providers"][provider]["cooldowns"], cfg, now)
-    out = {"account": last["email"], "until": round(until), "next": res.account.email if res else None}
+                      cooldowns, cfg, now)
+    # With nothing usable, the next request still goes to a depleted account the
+    # provider serves (last_resort); only when none serves does the caller wait.
+    nxt = res.account if res else last_resort(accounts, cooldowns, cfg, now)
+    if res is None and nxt is not None and not provider_serves(nxt, now):
+        nxt = None
+    out = {"account": last["email"], "until": round(until), "next": nxt.email if nxt else None}
     log("limited", provider=provider, account=last["email"], session=key.key,
         until=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(until)), next=out["next"])
     print(json.dumps(out))
@@ -3091,8 +3118,27 @@ def cmd_login(rest):
     else:
         result = driver.outcome(status)
     log("login_end", provider=provider, mode=argv[1], ok=result["ok"], message=result["message"])
+    if result["ok"]:
+        said = result["message"].split()
+        signed_in = account if positional else (
+            find_account(load_index(provider), said[1]) if len(said) > 1 and said[0] in ("added", "reauthed") else None)
+        if signed_in is not None:
+            drop_limit(provider, signed_in)
     emit(result)
     return 0 if result["ok"] else 1
+
+
+def drop_limit(provider, account):
+    """A new sign-in replaces the credential the provider answered 429 for, so
+    its `pi-pool limited` record no longer applies (2026-10-08: sieun@virev.ai
+    signed in again on a fresh plan at 0% and stayed limited for 2 h)."""
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        limit = state["providers"][provider]["limits"].pop(account.id, None)
+        if limit is None:
+            return
+        save_json(STATE, state)
+    log("limit_dropped", provider=provider, account=account.email, reason="login")
 
 
 USAGE = """usage: pi-pool [command]

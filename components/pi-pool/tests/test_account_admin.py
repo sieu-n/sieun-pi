@@ -165,6 +165,24 @@ class LimitedSurvivesARestart(PoolFixture):
         self.assertEqual(code, 0, out)
         self.assertIsNone(json.loads(out)["next"])
 
+    def test_with_only_a_depleted_account_left_next_is_that_account_while_it_serves(self):
+        reset_ms = (time.time() + 7200) * 1000
+        index = {"version": 2, "accounts": CODEX_INDEX["accounts"] + [
+            {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus",
+             "windows": [{"windowSeconds": 18000, "usedPercentage": 97, "resetsAt": reset_ms}]}]}
+        with open(os.path.join(self.tm, "codex-accounts.json"), "w") as f:
+            json.dump(index, f)
+        until = time.time() + 3600
+        code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["next"], "d@x")
+        index["accounts"][1]["windows"][0]["usedPercentage"] = 100
+        with open(os.path.join(self.tm, "codex-accounts.json"), "w") as f:
+            json.dump(index, f)
+        code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(json.loads(out)["next"])
+
     def test_a_session_with_no_vend_is_refused(self):
         code, out = self.cli("limited", "--provider", "anthropic", "--session", self.SESSION, "--until", str(time.time() + 60))
         self.assertEqual(code, 2)
@@ -316,6 +334,20 @@ class Login(PoolFixture):
         run.send("good\n")
         self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "reauthed a2@x"})
         self.assertEqual(self.ran(), ["auth " + B])
+
+    def test_a_new_sign_in_drops_that_accounts_429_limit_only(self):
+        until = time.time() + 3600
+        limits = {A: {"until": until, "at": time.time(), "session": None},
+                  B: {"until": until, "at": time.time(), "session": None}}
+        self.write_state({"version": 2, "providers": {
+            "anthropic": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}, "limits": limits},
+            "openai-codex": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
+        run = LoginRun(self, ["b@x"], "claude")
+        self.assertEqual(run.event()["event"], "url")
+        run.send("good\n")
+        self.assertTrue(run.event()["ok"])
+        self.assertEqual(run.exit_code(), 0)
+        self.assertEqual(list(self.state()["providers"]["anthropic"]["limits"]), [A])
 
     def test_an_unknown_account_fails_without_running_tokenmaxxing(self):
         run = LoginRun(self, ["z@x"], "claude")
