@@ -66,7 +66,8 @@
   });
   const excerpt = $derived(latest ? reportExcerpt(full[latest.id] ?? latest.body, BLOCKS) : null);
   /** The wiki page the report links, and its title once the page answers (the reader reuses the same answer). */
-  const linkedPath = $derived(latest ? reportWikiPage(full[latest.id] ?? latest.body) : null);
+  /** The newest wiki page any of the job's reports links: a short follow-up must not hide the report page an earlier message linked. */
+  const linkedPath = $derived(reports.map(report => reportWikiPage(full[report.id] ?? report.body)).find(path => path !== null) ?? null);
   let linkedTitle = $state.raw<{ path: string; title: string } | null>(null);
   $effect(() => {
     const path = linkedPath;

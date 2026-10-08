@@ -100,8 +100,11 @@
     api.localFile(path).then(result => { if (file === loading) file = { path, result, error: null }; },
       error => { if (file === loading) file = { path, result: null, error: error instanceof Error ? error.message : String(error) }; });
   });
-  /** The wiki page on screen: the `wiki:` link's own page, or the page a job's latest report links (reportWikiPage), drawn under the report. */
-  const linkedPath = $derived(view.kind === "job" && latest ? reportWikiPage(body(latest)) : null);
+  /**
+   * The wiki page on screen: the `wiki:` link's own page, or the newest page the job's reports link (reportWikiPage), drawn under the
+   * report. A short follow-up message ("committed", "holding") must not hide the report page an earlier message linked.
+   */
+  const linkedPath = $derived(view.kind === "job" ? reports.map(report => reportWikiPage(body(report))).find(path => path !== null) ?? null : null);
   const wikiPath = $derived(view.kind === "wiki" ? view.path : linkedPath);
   let wiki = $state.raw<{ path: string; result: WikiPage | null; error: string | null } | null>(null);
   $effect(() => {
