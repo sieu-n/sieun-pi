@@ -1,0 +1,67 @@
+{
+  "name": "Chat health",
+  "ownerWords": "keep monitoring all the usage patterns of the Chat feature for that day, and periodically refine the framework so same stupid errors don't happen again.\nnow, this is a common patter, i want you to deep-research what to do. i want it to be owned by Chat though, maybe in a Cron/heartbeat tab within it with semantic goal defined",
+  "goal": "Chats never sit stopped, never repeat themselves, and the owner never gives the same correction twice.",
+  "metrics": [
+    {
+      "key": "corrections",
+      "label": "Owner corrections",
+      "op": "<=",
+      "target": 1
+    },
+    {
+      "key": "stalls_2h",
+      "label": "Steps stalled over 2 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "dead_hours",
+      "label": "Hours a chat sat on a failed turn",
+      "op": "<=",
+      "target": 0,
+      "unit": " h"
+    },
+    {
+      "key": "unretried_errors",
+      "label": "Failed turns not retried in 25 min",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "dup_system_lines",
+      "label": "Repeated [job] or [check-in] lines",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "long_replies",
+      "label": "Owner replies over 60 words",
+      "op": "<=",
+      "target": 10,
+      "unit": "%"
+    },
+    {
+      "key": "wake_text",
+      "label": "Text on wakes the owner did not start",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "23:07"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/chat-health.ts"
+    ],
+    "cwd": "/Users/sieunpark/Documents/Github/sieun-pi/components/user-history",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Start one job that reads the details file, judges each flagged item, and routes each fix: the chat brief (send the owner's words to the realtime layer thread), code with a unit test in components/user-history/test, or a skill. Each fix names the metric it must move.",
+  "boardGoal": "p86"
+}
