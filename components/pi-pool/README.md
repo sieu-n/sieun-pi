@@ -258,8 +258,8 @@ the pick drew from. `pi-pool status` counts today's `switch` lines per provider.
 
 ### The weighted pick
 
-A switch draws one usable account at random, with chance proportional to its weight. The
-weight is the account's runway: how many hours until it crosses a pool cutoff
+A switch draws one usable account at random, with chance proportional to the cube of its
+runway. The runway is how many hours until it crosses a pool cutoff
 (`five_hour_max_pct` on the 5h window, `seven_day_max_pct` on the weekly window and the
 Fable cap) if the sessions already on it plus the switching one each burn
 `burn_5h_pct_per_hour` (2.5) of the 5h window and `burn_week_pct_per_hour` (0.5) of the
@@ -276,7 +276,13 @@ than `min_runway_hours` (1) is left out unless every usable account is under it,
 lands where it will last.
 
 The draw is random so that the sessions that leave one account at the same moment spread
-over several accounts instead of all landing on, and draining, the same one. The rates
+over several accounts instead of all landing on, and draining, the same one. The cube makes
+an account with twice the runway eight times as likely. `tests/sim_switching.py` replays a
+day of real requests against the old seat picker and this one. On 2026-10-08's 34,785
+Claude requests the seat picker made 171 switches; this one made 11.5 a day with runway as
+the weight, 8.6 with its square, 8.0 with its cube and 7.2 with the fifth power (mean of 20
+seeds). Always taking the longest runway made 0, so the randomness costs a few switches a
+day. The rates
 came from 2026-10-08: 18 sessions took one Max 20x account to 43% of its 5h window in 1.6
 hours, and one account spent 87% of a 5h window for 16% of its week.
 

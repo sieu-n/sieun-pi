@@ -1027,8 +1027,8 @@ def runway_hours(a, sessions, cfg, now):
 
 
 def switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=()):
-    """[(account, weight)] a switching session draws from, heaviest first. The
-    weight is runway_hours with the sessions already on the account plus the
+    """[(account, runway hours)] a switching session draws from, longest first.
+    The runway is runway_hours with the sessions already on the account plus the
     one switching, and one more for an account a supervised claude/codex
     session runs on. An account under min_runway_hours is left out unless
     every usable account is, so a switch lands where it will last."""
@@ -1039,14 +1039,30 @@ def switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=()):
     return sorted(lasting or weights, key=lambda p: (-p[1], p[0].email))
 
 
-def weighted_pick(weights, rng):
-    """One account from switch_weights, with chance proportional to its weight."""
-    total = sum(w for _, w in weights)
+# A draw weighs an account by its runway cubed. Replaying 2026-10-08's 34,785
+# Claude requests (tests/sim_switching.py, 20 seeds) gave 11.5 switches a day with
+# runway, 8.6 with its square, 8.0 with its cube and 7.2 with the fifth power; at a
+# heavier burn, 61, 58, 56 and 57. Past the cube, more sharpness bought nothing
+# while it took away the spread that keeps sessions leaving together apart.
+PICK_POWER = 3
+
+
+def pick_chances(weights):
+    """{account id: chance} of one weighted_pick over switch_weights."""
+    powered = [(a, w ** PICK_POWER) for a, w in weights]
+    total = sum(w for _, w in powered)
     if total <= 0:
-        return weights[0][0]
-    x = rng.random() * total
-    for a, w in weights:
-        x -= w
+        return {a.id: 1.0 / len(powered) for a, _ in powered}
+    return {a.id: w / total for a, w in powered}
+
+
+def weighted_pick(weights, rng):
+    """One account from switch_weights, with chance proportional to its runway
+    to the PICK_POWER."""
+    chances = pick_chances(weights)
+    x = rng.random()
+    for a, _ in weights:
+        x -= chances[a.id]
         if x < 0:
             return a
     return weights[-1][0]
@@ -2035,10 +2051,9 @@ def status_lines(providers, p, term_width, now=None):
         in_use = in_use_counts(state, provider, now)
         cooldowns = prov["cooldowns"]
         weights = switch_weights(accounts, in_use, cooldowns, cfg, now)
-        total = sum(w for _, w in weights) or 1
         reasons = {a.id: format_reason(a, cooldowns, cfg, now) for a in accounts}
         ctx = {"now": now, "in_use": in_use, "pool_pin": prov.get("pin"),
-               "chances": {a.id: w / total for a, w in weights},
+               "chances": pick_chances(weights),
                "reasons": reasons, "cooldown_reasons": prov.get("cooldown_reasons") or {}}
         head = [f"{title}  ({len(accounts)} accounts)"]
         if prov.get("pin"):

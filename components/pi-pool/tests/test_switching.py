@@ -97,12 +97,13 @@ class Stickiness(unittest.TestCase):
 
 
 class Weights(unittest.TestCase):
-    def test_a_draw_follows_the_weights(self):
-        weights = [(account("a", "a@x"), 6.0), (account("b", "b@x"), 3.0), (account("c", "c@x"), 1.0)]
+    def test_a_draw_follows_the_cube_of_the_runway(self):
+        weights = [(account("a", "a@x"), 4.0), (account("b", "b@x"), 3.0), (account("c", "c@x"), 2.0)]
         rng = random.Random(11)
         counts = collections.Counter(vend.weighted_pick(weights, rng).id for _ in range(20000))
-        for id, share in (("a", 0.6), ("b", 0.3), ("c", 0.1)):
+        for id, share in (("a", 64 / 99), ("b", 27 / 99), ("c", 8 / 99)):
             self.assertAlmostEqual(counts[id] / 20000, share, delta=0.015)
+        self.assertEqual(vend.pick_chances(weights), {"a": 64 / 99, "b": 27 / 99, "c": 8 / 99})
 
     def test_sessions_that_switch_together_spread_out(self):
         state = {"version": 2, "providers": {"anthropic": vend.empty_provider_state()}, "sessions": {}}
