@@ -22,6 +22,8 @@ const toolCall = (at: number, name: string, text = ""): Line =>
 const toolResult = (at: number): Line => entry({ role: "toolResult", toolCallId: "c" + (at - 1), toolName: "t", content: [], isError: false, timestamp: at });
 const custom = (at: number, customType: string, content: string): Line => ({ type: "custom_message", customType, content, display: true, timestamp: new Date(at).toISOString() });
 
+const API_KEY_ERROR = "Failed to resolve API key for provider \"anthropic\" from shell command: /Users/x/.config/pi-pool/bin/pi-pool-token";
+
 const CHECK_IN = [
   "[check-in] What changed:",
   "- p5 \"a\" is todo with no board change and no owner activity for 8 h",
@@ -61,7 +63,7 @@ const chatA: Line[] = [
   toolResult(ago(2 * HOUR) + MIN + 1),
   reply(ago(2 * HOUR) + 2 * MIN, ""),
   user(ago(1.5 * HOUR), "[job] build-x finished; don't wait"),
-  reply(ago(1.5 * HOUR) + MIN, "", "error", { errorMessage: "Failed to resolve API key" }),
+  reply(ago(1.5 * HOUR) + MIN, "", "error", { errorMessage: API_KEY_ERROR }),
 ];
 
 const chatB: Line[] = [
@@ -98,16 +100,17 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, stalls_2h: 9, dead_hours: 3.5, unretried_errors: 2, dup_system_lines: 2, long_replies: 28.6, wake_text: 3 });
+    assert.deepEqual(health.metrics, { corrections: 3, stalls_2h: 9, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 5, sieun_pi_breaks: 1, recurred: 0 });
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 3).map(slice => [slice.chat, slice.excerpt]), [["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]]);
     const kinds = (kind: string) => flagged.filter(slice => slice.kind === kind);
-    assert.deepEqual(kinds("unretried_errors").map(slice => slice.excerpt), ["1.5 h with no new message after: Failed to resolve API key", "2.0 h with no new message after: stopReason aborted"]);
+    assert.deepEqual(kinds("unretried_errors").map(slice => slice.excerpt), [`1.5 h with no new message after: ${API_KEY_ERROR}`, "2.0 h with no new message after: stopReason aborted"]);
     assert.deepEqual(kinds("long_replies").map(slice => slice.excerpt.split(":")[0]), ["61 words", "70 words"]);
     assert.equal(kinds("stalls_2h").length, 9);
     assert.ok(kinds("stalls_2h").every(slice => !slice.excerpt.includes("90 min")));
-    assert.deepEqual(kinds("dup_system_lines").map(slice => slice.excerpt), ["[job] build-x finished; don't wait", CHECK_IN.slice(0, 300)]);
-    assert.deepEqual(kinds("wake_text").map(slice => slice.excerpt), ["x", "Checked the board.", "Noted, filing it."]);
+    assert.deepEqual(kinds("sieun_pi_breaks").map(slice => slice.excerpt), [API_KEY_ERROR]);
+    assert.deepEqual(kinds("off_brief").map(slice => slice.excerpt), ["text on a wake: x", "repeated line: [job] build-x finished; don't wait", `repeated line: ${CHECK_IN}`.slice(0, 300),
+      "text on a wake: Checked the board.", "text on a wake: Noted, filing it."]);
     assert.ok(flagged.length <= 40);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -121,10 +124,39 @@ test("chat health: no owner turns gives long_replies 0; no OUTPUT_FILE exits non
     const output = join(dir, "health.json");
     const empty = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(empty.status, 0, empty.stderr);
-    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, dup_system_lines: 0, long_replies: 0, wake_text: 0 }, flagged: [] });
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0 }, flagged: [] });
     const missing = run({ CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /OUTPUT_FILE/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat health: a problem a run flagged is watched; the next run counts it once when it happens again, and not when nothing new happened", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-a"] }));
+    const transcript = join(dir, "chat-a.jsonl");
+    await writeFile(transcript, chatA.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const state = join(dir, "state.json");
+    const output = join(dir, "health.json");
+    const runAt = async (now: number) => {
+      const result = run({ OUTPUT_FILE: output, STATE_FILE: state, CHAT_HEALTH_NOW: String(now), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    };
+    assert.equal((await runAt(NOW)).metrics.recurred, 0);
+    assert.equal((await runAt(NOW)).metrics.recurred, 0);
+    const again = [user(NOW + 10 * MIN, "retry"), reply(NOW + 11 * MIN, "", "error", { errorMessage: API_KEY_ERROR }),
+      user(NOW + 20 * MIN, "[job] build-x finished; don't wait")];
+    await writeFile(transcript, [...chatA, ...again].map(line => JSON.stringify(line)).join("\n") + "\n");
+    const next = await runAt(NOW + HOUR);
+    assert.equal(next.metrics.recurred, 2);
+    const recurred = (next.flagged ?? []).filter(slice => slice.kind === "recurred").map(slice => slice.excerpt);
+    assert.equal(recurred.length, 2);
+    assert.ok(recurred.some(excerpt => excerpt.startsWith("off_brief, first flagged 2026-10-08: repeated line: [job] build-x")), recurred.join("\n"));
+    assert.ok(recurred.some(excerpt => excerpt.startsWith("sieun_pi_breaks, first flagged 2026-10-08: ") || excerpt.startsWith("unretried_errors, first flagged 2026-10-08: ")), recurred.join("\n"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

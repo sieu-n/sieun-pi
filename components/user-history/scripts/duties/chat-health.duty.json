@@ -1,7 +1,7 @@
 {
   "name": "Chat health",
   "ownerWords": "keep monitoring all the usage patterns of the Chat feature for that day, and periodically refine the framework so same stupid errors don't happen again.\nnow, this is a common patter, i want you to deep-research what to do. i want it to be owned by Chat though, maybe in a Cron/heartbeat tab within it with semantic goal defined",
-  "goal": "Chats never sit stopped, never repeat themselves, and the owner never gives the same correction twice.",
+  "goal": "Chats never sit stopped, never repeat themselves, and the owner never corrects the same thing twice. No bug seen in sieun-pi or prime-agent stays without a root fix and a test, or an open step. The spec rules hold: the sieun-pi server is a frontend-first wrapper around the prime-agent server, and prime-agent never needs sieun-pi to run.",
   "metrics": [
     {
       "key": "corrections",
@@ -10,8 +10,26 @@
       "target": 1
     },
     {
+      "key": "recurred",
+      "label": "Problems flagged before that came back",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "sieun_pi_breaks",
+      "label": "Failed turns caused by sieun-pi code",
+      "op": "<=",
+      "target": 0
+    },
+    {
       "key": "stalls_2h",
       "label": "Steps stalled over 2 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "unretried_errors",
+      "label": "Failed turns not retried in 25 min",
       "op": "<=",
       "target": 0
     },
@@ -23,18 +41,6 @@
       "unit": " h"
     },
     {
-      "key": "unretried_errors",
-      "label": "Failed turns not retried in 25 min",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "dup_system_lines",
-      "label": "Repeated [job] or [check-in] lines",
-      "op": "<=",
-      "target": 0
-    },
-    {
       "key": "long_replies",
       "label": "Owner replies over 60 words",
       "op": "<=",
@@ -42,8 +48,8 @@
       "unit": "%"
     },
     {
-      "key": "wake_text",
-      "label": "Text on wakes the owner did not start",
+      "key": "off_brief",
+      "label": "Times a chat did not behave as briefed",
       "op": "<=",
       "target": 0
     }
@@ -62,6 +68,6 @@
     "cwd": "/Users/sieunpark/Documents/Github/sieun-pi/components/user-history",
     "timeoutMs": 120000
   },
-  "onMiss": "Start one job that reads the details file, judges each flagged item, and routes each fix: the chat brief (send the owner's words to the realtime layer thread), code with a unit test in components/user-history/test, or a skill. Each fix names the metric it must move.",
+  "onMiss": "Start one job that reads the details file and judges each flagged item. Each problem gets a root fix with a test, or stays an open step that names the cause; a retry or a workaround does not close it. Route each fix: the chat brief (send the owner's words to the realtime layer thread), code with a unit test in components/user-history/test, or a skill. Everything flagged today is on the watch list for the next 7 days, so a recurred item means an earlier fix did not hold: reopen it. A sieun_pi_breaks item breaks the rule that prime-agent runs without sieun-pi. Each fix names the metric it must move.",
   "boardGoal": "p86"
 }

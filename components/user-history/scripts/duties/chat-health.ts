@@ -21,16 +21,24 @@ const WORD = /[\p{L}\p{N}][\p{L}\p{N}'\u2019._/-]*/gu;
 const BOARD_PREFIX = "[board] ";
 const BOARD_ANSWER = " and answered: ";
 const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
+const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
+const WATCH_MS = 7 * WINDOW_MS;
+const STALL_TAIL = " with no board change";
 
-type Metrics = { corrections: number; stalls_2h: number; dead_hours: number; unretried_errors: number; dup_system_lines: number; long_replies: number; wake_text: number };
+type Metrics = { corrections: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number };
 type Kind = keyof Metrics;
+/** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
+interface Seen { signature: string; slice: FlaggedSlice }
+/** The duty's state between runs: each watched signature, when a run first flagged it, and the window end of the last run that did. */
+type Watch = Record<string, { firstAt: number; lastRun: number }>;
 interface Turn { starter: TurnStarter; wake: boolean; at: number; lastText: string; lastTextAt: number; wroteText: boolean }
 interface Failure { at: number; reason: string }
-interface Tally { metrics: Metrics; deadMs: number; ownerTurns: number; longTurns: number; flagged: Map<Kind, FlaggedSlice[]> }
+interface Tally { metrics: Metrics; deadMs: number; ownerTurns: number; longTurns: number; flagged: Map<Kind, FlaggedSlice[]>; seen: Seen[] }
 
 const clip = (text: string): string => text.slice(0, EXCERPT);
 const words = (text: string): number => text.match(WORD)?.length ?? 0;
 const stallHours = (count: number, unit: string): number => unit === "d" ? count * 24 : unit === "h" ? count : count / 60;
+const signature = (kind: string, text: string): string => `${kind}:${text.toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ").slice(0, 160)}`;
 
 /** The part of an owner message the owner wrote: a board answer after "and answered: ", none for a board choice, and no injected skill text. */
 function ownerWords(text: string): string {
@@ -56,7 +64,11 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
   try { stream = createReadStream(file, { encoding: "utf8" }); await new Promise<void>((resolve, reject) => { stream!.once("open", () => resolve()); stream!.once("error", reject); }); }
   catch { return false; }
   const inWindow = (at: number) => at >= start && at <= now;
-  const flag = (kind: Kind, at: number, excerpt: string) => { const list = tally.flagged.get(kind) ?? []; list.push({ chat, at, kind, excerpt: clip(excerpt) }); tally.flagged.set(kind, list); };
+  const flag = (kind: Kind, at: number, excerpt: string, watch?: string) => {
+    const slice = { chat, at, kind, excerpt: clip(excerpt) };
+    const list = tally.flagged.get(kind) ?? []; list.push(slice); tally.flagged.set(kind, list);
+    if (watch) tally.seen.push({ signature: watch, slice });
+  };
   const seen = new Set<string>();
   let turn: Turn | undefined;
   let settled = true;
@@ -69,7 +81,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       const count = words(turn.lastText);
       if (count > LONG_WORDS) { tally.longTurns++; flag("long_replies", turn.lastTextAt, `${count} words: ${turn.lastText}`); }
     }
-    if (turn.wake && turn.wroteText) { tally.metrics.wake_text++; flag("wake_text", turn.lastTextAt, turn.lastText); }
+    if (turn.wake && turn.wroteText) { tally.metrics.off_brief++; flag("off_brief", turn.lastTextAt, `text on a wake: ${turn.lastText}`, `wake_text:${chat}`); }
   };
   const openTurn = (starter: TurnStarter, wake: boolean, at: number) => { closeTurn(); turn = { starter, wake, at, lastText: "", lastTextAt: at, wroteText: false }; };
   const settleFailure = (nextAt: number | undefined) => {
@@ -78,7 +90,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     if (inWindow(failure.at) && end - failure.at > DEAD_AFTER_MS) {
       tally.metrics.unretried_errors++;
       tally.deadMs += end - failure.at;
-      flag("unretried_errors", failure.at, `${((end - failure.at) / HOUR).toFixed(1)} h with no new message after: ${failure.reason}`);
+      flag("unretried_errors", failure.at, `${((end - failure.at) / HOUR).toFixed(1)} h with no new message after: ${failure.reason}`, signature("error", failure.reason));
     }
     failure = undefined;
   };
@@ -96,12 +108,12 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
         if (settled) openTurn("agent", true, at);
         settled = false;
         if (!inWindow(at)) continue;
-        if (seen.has(text)) { tally.metrics.dup_system_lines++; flag("dup_system_lines", at, text); }
+        if (seen.has(text)) { tally.metrics.off_brief++; flag("off_brief", at, `repeated line: ${text}`, signature("repeat", text)); }
         seen.add(text);
         if (text.startsWith(CHECK_IN_PREFIX)) {
           for (const row of text.split("\n")) {
             const stall = STALL.exec(row);
-            if (stall && stallHours(Number(stall[1]), stall[2]!) >= 2) { tally.metrics.stalls_2h++; flag("stalls_2h", at, row.trim()); }
+            if (stall && stallHours(Number(stall[1]), stall[2]!) >= 2) { tally.metrics.stalls_2h++; flag("stalls_2h", at, row.trim(), `stalls_2h:${chat}:${row.slice(0, row.indexOf(STALL_TAIL)).trim()}`); }
           }
         }
         continue;
@@ -117,6 +129,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       if (turn && text) { turn.lastText = text; turn.lastTextAt = at; turn.wroteText = true; }
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         failure = { at, reason: message.errorMessage?.trim() || `stopReason ${message.stopReason}` };
+        if (inWindow(at) && SIEUN_PI.test(failure.reason)) { tally.metrics.sieun_pi_breaks++; flag("sieun_pi_breaks", at, failure.reason, signature("error", failure.reason)); }
       }
     } else if (message.role === "custom" && isPromptCustom(message)) {
       settleFailure(at);
@@ -132,11 +145,36 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
 /** Round one decimal. */
 const tenth = (value: number): number => Math.round(value * 10) / 10;
 
-/** Corrections first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
+/**
+ * The watch list: a problem a run flagged stays on it for WATCH_MS, and each later run counts it again in `recurred` when it happens after that run.
+ * One count per signature, so a bug that came back is one, however often it fired. Returns the watch list for the next run.
+ */
+function watchRecurrences(seen: readonly Seen[], watch: Watch, now: number, tally: Tally): Watch {
+  const recurred = new Map<string, FlaggedSlice>();
+  for (const { signature: key, slice } of seen) {
+    const entry = watch[key];
+    if (entry && (slice.at ?? 0) > entry.lastRun && !recurred.has(key)) {
+      recurred.set(key, { ...slice, kind: "recurred", excerpt: clip(`${slice.kind}, first flagged ${new Date(entry.firstAt).toISOString().slice(0, 10)}: ${slice.excerpt}`) });
+    }
+  }
+  tally.metrics.recurred = recurred.size;
+  tally.flagged.set("recurred", [...recurred.values()]);
+  const next: Watch = Object.fromEntries(Object.entries(watch).filter(([, entry]) => now - entry.lastRun < WATCH_MS));
+  for (const { signature: key } of seen) next[key] = { firstAt: next[key]?.firstAt ?? now, lastRun: now };
+  return next;
+}
+
+async function readWatch(file: string | undefined): Promise<Watch> {
+  if (!file) return {};
+  try { const state = JSON.parse(await readFile(file, "utf8")) as { watch?: unknown }; return typeof state.watch === "object" && state.watch !== null ? state.watch as Watch : {}; }
+  catch { return {}; }
+}
+
+/** Recurrences and corrections first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
-  const picked = newest("corrections").slice(0, MAX_FLAGGED);
-  const queues = [newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("dup_system_lines", FEW), newest("wake_text", FEW)];
+  const picked = [...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
+  const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("off_brief", 2 * FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
     for (const queue of queues) { const next = queue.shift(); if (next && picked.length < MAX_FLAGGED) picked.push(next); }
   }
@@ -152,13 +190,16 @@ async function main(): Promise<void> {
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
-  const tally: Tally = { metrics: { corrections: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, dup_system_lines: 0, long_replies: 0, wake_text: 0 }, deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map() };
+  const tally: Tally = { metrics: { corrections: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0 },
+    deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   tally.metrics.dead_hours = tenth(tally.deadMs / HOUR);
   tally.metrics.long_replies = tally.ownerTurns ? tenth(100 * tally.longTurns / tally.ownerTurns) : 0;
+  const watch = watchRecurrences(tally.seen, await readWatch(process.env.STATE_FILE), now, tally);
   const result: PrecheckOutput = { metrics: { ...tally.metrics }, flagged: pickFlagged(tally.flagged) };
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
+  if (process.env.STATE_FILE) await writeFile(process.env.STATE_FILE, JSON.stringify({ watch }) + "\n");
 }
 
 await main();
