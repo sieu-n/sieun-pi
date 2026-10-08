@@ -43,6 +43,7 @@
     collapse: "M3 12h7M10 12l-3-3M10 12l-3 3M21 12h-7M14 12l3-3M14 12l3 3",
     grip: "M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01",
     expandBox: "M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7",
+    external: "M14 4h6v6M20 4l-9 9M11 6H5v13h13v-6",
   } as const;
   export type IconName = keyof typeof PATHS;
 </script>

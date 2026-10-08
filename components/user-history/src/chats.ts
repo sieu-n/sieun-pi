@@ -47,6 +47,8 @@ export const CHAT_BRIEF: readonly string[] = [
   "Do yourself only quick read-only look-ups that answer the owner in about a minute: read a file, `rg`, `git log/status/diff/show`, open a screenshot " +
     "with `attach_image`, read a job's report or wiki page, `await agent_observe.recent_messages(name)`. Any real task, read-only or not " +
     "(research, an audit, implementation, checks, browser work), goes to a job.",
+  "Name every job and thread you start like the owner names threads: a few plain lowercase words with spaces naming the topic (stripe and payments, " +
+    "realtime layer, crawler ops, readme check). No kebab-case, no ids, no numbered suffixes like -2.",
   "Jobs: `handle = await rlm.spawn(brief, name=...)` runs in this repository with its rules; `await rlm.create_session(brief, name=..., cwd=...)` for another " +
     "repository. Every brief starts with `Owner's words (verbatim):` quoting each owner message that led to the job exactly, then `My read:` with your " +
     "interpretation marked as yours, then the task, then the reply instruction: `await agent_message.send(report, receiver_role=\"parent\")` for a child, " +
@@ -58,7 +60,8 @@ export const CHAT_BRIEF: readonly string[] = [
   "Board shape: every goal gets its phases as child steps from the start: Plan (research or design), Decide (only when the owner must choose), Build, " +
     "Verify. Each step carries its real status, including blocked steps nobody works on yet, so the owner sees the whole path. Link a job on the step " +
     "it does, not on the goal. Example: goal `Reach chats from a messenger (Slack first)` has Plan (doing, job messenger-bridge-research), Decide " +
-    "(blocked), Build (blocked), Verify (todo). A step's `job` is its owner: a job name, or another thread as `thread:<id>` or its session name.",
+    "(blocked), Build (blocked), Verify (todo). A step's `job` is its owner: a job name, or another thread as `thread:<id>` or its session name. " +
+    "A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal.",
   "The scratchpad is a short bullet list: one finding or decision per bullet, with links to what it is about (`job:<name>` for a job's report, " +
     "`thread:<id>`, `wiki:<path>`, `file:<path>`, or a URL). No long prose.",
   "You are the VP: decide everything you can yourself. Ask the owner only for what a VP cannot decide: product direction, money, irreversible or " +
@@ -76,10 +79,13 @@ export const CHAT_BRIEF: readonly string[] = [
     "that job stopped without reporting: read its last messages (`await agent_observe.recent_messages(name)`) and act on what it did. " +
     "`[job] <name> is waiting for you` means it asked you something: answer it, do not replace it. Never start a second job on a step whose job " +
     "may still run: `rlm.list_subagents()` can say completed for a job a reply woke again, so check its activity first.",
+  "Never wait on the owner for a choice you can make yourself; a step you own moves every check-in or you start a job for it.",
+  "When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
+    "instead of leaving the step blocked with a note.",
   "Corrections stick: when the owner corrects how you work (board shape, tone, what to report), apply it now and make it hold for every future chat. " +
-    "If the brief or code must change, send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., " +
-    "receiver_role=\"sibling\", receiver_name=\"realtime layer\")`; if a note is enough, record it with `await refine.run()`. The owner should never " +
-    "have to give the same correction twice.",
+    "A correction changes the brief or a skill, never only a local note: send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., " +
+    "receiver_role=\"sibling\", receiver_name=\"realtime layer\")` for a brief or code change, or call `await refine.run()` aimed at a global skill or prompt entry. " +
+    "A local memory alone does not count. The owner should never have to give the same correction twice.",
   `Shell: only \`bash()\` commands that start with ${SHELL_LIST}, with no pipes, redirects or chaining. No edit(), no write-mode open(), no git writes.`,
 ];
 
@@ -216,6 +222,19 @@ export function judgeChatCode(code: string): string | null {
       }
     }
   }
+  for (const { name } of jobNameLiterals(code)) { const reason = nameReason(name); if (reason) return reason; }
+  return null;
+}
+
+/** The brief's naming line, and the reason a cell that names a job otherwise is refused. */
+export const NAME_RULE = CHAT_BRIEF.find(line => line.startsWith("Name every job"))!;
+/**
+ * Why a literal job or thread name is refused, or null: words joined by a hyphen or underscore (kebab-case, snake_case), a trailing number
+ * (`-2`, `_2`, `2`), or more than 40 characters. The owner names threads with a few plain words and spaces.
+ */
+export function nameReason(name: string): string | null {
+  const trimmed = name.trim();
+  if (/[A-Za-z0-9][-_][A-Za-z0-9]/.test(trimmed) || /[-_ ]?\d+$/.test(trimmed) || trimmed.length > 40) return NAME_RULE;
   return null;
 }
 
@@ -239,7 +258,8 @@ export interface ChatJobOf { chat: string; root: boolean }
 export function jobReplyGuideline(job: ChatJobOf): string {
   const send = job.root ? `await agent_message.send(report, receiver_role="sibling", receiver_name="${job.chat}")` : `await agent_message.send(report, receiver_role="parent")`;
   return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you are done, failed or blocked, send it one report with \`${send}\`. ` +
-    "Send at most one progress message before that.";
+    "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
+    "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report.";
 }
 
 /**
@@ -282,15 +302,15 @@ export async function fileChatName(sessionFile: string): Promise<string | null> 
   finally { lines.close(); }
 }
 
-const CREATE_SESSION = /\brlm\.create_session\s*\(/g;
+const JOB_CALL = /\brlm(?:\.spawn|\.create_session)?\s*\(/g;
 const blankStrings = (code: string): string => code.replace(new RegExp(`${PY_STRING.source}|#[^\n]*`, "g"), text => " ".repeat(text.length));
-/** The session names an ipython cell gives `rlm.create_session(..., name="...")` as plain string literals; a computed name is not found. */
-export function createSessionNames(code: string): string[] {
+/** Each `rlm(...)`, `rlm.spawn(...)` or `rlm.create_session(...)` in an ipython cell that gives `name=` as a plain string literal; a computed name (an f-string with a field, a variable) is not found. */
+export function jobNameLiterals(code: string): { call: "rlm" | "rlm.spawn" | "rlm.create_session"; name: string }[] {
   const blanked = blankStrings(code);
-  const names: string[] = [];
-  CREATE_SESSION.lastIndex = 0;
+  const names: { call: "rlm" | "rlm.spawn" | "rlm.create_session"; name: string }[] = [];
+  JOB_CALL.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = CREATE_SESSION.exec(blanked)) !== null) {
+  while ((match = JOB_CALL.exec(blanked)) !== null) {
     const args = argumentText(code, match.index + match[0].length - 1);
     const keyword = /\bname\s*=/.exec(blankStrings(args));
     if (!keyword) continue;
@@ -299,15 +319,19 @@ export function createSessionNames(code: string): string[] {
     const literal = PY_STRING.exec(rest);
     if (!literal || literal.index !== 0 || (/^[rbuRBU]*[fF]/.test(literal[0]) && literal[0].includes("{"))) continue;
     const name = unquote(literal[0]).trim();
-    if (name) names.push(name);
+    if (name) names.push({ call: match[0].replace(/\s*\($/, "") as "rlm" | "rlm.spawn" | "rlm.create_session", name });
   }
   return names;
 }
+/** The session names an ipython cell gives `rlm.create_session(..., name="...")` as plain string literals. */
+export const createSessionNames = (code: string): string[] => jobNameLiterals(code).filter(entry => entry.call === "rlm.create_session").map(entry => entry.name);
 
 /** Which chat started a root by name. The chat's extension writes it when a cell calls rlm.create_session; the root's extension reads it at start. */
 export interface JobRegistry {
   add(names: readonly string[], chat: string): Promise<void>;
   chatOf(name: string): Promise<string | undefined>;
+  /** The session names a chat (by any of its names: its session name, its id) started. */
+  rootsOf(chat: readonly string[]): Promise<string[]>;
 }
 const REGISTRY_KEEP_MS = 30 * 24 * 60 * 60_000;
 /** `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName]: { chat, at } } }` through locked-json; entries older than 30 days go on the next add. */
@@ -329,11 +353,12 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
       });
     },
     async chatOf(name) { return (await snapshotJsonFile(file)).jobs[name]?.chat; },
+    async rootsOf(chat) { return Object.entries((await snapshotJsonFile(file)).jobs).filter(([, entry]) => chat.includes(entry.chat)).map(([name]) => name); },
   };
 }
 
 /** The source files a chat session runs as its extension. A change in any of them is a new build; a chat that loaded an older one is reloaded. */
-const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts"];
+const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts"];
 /** A short hash of the extension sources on disk now. */
 export function extensionBuild(dir: string = import.meta.dirname): string {
   const hash = createHash("sha256");
@@ -389,17 +414,21 @@ export interface ChatThreads {
   /** `live` fires after each attach with the children known then; `children` on every change while attached; `idle` at each turn's end. */
   observe(observer: { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void }): () => void;
   /**
-   * The chat's transcript as the server holds it: the no-report notice looks for the job's last message there, the tick reads who started the
-   * running turn and whether the last one failed.
+   * The chat's state as the server holds it while attached: the no-report notice looks for the job's last message in the transcript, the tick
+   * reads who started the running turn and whether the last one failed, and `links` takes the board, the name and the children for the agents list.
    */
-  state?(id: string): { messages: readonly ThreadMessage[] } | undefined;
+  state?(id: string): { messages: readonly ThreadMessage[]; board?: ChatBoard | null; info?: { name?: string }; children?: readonly ChildAgent[] } | undefined;
 }
 export type ChatSummary = (id: string) => Promise<{ lifecycle?: string; sessionFile?: string } | undefined>;
+/** The chat side's inputs to `chatAgents` (src/chat-agents.ts); the catalog adds the daemon's sessions. */
+export interface ChatLinks { children: readonly ChildAgent[]; board: ChatBoard | null; roots: string[]; messages: readonly ThreadMessage[] }
 
 /** What the check-in reads besides the children: the board, the catalog rows (threads a plan item links), its memory and the owner's setting per chat. */
 export interface CheckInSource {
   board(id: string): Promise<ChatBoard | null>;
   rows(): Promise<readonly SessionRow[]>;
+  /** The roots chats started with rlm.create_session (`<data dir>/chat-jobs.json`); absent in tests that need none. */
+  registry?: JobRegistry;
   memory: CheckInRecord;
   settings: CheckInSettings;
   /** How often the scheduler wakes to run the chats whose interval has passed; 0 starts no timer (tests call `tick`). Default CHECK_IN_TICK_MS. */
@@ -644,6 +673,20 @@ export class Chats {
     const pausedUntil = activePause(setting, now);
     const lastAt = this.lastCheckIn.get(id) ?? null;
     return { everyMs: setting.everyMs, paused: pausedUntil !== null, nextAt: nextCheckIn(setting, lastAt ?? this.started, now), pausedUntil, lastAt };
+  }
+
+  /**
+   * What `chatAgents` needs from the chat side for one chat: the hub's child snapshots, the board (the hub's copy while attached, else the file),
+   * the roots the registry lists under the chat's name or id, and the transcript the hub holds. Empty for a thread that is not a chat.
+   */
+  async links(id: string): Promise<ChatLinks> {
+    await this.load();
+    if (!this.chatIds.has(id)) return { children: [], board: null, roots: [], messages: [] };
+    const state = this.threads.state?.(id);
+    const board = state?.board !== undefined ? state.board : await this.source.board(id).catch(() => null);
+    const name = state?.info?.name?.trim();
+    const roots = this.source.registry ? await this.source.registry.rootsOf(name ? [id, name] : [id]).catch(() => []) : [];
+    return { children: this.children.get(id) ?? state?.children ?? [], board, roots, messages: state?.messages ?? [] };
   }
 
   /** The sessions stream's check-in field for every chat. */

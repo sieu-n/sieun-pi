@@ -12,6 +12,7 @@ import { readAppended } from "../src/usage/reader.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow, UsageService } from "../src/usage/service.ts";
 import { databaseSources, fileRoots } from "../src/usage/sources.ts";
 import { UsageStore } from "../src/usage/store.ts";
+import { sessionRates } from "../src/usage/rates.ts";
 
 // Fixture lines keep the real field order and shapes of each client's transcript, with ids and text replaced.
 const prime = {
@@ -152,6 +153,12 @@ test("ingest: first build, appended bytes, partial lines, in-place rewrite and i
   assert.equal(store.fresh, true);
   const first = await totals(store);
   assert.deepEqual(first, ["claude-code 1 112952", "codex 1 110", "prime-agent 2 59763"]);
+  // Per-session timed calls, for the Agents card's output rates: the Prime Agent fixture call started at its message timestamp and ended at its entry's.
+  const timed = await store.sessionCalls(["s-root", "nobody"], 0);
+  assert.deepEqual(timed.map(call => [call.sessionId, call.startedAt, call.endedAt, call.output]).sort((a, b) => Number(a[3]) - Number(b[3])),
+    [["s-root", 1791371170814, Date.parse("2026-10-07T11:06:23.517Z"), 50], ["s-root", 1791371170814, Date.parse("2026-10-07T11:06:23.517Z"), 677]]);
+  assert.deepEqual(await store.sessionCalls([], 0), []);
+  assert.deepEqual(sessionRates(timed, Date.parse("2026-10-07T11:07:00Z")), { "s-root": { tps: 28.6, live: true } }, "727 tokens over two 12.7 s calls");
 
   // Appended: one whole line and one partial; then the rest of the partial line.
   const rootPath = join(home, ".prime/agent/sessions/root.jsonl");

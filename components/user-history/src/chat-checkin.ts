@@ -1,7 +1,7 @@
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
 import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type PlanItem, type PlanStatus, type SessionRow, type ThreadMessage } from "./shared/types.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow, type ThreadMessage } from "./shared/types.ts";
 
 /**
  * The server's check-in for a chat: at its own interval (CHECK_IN_MS unless the owner set another, see CheckInSetting) it reads the chat's jobs (its subagents, and every thread an open plan step names as its
@@ -13,6 +13,14 @@ export const CHECK_IN_MS = 15 * 60_000;
 export const STALE_MS = 30 * 60_000;
 /** An open step with no board change and no owner activity for this long is reported, once per stretch of this length. */
 export const STEP_STALE_MS = 2 * 60 * 60_000;
+/** A todo or doing step the chat itself owns that has not moved for this long is pushed, once per stretch of this length. */
+export const OWN_STEP_MS = 60 * 60_000;
+/**
+ * A step note that says the step waits on the owner. The status alone does not count: the board shape keeps every later phase (Build, Verify)
+ * blocked by design, so a blocked step with no such note waits on an earlier step, not on the owner.
+ */
+const WAITS_ON_OWNER = /\b(?:owner|go|approval|approve|decide|choose|sign[ -]?in|log[ -]?in|wait(?:s|ing)? for you)\b/i;
+const STOP_WORDS = new Set(["about", "after", "again", "before", "could", "every", "first", "other", "owner", "should", "still", "their", "there", "these", "think", "those", "under", "until", "which", "while", "would"]);
 /** A failed turn (the chat's own, or a step owner's) is acted on again after these waits, then every 20 min while it stays failed. */
 export const RETRY_BACKOFF_MS: readonly number[] = [5 * 60_000, 10 * 60_000, 20 * 60_000];
 /** Whether retry number `attempts` (0 for the first) is due: its wait has passed since `since` (the failure, or the last retry). */
@@ -36,8 +44,19 @@ export interface JobFact {
 }
 /** `failedAt`/`retries`/`retriedAt`: an owner of an open step that stays failed is reported again on the RETRY_BACKOFF_MS schedule. */
 export interface JobMemo { state: JobState; activityAt?: number; messages?: number; stale?: true; failedAt?: number; retries?: number; retriedAt?: number }
-/** One plan item as last seen: what it said, when that last changed, and when it was last reported as quiet. */
-export interface StepMemo { sig: string; at: number; nudged?: number }
+/** One plan item as last seen: what it said, when that last changed, when it was last reported as quiet, and the `sig` at which it was reported as waiting on the owner with no ask. */
+export interface StepMemo { sig: string; at: number; nudged?: number; asked?: string }
+
+/** The words of a text that can tell one step from another: five letters or more, not a common word. */
+const distinctiveWords = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{4,}/g)?.filter(word => !STOP_WORDS.has(word)) ?? []);
+/** Whether an open agent todo is about the step: it names the step's id, else it shares a distinctive word with the step's text. */
+export function todoForStep(step: Pick<PlanItem, "id" | "text">, todos: readonly Pick<OwnerTodo, "text">[]): boolean {
+  const id = new RegExp(`\\b${step.id}\\b`);
+  const words = distinctiveWords(step.text);
+  return todos.some(todo => id.test(todo.text) || [...distinctiveWords(todo.text)].some(word => words.has(word)));
+}
+/** Whether an open step waits on the owner: its note says so (WAITS_ON_OWNER). */
+export const waitsOnOwner = (item: PlanItem): boolean => WAITS_ON_OWNER.test(item.note ?? "");
 /** A condition reported once when it starts or changes (`key`), then again every STEP_STALE_MS while it holds. */
 export interface Reminder { key: string; at: number }
 /**
@@ -189,6 +208,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   }
 
   const self = new Set(context.self ?? []);
+  const openTodos = (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done);
   const firstSeen = Math.min(now, Date.parse(board?.updatedAt ?? "") || now);
   const steps: Record<string, StepMemo> = context.boardError ? { ...previous?.steps } : {};
   const open: { at: number; line: string }[] = [];
@@ -203,9 +223,16 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     const owner = mine ? undefined : ownerOf(item, facts);
     moved = Math.max(moved, memo.at, owner?.activityAt ?? 0);
     const isOpen = OPEN.has(item.status);
-    if (isOpen && !openBelow && now - Math.max(moved, memo.nudged ?? 0) >= STEP_STALE_MS) {
+    if (mine && !openBelow && (item.status === "todo" || item.status === "doing") && now - Math.max(moved, memo.nudged ?? 0) >= OWN_STEP_MS) {
+      lines.push(`${item.id} is yours and has not moved for ${ago(now - moved)}: act now, start a job or decide`);
+      memo.nudged = now;
+    } else if (isOpen && !openBelow && now - Math.max(moved, memo.nudged ?? 0) >= STEP_STALE_MS) {
       lines.push(`${item.id} ${quote(item.text)} is ${item.status} with no board change and no owner activity for ${ago(now - moved)}`);
       memo.nudged = now;
+    }
+    if (isOpen && !openBelow && waitsOnOwner(item) && !todoForStep(item, openTodos)) {
+      if (before?.asked !== sig) lines.push(`${item.id} waits on the owner but For you has no question for it: add one with choices`);
+      memo.asked = sig;
     }
     if (isOpen && !openBelow) {
       const who = mine ? "owner you" : owner ? `owner ${ownerLabel(owner)} (${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? `owner ${item.job} (not found)` : "no owner";

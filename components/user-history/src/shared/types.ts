@@ -201,8 +201,8 @@ export interface SessionRow {
   pulse?: SessionPulse;
   /** The thread is a chat (listed in `<dataDir>/chats.json`): the sidebar sections it under Chats and the main view renders Chat.svelte. */
   chat?: true;
-  /** Chats only: the subagent sessions under it, for the sidebar tree. A chat's `unread` ignores `working`, so a job report shows while other jobs run. */
-  jobs?: ChatJob[];
+  /** Chats only: every thread linked to it (`chatAgents`), running first, for the Agents card and the sidebar tree. A chat's `unread` ignores `working`, so a job report shows while other jobs run. */
+  agents?: ChatAgent[];
   /** Chats only: the check-in schedule the owner set (`<dataDir>/check-in-settings.json`). */
   checkIn?: CheckInState;
   /**
@@ -225,11 +225,40 @@ export const CHECK_IN_PAUSES: readonly CheckInPause[] = ["1h", "tomorrow", "fore
 export const CHECK_IN_MIN_MINUTES = 1;
 export const CHECK_IN_MAX_MINUTES = 240;
 export const CHECK_IN_PRESET_MINUTES: readonly number[] = [1, 5, 15, 30, 60];
-/** One job of a chat in the sessions stream: a subagent session whose parent is the chat. `name` is its session name, what the chat and the plan call it. */
-export interface ChatJob {
-  id: string; childId?: string; name: string; status: "running" | "idle" | "saved";
-  /** What it is doing (the daemon summary or status label) while running, or how it ended. */
-  activity?: string; lastActivityAt?: string; failed?: true;
+/** How a thread is linked to a chat, the strongest kept when several apply: its subagent, a root it started, a plan step's owner, a thread it exchanged agent messages with in the last day. */
+export type AgentLink = "subagent" | "root" | "step" | "message";
+/**
+ * A subagent works, has ended its task (done) or stopped on an error (failed); any other thread works or is idle. `waiting` is an idle one whose
+ * last exchange with the chat is a message it sent that asks something, so the chat owes it an answer.
+ */
+export type AgentState = "working" | "waiting" | "idle" | "done" | "failed";
+/** Output tokens per second of a thread, from the usage store's calls: `live` when a call ended in the last minute, else the last call's rate. */
+export interface TokenRate { tps: number; live: boolean }
+/**
+ * One thread linked to a chat, in the sessions stream on the chat's row (`SessionRow.agents`, computed by `chatAgents` on the server): the Agents card,
+ * the sidebar tree and the chat_board tool list the same rows. `name` is the display name: the session name, or one derived from its first task when
+ * the name is empty, "Untitled" or kebab-case (display only; the session keeps its name). `job` is what `store.openJob` takes: the subagent's name,
+ * or `session:<id>` for any other thread.
+ */
+export interface ChatAgent {
+  /** `child:<rlmChildId>` for a subagent, else `thread:<sessionId>`. */
+  key: string;
+  /** The thread to open; absent for a subagent whose session the daemon does not list (deleted, or not listed yet). */
+  sessionId?: string;
+  childId?: string;
+  name: string;
+  job: string;
+  /** The name its messages to the chat carry (`chatLines` `from`): the session name as given, so a derived display name still finds its reports. */
+  sender: string;
+  link: AgentLink;
+  state: AgentState;
+  /** One line: what it does while working, the first line of its last message to the chat, or how it ended. */
+  activity?: string;
+  lastActivityAt?: string;
+  /** Plan item ids whose owner it is. */
+  steps: string[];
+  /** Its output tokens per second, when the usage store has a timed call for its session. */
+  rate?: TokenRate;
 }
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
 

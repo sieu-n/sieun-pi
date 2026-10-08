@@ -7,7 +7,7 @@ import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
 import { BOARD_PREFIX, BoardError, parseBoardOps } from "./shared/chat-board.ts";
 import { buildRenderBundle, LocalFileError, readLocalImage, readLocalText, renderPage, renderPolicy } from "./chat-render.ts";
-import { readWikiPage } from "./chat-wiki.ts";
+import { readWikiPage, type WikiPageView } from "./chat-wiki.ts";
 import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
@@ -266,7 +266,7 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   return input;
 }
 
-export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes() }: {
+export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage }: {
   backend: ChatBackend; bundle: ClientBundle; port: number; capability: string; csrfToken: string;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
@@ -276,6 +276,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   /** Settings > Versions and the SDK auto-update; null for instances that do not manage their packages. */
   sdk?: SdkSync | null;
   onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins; refreshes?: UsageRefreshes;
+  /** How `api/wiki-page` reads a page; a probe points it at its own wiki and content folder. */
+  wikiPage?: (path: string) => Promise<WikiPageView>;
 }): Promise<{ url: string; close(): Promise<void> }> {
   const base = "/" + capability + "/";
   const shell = renderShell(csrfToken, bundle.version);
@@ -469,8 +471,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           return;
         }
         if (route === "api/wiki-page") {
-          // A `wiki:` artifact link: the page's text through the llm-wiki dev server, so a phone on the tailnet can read it too.
-          try { json(res, 200, await readWikiPage(url.searchParams.get("path") ?? "")); }
+          // A `wiki:` artifact link or a report's linked page: its HTML or markdown through the llm-wiki dev server, so a phone on the tailnet can read it too.
+          try { json(res, 200, await wikiPage(url.searchParams.get("path") ?? "")); }
           catch (error) { throw error instanceof LocalFileError ? new RequestError(error.status, error.message) : error; }
           return;
         }
@@ -515,6 +517,17 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             const view = await backend.chats.checkInView(id);
             if (!view) throw new RequestError(404, "This thread is not a chat.");
             json(res, 200, view); return;
+          }
+          if (action === "duties") {
+            if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+            json(res, 200, { duties: await backend.duties.view(id) }); return;
+          }
+          if (action === "agents") {
+            // The chat's agents as its row carries them; the chat_board tool reads this for its "Agents:" lines.
+            if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+            await backend.catalog.summary(id);
+            const row = (await backend.catalog.rows()).find(candidate => candidate.id === id);
+            json(res, 200, { agents: row?.agents ?? [] }); return;
           }
         }
         throw new RequestError(404, "Not found.");
@@ -676,6 +689,17 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           try { await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer" }); }
           catch (failure) { sent = false; error = failure instanceof Error ? failure.message : String(failure); }
           json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
+        }
+        case "duties": {
+          // The owner's Run now, Pause and Resume on the Duties card; the reply is the chat's duties after the change.
+          if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
+          const duty = text(body.duty, "duty", 16);
+          const action = body.action;
+          if (action !== "run" && action !== "pause" && action !== "resume") throw new RequestError(400, "Choose run, pause or resume.");
+          const found = action === "run" ? await backend.duties.runNow(id, duty) || (await backend.duties.view(id)).some(view => view.duty.id === duty)
+            : await backend.duties.setStatus(id, duty, action === "pause" ? "paused" : "active");
+          if (!found) throw new RequestError(404, "This chat has no such duty.");
+          json(res, 200, { duties: await backend.duties.view(id) }); return;
         }
         case "check-in": {
           // The owner's interval and pause for the chat's check-in; the chat reads it on the board tool and has no op to change it.

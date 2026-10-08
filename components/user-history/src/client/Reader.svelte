@@ -4,15 +4,15 @@
   import { store } from "./store.svelte.ts";
   import { clockTime } from "./format.ts";
   import { renderMarkdown, renderInline } from "./markdown.ts";
-  import { diagrams } from "./diagrams.ts";
+  import { diagrams, pageFrame, type PageHost } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
   import { chatFeed, chatLines, updatesLabel, type ChatItem, type ChatLine, type Update } from "../shared/chat-feed.ts";
-  import { parseArtifactTarget } from "../shared/artifact-link.ts";
-  import { createdSessions } from "./children.ts";
+  import { normalizeArtifactTarget, parseArtifactTarget } from "../shared/artifact-link.ts";
+  import { createdSessions } from "../shared/created-sessions.ts";
   import { findJob, jobName, jobNames, jobViews, reportsFor, type JobReport } from "./jobs.ts";
   import { triggerBody } from "../shared/turns.ts";
   import { anchorStamp, permalink } from "./permalink.ts";
-  import { diffLines, wikiBlocks, wikiUrl, type ReaderView } from "./reader.ts";
+  import { diffLines, reportWikiPage, wikiUrl, type ReaderView } from "./reader.ts";
   import { mentionIndex } from "./board.ts";
   import type { ChildUsage } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
@@ -20,10 +20,11 @@
   import Lightbox from "./ui/Lightbox.svelte";
 
   /**
-   * The one place an artifact opens: a job's latest report with its earlier messages behind a fold, a text file (markdown rendered, a diff
-   * with line colors, code with line numbers), a wiki page's text through the service, one message of a thread, or a folded run of a chat's
-   * updates as a list (who wrote, when, the whole text; the chat's own hidden text as "VP notes"). The header names the source, copies a
-   * link that pastes back as a note link, and offers the way to the full thing (the job's thread, the wiki, the message).
+   * The one place an artifact opens: a job's latest report with its earlier messages behind a fold and the wiki page it links drawn under
+   * it, a text file (markdown rendered, a diff with line colors, code with line numbers), a wiki page through the service (its own HTML in a
+   * sandboxed frame, or its markdown rendered), one message of a thread, or a folded run of a chat's updates as a list (who wrote, when,
+   * the whole text; the chat's own hidden text as "VP notes"). The header names the source, copies a link that pastes back as a note link,
+   * and offers the way to the full thing (the job's thread, the wiki, the message).
    */
   let { view, narrow, onclose }: { view: ReaderView; narrow: boolean; onclose: () => void } = $props();
 
@@ -99,14 +100,32 @@
     api.localFile(path).then(result => { if (file === loading) file = { path, result, error: null }; },
       error => { if (file === loading) file = { path, result: null, error: error instanceof Error ? error.message : String(error) }; });
   });
+  /** The wiki page on screen: the `wiki:` link's own page, or the page a job's latest report links (reportWikiPage), drawn under the report. */
+  const linkedPath = $derived(view.kind === "job" && latest ? reportWikiPage(body(latest)) : null);
+  const wikiPath = $derived(view.kind === "wiki" ? view.path : linkedPath);
   let wiki = $state.raw<{ path: string; result: WikiPage | null; error: string | null } | null>(null);
   $effect(() => {
-    if (view.kind !== "wiki") { wiki = null; return; }
-    const path = view.path;
+    const path = wikiPath;
+    if (!path) { wiki = null; return; }
     const loading = { path, result: null, error: null };
     wiki = loading;
     api.wikiPage(path).then(result => { if (wiki === loading) wiki = { path, result, error: null }; },
       error => { if (wiki === loading) wiki = { path, result: null, error: error instanceof Error ? error.message : String(error) }; });
+  });
+  const openWiki = (path: string) => window.open(wikiUrl(path), "_blank", "noopener");
+  /** The page frame's links and images: a link to another wiki page opens here in the reader, any other link (a data file, the web) in a tab; an image by path is read through `api/local-image`. */
+  const pageHost = (page: WikiPage): PageHost => ({
+    onOpen(href) {
+      let url: string;
+      try { url = new URL(href, page.url).href; } catch { return; }
+      const target = parseArtifactTarget(normalizeArtifactTarget(url) ?? "");
+      if (target?.kind === "wiki" && /\.(html?|md)$/i.test(target.path)) store.openArtifact(target, thread ?? store.selectedId ?? "");
+      else window.open(url, "_blank", "noopener");
+    },
+    async image(src) {
+      const path = page.dir + "/" + src.replace(/^\.\//, "");
+      try { const response = await fetch("api/local-image?path=" + encodeURIComponent(path)); return response.ok ? await response.blob() : null; } catch { return null; }
+    },
   });
 
   const fileName = (path: string) => path.split("/").filter(Boolean).at(-1) ?? path;
@@ -153,7 +172,7 @@
     switch (view.kind) {
       case "job": return fullThread ? [fullThread] : [];
       case "file": return [];
-      case "wiki": { const url = wikiUrl(view.path); return [{ label: "Open in wiki", run: () => window.open(url, "_blank", "noopener") }]; }
+      case "wiki": { const path = view.path; return [{ label: "Open in wiki", run: () => openWiki(path) }]; }
       case "message": {
         const { thread: id, at } = view;
         return [...(fullThread ? [fullThread] : []), { label: "Go to message", run: () => { onclose(); store.select(id, at); } }];
@@ -180,6 +199,13 @@
 
 {#snippet loading()}<p class="snapshot"><span class="spinner tiny"></span> Opening</p>{/snippet}
 {#snippet failure(text: string)}<p class="snapshot error">{text}</p>{/snippet}
+{#snippet page(path: string)}
+  {#if !wiki || wiki.path !== path || (!wiki.result && !wiki.error)}{@render loading()}
+  {:else if wiki.error}{@render failure(wiki.error)}
+  {:else if wiki.result?.kind === "html"}
+    {#key wiki.result.path}<div class="wiki-page" use:pageFrame={{ html: wiki.result.html, host: pageHost(wiki.result) }}></div>{/key}
+  {:else if wiki.result}{@render prose(wiki.result.text, wiki.result.dir)}{/if}
+{/snippet}
 
 <Modal {title} icon={ICON[view.kind]} width="min(960px, 92vw)" tall full={narrow} {onclose}>
   {#snippet header()}
@@ -196,6 +222,16 @@
       {:else if !latest}<p class="snapshot">This job has sent nothing to the chat yet.</p>
       {:else}
         {@render prose(body(latest), cwd)}
+        {#if linkedPath}
+          {@const path = linkedPath}
+          <section class="linked">
+            <div class="linked-head">
+              <Icon name="book" size={13} /><span class="linked-title">Full report: {wiki?.result?.title ?? fileName(path)}</span>
+              <button type="button" class="button small" onclick={() => openWiki(path)}>Open report</button>
+            </div>
+            {@render page(path)}
+          </section>
+        {/if}
         {#if earlier.length}
           <button type="button" class="fold" aria-expanded={earlierOpen} onclick={() => { earlierOpen = !earlierOpen; }}>
             <span class="chev" class:open={earlierOpen}><Icon name="chevronDown" size={12} /></span>{earlier.length} earlier {earlier.length === 1 ? "message" : "messages"}
@@ -223,15 +259,7 @@
         {/if}
       {/if}
     {:else if view.kind === "wiki"}
-      {#if !wiki || wiki.path !== view.path || (!wiki.result && !wiki.error)}{@render loading()}
-      {:else if wiki.error}{@render failure(wiki.error)}
-      {:else if wiki.result}
-        <div class="wiki-text">
-          {#each wikiBlocks(wiki.result.text, wiki.result.headings) as block, index (index)}
-            {#if block.kind === "heading"}<h3>{block.text}</h3>{:else}<p>{block.text}</p>{/if}
-          {/each}
-        </div>
-      {/if}
+      {@render page(view.path)}
     {:else if view.kind === "message"}
       {#if entry?.error && !snapshot}{@render failure(entry.error)}
       {:else if !snapshot}{@render loading()}
@@ -290,9 +318,12 @@
   .diff .hunk { color: var(--accent-bold); background: var(--accent-soft); }
   .diff .meta { color: var(--text-faint); }
   .code .num { display: inline-block; width: 3.2em; margin-right: 1em; text-align: right; color: var(--text-faint); user-select: none; }
-  .wiki-text h3 { margin: 1.4em 0 0.4em; font-size: 15px; font-weight: 600; }
-  .wiki-text h3:first-child { margin-top: 0; }
-  .wiki-text p { margin: 0 0 0.8em; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .wiki-page :global(.diagram-frame) { display: block; width: 100%; height: 0; border: 0; background: transparent; }
+  .linked { margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .linked-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; color: var(--text-muted); }
+  .linked-head :global(svg) { flex: none; color: var(--accent); }
+  .linked-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text); }
+  .linked-head .button { flex: none; }
   .said { line-height: 1.5; overflow-wrap: anywhere; }
   .said :global(code) { font-family: var(--mono); font-size: 0.88em; background: var(--bg-sunken); border: 1px solid var(--border); padding: 0.08em 0.35em; border-radius: 5px; }
   @container app (max-width: 899px) {

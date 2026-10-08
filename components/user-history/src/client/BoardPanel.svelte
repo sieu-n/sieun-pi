@@ -1,19 +1,25 @@
 <script lang="ts">
   import { untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, nextIds } from "../shared/chat-board.ts";
-  import type { ArtifactLink, BoardOp, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../shared/types.ts";
+  import type { ArtifactLink, BoardOp, ChatAgent, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../shared/types.ts";
+  import { AGENT_LINK_LABEL, AGENT_STATE_LABEL } from "./board.ts";
+  import { elapsed } from "./organize.ts";
   import { countItems, groupTodos, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, planProgress, planTotals, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
   import Checkbox from "./ui/Checkbox.svelte";
+  import { ChatDuties, dutiesCount } from "./duties.svelte.ts";
+  import DutyList from "./DutyList.svelte";
   import Icon from "./Icon.svelte";
   import IdChip from "./IdChip.svelte";
   import PlanMark from "./PlanMark.svelte";
   import { tooltip } from "./ui/tooltip.ts";
 
   /**
-   * The chat's board as three cards: the plan the chat keeps (read-only here), For you (the chat's asks, answered by a tap on a choice
-   * or a typed reply), and Notes (nested notes with links to jobs, messages, wiki pages, files and web pages; the owner adds and removes notes).
+   * The chat's board as four cards: the plan the chat keeps (read-only here), For you (the chat's asks, answered by a tap on a choice
+   * or a typed reply), Agents (every thread the server links to the chat, `SessionRow.agents`: a status dot, the name, one line of activity
+   * and the age; a click opens the job drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card),
+   * and Notes (nested notes with links to jobs, messages, wiki pages, files and web pages; the owner adds and removes notes).
    * Plan steps and notes are trees: everything with children starts folded, done and dropped steps hide behind "Show done" per parent, and
    * each item carries its id chip (the id the chat uses, with a color hashed from the chat and item ids; a click copies the id).
    * A row reads as one paragraph: the fold, the status mark and the chip sit inline before the text, and a wrapped line comes back to the row's
@@ -23,9 +29,25 @@
    * server's 5-minute tick line under the cards. `apply` gets the board after the owner's ops and the ops themselves; it resolves false when
    * the server refused them.
    */
-  let { id, board, checkIn, onjob, previewJob, apply }: {
-    id: string; board: ChatBoard | null; checkIn: { text: string; on: boolean }; onjob: (name: string) => void; previewJob: (owner: string) => string | undefined; apply: (next: ChatBoard, ops: BoardOp[]) => Promise<boolean>;
+  let { id, board, agents, now, checkIn, onjob, onagent, previewJob, apply }: {
+    id: string; board: ChatBoard | null; agents: readonly ChatAgent[]; now: number; checkIn: { text: string; on: boolean }; onjob: (name: string) => void; onagent: (agent: ChatAgent) => void;
+    previewJob: (owner: string) => string | undefined; apply: (next: ChatBoard, ops: BoardOp[]) => Promise<boolean>;
   } = $props();
+
+  /** The Agents header counts the working agents, or every agent when none works. */
+  const workingCount = $derived(agents.filter(agent => agent.state === "working").length);
+  const agentsCount = $derived(workingCount ? `${workingCount} running` : agents.length ? String(agents.length) : "");
+  const agentsOpen = $derived(ui.boardCards.agents ?? true);
+  /** How long since the agent last did anything, on the minute. */
+  const agentAge = (agent: ChatAgent): string => { const at = Date.parse(agent.lastActivityAt ?? ""); return at ? elapsed(Math.max(0, now - at)) : ""; };
+  /** "48 tok/s", one decimal under 10. */
+  const rateText = (tps: number): string => `${tps < 10 ? tps.toFixed(1) : Math.round(tps)} tok/s`;
+  const agentTitle = (agent: ChatAgent): string => `${AGENT_STATE_LABEL[agent.state]}${agent.steps.length ? ` · ${agent.steps.join(", ")}` : ""} · ${AGENT_LINK_LABEL[agent.link]}`;
+
+  /** The chat's standing duties (src/shared/chat-duties.ts), polled while the panel shows; the card appears once the chat has one. */
+  const duties = new ChatDuties();
+  $effect(() => duties.watch(id));
+  const dutiesOpen = $derived(ui.boardCards.duties ?? true);
 
   const todos = $derived(groupTodos(board?.todos ?? []));
   const openCount = $derived(todos.open.length);
@@ -111,7 +133,7 @@
   const onStepKey = (job: string) => (event: KeyboardEvent) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onjob(job); } };
 </script>
 
-{#snippet card(key: "plan" | "foryou" | "notes", title: string, count: string, open: boolean, toggle: () => void, body: Snippet, expandable = false)}
+{#snippet card(key: "plan" | "foryou" | "agents" | "duties" | "notes", title: string, count: string, open: boolean, toggle: () => void, body: Snippet, expandable = false)}
   <section class="island {key}" class:open>
     <div class="island-head">
       <button type="button" class="island-toggle" aria-expanded={open} onclick={toggle}>
@@ -276,18 +298,44 @@
     {#if doneOpen}<ul class="todos">{#each todos.done as todo (todo.id)}{@render todoRow(todo)}{/each}</ul>{/if}
   {/if}
 {/snippet}
+{#snippet agentsBody()}
+  {#if agents.length}
+    <ul class="agents">
+      {#each agents as agent (agent.key)}
+        <li>
+          <button type="button" class="agent" title={agentTitle(agent)} data-preview-chat={id} data-preview-job={agent.job} onclick={() => onagent(agent)}>
+            <span class="agent-state">{#if agent.state === "working"}<span class="spinner tiny"></span>{:else}<span class="agent-dot {agent.state}"></span>{/if}</span>
+            <span class="agent-name">{agent.name}</span>
+            {#if agent.activity}<span class="agent-activity" class:failed={agent.state === "failed"}>{agent.activity}</span>{/if}
+            {#if agent.rate}<span class="agent-rate" class:live={agent.rate.live && agent.state === "working"} title={agent.rate.live && agent.state === "working" ? "Output tokens per second now" : "Output tokens per second of its last turn"}>{rateText(agent.rate.tps)}</span>{/if}
+            {#if agentAge(agent)}<span class="agent-age">{agentAge(agent)}</span>{/if}
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {:else}<p class="none">No agents yet.</p>{/if}
+{/snippet}
 {#snippet notesBody()}
   {#if scratch.length}<ul class="notes">{#each noteRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render noteRow(row)}{/each}</ul>{/if}
   {@render addNoteField()}
 {/snippet}
 
+{#snippet dutiesBody()}<DutyList chat={id} {duties} {now} />{/snippet}
+{#snippet dutiesCard()}
+  {#if duties.views.length}{@render card("duties", "Duties", dutiesCount(duties.views), dutiesOpen, () => ui.setBoardCard("duties", !dutiesOpen), dutiesBody)}{/if}
+{/snippet}
+
 <div class="board">
   {#if isEmptyBoard(board)}
     <p class="empty">The plan, the chat's questions and its notes show up here once it starts work.</p>
+    {#if agents.length}{@render card("agents", "Agents", agentsCount, agentsOpen, () => ui.setBoardCard("agents", !agentsOpen), agentsBody)}{/if}
+    {@render dutiesCard()}
     {@render addNoteField()}
   {:else}
     {@render card("plan", "Plan", totals.total ? `${totals.done} of ${totals.total} done` : "", planOpen, () => ui.setBoardCard("plan", !planOpen), planBody, true)}
     {@render card("foryou", "For you", openCount ? `${openCount} open` : "", forYouOpen, () => { forYouOpen = !forYouOpen; }, forYouBody)}
+    {@render card("agents", "Agents", agentsCount, agentsOpen, () => ui.setBoardCard("agents", !agentsOpen), agentsBody)}
+    {@render dutiesCard()}
     {@render card("notes", "Notes", noteCount ? String(noteCount) : "", notesOpen, () => ui.setBoardCard("notes", !notesOpen), notesBody, true)}
   {/if}
   <p class="check-in" class:on={checkIn.on}><Icon name="bolt" size={12} /><span>{checkIn.text}</span></p>
@@ -365,6 +413,22 @@
   .done-fold { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; padding: 2px 4px; border-radius: 4px; font-size: 12px; color: var(--text-faint); }
   .done-fold:hover { color: var(--text); background: var(--bg-hover); }
   .done-fold + .todos { margin-top: 4px; }
+  /* An agent row reads like a sidebar job row: the dot column, the name, the activity fading out, the age at the right edge. */
+  .agents { list-style: none; margin: 0 -6px; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+  .agent { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 3px 6px; border-radius: var(--radius-small); text-align: left; line-height: 18px; }
+  .agent:hover { background: var(--bg-hover); }
+  .agent-state { display: inline-flex; flex: none; width: 12px; justify-content: center; }
+  .agent-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+  .agent-dot.idle { background: var(--success); }
+  .agent-dot.waiting { background: var(--warning); }
+  .agent-dot.failed { background: var(--danger); }
+  .agent-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-activity { flex: 1; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-faint); }
+  .agent-activity.failed { color: var(--danger); }
+  .agent-rate { flex: none; margin-left: auto; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .agent-rate.live { color: var(--accent-bold); }
+  .agent-rate + .agent-age { margin-left: 0; }
+  .agent-age { flex: none; margin-left: auto; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .notes { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
   .note { display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
   .note-actions { display: inline-flex; flex: none; }

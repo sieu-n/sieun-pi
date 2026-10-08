@@ -1,5 +1,5 @@
 import type { PulseReading } from "../shared/pulse.ts";
-import type { ChildAgent, ThreadMessage } from "../shared/types.ts";
+import type { ChildAgent } from "../shared/types.ts";
 
 export const isActiveChild = (child: ChildAgent): boolean => child.status === "running" || child.status === "queued";
 export const childName = (child: ChildAgent): string => child.sessionName ?? child.label.split("\n", 1)[0]!.slice(0, 80);
@@ -22,23 +22,4 @@ export function childDetail(child: ChildAgent, reading: PulseReading | null): Ch
   if (child.status === "error") return { lead: "Failed", text: oneLine(child.error ?? ""), tone: "failed" };
   if (child.status === "cancelled") return { lead: "Cancelled", text: oneLine(child.recap ?? ""), tone: "" };
   return { lead: "", text: oneLine(child.answerPreview ?? child.recap ?? "Done"), tone: "" };
-}
-
-/** A depth-0 session this thread started with `rlm.create_session`, read from the handle its tool result printed. */
-export interface CreatedSession { sessionId: string; name: string }
-const HANDLE = /RLMCreateSessionHandle\(active_session_id='[^']*', session_id='([^']+)', name=(?:'([^']*)'|None)/g;
-/** Created sessions in first-seen order, one per session id, from the ipython tool results in the transcript. */
-export function createdSessions(messages: readonly ThreadMessage[]): CreatedSession[] {
-  const found = new Map<string, CreatedSession>();
-  for (const message of messages) {
-    if (message.role !== "toolResult") continue;
-    for (const part of message.content) {
-      if (part.type !== "text") continue;
-      for (const match of part.text.matchAll(HANDLE)) {
-        const sessionId = match[1]!;
-        if (!found.has(sessionId)) found.set(sessionId, { sessionId, name: match[2] ?? "" });
-      }
-    }
-  }
-  return [...found.values()];
 }

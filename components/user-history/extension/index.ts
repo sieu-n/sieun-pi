@@ -1,5 +1,7 @@
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-agent";
+import { agentLines } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, fileChatName, hasChatMarker, JOB_REPLY_TOOL, jobOf,
@@ -7,6 +9,7 @@ import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, cha
 import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { checkInLine, checkInSettings } from "../src/chat-checkin.ts";
+import type { ChatAgent } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
   const images = new ImageFitter();
@@ -60,8 +63,10 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const ops = parseBoardOps((params as { ops?: unknown }).ops ?? []);
       const sessionId = ctx.sessionManager.getSessionId();
       const { board, summaries } = await boards().apply(sessionId, ops, "agent");
-      const checkIn = checkInLine(await checkInSettings(join(dataDir(), "check-in-settings.json")).get(sessionId), Date.now());
-      return { content: [{ type: "text", text: [...summaries, renderBoard(board, sessionId, checkIn)].join("\n") }], details: undefined };
+      const now = Date.now();
+      const checkIn = checkInLine(await checkInSettings(join(dataDir(), "check-in-settings.json")).get(sessionId), now);
+      const agents = agentLines(await chatAgentsOf(sessionId), now);
+      return { content: [{ type: "text", text: [...summaries, renderBoard(board, sessionId, checkIn), ...agents].join("\n") }], details: undefined };
     },
   });
   // The feed shows this call's text as a bubble on any turn; on a turn the owner did not start it is the only text the owner sees.
@@ -88,6 +93,18 @@ export default function historyExtension(pi: ExtensionAPI): void {
     return typeof flag === "string" && flag ? resolve(flag) : join(getAgentDir(), "browser-chat");
   };
   const boards = () => new BoardStore(dataDir());
+  // The chat server computes the agents list (subagents, roots, step owners, message partners) and serves it under its capability URL,
+  // recorded in <data dir>/instance.json. No server, no section.
+  const chatAgentsOf = async (sessionId: string): Promise<ChatAgent[]> => {
+    try {
+      const instance = JSON.parse(await readFile(join(dataDir(), "instance.json"), "utf8")) as { url?: unknown };
+      if (typeof instance.url !== "string") return [];
+      const response = await fetch(`${instance.url}api/threads/${encodeURIComponent(sessionId)}/agents`, { signal: AbortSignal.timeout(3000) });
+      if (!response.ok) return [];
+      const body = await response.json() as { agents?: unknown };
+      return Array.isArray(body.agents) ? body.agents as ChatAgent[] : [];
+    } catch { return []; }
+  };
   const jobs = () => jobRegistry(join(dataDir(), "chat-jobs.json"));
   // The marker is written once, at the first session_start of a flagged root, and read back on every later start. Children (depth > 0) inherit
   // the flag and the active tool list through the runtime config, so they drop the tool. Any error fails open.

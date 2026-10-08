@@ -68,35 +68,39 @@ test("briefFor takes the last naming call across the chat's ipython tool calls",
   assert.equal(briefFor(messages, "other"), null);
 });
 
-test("treeJobs and parentChatOf read a chat's jobs from its row and from the sessions its transcript started", () => {
+test("treeJobs and parentChatOf read a chat's agents from its row; jobNames adds the sessions its transcript started", () => {
   const row = (over: Partial<SessionRow>): SessionRow => ({ id: "r", name: "row", cwd: "/r", kind: "live", status: "idle", archived: false, messageCount: 1, working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", ...over });
-  const chat = row({ id: "chat", name: "ux", chat: true, jobs: [
-    { id: "s1", childId: "sub-1", name: "ux-email", status: "saved" },
-    { id: "s2", childId: "sub-2", name: "ux-monitor", status: "running", activity: "Reading routes", lastActivityAt: "2026-10-08T09:00:00.000Z" },
+  const chat = row({ id: "chat", name: "ux", chat: true, agents: [
+    { key: "child:sub-2", sessionId: "s2", childId: "sub-2", name: "ux-monitor", job: "ux-monitor", sender: "ux-monitor", link: "subagent", state: "working", activity: "Reading routes", lastActivityAt: "2026-10-08T09:00:00.000Z", steps: ["p2"] },
+    { key: "thread:01a1-root", sessionId: "01a1-root", name: "seo todo", job: "session:01a1-root", sender: "seo-todo", link: "root", state: "working", activity: "queued", steps: [] },
+    { key: "thread:01a1-main", sessionId: "01a1-main", name: "main stripe clerk", job: "session:01a1-main", sender: "main stripe clerk", link: "step", state: "waiting", activity: "May I push?", steps: ["p3"] },
+    { key: "child:sub-1", sessionId: "s1", childId: "sub-1", name: "ux-email", job: "ux-email", sender: "ux-email", link: "subagent", state: "done", steps: [] },
   ] });
   const created = row({ id: "01a1-root", name: "seo-todo", working: true, statusLabel: "queued", origin: "agent" });
   const messages: ThreadMessage[] = [{ role: "toolResult", toolCallId: "t", toolName: "ipython", content: [{ type: "text", text: "RLMCreateSessionHandle(active_session_id='a', session_id='01a1-root', name='seo-todo', session_file=PosixPath('/x'))" }], isError: false, timestamp: 1 }];
   const rows = [chat, created];
   const rowOf = (id: string) => rows.find(entry => entry.id === id);
-  const tree = treeJobs(chat, messages, rowOf);
-  assert.deepEqual(tree.map(job => [job.key, job.running, job.activity, job.open]), [
-    ["job:s2", true, "Reading routes", "ux-monitor"],
-    ["session:01a1-root", true, "queued", "session:01a1-root"],
-    ["job:s1", false, "", "ux-email"],
+  const tree = treeJobs(chat);
+  assert.deepEqual(tree.map(job => [job.key, job.running, job.waiting, job.saved, job.activity, job.open, job.report]), [
+    ["child:sub-2", true, false, false, "Reading routes", "ux-monitor", "ux-monitor"],
+    ["thread:01a1-root", true, false, false, "queued", "session:01a1-root", "seo-todo"],
+    ["thread:01a1-main", false, true, false, "May I push?", "session:01a1-main", "main stripe clerk"],
+    ["child:sub-1", false, false, true, "", "ux-email", "ux-email"],
   ]);
-  assert.deepEqual(tree.map(job => job.at), [Date.parse("2026-10-08T09:00:00.000Z"), 0, 0]);
-  assert.deepEqual(treeJobs(chat, undefined, rowOf).map(job => job.key), ["job:s2", "job:s1"]);
+  assert.deepEqual(tree.map(job => job.at), [Date.parse("2026-10-08T09:00:00.000Z"), 0, 0, 0]);
+  assert.deepEqual(treeJobs(row({ chat: true })), []);
   const messagesOf = (id: string) => id === "chat" ? messages : undefined;
   assert.deepEqual(parentChatOf("s1", rows, messagesOf), { chat, open: "ux-email" });
   assert.deepEqual(parentChatOf("01a1-root", rows, messagesOf), { chat, open: "session:01a1-root" });
+  assert.equal(parentChatOf("01a1-main", rows, messagesOf), null, "a step owner is no job of the chat");
   assert.equal(parentChatOf("nobody", rows, messagesOf), null);
-  assert.deepEqual(jobNames(chat, { children: [child("c1", "ux-monitor"), child("c2", "ux-review")], messages }, rowOf), ["ux-monitor", "seo-todo", "ux-email", "ux-review"], "row jobs and started sessions as the sidebar lists them, then the daemon's children, once each");
+  assert.deepEqual(jobNames(chat, { children: [child("c1", "ux-monitor"), child("c2", "ux-review")], messages }, rowOf), ["ux-monitor", "seo todo", "main stripe clerk", "ux-email", "seo-todo", "ux-review"], "the row's agents, the started sessions by catalog name, then the daemon's children, once each");
   assert.deepEqual(jobNames(undefined, { children: [], messages }, rowOf), ["seo-todo"], "no row yet: the started sessions by their catalog name");
   assert.deepEqual(jobNames(undefined, null, rowOf), []);
-  assert.deepEqual(tree.map(jobStatusText), ["Reading routes", "queued", "Finished"]);
+  assert.deepEqual(tree.map(jobStatusText), ["Reading routes", "queued", "Waiting for the chat", "Finished"]);
   assert.equal(jobStatusText({ ...tree[0]!, activity: "" }), "Running");
-  assert.equal(jobStatusText({ ...tree[2]!, saved: false }), "Idle");
-  assert.equal(jobStatusText({ ...tree[2]!, failed: true }), "Failed");
+  assert.equal(jobStatusText({ ...tree[3]!, saved: false }), "Idle");
+  assert.equal(jobStatusText({ ...tree[3]!, failed: true }), "Failed");
 });
 
 test("updatesJob previews the sender of the last job message in a folded run", () => {

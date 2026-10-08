@@ -1,5 +1,6 @@
 import { Worker } from "node:worker_threads";
 import { USAGE_METRICS, type UsageBucket, type UsageGroup, type UsageMetric, type UsageModelRow, type UsageRate, type UsageSeries, type UsageSummary, type UsageWindow } from "../shared/usage.ts";
+import type { TokenRate } from "../shared/types.ts";
 import type { WorkerOptions, WorkerRequest } from "./worker.ts";
 
 /**
@@ -120,6 +121,8 @@ export class UsageService {
   series(window: UsageWindow, bucket: UsageBucket, group: UsageGroup, metric: UsageMetric = "output"): Promise<UsageSeries> { return this.call("series", [window, bucket, group, metric]); }
   models(window: UsageWindow): Promise<{ models: UsageModelRow[] }> { return this.call("models", [window]); }
   daily(): Promise<unknown> { return this.call("daily"); }
+  /** Output tokens per second per session id (src/usage/rates.ts), for the threads the Agents card lists; a worker that is down answers with no rates. */
+  rates(sessionIds: readonly string[]): Promise<Record<string, TokenRate>> { return sessionIds.length ? this.call<Record<string, TokenRate>>("rates", [sessionIds]).catch(() => ({})) : Promise.resolve({}); }
   /** Resolves when the ingest has finished every pass queued so far (tests and measurements). */
   idle(): Promise<void> { return this.call("idle"); }
 

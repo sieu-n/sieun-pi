@@ -1,12 +1,13 @@
-import { closeSync, existsSync, openSync, readSync } from "node:fs";
-import { basename } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
+import { chatAgents, withRates, type AgentRow, type SubagentSession } from "./chat-agents.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
-import type { ChatJob, CheckInState, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChatAgent, CheckInState, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -61,6 +62,28 @@ function messageTitle(first: string): string {
 
 /** Title text of each session file's first user message. A session file only grows at its end, so a found entry never changes. */
 const fileTitles = new Map<string, string>();
+
+/** The raw first user message of each session file, cut to 2000 characters, for derived display names. */
+const fileFirsts = new Map<string, string>();
+/** The first task text of a session: the stored first user message, else the daemon's `firstMessage`. Empty when there is none yet. */
+export function firstTask(row: Pick<SessionSummary, "firstMessage" | "sessionFile">): string {
+  if (row.sessionFile) {
+    const cached = fileFirsts.get(row.sessionFile);
+    if (cached !== undefined) return cached;
+    const first = fileFirstMessage(row.sessionFile) || subagentPrompt(row.sessionFile);
+    if (first) { const cut = taskText(first).slice(0, 2000); fileFirsts.set(row.sessionFile, cut); return cut; }
+  }
+  return taskText(row.firstMessage ?? "");
+}
+/** A skill invocation stored expanded reads as what the person typed. */
+const taskText = (first: string): string => first.trimStart().startsWith("<skill") ? parseSkillBlock(first)?.userMessage ?? "" : first;
+/** A subagent's session file holds no user message: its task is the `prompt` of the rlm-subagent.json beside it. */
+function subagentPrompt(sessionFile: string): string {
+  try {
+    const record: unknown = JSON.parse(readFileSync(join(dirname(sessionFile), "rlm-subagent.json"), "utf8"));
+    return isRecord(record) && typeof record.prompt === "string" ? record.prompt : "";
+  } catch { return ""; }
+}
 
 function storedTitle(sessionFile: string | undefined): string | undefined {
   if (!sessionFile) return undefined;
@@ -189,21 +212,20 @@ export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, Ses
   return { ...(cost !== undefined ? { cost } : {}), running };
 }
 
-export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin; jobs?: ChatJob[]; checkIn?: CheckInState }
+export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin; agents?: ChatAgent[]; checkIn?: CheckInState }
 
-/** A chat's direct subagent sessions as sidebar jobs, running first, then by latest activity. */
-export function chatJobs(children: readonly SessionSummary[]): ChatJob[] {
-  const jobs = children.map((row): ChatJob => {
-    const status = nativeStatus(row);
+/** A chat's direct subagent sessions as `chatAgents` takes them: the daemon status, the failure, and the first task text for a derived display name. */
+export function subagentSessions(children: readonly SessionSummary[]): SubagentSession[] {
+  return children.map((row): SubagentSession => {
+    const running = nativeStatus(row) === "running";
     const failed = row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row);
-    const activity = status === "running" ? row.statusLabel ?? row.summary?.trim().slice(0, 200) : failed ? row.summary?.trim().slice(0, 200) : undefined;
+    const activity = running ? row.statusLabel ?? row.summary?.trim().slice(0, 200) : failed ? row.summary?.trim().slice(0, 200) : undefined;
     const at = row.lastActivityAt ?? row.modified;
-    return { id: row.sessionId, ...(row.rlmChildId ? { childId: row.rlmChildId } : {}), name: sessionTitle(row),
-      status: status === "running" ? "running" : row.activeSessionId !== undefined ? "idle" : "saved",
-      ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: at } : {}), ...(failed ? { failed: true } : {}) };
+    const name = row.sessionName?.replace(/\s+/g, " ").trim();
+    const first = firstTask(row);
+    return { sessionId: row.sessionId, ...(row.rlmChildId ? { childId: row.rlmChildId } : {}), ...(name ? { name } : {}), ...(first ? { first } : {}), running, failed,
+      ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: at } : {}) };
   });
-  const at = (job: ChatJob) => Date.parse(job.lastActivityAt ?? "") || 0;
-  return jobs.sort((left, right) => Number(right.status === "running") - Number(left.status === "running") || at(right) - at(left));
 }
 
 /** Working: the thread's own turn runs, or any subagent below it runs (`isSessionSummaryBusy` in the daemon counts both). */
@@ -244,7 +266,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
     ...(cost !== undefined ? { cost } : {}),
     ...(working && extras.pulse ? { pulse: extras.pulse } : {}),
     ...(extras.schedule ? { schedule: extras.schedule } : {}),
-    ...(extras.chat ? { chat: true, jobs: extras.jobs ?? [], ...(extras.checkIn ? { checkIn: extras.checkIn } : {}) } : {}),
+    ...(extras.chat ? { chat: true, agents: extras.agents ?? [], ...(extras.checkIn ? { checkIn: extras.checkIn } : {}) } : {}),
     origin: extras.origin ?? "user",
   };
 }
@@ -274,8 +296,15 @@ export function parseSummaries(value: unknown): SessionSummary[] {
   return value.sessions.filter((row: unknown): row is SessionSummary => isRecord(row) && typeof row.sessionId === "string" && typeof row.cwd === "string");
 }
 
+/** How often a working agent's output rate is read again and pushed with the rows; the usage feed's own cadence. */
+export const RATES_MS = 2000;
+
 export class Catalog {
   readonly client: DaemonClient;
+  /** Output rates by session id, from the usage service once the backend wires it; the default answers with none. */
+  ratesSource: (sessionIds: readonly string[]) => Promise<Record<string, TokenRate>> = async () => ({});
+  private rates: { key: string; at: number; value: Record<string, TokenRate> } | undefined;
+  private ratesTimer: ReturnType<typeof setTimeout> | undefined;
   private summaries = new Map<string, SessionSummary>();
   private childSummaries: SessionSummary[] = [];
   private schedules = new Map<string, ThreadSchedule>();
@@ -296,7 +325,7 @@ export class Catalog {
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns">,
+  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links">,
     private readonly origins: ThreadOrigins) {
     this.client = new DaemonClient(socketPath);
     this.client.onMessage(message => {
@@ -418,8 +447,8 @@ export class Catalog {
     const originOf = await this.origins.resolver(chats ?? new Set());
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
-    const rows = [...this.summaries.values()]
-      .filter(row => isListed(row))
+    const listed = [...this.summaries.values()].filter(row => isListed(row));
+    const rows = listed
       .map(row => {
         const schedule = this.schedules.get(row.sessionId);
         const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
@@ -427,11 +456,40 @@ export class Catalog {
         const checkIn = checkIns?.get(row.sessionId);
         return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
           ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
-          ...(chats?.has(row.sessionId) ? { chat: true, jobs: chatJobs(children.get(row.sessionId) ?? []), ...(checkIn ? { checkIn } : {}) } : {}),
+          ...(chats?.has(row.sessionId) ? { chat: true, ...(checkIn ? { checkIn } : {}) } : {}),
           ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
+    // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
+    const agentRows: AgentRow[] = rows.map(row => { const first = firstTask(this.summaries.get(row.id) ?? {}); return first ? { row, first } : { row }; });
+    const now = Date.now();
+    const chatRows = rows.filter(row => row.chat);
+    for (const row of chatRows) {
+      const links = await this.chats.links(row.id).catch(() => null);
+      row.agents = chatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? []),
+        board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
+    }
+    const rates = await this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
+    for (const row of chatRows) row.agents = withRates(row.agents ?? [], rates);
+    this.scheduleRates(chatRows.some(row => row.agents?.some(agent => agent.state === "working")));
     return { rows, tags: labels?.tags ?? [] };
+  }
+
+  /** Output rates per session from the usage store, asked at most once per RATES_MS for the same ids; nothing when no store is wired. */
+  private async ratesFor(sessionIds: string[], now: number): Promise<Record<string, TokenRate>> {
+    const ids = [...new Set(sessionIds)].sort();
+    const key = ids.join(",");
+    if (this.rates && this.rates.key === key && now - this.rates.at < RATES_MS) return this.rates.value;
+    const value = ids.length ? await this.ratesSource(ids).catch(() => ({})) : {};
+    this.rates = { key, at: now, value };
+    return value;
+  }
+
+  /** While an agent of a chat works, the rows go out again every RATES_MS with fresh rates; the timer stops once nothing works. */
+  private scheduleRates(working: boolean): void {
+    if (!working || this.ratesTimer || this.closed || this.listeners.size === 0) return;
+    this.ratesTimer = setTimeout(() => { this.ratesTimer = undefined; void this.emit(); }, RATES_MS);
+    this.ratesTimer.unref();
   }
 
   async rows(): Promise<SessionRow[]> { return (await this.project()).rows; }
@@ -514,6 +572,7 @@ export class Catalog {
     clearTimeout(this.refreshTimer);
     clearTimeout(this.reconnectTimer);
     clearTimeout(this.schedulesTimer);
+    clearTimeout(this.ratesTimer);
     this.listeners.clear();
     this.client.close();
   }

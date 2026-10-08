@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
+import { DuckDBInstance, listValue, type DuckDBConnection } from "@duckdb/node-api";
 import type { UsageBucket, UsageCall, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSource, UsageTokens, UsageWindow } from "../shared/usage.ts";
 import type { Price } from "./prices.ts";
+import type { SessionCall } from "./rates.ts";
 
 /**
  * usage.duckdb: a cache derived from the transcripts. Three kinds of change, from cheapest:
@@ -188,6 +189,14 @@ export class UsageStore {
   recent(since: number): Promise<({ id: bigint; endedAt: number } & CallTokens)[]> { return this.exclusive(async () => {
     const reader = await this.db.runAndReadAll("SELECT id, ended_at, c.input, c.output + c.reasoning, c.cache_read, c.cache_write FROM calls c WHERE ended_at >= $since", { since: BigInt(since) });
     return reader.getRowsJS().map(row => ({ id: row[0] as bigint, endedAt: num(row[1]), input: num(row[2]), output: num(row[3]), cacheRead: num(row[4]), cacheWrite: num(row[5]) }));
+  }); }
+
+  /** The timed calls of the given sessions that ended at or after `since`, for per-thread output rates (src/usage/rates.ts). */
+  sessionCalls(sessionIds: readonly string[], since: number): Promise<SessionCall[]> { return this.exclusive(async () => {
+    if (!sessionIds.length) return [];
+    const reader = await this.db.runAndReadAll(`SELECT session_id, started_at, ended_at, output + reasoning FROM calls
+      WHERE ended_at >= $since AND started_at IS NOT NULL AND session_id IN (SELECT unnest($ids::VARCHAR[])) ORDER BY ended_at, call_id`, { since: BigInt(since), ids: listValue(sessionIds) });
+    return reader.getRowsJS().map(row => ({ sessionId: String(row[0]), startedAt: num(row[1]), endedAt: num(row[2]), output: num(row[3]) }));
   }); }
 
   /** Tokens per kind since `since` (the 24 h window) and cost since `costSince` (local midnight). */

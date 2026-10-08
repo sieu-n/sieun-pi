@@ -1,6 +1,7 @@
 import type { ChatItem, ChatLine } from "../shared/chat-feed.ts";
-import type { ChildAgent, ChildUsage, SessionRow, ThreadMessage } from "../shared/types.ts";
-import { childName, createdSessions, isActiveChild, type CreatedSession } from "./children.ts";
+import { createdSessions, type CreatedSession } from "../shared/created-sessions.ts";
+import type { ChatAgent, ChildAgent, ChildUsage, SessionRow, ThreadMessage } from "../shared/types.ts";
+import { childName, isActiveChild } from "./children.ts";
 
 /**
  * One job of an open chat, the shape the Jobs list, the plan chips, the drawer and the breadcrumb share: a subagent the daemon reports
@@ -151,35 +152,24 @@ export function briefFor(messages: readonly ThreadMessage[], name: string): stri
 }
 
 /** One line of a chat's job tree in the sidebar. `at` is its last activity in ms (0 when unknown); `open` is what `store.openJob` takes for it. */
-export interface TreeJob { key: string; name: string; running: boolean; saved: boolean; failed: boolean; activity: string; at: number; open: string }
-const atOf = (value: string | undefined): number => Date.parse(value ?? "") || 0;
+/** `report` is the name the agent's messages to the chat carry, for `reportsFor`; `name` is what the row shows. */
+export interface TreeJob { key: string; name: string; report: string; running: boolean; waiting: boolean; saved: boolean; failed: boolean; activity: string; at: number; open: string }
 
-/**
- * A chat's jobs for the sidebar tree, running first: the subagent sessions its row carries, then the sessions it started with
- * `rlm.create_session` when the chat's transcript is loaded in this tab (`messages`), each read from its own catalog row.
- */
-export function treeJobs(chat: SessionRow, messages: readonly ThreadMessage[] | undefined, rowOf: (id: string) => SessionRow | undefined): TreeJob[] {
-  const jobs: TreeJob[] = (chat.jobs ?? []).map(job => ({ key: "job:" + job.id, name: job.name, running: job.status === "running", saved: job.status === "saved",
-    failed: job.failed === true, activity: job.activity ?? "", at: atOf(job.lastActivityAt), open: job.name }));
-  for (const created of createdSessions(messages ?? [])) {
-    const row = rowOf(created.sessionId);
-    jobs.push({ key: "session:" + created.sessionId, name: row?.name || created.name || created.sessionId.slice(0, 8), running: row?.working === true,
-      saved: row?.kind === "saved", failed: !row?.working && Boolean(row?.failure), activity: row?.working ? row.statusLabel ?? "" : row?.failure ?? "",
-      at: atOf(row?.lastActivityAt ?? row?.created), open: "session:" + created.sessionId });
-  }
-  return [...jobs.filter(job => job.running), ...jobs.filter(job => !job.running)];
+/** A chat's agents for the sidebar tree, as the server lists them on the row (`SessionRow.agents`, running first). */
+export function treeJobs(chat: SessionRow): TreeJob[] {
+  return (chat.agents ?? []).map((agent: ChatAgent) => ({ key: agent.key, name: agent.name, report: agent.sender, running: agent.state === "working", waiting: agent.state === "waiting",
+    saved: agent.state === "done", failed: agent.state === "failed", activity: agent.activity ?? "", at: Date.parse(agent.lastActivityAt ?? "") || 0, open: agent.job }));
 }
 
 /** What a sidebar row says about a job without a report: what it is doing while it runs, else how it ended. */
-export const jobStatusText = (job: TreeJob): string => job.running ? job.activity || "Running" : job.failed ? "Failed" : job.saved ? "Finished" : "Idle";
+export const jobStatusText = (job: TreeJob): string => job.running ? job.activity || "Running" : job.failed ? "Failed" : job.waiting ? "Waiting for the chat" : job.saved ? "Finished" : "Idle";
 
 /**
- * Every job name the page knows for a chat, unique: the catalog row's jobs and the sessions the chat started (as the sidebar lists them), plus
- * the subagents the daemon reports in the snapshot. These are the names that read as job chips in the chat's text.
+ * Every job name the page knows for a chat, unique: the agents the server lists on its row, the sessions its loaded transcript started, and the
+ * subagents the daemon reports in the snapshot. These are the names that read as job chips in the chat's text.
  */
 export function jobNames(row: SessionRow | undefined, snapshot: { children: readonly ChildAgent[]; messages: readonly ThreadMessage[] } | null, rowOf: (id: string) => SessionRow | undefined): string[] {
-  const listed = row ? treeJobs(row, snapshot?.messages, rowOf).map(job => job.name)
-    : createdSessions(snapshot?.messages ?? []).map(created => rowOf(created.sessionId)?.name || created.name);
+  const listed = [...(row?.agents ?? []).map(agent => agent.name), ...createdSessions(snapshot?.messages ?? []).map(created => rowOf(created.sessionId)?.name || created.name)];
   return [...new Set([...listed, ...(snapshot?.children ?? []).map(childName)].filter(Boolean))];
 }
 
@@ -188,12 +178,12 @@ export function updatesJob(item: Extract<ChatItem, { kind: "updates" }>): string
   return item.entries.findLast(entry => entry.kind === "job")?.from ?? null;
 }
 
-/** The chat a session is a job of, for the breadcrumb on its thread: a chat row that lists it, or an open chat whose transcript started it. */
+/** The chat a session is a job of, for the breadcrumb on its thread: a chat whose row lists it as its subagent or a root it started, or an open chat whose transcript started it. */
 export function parentChatOf(sessionId: string, rows: readonly SessionRow[], messagesOf: (chat: string) => readonly ThreadMessage[] | undefined): { chat: SessionRow; open: string } | null {
   for (const row of rows) {
     if (!row.chat) continue;
-    const job = row.jobs?.find(entry => entry.id === sessionId);
-    if (job) return { chat: row, open: job.name };
+    const agent = row.agents?.find(entry => entry.sessionId === sessionId && (entry.link === "subagent" || entry.link === "root"));
+    if (agent) return { chat: row, open: agent.job };
     if (createdSessions(messagesOf(row.id) ?? []).some(created => created.sessionId === sessionId)) return { chat: row, open: "session:" + sessionId };
   }
   return null;

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { BoardStore } from "../src/chat-board-store.ts";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { LocalFileError, readLocalText, textKind } from "../src/chat-render.ts";
-import { readWikiPage } from "../src/chat-wiki.ts";
+import { readWikiPage, wikiTitle } from "../src/chat-wiki.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
@@ -97,26 +97,45 @@ test("readLocalText: any UTF-8 text file under a root, with its kind; no hidden 
   assert.deepEqual(textKind("/x/app.svelte"), { kind: "code", language: "svelte" });
 });
 
-test("readWikiPage: the page text through the dev server API; the wiki's refusal and silence become reader errors", async () => {
+test("readWikiPage: an html page and a markdown page through the dev server API; the wiki's refusal is a reader error; its silence falls back to the file", async () => {
+  const content = await mkdtemp(join(tmpdir(), "wiki-content-"));
+  await mkdir(join(content, "sessions/a"), { recursive: true });
+  await writeFile(join(content, "sessions/a/report.html"), '<!--wiki\n{"title": "Chats build"}\n-->\n<h1>Chats build</h1>\n<p>From the file.</p>\n');
+  await writeFile(join(content, "sessions/a/notes.md"), '<!--wiki\n{"title": "Notes from the file"}\n-->\n# Notes heading\n\nA line.\n');
+  await writeFile(join(content, "sessions/a/data.json"), "{}");
   const calls: string[] = [];
   const fetchImpl = (async (input: string | URL | Request) => {
     const url = String(input);
     calls.push(url);
     if (url.includes("missing")) return new Response(JSON.stringify({ error: "Page not found" }), { status: 404 });
-    if (url.includes("slow")) await new Promise(resolve => setTimeout(resolve, 50));
-    if (url.includes("down")) throw new TypeError("fetch failed");
-    return new Response(JSON.stringify({ path: "sessions/a/report.html", title: "Chats build", headings: ["Chats", "Proof"], render: "text", content: "Chats\n\nA chat is\nProof\n" }), { status: 200 });
+    if (url.includes("down") || url.includes("file")) throw new TypeError("fetch failed");
+    if (url.includes("notes.md")) return new Response(JSON.stringify({ path: "sessions/a/notes.md", title: "Notes", kind: "md", render: "html", content: "# Notes\n\nA line.\n" }), { status: 200 });
+    if (url.includes("data.json")) return new Response(JSON.stringify({ path: "sessions/a/data.json", title: "data.json", kind: "json", content: "{}" }), { status: 200 });
+    return new Response(JSON.stringify({ path: "sessions/a/report.html", title: "Chats build", kind: "html", render: "html", content: "<h1>Chats build</h1>\n<p>From the wiki.</p>\n" }), { status: 200 });
   }) as typeof fetch;
-  const page = await readWikiPage("/sessions/a/report.html", fetchImpl, "http://wiki.test");
-  assert.deepEqual(page, { path: "sessions/a/report.html", title: "Chats build", url: "http://wiki.test/page/sessions/a/report.html", text: "Chats\n\nA chat is\nProof\n", headings: ["Chats", "Proof"] });
-  assert.equal(calls[0], "http://wiki.test/api/agent/page?path=sessions%2Fa%2Freport.html&render=text");
-  const status = (path: string) => readWikiPage(path, fetchImpl, "http://wiki.test").then(() => 200, (error: unknown) => error instanceof LocalFileError ? error.status : 500);
+  const read = (path: string) => readWikiPage(path, fetchImpl, "http://wiki.test", content);
+  const page = await read("/sessions/a/report.html");
+  assert.deepEqual(page, { path: "sessions/a/report.html", title: "Chats build", url: "http://wiki.test/page/sessions/a/report.html", dir: join(content, "sessions/a"), kind: "html", html: "<h1>Chats build</h1>\n<p>From the wiki.</p>\n" });
+  assert.equal(calls[0], "http://wiki.test/api/agent/page?path=sessions%2Fa%2Freport.html");
+  assert.deepEqual(await read("sessions/a/notes.md"), { path: "sessions/a/notes.md", title: "Notes", url: "http://wiki.test/page/sessions/a/notes.md", dir: join(content, "sessions/a"), kind: "markdown", text: "# Notes\n\nA line.\n" });
+  const status = (path: string) => read(path).then(() => 200, (error: unknown) => error instanceof LocalFileError ? error.status : 500);
   assert.equal(await status("sessions/missing.html"), 404);
-  assert.equal(await status("down/page.html"), 502);
+  assert.equal(await status("sessions/a/data.json"), 415);
   assert.equal(await status("../etc/passwd"), 400);
   assert.equal(await status(""), 400);
+  const wikiDown = (path: string) => readWikiPage(path, (async () => { throw new TypeError("fetch failed"); }) as typeof fetch, "http://wiki.test", content);
+  const fromFile = await wikiDown("sessions/a/report.html");
+  assert.equal(fromFile.kind, "html");
+  assert.equal(fromFile.title, "Chats build", "the title comes from the frontmatter");
+  assert.match(fromFile.kind === "html" ? fromFile.html : "", /From the file/);
+  const notes = await wikiDown("sessions/a/notes.md");
+  assert.deepEqual(notes, { path: "sessions/a/notes.md", title: "Notes from the file", url: "http://wiki.test/page/sessions/a/notes.md", dir: join(content, "sessions/a"), kind: "markdown", text: "# Notes heading\n\nA line.\n" }, "the frontmatter names the page and leaves the text");
+  const downStatus = (path: string) => wikiDown(path).then(() => 200, (error: unknown) => error instanceof LocalFileError ? error.message : "500");
+  assert.equal(await downStatus("sessions/a/nowhere.html"), "The wiki at http://wiki.test did not answer. Its file is not in the wiki folder either.");
+  assert.equal(await downStatus("sessions/a/data.json"), "Only .html and .md wiki pages show here.");
+  assert.equal(wikiTitle("<h1>Only <code>h1</code></h1>", "sessions/x.html"), "Only h1");
+  assert.equal(wikiTitle("<p>nothing</p>", "sessions/x.html"), "x.html");
 });
-
 test("GET api/local-file serves an allowed text file as {path, text}; POST unarchive restores a chat", async () => {
   const calls: string[] = [];
   const backend = {

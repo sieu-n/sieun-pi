@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createdSessions } from "../src/client/children.ts";
+import { createdSessions } from "../src/shared/created-sessions.ts";
 import type { ThreadMessage } from "../src/shared/types.ts";
 
 const result = (text: string, toolName = "ipython"): ThreadMessage => ({ role: "toolResult", toolCallId: "t", toolName, content: [{ type: "text", text }], isError: false, timestamp: 1 });

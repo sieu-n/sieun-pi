@@ -1,4 +1,4 @@
-import { WIKI_ORIGIN, type ArtifactTarget } from "../shared/artifact-link.ts";
+import { parseArtifactTarget, WIKI_ORIGIN, type ArtifactTarget } from "../shared/artifact-link.ts";
 
 /**
  * What the reader modal shows. Every artifact link opens here, except a web URL (a new tab) and a bare `thread:<id>` (the thread itself).
@@ -41,19 +41,16 @@ export function diffLineKind(line: string): DiffLineKind {
 export const diffLines = (text: string): { kind: DiffLineKind; text: string }[] =>
   text.replace(/\n$/, "").split("\n").map(line => ({ kind: diffLineKind(line), text: line }));
 
-/** A wiki page's plain text as paragraphs; a paragraph that is one of the page's headings reads as a heading. */
-export type WikiBlock = { kind: "heading" | "paragraph"; text: string };
-export function wikiBlocks(text: string, headings: readonly string[]): WikiBlock[] {
-  const known = new Set(headings.map(heading => heading.trim()));
-  const blocks: WikiBlock[] = [];
-  let paragraph: string[] = [];
-  const flush = () => { if (paragraph.length) blocks.push({ kind: "paragraph", text: paragraph.join("\n") }); paragraph = []; };
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (!line) { flush(); continue; }
-    if (known.has(line)) { flush(); blocks.push({ kind: "heading", text: line }); continue; }
-    paragraph.push(line);
+/**
+ * The wiki page a job's report links, as the report's reader shows it under the text: the first `.html` or `.md` page named as a wiki
+ * URL (`http://localhost:5176/page/<path>`), a `wiki:<path>` target, or a path through `apps/llm-wiki/content/<path>` (absolute or
+ * from the repo root). Null when the report names none.
+ */
+const WIKI_LINK = /(?:https?:\/\/(?:localhost|127\.0\.0\.1):5176\/page\/|wiki:|(?:^|[\s(\[<`"'])(?:\/[^\s`"'<>()]*?\/)?apps\/llm-wiki\/content\/)([^\s`"'<>()\[\]]+?\.(?:html|md))(?=[\s`"'<>()\[\].,;:]|$)/gi;
+export function reportWikiPage(text: string): string | null {
+  for (const match of text.matchAll(WIKI_LINK)) {
+    const target = parseArtifactTarget("wiki:" + match[1]!);
+    if (target?.kind === "wiki") return target.path;
   }
-  flush();
-  return blocks;
+  return null;
 }

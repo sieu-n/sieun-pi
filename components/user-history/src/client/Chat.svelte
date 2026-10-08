@@ -5,7 +5,7 @@
   import { ui, BOARD_DEFAULT, boardMax, BOARD_MIN } from "./ui.svelte.ts";
   import { clock } from "./clock.svelte.ts";
   import { clockTime } from "./format.ts";
-  import { createdSessions } from "./children.ts";
+  import { createdSessions } from "../shared/created-sessions.ts";
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobNames, jobViews, reportsFor, spawnCalls, updatesJob } from "./jobs.ts";
   import { boardActionText, isBoardAction, mentionIndex, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
@@ -14,7 +14,7 @@
   import { bubbleBlocks, renderInline, renderMarkdown } from "./markdown.ts";
   import { diagrams } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
-  import type { BoardOp, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
+  import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
   import ChatComposer from "./ChatComposer.svelte";
   import BoardPanel from "./BoardPanel.svelte";
   import PlanView from "./PlanView.svelte";
@@ -132,6 +132,9 @@
     return () => { cancelled = true; };
   });
   const openJob = (name: string) => store.openJob(id, name);
+  const EMPTY_AGENTS: ChatAgent[] = [];
+  /** An Agents card row: a subagent opens in the job drawer, any other thread opens as itself. */
+  const openAgent = (agent: ChatAgent) => { if (agent.link === "subagent") openJob(agent.job); else if (agent.sessionId) store.select(agent.sessionId); };
   const closeJob = () => { if (store.jobDrawer?.chat === id) store.jobDrawer = null; };
   /** A plan step's owner: a subagent of this chat opens in the drawer; a session (one this chat started, or any thread by id or name) opens as its thread. */
   function openStep(owner: string): void {
@@ -351,7 +354,7 @@
 {/snippet}
 
 {#snippet boardView()}
-  <BoardPanel {id} {board} {checkIn} onjob={openStep} {previewJob} apply={applyBoard} />
+  <BoardPanel {id} {board} agents={row?.agents ?? EMPTY_AGENTS} now={minute} {checkIn} onjob={openStep} onagent={openAgent} {previewJob} apply={applyBoard} />
 {/snippet}
 
 <div class="chat">

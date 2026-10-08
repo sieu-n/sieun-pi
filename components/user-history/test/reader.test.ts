@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { bubbleBlocks, renderInline, renderMarkdown, reportExcerpt } from "../src/client/markdown.ts";
 import { idClass, mentionIndex } from "../src/client/board.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
-import { diffLineKind, diffLines, readerAction, wikiBlocks } from "../src/client/reader.ts";
+import { diffLineKind, diffLines, readerAction, reportWikiPage } from "../src/client/reader.ts";
 import { parseArtifactTarget } from "../src/shared/artifact-link.ts";
 
 test("readerAction: a web URL opens a tab, a bare thread opens the thread, everything else opens the reader", () => {
@@ -24,11 +24,35 @@ test("diff lines: file headers before +/- lines, hunks, git metadata, context", 
   assert.equal(diffLineKind("Binary files a/x and b/x differ"), "meta");
 });
 
-test("wiki blocks: a known heading becomes its own block even on the last line of a paragraph", () => {
-  assert.deepEqual(wikiBlocks("Chats in sieun-pi\n\nA chat is a thread.\n1 · What it is\n\nAny thread.\nTwo lines.\n", ["Chats in sieun-pi", "1 · What it is"]), [
-    { kind: "heading", text: "Chats in sieun-pi" }, { kind: "paragraph", text: "A chat is a thread." }, { kind: "heading", text: "1 · What it is" }, { kind: "paragraph", text: "Any thread.\nTwo lines." }]);
+test("reportWikiPage: the first .html or .md wiki page a report names, in any of the three link forms; data files and other wiki routes are not pages", () => {
+  const report = "Done.\n\nReport: apps/llm-wiki/content/sessions/2026/10/08/1534-metal-ci-capacity-study-v2/report.html\n(http://localhost:5176/page/sessions/2026/10/08/1534-metal-ci-capacity-study-v2/report.html; it supersedes v1)";
+  assert.equal(reportWikiPage(report), "sessions/2026/10/08/1534-metal-ci-capacity-study-v2/report.html");
+  assert.equal(reportWikiPage("see wiki:sessions/a/b.md."), "sessions/a/b.md");
+  assert.equal(reportWikiPage("[page](http://localhost:5176/page/sessions/a/report.html)"), "sessions/a/report.html");
+  assert.equal(reportWikiPage("at /Users/me/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/a/index.html, then"), "sessions/a/index.html");
+  assert.equal(reportWikiPage("`apps/llm-wiki/content/sessions/a/notes.md`"), "sessions/a/notes.md");
+  assert.equal(reportWikiPage("data at http://localhost:5176/page/sessions/a/data.json and apps/llm-wiki/content/sessions/x.png"), null);
+  assert.equal(reportWikiPage("http://localhost:5176/search?q=report.html"), null);
+  assert.equal(reportWikiPage("xapps/llm-wiki/content/sessions/a.md and wiki:a/../b.md"), null);
+  assert.equal(reportWikiPage("no link here"), null);
 });
 
+test("a structured job reply renders its headers, table and diagram block, in the reader's markdown and in the card's excerpt", () => {
+  const reply = "Yes, with conditions.\n\n## Numbers\n\n| what | value |\n|---|---|\n| CPUs | 20.8 of 72 |\n| RAM | 61.8 GiB |\n\n## Flow\n\n```mermaid\nflowchart LR\n  a[job] --> b[report]\n```\n\nReport: wiki:sessions/a/report.html\n";
+  const html = renderMarkdown(reply);
+  assert.match(html, /<h2>Numbers<\/h2>/);
+  assert.match(html, /<div class="table-wrap"><table>\n<thead>\n<tr>\n<th>what<\/th>\n<th>value<\/th>/);
+  assert.match(html, /<td>20\.8 of 72<\/td>/);
+  assert.match(html, /<div class="code-block diagram-block" data-diagram="mermaid">/, "the diagram block the sandboxed frame draws");
+  assert.match(html, /<pre><code>flowchart LR\n  a\[job\] --&gt; b\[report\]<\/code><\/pre>/);
+  const excerpt = reportExcerpt(reply, 12);
+  assert.equal(excerpt.cut, false);
+  const card = renderMarkdown(excerpt.text);
+  assert.match(card, /<h2>Numbers<\/h2>/);
+  assert.match(card, /<table>/);
+  assert.match(card, /data-diagram="mermaid"/);
+  assert.equal(reportWikiPage(reply), "sessions/a/report.html");
+});
 test("bubbleBlocks: lone images and diagram fences become cards, inline ones stay in the prose; an open fence is not closed", () => {
   const text = "Here it is.\n\n![shot](/tmp/a.png)\n\nSee ![icon](https://x/i.png) inline, then:\n\n```mermaid\ngraph TD; A-->B\n```\n\nDone.\n";
   const blocks = bubbleBlocks(text);

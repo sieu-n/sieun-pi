@@ -82,8 +82,8 @@
     requestAnimationFrame(() => { if (!document.activeElement || document.activeElement === document.body) list?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`)?.focus(); });
   }
   function archive(row: SessionRow): void { void labels.archive([row.id]); }
-  /** A chat's jobs under its row: from the row, plus the sessions it started once its transcript is loaded here. */
-  const jobsOf = (row: SessionRow) => treeJobs(row, store.thread(row.id)?.state?.messages, id => store.session(id));
+  /** A chat's agents under its row, as the server lists them (its subagents, the roots it started, step owners, threads it messaged). */
+  const jobsOf = (row: SessionRow) => treeJobs(row);
   /** How long since the job last did anything, on the minute. */
   const jobAge = (at: number): string => at ? elapsed(Math.max(0, minute * 60_000 - at)) : "";
   const treeOpen = (row: SessionRow): boolean => ui.chatTreeOpen[row.id] === true;
@@ -203,7 +203,7 @@
           {/if}
         </a>
         {#if row.chat}
-          <button type="button" class="tree-toggle" aria-expanded={treeOpen(row)} aria-label="{treeOpen(row) ? 'Hide' : 'Show'} jobs of {row.name}" use:tooltip={jobs.length ? `${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}` : "No jobs yet"}
+          <button type="button" class="tree-toggle" aria-expanded={treeOpen(row)} aria-label="{treeOpen(row) ? 'Hide' : 'Show'} agents of {row.name}" use:tooltip={jobs.length ? `${jobs.length} ${jobs.length === 1 ? "agent" : "agents"}` : "No agents yet"}
             onclick={() => ui.setChatTreeOpen(row.id, !treeOpen(row))}><span class="chev" class:open={treeOpen(row)}><Icon name="chevronDown" size={11} /></span></button>
         {/if}
         <div class="actions">
@@ -219,18 +219,18 @@
       {/if}
     </div>
     {#if row.chat && treeOpen(row)}
-      <ul class="tree-jobs" aria-label="Jobs of {row.name}">
+      <ul class="tree-jobs" aria-label="Agents of {row.name}">
         {#each jobsOf(row) as job (job.key)}
           <li>
             <button type="button" class="tree-job" class:open={store.jobDrawer?.chat === row.id && store.jobDrawer.job === job.open} data-preview-chat={row.id} data-preview-job={job.open} onclick={() => store.openJob(row.id, job.open)}>
-              <span class="tree-state">{#if job.running}<span class="spinner tiny"></span>{:else}<span class="tree-mark" class:saved={job.saved} class:failed={job.failed}></span>{/if}</span>
+              <span class="tree-state">{#if job.running}<span class="spinner tiny"></span>{:else}<span class="tree-mark" class:saved={job.saved} class:failed={job.failed} class:waiting={job.waiting}></span>{/if}</span>
               <span class="tree-name">{job.name}</span>
               {#if job.activity}<span class="tree-activity" class:failed={job.failed}>{job.activity}</span>{/if}
               {#if jobAge(job.at)}<span class="tree-age">{jobAge(job.at)}</span>{/if}
             </button>
           </li>
         {/each}
-        {#if !jobsOf(row).length}<li class="tree-none">No jobs yet</li>{/if}
+        {#if !jobsOf(row).length}<li class="tree-none">No agents yet</li>{/if}
       </ul>
     {/if}
 {/snippet}
@@ -406,6 +406,7 @@
   .tree-mark { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
   .tree-mark.saved { background: var(--border-strong); }
   .tree-mark.failed { background: var(--danger); }
+  .tree-mark.waiting { background: var(--warning); }
   .tree-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tree-activity { flex: 1; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-faint); }
   .tree-activity.failed { color: var(--danger); }

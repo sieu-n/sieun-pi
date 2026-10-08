@@ -7,9 +7,10 @@ import { hasImageSignature } from "./chat-images.ts";
 import { asset, type Asset } from "./chat-assets.ts";
 
 /*
- * Rich blocks (mermaid today) draw inside `<iframe sandbox="allow-scripts">` pointing at `render`. The sandbox gives the frame
- * an opaque origin: it cannot read the chat's storage, cookies or API, and the chat page keeps its strict CSP. The frame gets
- * its own looser policy (inline styles for mermaid's SVG) and talks to the chat only through postMessage.
+ * Rich blocks (mermaid diagrams, and a wiki page's own HTML) draw inside `<iframe sandbox="allow-scripts">` pointing at `render`.
+ * The sandbox gives the frame an opaque origin: it cannot read the chat's storage, cookies or API, and the chat page keeps its
+ * strict CSP. The frame gets its own looser policy (inline styles for mermaid's SVG, blob images the chat hands it) and talks to
+ * the chat only through postMessage.
  */
 
 let renderBundle: Promise<Asset> | null = null;
@@ -34,10 +35,43 @@ export const renderPage = `<!doctype html>
 html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
 #out { display: flex; justify-content: safe center; overflow-x: auto; padding: 12px 8px; }
 #out svg { display: block; flex: none; }
+body.page #out { display: none; }
+#doc { display: none; }
+body.page #doc { display: block; padding: 4px 0 8px; overflow-wrap: anywhere; }
+#doc { font: 14.5px/1.7 "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif; color: light-dark(#23262b, #f0f1f4); }
+#doc > :first-child { margin-top: 0; }
+#doc p, #doc ul, #doc ol, #doc blockquote, #doc .table-wrap, #doc pre, #doc figure, #doc wiki-tldr, #doc .diagram { margin: 0 0 1em; }
+#doc h1, #doc h2, #doc h3, #doc h4 { margin: 1.9em 0 0.55em; line-height: 1.3; font-weight: 600; letter-spacing: -0.01em; }
+#doc h1 { font-size: 1.4em; } #doc h2 { font-size: 1.22em; } #doc h3 { font-size: 1.07em; } #doc h4 { font-size: 1em; color: light-dark(#5e6570, #9aa2ae); }
+#doc h1 + h2, #doc h2 + h3 { margin-top: 0.8em; }
+#doc wiki-tldr { display: block; padding: 0.7em 1em; border-left: 3px solid light-dark(#0077c0, #2e9fe6); background: light-dark(rgba(0, 119, 192, 0.08), rgba(46, 159, 230, 0.14)); border-radius: 0 8px 8px 0; }
+#doc strong { font-weight: 600; }
+#doc ul { padding-left: 1.5em; }
+#doc ol { padding-left: 2.2em; }
+#doc li + li { margin-top: 0.4em; }
+#doc li::marker { color: light-dark(#767e8b, #6a7180); }
+#doc blockquote { margin-left: 0; border-left: 3px solid light-dark(#ccd1d8, #363943); padding: 0.1em 0 0.1em 1em; color: light-dark(#5e6570, #9aa2ae); }
+#doc a { color: light-dark(#0077c0, #2e9fe6); text-decoration: underline; text-decoration-color: light-dark(rgba(0, 119, 192, 0.4), rgba(46, 159, 230, 0.4)); text-underline-offset: 0.18em; }
+#doc code { font-family: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.86em; background: light-dark(#eef0f3, #141519); border: 1px solid light-dark(#e7e9ed, #26282f); padding: 0.08em 0.35em; border-radius: 5px; }
+#doc pre { padding: 0.9em 1.1em; overflow: auto; border: 1px solid light-dark(#e7e9ed, #26282f); border-radius: 8px; background: light-dark(#eef0f3, #141519); font-size: 0.83em; line-height: 1.6; }
+#doc pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+#doc .table-wrap { overflow-x: auto; border: 1px solid light-dark(#e7e9ed, #26282f); border-radius: 8px; }
+#doc table { width: 100%; border-collapse: collapse; font-size: 0.9em; line-height: 1.5; font-variant-numeric: tabular-nums; }
+#doc th, #doc td { padding: 0.55em 0.9em; text-align: left; vertical-align: top; border-bottom: 1px solid light-dark(#e7e9ed, #26282f); }
+#doc th + th, #doc td + td { border-left: 1px solid light-dark(#e7e9ed, #26282f); }
+#doc tr:last-child td { border-bottom: 0; }
+#doc th { background: light-dark(#eef0f3, #141519); font-weight: 600; white-space: nowrap; }
+#doc tbody tr:nth-child(even) td { background: light-dark(rgba(238, 240, 243, 0.45), rgba(20, 21, 25, 0.45)); }
+#doc hr { border: 0; border-top: 1px solid light-dark(#e7e9ed, #26282f); margin: 2em 0; }
+#doc img { display: block; max-width: 100%; height: auto; margin: 0.4em 0 1em; border: 1px solid light-dark(#e7e9ed, #26282f); border-radius: 8px; }
+#doc .diagram { overflow-x: auto; padding: 12px 8px; border: 1px solid light-dark(#e7e9ed, #26282f); border-radius: 8px; }
+#doc .diagram svg { display: block; margin: 0 auto; }
+#doc .diagram-error { margin: 0 0 0.5em; font-size: 12.5px; color: light-dark(#d97706, #fbbf24); }
 </style>
 </head>
 <body>
 <div id="out"></div>
+<div id="doc"></div>
 <script src="render.js"></script>
 </body>
 </html>
@@ -45,7 +79,7 @@ html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
 
 /** The frame's own policy. `origin` is the chat's origin, the only page allowed to embed it. */
 export function renderPolicy(origin: string, base: string): string {
-  return `default-src 'none'; script-src ${origin}${base}render.js; style-src 'unsafe-inline'; img-src data:; font-src data:; ` +
+  return `default-src 'none'; script-src ${origin}${base}render.js; style-src 'unsafe-inline'; img-src data: blob: https:; font-src data:; ` +
     `base-uri 'none'; form-action 'none'; frame-ancestors ${origin}`;
 }
 

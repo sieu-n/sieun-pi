@@ -1,8 +1,11 @@
 import { parseArtifactTarget, normalizeArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
 import { findItem, walkItems } from "../shared/chat-board.ts";
-import type { ArtifactLink, ChatBoard, OwnerTodo, PlanItem, PlanStatus } from "../shared/types.ts";
+import type { AgentLink, AgentState, ArtifactLink, ChatBoard, OwnerTodo, PlanItem, PlanStatus } from "../shared/types.ts";
 
 export const PLAN_STATUS_LABEL: Record<PlanStatus, string> = { todo: "To do", doing: "In progress", done: "Done", blocked: "Blocked", dropped: "Dropped" };
+/** The Agents card's words for an agent's state and for how it is linked to the chat (its row's title). */
+export const AGENT_STATE_LABEL: Record<AgentState, string> = { working: "Working", waiting: "Waiting for the chat", idle: "Idle", done: "Done", failed: "Failed" };
+export const AGENT_LINK_LABEL: Record<AgentLink, string> = { subagent: "a job of this chat", root: "a thread this chat started", step: "owns a plan step", message: "exchanged messages with this chat today" };
 
 export interface PlanProgress { done: number; total: number }
 /** Steps under a goal: every item below it that is not dropped, and how many are done. Null for an item with nothing below it. */

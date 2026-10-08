@@ -7,7 +7,8 @@ import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, 
 const token = document.body.dataset.chatToken ?? "";
 
 export type LocalFile = { path: string; text: string } & ({ kind: "markdown" } | { kind: "diff" } | { kind: "code"; language: string });
-export interface WikiPage { path: string; title: string; url: string; text: string; headings: string[] }
+/** A wiki page as the service reads it (readWikiPage): its own HTML, drawn in a sandboxed frame, or its markdown, rendered as a reply; `dir` is its folder on this Mac. */
+export type WikiPage = { path: string; title: string; url: string; dir: string } & ({ kind: "html"; html: string } | { kind: "markdown"; text: string });
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -33,6 +34,9 @@ export async function post<T>(route: string, body: unknown, timeoutMs = 60000): 
 export function requestId(): string {
   return crypto.randomUUID().replaceAll("-", "") + Date.now().toString(36);
 }
+
+const WIKI_PAGE_TTL = 30_000;
+const wikiPages = new Map<string, { at: number; page: Promise<WikiPage> }>();
 
 export const api = {
   sessionsStream(onEvent: (event: SessionsEvent) => void, onError: () => void, onBuild: (version: string) => void): () => void {
@@ -120,6 +124,13 @@ export const api = {
   board: (id: string, ops: BoardOp[]) => post<ChatBoard>("api/threads/" + encodeURIComponent(id) + "/board", { ops }),
   /** A text file on this Mac, for a `file:` artifact link (readLocalText: any UTF-8 text under the allowed folders), with how to show it. */
   localFile: (path: string) => get<LocalFile>("api/local-file?path=" + encodeURIComponent(path)),
-  /** An llm-wiki page's text, fetched by the service from the wiki dev server, for a `wiki:` artifact link. */
-  wikiPage: (path: string) => get<WikiPage>("api/wiki-page?path=" + encodeURIComponent(path), 8000),
+  /** An llm-wiki page, fetched by the service from the wiki dev server (or its file), for a `wiki:` link or a report's linked page. The card and the reader ask within seconds of each other, so one answer serves both for a while. */
+  wikiPage: (path: string): Promise<WikiPage> => {
+    const cached = wikiPages.get(path);
+    if (cached && cached.at > Date.now() - WIKI_PAGE_TTL) return cached.page;
+    const page = get<WikiPage>("api/wiki-page?path=" + encodeURIComponent(path), 8000);
+    wikiPages.set(path, { at: Date.now(), page });
+    page.catch(() => wikiPages.delete(path));
+    return page;
+  },
 };

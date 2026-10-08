@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
 import { USAGE_METRICS, type UsageBucket, type UsageGroup, type UsageMetric, type UsageRate, type UsageSummary, type UsageWindow } from "../shared/usage.ts";
 import { Ingest } from "./ingest.ts";
+import { sessionRates } from "./rates.ts";
 import { databaseSources, fileRoots } from "./sources.ts";
 import { QueryError, UsageStore, type CallTokens, type StoredCall } from "./store.ts";
 
@@ -11,7 +12,7 @@ import { QueryError, UsageStore, type CallTokens, type StoredCall } from "./stor
  * or `{ id, error, status }` back.
  */
 export type WorkerOptions = { dataDir: string; home?: string; debounceMs?: number; sweepMs?: number; offline?: boolean };
-export type WorkerRequest = { id: number; method: "summary" | "series" | "models" | "daily" | "idle"; args: unknown[] };
+export type WorkerRequest = { id: number; method: "summary" | "series" | "models" | "daily" | "rates" | "idle"; args: unknown[] };
 
 const port = parentPort;
 if (!port) throw new Error("usage worker: no parent port");
@@ -79,6 +80,7 @@ async function handle(request: WorkerRequest): Promise<unknown> {
   if (request.method === "series") return store.series(request.args[0] as UsageWindow, request.args[1] as UsageBucket, request.args[2] as UsageGroup, request.args[3] as UsageMetric, now, offsetMs(now));
   if (request.method === "models") return { models: await store.modelRows(request.args[0] as UsageWindow, now) };
   if (request.method === "daily") return store.daily(offsetMs(now));
+  if (request.method === "rates") return sessionRates(await store.sessionCalls(request.args[0] as string[], now - 86_400_000), now);
   if (request.method === "idle") { await ingest.idle(); return null; }
   throw new QueryError("Unknown usage request.");
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
-import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobOf, jobRegistry,
+import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
   jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, withChatTool } from "../src/chats.ts";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
@@ -33,8 +33,13 @@ const ALLOWED = [
   "await bash(f'prime-agent send {job} done')",
   "print(1 + 1)\nagents = await agent_observe.list_agents()",
   'r = await agent_message.send("Owner says: slack-green", receiver_role="child", receiver_name="md-count")',
-  "handle = await rlm.spawn(brief, name='readme-lines')",
-  'await rlm.create_session(brief, name="readme-lines", cwd="/Users/sieunpark/Documents/Github/auto-sns-agent")',
+  "handle = await rlm.spawn(brief, name='readme lines')",
+  'await rlm.create_session(brief, name="readme lines", cwd="/Users/sieunpark/Documents/Github/auto-sns-agent")',
+  "handle = await rlm(brief, name='stripe and payments', thinking='max')",
+  "name = topic.lower()\nhandle = await rlm.spawn(brief, name=name)",
+  'await rlm.spawn(brief, name=f"{topic} check")',
+  "await rlm.spawn(brief, name='land 25 restack')",
+  "await rlm.spawn(brief, name='readme check' + '')",
   "text = open('/tmp/x.txt').read()",
   "with open(path, 'r', encoding='utf8') as f: data = f.read()",
   "brief = 'Never call bash(\"git status\") in this job; use edit( only in your repo'",
@@ -69,6 +74,13 @@ const BLOCKED: [string, RegExp][] = [
   ["await bash('prime-agentx')", /quick look-ups/],
   ["%%bash\nprime-agent stop x", /a shell cell/],
   ["!npm install", /a ! line/],
+  ["await rlm.spawn(brief, name='readme-check')", /Name every job and thread you start like the owner names threads/],
+  ["await rlm.create_session(brief, name='crawler_ops', cwd='/r')", /No kebab-case, no ids, no numbered suffixes like -2\./],
+  ["await rlm(brief, name='readme check 2')", /numbered suffixes/],
+  ["await rlm.spawn(brief, name='readme check-2')", /numbered suffixes/],
+  ["await rlm.spawn(brief, name='worker2')", /numbered suffixes/],
+  ["await rlm.spawn(brief, name='w22-agents-card')", /numbered suffixes/],
+  ["await rlm.spawn(brief, name='a thread name that goes on and on past forty')", /numbered suffixes/],
 ];
 
 test("chat guard: the decision table, only in a marked root", () => {
@@ -114,11 +126,20 @@ const child = (status: ChildAgent["status"]): ChildAgent => ({ id: status, label
 
 test("brief: the board shape and corrections-stick bullets, and the check-in bullet that reads the server digest", () => {
   const brief = CHAT_BRIEF.join("\n");
+  assert.ok(CHAT_BRIEF.includes("Name every job and thread you start like the owner names threads: a few plain lowercase words with spaces naming the topic (stripe and payments, " +
+    "realtime layer, crawler ops, readme check). No kebab-case, no ids, no numbered suffixes like -2."), "the naming line, verbatim");
   assert.match(brief, /Board shape: every goal gets its phases as child steps from the start: Plan \(research or design\), Decide \(only when the owner must choose\), Build, Verify\./);
   assert.match(brief, /including blocked steps nobody works on yet/);
   assert.match(brief, /Link a job on the step it does, not on the goal\./);
   assert.match(brief, /Plan \(doing, job messenger-bridge-research\), Decide \(blocked\), Build \(blocked\), Verify \(todo\)/);
   assert.match(brief, /Corrections stick: when the owner corrects how you work/);
+  assert.ok(brief.includes("A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal."), "board shape: app features nest");
+  assert.ok(brief.includes("A correction changes the brief or a skill, never only a local note: send the owner's exact words to the thread named `realtime layer` with " +
+    '`await agent_message.send(..., receiver_role="sibling", receiver_name="realtime layer")` for a brief or code change, or call `await refine.run()` aimed at a global skill or prompt entry. ' +
+    "A local memory alone does not count."), "corrections change the brief or a skill");
+  assert.ok(CHAT_BRIEF.includes("Never wait on the owner for a choice you can make yourself; a step you own moves every check-in or you start a job for it."), "own steps move");
+  assert.ok(CHAT_BRIEF.includes("When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
+    "instead of leaving the step blocked with a note."), "an owner wait is a For you ask");
   assert.match(brief, /receiver_role="sibling", receiver_name="realtime layer"/);
   assert.match(brief, /await refine\.run\(\)/);
   assert.match(brief, /never have to give the same correction twice/);
@@ -150,7 +171,9 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
   assert.deepEqual(jobOf({ depth: 0, marked: false, registered: "Feature X" }), { chat: "Feature X", root: true });
   assert.equal(jobOf({ depth: 0, marked: true, registered: "Feature X" }), null, "a chat is never a job");
   assert.equal(jobOf({ depth: 0, marked: false, registered: undefined }), null);
-  assert.match(jobReplyGuideline({ chat: "chat-ab12", root: false }), /^You are a job of the chat chat-ab12\. When you are done, failed or blocked, send it one report with `await agent_message\.send\(report, receiver_role="parent"\)`\. Send at most one progress message before that\.$/);
+  assert.equal(jobReplyGuideline({ chat: "chat-ab12", root: false }), 'You are a job of the chat chat-ab12. When you are done, failed or blocked, send it one report with `await agent_message.send(report, receiver_role="parent")`. ' +
+    "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
+    "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report.");
   assert.match(jobReplyGuideline({ chat: "Feature X", root: true }), /receiver_role="sibling", receiver_name="Feature X"/);
   assert.match(jobReplyGuideline({ chat: "", root: false }), /^You are a job of the chat\. /);
 
@@ -169,6 +192,11 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
   assert.equal(await registry.chatOf("api-audit"), "chat-b");
   assert.equal(await registry.chatOf("old"), undefined, "entries older than 30 days go on the next add");
   assert.equal(await registry.chatOf("nobody"), undefined);
+  await registry.add(["seo daily"], "chat-b");
+  assert.deepEqual(await registry.rootsOf(["01a1-b", "chat-b"]), ["api-audit", "seo daily"], "the roots a chat started, by any of its names");
+  assert.deepEqual(await registry.rootsOf(["chat-a"]), []);
+  assert.deepEqual(jobNameLiterals("h = await rlm(b, name='readme check')\nawait rlm.spawn(b, name=\"x-y\")\nawait rlm.create_session(b, name='r', cwd=c)"),
+    [{ call: "rlm", name: "readme check" }, { call: "rlm.spawn", name: "x-y" }, { call: "rlm.create_session", name: "r" }]);
 
   const lines = (entries: object[]) => entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
   const chatFile = join(dir, "chat.jsonl");
