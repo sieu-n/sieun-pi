@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agentContacts, agentLines, chatAgents, derivedName, displayName, needsDisplayName, type AgentRow } from "../src/chat-agents.ts";
+import { agentContacts, agentLines, chatAgents, derivedName, displayName, needsDisplayName, titledFromMessage, type AgentRow } from "../src/chat-agents.ts";
 import type { ChatBoard, ChildAgent, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 
 const NOW = Date.parse("2026-10-08T07:00:00Z");
@@ -28,15 +28,46 @@ test("display names: plain names stay, empty, Untitled and kebab-case names deri
   assert.equal(needsDisplayName(""), true);
   assert.equal(needsDisplayName("settings-reland-2"), true);
   assert.equal(needsDisplayName("w22_agents"), true);
-  assert.equal(derivedName("[task from parent]\nOwner's words (verbatim):\n\"like im pretty sure there ARE agents\"\n# Fix the **Agents** card on the board panel, please"), "fix the agents card on");
-  assert.equal(derivedName("> quoted\n`rg` the README Chats section against src"), "rg the readme chats section");
-  assert.equal(derivedName("Owner's words (verbatim): \"hows the settings reland going\"\nMy read: the owner wants a status.\nCheck the re-land on staging and report."), "the owner wants a status", "the owner's quote is skipped; the chat's read is a topic");
-  assert.equal(derivedName("<skill name=\"poteto-mode\" location=\"/x\">\nYou are Fable, the CI queue coordinator"), "you are fable, the ci");
+  assert.equal(derivedName("[task from parent]\nOwner's words (verbatim):\n\"like im pretty sure there ARE agents\"\n# Fix the **Agents** card on the board panel, please"), "fix agents card board");
+  assert.equal(derivedName("> quoted\n`rg` the README Chats section against src"), "rg readme chats section");
+  assert.equal(derivedName("Owner's words (verbatim): \"hows the settings reland going\"\nMy read: the owner wants a status.\nCheck the re-land on staging and report."), "status", "the owner's quote is skipped; the chat's read is a topic");
+  assert.equal(derivedName("<skill name=\"poteto-mode\" location=\"/x\">\nYou are Fable, the CI queue coordinator"), "fable ci queue coordinator");
+  assert.equal(derivedName("(no messages)"), "");
   assert.equal(derivedName(""), "");
   assert.equal(displayName("stripe and payments", "anything"), "stripe and payments");
-  assert.equal(displayName("chat-e15f", "Stripe webhook setup in general, step by step"), "stripe webhook setup in general");
+  assert.equal(displayName("chat-e15f", "Stripe webhook setup in general, step by step"), "stripe webhook setup general");
   assert.equal(displayName("chat-e15f", undefined), "chat-e15f");
   assert.equal(displayName("", undefined), "untitled");
+});
+
+/** Real names and first messages from the live session list (`prime-agent sessions --json`, sessionName or catalog title, and firstMessage), 10-08. */
+const LIVE_NAMES: readonly { name: string; first?: string; shown: string }[] = [
+  { name: "Look there are a bunch of prime agent threads in the sep-launch tags. Your job is to be responsible",
+    first: "Look there are a bunch of prime agent threads in the sep-launch tags. Your job is to be responsible in making staging and prod actually work.", shown: "prime agent threads sep-launch" },
+  { name: "Look there are a bunch of prime agent threads in the sep-launch tags. Your job is to be responsible", shown: "prime agent threads sep-launch" },
+  { name: "Untitled", first: "have a look at the Specs framwork (http://localhost:5176/specs) and review EVERY SINGLE previous conversation and documentation on 1) engage session management",
+    shown: "specs framwork" },
+  { name: "**** main dev thread ***", first: "have a careful read at `workpool overhaul Fable.` session and artifact doc. can you define \nspecs", shown: "main dev thread" },
+  { name: "/goal Astra, i want you to look at the http://localhost:5176/specs page, and make all the specs true",
+    first: "/goal \nAstra, i want you to look at the http://localhost:5176/specs page, and make all the specs true and tested. \n\nthe thing is", shown: "specs page" },
+  { name: "can we work on ux", first: "can we work on ux", shown: "work on ux" },
+  { name: "do something with the top-left corner also can you give it a favikon that stands out", first: "do something with the top-left corner\nalso can you give it a favikon that stands out",
+    shown: "top-left corner" },
+  { name: "**main thread** stripe clerk", first: "there's couple threads working on Stripe - COnvex - Clerk webhook settings.", shown: "main thread stripe clerk" },
+  { name: "settings-reland-2", first: "Owner's words (verbatim): \"hows the `stripe` tagged, Clerk-Convex-Stripe refactor threads going?\"\n\nMy read: the owner wants every stripe-tagged thread driven to done.",
+    shown: "settings reland" },
+  { name: "Untitled", first: "Owner's words (verbatim, relayed by the owner's monitor at 12:00Z): \"GeoNode will be fixed in about 3 DAYS\"\n\nMy read (crawler ops): the offline crawler harness under test",
+    shown: "offline crawler harness under" },
+  { name: "chat-6394", first: "Owner's words (verbatim), answering \"Slack: Virev.AI hit its app limit. How do we get the bot in?\": \"can you actually streamline the slack tokens?\"\n\nMy read: three Slack apps for the company",
+    shown: "three slack apps company" },
+  { name: "developer environment VP", first: "hey so you're developer environment VP.", shown: "developer environment VP" },
+  { name: "[live] 0920 - us-metal-01", first: "there was a couple threads discussing how to setup the us-metal01", shown: "[live] 0920 - us-metal-01" },
+  { name: "Untitled", first: "--- name: poteto-agent\ndescription: Subagent persona brief\n---\n\n# Poteto subagent\n\nYou are operating as poteto-mode.\n\n## Task\n# Context (read first)\n- Repo sieun-pi, the Agents card shows bad names",
+    shown: "repo sieun-pi" },
+];
+test("display names: the live list's names read as short plain topics", () => {
+  for (const { name, first, shown } of LIVE_NAMES) assert.equal(displayName(name, first), shown, `${name} | ${first ?? ""}`);
+  assert.equal(titledFromMessage("Instagram Main thread.", "your job is to make a fully-fledged Instagram crawling worker pipeline"), false, "a short name the owner gave is not a message title");
 });
 
 test("chatAgents lists subagents, created roots, open-step owners and message partners once each, working first", () => {
@@ -75,14 +106,14 @@ test("chatAgents lists subagents, created roots, open-step owners and message pa
   ], board: plan, roots: ["seo-daily"], messages, rows, now: NOW });
 
   assert.deepEqual(agents.map(agent => [agent.key, agent.name, agent.link, agent.state, agent.steps]), [
-    ["thread:01a0cc5e", "you are fable, the ci", "message", "working", []],
+    ["thread:01a0cc5e", "fable ci queue coordinator", "message", "working", []],
     ["child:sub-new", "prod topup check", "subagent", "working", []],
-    ["thread:01a1root", "run the daily seo program", "root", "working", []],
-    ["thread:01a10810", "Look there are a bunch of prime agent threads", "message", "idle", []],
-    ["child:sub-f4b6", "re-land the settings billing rounds", "subagent", "waiting", ["p8"]],
+    ["thread:01a1root", "seo daily", "root", "working", []],
+    ["thread:01a10810", "prime agent threads sep-launch", "message", "idle", []],
+    ["child:sub-f4b6", "settings reland", "subagent", "waiting", ["p8"]],
     ["thread:01a1fail", "crawler ops", "step", "failed", ["p9"]],
-    ["child:sub-bfe0", "task", "subagent", "done", []],
-    ["thread:01a0fc82", "**main thread** stripe clerk", "step", "idle", ["p2", "p3"]],
+    ["child:sub-bfe0", "grampo refund debit", "subagent", "done", []],
+    ["thread:01a0fc82", "main thread stripe clerk", "step", "idle", ["p2", "p3"]],
     ["child:sub-err", "topup check", "subagent", "failed", []],
   ]);
   const by = Object.fromEntries(agents.map(agent => [agent.key, agent]));
@@ -107,7 +138,7 @@ test("chatAgents lists subagents, created roots, open-step owners and message pa
 test("chatAgents with nothing attached still lists the daemon's subagent sessions", () => {
   const agents = chatAgents({ self: { id: "c", name: "c" }, children: [], childSessions: [{ sessionId: "s1", childId: "sub-1", name: "ux-email", running: false, failed: false, lastActivityAt: "2026-10-06T01:00:00Z" }],
     board: null, roots: [], messages: [], rows: [], now: NOW });
-  assert.deepEqual(agents.map(agent => [agent.key, agent.sessionId, agent.name, agent.job, agent.state]), [["child:sub-1", "s1", "ux-email", "ux-email", "done"]]);
+  assert.deepEqual(agents.map(agent => [agent.key, agent.sessionId, agent.name, agent.job, agent.state]), [["child:sub-1", "s1", "ux email", "ux-email", "done"]]);
 });
 
 test("agentLines gives the chat one line per agent, at most 15", () => {

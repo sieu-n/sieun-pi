@@ -139,6 +139,9 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
     '`await agent_message.send(..., receiver_role="sibling", receiver_name="realtime layer")` for a brief or code change, or call `await refine.run()` aimed at a global skill or prompt entry. ' +
     "A local memory alone does not count."), "corrections change the brief or a skill");
   assert.ok(CHAT_BRIEF.includes("Never wait on the owner for a choice you can make yourself; a step you own moves every check-in or you start a job for it."), "own steps move");
+  assert.ok(CHAT_BRIEF.includes("If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it."),
+    "talk first is a proposal with a default that starts at the next check-in");
+  assert.equal(CHAT_BRIEF[1], "Call a feature live only for what you saw on the real screen, and say what you checked.", "live means seen, the item after the first");
   assert.ok(CHAT_BRIEF.includes("When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
     "instead of leaving the step blocked with a note."), "an owner wait is a For you ask");
   assert.match(brief, /receiver_role="sibling", receiver_name="realtime layer"/);
@@ -300,7 +303,7 @@ test("chats: create names, indexes, pins and sets steering all; an attach re-app
   chats.close();
 });
 
-test("chats: a job that goes quiet with no message is told once per end, after the grace; a job that asked is waiting; a report, a first task, a deleted or cancelled job and a plain thread get nothing", async () => {
+test("chats: a job that goes quiet with no message since its wake is told once per end, after the grace; a message, a report, a first task, a deleted or cancelled job and a plain thread get nothing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
@@ -339,7 +342,14 @@ test("chats: a job that goes quiet with no message is told once per end, after t
   messages.push({ role: "custom", customType: "agent_message", content: "[agent-message from child:api-audit]\n\nTwo questions before I go on: keep the old route?", timestamp: 6000 });
   threads.fire().children("c1", [job("done", false, false, 200)]);
   await flush();
-  assert.deepEqual(calls, ['steer c1 [job] api-audit is waiting for you (last message: "Two questions before I go on: keep the old route?")'], "it asked: waiting, not dead");
+  assert.deepEqual(calls, [], "a message since its last wake is its report; the check-in tells a wait");
+  clock = 10_000_000;
+  threads.fire().children("c1", [job("done", true, false, 9_000_000)]);
+  threads.fire().children("c1", [job("done", false, false, 9_000_000)]);
+  threads.fire().children("c1", [job("done", true, false, 9_003_000)]);
+  threads.fire().children("c1", [job("done", false, false, 9_003_000)]);
+  await flush();
+  assert.deepEqual(calls, ["steer c1 [job] api-audit ended with no report"], "two ends 3 s apart are one end: one line, and a message before the wake is no report");
   calls.length = 0;
 
   threads.fire().children("c1", [job("done", true, false, 300)]);
@@ -392,6 +402,38 @@ test("chats: the check-in tick steers only what changed, stays quiet with no cha
   board.plan = [{ ...board.plan[0]!, status: "done", children: board.plan[0]!.children.map(step => ({ ...step, status: "done" as const })) }];
   assert.deepEqual(await chats.checkIn("c1"), [], "no job at work and no open step: paused");
   assert.deepEqual(calls, []);
+  chats.close();
+});
+
+test("chats: a check-in less than 60 s after the last steer waits and joins the next one, at the first wake after the 60 s", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
+    { id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] }, { id: "p3", text: "Docs", status: "doing", job: "docs", children: [] }] }] };
+  let now = 1_000_000;
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now));
+  await chats.adopt();
+  const job = (id: string, name: string, working: boolean): ChildAgent => ({ id, label: name, sessionName: name, status: working ? "running" : "done", lastActivityAt: now, repliedSinceTask: true });
+  threads.fire().live("c1", [job("k1", "api-audit", true), job("k2", "docs", true)]);
+  await chats.settled();
+  await chats.checkIn("c1");
+  threads.fire().children("c1", [job("k1", "api-audit", false), job("k2", "docs", true)]);
+  now += 60_000;
+  assert.deepEqual(await chats.checkIn("c1"), ["p2 (job api-audit) finished; the board still says doing"]);
+  threads.fire().children("c1", [job("k1", "api-audit", false), job("k2", "docs", false)]);
+  now += 10_000;
+  calls.length = 0;
+  assert.deepEqual(await chats.checkIn("c1"), [], "10 s after the last steer: it waits");
+  now += 30_000;
+  assert.deepEqual(await chats.tick(), [], "40 s: still waiting");
+  now += 30_000;
+  assert.deepEqual(await chats.tick(), ["c1"], "70 s: the waiting check-in runs");
+  await chats.settled();
+  assert.equal(calls.filter(call => call.startsWith("steer c1 [check-in]")).length, 1);
+  assert.match(calls.find(call => call.startsWith("steer c1 [check-in]"))!, /p3 \(job docs\) finished/);
   chats.close();
 });
 

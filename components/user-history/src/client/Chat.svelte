@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { ui, BOARD_DEFAULT, boardMax, BOARD_MIN } from "./ui.svelte.ts";
@@ -9,7 +10,7 @@
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobNames, jobViews, reportsFor, spawnCalls, updatesJob } from "./jobs.ts";
   import { boardActionText, isBoardAction, mentionIndex, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { chatFeed, chatLines, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
+  import { chatFeed, chatLines, foldReply, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { bubbleBlocks, renderInline, renderMarkdown } from "./markdown.ts";
   import { diagrams } from "./diagrams.ts";
@@ -46,6 +47,8 @@
   /** A sender named by a raw session id in an agent-message header reads as its catalog name. */
   const nameOf = (sessionId: string): string | undefined => store.session(sessionId)?.name;
   const feed = $derived(thread ? chatFeed(thread, pendingSends, nameOf) : []);
+  /** Long owner-turn replies the owner opened with "More" (`foldReply`), as `<chat id>:<item id>`. */
+  const unfolded = new SvelteSet<string>();
   /** Three dots while the chat answers the owner and no reply text has started. A turn a job or a check-in started shows nothing until a tell_owner lands. */
   const busy = $derived(thread ? isThreadBusy({ ...thread, children: [] }) : false);
   const typing = $derived(busy && thread !== null && turnStarter(thread.messages) === "owner" && !feed.some(item => item.kind === "agent" && item.streaming));
@@ -301,7 +304,8 @@
             </div>
           </div>
         {:else if item.kind === "agent"}
-          {@const blocks = bubbleBlocks(item.text)}
+          {@const fold = item.streaming || item.told || unfolded.has(`${id}:${item.id}`) ? null : foldReply(item.text)}
+          {@const blocks = bubbleBlocks(fold?.folded ? fold.shown : item.text)}
           <div class="line agent" data-at={item.at}>
             <div class="blocks">
               {#each blocks as block, position (position)}
@@ -311,6 +315,7 @@
                   <div class="bubble theirs" use:longpress={() => void copyLink(item.at)}>
                     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
                     <div class="prose bubble-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming }}>{@html html}{#if streaming && position === blocks.length - 1}<span class="caret"></span>{/if}</div>
+                    {#if fold?.folded && position === blocks.length - 1}<button type="button" class="more" aria-label="Show the whole reply" onclick={() => unfolded.add(`${id}:${item.id}`)}>More</button>{/if}
                   </div>
                 {:else}
                   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
@@ -488,6 +493,8 @@
   .blocks > .bubble { max-width: min(82%, 560px); }
   /* Bubble typography: paragraphs and lists sit tight, headings read as bold lines, blocks scroll sideways inside the bubble. */
   .bubble-prose { line-height: 1.45; }
+  .more { margin-top: 4px; padding: 0; border: 0; background: none; color: var(--accent-bold); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .more:hover { text-decoration: underline; }
   .bubble-prose :global(p), .bubble-prose :global(ul), .bubble-prose :global(ol), .bubble-prose :global(blockquote), .bubble-prose :global(.table-wrap), .bubble-prose :global(.code-block) { margin: 0 0 0.55em; }
   .bubble-prose :global(h1), .bubble-prose :global(h2), .bubble-prose :global(h3), .bubble-prose :global(h4) { font-size: 1em; margin: 0.7em 0 0.25em; }
   .bubble-prose :global(li + li) { margin-top: 0.15em; }

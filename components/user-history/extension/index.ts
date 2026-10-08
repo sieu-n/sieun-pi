@@ -8,7 +8,7 @@ import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, cha
   jobPersonaGuideline, jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool } from "../src/chats.ts";
 import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
-import { checkInLine, checkInSettings } from "../src/chat-checkin.ts";
+import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/chat-checkin.ts";
 import type { ChatAgent } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -27,7 +27,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     description: "Read or change this chat's board, which the owner sees next to the chat: the plan (a nested checklist of goals and steps, any depth, each " +
       "step linked to its job), the owner's todo list (asks only the owner can answer, each with choices), and the scratchpad (short notes, nested to any " +
       "depth, each with links to what it is about). Ops apply in order, all or none. No ops returns the current board. Every result shows the whole board with item " +
-      "ids (p1, t1, s1) and this chat's own link target.",
+      "ids (p1, t1, s1) and this chat's own link target. check_in changes this chat's own check-in (a pause or the interval).",
     promptGuidelines: [...CHAT_BRIEF],
     parameters: {
       type: "object",
@@ -56,17 +56,26 @@ export default function historyExtension(pi: ExtensionAPI): void {
             required: ["op"],
           },
         },
+        check_in: {
+          type: "object",
+          description: "Change this chat's own check-in, in the owner's settings: pause \"1h\" or \"tomorrow\" (until 09:00), null to resume your own pause, " +
+            "and/or every_minutes (1 to 240). A pause the owner set stays; the owner's later change replaces yours. The feed shows the owner one line.",
+          properties: { pause: { type: ["string", "null"], enum: ["1h", "tomorrow", null] }, every_minutes: { type: "integer", minimum: 1, maximum: 240 } },
+        },
       },
-      required: ["ops"],
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const ops = parseBoardOps((params as { ops?: unknown }).ops ?? []);
+      const input = params as { ops?: unknown; check_in?: unknown };
+      const ops = parseBoardOps(input.ops ?? []);
+      const change = input.check_in === undefined ? undefined : parseChatCheckIn(input.check_in);
       const sessionId = ctx.sessionManager.getSessionId();
-      const { board, summaries } = await boards().apply(sessionId, ops, "agent");
+      const settings = checkInSettings(join(dataDir(), "check-in-settings.json"));
       const now = Date.now();
-      const checkIn = checkInLine(await checkInSettings(join(dataDir(), "check-in-settings.json")).get(sessionId), now);
+      const changed = change ? [await chatCheckIn(settings, sessionId, change, now)] : [];
+      const { board, summaries } = await boards().apply(sessionId, ops, "agent");
+      const checkIn = checkInLine(await settings.get(sessionId), now);
       const agents = agentLines(await chatAgentsOf(sessionId), now);
-      return { content: [{ type: "text", text: [...summaries, renderBoard(board, sessionId, checkIn), ...agents].join("\n") }], details: undefined };
+      return { content: [{ type: "text", text: [...changed, ...summaries, renderBoard(board, sessionId, checkIn), ...agents].join("\n") }], details: undefined };
     },
   });
   // The feed shows this call's text as a bubble on any turn; on a turn the owner did not start it is the only text the owner sees.

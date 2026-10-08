@@ -5,7 +5,7 @@ import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem,
 /** A thread the chat exchanged agent messages with this long ago still counts as linked. */
 export const CONTACT_WINDOW_MS = 24 * 60 * 60_000;
 /** Words a derived display name keeps. */
-const NAME_WORDS = 5;
+const NAME_WORDS = 4;
 
 /** A daemon session that is a direct subagent of the chat, as the catalog sees it; `first` is its first task text, for the display name. */
 export interface SubagentSession {
@@ -71,22 +71,104 @@ export const needsDisplayName = (name: string): boolean => {
   const trimmed = name.trim();
   return !trimmed || /^untitled$/i.test(trimmed) || /^[^\s]*[A-Za-z0-9][-_][A-Za-z0-9][^\s]*$/.test(trimmed);
 };
-const LABEL = /^(?:\[task from parent\]|owner's words \(verbatim\):?|my read:?)\s*/i;
+/** A label a brief opens a line with: "[task from parent]", "Owner's words (verbatim, relayed):", "My read (crawler ops):", answering "...". */
+const LABEL = /^(?:\[task from parent\]\s*|[^:\n"]{0,60}?\b(?:words|read)\b\s*(?:\([^)]*\))?\s*(?:,\s*answering\s+"[^"]*")?\s*:\s*)/i;
+/** The line that holds the chat's own reading of the task; a brief's best topic line. */
+const MY_READ = /^\s*my read\b[^:\n]*:\s*(.+)$/im;
 /** A quoted line, a markup or tag line (a skill block, an HTML tag), a rule or a fence: not a name. */
 const QUOTE_LINE = /^(?:["'“‘>]|---|```|<)/;
+/** Openers that carry no topic, longest first so "have a look at" wins over "look". Stripped again until none is left. */
+const FILLER = ["have a careful read at", "have a look at", "take a look at", "i want you to", "i need you to", "your job is to", "your job is", "look there are",
+  "there are a bunch of", "there are", "there is", "there's", "there were", "there was", "the owner wants", "can you please", "could you please", "can you", "could you", "can we", "please",
+  "i want to", "i want", "you are", "you're", "we need to", "make sure", "look at", "look", "lets", "let's", "hey", "yo", "so", "ok", "okay", "btw", "bytheway", "hi", "also", "now", "and"];
+const FILLER_HEAD = new RegExp(`^(?:${FILLER.map(phrase => phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b[\\s,:]*`, "i");
+/** Words with no topic of their own: dropped at either end of a name, and inside it when it is longer than NAME_WORDS. */
+const STOP = new Set(["a", "an", "the", "of", "to", "in", "on", "at", "for", "with", "and", "or", "by", "from", "into", "is", "are", "be", "it", "its", "this", "that", "these",
+  "those", "my", "our", "your", "i", "we", "you", "me", "us", "do", "how", "what", "which", "why", "every", "all", "some", "any", "bunch", "couple", "lot", "something", "single", "much"]);
+/** A heading of this many words or fewer is a brief's section title ("# Context", "# Poteto subagent"), not its topic. */
+const SECTION_WORDS = 3;
+
+/** A brief's body: the part after a "Task" heading when it has one, else the text after a front-matter block. */
+function briefBody(first: string): string {
+  const task = /^#{1,3}\s*(?:task|asks?)\b[^\n]*\n/im.exec(first);
+  if (task) return first.slice(task.index + task[0].length);
+  return first.replace(/^\s*---\n[\s\S]*?\n---\s*\n/, "");
+}
+/** A line with its label, list mark, slash command and a leading "Name," cut; empty when it is a quote, a tag, a section heading or a placeholder. */
+function topicLine(raw: string): string {
+  let line = raw.trim().replace(LABEL, "").replace(/^[-*+]\s+|^\d+[.)]\s+/, "").replace(/^\/[\w:-]+\s*/, "").trim();
+  if (!line || QUOTE_LINE.test(line) || /^\(no messages\)$/i.test(line)) return "";
+  const heading = /^#+\s*(.*)$/.exec(line);
+  if (heading) { line = heading[1]!; if (line.split(/\s+/).length <= SECTION_WORDS) return ""; }
+  return line.replace(/^[A-Z][a-z]+,\s+/, "");
+}
+/** A URL as the last part of its path ("http://localhost:5176/specs" is "specs"); empty for a bare host. */
+const urlWord = (url: string): string => { try { return new URL(url).pathname.split("/").filter(Boolean).at(-1) ?? ""; } catch { return ""; } };
 /**
- * A display name from a first task or brief: its first line that is not "[task from parent]", "Owner's words (verbatim):" or a quote, cut to
- * NAME_WORDS words, lowercase, without markdown marks. Empty when nothing is left.
+ * Topic words of a line, lowercase: links and URLs cut to their text or last path part, paths, parentheses, markdown marks and quotes dropped,
+ * filler openers cut, then only the first clause when it holds two or more words that are not stop words.
+ */
+function topicWords(line: string): string[] {
+  let text = line.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/[^\s)>"']+/g, url => ` ${urlWord(url.replace(/[.,;:!?]+$/, ""))} `).replace(/\S*\/\S+/g, " ")
+    .replace(/\([^)]*\)/g, " ").replace(/<[^>]*>/g, " ").replace(/[`*_#>|"“”‘’[\]{}]/g, " ").replace(/\s+/g, " ").trim();
+  for (let before = ""; before !== text; ) { before = text; text = text.replace(FILLER_HEAD, "").trim(); }
+  const clause = /^(.*?)(?:[.?!;](?:\s|$)|,\s|\s(?:and|but|so|then)\s)/i.exec(text);
+  const head = clause && clause[1]!.split(" ").filter(word => !STOP.has(word.toLowerCase())).length >= 2 ? clause[1]! : text.split(/[.?!;](?:\s|$)/)[0]!;
+  return head.toLowerCase().replace(/[,:;.!?]+/g, " ").split(/\s+/).filter(word => /[a-z0-9]/.test(word));
+}
+/** At most NAME_WORDS words with no stop word at either end; stop words inside go first when there are more. */
+function nameOf(words: readonly string[]): string {
+  let kept = [...words];
+  while (kept.length && STOP.has(kept[0]!)) kept.shift();
+  if (kept.length > NAME_WORDS) kept = kept.filter(word => !STOP.has(word));
+  kept = kept.slice(0, NAME_WORDS);
+  while (kept.length && STOP.has(kept.at(-1)!)) kept.pop();
+  return kept.join(" ");
+}
+/**
+ * A short topic name from a first task or brief: the "My read" line when it has one, else its first line that is not a label, a quote, a tag or a
+ * section heading; filler openers ("have a look at", "can you", "your job is") and stop words at its ends cut, at most NAME_WORDS words, lowercase.
+ * Empty when nothing is left.
  */
 export function derivedName(first: string): string {
-  const line = first.split("\n").map(line => line.trim().replace(LABEL, "")).find(line => line && !QUOTE_LINE.test(line)) ?? "";
-  const words = line.replace(/[`*_#>|]/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").toLowerCase().split(/\s+/).filter(Boolean).slice(0, NAME_WORDS);
-  return words.join(" ").replace(/[\s.,;:!?]+$/, "");
+  const body = briefBody(first);
+  const read = MY_READ.exec(body)?.[1];
+  for (const line of [...(read ? [read] : []), ...body.split("\n")]) {
+    const name = nameOf(topicWords(topicLine(line)));
+    if (name) return name;
+  }
+  return "";
 }
-/** The name a row shows: the session name as given, or one derived from its first task when the name is empty, "Untitled" or kebab-case. */
+/** A given name with markdown marks around or inside it removed: "**** main dev thread ***" is "main dev thread". */
+const plainName = (name: string): string => name.replace(/[*`]+/g, " ").replace(/^[\s#_~>]+|[\s_~]+$/g, "").replace(/\s+/g, " ").trim();
+const squash = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
+/**
+ * Whether a row's name is a title the catalog took from its first message, not one the owner gave: longer than six words, or three or more words
+ * that open the first message.
+ */
+export function titledFromMessage(name: string, first: string | undefined): boolean {
+  const words = name.trim().split(/\s+/).length;
+  return words > 6 || (words >= 3 && first !== undefined && squash(first).startsWith(squash(name)));
+}
+/** A name the chat server made up ("chat-e15f") or the daemon's "Untitled": it names no topic. */
+const generatedName = (name: string): boolean => !name || /^untitled$/i.test(name) || /^chat-[0-9a-f]{4}$/i.test(name);
+/** A kebab-case or snake_case job name as words, with trailing number parts dropped: "settings-reland-2" is "settings reland". */
+function kebabWords(name: string): string {
+  const parts = name.split(/[-_]+/).filter(Boolean);
+  while (parts.length > 1 && /^\d+$/.test(parts.at(-1)!)) parts.pop();
+  return parts.join(" ");
+}
+/**
+ * The name a row shows. A name the owner gave stays, without markdown marks. A kebab-case job name reads as its words. A made-up name
+ * ("chat-e15f", "Untitled", none) or a title the catalog took from the first message gets a topic name derived from the first task, else
+ * from that title.
+ */
 export function displayName(name: string, first: string | undefined): string {
-  if (!needsDisplayName(name)) return name.trim();
-  return (first && derivedName(first)) || name.trim() || "untitled";
+  const plain = plainName(name);
+  if (!generatedName(plain) && needsDisplayName(plain)) return kebabWords(plain);
+  const titled = !generatedName(plain) && titledFromMessage(plain, first);
+  if (!generatedName(plain) && !titled) return plain;
+  return (first && derivedName(first)) || (titled ? derivedName(plain) : "") || plain || "untitled";
 }
 
 type Draft = {

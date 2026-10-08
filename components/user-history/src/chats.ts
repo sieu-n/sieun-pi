@@ -4,12 +4,12 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { activePause, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN, endedWithoutReport, jobFacts,
-  nextCheckIn, noReportKey, noReportNotice, pauseEnd, retryDue } from "./chat-checkin.ts";
+import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
+  endedWithoutReport, jobFacts, jobReport, lastJobMessages, nextCheckIn, retryDue } from "./chat-checkin.ts";
 import { type ClaudeState, claudeDown, type FallbackRecord, fallbackModel, revivalMessage, type Stall, stallAction, strandedInput, switchBack, switchedBackNotice,
   switchedNotice, turnStall, turnViewOf } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
-import type { ChatBoard, ChatWait, CheckInPause, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { ChatBoard, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -27,6 +27,8 @@ export const TELL_OWNER_DONE = "told the owner";
 export const OLD_CHECK_IN = "Check-in. Read the board";
 /** A job quiet this long with no report is told to the chat; shorter gaps are a job between tool calls or one that a reply woke again. */
 export const NO_REPORT_GRACE_MS = 90_000;
+/** Two ends of one job whose last activity is this close are one end: told once. */
+export const NO_REPORT_SAME_END_MS = 60_000;
 /** Shell commands a chat may run: prime-agent (stop, send) and quick read-only look-ups. Each entry matches as a whole word at the start. */
 const ALLOWED_SHELL = ["prime-agent", "git log", "git status", "git diff", "git show", "rg", "ls", "cat", "head", "tail", "wc"];
 const SHELL_LIST = "prime-agent, git log/status/diff/show, rg, ls, cat, head, tail, wc";
@@ -37,6 +39,7 @@ export const CHAT_BRIEF: readonly string[] = [
     "Every open step names its owner (a job, or another thread as `thread:<id>` or its session name) and its next action; otherwise mark it " +
     "blocked with the exact thing that unblocks it. A step that waits on someone else is still yours to chase. Before you mark a step done, check " +
     "the real state (the commit, the live service, the report), never an old note. Plan it, staff it with jobs, and bring the owner only what needs them.",
+  "Call a feature live only for what you saw on the real screen, and say what you checked.",
   "Voice: the owner's language, short. Owner replies: at most 60 words including bullets; a status answer is one line per goal. Lead with the answer. Markdown renders in the chat: use a short list, " +
     "inline code or a link when it makes the reply easier to scan; no headings, no tables unless asked, no em dashes. Refer to board items by " +
     "their id (p7, s3); the page turns them into links. Long detail (findings, options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
@@ -79,9 +82,11 @@ export const CHAT_BRIEF: readonly string[] = [
     "Never ask the owner to relay a message to another thread. Make the board match reality (statuses, notes with links), send a job only its own plan item, not the whole board, and " +
     "stay quiet unless a goal finished, something is blocked, or you need a decision (one tell_owner). `[job] <name> ended with no report` means " +
     "that job stopped without reporting: read its last messages (`await agent_observe.recent_messages(name)`) and act on what it did. " +
-    "`[job] <name> is waiting for you` means it asked you something: answer it, do not replace it. Never start a second job on a step whose job " +
+    "A check-in line `<step> (job <name>) waits: \"...\"` means the job waits on you or on something you can get it (a slot, a go, an answer): " +
+    "answer it or get it, do not replace it. Never start a second job on a step whose job " +
     "may still run: `rlm.list_subagents()` can say completed for a job a reply woke again, so check its activity first.",
   "Never wait on the owner for a choice you can make yourself; a step you own moves every check-in or you start a job for it.",
+  "If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it.",
   "When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
     "instead of leaving the step blocked with a note.",
   "Corrections stick: when the owner corrects how you work (board shape, tone, what to report), apply it now and make it hold for every future chat. " +
@@ -471,8 +476,6 @@ export const CHECK_IN_TICK_MS = 30_000;
 /** How often the scheduler looks for chats the index lost, and how recent a thread must be to be looked at. */
 export const ADOPT_SCAN_MS = 10 * 60_000;
 export const ADOPT_RECENT_MS = 7 * 24 * 60 * 60_000;
-/** What the owner changes in a chat's check-in: the interval, and a pause (null resumes). */
-export interface CheckInChange { everyMs?: number; pause?: CheckInPause | null }
 
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
@@ -485,9 +488,12 @@ export class Chats {
   private readonly chatIds = new Set<string>();
   /** The children last seen per thread: the tick reads them, and each change is compared with them to find a job that ended with no report. */
   private readonly children = new Map<string, readonly ChildAgent[]>();
-  /** When each job was last seen starting to work, and which job ends were already told to the chat (`noReportKey`). */
+  /** When each job was last seen starting to work, and the end (its last activity) last told to the chat as "ended with no report". */
   private readonly workingSince = new Map<string, number>();
-  private readonly noticed = new Set<string>();
+  private readonly noticedEnd = new Map<string, number>();
+  /** When the server last steered each chat with a `[check-in]` (a digest or a restart), and the chats whose check-in waits to join the next. */
+  private readonly steeredAt = new Map<string, number>();
+  private readonly mergeWaiting = new Set<string>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
   private readonly syncing = new Map<string, Promise<void>>();
@@ -659,7 +665,8 @@ export class Chats {
       if (activePause(setting, now) !== null) continue;
       this.queue(id, () => this.revive(id));
       const next = nextCheckIn(setting, this.lastCheckIn.get(id) ?? this.started, now);
-      if (next === null || next > now || this.ownerTurn(id)) continue;
+      const merged = this.mergeWaiting.has(id) && now - (this.steeredAt.get(id) ?? 0) >= CHECK_IN_MERGE_MS;
+      if ((!merged && (next === null || next > now)) || this.ownerTurn(id)) continue;
       due.push(id);
       this.lastCheckIn.set(id, now);
       this.queue(id, async () => { await this.checkIn(id); });
@@ -720,6 +727,7 @@ export class Chats {
     this.threads.setWait(id, null);
     try {
       await this.threads.restart(id, action.message, action.abort);
+      this.steeredAt.set(id, now);
       this.log(`chat ${id.slice(0, 8)}: last turn failed (${stall.error}); started a new turn, try ${attempts}`);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: restart: ${error instanceof Error ? error.message : String(error)}`);
@@ -757,6 +765,7 @@ export class Chats {
       this.threads.setWait(id, null);
       this.revivals.set(id, { attempts: 1, at: this.now() });
       await this.threads.restart(id, revivalMessage(stall.error, stall.owner));
+      this.steeredAt.set(id, this.now());
       this.log(`chat ${id.slice(0, 8)}: Claude cannot serve (${stall.error}); switched ${model.provider}/${model.id} to ${to.provider}/${to.id} and started a new turn`);
       return true;
     } catch (error) {
@@ -886,9 +895,8 @@ export class Chats {
     if (!this.chatIds.has(id)) return null;
     const now = this.now();
     const setting = await this.source.settings.update(id, current => {
-      const everyMs = change.everyMs ?? current.everyMs;
-      const pausedUntil = change.pause === undefined ? current.pausedUntil : change.pause === null ? undefined : pauseEnd(change.pause, now);
-      return { everyMs, ...(pausedUntil !== undefined ? { pausedUntil } : {}) };
+      const result = changeCheckIn(current, change, now, "owner");
+      return "setting" in result ? result.setting : current;
     });
     return this.state(id, setting, now);
   }
@@ -902,20 +910,30 @@ export class Chats {
   async checkIn(id: string): Promise<string[]> {
     await this.load();
     if (!this.chatIds.has(id) || this.ownerTurn(id) || this.stall(id)) return [];
+    if (this.now() - (this.steeredAt.get(id) ?? -Infinity) < CHECK_IN_MERGE_MS) { this.mergeWaiting.add(id); return []; }
+    this.mergeWaiting.delete(id);
     try {
       let board: ChatBoard | null = null;
       let boardError: string | undefined;
       try { board = await this.source.board(id); }
       catch (error) { boardError = error instanceof Error ? error.message : String(error); this.log(`chat ${id.slice(0, 8)}: check-in board: ${boardError}`); }
       const rows = await this.source.rows();
-      const facts = jobFacts(this.children.get(id) ?? [], board, rows, id);
+      const said = lastJobMessages(this.messages(id) ?? []);
+      const facts = jobFacts(this.children.get(id) ?? [], board, rows, id).map(fact => {
+        const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
+        const wokeAt = this.workingSince.get(fact.key);
+        return { ...fact, ...(lastMessage ? { lastMessage } : {}), ...(wokeAt !== undefined ? { wokeAt } : {}) };
+      });
       for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
       if (!checkInDue(facts, board, boardError)) return [];
       const name = rows.find(row => row.id === id)?.name;
       const { memory, lines, open } = checkInDigest(await this.source.memory.get(id), facts, board, this.now(),
         { self: name ? [id, name] : [id], ...(boardError !== undefined ? { boardError } : {}) });
       await this.source.memory.set(id, memory);
-      if (lines.length) await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines, open), images: [], mode: "steer" });
+      if (lines.length) {
+        await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines, open), images: [], mode: "steer" });
+        this.steeredAt.set(id, this.now());
+      }
       return lines;
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
@@ -937,12 +955,14 @@ export class Chats {
     if (!this.chatIds.has(id)) return;
     const child = this.children.get(id)?.find(candidate => candidate.id === childId);
     if (!child || childWorking(child) || child.status === "cancelled" || child.repliedSinceTask !== false) return;
-    const key = child.lastActivityAt === undefined ? `${child.id}@started:${this.workingSince.get(child.id) ?? 0}` : noReportKey(child);
-    if (this.noticed.has(key)) return;
-    this.noticed.add(key);
+    const lastMessage = lastJobMessages(this.messages(id) ?? []).get(childName(child));
+    if (jobReport({ replied: false, ...(lastMessage ? { lastMessage } : {}), wokeAt: this.workingSince.get(child.id) ?? 0 }).reported) return;
+    const end = child.lastActivityAt ?? this.now();
+    const told = this.noticedEnd.get(child.id);
+    if (told !== undefined && Math.abs(end - told) < NO_REPORT_SAME_END_MS) return;
+    this.noticedEnd.set(child.id, end);
     if (this.stall(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the check-in after its restart tells it`); return; }
-    const text = noReportNotice(childName(child), this.threads.state?.(id)?.messages ?? [], this.workingSince.get(child.id) ?? 0);
-    try { await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${text}`, images: [], mode: "steer" }); }
+    try { await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${childName(child)} ended with no report`, images: [], mode: "steer" }); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 

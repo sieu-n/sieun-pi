@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatFeed, chatLines, collapseUpdates, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
+import { chatFeed, chatLines, collapseUpdates, foldReply, REPLY_FOLD_WORDS, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, CustomMessage, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -44,7 +44,7 @@ test("a turn another agent started hides the chat's text; only tell_owner reache
   ];
   const lines = chatLines(messages);
   assert.deepEqual(kinds(lines), ["user", "agent", "job", "notes", "notes", "job", "agent", "notes"]);
-  assert.deepEqual(lines[6], { kind: "agent", id: "m7-t0", text: "The README is written; both jobs are done.", at: 2100 });
+  assert.deepEqual(lines[6], { kind: "agent", id: "m7-t0", text: "The README is written; both jobs are done.", at: 2100, told: true });
   const job = lines[2];
   assert.ok(job?.kind === "job");
   assert.deepEqual([job.from, job.title, job.body], ["readme-lines", "There is no README.md at the repo root.", "There is no README.md at the repo root.\nOnly AGENTS.md and CLAUDE.md."]);
@@ -144,4 +144,34 @@ test("a job message the snapshot clipped names where its full text is", () => {
   const clipped: CustomMessage = { role: "custom", customType: "agent_message", content: [{ type: "text", text: "[agent-message from w10]\nLong report", truncated: true }], timestamp: 1 };
   assert.deepEqual(chatLines([user("x", 0), clipped]).at(-1), { kind: "job", id: "m1", from: "w10", title: "Long report", body: "Long report", at: 1, clipped: { message: 1, part: 0 } });
   assert.equal("clipped" in chatLines([report("w10", "Short", 1)])[0]!, false);
+});
+
+test("a chat_board call that changed the chat's own check-in shows its first result line as a notice; a refused one shows nothing", () => {
+  const board = (id: string): AssistantMessage["content"][number] => ({ type: "toolCall", id, name: "chat_board", arguments: { check_in: { pause: "1h" } } });
+  const boardResult = (toolCallId: string, text: string, isError: boolean, timestamp: number): ThreadMessage =>
+    ({ role: "toolResult", toolCallId, toolName: "chat_board", content: [{ type: "text", text }], isError, timestamp });
+  const messages: ThreadMessage[] = [
+    custom("agent_message", "[agent-message from child:docs]\nDone.", 1000),
+    assistant([board("b1")], 1100, "toolUse"),
+    boardResult("b1", "The chat set its check-in: paused until 2026-10-08 15:03\nPlan:\n- p1 Goal [doing]", false, 1110),
+    assistant([board("b2")], 1200, "toolUse"),
+    boardResult("b2", "check_in refused: the owner paused check-ins until they resume them; that stays", true, 1210),
+  ];
+  const notices = chatLines(messages).filter(line => line.kind === "notice");
+  assert.deepEqual(notices, [{ kind: "notice", id: "m1-c0", text: "The chat set its check-in: paused until 2026-10-08 15:03", at: 1100 }]);
+});
+
+test("an owner-turn reply over 60 words folds after its 60th word; fences are not words and are never cut; tell_owner lines are marked", () => {
+  const words = (count: number, from = 1) => Array.from({ length: count }, (_, index) => `w${from + index}`).join(" ");
+  assert.equal(REPLY_FOLD_WORDS, 60);
+  assert.deepEqual(foldReply(words(60)), { shown: words(60), folded: false }, "60 words stay whole");
+  assert.deepEqual(foldReply(words(61)), { shown: `${words(60)}…`, folded: true });
+  assert.deepEqual(foldReply(`- ${words(30)}\n- ${words(40, 31)}`), { shown: `- ${words(30)}\n- ${words(30, 31)}…`, folded: true }, "list marks are no words");
+  const diagram = "```mermaid\nflowchart LR\n" + "  a --> b\n".repeat(80) + "```\n";
+  assert.deepEqual(foldReply(`${words(20)}\n${diagram}${words(20, 21)}`).folded, false, "a diagram is not words");
+  const long = `${words(50)}\n${diagram}${words(30, 51)}`;
+  assert.deepEqual(foldReply(long), { shown: `${words(50)}\n${diagram}${words(10, 51)}…`, folded: true }, "the cut lands after the fence, in prose");
+  assert.deepEqual(foldReply(`${words(59)} last, ${words(5, 61)}`), { shown: `${words(59)} last…`, folded: true }, "no trailing comma before the mark");
+  const lines = chatLines([user("status?", 1000), assistant([{ type: "text", text: words(80) }, tell("t9", "Short note.")], 1100)]);
+  assert.deepEqual(lines.slice(1).map(line => line.kind === "agent" ? [line.text.length > 20, line.told ?? false] : []), [[true, false], [false, true]], "the fold applies to the reply, not to tell_owner");
 });

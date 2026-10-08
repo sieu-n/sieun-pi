@@ -14,8 +14,7 @@ import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { NOTE_MAX } from "./chat-notes.ts";
 import { ThreadError } from "./chat-threads.ts";
-import { validCheckInEvery } from "./chat-checkin.ts";
-import type { CheckInChange } from "./chats.ts";
+import { type CheckInChange, validCheckInEvery } from "./chat-checkin.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
 import { interruptedRuns } from "./chat-resume.ts";

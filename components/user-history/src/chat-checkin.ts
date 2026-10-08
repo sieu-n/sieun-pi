@@ -1,5 +1,6 @@
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
+import { CHAT_CHECK_IN_LINE } from "./shared/chat-feed.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow } from "./shared/types.ts";
 
 /**
@@ -10,6 +11,10 @@ import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckI
 export const CHECK_IN_MS = 15 * 60_000;
 /** A job that runs with no activity for this long is reported once as stale, until its activity moves again. */
 export const STALE_MS = 30 * 60_000;
+/** A thread that owns a todo or doing step and stays idle this long is reported, once per idle stretch. */
+export const THREAD_IDLE_MS = 60 * 60_000;
+/** A check-in this soon after the last steer the server sent the chat waits and joins the next one. */
+export const CHECK_IN_MERGE_MS = 60_000;
 /** An open step with no board change and no owner activity for this long is reported, once per stretch of this length. */
 export const STEP_STALE_MS = 2 * 60 * 60_000;
 /** A todo or doing step the chat itself owns that has not moved for this long is pushed, once per stretch of this length. */
@@ -42,9 +47,17 @@ export interface JobFact {
   cancelled?: true;
   /** The plan item this owner works on, an open one when it has several. */
   item?: { id: string; text: string; status: PlanStatus };
+  /** A subagent's last agent message to the chat (`lastJobMessages`), and when the server last saw it start working. */
+  lastMessage?: JobMessage; wokeAt?: number;
 }
+/** One agent message a job sent the chat: when, and its first line. */
+export interface JobMessage { at: number; text: string }
 /** `failedAt`/`retries`/`retriedAt`: an owner of an open step that stays failed is reported again on the RETRY_BACKOFF_MS schedule. */
-export interface JobMemo { state: JobState; activityAt?: number; messages?: number; stale?: true; failedAt?: number; retries?: number; retriedAt?: number }
+export interface JobMemo {
+  state: JobState; activityAt?: number; messages?: number; stale?: true; failedAt?: number; retries?: number; retriedAt?: number;
+  /** The time of the job message last reported as waiting, and the activity time of the thread owner last reported as idle. */
+  waited?: number; idle?: number;
+}
 /** One plan item as last seen: what it said, when that last changed, when it was last reported as quiet, and the `sig` at which it was reported as waiting on the owner with no ask. */
 export interface StepMemo { sig: string; at: number; nudged?: number; asked?: string }
 
@@ -166,7 +179,9 @@ const reminderDue = (before: Reminder | undefined, key: string, now: number): bo
  * One tick: the memory to keep, the lines that need the VP, and every open leaf step (an open item with no open child) as a line, oldest change
  * first, to list under them. With no memory (the first tick) only conditions are reported (a stale job or step, a ready step); transitions need
  * a before. A job counts as finished when it was working last tick, or when it is new since then and its last activity came after it; a
- * cancelled one gives no line. A thread owner also counts when it stayed idle but posted messages since the last tick. An owner of an open step
+ * cancelled one gives no line, one whose last message since its wake says it waits gives that message once, and a message since its wake is
+ * its report. A thread owner gives no line for going idle: it is reported when it posted messages since the last tick, and once per idle
+ * stretch when it owns a todo or doing step and stays idle THREAD_IDLE_MS. An owner of an open step
  * that stays failed is reported again on the RETRY_BACKOFF_MS schedule. A plan item's last change is when its status, text or owner last
  * differed (the board's `updatedAt` for one never seen before); a note edit is no change. An open item with no open child that had no change,
  * no change below it and no owner activity for STEP_STALE_MS is reported, once per stretch of that length. A board read error keeps the last
@@ -176,6 +191,8 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   { memory: CheckInMemory; lines: string[]; open: string[] } {
   const lines: string[] = [];
   const jobs: Record<string, JobMemo> = {};
+  /** Steps whose thread owner was just reported idle: their quiet-step line would say the same. */
+  const idleSteps = new Set<string>();
   for (const fact of facts) {
     const before = previous?.jobs[fact.key];
     const label = factLabel(fact);
@@ -183,13 +200,23 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     const stale = fact.item && !CLOSED.has(fact.item.status) && fact.item.status !== "blocked" ? `; the board still says ${fact.item.status}` : "";
     const wasWorking = before ? before.state === "working" : previous !== undefined && (fact.activityAt ?? 0) > previous.at;
     const ended = fact.state !== "working" && (wasWorking || (before !== undefined && before.state !== fact.state));
+    const report = jobReport(fact);
+    const memo: JobMemo = { state: fact.state, ...(fact.activityAt !== undefined ? { activityAt: fact.activityAt } : {}), ...(fact.messages !== undefined ? { messages: fact.messages } : {}),
+      ...(before?.waited !== undefined ? { waited: before.waited } : {}), ...(before?.idle !== undefined && before.idle === fact.activityAt ? { idle: before.idle } : {}) };
+    const added = before?.messages !== undefined && fact.messages !== undefined ? fact.messages - before.messages : 0;
+    const jobEnded = ended && !thread && !fact.cancelled && fact.state === "ended";
     if (ended && fact.state === "failed") lines.push(`${label} failed${fact.error ? `: ${clip(fact.error, 120)}` : ""}${stale}`);
-    else if (ended && !fact.cancelled) lines.push(`${label} ${thread ? "went idle" : "finished"}${fact.replied === false ? " with no report" : ""}${stale}`);
-    else if (!ended && fact.state !== "working" && before && before.messages !== undefined && fact.messages !== undefined && fact.messages > before.messages) {
-      const added = fact.messages - before.messages;
-      lines.push(`${label} has ${added} new ${added === 1 ? "message" : "messages"} and is ${STATE_WORD[fact.state]}${stale}`);
+    else if (jobEnded && report.waits) {
+      if (before?.waited !== report.waits.at) lines.push(`${label} waits: ${quote(report.waits.text)}`);
+      memo.waited = report.waits.at;
+    } else if (jobEnded) lines.push(`${label} finished${report.reported ? "" : " with no report"}${stale}`);
+    else if ((!ended || thread) && fact.state !== "working" && added > 0) lines.push(`${label} has ${added} new ${added === 1 ? "message" : "messages"} and is ${STATE_WORD[fact.state]}${stale}`);
+    if (thread && fact.state === "ended" && fact.item && (fact.item.status === "todo" || fact.item.status === "doing") && fact.activityAt !== undefined &&
+      now - fact.activityAt >= THREAD_IDLE_MS && memo.idle !== fact.activityAt) {
+      lines.push(`${label} idle for ${ago(now - fact.activityAt)}`);
+      memo.idle = fact.activityAt;
+      idleSteps.add(fact.item.id);
     }
-    const memo: JobMemo = { state: fact.state, ...(fact.activityAt !== undefined ? { activityAt: fact.activityAt } : {}), ...(fact.messages !== undefined ? { messages: fact.messages } : {}) };
     if (fact.state === "working" && fact.activityAt !== undefined && now - fact.activityAt > STALE_MS) {
       memo.stale = true;
       if (!(before?.stale && before.activityAt === fact.activityAt)) lines.push(`${label}: no activity for ${Math.round((now - fact.activityAt) / 60_000)} min`);
@@ -230,7 +257,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
       lines.push(`${item.id} is yours and has not moved for ${ago(now - moved)}: act now, start a job or decide`);
       memo.nudged = now;
     } else if (isOpen && !openBelow && now - Math.max(moved, memo.nudged ?? 0) >= STEP_STALE_MS) {
-      lines.push(`${item.id} ${quote(item.text)} is ${item.status} with no board change and no owner activity for ${ago(now - moved)}`);
+      if (!idleSteps.has(item.id)) lines.push(`${item.id} ${quote(item.text)} is ${item.status} with no board change and no owner activity for ${ago(now - moved)}`);
       memo.nudged = now;
     }
     if (isOpen && !openBelow && waitsOnOwner(item) && !todoForStep(item, openTodos) && !todoForStep(item, answeredTodos)) {
@@ -287,26 +314,29 @@ export function endedWithoutReport(before: readonly ChildAgent[], after: readonl
   });
 }
 
-/** A job that went quiet is told to the chat once per end: the same child at the same last activity is one end. */
-export const noReportKey = (child: ChildAgent): string => `${child.id}@${child.lastActivityAt ?? ""}`;
-
-/**
- * The notice for a job that went quiet without a report. A job that messaged the chat during the run that just ended asked something and
- * waits for an answer; it did not end silently. `messages` is the chat's transcript, `since` when the chat last saw the job start working.
- */
-export function noReportNotice(name: string, messages: readonly { role: string; customType?: string; content?: unknown; timestamp?: number }[], since: number): string {
-  const header = `[agent-message from child:${name}]`;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index]!;
-    if ((message.timestamp ?? 0) < since) break;
+/** Each job's last agent message to the chat, by the name its header gives (`[agent-message from child:<name>]`, the `child:` cut). */
+export function lastJobMessages(messages: readonly { role: string; customType?: string; content?: unknown; timestamp?: number }[]): Map<string, JobMessage> {
+  const last = new Map<string, JobMessage>();
+  for (const message of messages) {
     if (message.role !== "custom" || message.customType !== "agent_message") continue;
     const text = typeof message.content === "string" ? message.content
       : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
-    if (!text.startsWith(header)) continue;
-    const first = text.slice(header.length).split("\n").map(line => line.trim()).find(Boolean) ?? "";
-    return `${name} is waiting for you (last message: "${first.length > 140 ? first.slice(0, 139) + "…" : first}")`;
+    const header = /^\s*\[agent-message from\s+(?:child:)?([^\]]+)\]/.exec(text);
+    if (!header) continue;
+    last.set(header[1]!.trim(), { at: message.timestamp ?? 0, text: text.slice(header[0].length).split("\n").map(line => line.trim()).find(Boolean) ?? "" });
   }
-  return `${name} ended with no report`;
+  return last;
+}
+/** A job message that says the job waits on someone: a slot, a go, a review, an answer. */
+const SAYS_WAITS = /\b(?:wait(?:s|ing)?\b|slot\b|(?:your|the owner's|a)\s+(?:go|ok|word|call|review|answer|approval)\b|ready\s+for\s+(?:review|your)|blocked\s+(?:on|by)\b|before\s+i\s+(?:go\s+on|continue|push|commit))/i;
+/**
+ * What a job that stopped told the chat: `reported` unless the daemon says it did not reply and it sent no message at or after its last wake
+ * (an unknown wake counts any message); `waits` when that message says it waits on someone.
+ */
+export function jobReport(fact: Pick<JobFact, "replied" | "lastMessage" | "wokeAt">): { reported: boolean; waits?: JobMessage } {
+  const message = fact.lastMessage;
+  const after = message !== undefined && message.at >= (fact.wokeAt ?? 0);
+  return { reported: fact.replied !== false || after, ...(after && SAYS_WAITS.test(message.text) ? { waits: message } : {}) };
 }
 
 /** `<data dir>/check-ins.json`: the last tick's memory per chat, through locked-json. */
@@ -332,9 +362,10 @@ export function checkInRecord(path: string): CheckInRecord {
   };
 }
 
-/** The owner's check-in choices for one chat: its interval, and a pause until a time or until the owner resumes it. */
+/** A chat's check-in choices: its interval, and a pause until a time or until the owner resumes it, with who paused it. */
 export type CheckInPausedUntil = number | "forever";
-export interface CheckInSetting { everyMs: number; pausedUntil?: CheckInPausedUntil }
+export type CheckInBy = "owner" | "chat";
+export interface CheckInSetting { everyMs: number; pausedUntil?: CheckInPausedUntil; pausedBy?: CheckInBy }
 export const DEFAULT_CHECK_IN: CheckInSetting = { everyMs: CHECK_IN_MS };
 
 /** An interval the owner may set: whole minutes from 1 to 240. */
@@ -375,7 +406,61 @@ export function checkInLine(setting: CheckInSetting, now: number): string {
   return `Check-in: every ${setting.everyMs / 60_000} min`;
 }
 
-/** `<data dir>/check-in-settings.json`: `{ [chatId]: CheckInSetting }` through locked-json. Only the owner writes it, through the chat server. */
+/** What the owner (through the chat server) or the chat (through chat_board `check_in`) changes: the interval, and a pause (null resumes). */
+export interface CheckInChange { everyMs?: number; pause?: CheckInPause | null }
+
+/**
+ * A change applied to a chat's setting at `now`. Whoever writes later wins, with one limit: the chat cannot pause or resume over a pause the
+ * owner set that is still in force (the refusal says why), and it cannot pause until resumed. Its interval change always applies.
+ */
+export function changeCheckIn(current: CheckInSetting, change: CheckInChange, now: number, by: CheckInBy): { setting: CheckInSetting } | { refused: string } {
+  const pause = activePause(current, now);
+  if (by === "chat" && change.pause !== undefined) {
+    if (change.pause === "forever") return { refused: "a chat pauses its check-ins for 1h or until tomorrow 09:00; only the owner pauses them until resumed" };
+    if (pause !== null && current.pausedBy !== "chat") return { refused: `the owner paused check-ins ${pause === "forever" ? "until they resume them" : `until ${localTime(pause)}`}; that stays` };
+  }
+  const everyMs = change.everyMs ?? current.everyMs;
+  if (change.pause === undefined) return { setting: { everyMs, ...(pause !== null ? { pausedUntil: pause, ...(current.pausedBy ? { pausedBy: current.pausedBy } : {}) } : {}) } };
+  if (change.pause === null) return { setting: { everyMs } };
+  return { setting: { everyMs, pausedUntil: pauseEnd(change.pause, now), pausedBy: by } };
+}
+
+/** The chat_board `check_in` argument, parsed: `pause` "1h", "tomorrow" or null (resume), `every_minutes` a whole number from 1 to 240. Throws on anything else. */
+export function parseChatCheckIn(value: unknown): CheckInChange {
+  if (!isRecord(value)) throw new Error("check_in: give {pause} and/or {every_minutes}");
+  const change: CheckInChange = {};
+  if ("pause" in value) {
+    if (value.pause !== null && value.pause !== "1h" && value.pause !== "tomorrow") throw new Error('check_in.pause: "1h", "tomorrow" (09:00) or null to resume');
+    change.pause = value.pause;
+  }
+  if ("every_minutes" in value) {
+    const everyMs = typeof value.every_minutes === "number" ? value.every_minutes * 60_000 : NaN;
+    if (!validCheckInEvery(everyMs)) throw new Error(`check_in.every_minutes: a whole number from ${CHECK_IN_MIN_MINUTES} to ${CHECK_IN_MAX_MINUTES}`);
+    change.everyMs = everyMs;
+  }
+  if (change.pause === undefined && change.everyMs === undefined) throw new Error("check_in: give {pause} and/or {every_minutes}");
+  return change;
+}
+
+/**
+ * The chat's own change to its check-in, written to the owner's setting store under its lock: the line the tool returns first (the feed
+ * shows it as a quiet line), or an error with the refusal.
+ */
+export async function chatCheckIn(settings: CheckInSettings, id: string, change: CheckInChange, now: number): Promise<string> {
+  let refused: string | undefined;
+  const setting = await settings.update(id, current => {
+    const result = changeCheckIn(current, change, now, "chat");
+    if ("refused" in result) { refused = result.refused; return current; }
+    return result.setting;
+  });
+  if (refused) throw new Error(`check_in refused: ${refused}`);
+  const pause = activePause(setting, now);
+  const what = change.pause === undefined ? `every ${setting.everyMs / 60_000} min` : pause === null ? `resumed, every ${setting.everyMs / 60_000} min`
+    : `paused until ${pause === "forever" ? "the owner resumes it" : localTime(pause)}${change.everyMs !== undefined ? `, then every ${setting.everyMs / 60_000} min` : ""}`;
+  return CHAT_CHECK_IN_LINE + what;
+}
+
+/** `<data dir>/check-in-settings.json`: `{ [chatId]: CheckInSetting }` through locked-json. The owner writes it through the chat server, the chat through chat_board `check_in`. */
 export interface CheckInSettings {
   all(): Promise<Record<string, CheckInSetting>>;
   get(id: string): Promise<CheckInSetting>;
@@ -385,7 +470,8 @@ function parseSetting(value: unknown): CheckInSetting | undefined {
   if (!isRecord(value) || !validCheckInEvery(value.everyMs)) return undefined;
   const until = value.pausedUntil;
   const pausedUntil = until === "forever" || (typeof until === "number" && Number.isFinite(until)) ? until : undefined;
-  return { everyMs: value.everyMs, ...(pausedUntil !== undefined ? { pausedUntil } : {}) };
+  const pausedBy = value.pausedBy === "owner" || value.pausedBy === "chat" ? value.pausedBy : undefined;
+  return { everyMs: value.everyMs, ...(pausedUntil !== undefined ? { pausedUntil, ...(pausedBy ? { pausedBy } : {}) } : {}) };
 }
 export function checkInSettings(path: string): CheckInSettings {
   const file: JsonFile<Record<string, CheckInSetting>> = { path, label: "Check-in settings", initial: () => ({}), parse(value: unknown) {

@@ -73,8 +73,10 @@ export function firstTask(row: Pick<SessionSummary, "firstMessage" | "sessionFil
     const first = fileFirstMessage(row.sessionFile) || subagentPrompt(row.sessionFile);
     if (first) { const cut = taskText(first).slice(0, 2000); fileFirsts.set(row.sessionFile, cut); return cut; }
   }
-  return taskText(row.firstMessage ?? "");
+  return row.firstMessage === NO_MESSAGES ? "" : taskText(row.firstMessage ?? "");
 }
+/** The daemon's `firstMessage` for a session with no message yet: a placeholder, not a task. */
+const NO_MESSAGES = "(no messages)";
 /** A skill invocation stored expanded reads as what the person typed. */
 const taskText = (first: string): string => first.trimStart().startsWith("<skill") ? parseSkillBlock(first)?.userMessage ?? "" : first;
 /** A subagent's session file holds no user message: its task is the `prompt` of the rlm-subagent.json beside it. */
