@@ -479,14 +479,15 @@
   .line:global(.linked) { animation: linked 2s ease-out; }
   @keyframes linked { from { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } to { background: transparent; box-shadow: none; } }
   .bubble { max-width: min(82%, 560px); min-width: 0; padding: 8px 14px; border-radius: 18px; font-size: 15.5px; line-height: 1.45; }
-  .bubble.mine { background: var(--accent-fill); color: var(--accent-text); border-bottom-right-radius: 5px; transition: opacity 0.2s; }
+  /* The owner's bubble is a light blue tint with normal text, calm next to the gray replies (owner, 10-08: "this blue is too blue"). */
+  .bubble.mine { background: light-dark(#dcebf7, #1f3a52); color: var(--text); border-bottom-right-radius: 5px; transition: opacity 0.2s; }
   .bubble.mine.pending { opacity: 0.55; }
   .bubble.theirs { background: var(--user-bubble); border-bottom-left-radius: 5px; }
   .text { white-space: pre-wrap; overflow-wrap: anywhere; }
   .said :global(a) { color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
   .said :global(code) { font-family: var(--mono); font-size: 0.88em; padding: 0.05em 0.3em; border-radius: 4px; background: color-mix(in srgb, currentColor 16%, transparent); }
   .said :global(.artifact-link) { font: inherit; color: inherit; text-decoration: underline; padding: 0; }
-  /* In the owner's accent bubble the pill takes the bubble text color; the dot keeps the item's color with a thin ring so it reads on the fill. */
+  /* In the owner's bubble the pill takes the bubble text color; the dot keeps the item's color with a thin ring so it reads on the tint. */
   .said :global(.mention-chip) { border-color: color-mix(in srgb, currentColor 55%, transparent); background: color-mix(in srgb, currentColor 16%, transparent); }
   .said :global(.mention-chip .dot) { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 70%, transparent); }
   .blocks { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; flex: 1; min-width: 0; }

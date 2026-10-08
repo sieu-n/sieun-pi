@@ -4,6 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
 import { chatAgents, withRates, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { planCounts } from "./shared/chat-board.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
@@ -470,6 +471,7 @@ export class Catalog {
       const links = await this.chats.links(row.id).catch(() => null);
       row.agents = chatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? []),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
+      if (links?.board?.plan.length) row.plan = planCounts(links.board.plan);
     }
     const rates = await this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
     for (const row of chatRows) row.agents = withRates(row.agents ?? [], rates);

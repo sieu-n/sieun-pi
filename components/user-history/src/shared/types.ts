@@ -208,6 +208,8 @@ export interface SessionRow {
   chat?: true;
   /** Chats only: every thread linked to it (`chatAgents`), running first, for the Agents card and the sidebar tree. A chat's `unread` ignores `working`, so a job report shows while other jobs run. */
   agents?: ChatAgent[];
+  /** Chats only: plan steps done and in total (dropped ones left out), for the sidebar line; absent with no plan. */
+  plan?: { done: number; total: number };
   /** Chats only: the check-in schedule the owner set (`<dataDir>/check-in-settings.json`). */
   checkIn?: CheckInState;
   /**

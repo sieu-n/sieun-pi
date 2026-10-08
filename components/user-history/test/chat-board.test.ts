@@ -281,3 +281,11 @@ test("extension: chat_board writes the chat's board under agent-chat-data-dir an
     "the chat reads the owner's setting from the data dir");
   await assert.rejects(tool.execute("c3", { ops: [{ op: "plan_update", id: "p7", status: "done" }] }, undefined, undefined, ctx), /No plan item p7/);
 });
+
+import { planCounts as countPlan } from "../src/shared/chat-board.ts";
+test("planCounts: every non-dropped step at any depth, and the done ones, for the sidebar line", () => {
+  type Item = { id: string; text: string; status: "todo" | "doing" | "done" | "blocked" | "dropped"; children: Item[] };
+  const item = (id: string, status: Item["status"], children: Item[] = []): Item => ({ id, text: id, status, children });
+  assert.deepEqual(countPlan([item("p1", "doing", [item("p2", "done"), item("p3", "dropped"), item("p4", "todo", [item("p5", "done")])]), item("p6", "done")]), { done: 3, total: 5 });
+  assert.deepEqual(countPlan([]), { done: 0, total: 0 });
+});

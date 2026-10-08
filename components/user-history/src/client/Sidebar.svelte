@@ -183,6 +183,15 @@
           {@const failure = pulse?.level === "failed" ? pulse.text : row.failure}
           <span class="line sub"><span class="meta failure" title={failure}>{failure}</span></span>
           {:else}
+          {#if row.chat}
+          {@const running = (row.agents ?? []).filter(agent => agent.state === "working").length}
+          <span class="line sub" title={[money(row.cost), row.model ? modelShort(row.model) : ""].filter(Boolean).join(", ")}>
+            {#if row.plan}<span class="meta date">{row.plan.done} of {row.plan.total} done</span>{/if}
+            {#if running}<span class="meta working">{running} {running === 1 ? "agent" : "agents"} running</span>
+            {:else if pulse && pulse.level !== "live"}<span class="meta working {pulse.level}">{pulse.text}</span>{/if}
+            {#if !row.plan && !running}<span class="meta date">No plan yet</span>{/if}
+          </span>
+          {:else}
           <span class="line sub">
             {#if row.schedule && !row.chat}
               <span class="meta date">{row.schedule.label ?? row.schedule.kind}{row.schedule.status === "paused" ? ", paused" : row.schedule.nextRunAt ? ", " + nextRun(row.schedule.nextRunAt, minute * 60_000) : ""}</span>
@@ -200,6 +209,7 @@
             {#if row.progress !== "none"}<ProgressSteps progress={row.progress} />{/if}
             {#if row.priority > 0}<PriorityBars level={row.priority} />{/if}
           </span>
+          {/if}
           {/if}
         </a>
         {#if row.chat}

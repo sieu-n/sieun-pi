@@ -54,7 +54,12 @@ const jobMentions: TokenizerAndRendererExtension = {
   tokenizer(src, tokens) {
     if (!renderIndex?.jobs || this.lexer.state.inLink) return undefined;
     const match = renderIndex.jobs.at.exec(src);
-    if (!match || /[\w-]$/.test(tokens.at(-1)?.raw ?? "")) return undefined;
+    const before = tokens.at(-1)?.raw ?? "";
+    // A name inside quotes is the chat quoting it ("realtime layer"), not pointing at the job: it stays text.
+    if (!match) return undefined;
+    const after = src.slice(match[0].length);
+    const quoted = /["\u201c]$/.test(before) || (/['\u2018]$/.test(before) && /^['\u2019]/.test(after));
+    if (/[\w-]$/.test(before) || quoted) return undefined;
     return { type: "jobMention", raw: match[0], name: match[0] };
   },
   renderer(token) { return jobChip(String(token.name)); },

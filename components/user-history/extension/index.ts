@@ -87,7 +87,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
       "or is blocked, or you need a decision. On a turn the owner started, reply with text instead.",
     parameters: {
       type: "object",
-      properties: { text: { type: "string", description: `What the owner reads, one or two sentences, up to ${TELL_OWNER_LIMIT} characters.` } },
+      properties: { text: { type: "string", description: `What the owner reads: one or two casual spoken sentences that read straight through, with no ids, hashes or asides; up to ${TELL_OWNER_LIMIT} characters.` } },
       required: ["text"],
     },
     async execute(_toolCallId, params) {

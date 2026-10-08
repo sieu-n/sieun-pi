@@ -350,3 +350,16 @@ export function renderBoard(board: ChatBoard | null, sessionId?: string, checkIn
   walk(board.scratch, (item, depth) => lines.push(`${"  ".repeat(depth + 1)}- ${item.id} ${item.text}${item.links.length ? " " + item.links.map(markdownLink).join(" ") : ""}`));
   return lines.join("\n");
 }
+
+/** Plan steps of a chat for its sidebar line: every item that is not dropped, and how many are done (the board card counts the same way). */
+export function planCounts(items: readonly PlanItem[]): { done: number; total: number } {
+  const counts = { done: 0, total: 0 };
+  const walk = (list: readonly PlanItem[]) => {
+    for (const item of list) {
+      if (item.status !== "dropped") { counts.total++; if (item.status === "done") counts.done++; }
+      walk(item.children);
+    }
+  };
+  walk(items);
+  return counts;
+}

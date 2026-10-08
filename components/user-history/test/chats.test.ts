@@ -152,7 +152,9 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /On a `\[check-in\]`, act on every open step, not only the one that changed: start what can start, re-brief, replace or unblock a stuck owner, do or assign the commit, restart or check a step waits on, and if a step truly waits on the owner make sure exactly one owner todo exists for it\. Watching and reporting alone is not progress\./);
   assert.match(brief, /Make the board match reality/);
   assert.match(brief, /send a job only its own plan item, not the whole board/);
-  assert.match(brief, /Refer to board items by their id \(p7, s3\); the page turns them into links\./);
+  assert.ok(brief.includes("no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides"), "replies read straight through (owner 10-08)");
+  assert.ok(brief.includes("Write like a text message from a coworker: short, casual, a few lines, spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence."), "casual spoken style (owner 10-08)");
+  assert.ok(brief.includes("Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, and translate any Korean."), "relays to agents in English with the meaning (owner 10-08)");
   assert.ok(brief.includes("No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works."), "plain board notes (owner correction 10-08)");
   // Audit 2026-10-08 (0409-chat-usage-audit): each line names the counter it should lower at the next audit.
   // Stalls and owner corrections: one chase, then a job.

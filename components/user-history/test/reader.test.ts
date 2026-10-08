@@ -108,6 +108,7 @@ test("job mentions: a whole-word job name, bare or alone in a code span, becomes
   assert.deepEqual(chips(renderMarkdown("`w20` and `w20-preview` and `api.reviewer`", "", index)), ["w20", "w20-preview", "api.reviewer"]);
   assert.match(renderMarkdown("`w20`"), /<code>w20<\/code>/, "no index: the code span stays code");
   assert.deepEqual(chips(renderInline("w20 said so", index)), ["w20"], "the owner's bubble gets job chips too");
+  assert.deepEqual(chips(renderMarkdown('I sent your words to "w20" and \u201cw20\u201d and \'w20\', then w20\'s report came', "", index)), ["w20"], "a quoted name stays text; a possessive is still a chip");
   assert.deepEqual(chips(renderMarkdown("w20 and x", "", mentionIndex("chat-1", null, ["x"]))), [], "a one-letter name is never a chip; an unknown name stays text");
   assert.deepEqual(chips(renderMarkdown("w20")), [], "no index, no chips");
   assert.equal(mentionIndex("chat-1", null, ["w20"])!.titles.size, 0);
