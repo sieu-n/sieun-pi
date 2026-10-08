@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
+import { fallbackRecord } from "../src/chat-fallback.ts";
 import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
-  jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, withChatTool } from "../src/chats.ts";
+  jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, type ThreadView, withChatTool } from "../src/chats.ts";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import { isThreadBusy, isTurnRunning } from "../src/shared/thread-state.ts";
 import { IdIndex } from "../src/id-index.ts";
-import type { ChatBoard, ChildAgent, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
+import type { ChatBoard, ChatWait, ChildAgent, ModelInfo, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
 import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
 
 test("id index: add puts the newest first once, forget removes", async () => {
@@ -228,8 +229,21 @@ function fakeThreads(calls: string[], pinLimit = 8) {
     busyIds,
     queuedIds,
     transcripts,
-    state(id: string) { const messages = transcripts.get(id); return messages ? { messages } : undefined; },
-    async restart(id: string, message: string) { calls.push(`restart ${id} ${message}`); },
+    /** Info, queue and retry the hub would hold next to the transcript. */
+    extras: new Map<string, Omit<ThreadView, "messages">>(),
+    state(id: string): ThreadView | undefined { const messages = transcripts.get(id); return messages ? { messages, ...this.extras.get(id) } : undefined; },
+    async restart(id: string, message: string, abort?: boolean) { calls.push(`restart ${id} ${message}${abort ? " (abort)" : ""}`); },
+    async abort(id: string) { calls.push(`abort ${id}`); },
+    async resumeQueue(id: string) { calls.push(`resume ${id}`); },
+    catalog: { models: [] as ModelInfo[], configuredProviders: [] as string[] },
+    async models(_id: string) { return { ...this.catalog, current: null, thinkingLevel: null, availableThinkingLevels: [] }; },
+    async setModel(id: string, provider: string, modelId: string) { calls.push(`model ${id} ${provider}/${modelId}`); },
+    async setThinking(id: string, level: string) { calls.push(`thinking ${id} ${level}`); },
+    async notice(id: string, text: string) { calls.push(`notice ${id} ${text}`); },
+    waits: new Map<string, ChatWait | null>(),
+    setWait(id: string, wait: ChatWait | null) { this.waits.set(id, wait); },
+    views: new Map<string, ThreadView>(),
+    async view(id: string) { return this.views.get(id) ?? null; },
     fire: () => observer!,
     busy(id: string) { return busyIds.has(id) || queuedIds.has(id); },
     running(id: string) { return busyIds.has(id); },
@@ -604,7 +618,7 @@ test("chats: a chat whose last turn failed gets a new turn 5, 10, then every 20 
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [] }] };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now), line => lines.push(line));
   await chats.adopt();
-  threads.transcripts.set("c1", [ownerAsks("write the article", now), reply("error", now, "Provider rate limit exceeded (rate_limit_error, 429)")]);
+  threads.transcripts.set("c1", [ownerAsks("[check-in] What changed: p1 finished", now), reply("error", now, "Provider rate limit exceeded (rate_limit_error, 429)")]);
   // The check-ins sent so far sit in its queue with nothing running: `busy`, not `running`. Waiting on `busy` is how 453e stayed dead for 2.6 h.
   threads.queuedIds.add("c1");
   const restarted: number[] = [];
@@ -758,6 +772,10 @@ test("thread hub: running ignores queued input that busy counts; restart sends t
   hub.resumeQueue = async id => { calls.push(`resume ${id}`); };
   await hub.restart("c1", "[check-in] Your last turn failed (429). Re-check the board and continue.");
   assert.deepEqual(calls, ["prompt c1 steer [check-in] Your last turn failed (429). Re-check the board and continue.", "resume c1"]);
+  calls.length = 0;
+  hub.abort = async id => { calls.push(`abort ${id}`); };
+  await hub.restart("t1", "continue", true);
+  assert.deepEqual(calls, ["abort t1", "prompt t1 steer continue", "resume t1"], "the way the owner unstuck a session by hand: abort, a steer, resume the queue");
   await hub.close();
 });
 
@@ -766,4 +784,173 @@ test("jobs of a chat work in poteto-mode when the skill is installed, and get no
   const line = jobPersonaGuideline(skill, path => path === skill);
   assert.ok(line?.startsWith(`Work in poteto-mode: read ${skill} in full before your first step`), String(line));
   assert.equal(jobPersonaGuideline(skill, () => false), null, "no skill installed: no persona line");
+});
+
+const SOL = { provider: "openai-codex", id: "gpt-6-sol", name: "GPT-6 Sol", input: ["text"], contextWindow: 0, reasoning: true } as ModelInfo;
+const OPUS = { provider: "anthropic", id: "claude-opus-5-5", name: "Claude Opus 5.5", input: ["text"], contextWindow: 0, reasoning: true } as ModelInfo;
+const TOKEN_FAILURE = 'Failed to resolve API key for provider "anthropic" from shell command: /Users/sieunpark/.config/pi-pool/bin/pi-pool-token';
+const RATE_LIMITED = "Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit.";
+async function fallbackChat(claude: { serves: boolean; freeAt: number | null } | null) {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const threads = fakeThreads(calls);
+  threads.catalog = { models: [OPUS, SOL], configuredProviders: ["anthropic", "openai-codex"] };
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  const clock = { now: 1_000_000_000, claude };
+  const fallbacks = fallbackRecord(join(dir, "chat-fallbacks.json"));
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, {}, () => clock.now), claude: async () => clock.claude, fallbacks }, line => lines.push(line));
+  await chats.adopt();
+  const info = (model: ModelInfo, extra: Partial<NonNullable<ThreadView["info"]>> = {}) =>
+    threads.extras.set("c1", { info: { model, thinkingLevel: "high", availableThinkingLevels: ["low", "high"], retryAttempt: 0, queuedActions: 0, ...extra } });
+  const step = async (seconds = 30) => { clock.now += seconds * 1000; calls.length = 0; await chats.tick(); await chats.settled(); return [...calls]; };
+  return { chats, threads, calls, lines, clock, fallbacks, info, step };
+}
+
+test("chats: Claude cannot serve (the pool token failed): the chat moves to GPT-6 Sol at once with its thinking level, one notice, a restart quoting the owner; it moves back between turns once Claude serves", async () => {
+  const { chats, threads, clock, fallbacks, info, step, lines } = await fallbackChat({ serves: false, freeAt: null });
+  info(OPUS);
+  threads.transcripts.set("c1", [ownerAsks("what was the response to t5 question???", clock.now), reply("error", clock.now, TOKEN_FAILURE)]);
+  assert.deepEqual(await step(), [
+    "model c1 openai-codex/gpt-6-sol",
+    "notice c1 Claude has no free account; switched to GPT-6 Sol. I switch back when one frees up.",
+    `restart c1 [check-in] Your last turn failed (${TOKEN_FAILURE}). The owner's message is still unanswered: "what was the response to t5 question???". Answer it first.`,
+  ], "30 s after the failure, not 5 min");
+  assert.deepEqual(await fallbacks.get("c1"), { original: { provider: "anthropic", id: "claude-opus-5-5", thinkingLevel: "high" }, fallback: { provider: "openai-codex", id: "gpt-6-sol" }, at: clock.now });
+  assert.match(lines.join("\n"), /Claude cannot serve .*; switched anthropic\/claude-opus-5-5 to openai-codex\/gpt-6-sol/);
+
+  info(SOL, { thinkingLevel: "medium" });
+  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] retry", clock.now), reply("stop", clock.now));
+  assert.deepEqual(await step(), [], "the chat answered on Sol; Claude still has no account");
+  clock.claude = { serves: true, freeAt: null };
+  threads.queuedIds.add("c1");
+  assert.deepEqual(await step(), [], "mid-turn: wait for the turn to end");
+  threads.queuedIds.delete("c1");
+  assert.deepEqual(await step(), ["model c1 anthropic/claude-opus-5-5", "thinking c1 high", "notice c1 A Claude account is free again; switched back to Claude Opus 5.5."],
+    "back to Opus at the level it had");
+  assert.equal(await fallbacks.get("c1"), undefined);
+  chats.close();
+});
+
+test("chats: the switch keeps the thinking level the new model supports; a 429 switches only when the pool has no usable account; no Codex model: the owner sees the wait", async () => {
+  const served = await fallbackChat({ serves: true, freeAt: null });
+  served.info(OPUS);
+  served.threads.transcripts.set("c1", [ownerAsks("hi", served.clock.now), reply("error", served.clock.now, RATE_LIMITED)]);
+  assert.deepEqual(await served.step(), [`restart c1 [check-in] Your last turn failed (${RATE_LIMITED}). The owner's message is still unanswered: "hi". Answer it first.`],
+    "another account serves: a plain restart after 30 s");
+  served.chats.close();
+
+  const down = await fallbackChat({ serves: false, freeAt: null });
+  down.info(OPUS);
+  const original = down.threads.setModel.bind(down.threads);
+  down.threads.setModel = async (id, provider, modelId) => { await original(id, provider, modelId); down.info(SOL, { thinkingLevel: "low", availableThinkingLevels: ["low", "high"] }); };
+  down.threads.transcripts.set("c1", [ownerAsks("hi", down.clock.now), reply("error", down.clock.now, RATE_LIMITED)]);
+  assert.deepEqual((await down.step()).slice(0, 2), ["model c1 openai-codex/gpt-6-sol", "thinking c1 high"]);
+  down.chats.close();
+
+  const none = await fallbackChat({ serves: false, freeAt: 1_000_000_000 + 45 * 60_000 });
+  none.threads.catalog = { models: [OPUS], configuredProviders: ["anthropic"] };
+  none.info(OPUS);
+  none.threads.transcripts.set("c1", [ownerAsks("hi", none.clock.now), reply("error", none.clock.now, TOKEN_FAILURE)]);
+  assert.deepEqual(await none.step(10), []);
+  assert.deepEqual(none.threads.waits.get("c1"), { kind: "account", until: 1_000_000_000 + 45 * 60_000 }, "the feed says when an account frees up");
+  assert.equal((await none.step(30))[0]?.startsWith("restart c1"), true, "it still tries at 30 s");
+  assert.equal(none.threads.waits.get("c1"), null);
+  none.chats.close();
+
+  const codex = await fallbackChat({ serves: false, freeAt: null });
+  codex.info(SOL);
+  codex.threads.transcripts.set("c1", [ownerAsks("hi", codex.clock.now), reply("error", codex.clock.now, TOKEN_FAILURE)]);
+  assert.deepEqual(await codex.step(10), [], "the owner picked Codex: never switched");
+  assert.deepEqual(codex.threads.waits.get("c1"), { kind: "retry", error: TOKEN_FAILURE, at: codex.clock.now + 20_000 });
+  codex.chats.close();
+});
+
+test("chats: an owner who moved off the fallback keeps that model; the record is dropped", async () => {
+  const { chats, threads, clock, fallbacks, info, step } = await fallbackChat({ serves: false, freeAt: null });
+  info(OPUS);
+  threads.transcripts.set("c1", [ownerAsks("hi", clock.now), reply("error", clock.now, TOKEN_FAILURE)]);
+  await step();
+  info({ ...SOL, id: "gpt-6-astra" });
+  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] retry", clock.now), reply("stop", clock.now));
+  clock.claude = { serves: true, freeAt: null };
+  assert.deepEqual(await step(), []);
+  assert.equal(await fallbacks.get("c1"), undefined);
+  chats.close();
+});
+
+test("chats: a provider retry that holds queued input is aborted and restarted; one with nothing queued is the session's own", async () => {
+  const { chats, threads, clock, info, step } = await fallbackChat({ serves: true, freeAt: null });
+  threads.transcripts.set("c1", [ownerAsks("[check-in] What changed: p1", clock.now), reply("error", clock.now, "Connection error.")]);
+  threads.busyIds.add("c1");
+  info(OPUS, { retryAttempt: 3 });
+  for (let minute = 0; minute < 10; minute++) assert.deepEqual(await step(60), [], "no queue: the native retry runs");
+  info(OPUS, { retryAttempt: 3, queuedActions: 2 });
+  threads.extras.get("c1")!.queue = { steering: ["can you use gpt-sol subagents"], followUp: [] };
+  assert.deepEqual(await step(), ["restart c1 [check-in] Your last turn failed (Connection error.). Re-check the board and continue. (abort)"],
+    "5 min after the failure, the stranded input runs");
+  chats.close();
+});
+
+test("chats: a step-owner thread whose last turn failed with input queued gets abort, a continue steer and a resumed queue, on the 5, 10, 20 min schedule", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = 1_000_000_000;
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Ship it", status: "doing", job: "thread:t1", children: [] }] };
+  const rows = (): SessionRow[] => [{ id: "t1", name: "TPS thread", cwd: "/r", kind: "live", status: "idle", archived: false, messageCount: 9, failure: "429", lastActivityAt: new Date(now - 60_000).toISOString() } as SessionRow];
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now, rows));
+  await chats.adopt();
+  threads.transcripts.set("c1", [ownerAsks("go", now), reply("stop", now)]);
+  const failed: ThreadView = { messages: [ownerAsks("continue", now - 60_000), reply("error", now - 60_000, "429")], queue: { steering: ["owner: status?"], followUp: [] } };
+  threads.views.set("t1", failed);
+  const wakes = async () => { calls.length = 0; await chats.checkIn("c1"); await chats.settled(); return calls.filter(call => call.startsWith("restart t1")); };
+  assert.deepEqual(await wakes(), ["restart t1 continue (abort)"]);
+  now += 60_000;
+  assert.deepEqual(await wakes(), [], "not again within 5 min");
+  now += 5 * 60_000;
+  assert.deepEqual(await wakes(), ["restart t1 continue (abort)"]);
+  threads.views.set("t1", { ...failed, queue: { steering: [], followUp: [] } });
+  now += 30 * 60_000;
+  assert.deepEqual(await wakes(), [], "nothing queued: the check-in line covers it, nothing is stranded");
+  chats.close();
+});
+
+test("chats: after the owner changes the model or account, a stalled chat restarts now; a plain thread in a provider retry is aborted and resumed", async () => {
+  const { chats, threads, clock, info, calls } = await fallbackChat({ serves: true, freeAt: null });
+  const lastCalls = () => calls.splice(0);
+  info(SOL);
+  threads.transcripts.set("c1", [ownerAsks("hi", clock.now), reply("error", clock.now, RATE_LIMITED)]);
+  lastCalls();
+  await chats.retryNow("c1");
+  assert.deepEqual(lastCalls(), [`restart c1 [check-in] Your last turn failed (${RATE_LIMITED}). The owner's message is still unanswered: "hi". Answer it first.`]);
+  threads.views.set("t9", { messages: [ownerAsks("hi", 1), reply("error", 2, RATE_LIMITED)], info: { retryAttempt: 2 } });
+  threads.busyIds.add("t9");
+  await chats.retryNow("t9");
+  assert.deepEqual(lastCalls(), ["abort t9", "resume t9"]);
+  threads.views.set("t8", { messages: [ownerAsks("hi", 1), reply("stop", 2)] });
+  await chats.retryNow("t8");
+  assert.deepEqual(lastCalls(), [], "a turn that ended well: nothing to do");
+  chats.close();
+});
+
+test("chats: the attach clears only the old daemon check-in heartbeat, never a duty heartbeat or the duty runner's [check-in] wake", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  for (const id of ["d1", "d2", "d3"]) await index.add(id);
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir));
+  await chats.adopt();
+  threads.heartbeats.set("d1", "Duty: every hour, check the CI queue and post the result on the board.");
+  threads.heartbeats.set("d2", "[check-in] Duty d4 is due: crawler health.");
+  threads.heartbeats.set("d3", OLD_CHECK_IN + " (chat_board with no ops) and what each job is doing.");
+  for (const id of ["d1", "d2", "d3"]) threads.fire().live(id, []);
+  await chats.settled();
+  assert.deepEqual(calls.filter(call => call.startsWith("heartbeat")), ["heartbeat d3 clear"]);
+  chats.close();
 });

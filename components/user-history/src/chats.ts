@@ -5,9 +5,11 @@ import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { activePause, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN, endedWithoutReport, jobFacts,
-  nextCheckIn, noReportKey, noReportNotice, pauseEnd, retryDue, revivalMessage, turnFailure } from "./chat-checkin.ts";
+  nextCheckIn, noReportKey, noReportNotice, pauseEnd, retryDue } from "./chat-checkin.ts";
+import { type ClaudeState, claudeDown, type FallbackRecord, fallbackModel, revivalMessage, type Stall, stallAction, strandedInput, switchBack, switchedBackNotice,
+  switchedNotice, turnStall, turnViewOf } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
-import type { ChatBoard, CheckInPause, CheckInState, CheckInView, ChildAgent, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { ChatBoard, ChatWait, CheckInPause, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -403,8 +405,25 @@ export interface ChatThreads {
   clearHeartbeat(id: string): Promise<void>;
   /** Sends text as a steer: it joins the running turn or starts one. A steer to a chat whose last turn failed can wait in its queue unseen. */
   prompt(id: string, input: { message: string; images: []; mode: "steer" }): Promise<void>;
-  /** Starts a new turn in a chat whose last turn failed: sends the text and resumes the session's queued input, so neither waits unseen. */
-  restart(id: string, message: string): Promise<void>;
+  /**
+   * Starts a new turn in a chat whose last turn failed: sends the text and resumes the session's queued input, so neither waits unseen.
+   * `abort` first stops a provider retry that holds the turn.
+   */
+  restart(id: string, message: string, abort?: boolean): Promise<void>;
+  /** Stops the running turn or provider retry; the input pump stays suspended until `resumeQueue` or `restart`. */
+  abort(id: string): Promise<void>;
+  /** Reopens the session's input pump, so queued input runs now. */
+  resumeQueue(id: string): Promise<void>;
+  /** The model catalog as the thread sees it (configured providers included). */
+  models(id: string): Promise<ModelCatalog>;
+  setModel(id: string, provider: string, modelId: string): Promise<void>;
+  setThinking(id: string, level: string): Promise<void>;
+  /** A transcript line that starts no turn; the feed shows it as a notice. */
+  notice(id: string, text: string): Promise<void>;
+  /** What the feed shows under the owner's unanswered message while a restart waits; null clears it. */
+  setWait(id: string, wait: ChatWait | null): void;
+  /** A thread's state for a stall check, attaching it first; null when it is not live. */
+  view(id: string): Promise<ThreadView | null>;
   /** Whether the thread is mid-turn or has input queued; the reload waits for it. */
   busy(id: string): boolean;
   /** Whether the thread runs a turn now; queued input alone does not count, since after a failed turn it can wait there unseen. */
@@ -417,7 +436,12 @@ export interface ChatThreads {
    * The chat's state as the server holds it while attached: the no-report notice looks for the job's last message in the transcript, the tick
    * reads who started the running turn and whether the last one failed, and `links` takes the board, the name and the children for the agents list.
    */
-  state?(id: string): { messages: readonly ThreadMessage[]; board?: ChatBoard | null; info?: { name?: string }; children?: readonly ChildAgent[] } | undefined;
+  state?(id: string): ThreadView | undefined;
+}
+/** The parts of a thread's state the chat side reads. */
+export interface ThreadView {
+  messages: readonly ThreadMessage[]; board?: ChatBoard | null; children?: readonly ChildAgent[]; queue?: QueueState; retry?: RetryState | null;
+  info?: { name?: string; model?: ModelInfo | null; thinkingLevel?: ThinkingLevel; availableThinkingLevels?: readonly ThinkingLevel[]; retryAttempt?: number; queuedActions?: number };
 }
 export type ChatSummary = (id: string) => Promise<{ lifecycle?: string; sessionFile?: string } | undefined>;
 /** The chat side's inputs to `chatAgents` (src/chat-agents.ts); the catalog adds the daemon's sessions. */
@@ -436,6 +460,10 @@ export interface CheckInSource {
   now?: () => number;
   /** How long a job must stay quiet before the no-report notice; default NO_REPORT_GRACE_MS. Tests pass 0. */
   noReportGraceMs?: number;
+  /** The pool's answer about Claude (cached by the reader), null when the pool cannot be read; absent: no chat is ever switched to the fallback. */
+  claude?: () => Promise<ClaudeState | null>;
+  /** `<data dir>/chat-fallbacks.json`: the model each chat ran before the server switched it to the fallback. */
+  fallbacks?: FallbackRecord;
 }
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
@@ -472,6 +500,10 @@ export class Chats {
   private readonly started: number;
   /** Restarts sent per chat since its last turn that ended well: how many, and when the last one went. */
   private readonly revivals = new Map<string, { attempts: number; at: number }>();
+  /** When each chat's current stall was first seen, for a provider retry whose failed reply the hub does not hold. */
+  private readonly stallSeen = new Map<string, number>();
+  /** Wakes sent per stranded step-owner thread: how many, and when the last one went. */
+  private readonly ownerWakes = new Map<string, { attempts: number; at: number }>();
   /** When the scheduler last looked for lost chats, and the threads with messages found plain (their head never changes). */
   private lastScan: number;
   private readonly plain = new Set<string>();
@@ -602,6 +634,7 @@ export class Chats {
     await this.index.forget(id);
     await this.loads.forget(id);
     await this.source.memory.forget(id);
+    await this.source.fallbacks?.forget(id);
   }
 
   /** The owner's settings, or none when the file cannot be read (logged): every chat then runs at the default interval. */
@@ -642,31 +675,171 @@ export class Chats {
     return messages !== undefined && this.threads.running(id) && turnStarter(messages) === "owner";
   }
 
-  /** The failure the chat's last turn ended in, when it runs nothing now; a steer to it would wait unseen. */
-  private failure(id: string): { error: string; at: number } | null {
-    const messages = this.messages(id);
-    return messages === undefined || this.threads.running(id) ? null : turnFailure(messages);
+  /** The stall of a chat's last turn as the hub holds it: a failure with nothing running, or a provider retry holding the turn after one. */
+  private stall(id: string): Stall | null {
+    const state = this.threads.state?.(id);
+    return state ? turnStall(turnViewOf(state, this.threads.running(id)), this.now()) : null;
+  }
+
+  private async claude(): Promise<ClaudeState | null> {
+    return this.source.claude ? this.source.claude().catch(() => null) : null;
   }
 
   /**
-   * A chat whose last turn failed (a 429, a connection error) gets a new turn: 5 min after the failure, then 10, then every 20 while each new
-   * turn fails again. A turn that ends well resets the count.
+   * A chat whose last turn failed (a 429, a connection error), or whose provider retry holds input queued behind it, gets a new turn: 5 min
+   * after the failure, then 10, then every 20 while each new turn fails again; an owner turn first after 30 s, quoting the owner's message,
+   * with the wait shown under it. When Claude cannot serve the chat, it moves to the fallback model and restarts at once. A turn that ends
+   * well resets the count, clears the wait and, once Claude serves again, moves a switched chat back.
    */
   private async revive(id: string): Promise<void> {
-    if (!this.chatIds.has(id) || this.threads.running(id)) return;
-    const failed = this.failure(id);
-    if (!failed) { this.revivals.delete(id); return; }
-    const last = this.revivals.get(id);
+    if (!this.chatIds.has(id)) return;
+    const state = this.threads.state?.(id);
+    if (!state) return;
+    const view = turnViewOf(state, this.threads.running(id));
+    if (view.running && !view.retrying) return;
     const now = this.now();
-    if (!retryDue(last?.attempts ?? 0, last?.at ?? failed.at, now)) return;
+    const stall = turnStall(view, now);
+    if (!stall) {
+      this.revivals.delete(id);
+      this.stallSeen.delete(id);
+      this.threads.setWait(id, null);
+      await this.switchBack(id);
+      return;
+    }
+    const provider = state.info?.model?.provider ?? null;
+    const claude = provider === "anthropic" ? await this.claude() : null;
+    const down = claudeDown(stall.error, provider, claude);
+    if (down && await this.switchToFallback(id, stall)) return;
+    const seen = this.stallSeen.get(id) ?? now;
+    this.stallSeen.set(id, seen);
+    const last = this.revivals.get(id);
+    const action = stallAction({ stall, down, claude, attempts: last?.attempts ?? 0, since: last?.at ?? Math.min(stall.at, seen), now });
+    if (action.kind !== "restart") { this.threads.setWait(id, action.kind === "wait" ? action.wait : null); return; }
     const attempts = (last?.attempts ?? 0) + 1;
     this.revivals.set(id, { attempts, at: now });
+    this.threads.setWait(id, null);
     try {
-      await this.threads.restart(id, revivalMessage(failed.error));
-      this.log(`chat ${id.slice(0, 8)}: last turn failed (${failed.error}); started a new turn, try ${attempts}`);
+      await this.threads.restart(id, action.message, action.abort);
+      this.log(`chat ${id.slice(0, 8)}: last turn failed (${stall.error}); started a new turn, try ${attempts}`);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: restart: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** The thinking level a model switch should keep, set again when the new model supports it and the switch changed it. */
+  private async keepThinking(id: string, level: ThinkingLevel | null): Promise<void> {
+    const info = this.threads.state?.(id)?.info;
+    if (!level || info?.thinkingLevel === level || !info?.availableThinkingLevels?.includes(level)) return;
+    await this.threads.setThinking(id, level);
+  }
+
+  /**
+   * Claude cannot serve the chat: record its model, move it to the fallback (keeping its thinking level), post one notice line, and restart
+   * the turn now. False when there is no fallback (no record, no Codex model) or the switch failed; the usual restart schedule then runs.
+   */
+  private async switchToFallback(id: string, stall: Stall): Promise<boolean> {
+    const fallbacks = this.source.fallbacks;
+    const info = this.threads.state?.(id)?.info;
+    const model = info?.model;
+    if (!fallbacks || !model) return false;
+    const level = info.thinkingLevel ?? null;
+    try {
+      const to = fallbackModel(await this.threads.models(id));
+      if (!to) {
+        if (!this.stallSeen.has(id)) this.log(`chat ${id.slice(0, 8)}: Claude cannot serve (${stall.error}) and no Codex model is configured`);
+        return false;
+      }
+      await fallbacks.set(id, { original: { provider: model.provider, id: model.id, thinkingLevel: level }, fallback: { provider: to.provider, id: to.id }, at: this.now() });
+      if (stall.retrying) await this.threads.abort(id);
+      await this.threads.setModel(id, to.provider, to.id);
+      await this.keepThinking(id, level);
+      await this.threads.notice(id, switchedNotice(to.name));
+      this.threads.setWait(id, null);
+      this.revivals.set(id, { attempts: 1, at: this.now() });
+      await this.threads.restart(id, revivalMessage(stall.error, stall.owner));
+      this.log(`chat ${id.slice(0, 8)}: Claude cannot serve (${stall.error}); switched ${model.provider}/${model.id} to ${to.provider}/${to.id} and started a new turn`);
+      return true;
+    } catch (error) {
+      this.log(`chat ${id.slice(0, 8)}: switch to the fallback: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  /** Between turns, a chat on the fallback goes back to its model once Claude serves again; a chat the owner moved off the fallback keeps its model. */
+  private async switchBack(id: string): Promise<void> {
+    const fallbacks = this.source.fallbacks;
+    const info = this.threads.state?.(id)?.info;
+    if (!fallbacks || !info?.model) return;
+    try {
+      const entry = await fallbacks.get(id);
+      if (!entry) return;
+      const busy = this.threads.busy(id);
+      const decision = switchBack(entry, info.model, busy, busy ? null : await this.claude());
+      if (decision === "keep") return;
+      if (decision === "back") {
+        const { provider, id: modelId, thinkingLevel } = entry.original;
+        const name = (await this.threads.models(id)).models.find(model => model.provider === provider && model.id === modelId)?.name ?? modelId;
+        await this.threads.setModel(id, provider, modelId);
+        await this.keepThinking(id, thinkingLevel);
+        await this.threads.notice(id, switchedBackNotice(name));
+        this.log(`chat ${id.slice(0, 8)}: Claude serves again; switched back to ${provider}/${modelId}`);
+      }
+      await fallbacks.forget(id);
+    } catch (error) {
+      this.log(`chat ${id.slice(0, 8)}: switch back: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * A thread that owns an open step, whose last turn failed and that still holds queued input (an owner message, a job report), is woken the
+   * way the owner did it by hand: abort, a `continue` steer, resume the queue. Again on the RETRY_BACKOFF_MS schedule while it stays stranded.
+   */
+  private async wakeOwner(threadId: string): Promise<void> {
+    if (this.chatIds.has(threadId)) return;
+    const now = this.now();
+    const last = this.ownerWakes.get(threadId);
+    if (last && !retryDue(last.attempts - 1, last.at, now)) return;
+    try {
+      const state = await this.threads.view(threadId);
+      const stall = state ? turnStall(turnViewOf(state, this.threads.running(threadId)), now) : null;
+      if (!strandedInput(stall)) { this.ownerWakes.delete(threadId); return; }
+      this.ownerWakes.set(threadId, { attempts: (last?.attempts ?? 0) + 1, at: now });
+      await this.threads.restart(threadId, "continue", true);
+      this.log(`thread ${threadId.slice(0, 8)}: last turn failed (${stall!.error}) with ${stall!.queued} queued; woke it`);
+    } catch (error) {
+      this.log(`thread ${threadId.slice(0, 8)}: wake: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * After the owner changes a thread's model or account: a stalled turn goes again now, on the new choice. A chat restarts its turn (quoting
+   * the owner's message when the owner started it); a plain thread only gets its provider retry stopped and its queued input resumed, so the
+   * next send runs at once. A no-op for a thread whose last turn ended well.
+   */
+  async retryNow(id: string): Promise<void> {
+    await this.load();
+    const chat = this.chatIds.has(id);
+    await new Promise<void>(resolve => this.queue(id, async () => {
+      try {
+        const state = chat ? this.threads.state?.(id) : await this.threads.view(id);
+        if (!state) return;
+        const view = turnViewOf(state, this.threads.running(id));
+        if (view.running && !view.retrying) return;
+        const stall = turnStall(view, this.now());
+        if (!stall) return;
+        if (chat) {
+          this.revivals.set(id, { attempts: 1, at: this.now() });
+          this.threads.setWait(id, null);
+          await this.threads.restart(id, revivalMessage(stall.error, stall.owner), stall.retrying);
+          this.log(`chat ${id.slice(0, 8)}: the owner changed its model or account; started a new turn`);
+        } else if (stall.retrying || stall.queued > 0) {
+          await this.threads.abort(id);
+          await this.threads.resumeQueue(id);
+        }
+      } catch (error) {
+        this.log(`thread ${id.slice(0, 8)}: retry after a change: ${error instanceof Error ? error.message : String(error)}`);
+      } finally { resolve(); }
+    }));
   }
 
   private state(id: string, setting: CheckInSetting, now: number): CheckInView {
@@ -728,7 +901,7 @@ export class Chats {
    */
   async checkIn(id: string): Promise<string[]> {
     await this.load();
-    if (!this.chatIds.has(id) || this.ownerTurn(id) || this.failure(id)) return [];
+    if (!this.chatIds.has(id) || this.ownerTurn(id) || this.stall(id)) return [];
     try {
       let board: ChatBoard | null = null;
       let boardError: string | undefined;
@@ -736,6 +909,7 @@ export class Chats {
       catch (error) { boardError = error instanceof Error ? error.message : String(error); this.log(`chat ${id.slice(0, 8)}: check-in board: ${boardError}`); }
       const rows = await this.source.rows();
       const facts = jobFacts(this.children.get(id) ?? [], board, rows, id);
+      for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
       if (!checkInDue(facts, board, boardError)) return [];
       const name = rows.find(row => row.id === id)?.name;
       const { memory, lines, open } = checkInDigest(await this.source.memory.get(id), facts, board, this.now(),
@@ -766,7 +940,7 @@ export class Chats {
     const key = child.lastActivityAt === undefined ? `${child.id}@started:${this.workingSince.get(child.id) ?? 0}` : noReportKey(child);
     if (this.noticed.has(key)) return;
     this.noticed.add(key);
-    if (this.failure(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the check-in after its restart tells it`); return; }
+    if (this.stall(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the check-in after its restart tells it`); return; }
     const text = noReportNotice(childName(child), this.threads.state?.(id)?.messages ?? [], this.workingSince.get(child.id) ?? 0);
     try { await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${text}`, images: [], mode: "steer" }); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }

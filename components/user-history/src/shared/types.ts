@@ -130,7 +130,11 @@ export interface ThreadSnapshot {
   runStartedAt: number | null;
   /** Chats only: the shared board, null until the first op. */
   board?: ChatBoard | null;
+  /** Chats only: while the server waits to restart a failed owner turn, what it waits for; the feed shows it under the owner's message. */
+  wait?: ChatWait | null;
 }
+/** `retry`: the turn is restarted at `at`. `account`: Claude has no account that can serve and no fallback model exists; `until` is when one frees up. Epoch ms. */
+export type ChatWait = { kind: "retry"; error: string; at: number } | { kind: "account"; until: number | null };
 
 export interface ThreadState extends ThreadSnapshot { connection: ThreadConnection; error?: string }
 
@@ -164,6 +168,7 @@ export type ThreadEvent =
   | { type: "queue"; queue: QueueState }
   | { type: "children"; children: ChildAgent[] }
   | { type: "board"; board: ChatBoard }
+  | { type: "wait"; wait: ChatWait | null }
   | { type: "status"; connection: ThreadConnection; error?: string };
 
 export type SessionKind = "live" | "saved";

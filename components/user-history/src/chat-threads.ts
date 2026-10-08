@@ -3,10 +3,11 @@ import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry,
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
 import { CHAT_FLAG } from "./chats.ts";
+import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatBoard, ChatDefaults, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
@@ -69,8 +70,9 @@ class Thread {
   private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent } | undefined;
   constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread) => void) { this.state = threadStateFromSnapshot(snapshot); }
   broadcast(event: ThreadEvent): void {
-    // A snapshot from the daemon carries no board; a chat keeps its board until a board event replaces it.
+    // A snapshot from the daemon carries no board or wait; a chat keeps both until their own events replace them.
     if (event.type === "snapshot" && event.snapshot.board === undefined && this.state.board !== undefined) event = { ...event, snapshot: { ...event.snapshot, board: this.state.board } };
+    if (event.type === "snapshot" && event.snapshot.wait === undefined && this.state.wait) event = { ...event, snapshot: { ...event.snapshot, wait: this.state.wait } };
     const children = this.state.children;
     this.state = applyThreadEvent(this.state, event);
     for (const listener of [...this.listeners]) listener(event);
@@ -423,6 +425,19 @@ export class ThreadHub {
     thread.broadcast({ type: "board", board });
   }
 
+  /** What the server waits for before it restarts a chat's failed owner turn; the open thread's listeners get a wait event when it changes. */
+  setWait(id: string, wait: ChatWait | null): void {
+    const thread = this.threads.get(id);
+    if (!thread || JSON.stringify(thread.state.wait ?? null) === JSON.stringify(wait)) return;
+    thread.broadcast({ type: "wait", wait });
+  }
+
+  /** The thread's state for a stall check, attaching it first; null for a thread that is not live. */
+  async view(id: string): Promise<ThreadState | null> {
+    const thread = await this.open(id);
+    return thread.live ? thread.state : null;
+  }
+
   private async requireLive(id: string): Promise<{ thread: Thread; live: Live }> {
     const thread = await this.open(id);
     if (!thread.live) throw new ThreadError(409, "Reply to resume this thread first.");
@@ -496,13 +511,21 @@ export class ThreadHub {
   }
 
   /**
-   * A new turn for a chat whose last turn failed. After a failed turn a steer can sit in the session's queue with its input pump stopped, so the
+   * A new turn for a chat whose last turn failed. `abort` first stops a provider retry that holds the turn (and suspends the input pump, which
+   * the resume reopens). After a failed turn a steer can sit in the session's queue with its input pump stopped, so the
    * check-ins and notices sent to it wait unseen until the owner writes. This sends the text as a steer, then resumes the queued input, so the
    * text (and anything queued before it) starts a turn now.
    */
-  async restart(id: string, message: string): Promise<void> {
+  async restart(id: string, message: string, abort = false): Promise<void> {
+    if (abort) await this.abort(id);
     await this.prompt(id, { message, images: [], mode: "steer" });
     await this.resumeQueue(id);
+  }
+
+  /** A line in the transcript that starts no turn (the feed shows it as a notice). Sent only between turns: in a running turn it would join it as input. */
+  async notice(id: string, text: string): Promise<void> {
+    const { live } = await this.requireLive(id);
+    await live.connection.appendCustomMessage({ customType: CHAT_NOTICE, content: text, display: true });
   }
 
   async abort(id: string): Promise<void> {

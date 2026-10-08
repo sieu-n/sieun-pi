@@ -7,6 +7,8 @@ import { ChatNotes } from "./chat-notes.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
 import { checkInRecord, checkInSettings } from "./chat-checkin.ts";
+import { fallbackRecord } from "./chat-fallback.ts";
+import { claudeReader } from "./chat-pool.ts";
 import { Chats, extensionBuild, jobRegistry, loadRecord } from "./chats.ts";
 import { Duties } from "./chat-duty-run.ts";
 import { DutyStore } from "./chat-duty-store.ts";
@@ -81,7 +83,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry: jobRegistry(join(dataDir, "chat-jobs.json")),
-      settings: checkInSettings(join(dataDir, "check-in-settings.json")) }, line => process.stderr.write(line + "\n"));
+      settings: checkInSettings(join(dataDir, "check-in-settings.json")), claude: claudeReader(), fallbacks: fallbackRecord(join(dataDir, "chat-fallbacks.json")) },
+    line => process.stderr.write(line + "\n"));
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   // The usage worker thread reads the transcripts and owns usage.duckdb; its first build runs in the background.

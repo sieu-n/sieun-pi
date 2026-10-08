@@ -1,7 +1,6 @@
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
-import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow, type ThreadMessage } from "./shared/types.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow } from "./shared/types.ts";
 
 /**
  * The server's check-in for a chat: at its own interval (CHECK_IN_MS unless the owner set another, see CheckInSetting) it reads the chat's jobs (its subagents, and every thread an open plan step names as its
@@ -210,9 +209,9 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   }
 
   const self = new Set(context.self ?? []);
+  const openTodos = (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done);
   /** Asks already answered: a step whose question the owner answered does not need a new one. */
   const answeredTodos = (board?.todos ?? []).filter(todo => todo.done || (todo.reply ?? "").trim() !== "");
-  const openTodos = (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done);
   const firstSeen = Math.min(now, Date.parse(board?.updatedAt ?? "") || now);
   const steps: Record<string, StepMemo> = context.boardError ? { ...previous?.steps } : {};
   const open: { at: number; line: string }[] = [];
@@ -309,25 +308,6 @@ export function noReportNotice(name: string, messages: readonly { role: string; 
   }
   return `${name} ended with no report`;
 }
-
-/**
- * How the thread's last turn ended, when it ended in a failure: the last assistant reply, if no owner or server message came after it, stopped
- * with `error` or `aborted` (a 429, a connection error, a Stop). `at` is when it failed. Null for a turn that ended well or one still to run.
- */
-export function turnFailure(messages: readonly ThreadMessage[]): { error: string; at: number } | null {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index]!;
-    if (message.role === "user") return null;
-    if (message.role !== "assistant") continue;
-    if (message.stopReason !== "error" && message.stopReason !== "aborted") return null;
-    const error = message.errorMessage?.trim() || (message.stopReason === "aborted" ? "aborted" : "error");
-    return { error: clip(error.replace(/\s+/g, " "), 160), at: message.timestamp };
-  }
-  return null;
-}
-
-/** The new turn the server starts in a chat whose last turn failed. */
-export const revivalMessage = (error: string): string => `${CHECK_IN_PREFIX}Your last turn failed (${error}). Re-check the board and continue.`;
 
 /** `<data dir>/check-ins.json`: the last tick's memory per chat, through locked-json. */
 export interface CheckInRecord {

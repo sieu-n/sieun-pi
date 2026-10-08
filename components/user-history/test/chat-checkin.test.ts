@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { activePause, checkInDigest, checkInDue, checkInLine, checkInMessage, checkInRecord, checkInSettings, endedWithoutReport, nextCheckIn, pauseEnd, validCheckInEvery, jobFacts, readySteps,
-  OWN_STEP_MS, retryDue, revivalMessage, STALE_MS, STEP_STALE_MS, stepOwner, todoForStep, turnFailure, waitsOnOwner, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
+  OWN_STEP_MS, retryDue, STALE_MS, STEP_STALE_MS, stepOwner, todoForStep, waitsOnOwner, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
 import { applyBoardOp, emptyBoard, nextIds, renderBoard } from "../src/shared/chat-board.ts";
 import { chatLines, turnStarter } from "../src/shared/chat-feed.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, SessionRow, ThreadMessage } from "../src/shared/types.ts";
@@ -269,17 +269,7 @@ const MIN = 60_000;
 const reply = (stopReason: "stop" | "error" | "aborted" | "toolUse", timestamp: number, errorMessage?: string): ThreadMessage =>
   ({ role: "assistant", content: [], provider: "p", model: "m", stopReason, timestamp, ...(errorMessage ? { errorMessage } : {}) });
 
-test("turn failure: the last reply stopped on an error or an abort with nothing after it; the revival text; the 5, 10, 20 min schedule", () => {
-  const owner: ThreadMessage = { role: "user", content: "hows this doing?", timestamp: 1 };
-  assert.deepEqual(turnFailure([owner, reply("error", 5, "Provider rate limit exceeded (rate_limit_error, 429)")]), { error: "Provider rate limit exceeded (rate_limit_error, 429)", at: 5 });
-  assert.deepEqual(turnFailure([owner, reply("aborted", 6)]), { error: "aborted", at: 6 });
-  assert.deepEqual(turnFailure([owner, reply("error", 7, "Connection error."), { role: "custom", customType: "refinement_notice", content: "x", timestamp: 8 }]),
-    { error: "Connection error.", at: 7 }, "a display-only entry after the failure changes nothing");
-  assert.equal(turnFailure([reply("error", 5, "429"), owner]), null, "the owner wrote after it: a new turn");
-  assert.equal(turnFailure([owner, reply("stop", 5)]), null);
-  assert.equal(turnFailure([owner, reply("toolUse", 5)]), null, "mid-turn");
-  assert.equal(turnFailure([]), null);
-  assert.equal(revivalMessage("429"), "[check-in] Your last turn failed (429). Re-check the board and continue.");
+test("retry schedule: 5, 10, then every 20 min", () => {
   assert.deepEqual([retryDue(0, 0, 5 * MIN - 1), retryDue(0, 0, 5 * MIN), retryDue(1, 0, 10 * MIN - 1), retryDue(1, 0, 10 * MIN), retryDue(2, 0, 20 * MIN), retryDue(7, 0, 20 * MIN)],
     [false, true, false, true, true, true], "5 min, then 10, then every 20");
 });

@@ -1,5 +1,5 @@
 import { isPromptCustom, messageText, toolResults, triggerSummary } from "./turns.ts";
-import type { AssistantMessage, CustomMessage, ImagePart, ThreadMessage, ThreadState, UserMessage } from "./types.ts";
+import type { AssistantMessage, ChatWait, CustomMessage, ImagePart, ThreadMessage, ThreadState, UserMessage } from "./types.ts";
 
 /** A message the owner sent from the chat composer that the thread has not echoed back yet. `images` are data URLs for the bubble. */
 export interface PendingSend { id: string; text: string; images: ImagePart[]; at: number }
@@ -12,6 +12,10 @@ export const TELL_OWNER_LIMIT = 400;
 export const CHECK_IN_PREFIX = "[check-in] ";
 export const JOB_NOTICE_PREFIX = "[job] ";
 const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"]];
+/** In a server note that restarts a failed owner turn: the turn it starts stays the owner's, so the chat's answer is a bubble and check-ins wait. */
+export const OWNER_RETRY_MARK = "The owner's message is still unanswered: ";
+/** A line the server writes into a chat's transcript without starting a turn (the model switch to and from the fallback); the feed shows it as a notice. */
+export const CHAT_NOTICE = "chat_notice";
 /** Who sent a server note ("check-in", "jobs"), or undefined for a message the owner typed. */
 export function serverNote(text: string): string | undefined { return SERVER_NOTES.find(([prefix]) => text.startsWith(prefix))?.[1]; }
 
@@ -83,6 +87,7 @@ function customLines(message: CustomMessage, id: string, index: number, nameOf: 
     return [{ kind: "job", id, from, title: firstLine(summary.body) || "(empty message)", body: summary.body, at: message.timestamp, ...(part >= 0 ? { clipped: { message: index, part } } : {}) }];
   }
   if (message.customType === "prime-agent.update_restart") return [{ kind: "notice", id, text: "Prime Agent restarted", at: message.timestamp }];
+  if (message.customType === CHAT_NOTICE) return [{ kind: "notice", id, text: messageText(message).trim(), at: message.timestamp }];
   return [];
 }
 
@@ -126,7 +131,8 @@ function turnTracker(): (message: ThreadMessage) => TurnStarter {
   let starter: TurnStarter = "owner";
   let settled = true;
   return message => {
-    if (message.role === "user" && serverNote(messageText(message).trim())) { if (settled) starter = "agent"; settled = false; }
+    if (message.role === "user" && messageText(message).includes(OWNER_RETRY_MARK) && serverNote(messageText(message).trim())) { starter = "owner"; settled = false; }
+    else if (message.role === "user" && serverNote(messageText(message).trim())) { if (settled) starter = "agent"; settled = false; }
     else if (message.role === "user") { starter = "owner"; settled = false; }
     else if (message.role === "assistant") settled = message.stopReason !== "toolUse";
     else if (message.role === "custom" && isPromptCustom(message)) { if (settled) starter = "agent"; settled = false; }
@@ -189,7 +195,7 @@ export function settledPending(messages: readonly ThreadMessage[], pending: read
  * The whole chat, oldest first: every message as lines with the quiet runs folded, then the streaming reply when the owner started the turn,
  * then the sends the thread has not echoed yet.
  */
-export function chatFeed(state: Pick<ThreadState, "messages" | "streaming">, pending: readonly PendingSend[] = [], nameOf: NameOf = () => undefined): ChatItem[] {
+export function chatFeed(state: Pick<ThreadState, "messages" | "streaming" | "wait">, pending: readonly PendingSend[] = [], nameOf: NameOf = () => undefined): ChatItem[] {
   const lines = chatLines(state.messages, nameOf);
   if (state.streaming) lines.push(...assistantLines(state.streaming, "streaming", turnStarter(state.messages), true, () => true));
   const items = collapseUpdates(lines);
@@ -198,5 +204,13 @@ export function chatFeed(state: Pick<ThreadState, "messages" | "streaming">, pen
     if (settled.has(send.id)) continue;
     items.push({ kind: "user", id: "p" + send.id, text: send.text, images: send.images, at: send.at, pending: true });
   }
+  if (state.wait) items.push({ kind: "notice", id: "wait", text: waitText(state.wait), at: items.at(-1)?.at ?? 0 });
   return items;
+}
+
+const clock = (at: number): string => { const date = new Date(at); return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`; };
+/** The line under the owner's unanswered message while the server waits to restart its failed turn, in the reader's local time. */
+export function waitText(wait: ChatWait): string {
+  if (wait.kind === "retry") return `Turn failed (${wait.error}). Retrying at ${clock(wait.at)}.`;
+  return wait.until === null ? "Waiting for a Claude account." : `Waiting for a Claude account until ${clock(wait.until)}.`;
 }

@@ -1,6 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import type { ClaudeState } from "./chat-fallback.ts";
 import type { AccountAction, AccountLogin, AccountResets, AccountsView, PoolAccount, PoolProvider, PoolResolution, PoolWindow, UsageRefresh, UsageRefreshAccount } from "./shared/types.ts";
 
 /** The pi-pool CLI next to this component; PI_POOL_BIN names another one (the native test runs a recording fake). */
@@ -118,6 +119,33 @@ export async function listAccounts(sessionId: string | null, model: string | nul
     } catch (error) { return { provider, rows: [], resolution: null, error: error instanceof Error ? error.message : String(error) }; }
   }));
   return { sessionId, checkedAt: new Date().toISOString(), providers };
+}
+
+/**
+ * Claude as the pool sees it: whether an account can serve now, and the earliest time one that cannot frees up (its 429 limit or cooldown
+ * end, else the reset of a spent window); null when nothing says. Off accounts do not count.
+ */
+export function claudeStateOf(rows: readonly PoolAccount[], now: number): ClaudeState {
+  const live = rows.filter(row => !row.disabled);
+  const frees = live.flatMap(row => {
+    const blocked = [row.limitedUntil, row.cooldownUntil].filter((at): at is number => at !== null && at > now);
+    if (blocked.length) return [Math.max(...blocked)];
+    const spent = row.windows.filter(window => window.pct >= 100 && window.resetsAt !== null && window.resetsAt > now).map(window => window.resetsAt!);
+    return spent.length ? [Math.max(...spent)] : [];
+  });
+  return { serves: live.some(row => row.usable), freeAt: frees.length ? Math.min(...frees) : null };
+}
+
+/** A reader of `claudeStateOf` over `pi-pool ls --json --provider anthropic`, one CLI call per `ttlMs` at most; null when the pool cannot be read. */
+export function claudeReader(ttlMs = 60_000, now: () => number = Date.now,
+  read: () => Promise<string> = () => run(["ls", "--json", "--provider", "anthropic"])): () => Promise<ClaudeState | null> {
+  let cached: { at: number; value: Promise<ClaudeState | null> } | null = null;
+  return () => {
+    if (cached && now() - cached.at < ttlMs) return cached.value;
+    const value = read().then(stdout => claudeStateOf(parsePoolRows(JSON.parse(stdout), "anthropic"), now()), () => null);
+    cached = { at: now(), value };
+    return value;
+  };
 }
 
 /** The pi-pool command lines this service runs for account changes. A CLI contract change is a one-line fix here. */

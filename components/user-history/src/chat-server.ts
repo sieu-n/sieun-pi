@@ -625,6 +625,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       if (route === "api/accounts") {
         const action = parseAccountAction(body);
         const notice = await runAccountAction(action);
+        // A thread moved to another account goes again now if its turn failed or waits on a provider retry.
+        if ((action.action === "use" || action.action === "follow") && action.id) await backend.chats.retryNow(action.id);
         json(res, 200, { ...await listAccounts("id" in action ? action.id : null), ...(notice ? { notice } : {}) }); return;
       }
       if (route === "api/accounts/login") {
@@ -713,7 +715,11 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (!name) throw new RequestError(400, "Use a name of 1 to 200 characters.");
           await backend.threads.rename(id, name); break;
         }
-        case "model": await backend.threads.setModel(id, text(body.provider, "provider", 128), text(body.modelId, "modelId", 256)); break;
+        case "model":
+          // A turn that failed or waits on a provider retry goes again now on the new model, so the next send is not stuck behind it.
+          await backend.threads.setModel(id, text(body.provider, "provider", 128), text(body.modelId, "modelId", 256));
+          await backend.chats.retryNow(id);
+          break;
         case "thinking": await backend.threads.setThinking(id, text(body.level, "level", 16)); break;
         case "queue": {
           const lane = body.lane;
