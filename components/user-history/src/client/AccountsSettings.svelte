@@ -107,7 +107,7 @@
   const shownRefresh = $derived(refresh && watchedRefreshes.includes(refresh.id) ? refresh : null);
   const refreshEntry = (row: PoolAccount): UsageRefreshAccount | undefined => shownRefresh?.accounts.find(entry => entry.id === row.id);
   const columns = $derived(current ? windowColumns(current.rows) : []);
-  const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, limited: 3, cooldown: 4, refused: 4, "needs-login": 5, off: 6 };
+  const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, limited: 3, cooldown: 4, refused: 4, "needs-terms": 4, "needs-login": 5, off: 6 };
   const rows = $derived([...(current?.rows ?? [])].sort((a, b) => rank(a) - rank(b) || a.email.localeCompare(b.email)));
 
   function rank(row: PoolAccount): number {
@@ -228,6 +228,7 @@
     if (state === "off") return ["Off. The pool never picks it.", ...unread];
     const out: string[] = [];
     if (state === "needs-login") out.push("The sign-in expired.");
+    else if (state === "needs-terms") out.push(`Anthropic refuses every request until the updated Consumer Terms are accepted. Open claude.ai signed in as ${row.email}, accept them, then choose Check again.`);
     else if (state === "refused" || state === "cooldown") {
       const left = row.cooldownUntil && row.cooldownUntil > now ? ` The pool tries it again in ${span(row.cooldownUntil - now)}.` : "";
       out.push((row.cooldownReason ? `Refused: ${row.cooldownReason}.` : "Cooling down after a failure.") + left);
@@ -263,7 +264,7 @@
   const askDropSeat = (provider: Provider, row: PoolAccount) => ask({ title: `Drop the seat on ${row.email}?`, body: "The next request moves the seat to the best account. Running sessions keep their connection.",
     label: "Drop seat", action: { action: "switch", provider } });
   const askRecheck = (provider: Provider) => ask({ title: "Check refused accounts again?",
-    body: "The pool sends one free request per Claude account. An account the API accepts again returns to the pool. One it refuses cools down for 24 hours.", label: "Check again",
+    body: "The pool sends one free request per Claude account, and a one-token message to an account that needs terms. An account the API accepts again returns to the pool. One it refuses cools down for 24 hours.", label: "Check again",
     action: { action: "recheck", provider } });
   const askRemove = (provider: Provider, row: PoolAccount) => ask({ title: `Remove ${row.email}?`,
     body: "This deletes its sign-in and drops its pins and seat. To use it again, add it again.", label: "Remove", danger: true, typed: row.email,
@@ -433,7 +434,7 @@
       {#if provider === "anthropic"}
         <button type="button" class="menu-item" role="menuitem" disabled={acting !== null} onclick={() => void run({ action: "resets", provider, account: row.id }, row.id)}>Check resets</button>
       {/if}
-      {#if provider === "anthropic" && (state === "refused" || state === "cooldown")}
+      {#if provider === "anthropic" && (state === "refused" || state === "cooldown" || state === "needs-terms")}
         <button type="button" class="menu-item" role="menuitem" onclick={() => askRecheck(provider)}>Check again</button>
       {/if}
     {/if}

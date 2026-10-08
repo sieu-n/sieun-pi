@@ -295,29 +295,51 @@ def refresh_token(creds):
 PROBE_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 PROBE_MODEL = "claude-opus-4-8"
 PROBE_TIMEOUT = 3.0
+INFER_URL = "https://api.anthropic.com/v1/messages"
+INFER_MODEL = "claude-haiku-4-5"
+INFER_TIMEOUT = 15.0
+OAUTH_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
+OAUTH_OFF = "oauth not allowed for organization"
+NEEDS_TERMS = "needs terms"
 
 
-def anthropic_refusal(access_token):
+def account_refusal(text):
+    """The account-level refusal an API error body names, or None. These fail
+    every request on the account whatever the model or the prompt, so the pool
+    takes the account out instead of letting turns fail on it. NEEDS_TERMS is the
+    400 Anthropic sends until someone signed in as the account accepts updated
+    Consumer Terms on claude.ai (2026-10-08: claude7@slack.green failed every turn
+    for 3 min after it was added)."""
+    if "OAuth authentication is currently not allowed" in text or "oauth_not_allowed" in text:
+        return OAUTH_OFF
+    if "updated our Consumer Terms" in text:
+        return NEEDS_TERMS
+    return None
+
+
+def anthropic_refusal(access_token, infer=False):
     """Why the API refuses this token, or None. Uses count_tokens: it costs
     nothing, it is not rate limited like the usage endpoint, and it answers
     with the same 403 as inference when the account's organization has OAuth
     turned off (verified 2026-09-23 on an account whose usage figures looked
-    fine). 401 is a revoked token. Anything else (400, 429, 5xx, network) is
-    not a refusal."""
-    body = json.dumps({"model": PROBE_MODEL, "messages": [{"role": "user", "content": "ok"}]}).encode()
-    req = urllib.request.Request(PROBE_URL, data=body, method="POST", headers={
+    fine). 401 is a revoked token. `infer` sends a one-token message instead,
+    for the terms check, which count_tokens is not known to apply. Any other
+    answer (429, 5xx, network) is not a refusal."""
+    url, payload, timeout = (
+        (INFER_URL, {"model": INFER_MODEL, "max_tokens": 1, "system": OAUTH_SYSTEM}, INFER_TIMEOUT) if infer
+        else (PROBE_URL, {"model": PROBE_MODEL}, PROBE_TIMEOUT))
+    body = json.dumps({**payload, "messages": [{"role": "user", "content": "ok"}]}).encode()
+    req = urllib.request.Request(url, data=body, method="POST", headers={
         "Authorization": f"Bearer {access_token}", "anthropic-beta": "oauth-2025-04-20",
         "anthropic-version": "2023-06-01", "Content-Type": "application/json", "User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT):
+        with urllib.request.urlopen(req, timeout=timeout):
             return None
     except urllib.error.HTTPError as e:
         if e.code == 401:
             return "token rejected (401)"
-        if e.code == 403:
-            text = e.read().decode(errors="replace")
-            return "oauth not allowed for organization" if "OAuth authentication is currently not allowed" in text or "oauth_not_allowed" in text else "forbidden (403)"
-        return None
+        refusal = account_refusal(e.read().decode(errors="replace"))
+        return refusal or ("forbidden (403)" if e.code == 403 else None)
     except Exception:
         return None
 
@@ -1408,13 +1430,16 @@ def cmd_adopt_logins(rest=()):
     return 0
 
 
-def apply_refusal(account, refusal, cfg, now):
-    """Cool an API-refused anthropic account down in the pool and in tokenmaxxing."""
+def apply_refusal(provider, account, refusal, cfg, now):
+    """Cool an API-refused account down in the pool, and an anthropic one in
+    tokenmaxxing too."""
     until = now + cfg["refused_cooldown_sec"]
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
-        HookWriter(state).set_cooldown("anthropic", account.id, until, refusal)
+        HookWriter(state).set_cooldown(provider, account.id, until, refusal)
         save_json(STATE, state)
+    if provider != "anthropic":
+        return
     try:
         mark_refused(account.id, until)
     except Exception as e:
@@ -1445,9 +1470,10 @@ def cmd_probe(rest=()):
             continue
         if not creds or (creds.get("expiresAt") or 0) / 1000 - now < 60:
             continue
-        refusal = anthropic_refusal(creds["accessToken"])
+        # Only a message shows whether the terms were accepted since.
+        refusal = anthropic_refusal(creds["accessToken"], infer=reasons.get(a.id) == NEEDS_TERMS)
         if refusal:
-            apply_refusal(a, refusal, cfg, now)
+            apply_refusal("anthropic", a, refusal, cfg, now)
             lines.append(f"{a.email}: {refusal}")
         elif a.id in reasons:
             with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
@@ -1550,7 +1576,7 @@ def vend(provider):
             if refusal:
                 errors.append(f"{account.email}: {refusal}")
                 log("account_refused", provider=provider, account=account.email, error=refusal)
-                apply_refusal(account, refusal, cfg, now)
+                apply_refusal(provider, account, refusal, cfg, now)
                 cooldowns[account.id] = now + cfg["refused_cooldown_sec"]
                 continue
         prev = vended = None
@@ -2741,19 +2767,55 @@ def cmd_limited(rest):
             return 2
         HookWriter(state).set_limit(provider, last["account_id"], until, key, now)
         save_json(STATE, state)
-        accounts = with_pool_state(accounts, state, provider)
-        accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
-        cooldowns = state["providers"][provider]["cooldowns"]
-        res = resolve(intent_for(state, key, provider), accounts, in_use_counts(state, provider),
-                      cooldowns, cfg, now)
-    # With nothing usable, the next request still goes to a depleted account the
-    # provider serves (last_resort); only when none serves does the caller wait.
-    nxt = res.account if res else last_resort(accounts, cooldowns, cfg, now)
-    if res is None and nxt is not None and not provider_serves(nxt, now):
-        nxt = None
+        nxt = next_account(state, key, provider, accounts, cfg, now)
     out = {"account": last["email"], "until": round(until), "next": nxt.email if nxt else None}
     log("limited", provider=provider, account=last["email"], session=key.key,
         until=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(until)), next=out["next"])
+    print(json.dumps(out))
+    return 0
+
+
+def next_account(state, key, provider, accounts, cfg, now):
+    """The account this tree's next request gets, or None when the caller has
+    to wait for a reset. With nothing usable the next request still goes to a
+    depleted account the provider serves (last_resort)."""
+    accounts = with_pool_state(accounts, state, provider)
+    accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
+    cooldowns = state["providers"][provider]["cooldowns"]
+    res = resolve(intent_for(state, key, provider), accounts, in_use_counts(state, provider), cooldowns, cfg, now)
+    if res:
+        return res.account
+    nxt = last_resort(accounts, cooldowns, cfg, now)
+    return nxt if nxt is not None and provider_serves(nxt, now) else None
+
+
+def cmd_refused(rest):
+    """A request of this session tree failed with an error whose text names an
+    account-level refusal (account_refusal). Cool the account the tree last
+    vended down, as a probe refusal does, and print {"account", "reason",
+    "next"}. Error text that names no refusal prints {"reason": null} and
+    changes nothing. `next` is null when no other account can serve."""
+    f = parse_flags(rest)
+    provider = f["provider"]
+    reason = account_refusal(" ".join(f["positional"]))
+    if reason is None:
+        print(json.dumps({"reason": None}))
+        return 0
+    cfg, now = config(), time.time()
+    accounts = load_index(provider)
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        key = session_key_for(f["session"], state)
+        last = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
+    account = next((a for a in accounts if last and a.id == last["account_id"]), None)
+    if account is None:
+        print(json.dumps({"error": f"no {provider} vend on file for this session"}))
+        return 2
+    apply_refusal(provider, account, reason, cfg, now)
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        nxt = next_account(load_state(), key, provider, accounts, cfg, now)
+    out = {"account": account.email, "reason": reason, "next": nxt.email if nxt else None}
+    log("refused", provider=provider, account=account.email, reason=reason, session=key.key, next=out["next"])
     print(json.dumps(out))
     return 0
 
@@ -3165,22 +3227,34 @@ def cmd_login(rest):
         signed_in = account if positional else (
             find_account(load_index(provider), said[1]) if len(said) > 1 and said[0] in ("added", "reauthed") else None)
         if signed_in is not None:
-            drop_limit(provider, signed_in)
+            drop_login_blocks(provider, signed_in)
     emit(result)
     return 0 if result["ok"] else 1
 
 
-def drop_limit(provider, account):
+def drop_login_blocks(provider, account):
     """A new sign-in replaces the credential the provider answered 429 for, so
     its `pi-pool limited` record no longer applies (2026-10-08: sieun@virev.ai
-    signed in again on a fresh plan at 0% and stayed limited for 2 h)."""
+    signed in again on a fresh plan at 0% and stayed limited for 2 h). It also
+    passes claude.ai, where updated terms are accepted, so a NEEDS_TERMS
+    cooldown goes too (2026-10-08: claude7@slack.green served again right
+    after it signed in again). If the terms are still pending, the next request
+    puts the cooldown back and moves the turn to another account."""
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
-        limit = state["providers"][provider]["limits"].pop(account.id, None)
-        if limit is None:
+        prov = state["providers"][provider]
+        limit = prov["limits"].pop(account.id, None)
+        terms = (prov.get("cooldown_reasons") or {}).get(account.id) == NEEDS_TERMS
+        if terms:
+            prov["cooldowns"].pop(account.id, None)
+            prov["cooldown_reasons"].pop(account.id, None)
+        if limit is None and not terms:
             return
         save_json(STATE, state)
-    log("limit_dropped", provider=provider, account=account.email, reason="login")
+    if limit is not None:
+        log("limit_dropped", provider=provider, account=account.email, reason="login")
+    if terms:
+        log("refusal_dropped", provider=provider, account=account.email, reason="login", refusal=NEEDS_TERMS)
 
 
 USAGE = """usage: pi-pool [command]
@@ -3199,6 +3273,10 @@ USAGE = """usage: pi-pool [command]
   limited --until <epoch sec> [--provider <p>] [--session <id>]
                                   the provider answered 429 for this session's account; every
                                   pin yields to it until then. Prints the next account or null
+  refused <error text> [--provider <p>] [--session <id>]
+                                  a request failed with an account-level refusal (terms not
+                                  accepted, OAuth off); cool this session's account down for
+                                  24 h. Prints the next account or null
   model (<id> --provider <p> | --clear) --source <session id>
                                   record the model one session of this tree runs; the
                                   /account extension calls it on session start and model change
@@ -3236,6 +3314,7 @@ def cli(args):
         "resets": cmd_resets, "reset": cmd_reset,
         "off": lambda rest: cmd_toggle(rest, True), "on": lambda rest: cmd_toggle(rest, False),
         "rm": cmd_rm, "login": cmd_login, "model": cmd_model, "limited": cmd_limited,
+        "refused": cmd_refused,
     }
     if cmd in handlers:
         return handlers[cmd](rest)

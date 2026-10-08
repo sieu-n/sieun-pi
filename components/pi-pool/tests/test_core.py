@@ -658,6 +658,25 @@ class AnthropicRefusal(unittest.TestCase):
             with unittest.mock.patch.object(vend.urllib.request, "urlopen", self.raising(code, "{}")):
                 self.assertIsNone(vend.anthropic_refusal("t"))
 
+    def test_consumer_terms_not_accepted_is_named(self):
+        """The body Anthropic sent on 2026-10-08 for an account whose terms were pending."""
+        with unittest.mock.patch.object(vend.urllib.request, "urlopen", self.raising(400, TERMS_BODY)):
+            self.assertEqual(vend.anthropic_refusal("t"), vend.NEEDS_TERMS)
+            self.assertEqual(vend.anthropic_refusal("t", infer=True), vend.NEEDS_TERMS)
+
+    def test_the_terms_check_sends_a_one_token_message(self):
+        sent = []
+        def fake(req, timeout=None):
+            sent.append((req.full_url, json.loads(req.data)))
+            return contextlib.nullcontext()
+        with unittest.mock.patch.object(vend.urllib.request, "urlopen", fake):
+            self.assertIsNone(vend.anthropic_refusal("t", infer=True))
+        self.assertEqual(sent[0][0], vend.INFER_URL)
+        self.assertEqual(sent[0][1]["max_tokens"], 1)
+
+
+TERMS_BODY = '{"type":"error","error":{"type":"invalid_request_error","message":"We\'ve updated our Consumer Terms and Privacy Policy. You\'ll need to accept them in claude.ai with the email in /status to continue."},"request_id":"req_011Cfpei9Q2FndKLU23sLdgU"}'
+
 
 class MarkRefused(unittest.TestCase):
     def test_sets_enforced_until_and_never_shortens_it(self):

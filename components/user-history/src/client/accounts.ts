@@ -29,10 +29,13 @@ export function forgetAccounts(): void { cache.clear(); }
 export const PROVIDER_LABEL: Record<PoolProvider["provider"], string> = { anthropic: "Claude", "openai-codex": "Codex" };
 
 export type Tone = "accent" | "success" | "muted" | "warning" | "danger";
-export type AccountState = "off" | "needs-login" | "refused" | "cooldown" | "limited" | "depleted" | "pinned" | "seat" | "live";
+export type AccountState = "off" | "needs-login" | "needs-terms" | "refused" | "cooldown" | "limited" | "depleted" | "pinned" | "seat" | "live";
+/** The pool's cooldown reason for an account whose updated Consumer Terms are not accepted on claude.ai yet (vend.py NEEDS_TERMS). */
+export const NEEDS_TERMS = "needs terms";
 export const STATE_LABEL: Record<AccountState, { label: string; tone: Tone }> = {
   off: { label: "Off", tone: "muted" },
   "needs-login": { label: "Needs login", tone: "danger" },
+  "needs-terms": { label: "Needs terms", tone: "danger" },
   refused: { label: "Refused", tone: "danger" },
   cooldown: { label: "Cooldown", tone: "warning" },
   limited: { label: "Limited", tone: "warning" },
@@ -46,7 +49,7 @@ export const STATE_LABEL: Record<AccountState, { label: string; tone: Tone }> = 
 export function accountState(row: PoolAccount): AccountState | null {
   if (row.disabled) return "off";
   if (row.reason === "needs-reauth") return "needs-login";
-  if (row.reason?.startsWith("cooldown")) return row.cooldownReason ? "refused" : "cooldown";
+  if (row.reason?.startsWith("cooldown")) return row.cooldownReason === NEEDS_TERMS ? "needs-terms" : row.cooldownReason ? "refused" : "cooldown";
   if (row.reason?.startsWith("limited")) return "limited";
   if (row.reason === "depleted") return "depleted";
   if (row.pinned) return "pinned";

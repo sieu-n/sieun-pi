@@ -189,6 +189,56 @@ class LimitedSurvivesARestart(PoolFixture):
         self.assertIn("no anthropic vend", json.loads(out)["error"])
 
 
+class TermsRefusalTakesTheAccountOut(PoolFixture):
+    """`pi-pool refused` with the 400 a turn got while the account's Consumer
+    Terms were pending (2026-10-08) cools that account down; the next request
+    of the tree, a later process, gets the other account."""
+    SESSION = "01a1-terms-session"
+    TERMS = "Provider rejected the request (invalid_request_error, 400): We've updated our Consumer Terms and Privacy Policy. You'll need to accept them in claude.ai with the email in /status to continue. [request_id: req_011Cfpei9Q2FndKLU23sLdgU]"
+
+    def setUp(self):
+        super().setUp()
+        now = time.time()
+        self.write_state({"version": 2, "providers": {
+            "anthropic": {"pin": None, "seat": {"account_id": A, "since": now}, "cooldowns": {}, "disabled": {}},
+            "openai-codex": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}}},
+            "sessions": {self.SESSION: {"uuid": self.SESSION, "active_id": None, "last_seen": now, "pins": {},
+                                        "vends": {"anthropic": {"account_id": A, "email": "a@x", "at": now, "n": 3}}}}})
+
+    def test_the_account_leaves_the_pool_and_the_session_moves(self):
+        code, out = self.cli("refused", "--provider", "anthropic", "--session", self.SESSION, self.TERMS)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out), {"account": "a@x", "reason": "needs terms", "next": "b@x"})
+        code, out = self.cli("who", "--json", "--session", self.SESSION)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out)["providers"]["anthropic"]["email"], "b@x")
+        row = self.rows()["a@x"]
+        self.assertEqual((row["usable"], row["cooldown_reason"]), (False, "needs terms"))
+        with open(os.path.join(self.tm, "accounts.json")) as f:
+            self.assertGreater(json.load(f)["accounts"][0]["enforcedUntil"], time.time() * 1000)
+        with open(os.path.join(self.pool, "pi-pool.log")) as f:
+            events = [json.loads(line) for line in f]
+        self.assertEqual([(e["account"], e["reason"], e["next"]) for e in events if e["event"] == "refused"],
+                         [("a@x", "needs terms", "b@x")])
+
+    def test_with_no_other_account_next_is_null_and_the_account_is_still_out(self):
+        state = self.state()
+        state["providers"]["anthropic"]["disabled"] = {B: time.time()}
+        self.write_state(state)
+        code, out = self.cli("refused", "--provider", "anthropic", "--session", self.SESSION, self.TERMS)
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(json.loads(out)["next"])
+        self.assertIn(A, self.state()["providers"]["anthropic"]["cooldowns"])
+
+    def test_any_other_400_changes_nothing(self):
+        before = self.state()
+        code, out = self.cli("refused", "--provider", "anthropic", "--session", self.SESSION,
+                             "Provider rejected the request (invalid_request_error, 400): prompt is too long")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out), {"reason": None})
+        self.assertEqual(self.state(), before)
+
+
 class OffAndOn(PoolFixture):
     def test_off_keeps_the_account_listed_but_never_usable(self):
         self.assertEqual(self.cli("off", "a@x"), (0, "a@x is off; the pool never picks it until pi-pool on"))
@@ -348,6 +398,20 @@ class Login(PoolFixture):
         self.assertTrue(run.event()["ok"])
         self.assertEqual(run.exit_code(), 0)
         self.assertEqual(list(self.state()["providers"]["anthropic"]["limits"]), [A])
+
+    def test_a_new_sign_in_drops_that_accounts_terms_refusal_only(self):
+        until = time.time() + 3600
+        self.write_state({"version": 2, "providers": {
+            "anthropic": {"pin": None, "seat": None, "disabled": {}, "limits": {},
+                          "cooldowns": {A: until, B: until}, "cooldown_reasons": {A: "needs terms", B: "needs terms"}},
+            "openai-codex": {"pin": None, "seat": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
+        run = LoginRun(self, ["b@x"], "claude")
+        self.assertEqual(run.event()["event"], "url")
+        run.send("good\n")
+        self.assertTrue(run.event()["ok"])
+        self.assertEqual(run.exit_code(), 0)
+        prov = self.state()["providers"]["anthropic"]
+        self.assertEqual((list(prov["cooldowns"]), list(prov["cooldown_reasons"])), ([A], [A]))
 
     def test_an_unknown_account_fails_without_running_tokenmaxxing(self):
         run = LoginRun(self, ["z@x"], "claude")

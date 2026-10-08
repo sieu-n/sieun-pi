@@ -15,8 +15,14 @@ const output = process.env.PI_POOL_TEST_OUTPUT_DIR;
 if (!output) throw new Error('PI_POOL_TEST_OUTPUT_DIR is required');
 const expectation = process.env.FIXTURE_EXPECT ?? 'swap';
 if (!['baseline', 'swap'].includes(expectation)) throw new Error('FIXTURE_EXPECT must be baseline or swap');
+// What account c answers: a 429 with a one-hour reset, or the 400 Anthropic sent
+// on 2026-10-08 while an account's Consumer Terms were pending.
+const failure = process.env.FIXTURE_FAILURE ?? '429';
+if (!['429', 'terms'].includes(failure)) throw new Error('FIXTURE_FAILURE must be 429 or terms');
+const FAIL_STATUS = failure === 'terms' ? 400 : 429;
+const TERMS_MESSAGE = "We've updated our Consumer Terms and Privacy Policy. You'll need to accept them in claude.ai with the email in /status to continue.";
 const run = mkdtempSync(join(output, 'swap-'));
-console.log(JSON.stringify({ run, expectation }));
+console.log(JSON.stringify({ run, expectation, failure }));
 
 const C = 'cccc3333-0000-0000-0000-000000000000';
 const D = 'dddd4444-0000-0000-0000-000000000000';
@@ -62,13 +68,16 @@ const bus = new EventEmitter();
 const server = createServer(async (request, response) => {
   for await (const _chunk of request);
   const record = { n: requests.length + 1, at: Date.now(), path: request.url, keyLabel: jwtLabel(request.headers.authorization ?? '') };
-  record.status = record.keyLabel === 'c' ? 429 : 200;
+  record.status = record.keyLabel === 'c' ? FAIL_STATUS : 200;
   requests.push(record);
   appendFileSync(join(run, 'http.jsonl'), JSON.stringify(record) + '\n');
   bus.emit('request', record);
   if (record.status === 429) {
     response.writeHead(429, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'plus', resets_at: Math.floor(Date.now() / 1000) + RESET_SEC } }));
+  } else if (record.status === 400) {
+    response.writeHead(400, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: TERMS_MESSAGE } }));
   } else sse(response, 'SYNTHETIC_SWAP_OK', record.n);
 });
 server.listen(0, '127.0.0.1');
@@ -154,28 +163,42 @@ const summary = {};
 try {
   if (expectation === 'baseline') {
     const base = await prime('baseline', false);
-    summary.baseline = { requests: base.requests.map(r => `${r.keyLabel}:${r.status}`), waitMs: base.retryStart?.delayMs, reason: base.retryStart?.reason };
-    assert.deepEqual(summary.baseline.requests, ['c:429'], 'without the extension the turn sends no second request');
-    assert.equal(base.retryStart?.reason, 'usage');
-    assert.ok(base.retryStart.delayMs > (RESET_SEC - 60) * 1000, 'without the extension Prime sleeps until the reset');
+    summary.baseline = { requests: base.requests.map(r => `${r.keyLabel}:${r.status}`), waitMs: base.retryStart?.delayMs, reason: base.retryStart?.reason, errorMessage: base.assistants[0]?.errorMessage };
+    assert.deepEqual(summary.baseline.requests, [`c:${FAIL_STATUS}`], 'without the extension the turn sends no second request');
+    if (failure === 'terms') {
+      assert.equal(base.retryStart, undefined, 'without the extension Prime treats the terms 400 as permanent and the turn fails');
+      assert.match(base.assistants[0].errorMessage, /Consumer Terms/);
+    } else {
+      assert.equal(base.retryStart?.reason, 'usage');
+      assert.ok(base.retryStart.delayMs > (RESET_SEC - 60) * 1000, 'without the extension Prime sleeps until the reset');
+    }
   } else {
     const swapped = await prime('swap', true);
     summary.swap = { requests: swapped.requests.map(r => `${r.keyLabel}:${r.status}`), waitMs: swapped.retryStart?.delayMs, doneAfterMs: swapped.doneAfterMs, errorMessage: swapped.assistants[0]?.errorMessage };
-    assert.deepEqual(summary.swap.requests, ['c:429', 'd:200'], 'request 2 of the same turn uses the other account');
+    assert.deepEqual(summary.swap.requests, [`c:${FAIL_STATUS}`, 'd:200'], 'request 2 of the same turn uses the other account');
     assert.ok(swapped.retryStart.delayMs < 5000, `Prime retried after ${swapped.retryStart.delayMs}ms, not at the reset`);
     assert.ok(swapped.doneAfterMs < 10000, 'the turn finished on the new account');
-    assert.match(swapped.assistants[0].errorMessage, /pi-pool: c@x is limited until .*; the retry uses d@x\./);
-    assert.doesNotMatch(swapped.assistants[0].errorMessage, /Try again in/);
     const log = readLog();
-    summary.log = log.filter(e => ['limited', 'vend'].includes(e.event));
-    assert.ok(log.some(e => e.event === 'limited' && e.account === 'c@x' && e.next === 'd@x' && e.session === SESSION));
-    assert.ok(log.some(e => e.event === 'vend' && e.account === 'd@x' && e.why === 'limited' && e.shadowed === C && e.previous === 'c@x'));
-    const limit = readState().providers['openai-codex'].limits[C];
-    assert.ok(limit.until * 1000 > Date.now() + (RESET_SEC - 60) * 1000, 'the limit lasts until the provider reset');
+    summary.log = log.filter(e => ['limited', 'refused', 'vend'].includes(e.event));
+    if (failure === 'terms') {
+      assert.match(swapped.assistants[0].errorMessage, /pi-pool: c@x is out of the pool \(needs terms\); the retry uses d@x\./);
+      assert.ok(log.some(e => e.event === 'refused' && e.account === 'c@x' && e.reason === 'needs terms' && e.next === 'd@x' && e.session === SESSION));
+      assert.ok(log.some(e => e.event === 'vend' && e.account === 'd@x' && e.why === 'cooldown' && e.shadowed === C && e.previous === 'c@x'));
+      const provider = readState().providers['openai-codex'];
+      assert.equal(provider.cooldown_reasons[C], 'needs terms');
+      assert.ok(provider.cooldowns[C] * 1000 > Date.now() + 23 * 3600 * 1000, 'the account stays out for a day unless a check or a sign-in clears it');
+    } else {
+      assert.match(swapped.assistants[0].errorMessage, /pi-pool: c@x is limited until .*; the retry uses d@x\./);
+      assert.doesNotMatch(swapped.assistants[0].errorMessage, /Try again in/);
+      assert.ok(log.some(e => e.event === 'limited' && e.account === 'c@x' && e.next === 'd@x' && e.session === SESSION));
+      assert.ok(log.some(e => e.event === 'vend' && e.account === 'd@x' && e.why === 'limited' && e.shadowed === C && e.previous === 'c@x'));
+      const limit = readState().providers['openai-codex'].limits[C];
+      assert.ok(limit.until * 1000 > Date.now() + (RESET_SEC - 60) * 1000, 'the limit lasts until the provider reset');
+    }
 
     const restarted = await prime('restart', true);
     summary.restart = { requests: restarted.requests.map(r => `${r.keyLabel}:${r.status}`) };
-    assert.deepEqual(summary.restart.requests, ['d:200'], 'a new Prime process still avoids the limited account');
+    assert.deepEqual(summary.restart.requests, ['d:200'], 'a new Prime process still avoids the account');
   }
 } finally {
   server.closeAllConnections();

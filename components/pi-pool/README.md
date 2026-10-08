@@ -133,6 +133,8 @@ until the session's next provider request runs the hook.
     pi-pool probe [--force]       check every Claude account for an API refusal (no token refresh)
     pi-pool limited --until <epoch sec> [--provider p] [--session id]
                                   the provider answered 429 for this session's account; prints the next account or null
+    pi-pool refused <error text> [--provider p] [--session id]
+                                  an account-level refusal (terms, OAuth off) cools this session's account down; prints the next account or null
     pi-pool log [n]               last n pool events
     pi-pool config / set <k> <v>
 
@@ -231,6 +233,31 @@ The hook prunes it when it expires. A successful `pi-pool login` for the account
 since the 429 belonged to the replaced credential. `tests/native/swap.mjs` runs this against a copied
 Prime install: request 1 gets a 429 on one Codex account, request 2 of the same turn uses
 the other one, and a restarted Prime process goes straight to the other account.
+
+## An account-level refusal moves the session the same way
+
+Some errors fail every request on one account whatever the prompt. Prime treats a 400 or
+403 as permanent, so without the pool the turn ends there. On 2026-10-08 a newly added
+Claude account answered every turn for 3 minutes with a 400: "We've updated our Consumer
+Terms and Privacy Policy. You'll need to accept them in claude.ai". The extension handles
+these on `message_end` too:
+
+1. An assistant error with status 400 or 403 on a pooled provider runs
+   `pi-pool refused --provider <p> <error text>`.
+2. `refused` reads the text (`account_refusal`). Terms not accepted is `needs terms`; OAuth
+   turned off for the organization is `oauth not allowed for organization`. Any other text
+   prints `{"reason": null}` and changes nothing.
+3. For a refusal it cools the account the tree last vended down for `refused_cooldown_sec`,
+   with the reason in `cooldown_reasons`, logs a `refused` line, and prints
+   `{"account", "reason", "next"}`.
+4. When `next` names an account, the extension marks the failure a rate limit, so Prime's
+   usage wait retries in about a second and that retry's hook call vends `next`.
+
+Settings > Accounts shows a `needs terms` account as "Needs terms". To bring it back, sign
+in to claude.ai as that account, accept the terms, then choose Check again (`pi-pool probe
+--force`, which sends that account a one-token message) or sign it in again (`pi-pool
+login`). `FIXTURE_FAILURE=terms node tests/native/swap.mjs` runs this against a copied Prime
+install, and with `FIXTURE_EXPECT=baseline` it shows the turn failing without the extension.
 
 Step 3 exists because the seat otherwise moves only when it cannot serve. A free codex
 account taken while the paid one was depleted would hold every unpinned session after

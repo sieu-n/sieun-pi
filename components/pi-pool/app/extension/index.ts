@@ -6,6 +6,9 @@
  * A provider 429 on a pooled provider is reported to the pool (`limited`); when
  * another account can serve, the failed message loses its reset time, so Prime
  * retries in about a second and the hook vends that account in the same turn.
+ * A 400 or 403 goes to the pool too (`refused`): when its text names an
+ * account-level refusal, such as Consumer Terms not yet accepted, the pool takes
+ * the account out and the same turn retries on another one the same way.
  *
  * Every judgement lives in `pi-pool-token --cli`. This file parses JSON and
  * formats strings, so the precedence rules and the usage math exist once, in
@@ -166,35 +169,61 @@ const RESET_PHRASE = /(?:try again|resets?|available)[^.]{0,80}?(?:~\s*)?\d+\s*(
 
 /** `pi-pool-token --cli limited` answer. `next` is null when no other account can serve. */
 interface LimitedReply { account: string; until: number; next: string | null }
+/** `pi-pool-token --cli refused` answer. `reason` is null when the text names no account-level refusal. */
+interface RefusedReply { account?: string; reason: string | null; next?: string | null }
 
-/**
- * A 429 on a pooled provider: tell the pool the account is limited until the
- * provider's reset. With another account free, return the message without the
- * reset, so Prime's usage wait pings after about 1s instead of sleeping until
- * the reset, and that ping's hook call vends the other account. With none free,
- * leave the message alone and Prime waits for the real reset.
- */
-async function swapOn429(message: AgentMessage): Promise<AgentMessage | undefined> {
-	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
-	const failure = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
-	const details = (failure?.details ?? {}) as Record<string, unknown>;
-	if (details.status !== 429 || typeof details.retryAfterMs !== "number") return undefined;
-	const until = (Date.now() + details.retryAfterMs) / 1000;
-	const res = await pool(["limited", "--provider", message.provider, "--until", String(until)]);
-	let reply: LimitedReply;
+async function poolJson<T>(args: string[]): Promise<T | undefined> {
+	const res = await pool(args);
+	if (!res.ok) return undefined;
 	try {
-		reply = JSON.parse(res.out) as LimitedReply;
+		return JSON.parse(res.out) as T;
 	} catch {
 		return undefined;
 	}
-	if (!res.ok || !reply.next) return undefined;
-	const { retryAfterMs: _reset, ...rest } = details;
+}
+
+/**
+ * A failed request on a pooled provider that another account can serve.
+ *
+ * A 429: tell the pool the account is limited until the provider's reset, and
+ * return the message without the reset, so Prime's usage wait pings after about
+ * 1s instead of sleeping until the reset, and that ping's hook call vends the
+ * other account. With none free, leave the message alone and Prime waits for
+ * the real reset.
+ *
+ * A 400 or 403: the pool reads the error text. An account-level refusal (terms
+ * not accepted, OAuth off for the organization) takes the account out of the
+ * pool; the message is then re-labelled a rate limit, the one failure kind Prime
+ * retries for an account, so the same turn moves on the same way. Prime treats
+ * any other 400 as permanent, and the pool leaves it alone.
+ */
+async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefined> {
+	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
+	const failure = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
+	const details = (failure?.details ?? {}) as Record<string, unknown>;
 	const original = (message.errorMessage ?? "").replace(RESET_PHRASE, "").trim();
-	return {
-		...message,
-		errorMessage: `${original} pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}; the retry uses ${reply.next}.`.trim(),
-		diagnostics: message.diagnostics?.map((diagnostic) => (diagnostic === failure ? { ...diagnostic, details: rest } : diagnostic)),
-	};
+	const withDetails = (next: Record<string, unknown>) => message.diagnostics?.map((diagnostic) => (diagnostic === failure ? { ...diagnostic, details: next } : diagnostic));
+	if (details.status === 429 && typeof details.retryAfterMs === "number") {
+		const until = (Date.now() + details.retryAfterMs) / 1000;
+		const reply = await poolJson<LimitedReply>(["limited", "--provider", message.provider, "--until", String(until)]);
+		if (!reply?.next) return undefined;
+		const { retryAfterMs: _reset, ...rest } = details;
+		return {
+			...message,
+			errorMessage: `${original} pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}; the retry uses ${reply.next}.`.trim(),
+			diagnostics: withDetails(rest),
+		};
+	}
+	if (details.status === 400 || details.status === 403) {
+		const reply = await poolJson<RefusedReply>(["refused", "--provider", message.provider, message.errorMessage ?? ""]);
+		if (!reply?.reason || !reply.next) return undefined;
+		return {
+			...message,
+			errorMessage: `${original} pi-pool: ${reply.account} is out of the pool (${reply.reason}); the retry uses ${reply.next}.`.trim(),
+			diagnostics: withDetails({ ...details, kind: "rate_limit" }),
+		};
+	}
+	return undefined;
 }
 
 /** Moves a stored /login for a pooled provider into the pool's fallback, so it cannot shadow the pool. */
@@ -235,7 +264,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
 	pi.on("message_end", async (event) => {
-		const message = await swapOn429(event.message);
+		const message = await swapAccount(event.message);
 		return message ? { message } : undefined;
 	});
 
