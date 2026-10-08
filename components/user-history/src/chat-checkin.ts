@@ -332,6 +332,32 @@ export function endedWithoutReport(before: readonly ChildAgent[], after: readonl
   });
 }
 
+/** A finished job is deleted once it has been quiet this long; the check runs at most once per JOB_CLEANUP_EVERY_MS per chat. */
+export const JOB_CLEANUP_IDLE_MS = 60 * 60_000;
+export const JOB_CLEANUP_EVERY_MS = 10 * 60_000;
+
+/**
+ * The chat's finished jobs to delete (each holds a worker process and a Python kernel until it is deleted): a direct subagent that is done, sent
+ * its final report (`repliedSinceTask` true), has been quiet JOB_CLEANUP_IDLE_MS, and that no open step keeps: one it owns, or one waiting on
+ * purpose (`waitUntil`, `waitFor`) whose `waitFor` names it.
+ */
+export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard | null, now: number): ChildAgent[] {
+  const ids = new Set(children.map(child => child.id));
+  const keeps: { owner?: string; waitFor?: string }[] = [];
+  walk(board?.plan ?? [], item => {
+    if (!OPEN.has(item.status)) return;
+    const owner = stepOwner(item);
+    keeps.push({ ...(owner !== undefined ? { owner } : {}), ...(item.waitFor ? { waitFor: item.waitFor } : {}) });
+  });
+  return children.filter(child => {
+    if (child.parentId !== undefined && ids.has(child.parentId)) return false;
+    if (child.status !== "done" || childWorking(child) || child.repliedSinceTask !== true) return false;
+    if (child.lastActivityAt === undefined || now - child.lastActivityAt < JOB_CLEANUP_IDLE_MS) return false;
+    const names = [child.id, childName(child), child.label];
+    return !keeps.some(keep => (keep.owner !== undefined && names.includes(keep.owner)) || (keep.waitFor !== undefined && names.some(name => keep.waitFor!.includes(name))));
+  });
+}
+
 /** Each job's last agent message to the chat, by the name its header gives (`[agent-message from child:<name>]`, the `child:` cut). */
 export function lastJobMessages(messages: readonly { role: string; customType?: string; content?: unknown; timestamp?: number }[]): Map<string, JobMessage> {
   const last = new Map<string, JobMessage>();
@@ -355,6 +381,16 @@ export function jobReport(fact: Pick<JobFact, "replied" | "lastMessage" | "wokeA
   const message = fact.lastMessage;
   const after = message !== undefined && message.at >= (fact.wokeAt ?? 0);
   return { reported: fact.replied !== false || after, ...(after && SAYS_WAITS.test(message.text) ? { waits: message } : {}) };
+}
+
+/**
+ * The `[job]` notice for a job that went quiet while the daemon says it did not reply to its task: one that messaged the chat at or after its
+ * last wake asked something and waits for an answer, since that message; any other ended at its last activity with no report.
+ */
+export function noReportNotice(name: string, message: JobMessage | undefined, wokeAt: number, end: number): string {
+  return message !== undefined && message.at >= wokeAt
+    ? `${name} is waiting for you since ${clockTime(message.at)} (last message: "${clip(message.text, 140)}")`
+    : `${name} ended at ${clockTime(end)} with no report`;
 }
 
 /** `<data dir>/check-ins.json`: the last tick's memory per chat, through locked-json. */

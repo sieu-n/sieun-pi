@@ -266,7 +266,7 @@ function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
 }
 
 export async function startChatServer({ backend, bundle, port, capability, csrfToken, publicOrigin = null, remote = fixedRemote(publicOrigin, capability), slack = null, sdk = null, identity, stopToken, onStop, identityReady = Promise.resolve(), logins = new AccountLogins(), refreshes = new UsageRefreshes(), wikiPage = readWikiPage }: {
-  backend: ChatBackend; bundle: ClientBundle; port: number; capability: string; csrfToken: string;
+  backend: ChatBackend; bundle: ClientBundle | Promise<ClientBundle>; port: number; capability: string; csrfToken: string;
   identity: { pid: number; instanceId: string; socketPath: string }; stopToken: string; publicOrigin?: string | null;
   /** Phone access: which remote HTTPS origin is allowed right now, and the Settings view and switches. */
   remote?: RemoteControl;
@@ -279,7 +279,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   wikiPage?: (path: string) => Promise<WikiPageView>;
 }): Promise<{ url: string; close(): Promise<void> }> {
   const base = "/" + capability + "/";
-  const shell = renderShell(csrfToken, bundle.version);
+  /** The serving process builds the page bundle after it listens; a feed names the build once it exists (a failed build was logged there). */
+  const sendBuild = (send: (version: string) => void) => { void Promise.resolve(bundle).then(built => send(built.version), () => {}); };
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
   const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
   const streams = new Set<EventStream>();
@@ -293,7 +294,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   server.on("clientError", (_error, socket) => { socket.destroy(); });
   const feeds = new FeedSockets(async (feed, send) => {
     if (feed.feed === "sessions") {
-      send("build", { version: bundle.version });
+      sendBuild(version => send("build", { version }));
       return backend.catalog.subscribe(event => send("sessions", event));
     }
     if (feed.feed === "login") return logins.subscribe(login => send("login", login));
@@ -408,14 +409,17 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         return;
       }
       if (method === "GET") {
-        if (route === "") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(shell); return; }
-        if (route === "app.js") { serveAsset(req, res, bundle.js); return; }
-        if (route === "app.css") { serveAsset(req, res, bundle.css); return; }
-        const appFile = bundle.app?.(route);
-        if (appFile) { serveAsset(req, res, appFile); return; }
+        if (!route.startsWith("api/")) {
+          const built = await bundle;
+          if (route === "") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end(renderShell(csrfToken, built.version)); return; }
+          if (route === "app.js") { serveAsset(req, res, built.js); return; }
+          if (route === "app.css") { serveAsset(req, res, built.css); return; }
+          const appFile = built.app?.(route);
+          if (appFile) { serveAsset(req, res, appFile); return; }
+        }
         if (route === "api/sessions/stream") {
           const stream = openStream(req, res);
-          stream.send("build", { version: bundle.version });
+          sendBuild(version => stream.send("build", { version }));
           const unsubscribe = backend.catalog.subscribe(event => stream.send("sessions", event));
           res.once("close", unsubscribe);
           return;

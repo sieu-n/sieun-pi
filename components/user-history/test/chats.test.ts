@@ -7,8 +7,9 @@ import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
 import { fallbackRecord } from "../src/chat-fallback.ts";
 import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
   jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, type ThreadView, withChatTool } from "../src/chats.ts";
+import { SessionManager } from "prime-agent";
 import type { Catalog } from "../src/chat-catalog.ts";
-import { ThreadHub } from "../src/chat-threads.ts";
+import { AttachQueue, ThreadHub } from "../src/chat-threads.ts";
 import { isThreadBusy, isTurnRunning } from "../src/shared/thread-state.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatAgent, ChatBoard, ChatWait, ChildAgent, ModelInfo, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
@@ -173,6 +174,8 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   // Stalled steps (chat health stalls_2h, 24 steps quiet 2 h or more after 7f24e91).
   assert.ok(CHAT_BRIEF.includes("A step stalled 2 h or more must change at this check-in: chase the blocker, start a job, add one owner todo, or set waitUntil/waitFor."));
   assert.match(brief, /`\[job\] <name> ended at <time> with no report` means/);
+  assert.ok(CHAT_BRIEF.includes("After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it waiting on purpose; finished jobs hold memory."));
+  assert.match(brief, /`\[job\] <name> is waiting for you since <time>` or a check-in line `<step> \(job <name>\) waits: "\.\.\."` means the job waits on you/);
   assert.doesNotMatch(brief, /15 to 60 words/, "the old count, which bullets slipped past, is gone");
   assert.doesNotMatch(brief, /—/, "no em dashes");
 });
@@ -248,6 +251,7 @@ function fakeThreads(calls: string[], pinLimit = 8) {
     async restart(id: string, message: string, abort?: boolean) { calls.push(`restart ${id} ${message}${abort ? " (abort)" : ""}`); },
     async abort(id: string) { calls.push(`abort ${id}`); },
     async resumeQueue(id: string) { calls.push(`resume ${id}`); },
+    async deleteSubagent(id: string, childId: string) { calls.push(`delete ${id} ${childId}`); },
     catalog: { models: [] as ModelInfo[], configuredProviders: [] as string[] },
     async models(_id: string) { return { ...this.catalog, current: null, thinkingLevel: null, availableThinkingLevels: [] }; },
     async setModel(id: string, provider: string, modelId: string) { calls.push(`model ${id} ${provider}/${modelId}`); },
@@ -352,7 +356,9 @@ test("chats: a job that goes quiet with no message since its wake is told once p
   messages.push({ role: "custom", customType: "agent_message", content: "[agent-message from child:api-audit]\n\nTwo questions before I go on: keep the old route?", timestamp: 6000 });
   threads.fire().children("c1", [job("done", false, false, 200)]);
   await flush();
-  assert.deepEqual(calls, [], "a message since its last wake is its report; the check-in tells a wait");
+  assert.deepEqual(calls, ['steer c1 [job] api-audit is waiting for you since 09:00 (last message: "Two questions before I go on: keep the old route?")'],
+    "a message since its last wake: the job waits for the chat, since that message");
+  calls.length = 0;
   clock = 10_000_000;
   threads.fire().children("c1", [job("done", true, false, 9_000_000)]);
   threads.fire().children("c1", [job("done", false, false, 9_000_000)]);
@@ -412,6 +418,37 @@ test("chats: the check-in tick steers only what changed, stays quiet with no cha
   board.plan = [{ ...board.plan[0]!, status: "done", children: board.plan[0]!.children.map(step => ({ ...step, status: "done" as const })) }];
   assert.deepEqual(await chats.checkIn("c1"), [], "no job at work and no open step: paused");
   assert.deepEqual(calls, []);
+  chats.close();
+});
+
+test("chats: a job told as waiting is not told again by the next check-in", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const messages: ThreadMessage[] = [];
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] }] };
+  let now = 1_000_000;
+  const chats = new Chats(index, { ...threads, state: () => ({ messages }) }, async () => ({ lifecycle: "live" }), "b1",
+    loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now));
+  await chats.adopt();
+  const job = (working: boolean): ChildAgent => ({ id: "k1", label: "audit", sessionName: "api-audit", status: "done",
+    ...(working ? { activity: { kind: "writing" as const } } : {}), lastActivityAt: 1_000_000, repliedSinceTask: false });
+  threads.fire().live("c1", [job(true)]);
+  await chats.settled();
+  assert.deepEqual(await chats.checkIn("c1"), [], "the first tick takes the baseline: the job works");
+  calls.length = 0;
+  now += 60_000;
+  messages.push({ role: "custom", customType: "agent_message", content: "[agent-message from child:api-audit]\nReady for review, waiting for your go.", timestamp: now });
+  threads.fire().children("c1", [job(false)]);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await chats.settled();
+  assert.deepEqual(calls, ['steer c1 [job] api-audit is waiting for you since 09:17 (last message: "Ready for review, waiting for your go.")']);
+  calls.length = 0;
+  now += 120_000;
+  const lines = await chats.checkIn("c1");
+  assert.ok(!lines.some(line => line.includes("api-audit")), `the notice told this end: ${JSON.stringify(lines)}`);
   chats.close();
 });
 
@@ -831,6 +868,126 @@ test("thread hub: running ignores queued input that busy counts; restart sends t
   await hub.close();
 });
 
+test("chats: a finished job (reported, done, quiet an hour, no open step) is deleted once, checked at most every 10 min; a job a step keeps stays", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = 10_000_000;
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [
+    { id: "p1", text: "Build", status: "doing", job: "builder", children: [] },
+    { id: "p2", text: "Ship", status: "blocked", waitFor: "reviewer's go on PR 12", children: [] },
+    { id: "p3", text: "Audit", status: "done", job: "auditor", children: [] }] };
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    source(dir, { c1: board }, () => now), line => lines.push(line));
+  await chats.adopt();
+  const job = (id: string, name: string, at: number, extra: Partial<ChildAgent> = {}): ChildAgent =>
+    ({ id, label: name, sessionName: name, status: "done", repliedSinceTask: true, lastActivityAt: at, ...extra });
+  const old = now - 61 * 60_000;
+  threads.fire().live("c1", [job("k1", "auditor", old), job("k2", "builder", old), job("k3", "reviewer", old), job("k4", "fresh", now - 10 * 60_000),
+    job("k5", "silent", old, { repliedSinceTask: false }), job("k6", "busy", old, { activity: { kind: "writing" } }), job("k7", "nested", old, { parentId: "k1" })]);
+  await chats.settled();
+  const deletes = async () => { calls.length = 0; await chats.tick(); await chats.settled(); return calls.filter(call => call.startsWith("delete")); };
+  assert.deepEqual(await deletes(), ["delete c1 k1"], "only the reported, idle job whose step is done");
+  assert.deepEqual(lines.filter(line => line.includes("finished job")), ["chat c1: deleted finished job auditor (reported, quiet 61 min, no open step)"]);
+  now += 5 * 60_000;
+  assert.deepEqual(await deletes(), [], "not checked again within 10 min");
+  now += 6 * 60_000;
+  threads.fire().children("c1", [job("k1", "auditor", old), job("k4", "fresh", now - 70 * 60_000)]);
+  await chats.settled();
+  assert.deepEqual(await deletes(), ["delete c1 k4"], "each job once; a job quiet past the hour goes at the next check");
+  chats.close();
+});
+
+test("attach queue: background attaches run two at a time in order; a foreground one starts at once and counts; promote starts a waiting one", async () => {
+  const queue = new AttachQueue(2);
+  const log: string[] = [];
+  const gates = new Map<string, () => void>();
+  const job = (key: string, background: boolean) => queue.run(key, background, () => new Promise<void>(done => { log.push(key); gates.set(key, done); }));
+  const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+  const runs = ["a", "b", "c", "d", "e"].map(key => job(key, true));
+  await flush();
+  assert.deepEqual(log, ["a", "b"], "two background attaches at a time");
+  const tab = job("tab", false);
+  await flush();
+  assert.deepEqual(log, ["a", "b", "tab"], "a foreground attach does not wait");
+  gates.get("a")!();
+  await flush();
+  assert.deepEqual(log, ["a", "b", "tab"], "the foreground one holds a slot");
+  queue.promote("e");
+  await flush();
+  assert.deepEqual(log, ["a", "b", "tab", "e"], "a tab opening a waiting chat starts it");
+  for (const key of ["b", "tab", "e"]) gates.get(key)!();
+  await flush();
+  assert.deepEqual(log, ["a", "b", "tab", "e", "c", "d"], "the rest in order");
+  gates.get("c")!(); gates.get("d")!();
+  await Promise.all([...runs, tab]);
+});
+
+test("thread hub: after a restart the pinned chats attach two at a time in pin order, an open tab goes first, and a failed attach waits before its retry", async () => {
+  let fire: (event: { daemon: string }) => void = () => {};
+  const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: "a-" + id, cwd: "/", lifecycle: "live" }),
+    subscribe: (listener: typeof fire) => { fire = listener; return () => {}; } } as unknown as Catalog;
+  const hub = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  const started: string[] = [];
+  const finish = new Map<string, (error?: Error) => void>();
+  let running = 0, peak = 0;
+  const connection = { subscribe: () => () => {}, dispose: async () => {} };
+  const internals = hub as unknown as { attach(id: string): Promise<unknown>; liveSnapshot(): Promise<unknown> };
+  internals.attach = id => new Promise((resolve, reject) => {
+    started.push(id.slice(2));
+    peak = Math.max(peak, ++running);
+    finish.set(id.slice(2), error => { running--; if (error) reject(error); else resolve(connection); });
+  });
+  internals.liveSnapshot = async () => ({ kind: "live", info: {}, messages: [], streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null });
+  const flush = () => new Promise(resolve => setTimeout(resolve, 5));
+  const chats = ["c1", "c2", "c3", "c4", "c5", "c6"];
+  for (const id of chats) assert.ok(hub.pin(id));
+  fire({ daemon: "up" });
+  await flush();
+  assert.deepEqual(started, ["c1", "c2"], "two pins at a time, in pin order");
+  const tab = hub.open("c6");
+  await flush();
+  assert.deepEqual(started, ["c1", "c2", "c6"], "the chat open in a tab does not wait behind the others");
+  finish.get("c6")!();
+  assert.equal((await tab).live !== null, true);
+  finish.get("c1")!();
+  await flush();
+  assert.deepEqual(started, ["c1", "c2", "c6", "c3"]);
+  finish.get("c3")!(new Error("Timed out after 30000ms waiting for the Prime Agent daemon response to \"attach\"."));
+  await flush();
+  assert.deepEqual(started, ["c1", "c2", "c6", "c3", "c4"]);
+  fire({ daemon: "up" });
+  await flush();
+  assert.equal(started.filter(id => id === "c3").length, 1, "a timed-out pin is not tried again at once");
+  for (const id of ["c2", "c4"]) finish.get(id)!();
+  await flush();
+  finish.get("c5")!();
+  await flush();
+  assert.equal(peak, 3, "two background attaches plus the tab's");
+  assert.deepEqual(chats.map(id => hub.state(id)?.kind ?? "none"), ["live", "live", "none", "live", "live", "live"], "every pin attached but the one waiting for its retry");
+  await hub.close();
+});
+
+test("thread hub: a session the daemon list calls active but the daemon does not hold opens saved, so a wake reads it as not live", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "hub-"));
+  const manager = SessionManager.create(dir, dir);
+  manager.appendMessage({ role: "user", content: "build it", timestamp: 1000 });
+  manager.flushNow();
+  const summary = { sessionId: manager.getSessionId(), activeSessionId: "fa0261485da9", sessionFile: manager.getSessionFile(), cwd: dir };
+  const hub = new ThreadHub("/nonexistent.sock", { summary: async () => summary } as unknown as Catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
+  const attached: string[] = [];
+  (hub as unknown as { attach(id: string): Promise<never> }).attach = async id => { attached.push(id); throw new Error(`Unknown active session: ${id}`); };
+  assert.equal(await hub.view(summary.sessionId), null, "not live: no throw");
+  assert.equal((await hub.open(summary.sessionId)).state.messages.length, 1, "the transcript from the session file");
+  assert.deepEqual(attached, ["fa0261485da9"], "tried once; the saved thread is kept");
+  (hub as unknown as { attach(id: string): Promise<never> }).attach = async () => { throw new Error("Timed out after 30000ms waiting for the Prime Agent daemon response to \"attach\"."); };
+  await assert.rejects(hub.open("other"), /Timed out/, "a daemon timeout is still an error");
+  await hub.close();
+});
+
 test("jobs of a chat work in poteto-mode when the skill is installed, and get nothing extra when it is not", () => {
   const skill = "/home/x/.prime/agent/skills/poteto-mode/SKILL.md";
   const line = jobPersonaGuideline(skill, path => path === skill);
@@ -1082,3 +1239,38 @@ test("chats: the subagents and roots of a chat whose last turn failed transientl
   assert.deepEqual(awake.slice(-1), [true], "the chat's own turn counts");
   chats.close();
 });
+
+test("chats: a job whose session is gone (not in the catalog, or listed active with a session the daemon does not hold) is looked at once, logged once, and not again until it shows new activity", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = 1_000_000_000;
+  const agent = (sessionId: string, at: number): ChatAgent =>
+    ({ key: `child:${sessionId}`, sessionId, name: sessionId, job: sessionId, sender: sessionId, link: "subagent", state: "done", lastActivityAt: new Date(at).toISOString(), steps: [] });
+  const before = now - 60_000;
+  let agents: ChatAgent[] = [agent("deleted", before), agent("stale", before)];
+  const rows = (): SessionRow[] => [row("c1", new Date(now).toISOString(), { chat: true, agents })];
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    source(dir, {}, () => now, rows), line => lines.push(line));
+  await chats.adopt();
+  const views: string[] = [];
+  threads.view = async (id: string) => {
+    views.push(id);
+    if (id === "deleted") throw Object.assign(new Error("This thread is not in the Prime Agent catalog."), { status: 404 });
+    throw new Error("Unknown active session: fa0261485da9");
+  };
+  const step = async () => { now += 30_000; await chats.tick(); await chats.settled(); };
+  for (let index = 0; index < 10; index++) await step();
+  assert.deepEqual(views.sort(), ["deleted", "stale"], "each gone job is looked at once in ten ticks");
+  assert.deepEqual(lines.filter(line => line.startsWith("job ")), [
+    "job deleted: gone, not woken again: This thread is not in the Prime Agent catalog.",
+    "job stale: gone, not woken again: Unknown active session: fa0261485da9"]);
+  agents = [agent("deleted", before), agent("stale", now)];
+  await step();
+  assert.deepEqual(views.sort(), ["deleted", "stale", "stale"], "new activity: looked at again");
+  chats.close();
+});
+

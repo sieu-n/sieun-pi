@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
-import { CHAT_FLAG } from "./chats.ts";
+import { CHAT_FLAG, UNKNOWN_ACTIVE } from "./chats.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
@@ -56,6 +56,39 @@ export function compactedEntries(branch: readonly SessionEntry[]): SessionEntry[
   return branch.slice(0, firstKept >= 0 ? firstKept : compaction);
 }
 
+/** Background daemon attaches that may run at once; a restart pins 10 chats, and at a load of 90 each attach took 16 to 41 s when all ran together. */
+export const BACKGROUND_ATTACHES = 2;
+
+/**
+ * Daemon attaches (attach plus the first snapshot). A foreground one (a tab opening a thread, an owner send) starts at once. Background ones
+ * (pinned chats coming back, stall checks) wait in order until fewer than `limit` attaches of either kind run. A foreground request for a key
+ * still waiting promotes it, so an open chat never waits behind the others.
+ */
+export class AttachQueue {
+  private active = 0;
+  private readonly waiting: { key: string; start(): void }[] = [];
+  constructor(private readonly limit = BACKGROUND_ATTACHES) {}
+
+  async run<T>(key: string, background: boolean, task: () => Promise<T>): Promise<T> {
+    if (!background || (this.active < this.limit && this.waiting.length === 0)) this.active++;
+    else await new Promise<void>(start => { this.waiting.push({ key, start }); });
+    try { return await task(); }
+    finally { this.active--; this.next(); }
+  }
+
+  promote(key: string): void {
+    const index = this.waiting.findIndex(entry => entry.key === key);
+    if (index < 0) return;
+    const [entry] = this.waiting.splice(index, 1);
+    this.active++;
+    entry!.start();
+  }
+
+  private next(): void {
+    while (this.active < this.limit && this.waiting.length) { this.active++; this.waiting.shift()!.start(); }
+  }
+}
+
 export class ThreadError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -96,8 +129,9 @@ const MAX_LIVE = 8;
 const MAX_SAVED = 16;
 const IDLE_MS = 3 * 60 * 1000;
 const UPDATE_COALESCE_MS = 40;
-/** A pinned thread that is not live is resumed again no sooner than this after the last try. */
+/** A pinned thread whose resume failed (a daemon timeout, a refused attach) is tried again after 15 s, doubling per failure up to 5 min. */
 const PIN_RETRY_MS = 15000;
+const PIN_RETRY_MAX_MS = 5 * 60_000;
 
 export class ThreadHub {
   readonly images = new ImageStore();
@@ -109,8 +143,11 @@ export class ThreadHub {
   private readonly sweeper: ReturnType<typeof setInterval>;
   /** Threads kept attached and resident while the service runs: never swept or evicted, resumed again when the daemon comes back. */
   private readonly pinned = new Set<string>();
-  private readonly pinTried = new Map<string, number>();
+  /** Pins being resumed now (queued or attaching), and the failed ones with when to try next. */
+  private readonly pinning = new Set<string>();
+  private readonly pinRetry = new Map<string, { at: number; failures: number }>();
   private unwatchCatalog: (() => void) | undefined;
+  private readonly attaches = new AttachQueue();
   private readonly observers = new Set<ThreadObserver>();
   private closed = false;
 
@@ -149,7 +186,7 @@ export class ThreadHub {
 
   unpin(id: string): void {
     this.pinned.delete(id);
-    this.pinTried.delete(id);
+    this.pinRetry.delete(id);
   }
 
   observe(observer: ThreadObserver): () => void {
@@ -191,20 +228,28 @@ export class ThreadHub {
   }
 
   /**
-   * On every catalog update with the daemon up, a pinned thread that lost its attachment (daemon restart, worker exit) is resumed again. One
-   * archived outside this server (the terminal agents view) is unpinned instead, so the pin never brings an archived session back.
+   * On every catalog update with the daemon up, a pinned thread that lost its attachment (daemon restart, worker exit) is resumed again, as a
+   * background attach (`AttachQueue`), so after a restart the pins come back two at a time and an open tab or an owner send goes first. A
+   * failed resume waits PIN_RETRY_MS, doubling per failure. One archived outside this server (the terminal agents view) is unpinned instead,
+   * so the pin never brings an archived session back.
    */
   private keepPinnedLive(): void {
     if (this.closed) return;
     const now = Date.now();
     for (const id of this.pinned) {
-      if (this.threads.get(id)?.live || now - (this.pinTried.get(id) ?? 0) < PIN_RETRY_MS) continue;
-      this.pinTried.set(id, now);
+      if (this.threads.get(id)?.live || this.pinning.has(id) || now < (this.pinRetry.get(id)?.at ?? 0)) continue;
+      this.pinning.add(id);
       void (async () => {
         const summary = await this.catalog.summary(id);
         if (!summary || summary.lifecycle === "archived") { this.unpin(id); return; }
-        await this.resume(id);
-      })().catch(error => { process.stderr.write(`pin ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
+        await this.resume(id, true);
+        this.pinRetry.delete(id);
+      })().catch(error => {
+        const failures = (this.pinRetry.get(id)?.failures ?? 0) + 1;
+        const wait = Math.min(PIN_RETRY_MS * 2 ** (failures - 1), PIN_RETRY_MAX_MS);
+        this.pinRetry.set(id, { at: Date.now() + wait, failures });
+        process.stderr.write(`pin ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}; next try in ${Math.round(wait / 1000)} s\n`);
+      }).finally(() => { this.pinning.delete(id); });
     }
   }
 
@@ -360,12 +405,13 @@ export class ThreadHub {
     }
   }
 
-  async open(id: string): Promise<Thread> {
+  /** `background` (a pin coming back, a stall check) waits its turn in the attach queue; a foreground open promotes a waiting one. */
+  async open(id: string, background = false): Promise<Thread> {
     if (this.closed) throw new ThreadError(410, "Chat is stopping.");
     const cached = this.threads.get(id);
     if (cached) { cached.touched = Date.now(); return cached; }
     const pending = this.opening.get(id);
-    if (pending) return pending;
+    if (pending) { if (!background) this.attaches.promote(id); return pending; }
     const promise = (async () => {
       const started = performance.now();
       const summary = await this.summary(id);
@@ -373,15 +419,24 @@ export class ThreadHub {
       const marks: string[] = [];
       const mark = (label: string, from: number) => { marks.push(`${label} ${Math.round(performance.now() - from)}ms`); return performance.now(); };
       let at = mark("catalog", started);
-      if (summary.activeSessionId !== undefined) {
-        this.evict("live");
-        const connection = await this.attach(summary.activeSessionId);
+      const activeSessionId = summary.activeSessionId;
+      const live = activeSessionId === undefined ? null : await this.attaches.run(id, background, async () => {
+        at = mark("queue", at);
+        const connection = await this.attach(activeSessionId).catch(error => {
+          if (!(error instanceof Error && error.message.startsWith(UNKNOWN_ACTIVE))) throw error;
+          marks.push(`listed active but the daemon has no ${activeSessionId}: read saved`);
+          return null;
+        });
+        if (!connection) return null;
         at = mark("attach", at);
-        try {
-          thread = new Thread(id, await this.liveSnapshot(connection, summary), candidate => this.childrenChanged(candidate));
-          at = mark("snapshot+project", at);
-          this.bind(thread, connection, summary.activeSessionId);
-        } catch (error) { await connection.dispose().catch(() => {}); throw error; }
+        try { return { connection, snapshot: await this.liveSnapshot(connection, summary) }; }
+        catch (error) { await connection.dispose().catch(() => {}); throw error; }
+      });
+      if (activeSessionId !== undefined && live) {
+        this.evict("live");
+        thread = new Thread(id, live.snapshot, candidate => this.childrenChanged(candidate));
+        at = mark("snapshot+project", at);
+        this.bind(thread, live.connection, activeSessionId);
       } else {
         this.evict("saved");
         const { messages, info } = this.savedMessages(summary);
@@ -402,8 +457,9 @@ export class ThreadHub {
     return promise;
   }
 
-  async subscribe(id: string, listener: Listener): Promise<() => void> {
-    const thread = await this.open(id);
+  /** `background` for a listener no person waits on (the Slack bridge): its attach waits its turn in the queue. */
+  async subscribe(id: string, listener: Listener, background = false): Promise<() => void> {
+    const thread = await this.open(id, background);
     thread.listeners.add(listener);
     thread.idleSince = null;
     const { connection: _connection, error: _error, ...snapshot } = thread.state;
@@ -434,7 +490,7 @@ export class ThreadHub {
 
   /** The thread's state for a stall check, attaching it first; null for a thread that is not live. */
   async view(id: string): Promise<ThreadState | null> {
-    const thread = await this.open(id);
+    const thread = await this.open(id, true);
     return thread.live ? thread.state : null;
   }
 
@@ -444,8 +500,9 @@ export class ThreadHub {
     return { thread, live: thread.live };
   }
 
-  async resume(id: string): Promise<Thread> {
-    const thread = await this.open(id);
+  async resume(id: string, background = false): Promise<Thread> {
+    if (!background) this.attaches.promote(id);
+    const thread = await this.open(id, background);
     if (thread.live) return thread;
     const summary = await this.summary(id);
     if (summary.activeSessionId === undefined) {
@@ -457,13 +514,15 @@ export class ThreadHub {
     await this.catalog.refresh();
     const resumed = await this.summary(id);
     if (resumed.activeSessionId === undefined) throw new ThreadError(502, "Prime Agent did not resume this thread.");
+    const activeSessionId = resumed.activeSessionId;
+    const { connection, snapshot } = await this.attaches.run(id, background, async () => {
+      const connection = await this.attach(activeSessionId);
+      try { return { connection, snapshot: await this.liveSnapshot(connection, resumed) }; }
+      catch (error) { await connection.dispose().catch(() => {}); throw error; }
+    });
     this.evict("live");
-    const connection = await this.attach(resumed.activeSessionId);
-    try {
-      const snapshot = await this.liveSnapshot(connection, resumed);
-      this.bind(thread, connection, resumed.activeSessionId);
-      thread.broadcast({ type: "snapshot", snapshot });
-    } catch (error) { await connection.dispose().catch(() => {}); throw error; }
+    this.bind(thread, connection, activeSessionId);
+    thread.broadcast({ type: "snapshot", snapshot });
     this.attached(thread);
     return thread;
   }
@@ -548,6 +607,14 @@ export class ThreadHub {
     if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
   }
 
+  /** Deletes a finished subagent of the thread the way `rlm.delete_subagent` does, so its worker and Python kernel stop holding memory. */
+  async deleteSubagent(id: string, childId: string): Promise<void> {
+    const { live } = await this.requireLive(id);
+    await this.catalog.connect();
+    const response = await this.catalog.client.request({ type: "delete_rlm_subagent", activeSessionId: live.activeSessionId, childId }, 30000, { recoverable: false });
+    if (!response.success) throw new ThreadError(502, response.error);
+  }
+
   /** `all` batches every queued steer into one turn; `one-at-a-time` runs each as its own turn. Runtime state: it resets on every re-create. */
   async setSteeringMode(id: string, mode: "all" | "one-at-a-time"): Promise<void> {
     const { live } = await this.requireResumed(id);
@@ -578,7 +645,7 @@ export class ThreadHub {
     if (summary.activeSessionId) {
       await this.catalog.connect();
       const response = await this.catalog.client.request({ type: "kill", activeSessionId: summary.activeSessionId }, 30000, { recoverable: false });
-      if (!response.success && !response.error.startsWith("Unknown active session:")) {
+      if (!response.success && !response.error.startsWith(UNKNOWN_ACTIVE)) {
         if (!STOP_PENDING.test(response.error)) throw new ThreadError(502, response.error);
         this.finishKill(id, summary.activeSessionId);
       }

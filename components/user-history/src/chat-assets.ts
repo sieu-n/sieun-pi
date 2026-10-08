@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { build } from "esbuild";
 import esbuildSvelte from "esbuild-svelte";
 import { iconPng } from "./chat-icon.ts";
@@ -18,7 +19,8 @@ export function asset(body: Uint8Array, contentType: string): Asset {
   return { body: buffer, etag: '"' + createHash("sha256").update(buffer).digest("hex").slice(0, 32) + '"', contentType };
 }
 
-export async function buildClientBundle(): Promise<ClientBundle> {
+/** The esbuild and Svelte compile of the client: app.js and app.css. It holds its thread for seconds, so `buildClientBundle` runs it in a worker. */
+export async function compileClient(): Promise<{ js: Uint8Array; css: Uint8Array }> {
   const entry = fileURLToPath(new URL("./client/main.ts", import.meta.url));
   const result = await build({
     entryPoints: [entry], bundle: true, write: false, format: "esm", target: "es2022", minify: true, sourcemap: false, legalComments: "none",
@@ -28,10 +30,25 @@ export async function buildClientBundle(): Promise<ClientBundle> {
   const js = result.outputFiles.find(file => file.path.endsWith(".js"));
   const css = result.outputFiles.find(file => file.path.endsWith(".css"));
   if (!js) throw new Error("Client bundle produced no app.js");
-  const script = asset(js.contents, "text/javascript; charset=utf-8");
-  const style = asset(css?.contents ?? new Uint8Array(), "text/css; charset=utf-8");
-  const version = createHash("sha256").update(script.etag + style.etag).digest("hex").slice(0, 16);
-  return { js: script, css: style, version, app: appAsset };
+  return { js: js.contents, css: css?.contents ?? new Uint8Array() };
+}
+
+type Compiled = { ok: true; js: Uint8Array; css: Uint8Array } | { ok: false; error: string };
+
+/** The client bundle, compiled in a worker thread (`chat-assets-worker.mjs`) so the server keeps answering while it builds. */
+export function buildClientBundle(): Promise<ClientBundle> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./chat-assets-worker.mjs", import.meta.url));
+    worker.once("message", (compiled: Compiled) => {
+      void worker.terminate();
+      if (!compiled.ok) { reject(new Error(compiled.error)); return; }
+      const script = asset(compiled.js, "text/javascript; charset=utf-8");
+      const style = asset(compiled.css, "text/css; charset=utf-8");
+      resolve({ js: script, css: style, version: createHash("sha256").update(script.etag + style.etag).digest("hex").slice(0, 16), app: appAsset });
+    });
+    worker.once("error", reject);
+    worker.once("exit", code => { reject(new Error(`The client bundle worker exited (${code}) with no bundle.`)); });
+  });
 }
 
 /**

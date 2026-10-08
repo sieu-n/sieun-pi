@@ -281,7 +281,7 @@ export function slackChats(backend: ChatBackend): SlackChats {
     ids: () => backend.chats.ids(),
     name: async id => (await backend.catalog.summary(id))?.sessionName,
     messages: id => backend.threads.state(id)?.messages,
-    subscribe: (id, listener) => backend.threads.subscribe(id, listener),
+    subscribe: (id, listener) => backend.threads.subscribe(id, listener, true),
     prompt: (id, message) => backend.threads.prompt(id, { message, images: [], mode: "steer" }),
     watch: listener => backend.catalog.subscribe(() => listener()),
   };

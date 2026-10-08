@@ -5,11 +5,9 @@ import { join, resolve } from "node:path";
 import { userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { defaultDaemonSocketPath, getAgentDir } from "prime-agent";
 import { parsePublicOrigin, parseRemoteFlag, type RemoteSetting } from "./chat-origin.ts";
 import { KeepRunning } from "./chat-autostart.ts";
 import { LoginWindow } from "./chat-login-window.ts";
-import { daemonAnswers, DaemonKeeper } from "./chat-daemon.ts";
 import { openChat } from "./chat-open.ts";
 import { RemoteAccess, type RemoteControl } from "./chat-remote.ts";
 import { runsSlack, SlackBridge, slackChats } from "./chat-slack.ts";
@@ -26,6 +24,8 @@ type Configuration = {
 type Instance = { pid: number; instanceId: string; url: string };
 type Service = { directory: string; config: Configuration; url: string; primary: boolean };
 
+/** Loading prime-agent costs about a CPU second (10 s at a load of 80), so only a command that needs its paths or the daemon loads it. */
+const defaultSocket = async (): Promise<string> => (await import("prime-agent")).defaultDaemonSocketPath();
 const secret = () => randomBytes(32).toString("hex");
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isSecret = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -97,7 +97,7 @@ async function privateWrite(path: string, value: unknown, exclusive = false): Pr
   } finally { await unlink(temporary).catch(error => { if (!hasCode(error, "ENOENT")) throw error; }); }
 }
 async function loadService(options: Options, create: boolean): Promise<Service | null> {
-  const directoryPath = resolve(options.dataDir ?? join(getAgentDir(), "browser-chat"));
+  const directoryPath = resolve(options.dataDir ?? join((await import("prime-agent")).getAgentDir(), "browser-chat"));
   if (create) { await mkdir(directoryPath, { recursive: true, mode: 0o700 }); await chmod(directoryPath, 0o700); }
   let directory: string;
   try { directory = await realpath(directoryPath); }
@@ -109,7 +109,7 @@ async function loadService(options: Options, create: boolean): Promise<Service |
   catch (error) {
     if (!hasCode(error, "ENOENT")) throw error;
     if (!create) return null;
-    const proposed = { port: validPort(options.port ?? 5182), socketPath: resolve(options.socketPath ?? defaultDaemonSocketPath()),
+    const proposed = { port: validPort(options.port ?? 5182), socketPath: resolve(options.socketPath ?? await defaultSocket()),
       capability: secret(), csrfToken: secret(), stopToken: secret(), publicOrigin: options.remote?.origin ?? null,
       ...(options.remote ? { remoteAccess: options.remote.mode } : {}) };
     try { await privateWrite(path, proposed, true); }
@@ -177,7 +177,7 @@ async function waitForService(service: Service, timeoutMs: number): Promise<Inst
 const withPhone = (service: Service, record: Instance): Instance & { phoneUrl: string | null } => ({ ...record, phoneUrl: phoneUrl(service) });
 
 export async function ensureChatService(options: Options = {}): Promise<Instance & { phoneUrl: string | null }> {
-  const service = await loadService({ ...options, socketPath: options.socketPath ?? defaultDaemonSocketPath() }, true);
+  const service = await loadService({ ...options, socketPath: options.socketPath ?? await defaultSocket() }, true);
   if (!service) throw new Error("Could not create chat configuration.");
   const existing = await running(service);
   if (existing) return withPhone(service, existing);
@@ -216,7 +216,7 @@ export async function ensureChatService(options: Options = {}): Promise<Instance
 }
 
 async function serve(options: Options): Promise<void> {
-  const service = await loadService({ ...options, socketPath: options.socketPath ?? defaultDaemonSocketPath() }, true);
+  const service = await loadService({ ...options, socketPath: options.socketPath ?? await defaultSocket() }, true);
   if (!service) throw new Error("Could not create chat configuration.");
   const instancePath = join(service.directory, "instance.json");
   if (options.supervised) {
@@ -236,13 +236,17 @@ async function serve(options: Options): Promise<void> {
   const existing = await running(service);
   if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
-  // Started before the bundle build, so the daemon boots while esbuild runs. The catalog and threads reconnect on their own once it answers.
+  const { DaemonKeeper } = await import("./chat-daemon.ts");
+  // Started first, so the daemon boots while the rest loads. The catalog and threads reconnect on their own once it answers.
   const keeper = startsDaemon(service.primary)
     ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   void keeper?.start();
-  const [{ buildClientBundle }, { createChatBackend }, { startChatServer }] = await Promise.all([
-    import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts")]);
-  const [bundle, { SdkSync, loadedClientVersion }] = await Promise.all([buildClientBundle(), import("./chat-sdk.ts")]);
+  const [{ buildClientBundle }, { createChatBackend }, { startChatServer }, { SdkSync, loadedClientVersion }] = await Promise.all([
+    import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts"), import("./chat-sdk.ts")]);
+  // The page bundle is the slowest start step (a Svelte compile of the client, 17 s at a load of 90). It builds in a worker while the server
+  // listens; the page and app.js wait for it, the API answers at once.
+  const bundle = buildClientBundle();
+  bundle.catch(error => { process.stderr.write(`${new Date().toISOString()} client bundle: ${error instanceof Error ? error.message : String(error)}\n`); });
   const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = runsSlack(service.primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
@@ -252,7 +256,7 @@ async function serve(options: Options): Promise<void> {
   void backend.chats.adopt().then(({ pinned, forgotten }) => { if (pinned.length || forgotten.length) process.stderr.write(`chats: pinned ${pinned.length}, forgot ${forgotten.length}\n`); },
     error => { process.stderr.write(`chats: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Exit 75 after an SDK update: launchd's KeepAlive starts a crashed (non-zero) login item again, now on the new packages.
-  const sdk = new SdkSync(join(service.directory, "sdk.json"), { client: loadedClientVersion(), build: bundle.version,
+  const sdk = new SdkSync(join(service.directory, "sdk.json"), { client: loadedClientVersion(), build: bundle.then(built => built.version, () => "build failed"),
     canRestart: options.supervised === true && service.primary, restart: () => { process.exitCode = 75; stop(); } });
   backend.catalog.onDaemonVersion = version => { void sdk.daemonVersion(version); };
   let stopped: () => void = () => {};
@@ -365,6 +369,7 @@ export async function runChatCommand(args: string[]): Promise<void> {
   const record = await running(service);
   if (command === "status") {
     const phone = phoneUrl(service);
+    const { daemonAnswers } = await import("./chat-daemon.ts");
     const daemon = await daemonAnswers(service.config.socketPath) ? "answering" : "not running";
     process.stdout.write((record ? `Chat is running (PID ${record.pid}).` : "Chat is stopped.") + "\n" + service.url + "\n" + (phone ? `Phone: ${phone}\n` : "") +
       `Daemon: ${daemon} on ${service.config.socketPath}\n`); return;

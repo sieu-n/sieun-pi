@@ -39,7 +39,7 @@ export class SdkSync {
   private readonly loaded: Promise<void>;
   private readonly file: JsonFile<Saved>;
 
-  constructor(path: string, private readonly options: { client: string; build: string; canRestart: boolean; restart(): void; script?: string }) {
+  constructor(path: string, private readonly options: { client: string; build: string | Promise<string>; canRestart: boolean; restart(): void; script?: string }) {
     this.file = { path, label: "SDK update state", parse: parseSaved, initial: () => ({ auto: true }) };
     this.loaded = readJsonFile(this.file).then(saved => { this.saved = saved; }, () => {});
   }
@@ -64,7 +64,7 @@ export class SdkSync {
     const failed = this.state.state === "idle" && this.saved.failedTarget && this.saved.failedTarget === this.daemon
       ? { state: "failed" as const, target: this.saved.failedTarget, message: this.saved.error ?? "The last update failed.", log: [], ...(this.saved.failedAt ? { at: this.saved.failedAt } : {}) }
       : null;
-    return { daemon: this.daemon, client: this.options.client, build: this.options.build, matched, auto: this.saved.auto, available: this.available,
+    return { daemon: this.daemon, client: this.options.client, build: await this.options.build, matched, auto: this.saved.auto, available: this.available,
       canRestart: this.options.canRestart, update: failed ?? this.state };
   }
 
