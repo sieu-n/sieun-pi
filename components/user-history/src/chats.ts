@@ -6,8 +6,8 @@ import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
   endedWithoutReport, jobFacts, jobReport, lastJobMessages, nextCheckIn, retryDue } from "./chat-checkin.ts";
-import { type ClaudeState, claudeDown, type FallbackRecord, fallbackModel, revivalMessage, type Stall, stallAction, strandedInput, switchBack, switchedBackNotice,
-  switchedNotice, turnStall, turnViewOf } from "./chat-fallback.ts";
+import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
+  switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
 import type { ChatBoard, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
@@ -471,6 +471,8 @@ export interface CheckInSource {
   claude?: () => Promise<ClaudeState | null>;
   /** `<data dir>/chat-fallbacks.json`: the model each chat ran before the server switched it to the fallback. */
   fallbacks?: FallbackRecord;
+  /** Told at each wake whether any chat or any of its jobs works now; the service holds the Mac awake while it does (src/chat-awake.ts). */
+  awake?: (working: boolean) => void;
 }
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
@@ -478,6 +480,8 @@ export const CHECK_IN_TICK_MS = 30_000;
 /** How often the scheduler looks for chats the index lost, and how recent a thread must be to be looked at. */
 export const ADOPT_SCAN_MS = 10 * 60_000;
 export const ADOPT_RECENT_MS = 7 * 24 * 60 * 60_000;
+/** A job of a chat quiet for longer than this is not looked at for a failed turn. */
+export const JOB_WAKE_WINDOW_MS = 24 * 60 * 60_000;
 
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
@@ -512,6 +516,13 @@ export class Chats {
   private readonly stallSeen = new Map<string, number>();
   /** Wakes sent per stranded step-owner thread: how many, and when the last one went. */
   private readonly ownerWakes = new Map<string, { attempts: number; at: number }>();
+  /** When the scheduler last woke; a longer gap than SLEEP_GAP_MS means the Mac slept. */
+  private lastTick: number | null = null;
+  /** The subagents and create_session roots of the chats, as the last wake found them, and the wakes sent to each for a transient failure. */
+  private jobThreads = new Set<string>();
+  private readonly jobWakes = new Map<string, JobWake>();
+  /** The activity stamp at which a job thread was last found with no transient failure; it is looked at again once the stamp changes. */
+  private readonly jobQuiet = new Map<string, string>();
   /** When the scheduler last looked for lost chats, and the threads with messages found plain (their head never changes). */
   private lastScan: number;
   private readonly plain = new Set<string>();
@@ -654,18 +665,24 @@ export class Chats {
   /**
    * One scheduler wake: queues the check-in of every chat whose interval has passed since its last one, that is not paused and runs no owner
    * turn (a held check-in stays due, so it runs at the first wake after that turn). Every chat that is not paused is also checked for a failed
-   * last turn (`revive`), and every ADOPT_SCAN_MS the session files are scanned for chats the index lost. Returns the ids checked in.
+   * last turn (`revive`), and so are its jobs (`jobs`); a wake that follows a sleep restarts every transient failure at once. Every
+   * ADOPT_SCAN_MS the session files are scanned for chats the index lost. Returns the ids checked in.
    */
   async tick(): Promise<string[]> {
     await this.load();
     const settings = await this.settings();
     const now = this.now();
+    const woke = wokeFromSleep(this.lastTick, now);
+    if (woke) this.log(`chats: woke after ${Math.round((now - this.lastTick!) / 1000)} s; transient failures restart now`);
+    this.lastTick = now;
     if (now - this.lastScan >= ADOPT_SCAN_MS) { this.lastScan = now; this.queue("#scan", async () => { await this.rescan(); }); }
     const due: string[] = [];
+    const active = new Set<string>();
     for (const id of this.chatIds) {
       const setting = settings[id] ?? DEFAULT_CHECK_IN;
       if (activePause(setting, now) !== null) continue;
-      this.queue(id, () => this.revive(id));
+      active.add(id);
+      this.queue(id, () => this.revive(id, woke));
       const next = nextCheckIn(setting, this.lastCheckIn.get(id) ?? this.started, now);
       const merged = this.mergeWaiting.has(id) && now - (this.steeredAt.get(id) ?? 0) >= CHECK_IN_MERGE_MS;
       if ((!merged && (next === null || next > now)) || this.ownerTurn(id)) continue;
@@ -673,7 +690,60 @@ export class Chats {
       this.lastCheckIn.set(id, now);
       this.queue(id, async () => { await this.checkIn(id); });
     }
+    this.queue("#jobs", () => this.jobs(active, woke));
     return due;
+  }
+
+  /**
+   * The jobs of the chats, from the catalog rows: tells `awake` whether any chat or job works, and looks at each subagent and create_session
+   * root of a chat that is not paused for a turn that ended in a transient failure (`wakeJob`). A job is read again only when its activity
+   * changed since it was last found fine, or while a failure of it waits for its wake.
+   */
+  private async jobs(active: ReadonlySet<string>, woke: boolean): Promise<void> {
+    let rows: readonly SessionRow[];
+    try { rows = await this.source.rows(); }
+    catch (error) { this.log(`chats: jobs: ${error instanceof Error ? error.message : String(error)}`); return; }
+    const chatRows = rows.filter(row => this.chatIds.has(row.id));
+    this.source.awake?.(chatRows.some(row => row.working || (row.agents ?? []).some(agent => agent.state === "working")));
+    const now = this.now();
+    const threads = new Set<string>();
+    for (const row of chatRows) {
+      if (!active.has(row.id)) continue;
+      for (const agent of row.agents ?? []) {
+        const threadId = agent.sessionId;
+        if (!threadId || (agent.link !== "subagent" && agent.link !== "root") || this.chatIds.has(threadId) || threads.has(threadId)) continue;
+        threads.add(threadId);
+        const stamp = agent.lastActivityAt ?? "";
+        if (agent.state === "working" || now - (Date.parse(stamp) || 0) > JOB_WAKE_WINDOW_MS) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); continue; }
+        if (!this.jobWakes.has(threadId) && this.jobQuiet.get(threadId) === stamp) continue;
+        this.queue(threadId, () => this.wakeJob(threadId, stamp, woke));
+      }
+    }
+    for (const threadId of this.jobThreads) if (!threads.has(threadId)) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); }
+    this.jobThreads = threads;
+  }
+
+  /**
+   * A job whose last turn ended in a transient failure is woken the way the owner did it by hand: abort when a provider retry holds it, a
+   * `continue` steer, resume the queue. Once per failure, on the TRANSIENT_RETRY_BACKOFF_MS schedule, and at once after a sleep.
+   */
+  private async wakeJob(threadId: string, stamp: string, woke: boolean): Promise<void> {
+    const now = this.now();
+    try {
+      const state = await this.threads.view(threadId);
+      const stall = state ? turnStall(turnViewOf(state, this.threads.running(threadId)), now) : null;
+      const last = this.jobWakes.get(threadId);
+      const action = jobWake({ stall, last, woke, now });
+      if (action === "none") { this.jobWakes.delete(threadId); this.jobQuiet.set(threadId, stamp); return; }
+      this.jobQuiet.delete(threadId);
+      if (action === "wait") { if (!last) this.jobWakes.set(threadId, { failureAt: Number.NaN, attempts: 0, at: stall!.at }); return; }
+      const attempts = woke ? 1 : (last?.attempts ?? 0) + 1;
+      this.jobWakes.set(threadId, { failureAt: stall!.at, attempts, at: now });
+      await this.threads.restart(threadId, "continue", stall!.retrying);
+      this.log(`job ${threadId.slice(0, 8)}: last turn failed (${stall!.error}); woke it${woke ? " after a sleep" : ""}, try ${attempts}`);
+    } catch (error) {
+      this.log(`job ${threadId.slice(0, 8)}: wake: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private messages(id: string): readonly ThreadMessage[] | undefined { return this.threads.state?.(id)?.messages; }
@@ -696,11 +766,12 @@ export class Chats {
 
   /**
    * A chat whose last turn failed (a 429, a connection error), or whose provider retry holds input queued behind it, gets a new turn: 5 min
-   * after the failure, then 10, then every 20 while each new turn fails again; an owner turn first after 30 s, quoting the owner's message,
+   * after the failure, then 10, then every 20 while each new turn fails again; a transient failure (the token command, the connection) after
+   * 30 s, 1 min, 2 min first, and at once after a sleep (`woke`); an owner turn first after 30 s, quoting the owner's message,
    * with the wait shown under it. When Claude cannot serve the chat, it moves to the fallback model and restarts at once. A turn that ends
    * well resets the count, clears the wait and, once Claude serves again, moves a switched chat back.
    */
-  private async revive(id: string): Promise<void> {
+  private async revive(id: string, woke = false): Promise<void> {
     if (!this.chatIds.has(id)) return;
     const state = this.threads.state?.(id);
     if (!state) return;
@@ -721,8 +792,9 @@ export class Chats {
     if (down && await this.switchToFallback(id, stall)) return;
     const seen = this.stallSeen.get(id) ?? now;
     this.stallSeen.set(id, seen);
-    const last = this.revivals.get(id);
-    const action = stallAction({ stall, down, claude, attempts: last?.attempts ?? 0, since: last?.at ?? Math.min(stall.at, seen), now });
+    // After a sleep a transient failure starts its schedule over.
+    const last = woke && failureCause(stall.error) === "transient" ? undefined : this.revivals.get(id);
+    const action = stallAction({ stall, down, claude, attempts: last?.attempts ?? 0, since: last?.at ?? Math.min(stall.at, seen), now, woke });
     if (action.kind !== "restart") { this.threads.setWait(id, action.kind === "wait" ? action.wait : null); return; }
     const attempts = (last?.attempts ?? 0) + 1;
     this.revivals.set(id, { attempts, at: now });
@@ -730,7 +802,7 @@ export class Chats {
     try {
       await this.threads.restart(id, action.message, action.abort);
       this.steeredAt.set(id, now);
-      this.log(`chat ${id.slice(0, 8)}: last turn failed (${stall.error}); started a new turn, try ${attempts}`);
+      this.log(`chat ${id.slice(0, 8)}: last turn failed (${stall.error}); started a new turn, try ${attempts}${woke ? " after a sleep" : ""}`);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: restart: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -814,6 +886,8 @@ export class Chats {
       const state = await this.threads.view(threadId);
       const stall = state ? turnStall(turnViewOf(state, this.threads.running(threadId)), now) : null;
       if (!strandedInput(stall)) { this.ownerWakes.delete(threadId); return; }
+      // A job's transient failure is woken by `wakeJob` on its faster schedule.
+      if (this.jobThreads.has(threadId) && failureCause(stall!.error) === "transient") return;
       this.ownerWakes.set(threadId, { attempts: (last?.attempts ?? 0) + 1, at: now });
       await this.threads.restart(threadId, "continue", true);
       this.log(`thread ${threadId.slice(0, 8)}: last turn failed (${stall!.error}) with ${stall!.queued} queued; woke it`);

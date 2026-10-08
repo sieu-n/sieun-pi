@@ -3,8 +3,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { claudeDown, failureCause, fallbackModel, fallbackRecord, OWNER_RETRY_BACKOFF_MS, revivalMessage, stallAction, strandedInput, switchBack, turnStall, turnViewOf,
-  type Stall } from "../src/chat-fallback.ts";
+import { claudeDown, failureCause, fallbackModel, fallbackRecord, jobWake, type JobWake, OWNER_RETRY_BACKOFF_MS, revivalMessage, stallAction, strandedInput, switchBack,
+  TRANSIENT_RETRY_BACKOFF_MS, turnStall, turnViewOf, wokeFromSleep, type Stall } from "../src/chat-fallback.ts";
 import { claudeReader, claudeStateOf } from "../src/chat-pool.ts";
 import { CHAT_NOTICE, chatFeed, turnStarter, waitText } from "../src/shared/chat-feed.ts";
 import type { ModelInfo, PoolAccount, ThreadMessage } from "../src/shared/types.ts";
@@ -19,19 +19,76 @@ const view = (messages: ThreadMessage[], extra: { running?: boolean; retrying?: 
 const model = (provider: string, id: string, name = id): ModelInfo => ({ provider, id, name, input: ["text"], contextWindow: 0, reasoning: true });
 const MIN = 60_000;
 
-test("failure classification: a pool token failure or no account is Claude down; a 429 only when the pool has no usable account; never for a non-Anthropic chat", () => {
-  assert.equal(failureCause(TOKEN_ERROR), "account");
-  assert.equal(failureCause("No Claude account"), "account");
-  assert.equal(failureCause(RATE_LIMIT), "rate-limit");
-  assert.equal(failureCause("Connection error."), "other");
-  assert.equal(failureCause("aborted"), "other");
-  assert.equal(claudeDown(TOKEN_ERROR, "anthropic", null), true, "a token failure switches even when the pool cannot be read (a broken vend.py)");
-  assert.equal(claudeDown(RATE_LIMIT, "anthropic", { serves: false, freeAt: null }), true);
-  assert.equal(claudeDown(RATE_LIMIT, "anthropic", { serves: true, freeAt: null }), false, "another account serves: the pool moves the session");
+const CODEX_TOKEN_ERROR = 'Failed to resolve API key for provider "openai-codex" from shell command: /Users/sieunpark/.config/pi-pool/bin/pi-pool-token';
+
+test("failure classification: the token command and a dropped connection are transient; no account is Claude down; a 429, 401 or Terms 400 only when the pool has no usable account", () => {
+  const table: [string, ReturnType<typeof failureCause>][] = [
+    [TOKEN_ERROR, "transient"], [CODEX_TOKEN_ERROR, "transient"], ["Connection error.", "transient"], ["TypeError: fetch failed", "transient"],
+    ["read ECONNRESET", "transient"], ["connect ETIMEDOUT 160.79.104.10:443", "transient"], ["socket hang up", "transient"],
+    ["No Claude account", "account"], ['No API key for provider: anthropic', "account"],
+    [RATE_LIMIT, "rate-limit"], ["Provider authentication failed (authentication_error, 401): Invalid authentication credentials", "rate-limit"],
+    ["400 Please accept the updated Consumer Terms to continue", "rate-limit"], ["aborted", "other"], ["Context window exceeded", "other"],
+  ];
+  for (const [error, cause] of table) assert.equal(failureCause(error), cause, error);
+  const serving = { serves: true, freeAt: null }, notServing = { serves: false, freeAt: null };
+  assert.equal(claudeDown(TOKEN_ERROR, "anthropic", null), false, "an unreadable pool after a token timeout means retry, not Codex (10-05 battery sleep)");
+  assert.equal(claudeDown(TOKEN_ERROR, "anthropic", serving), false, "an account serves: the token command only timed out");
+  assert.equal(claudeDown(TOKEN_ERROR, "anthropic", notServing), true, "the pool is read and no account serves");
+  assert.equal(claudeDown("Connection error.", "anthropic", null), false);
+  assert.equal(claudeDown("Connection error.", "anthropic", serving), false);
+  assert.equal(claudeDown("Connection error.", "anthropic", notServing), true);
+  assert.equal(claudeDown("No Claude account", "anthropic", null), true, "no account at all is Claude down whatever the pool read says");
+  assert.equal(claudeDown(RATE_LIMIT, "anthropic", notServing), true);
+  assert.equal(claudeDown(RATE_LIMIT, "anthropic", serving), false, "another account serves: the pool moves the session");
   assert.equal(claudeDown(RATE_LIMIT, "anthropic", null), false, "an unreadable pool proves nothing about a 429");
-  assert.equal(claudeDown("Connection error.", "anthropic", { serves: false, freeAt: null }), false);
-  assert.equal(claudeDown(TOKEN_ERROR, "openai-codex", null), false, "the owner picked a non-Anthropic model");
+  assert.equal(claudeDown(TOKEN_ERROR, "openai-codex", notServing), false, "the owner picked a non-Anthropic model");
   assert.equal(claudeDown(TOKEN_ERROR, null, null), false);
+});
+
+test("transient stalls: 30 s, 1 min, 2 min, then 5, 10, 20 min; an owner turn still quotes the owner; a wake from sleep restarts at once", () => {
+  const stall = (owner: string | null, extra: Partial<Stall> = {}): Stall => ({ error: TOKEN_ERROR, at: 0, owner, aborted: false, retrying: false, queued: 0, ...extra });
+  const act = (s: Stall, attempts: number, since: number, now: number, woke = false) =>
+    stallAction({ stall: s, down: false, claude: null, attempts, since, now, woke });
+  assert.deepEqual(TRANSIENT_RETRY_BACKOFF_MS, [30_000, MIN, 2 * MIN, 5 * MIN, 10 * MIN, 20 * MIN]);
+  const due = (owner: string | null) => TRANSIENT_RETRY_BACKOFF_MS.map((wait, attempts) => [act(stall(owner), attempts, 0, wait - 1).kind, act(stall(owner), attempts, 0, wait).kind]);
+  assert.deepEqual(due(null), TRANSIENT_RETRY_BACKOFF_MS.map(() => ["wait", "restart"]));
+  assert.deepEqual(due("hi"), TRANSIENT_RETRY_BACKOFF_MS.map(() => ["wait", "restart"]));
+  assert.deepEqual(act(stall("hi"), 2, 0, MIN), { kind: "wait", wait: { kind: "retry", error: TOKEN_ERROR, at: 2 * MIN } });
+  assert.deepEqual(act(stall("hi"), 0, 0, 30_000), { kind: "restart", message: revivalMessage(TOKEN_ERROR, "hi"), abort: false });
+  assert.equal(act(stall(null, { error: "Connection error." }), 1, 0, MIN).kind, "restart", "a dropped connection is on the fast schedule too");
+  assert.equal(act(stall(null, { error: "429" }), 1, 0, MIN).kind, "wait", "a 429 stays on the 5, 10, 20 min schedule");
+  assert.deepEqual(act(stall("hi"), 5, 0, 1, true), { kind: "restart", message: revivalMessage(TOKEN_ERROR, "hi"), abort: false }, "after a sleep: at once, whatever the count");
+  assert.deepEqual(act(stall(null, { error: "Connection error.", retrying: true }), 0, 0, 1, true), { kind: "restart", message: revivalMessage("Connection error."), abort: true },
+    "a provider retry left over from before the sleep is stopped");
+  assert.equal(act(stall(null, { error: "429" }), 0, 0, 1, true).kind, "wait", "a wake does not hurry a 429");
+  assert.equal(act(stall(null, { error: "aborted", aborted: true }), 0, 0, 1, true).kind, "wait", "a Stop is not transient");
+});
+
+test("sleep: a gap of more than 90 s between two scheduler wakes means the Mac slept", () => {
+  assert.equal(wokeFromSleep(null, 1_000_000), false, "the first wake");
+  assert.equal(wokeFromSleep(0, 30_000), false);
+  assert.equal(wokeFromSleep(0, 90_000), false);
+  assert.equal(wokeFromSleep(0, 90_001), true);
+  assert.equal(wokeFromSleep(0, 40 * MIN), true);
+});
+
+test("job wake: a transient failure is woken once per failure on the fast schedule, at once after a sleep, queued input or not", () => {
+  const failed = (at: number, extra: Partial<Stall> = {}): Stall => ({ error: TOKEN_ERROR, at, owner: null, aborted: false, retrying: false, queued: 0, ...extra });
+  const wake = (stall: Stall | null, last: JobWake | undefined, now: number, woke = false) => jobWake({ stall, last, woke, now });
+  assert.equal(wake(null, undefined, 0), "none", "the last turn ended well");
+  assert.equal(wake(failed(0, { error: "429" }), undefined, 10 * MIN), "none", "a 429 is not this path's");
+  assert.equal(wake(failed(0, { error: "aborted", aborted: true }), undefined, 10 * MIN), "none", "a Stop");
+  assert.equal(wake(failed(0), undefined, 29_999), "wait");
+  assert.equal(wake(failed(0), undefined, 30_000), "wake", "30 s after the failure, nothing queued");
+  assert.equal(wake(failed(0), { failureAt: 0, attempts: 1, at: 30_000 }, 60 * MIN), "wait", "once per failure");
+  assert.equal(wake(failed(40_000), { failureAt: 0, attempts: 1, at: 30_000 }, 30_000 + MIN - 1), "wait", "the woken turn failed again: 1 min after the last wake");
+  assert.equal(wake(failed(40_000), { failureAt: 0, attempts: 1, at: 30_000 }, 30_000 + MIN), "wake");
+  assert.equal(wake(failed(9 * MIN), { failureAt: 8 * MIN, attempts: 3, at: 8 * MIN }, 8 * MIN + 5 * MIN), "wake", "then 5 min");
+  assert.equal(wake(failed(9 * MIN), { failureAt: 8 * MIN, attempts: 3, at: 8 * MIN }, 9 * MIN + 1, true), "wake", "after a sleep: at once");
+  assert.equal(wake(failed(9 * MIN), { failureAt: 9 * MIN, attempts: 3, at: 9 * MIN }, 20 * MIN, true), "wait", "a failure already woken is not woken again by a sleep");
+  assert.equal(wake(failed(0, { error: "Connection error.", retrying: true }), undefined, 10 * MIN), "wait", "a provider retry with nothing queued is the session's own");
+  assert.equal(wake(failed(0, { error: "Connection error.", retrying: true, queued: 1 }), undefined, 30_000), "wake");
+  assert.equal(wake(failed(0, { error: "Connection error.", retrying: true }), undefined, 1, true), "wake", "after a sleep the retry is stopped");
 });
 
 test("fallback model: GPT-6 Sol when the catalog has it, else the closest configured Codex model, else none", () => {
@@ -156,5 +213,5 @@ test("feed: an owner retry keeps the owner's turn; a server notice is one muted 
 test("failure cause: a 401 or a Consumer Terms 400 counts like a 429 (down only when the pool has no usable account)", () => {
   assert.equal(failureCause("Provider authentication failed (authentication_error, 401): Invalid authentication credentials"), "rate-limit");
   assert.equal(failureCause("400 Please accept the updated Consumer Terms to continue"), "rate-limit");
-  assert.equal(failureCause("Connection error."), "other");
+  assert.equal(failureCause("Connection error."), "transient");
 });

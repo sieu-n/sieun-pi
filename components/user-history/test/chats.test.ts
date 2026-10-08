@@ -11,7 +11,7 @@ import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import { isThreadBusy, isTurnRunning } from "../src/shared/thread-state.ts";
 import { IdIndex } from "../src/id-index.ts";
-import type { ChatBoard, ChatWait, ChildAgent, ModelInfo, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
+import type { ChatAgent, ChatBoard, ChatWait, ChildAgent, ModelInfo, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
 import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
 
 test("id index: add puts the newest first once, forget removes", async () => {
@@ -996,5 +996,81 @@ test("chats: the attach clears only the old daemon check-in heartbeat, never a d
   for (const id of ["d1", "d2", "d3"]) threads.fire().live(id, []);
   await chats.settled();
   assert.deepEqual(calls.filter(call => call.startsWith("heartbeat")), ["heartbeat d3 clear"]);
+  chats.close();
+});
+
+test("chats: a token-command timeout restarts after 30 s, 1 min, 2 min with an unreadable pool (no switch to Codex); a wake from sleep restarts at once and starts the schedule over", async () => {
+  const { chats, threads, clock, info, step, lines, fallbacks } = await fallbackChat(null);
+  info(OPUS);
+  threads.transcripts.set("c1", [ownerAsks("[check-in] What changed: p1", clock.now), reply("error", clock.now, TOKEN_FAILURE)]);
+  const start = clock.now;
+  const restarts: number[] = [];
+  for (let half = 0; half < 20; half++) if ((await step()).some(call => call.startsWith("restart c1"))) restarts.push((clock.now - start) / 1000);
+  assert.deepEqual(restarts, [30, 90, 210, 510], "30 s, then 1 min, 2 min, 5 min after each restart");
+  assert.equal(await fallbacks.get("c1"), undefined, "never switched: the pool could not be read");
+  assert.deepEqual(await step(40 * 60), [`restart c1 [check-in] Your last turn failed (${TOKEN_FAILURE}). Re-check the board and continue.`], "the Mac slept 40 min: at once");
+  assert.match(lines.join("\n"), /chats: woke after 2400 s; transient failures restart now/);
+  assert.match(lines.join("\n"), /started a new turn, try 1 after a sleep/);
+  assert.deepEqual(await step(), [], "the schedule starts over: 1 min after the wake restart");
+  assert.equal((await step())[0]?.startsWith("restart c1"), true);
+  chats.close();
+});
+
+test("chats: the subagents and roots of a chat whose last turn failed transiently get a continue on the fast schedule and at once after a sleep; step owners and plain threads do not", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = 1_000_000_000;
+  const failedAt = now;
+  const agent = (sessionId: string, link: ChatAgent["link"], state: ChatAgent["state"] = "done", at = failedAt): ChatAgent =>
+    ({ key: `thread:${sessionId}`, sessionId, name: sessionId, job: sessionId, sender: sessionId, link, state, lastActivityAt: new Date(at).toISOString(), steps: [] });
+  let agents: ChatAgent[] = [agent("j1", "subagent"), agent("r1", "root"), agent("t3", "step"), agent("w1", "subagent", "working")];
+  let working = false;
+  const rows = (): SessionRow[] => [row("c1", new Date(now).toISOString(), { chat: true, working, agents }), row("u1", new Date(now).toISOString())];
+  const awake: boolean[] = [];
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, {}, () => now, rows), awake: value => awake.push(value) }, line => lines.push(line));
+  await chats.adopt();
+  threads.transcripts.set("c1", [ownerAsks("go", now), reply("stop", now)]);
+  const views: string[] = [];
+  const view = threads.view.bind(threads);
+  threads.view = async (id: string) => { views.push(id); return view(id); };
+  const failed = (error: string, at: number): ThreadView => ({ messages: [ownerAsks("[task from parent] build it", at - 1), reply("error", at, error)] });
+  threads.views.set("j1", failed(TOKEN_FAILURE, failedAt));
+  threads.views.set("r1", failed("Connection error.", failedAt));
+  threads.views.set("t3", failed(TOKEN_FAILURE, failedAt));
+  threads.views.set("u1", failed(TOKEN_FAILURE, failedAt));
+  threads.views.set("w1", failed(TOKEN_FAILURE, failedAt));
+  const step = async (seconds = 30) => { now += seconds * 1000; calls.length = 0; await chats.tick(); await chats.settled(); return calls.filter(call => call.startsWith("restart")).sort(); };
+
+  assert.deepEqual(await step(10), [], "10 s: wait");
+  assert.deepEqual(await step(20), ["restart j1 continue", "restart r1 continue"], "30 s after the failure, with nothing queued");
+  threads.views.set("j1", failed(TOKEN_FAILURE, now + 5_000));
+  agents = [agent("j1", "subagent", "done", now + 5_000), ...agents.slice(1)];
+  assert.deepEqual(await step(), [], "the woken turn failed again: not before 1 min after the last wake; r1 is not woken twice for one failure");
+  assert.deepEqual(await step(), ["restart j1 continue"], "1 min after the last wake");
+  assert.deepEqual(await step(5 * 60), [], "once per failure");
+  views.length = 0;
+  threads.views.set("j1", { messages: [ownerAsks("continue", now), reply("stop", now)] });
+  agents = [agent("j1", "subagent", "done", now + 1), ...agents.slice(1)];
+  await step();
+  assert.deepEqual(views.filter(id => id === "j1"), ["j1"], "a changed job is read once");
+  await step();
+  assert.deepEqual(views.filter(id => id === "j1"), ["j1"], "a quiet job that ended well is not read again");
+  threads.views.set("j1", failed(TOKEN_FAILURE, now));
+  agents = [agent("j1", "subagent", "done", now), ...agents.slice(1)];
+  assert.deepEqual(await step(40 * 60), ["restart j1 continue"], "a new failure found right after a 40 min sleep: at once");
+  assert.match(lines.join("\n"), /job j1: last turn failed \(Failed to resolve API key.*\); woke it after a sleep, try 1/);
+  assert.equal(calls.some(call => / (t3|u1|w1|c1) /.test(call)), false, "a step owner, a plain thread, a working job and the chat itself are not touched here");
+  assert.deepEqual(awake.slice(-1), [true], "a working job keeps the Mac awake");
+  agents = agents.filter(entry => entry.state !== "working");
+  await step();
+  assert.deepEqual(awake.slice(-1), [false]);
+  working = true;
+  await step();
+  assert.deepEqual(awake.slice(-1), [true], "the chat's own turn counts");
   chats.close();
 });

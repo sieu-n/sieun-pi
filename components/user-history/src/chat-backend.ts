@@ -6,6 +6,7 @@ import { ChatLabels } from "./chat-labels.ts";
 import { ChatNotes } from "./chat-notes.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
+import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord, checkInSettings } from "./chat-checkin.ts";
 import { fallbackRecord } from "./chat-fallback.ts";
 import { claudeReader } from "./chat-pool.ts";
@@ -78,12 +79,15 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const index = new IdIndex(join(dataDir, "chats.json"), "Chat index");
   const created = new IdIndex(join(dataDir, "threads.json"), "Thread index");
   let chats: Chats;
+  // While a chat or one of its jobs works, the service keeps the Mac from idle sleep (10-05: a battery sleep stopped every chat and job).
+  const awake = new IdleSleepHold(line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: id => chats.links(id) }, new ThreadOrigins(created));
   const boards = new BoardStore(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry: jobRegistry(join(dataDir, "chat-jobs.json")),
-      settings: checkInSettings(join(dataDir, "check-in-settings.json")), claude: claudeReader(), fallbacks: fallbackRecord(join(dataDir, "chat-fallbacks.json")) },
+      settings: checkInSettings(join(dataDir, "check-in-settings.json")), claude: claudeReader(), fallbacks: fallbackRecord(join(dataDir, "chat-fallbacks.json")),
+      awake: working => awake.update(working) },
     line => process.stderr.write(line + "\n"));
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
@@ -106,6 +110,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       duties.close();
       await usage.close();
       chats.close();
+      awake.close();
       await threads.close();
       await catalog.close();
     },

@@ -12,25 +12,37 @@ export interface ClaudeState { serves: boolean; freeAt: number | null }
 
 /** An owner-started failed turn is restarted after 30 s, then on the usual schedule. A turn something else started waits 5 min first. */
 export const OWNER_RETRY_BACKOFF_MS: readonly number[] = [30_000, ...RETRY_BACKOFF_MS];
+/** A transient failure (the token command, the connection) is restarted after 30 s, 1 min, 2 min, then on the usual schedule. */
+export const TRANSIENT_RETRY_BACKOFF_MS: readonly number[] = [30_000, 60_000, 120_000, ...RETRY_BACKOFF_MS];
+/** The scheduler wakes every 30 s; a gap longer than this between two wakes means the Mac slept. */
+export const SLEEP_GAP_MS = 90_000;
+/** Whether the wake at `now` follows a sleep: more than SLEEP_GAP_MS since the last wake. False at the first wake. */
+export const wokeFromSleep = (last: number | null, now: number): boolean => last !== null && now - last > SLEEP_GAP_MS;
 const waitOf = (schedule: readonly number[], attempts: number): number => schedule[Math.min(attempts, schedule.length - 1)]!;
 
 /**
- * Why a turn failed, as far as Claude goes: `account` when no Claude key could be had at all (the pool's token command failed, or no account),
- * `rate-limit` for a 429 (Claude is down only when the pool also has no usable account), `other` for the rest (connection errors, Stop).
+ * Why a turn failed, as far as Claude goes: `transient` when the pool's token command failed or timed out (Prime runs it with a 10 s limit;
+ * on 10-05 the Mac slept on battery and every turn failed so) or the connection dropped, `account` when no Claude account exists,
+ * `rate-limit` for a 429, a 401 or a Consumer Terms 400 (Claude is down only when the pool also has no usable account), `other` for the rest (Stop).
  */
-export function failureCause(error: string): "account" | "rate-limit" | "other" {
+export function failureCause(error: string): "account" | "rate-limit" | "transient" | "other" {
+  if (/Failed to resolve API key for provider "[^"]*" from shell command/i.test(error)) return "transient";
   if (/Failed to resolve API key for provider "anthropic"|No Claude account|No API key for (?:provider: )?anthropic/i.test(error)) return "account";
   // A 401 (bad or expired credentials) or a 400 asking to accept new terms is the vended account failing, like a 429: Claude is down only when
   // the pool has no other usable account (10-08: every account went 401 or "accept the updated Consumer Terms" and no chat switched).
   if (/\b429\b|rate_limit_error|rate limit|\b401\b|authentication_error|Consumer Terms/i.test(error)) return "rate-limit";
+  if (/Connection error|fetch failed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(error)) return "transient";
   return "other";
 }
 
-/** Whether a chat on `provider` failed because Claude cannot serve: always for a key failure, for a 429 only when the pool has no usable account. */
+/**
+ * Whether a chat on `provider` failed because Claude cannot serve: always when no account exists; for a 429 or a transient failure only when the
+ * pool is read and no account serves. An unreadable pool (null) means retry: a failed token command does not prove Claude is down.
+ */
 export function claudeDown(error: string, provider: string | null, claude: ClaudeState | null): boolean {
   if (provider !== "anthropic") return false;
   const cause = failureCause(error);
-  return cause === "account" || (cause === "rate-limit" && claude !== null && !claude.serves);
+  return cause === "account" || ((cause === "rate-limit" || cause === "transient") && claude !== null && !claude.serves);
 }
 
 /** The fallback model in the catalog, else the configured Codex model whose id shares the longest start with it (the newest on a tie); null when none. */
@@ -90,17 +102,37 @@ export function revivalMessage(error: string, owner: string | null = null): stri
 
 /**
  * What to do about a chat's stall now that a switch to the fallback is ruled out. A provider retry with nothing queued is the session's own to
- * finish. Otherwise the restart goes at its time on the schedule (owner turns: 30 s first); before that the feed shows the wait to the owner.
+ * finish. Otherwise the restart goes at its time on the schedule (transient failures: 30 s, 1, 2 min first; owner turns: 30 s first); before that
+ * the feed shows the wait to the owner. `woke`: the scheduler just woke from a sleep, and a transient stall restarts now.
  */
-export function stallAction(input: { stall: Stall; down: boolean; claude: ClaudeState | null; attempts: number; since: number; now: number }):
+export function stallAction(input: { stall: Stall; down: boolean; claude: ClaudeState | null; attempts: number; since: number; now: number; woke?: boolean }):
   { kind: "restart"; message: string; abort: boolean } | { kind: "wait"; wait: ChatWait | null } | { kind: "none" } {
   const { stall, attempts, since, now } = input;
+  const transient = !stall.aborted && failureCause(stall.error) === "transient";
+  const restart = { kind: "restart" as const, message: revivalMessage(stall.error, stall.owner), abort: stall.retrying };
+  if (input.woke && transient) return restart;
   if (stall.retrying && stall.queued === 0 && !input.down) return { kind: "none" };
-  const schedule = stall.owner !== null ? OWNER_RETRY_BACKOFF_MS : RETRY_BACKOFF_MS;
+  const schedule = transient ? TRANSIENT_RETRY_BACKOFF_MS : stall.owner !== null ? OWNER_RETRY_BACKOFF_MS : RETRY_BACKOFF_MS;
   const at = since + waitOf(schedule, attempts);
-  if (now >= at) return { kind: "restart", message: revivalMessage(stall.error, stall.owner), abort: stall.retrying };
+  if (now >= at) return restart;
   if (stall.owner === null) return { kind: "wait", wait: null };
   return { kind: "wait", wait: input.down ? { kind: "account", until: input.claude?.freeAt && input.claude.freeAt > now ? input.claude.freeAt : at } : { kind: "retry", error: stall.error, at } };
+}
+
+/** The wakes sent to a job thread for its run of transient failures: the failure last woken (its time), how many, and when the last went. */
+export interface JobWake { failureAt: number; attempts: number; at: number }
+/**
+ * What to do about a job of a chat (a subagent or a create_session root): `none` when its last turn did not end in a transient failure;
+ * otherwise `wake` once per failure on the TRANSIENT_RETRY_BACKOFF_MS schedule, and at once after a sleep (`woke`), queued input or not. A
+ * provider retry with nothing queued is the session's own to finish until a sleep.
+ */
+export function jobWake(input: { stall: Stall | null; last: JobWake | undefined; woke: boolean; now: number }): "wake" | "wait" | "none" {
+  const { stall, last } = input;
+  if (!stall || stall.aborted || failureCause(stall.error) !== "transient") return "none";
+  if (last?.failureAt === stall.at) return "wait";
+  if (input.woke) return "wake";
+  if (stall.retrying && stall.queued === 0) return "wait";
+  return input.now - (last?.at ?? stall.at) >= waitOf(TRANSIENT_RETRY_BACKOFF_MS, last?.attempts ?? 0) ? "wake" : "wait";
 }
 
 /** A thread (a step owner, or any thread after a model or account change) whose stalled turn holds queued input gets woken: its input is stranded. */
