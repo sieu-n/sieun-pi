@@ -101,7 +101,8 @@ export const CHAT_BRIEF: readonly string[] = [
   "A step stalled 2 h or more must change at this check-in: chase the blocker, start a job, add one owner todo, or set waitUntil/waitFor.",
   "If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it.",
   "When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
-    "instead of leaving the step blocked with a note.",
+    "instead of leaving the step blocked with a note. When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot " +
+    "per variant inline in the chat message itself (![variant A](path) and its URL), never only in a todo or a board note.",
   "Corrections stick: when the owner corrects how you work (board shape, tone, what to report), apply it now and make it hold for every future chat. " +
     "A correction changes the brief or a skill, never only a local note: send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., " +
     "receiver_role=\"sibling\", receiver_name=\"realtime layer\")` for a brief or code change, or call `await refine.run()` aimed at a global skill or prompt entry. " +
