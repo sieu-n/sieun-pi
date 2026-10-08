@@ -12,7 +12,7 @@ def setUpModule():
 
 INSTALLER = Path(__file__).resolve().parents[1] / "install.py"
 HOOK = """#!/bin/sh
-[ -e "$HOME/hook-fails" ] && grep -q "$(cat "$HOME/hook-fails")" "$(dirname "$0")/../vend.py" && exit 3
+[ -e "$PI_POOL_DIR/hook-fails" ] && grep -q "$(cat "$PI_POOL_DIR/hook-fails")" "$(dirname "$0")/../vend.py" && exit 3
 printf 'fixture-token-%s' 0123456789abcdefghij
 """
 
@@ -105,11 +105,22 @@ class Install(unittest.TestCase):
         first = self.git("rev-parse", "HEAD:components/pi-pool")[:12]
         self.run_installer()
         self.commit("hook breaks", **{"vend.py": "VERSION = 3\n"})
-        (self.home / "hook-fails").write_text("VERSION = 3")
+        (self.home / ".config/pi-pool/hook-fails").write_text("VERSION = 3")
         code, err = self.run_installer()
         self.assertEqual(code, 1)
         self.assertIn("hook check failed", err)
         self.assertEqual(self.current(), f"releases/{first}")
+
+    def test_a_first_install_whose_hook_fails_puts_the_old_links_back(self):
+        (self.home / ".config/pi-pool").mkdir(parents=True)
+        (self.home / ".config/pi-pool/hook-fails").write_text("VERSION = 1")
+        (self.home / ".config/pi-pool/bin").symlink_to("/checkout/bin")
+        code, err = self.run_installer()
+        self.assertEqual(code, 1)
+        self.assertIn("back as they were", err)
+        self.assertEqual(os.readlink(self.home / ".config/pi-pool/bin"), "/checkout/bin")
+        self.assertFalse((self.home / ".config/pi-pool/app").is_symlink())
+        self.assertFalse((self.home / ".local/share/pi-pool/current").is_symlink())
 
     def test_a_real_file_at_a_runtime_path_is_refused(self):
         (self.home / ".local/bin").mkdir(parents=True)

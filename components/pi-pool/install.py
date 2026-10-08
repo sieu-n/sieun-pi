@@ -96,8 +96,9 @@ def check_hooks(home):
     results = {}
     for args in PROVIDERS:
         started = time.monotonic()
+        # HOME stays the caller's: the macOS Keychain the anthropic stores live in follows it.
         done = subprocess.run([str(hook), *args], capture_output=True, text=True, timeout=10,
-                              env=dict(os.environ, HOME=str(home)))
+                              env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool")))
         ok = done.returncode == 0 and len(done.stdout.strip()) > 20
         results[args[1]] = {"ok": ok, "exit": done.returncode, "token_chars": len(done.stdout.strip()),
                             "sec": round(time.monotonic() - started, 2)}
@@ -120,9 +121,22 @@ def flip(root, release_id):
     return before
 
 
+def link_targets(home):
+    return {name: os.readlink(home / name) if (home / name).is_symlink() else None for name in LINKS}
+
+
 def link_runtime(home):
     current = root_of(home) / "current"
     return [str(home / name) for name, inside in LINKS.items() if relink(home / name, current / inside)]
+
+
+def restore_links(home, targets):
+    for name, target in targets.items():
+        if target is None:
+            if (home / name).is_symlink():
+                (home / name).unlink()
+        else:
+            relink(home / name, target)
 
 
 def prune(root):
@@ -135,14 +149,19 @@ def prune(root):
             shutil.rmtree(old)
 
 
-def checked_switch(home, release_id, before):
-    """Run both hooks after a flip; on a failure put `before` back and raise."""
+def checked_switch(home, release_id, before, links_before):
+    """Run both hooks after a flip. On a failure put `current` and every runtime
+    link back where they were, then raise."""
     hooks = check_hooks(home)
     if all(h["ok"] for h in hooks.values()):
         return hooks
+    root = root_of(home)
     if before:
-        flip(root_of(home), before)
-    raise InstallError(f"hook check failed on {release_id}; current is {before} again: {json.dumps(hooks)}")
+        flip(root, before)
+    elif (root / "current").is_symlink():
+        (root / "current").unlink()
+    restore_links(home, links_before)
+    raise InstallError(f"hook check failed on {release_id}; links and current are back as they were: {json.dumps(hooks)}")
 
 
 def install(home, ref):
@@ -166,9 +185,10 @@ def install(home, ref):
                 set_writable(staging, True)
                 shutil.rmtree(staging)
             raise
+    links_before = link_targets(home)
     linked = link_runtime(home)
     before = flip(root, release_id)
-    hooks = checked_switch(home, release_id, before)
+    hooks = checked_switch(home, release_id, before, links_before)
     prune(root)
     return {"current": release_id, "commit": commit, "previous": before, "tests": tests, "relinked": linked, "hooks": hooks}
 
@@ -179,12 +199,12 @@ def rollback(home):
         raise InstallError("no previous release to roll back to")
     target = os.readlink(root / "previous").split("/")[-1]
     before = flip(root, target)
-    return {"current": target, "previous": before, "hooks": checked_switch(home, target, before)}
+    return {"current": target, "previous": before, "hooks": checked_switch(home, target, before, link_targets(home))}
 
 
 def status(home):
     root = root_of(home)
-    links = {name: os.readlink(home / name) if (home / name).is_symlink() else None for name in LINKS}
+    links = link_targets(home)
     releases = sorted(p.name for p in (root / "releases").iterdir()) if (root / "releases").exists() else []
     previous = os.readlink(root / "previous").split("/")[-1] if (root / "previous").is_symlink() else None
     return {"root": str(root), "current": current_id(root), "previous": previous, "releases": releases, "links": links}
