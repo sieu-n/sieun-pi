@@ -100,9 +100,12 @@ def load_json(path, default=None):
 
 
 def save_json(path, data):
+    # One C-encoded string and one write. json.dump(indent=2) streams through the
+    # pure-Python encoder: 130 ms for the 900 KB state.json, under the pool flock.
+    text = json.dumps(data, separators=(",", ":"))
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
+        f.write(text)
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
 
@@ -1093,10 +1096,11 @@ class HookWriter:
     def __init__(self, state):
         self._state = state
 
-    def record_vend(self, key, provider, account, source, reason, shadowed, now):
+    def record_vend(self, key, provider, account, source, reason, shadowed, now, parent):
+        """`parent` is (pid, start) of the calling process, read before the flock."""
         rec = self._state["sessions"].setdefault(key.key, {})
         rec["uuid"], rec["active_id"] = key.uuid, key.active_id
-        rec["pid"], rec["pid_start"] = os.getppid(), (proc_info(os.getppid()) or {}).get("start")
+        rec["pid"], rec["pid_start"] = parent
         rec["last_seen"] = now
         rec.setdefault("pins", {})
         prev = (rec.setdefault("vends", {})).get(provider) or {}
@@ -1473,6 +1477,8 @@ def vend(provider):
     cfg = config()
     accounts = load_index(provider)
     key = session_key()
+    parent_pid = os.getppid()
+    parent = (parent_pid, (proc_info(parent_pid) or {}).get("start")) if key else None
 
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
@@ -1523,7 +1529,7 @@ def vend(provider):
                 writer.move_seat(provider, account, now)
             prev = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
             vended = writer.record_vend(key, provider, account, source, reason,
-                                        res.shadowed, now) if key else None
+                                        res.shadowed, now, parent) if key else None
             save_json(STATE, state)
         # The hook runs on every provider request, so a line per vend would be a log of
         # thousands. Log the transitions only: a session changing account, and a seat move.

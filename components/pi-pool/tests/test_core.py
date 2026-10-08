@@ -365,16 +365,16 @@ class Writers(unittest.TestCase):
     def test_the_hook_records_a_vend_and_counts_repeats(self):
         state = state_v2(seat="b")
         w = vend.HookWriter(state)
-        w.record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW)
-        w.record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW + 1)
+        w.record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW, (123, "parent-start"))
+        w.record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW + 1, (123, "parent-start"))
         self.assertEqual(state["sessions"][KEY.key]["vends"]["anthropic"]["n"], 2)
-        w.record_vend(KEY, "anthropic", A, "parked", "seat_move", ("d", "depleted"), NOW + 2)
+        w.record_vend(KEY, "anthropic", A, "parked", "seat_move", ("d", "depleted"), NOW + 2, (123, "parent-start"))
         vended = state["sessions"][KEY.key]["vends"]["anthropic"]
         self.assertEqual((vended["account_id"], vended["n"], vended["shadowed"]), ("a", 1, ["d", "depleted"]))
 
     def test_the_cli_writes_a_pin_without_touching_a_vend(self):
         state = state_v2(seat="b")
-        vend.HookWriter(state).record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW)
+        vend.HookWriter(state).record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW, (123, "parent-start"))
         vend.IntentWriter(state).set_pin(KEY, "anthropic", "c", False, "cli", NOW)
         rec = state["sessions"][KEY.key]
         self.assertEqual(rec["pins"]["anthropic"]["account_id"], "c")
@@ -408,8 +408,50 @@ class Writers(unittest.TestCase):
 
     def test_record_vend_returns_the_record_it_wrote(self):
         state = state_v2()
-        vended = vend.HookWriter(state).record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW)
+        vended = vend.HookWriter(state).record_vend(KEY, "anthropic", B, "parked", "seat", None, NOW, (123, "parent-start"))
         self.assertIs(vended, state["sessions"][KEY.key]["vends"]["anthropic"])
+
+
+class SessionVend(unittest.TestCase):
+    def test_session_credential_is_emitted_and_parent_is_read_outside_pool_lock(self):
+        for provider in ("anthropic", "openai-codex"):
+            with self.subTest(provider=provider):
+                state = state_v2()
+                acct = B if provider == "anthropic" else codex_account("b", "b@x", "pro")
+                state["providers"][provider]["seat"] = {"account_id": acct.id, "since": NOW}
+                held = []
+
+                @contextlib.contextmanager
+                def lock(*args, **kwargs):
+                    held.append(True)
+                    try:
+                        yield
+                    finally:
+                        held.pop()
+
+                def parent_info(pid):
+                    self.assertFalse(held, "process lookup must not block other token requests")
+                    return {"start": "parent-start"}
+
+                output = io.StringIO()
+                with contextlib.ExitStack() as stack:
+                    for name, value in {"config": CFG, "load_index": [acct], "session_key": KEY,
+                                        "load_state": state, "credential_for": ("fixture-token", "store")}.items():
+                        stack.enter_context(unittest.mock.patch.object(vend, name, return_value=value))
+                    stack.enter_context(unittest.mock.patch.object(vend, "Flock", lock))
+                    stack.enter_context(unittest.mock.patch.object(vend, "proc_info", side_effect=parent_info))
+                    stack.enter_context(unittest.mock.patch.object(vend.os, "getppid", return_value=123))
+                    stack.enter_context(unittest.mock.patch.object(vend.time, "time", return_value=NOW))
+                    stack.enter_context(unittest.mock.patch.object(vend, "save_json"))
+                    stack.enter_context(unittest.mock.patch.object(vend, "log"))
+                    stack.enter_context(contextlib.redirect_stdout(output))
+                    vend.vend(provider)
+                self.assertEqual(output.getvalue(), "fixture-token")
+                rec = state["sessions"][KEY.key]
+                self.assertEqual((rec["pid"], rec["pid_start"]), (123, "parent-start"))
+                self.assertEqual(rec["vends"][provider]["account_id"], acct.id)
+
+
 class IndexV2Windows(unittest.TestCase):
     """tokenmaxxing index v2 windows, classified by windowSeconds and name
     rather than array position, for both providers."""
