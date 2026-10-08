@@ -100,13 +100,14 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, stalls_2h: 9, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 5, sieun_pi_breaks: 1, recurred: 0 });
+    assert.deepEqual(health.metrics, { corrections: 3, stalls_2h: 6, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 5, sieun_pi_breaks: 1, recurred: 0 });
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 3).map(slice => [slice.chat, slice.excerpt]), [["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]]);
     const kinds = (kind: string) => flagged.filter(slice => slice.kind === kind);
     assert.deepEqual(kinds("unretried_errors").map(slice => slice.excerpt), [`1.5 h with no new message after: ${API_KEY_ERROR}`, "2.0 h with no new message after: stopReason aborted"]);
     assert.deepEqual(kinds("long_replies").map(slice => slice.excerpt.split(":")[0]), ["61 words", "70 words"]);
-    assert.equal(kinds("stalls_2h").length, 9);
+    assert.equal(kinds("stalls_2h").length, 6);
+    assert.ok(kinds("stalls_2h").some(slice => slice.chat === "chat-a" && slice.excerpt.includes("p8") && slice.at === ago(3 * HOUR)), "a step counts once, at its latest check-in row");
     assert.ok(kinds("stalls_2h").every(slice => !slice.excerpt.includes("90 min")));
     assert.deepEqual(kinds("sieun_pi_breaks").map(slice => slice.excerpt), [API_KEY_ERROR]);
     assert.deepEqual(kinds("off_brief").map(slice => slice.excerpt), ["text on a wake: x", "repeated line: [job] build-x finished; don't wait", `repeated line: ${CHECK_IN}`.slice(0, 300),
@@ -157,6 +158,46 @@ test("chat health: a problem a run flagged is watched; the next run counts it on
     assert.equal(recurred.length, 2);
     assert.ok(recurred.some(excerpt => excerpt.startsWith("off_brief, first flagged 2026-10-08: repeated line: [job] build-x")), recurred.join("\n"));
     assert.ok(recurred.some(excerpt => excerpt.startsWith("sieun_pi_breaks, first flagged 2026-10-08: ") || excerpt.startsWith("unretried_errors, first flagged 2026-10-08: ")), recurred.join("\n"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat health: owner directions and status questions are not corrections, a quoted question is not the owner's, a provider error the pool retried is not a sieun-pi break, and a stalled step counts once", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    const corrections = [
+      "what the fuck is this diagram, and still don't understand what Github pro changes??",
+      "so explain more, i dont get it",
+      "also why is nothing being done are you sure the checks are running properly??",
+      "can you make it so pi-agent never says shit like s20?",
+      "also i said merge the Jobs thing into the left sidebar and remove the pill",
+      "also even if i say i Korean always message in English never in Korean",
+    ];
+    const notCorrections = [
+      "good you asked me. NEVER litellm. terrible terrible idea.",
+      "is writer still going on?",
+      "im back stop the ampethamine thing",
+      "Can you use computer use to reset amphetimine and set it again?",
+      "also why is everything complaining about ci in short?",
+      "the frontend shape should have scenarios",
+      "Authentication is repaired. Please answer my last unanswered question: \u201cso explain more, i dont get it\u201d.",
+    ];
+    const retried = "Provider rate limit exceeded (rate_limit_error, 429): Please try again later. pi-pool: a@x is limited until 2026-10-08T13:20:00.000Z; the retry uses b@x.";
+    const lines: Line[] = [...corrections, ...notCorrections].flatMap((text, index) => [user(ago(20 * HOUR) + index * MIN, text), reply(ago(20 * HOUR) + index * MIN + 1_000, "ok")]);
+    lines.push(user(ago(4 * HOUR), "[check-in] What changed:\n- p9 \"x\" is doing with no board change and no owner activity for 3 h"), reply(ago(4 * HOUR) + MIN, ""),
+      user(ago(3 * HOUR), "[check-in] What changed:\n- p9 \"x\" is blocked with no board change and no owner activity for 4 h"), reply(ago(3 * HOUR) + MIN, ""));
+    lines.push(user(ago(2 * HOUR), "go"), reply(ago(2 * HOUR) + 1_000, "", "error", { errorMessage: retried }), reply(ago(2 * HOUR) + 20_000, "done"));
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-c"] }));
+    await writeFile(join(dir, "chat-c.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "corrections").map(slice => slice.excerpt).sort(), [...corrections].sort());
+    assert.equal(health.metrics.sieun_pi_breaks, 0);
+    assert.equal(health.metrics.unretried_errors, 0);
+    assert.equal(health.metrics.stalls_2h, 1, "a step that moved from doing to blocked is one stalled step");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

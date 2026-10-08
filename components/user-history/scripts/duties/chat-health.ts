@@ -15,7 +15,12 @@ const LONG_WORDS = 60;
 const MAX_FLAGGED = 40;
 const EXCERPT = 300;
 const FEW = 5;
-const CORRECTION = /\b(?:i told you|again|don['\u2019]?t|do not|stop|why did|why is|not what i|wrong|never|should have|you didn['\u2019]?t|still)\b/i;
+/** Phrases where the owner corrects how the chat works; a bare "never", "still" or "don't" is usually a product direction or a status question. */
+const CORRECTION = /\b(?:i told you|i (?:already )?(?:said|asked)|didn['\u2019]?t i (?:say|ask|request|tell)|not what i|you didn['\u2019]?t|you did not|you (?:were|are) wrong|(?:that|this|it) (?:is|was) wrong|why did you|why (?:is|are) (?:nothing|you)|stop (?:doing|saying|writing|asking)|never (?:says?|does|do|writes?|uses?|asks?)|don['\u2019]?t (?:do|say|write|use|ask|force)|(?:dont|don['\u2019]?t|do not) (?:get it|understand)|explain (?:it |this )?(?:more|again)|are you sure|what the fuck|wtf|you should have|(?:it|this) doesn['\u2019]?t happen again|always (?:message|reply|write|answer|talk|speak))\b|^again\b/i;
+/** Quoted text is someone else's words, such as an agent quoting the owner's earlier question. */
+const QUOTED = /[\u201c"][^\u201d"]*[\u201d"]/g;
+/** The note the pool's extension appends to a provider error it retries on another account: the provider failed, not sieun-pi. */
+const POOL_RETRY_NOTE = / pi-pool: [\s\S]*; the retry uses [\s\S]*$/;
 const STALL = /with no board change and no owner activity for (\d+) (min|h|d)\b/;
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'\u2019._/-]*/gu;
 const BOARD_PREFIX = "[board] ";
@@ -24,6 +29,8 @@ const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 const STALL_TAIL = " with no board change";
+/** The status at the end of a stall row's head: a step that moved from doing to blocked is still one step. */
+const STALL_STATUS = / is \w+$/;
 
 type Metrics = { corrections: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number };
 type Kind = keyof Metrics;
@@ -70,6 +77,8 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     if (watch) tally.seen.push({ signature: watch, slice });
   };
   const seen = new Set<string>();
+  /** Each step a check-in reported stalled 2 h or more, by its row before the time: every check-in repeats the row, and the step counts once at its latest row. */
+  const stalls = new Map<string, { at: number; row: string }>();
   let turn: Turn | undefined;
   let settled = true;
   let failure: Failure | undefined;
@@ -113,7 +122,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
         if (text.startsWith(CHECK_IN_PREFIX)) {
           for (const row of text.split("\n")) {
             const stall = STALL.exec(row);
-            if (stall && stallHours(Number(stall[1]), stall[2]!) >= 2) { tally.metrics.stalls_2h++; flag("stalls_2h", at, row.trim(), `stalls_2h:${chat}:${row.slice(0, row.indexOf(STALL_TAIL)).trim()}`); }
+            if (stall && stallHours(Number(stall[1]), stall[2]!) >= 2) stalls.set(row.slice(0, row.indexOf(STALL_TAIL)).replace(STALL_STATUS, "").trim(), { at, row: row.trim() });
           }
         }
         continue;
@@ -121,7 +130,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       openTurn("owner", false, at);
       settled = false;
       const own = ownerWords(text);
-      if (inWindow(at) && own && CORRECTION.test(own)) { tally.metrics.corrections++; flag("corrections", at, own); }
+      if (inWindow(at) && own && CORRECTION.test(own.replace(QUOTED, ""))) { tally.metrics.corrections++; flag("corrections", at, own); }
     } else if (message.role === "assistant") {
       failure = undefined;
       settled = message.stopReason !== "toolUse";
@@ -129,7 +138,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       if (turn && text) { turn.lastText = text; turn.lastTextAt = at; turn.wroteText = true; }
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         failure = { at, reason: message.errorMessage?.trim() || `stopReason ${message.stopReason}` };
-        if (inWindow(at) && SIEUN_PI.test(failure.reason)) { tally.metrics.sieun_pi_breaks++; flag("sieun_pi_breaks", at, failure.reason, signature("error", failure.reason)); }
+        if (inWindow(at) && SIEUN_PI.test(failure.reason.replace(POOL_RETRY_NOTE, ""))) { tally.metrics.sieun_pi_breaks++; flag("sieun_pi_breaks", at, failure.reason, signature("error", failure.reason)); }
       }
     } else if (message.role === "custom" && isPromptCustom(message)) {
       settleFailure(at);
@@ -139,6 +148,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
   }
   closeTurn();
   settleFailure(undefined);
+  for (const [step, { at, row }] of stalls) { tally.metrics.stalls_2h++; flag("stalls_2h", at, row, `stalls_2h:${chat}:${step}`); }
   return true;
 }
 
