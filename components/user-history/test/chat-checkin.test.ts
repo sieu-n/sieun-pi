@@ -311,7 +311,7 @@ test("check-in digest: a note-only edit is no change, a cancelled job ends with 
   const first = checkInDigest(undefined, [fixer], plan("started"), now, { self: ["c-self", "chat-6394"] });
   const later = now + 30 * MIN;
   const tick = checkInDigest(first.memory, [{ ...fixer, state: "ended", cancelled: true, activityAt: later }], plan("chased the owner again"), later, { self: ["c-self", "chat-6394"] });
-  assert.deepEqual(tick.lines, ["p2 waits on the owner but For you has no question for it: add one with choices"], "the chat cancelled the job itself, and a chase note is no board change; the note now names the owner");
+  assert.deepEqual(tick.lines, [], "the chat cancelled the job itself, and a chase note is no board change; a doing step that names the owner is no owner wait");
   assert.equal(tick.memory.steps.p2!.at, now);
   assert.deepEqual(tick.open, ['p2 "Build" doing, owner job fixer (ended), last change 30 min ago', 'p3 "Verify" todo, owner you, last change 30 min ago',
     'p4 "Docs" doing, owner you, last change 30 min ago'], "no goal line, no '(working)' for the chat's own steps");
@@ -374,8 +374,26 @@ test("check-in digest: a step the chat owns that has not moved for an hour is pu
   const byId = plan("blocked", "needs your go", [{ id: "t2", text: "p2: go ahead?", choices: ["Go", "Wait"], done: false, from: "agent", at: "2026-10-08T00:00:00Z" }]);
   assert.deepEqual(checkInDigest(undefined, [], byId, now, self).lines, [], "an ask that names the step id covers it");
   const doneAsk = plan("blocked", "needs your go", [{ id: "t2", text: "p2: go ahead?", choices: ["Go", "Wait"], done: true, from: "agent", at: "2026-10-08T00:00:00Z" }]);
-  assert.deepEqual(checkInDigest(undefined, [], doneAsk, now, self).lines, ["p2 waits on the owner but For you has no question for it: add one with choices"], "an answered ask no longer covers it");
+  assert.deepEqual(checkInDigest(undefined, [], doneAsk, now, self).lines, [], "the owner already answered the ask for this step: no new question");
   assert.equal(todoForStep({ id: "p9", text: "Sign in to Stripe" }, [{ text: "Approve the deploy?" }]), false);
   assert.equal(waitsOnOwner(step("p9", "Build", "blocked")), false, "blocked alone is the board shape, not an owner wait");
-  assert.equal(waitsOnOwner(step("p9", "Build", "todo", { note: "Decide: A or B" })), true);
+  assert.equal(waitsOnOwner(step("p9", "Build", "todo", { note: "Decide: A or B" })), false, "only a blocked step waits on the owner");
+  assert.equal(waitsOnOwner(step("p9", "Build", "blocked", { note: "waits on the owner's choice: A or B" })), true);
+});
+
+test("waits on the owner: only a blocked step whose note says it waits on the owner's choice, and not when that ask was answered", () => {
+  const now = 50 * STEP_STALE_MS;
+  const wait = (id: string, status: PlanItem["status"], note: string) => step(id, "Delete the old route", status, { note });
+  const plan = board([step("p1", "Goal", "doing", { children: [
+    wait("p45", "blocked", "waits on land 25 reaching staging"),
+    wait("p49", "blocked", "the owner answered: delete after land 25 is live"),
+    wait("p112", "doing", "needs the owner's go"),
+    wait("p50", "blocked", "waits on the owner's approval of the price"),
+    wait("p51", "blocked", "needs your go before the deploy"),
+  ] })]);
+  const lines = checkInDigest(undefined, [], { ...plan, todos: [] }, now).lines.filter(line => line.includes("For you has no question"));
+  assert.deepEqual(lines.map(line => line.split(" ")[0]), ["p50", "p51"], "a land wait, a note naming the owner, and a doing step are not owner waits");
+  const answered = { ...plan, todos: [{ id: "t12", text: "p50: approve the price?", done: true, reply: "yes", from: "agent" as const, at: "" }] };
+  const after = checkInDigest(undefined, [], answered, now).lines.filter(line => line.includes("For you has no question"));
+  assert.deepEqual(after.map(line => line.split(" ")[0]), ["p51"], "an answered ask for the step counts");
 });

@@ -16,10 +16,12 @@ export const STEP_STALE_MS = 2 * 60 * 60_000;
 /** A todo or doing step the chat itself owns that has not moved for this long is pushed, once per stretch of this length. */
 export const OWN_STEP_MS = 60 * 60_000;
 /**
- * A step note that says the step waits on the owner. The status alone does not count: the board shape keeps every later phase (Build, Verify)
- * blocked by design, so a blocked step with no such note waits on an earlier step, not on the owner.
+ * A blocked step whose note says it waits on the owner's choice or action ("waits on the owner's approval", "needs your go", "owner must decide",
+ * "waiting for you to sign in"). A single word such as "owner" or "go" is not enough: notes name the owner and land events ("delete after land 25
+ * is live, per the owner") without waiting on them. The status must be blocked too: later phases are blocked by design and a todo or doing
+ * step is being worked.
  */
-const WAITS_ON_OWNER = /\b(?:owner|go|approval|approve|decide|choose|sign[ -]?in|log[ -]?in|wait(?:s|ing)? for you)\b/i;
+const WAITS_ON_OWNER = /\b(?:wait(?:s|ing)?\s+(?:on|for)\s+(?:the\s+)?(?:owner|you|your)|needs?\s+(?:the\s+)?(?:owner|you|your)|(?:owner|you)\s+(?:must|has\s+to|have\s+to|needs?\s+to|should)|(?:owner|your)'?s?\s+(?:go|approval|decision|answer|choice|login|sign[ -]?in|ok)\b)/i;
 const STOP_WORDS = new Set(["about", "after", "again", "before", "could", "every", "first", "other", "owner", "should", "still", "their", "there", "these", "think", "those", "under", "until", "which", "while", "would"]);
 /** A failed turn (the chat's own, or a step owner's) is acted on again after these waits, then every 20 min while it stays failed. */
 export const RETRY_BACKOFF_MS: readonly number[] = [5 * 60_000, 10 * 60_000, 20 * 60_000];
@@ -56,7 +58,7 @@ export function todoForStep(step: Pick<PlanItem, "id" | "text">, todos: readonly
   return todos.some(todo => id.test(todo.text) || [...distinctiveWords(todo.text)].some(word => words.has(word)));
 }
 /** Whether an open step waits on the owner: its note says so (WAITS_ON_OWNER). */
-export const waitsOnOwner = (item: PlanItem): boolean => WAITS_ON_OWNER.test(item.note ?? "");
+export const waitsOnOwner = (item: PlanItem): boolean => item.status === "blocked" && WAITS_ON_OWNER.test(item.note ?? "");
 /** A condition reported once when it starts or changes (`key`), then again every STEP_STALE_MS while it holds. */
 export interface Reminder { key: string; at: number }
 /**
@@ -208,6 +210,8 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   }
 
   const self = new Set(context.self ?? []);
+  /** Asks already answered: a step whose question the owner answered does not need a new one. */
+  const answeredTodos = (board?.todos ?? []).filter(todo => todo.done || (todo.reply ?? "").trim() !== "");
   const openTodos = (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done);
   const firstSeen = Math.min(now, Date.parse(board?.updatedAt ?? "") || now);
   const steps: Record<string, StepMemo> = context.boardError ? { ...previous?.steps } : {};
@@ -230,7 +234,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
       lines.push(`${item.id} ${quote(item.text)} is ${item.status} with no board change and no owner activity for ${ago(now - moved)}`);
       memo.nudged = now;
     }
-    if (isOpen && !openBelow && waitsOnOwner(item) && !todoForStep(item, openTodos)) {
+    if (isOpen && !openBelow && waitsOnOwner(item) && !todoForStep(item, openTodos) && !todoForStep(item, answeredTodos)) {
       if (before?.asked !== sig) lines.push(`${item.id} waits on the owner but For you has no question for it: add one with choices`);
       memo.asked = sig;
     }
