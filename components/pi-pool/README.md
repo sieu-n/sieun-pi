@@ -38,7 +38,7 @@ session from 17:45 to 17:59, because the links pointed at source.
 ```sh
 /usr/bin/python3 -B components/pi-pool/install.py            # install HEAD
 /usr/bin/python3 -B components/pi-pool/install.py --ref <sha>  # install another commit
-/usr/bin/python3 -B components/pi-pool/install.py rollback     # swap current and previous
+/usr/bin/python3 -B components/pi-pool/install.py rollback     # back one release, or to the old links
 /usr/bin/python3 -B components/pi-pool/install.py status
 ```
 
@@ -51,8 +51,13 @@ session from 17:45 to 17:59, because the links pointed at source.
    the commit's tree id for this directory, so installing the same code twice reuses it.
 4. The runtime links point at `~/.local/share/pi-pool/current`. Then `current` flips to
    the new release in one rename, and the release it replaced becomes `previous`.
-5. Both token hooks run through `~/.config/pi-pool/bin/pi-pool-token`. If either fails,
-   `current` goes back to `previous` and the command exits 1. Only token lengths are read.
+5. Both token hooks run through `~/.config/pi-pool/bin/pi-pool-token`. If either hook
+   exits nonzero, hangs past 10 s or is missing, `current` and the links go back to where
+   they were and the command exits 1. Only token lengths are read.
+
+The first install saves the links it replaced in
+`~/.local/share/pi-pool/links-before-install.json`. `rollback` with no `previous` puts
+those links back and removes `current`.
 
 The installer owns these links. It refuses to replace anything at these paths that is
 not a link.
@@ -421,6 +426,7 @@ per-process mode and the per-session balancing they tuned.
 ## Rollback
 
 `install.py rollback` puts the previous release back in one rename and checks both hooks.
+With no previous release it puts back the links the first install replaced.
 To stop using the pool hook, remove the extension link `~/.prime/agent/extensions/pi-pool`
 and restore the previous provider configuration from your own backup of `models.json`.
 `fallback.json` holds any adopted login; copy an entry back into `auth.json` to restore it.
