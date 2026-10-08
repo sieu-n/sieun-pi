@@ -125,7 +125,7 @@ Launch all matching investigators from one IPython cell so they run concurrently
 
 Subagent config (each):
 - Spawn: `await rlm(brief, model=..., thinking=..., name=...)`. There is no `subagent_type` — every RLM child is a general-purpose Prime Agent, so the brief carries the role.
-- `model`: your configured why-investigators model (default `anthropic/claude-fable-5-1 @ xhigh`)
+- `model`: your configured why-investigators model (default inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model))
 - Tool posture: an RLM child inherits the full Prime Agent toolset, including any configured MCP servers. There is no readonly/Ask mode that could strip them, and no sandbox flag either. Write "read and report only; do not edit any file" into the brief. That is a posture, not a sandbox.
 
 Each investigator gets:
@@ -171,7 +171,7 @@ If your scope assessment suggests a single-commit trivial target where the PR de
 Spawn one synthesizer subagent:
 
 - Spawn: `await rlm(brief, model=..., thinking=..., name=...)`. There is no `subagent_type` — every RLM child is a general-purpose Prime Agent, so the brief carries the role.
-- `model`: your configured why-synthesizer model (default `anthropic/claude-fable-5-1 @ max`)
+- `model`: your configured why-synthesizer model (default inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model))
 - Tool posture: the synthesizer needs the full toolset to spot-verify citations. An RLM child inherits it by default, so there is nothing to set.
 
 The synthesizer gets:

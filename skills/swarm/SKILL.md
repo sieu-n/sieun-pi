@@ -30,7 +30,7 @@ Prime Agent has no todo tool. Write the phase checklist into your reply, or into
 1. State the done predicate and the artifact or report the swarm must return.
 2. Choose the shape. Partition into slices, race N workers on identical briefs, or mix both. For a race or mixed shape, declare `first pass`, `rank all`, or `best-of` before spawning.
 3. Set N from the user or derive it from the shape. N is total workers. Prime Agent has no cloud concurrency limit; the real ceilings are this machine and `RLM_MAX_DEPTH`.
-4. Pick the worker model from `swarm workers` in `~/.prime/agent/pstack-models.json` when present. Otherwise use `anthropic/claude-fable-5-1 @ xhigh`. For a model race, name each arm's model up front.
+4. Pick the worker model from `swarm workers` in `~/.prime/agent/pstack-models.json` when present. Otherwise use inherit-parent (omit `model=` and `thinking=`). For a model race, name each arm's model up front.
 5. Give each worker its own writable output when it writes. Use a worktree, branch, or `/tmp/swarm-<slug>/worker-<n>/`.
 
 ## Phase B: Fan out

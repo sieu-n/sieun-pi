@@ -41,21 +41,21 @@ Write one clear paragraph. Reviewers challenge whether the work achieves the int
 
 ## Step 3, Spawn Reviewers
 
-Launch all reviewers from one IPython cell with repeated `await rlm(...)` calls; each returns on admission, so they run concurrently. Use the `interrogate reviewers` list from `~/.prime/agent/pstack-models.json` when present, one reviewer per entry, extending or shrinking the Reviewer A/B/C/D labels below to the configured entry count; otherwise use the table defaults.
+Launch all reviewers from one IPython cell with repeated `await rlm(...)` calls; each returns on admission, so they run concurrently. Read the reviewers from the `interrogate reviewers` role in `~/.prime/agent/pstack-models.json`: one reviewer per entry, labelled Reviewer A, B, C and so on. Without that role, spawn two reviewers on inherit-parent.
 
-| Subagent | Default model |
-|----------|---------------|
-| Reviewer A | `anthropic/claude-fable-5-1 @ max` |
-| Reviewer B | `anthropic/claude-fable-5-1 @ xhigh` |
-| Reviewer C | `anthropic/claude-fable-5-1 @ max` |
-| Reviewer D | `anthropic/claude-fable-5-1 @ xhigh` |
+```python
+import json, pathlib
+CFG = pathlib.Path.home() / ".prime/agent/pstack-models.json"
+roles = json.loads(CFG.read_text())["roles"] if CFG.exists() else {}
+reviewers = roles.get("interrogate reviewers") or [{"model": "inherit-parent"}] * 2
+```
 
 For each reviewer:
 - Spawn: `await rlm(brief, model=..., thinking=..., name=...)`. There is no `subagent_type` — every RLM child is a general-purpose Prime Agent, so the brief carries the role.
-- `model`: the configured `interrogate reviewers` entry, or the table default with no configured line
+- `model`: the reviewer's `interrogate reviewers` entry; for `inherit-parent`, omit `model=` (and `thinking=` unless the entry sets it)
 - Read-only posture: Prime Agent has no read-only child mode. Put "read and report only; do not edit any file" in the brief.
 
-If `await rlm(...)` rejects a model selector, run `await rlm.find_models('<family>')` to list the selectors backed by live credentials, pick the closest equivalent (prefer the highest-reasoning tier of the same family), spawn with the valid slug, and open a separate PR to update the configured value or default table. Do not block the review on the slug issue. If the configured value is `inherit-parent` or `auto`, omit `model` instead; never treat those aliases as broken slugs or enter this fallback for them.
+If `await rlm(...)` rejects a model selector, run `await rlm.find_models('<family>')` to list the selectors backed by live credentials, pick the closest equivalent (prefer the highest-reasoning tier of the same family), spawn with the valid slug, and open a separate PR to update the configured value. Do not block the review on the slug issue. If the configured value is `inherit-parent` or `auto`, omit `model` instead; never treat those aliases as broken slugs or enter this fallback for them.
 
 Read `references/reviewer-prompt.md` and fill in the template with:
 1. The stated intent

@@ -53,7 +53,7 @@ The right decomposition depends on the question. Use your judgment. Narrow quest
 Spawn all explorers from one IPython cell:
 
 - Spawn: `await rlm(brief, model=..., thinking=..., name=...)`. There is no `subagent_type` — every RLM child is a general-purpose Prime Agent, so the brief carries the role.
-- `model`: your configured how-explorer model (default `anthropic/claude-fable-5-1 @ xhigh`)
+- `model`: your configured how-explorer model (default inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model))
 - Read-only posture: Prime Agent has no read-only child mode. Put "read and report only; do not edit any file" in the brief.
 
 Each explorer gets the same base prompt from `references/explorer-prompt.md` plus a specific exploration angle naming its slice. Each explorer should:
@@ -72,7 +72,7 @@ Then proceed to Step 3.
 Spawn a single RLM child that explores and explains in one pass:
 
 - Spawn: `await rlm(brief, model=..., thinking=..., name=...)`. There is no `subagent_type` — every RLM child is a general-purpose Prime Agent, so the brief carries the role.
-- `model`: your configured how-explainer model (default `anthropic/claude-fable-5-1 @ max`)
+- `model`: your configured how-explainer model (default inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model))
 - Read-only posture: Prime Agent has no read-only child mode. Put "read and report only; do not edit any file" in the brief.
 
 The agent does its own exploration (Glob, Grep, Read) and writes the explanation directly. Read `references/explainer-prompt.md` for the communication style and output format. Same structure, just no explorer findings as input.
@@ -84,7 +84,7 @@ Proceed to Step 4.
 Once all explorers return, spawn a single RLM child to synthesize their findings into one coherent explanation:
 
 - Spawn: `await rlm(brief, model=..., thinking=..., name=...)`. There is no `subagent_type` — every RLM child is a general-purpose Prime Agent, so the brief carries the role.
-- `model`: your configured how-explainer model (default `anthropic/claude-fable-5-1 @ max`)
+- `model`: your configured how-explainer model (default inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model))
 - Read-only posture: Prime Agent has no read-only child mode. Put "read and report only; do not edit any file" in the brief.
 
 The explainer gets all explorers' findings and writes the human-facing explanation (output format below). Read `references/explainer-prompt.md` for the full prompt template. The explainer reconciles overlapping findings, resolves contradictions, and weaves the slices into a unified picture.
@@ -117,7 +117,7 @@ Run the full explain flow above (Steps 1-4). You must understand the architectur
 
 ### Step 2. Spawn Critics
 
-After the explanation is complete, spawn one architectural critic per model in your configured how-critics list (defaults `anthropic/claude-fable-5-1 @ max`, `anthropic/claude-fable-5-1 @ xhigh`), all from one IPython cell.
+After the explanation is complete, spawn one architectural critic per model in your configured how-critics list (default: two critics, both inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model)), all from one IPython cell.
 
 For each critic:
 - Spawn: `await rlm(brief, model=..., thinking=..., name=...)`. There is no `subagent_type` — every RLM child is a general-purpose Prime Agent, so the brief carries the role.

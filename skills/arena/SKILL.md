@@ -33,7 +33,7 @@ The N candidates will receive the same prompt, so the prompt is the contract. Ge
 
 1. State the artifact each candidate is producing.
 2. Derive the rubric. State what success looks like for *this* task, then turn it into 3-6 concrete gradeable criteria. Concrete: `Adds a --dry-run flag that skips writes`. Vague: `code is correct`. The rubric is the picker's tool in Phase D; candidates only see the task.
-3. Pick the runners. Use `arena runners` from `~/.prime/agent/pstack-models.json` when present. Otherwise default to `anthropic/claude-fable-5-1 @ max` and `anthropic/claude-fable-5-1 @ xhigh` (the `policy` block in `~/.prime/agent/pstack-models.json` lists the allowed and banned models). Spawn more when the arena covers multiple design directions. Same model N times when the work is generation-bound rather than judgment-sensitive.
+3. Pick the runners. Use `arena runners` from `~/.prime/agent/pstack-models.json` when present. Otherwise default to two runners, both inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model) (the `policy` block in `~/.prime/agent/pstack-models.json` lists the allowed and banned models). Spawn more when the arena covers multiple design directions. Same model N times when the work is generation-bound rather than judgment-sensitive.
 4. Assign output paths. Each candidate writes to its own location (a git worktree where possible, otherwise `/tmp/arena-<slug>/candidate-<n>/`). N candidates writing to the same path is shared mutable state and fails the the **separate-before-serializing-shared-state** principle skill test.
 
 ## Phase B: Fan out
@@ -46,7 +46,7 @@ If a candidate fails to produce output, proceed with N-1 and note the dropout in
 
 ## Phase C: Cross-judge
 
-After all Phase B candidates complete, choose one model from the `arena cross-judge pool` in `~/.prime/agent/pstack-models.json` when present. Otherwise use `anthropic/claude-fable-5-1 @ max`. Prefer a different model family from the parent's only when the user asked for a cross-family panel. Spawn one judge child on that model with `await rlm(...)`, and tell it in the brief to read and score only, never to edit a file. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with the parent's reading in Phase D, not with the candidates themselves. Spawning while candidates are still writing means the judge sees partial or empty outputs and reports them as dropouts.
+After all Phase B candidates complete, choose one model from the `arena cross-judge pool` in `~/.prime/agent/pstack-models.json` when present. Otherwise use inherit-parent (omit `model=`). Prefer a different model family from the parent's only when the user asked for a cross-family panel. Spawn one judge child on that model with `await rlm(...)`, and tell it in the brief to read and score only, never to edit a file. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with the parent's reading in Phase D, not with the candidates themselves. Spawning while candidates are still writing means the judge sees partial or empty outputs and reports them as dropouts.
 
 ## Phase D: Pick a base
 
