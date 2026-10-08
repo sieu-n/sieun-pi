@@ -373,7 +373,10 @@ per-process mode and the per-session balancing they tuned.
 - Rotations are journalled to `rotations/` before the write; a crash in that window is
   healed on the next vend.
 - The pool flock is never held across a refresh, so `pi-pool use` never queues behind one.
-- Every wait is budgeted under pi's 10s hook timeout.
+- Every wait is budgeted under pi's 10s hook timeout. Prime measures that timeout by the
+  wall clock and drops the hook's stderr. A hook it kills logs one `hook_killed` line with
+  the stack it was in, `wall_sec` and `awake_sec`. A `wall_sec` far above `awake_sec` means
+  the Mac slept while the hook ran; Prime 0.9.8 does not retry that turn.
 - A failure on either provider degrades to `fallback.json` (your own login, a separate
   grant family) rather than "No API key found".
 

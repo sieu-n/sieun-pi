@@ -18,7 +18,7 @@ Private rotation journals live under the pool state directory.
 
 stdout = the token, and nothing else. All diagnostics go to the log file.
 """
-import base64, collections, concurrent.futures, dataclasses, datetime, fcntl, hashlib, json, os, queue, re, shlex, shutil, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error, uuid
+import base64, collections, concurrent.futures, dataclasses, datetime, fcntl, hashlib, json, os, queue, re, shlex, shutil, signal, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error, uuid
 
 HOME = os.path.expanduser("~")
 TM = os.environ.get("TOKENMAXXING_HOME") or os.path.join(HOME, ".config", "tokenmaxxing")
@@ -3321,6 +3321,25 @@ def cli(args):
     raise SystemExit(USAGE)
 
 
+def log_when_killed(provider):
+    """Prime runs the hook under a 10 s timeout and drops its stderr, so a hook it
+    kills leaves no trace anywhere. Log the kill. Both clocks start at main();
+    `wall_sec` far above `awake_sec`
+    means the Mac slept while the hook ran (2026-10-08 21:20-21:44: every failed
+    hook call fell in a sleep or dark-wake window and the log had no line)."""
+    wall, awake = time.time(), time.monotonic()
+
+    def on_term(signum, frame):
+        at = []
+        while frame is not None and len(at) < 8:
+            at.append(f"{frame.f_code.co_name}:{frame.f_lineno}")
+            frame = frame.f_back
+        log("hook_killed", provider=provider, signal=signum, session=os.environ.get(SESSION_ENV),
+            wall_sec=round(time.time() - wall, 1), awake_sec=round(time.monotonic() - awake, 1), at=at)
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, on_term)
+
+
 def main():
     argv = sys.argv[1:]
     if argv and argv[0] == "--cli":
@@ -3330,6 +3349,7 @@ def main():
     provider = "anthropic"
     if "--provider" in argv:
         provider = argv[argv.index("--provider") + 1]
+    log_when_killed(provider)
     try:
         vend(provider)
     except SystemExit:
