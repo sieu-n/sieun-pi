@@ -63,7 +63,7 @@ class InstallerTests(unittest.TestCase):
         receipt = self.installer.apply_plan(plan)
         self.assertTrue(receipt.is_relative_to(self.home / ".local/state/sieun-pi"))
         self.assertFalse(receipt.is_relative_to(self.checkout))
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 67)
+        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
         settings = self.home / ".prime/agent/settings.json"
         self.assertFalse(settings.is_symlink())
         self.assertEqual(json.loads(settings.read_text()), {})
@@ -173,7 +173,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(saved["changes"][0]["state"], "prepared")
         self.assertTrue((receipt.parent / "backups/0/old.txt").exists())
         self.installer.apply_plan(plan)
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 67)
+        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
         self.installer.rollback_receipt(receipt)
         self.assertEqual((self.home / ".prime/agent/skills/architect/old.txt").read_bytes(), b"old source")
 
@@ -207,7 +207,7 @@ class InstallerTests(unittest.TestCase):
             with self.assertRaises(InterruptedError):
                 self.installer.apply_plan(plan)
         self.installer.apply_plan(plan)
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 67)
+        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
         self.assertFalse(list(self.home.rglob("*.sieun-pi-*")))
 
     def test_interrupted_json_publication_cleans_temporary(self):
@@ -234,7 +234,7 @@ class InstallerTests(unittest.TestCase):
         receipt = self.installer.receipt_location(self.home, plan["id"])
         (receipt.parent / "backups").mkdir(parents=True)
         self.installer.apply_plan(plan)
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 67)
+        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
 
     def test_rollback_refuses_target_drift_before_any_restore(self):
         plan = self.plan()
@@ -390,7 +390,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_project_is_explicit(self):
         plan = self.plan(project=False)
-        self.assertEqual(len(plan["operations"]), 64)
+        self.assertEqual(len(plan["operations"]), 59)
         self.installer.apply_plan(plan)
         self.assertEqual(list(self.project.iterdir()), [])
         self.assertEqual(self.installer.verify(self.home, None)["project"], "not selected")
@@ -414,7 +414,7 @@ class InstallerTests(unittest.TestCase):
         artifact.parent.mkdir(parents=True)
         artifact.write_text("synthetic test data")
         self.installer.apply_plan(plan)
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 67)
+        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
 
     def test_state_inside_checkout_is_rejected(self):
         with self.assertRaisesRegex(self.installer.InstallError, "outside the checkout"):
@@ -444,7 +444,7 @@ class InstallerTests(unittest.TestCase):
         receipt = json.loads(result.stdout)["receipt"]
         result = self.cli("verify", "--home", str(self.home), "--project", str(self.project))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["verified"], 67)
+        self.assertEqual(json.loads(result.stdout)["verified"], 62)
         result = self.cli("rollback", "--receipt", receipt)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.home / ".prime/agent/settings.json").exists())

@@ -6,7 +6,7 @@ The supported host is **Prime Agent 0.9.8**. `node scripts/sync-prime-agent.mjs`
 ```text
 Public Git source or installed npm package
   ├─ skills/                    -> ~/.prime/agent/skills/<name>
-  ├─ components/pi-pool/         -> pool source links and /account
+  ├─ components/pi-pool/         -> install.py copies a commit to ~/.local/share/pi-pool
   ├─ components/virev/           -> one global Virev extension
   ├─ components/user-history/    -> one global whole-package link
   └─ config/                    -> rules and new-profile defaults

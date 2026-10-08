@@ -89,7 +89,7 @@ for (let pass = 1; pass <= 2; pass++) {
     assert.equal(commands.filter(name => name === command).length, 1, `Expected one /${command} after pass ${pass}`);
   }
   const extensionPaths = result.extensions.map(extension => realpathSync(extension.resolvedPath));
-  assert(extensionPaths.includes(realpathSync(join(source, "components/pi-pool/app/extension/index.ts"))));
+  assert(extensionPaths.includes(realpathSync(join(home, ".local/share/pi-pool/current/app/extension/index.ts"))));
   assert(extensionPaths.includes(realpathSync(join(source, "components/virev/extensions/virev.ts"))));
   assert(extensionPaths.includes(realpathSync(join(source, "components/user-history/extension/index.ts"))));
   const history = result.extensions.find(extension => realpathSync(extension.resolvedPath) === realpathSync(join(source, "components/user-history/extension/index.ts")));

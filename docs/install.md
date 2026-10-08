@@ -84,8 +84,10 @@ The manifest installs these links.
 
 - Each skill root and the auxiliary `skills/skills` directory goes under `~/.prime/agent/skills`.
 - `config/AGENTS.md` and `config/pstack-models.json` go under `~/.prime/agent`.
-- Pool `vend.py`, `app`, and `bin` go under `~/.config/pi-pool`. That parent stays a real directory.
-- The pool CLI goes at `~/.local/bin/pi-pool`; its `/account` extension goes under `~/.prime/agent/extensions/pi-pool`.
+- The pool is not in the manifest. `/usr/bin/python3 -B components/pi-pool/install.py` installs a commit of it
+  under `~/.local/share/pi-pool` and owns its links: `vend.py`, `app` and `bin` under `~/.config/pi-pool`,
+  `~/.local/bin/pi-pool`, and `~/.prime/agent/extensions/pi-pool`. `~/.config/pi-pool` stays a real directory.
+  See [the pool README](../components/pi-pool/README.md#install-update-and-roll-back).
 - One global Virev entry links `~/.prime/agent/extensions/virev.ts` to `components/virev/extensions/virev.ts`.
 - One global history link points `~/.prime/agent/extensions/user-history` at the whole `components/user-history` package.
   Its `pi.extensions` declaration loads `./extension/index.ts`. Both history commands use its sibling `src/` files.

@@ -392,41 +392,6 @@
       "seed_only": true
     },
     {
-      "id": "pool:vend.py",
-      "kind": "link",
-      "source": "components/pi-pool/vend.py",
-      "scope": "home",
-      "target": ".config/pi-pool/vend.py"
-    },
-    {
-      "id": "pool:app",
-      "kind": "link",
-      "source": "components/pi-pool/app",
-      "scope": "home",
-      "target": ".config/pi-pool/app"
-    },
-    {
-      "id": "pool:bin",
-      "kind": "link",
-      "source": "components/pi-pool/bin",
-      "scope": "home",
-      "target": ".config/pi-pool/bin"
-    },
-    {
-      "id": "pool-command",
-      "kind": "link",
-      "source": "components/pi-pool/bin/pi-pool",
-      "scope": "home",
-      "target": ".local/bin/pi-pool"
-    },
-    {
-      "id": "pool-extension",
-      "kind": "link",
-      "source": "components/pi-pool/app/extension",
-      "scope": "home",
-      "target": ".prime/agent/extensions/pi-pool"
-    },
-    {
       "id": "virev-extension",
       "kind": "link",
       "source": "components/virev/extensions/virev.ts",
