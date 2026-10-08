@@ -186,8 +186,9 @@ def install(home, ref):
                 shutil.rmtree(staging)
             raise
     links_before = link_targets(home)
-    linked = link_runtime(home)
+    # `current` first, so no link ever names a path that does not exist yet.
     before = flip(root, release_id)
+    linked = link_runtime(home)
     hooks = checked_switch(home, release_id, before, links_before)
     prune(root)
     return {"current": release_id, "commit": commit, "previous": before, "tests": tests, "relinked": linked, "hooks": hooks}
