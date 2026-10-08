@@ -152,3 +152,9 @@ test("feed: an owner retry keeps the owner's turn; a server notice is one muted 
   assert.equal(waitText({ kind: "retry", error: "Connection error.", at: new Date(2026, 9, 8, 9, 5).getTime() }), "Turn failed (Connection error.). Retrying at 09:05.");
   assert.equal(waitText({ kind: "account", until: null }), "Waiting for a Claude account.");
 });
+
+test("failure cause: a 401 or a Consumer Terms 400 counts like a 429 (down only when the pool has no usable account)", () => {
+  assert.equal(failureCause("Provider authentication failed (authentication_error, 401): Invalid authentication credentials"), "rate-limit");
+  assert.equal(failureCause("400 Please accept the updated Consumer Terms to continue"), "rate-limit");
+  assert.equal(failureCause("Connection error."), "other");
+});

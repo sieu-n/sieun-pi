@@ -20,7 +20,9 @@ const waitOf = (schedule: readonly number[], attempts: number): number => schedu
  */
 export function failureCause(error: string): "account" | "rate-limit" | "other" {
   if (/Failed to resolve API key for provider "anthropic"|No Claude account|No API key for (?:provider: )?anthropic/i.test(error)) return "account";
-  if (/\b429\b|rate_limit_error|rate limit/i.test(error)) return "rate-limit";
+  // A 401 (bad or expired credentials) or a 400 asking to accept new terms is the vended account failing, like a 429: Claude is down only when
+  // the pool has no other usable account (10-08: every account went 401 or "accept the updated Consumer Terms" and no chat switched).
+  if (/\b429\b|rate_limit_error|rate limit|\b401\b|authentication_error|Consumer Terms/i.test(error)) return "rate-limit";
   return "other";
 }
 
