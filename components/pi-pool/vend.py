@@ -2886,9 +2886,14 @@ def cmd_enable(rest):
 
     models = load_json(models_path, {}) or {}
     providers = models.setdefault("providers", {})
+    # The installer's runtime link follows each new release; CODE_ROOT is one
+    # installed release, which a later install replaces and prunes.
+    hook = os.path.join(POOL, "bin", "pi-pool-token")
+    if not os.path.exists(hook):
+        hook = os.path.join(CODE_ROOT, "bin", "pi-pool-token")
     entry = {"baseUrl": "https://chatgpt.com/backend-api",
              "api": "openai-codex-responses",
-             "apiKey": f"!{shlex.quote(os.path.join(CODE_ROOT, 'bin', 'pi-pool-token'))} --provider openai-codex"}
+             "apiKey": f"!{shlex.quote(hook)} --provider openai-codex"}
     changed = providers.get("openai-codex") != entry
     if changed:
         providers["openai-codex"] = entry

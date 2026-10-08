@@ -13,6 +13,7 @@ No account store or credential is included here.
 
 ```text
 checkout/components/pi-pool/
+  install.py               copies a commit into ~/.local/share/pi-pool (next section)
   vend.py                  code root from realpath(__file__)
   app/extension/           /account command, account line, login adoption
   bin/                     executable, relocatable Python wrappers
@@ -27,24 +28,53 @@ PI_POOL_DIR or ~/.config/pi-pool/
 The wrappers resolve symlinks before they locate source files.
 Both wrappers use `-B`, so normal commands do not write Python bytecode into source.
 
-The root installer owns these links. It retains the state directory itself and
-its existing private files.
+## Install, update and roll back
 
-```text
-~/.config/pi-pool/vend.py -> <checkout>/components/pi-pool/vend.py
-~/.config/pi-pool/app     -> <checkout>/components/pi-pool/app
-~/.config/pi-pool/bin     -> <checkout>/components/pi-pool/bin
-~/.local/bin/pi-pool      -> <checkout>/components/pi-pool/bin/pi-pool
+Prime never runs files from this checkout. `install.py` copies a commit into its own
+folder and points the runtime links at it, so an edit here is not live until it is
+committed and installed. On 2026-10-08 a half-done edit in the checkout broke every
+session from 17:45 to 17:59, because the links pointed at source.
+
+```sh
+/usr/bin/python3 -B components/pi-pool/install.py            # install HEAD
+/usr/bin/python3 -B components/pi-pool/install.py --ref <sha>  # install another commit
+/usr/bin/python3 -B components/pi-pool/install.py rollback     # swap current and previous
+/usr/bin/python3 -B components/pi-pool/install.py status
 ```
 
-These links preserve existing `!command` paths under `~/.config/pi-pool`.
-New `enable` entries point to the source wrapper and quote paths with spaces.
-For a custom state directory, pass the same `PI_POOL_DIR` to the CLI and Prime Agent.
-The installer must create that directory before commands that write configuration.
-The CLI rejects state roots inside this source directory.
+`install` takes these steps.
 
-The extension link points to source. A new session loads the current extension; a
-running session keeps the code it loaded until it is rebuilt.
+1. `git archive` exports `components/pi-pool` at the commit into a staging folder.
+   Uncommitted edits never ship.
+2. The pool's Python tests run in that folder. A failure stops here and changes nothing.
+3. The folder becomes `~/.local/share/pi-pool/releases/<tree id>`, read-only. The id is
+   the commit's tree id for this directory, so installing the same code twice reuses it.
+4. The runtime links point at `~/.local/share/pi-pool/current`. Then `current` flips to
+   the new release in one rename, and the release it replaced becomes `previous`.
+5. Both token hooks run through `~/.config/pi-pool/bin/pi-pool-token`. If either fails,
+   `current` goes back to `previous` and the command exits 1. Only token lengths are read.
+
+The installer owns these links. It refuses to replace anything at these paths that is
+not a link.
+
+```text
+~/.config/pi-pool/vend.py           -> ~/.local/share/pi-pool/current/vend.py
+~/.config/pi-pool/app               -> ~/.local/share/pi-pool/current/app
+~/.config/pi-pool/bin               -> ~/.local/share/pi-pool/current/bin
+~/.local/bin/pi-pool                -> ~/.local/share/pi-pool/current/bin/pi-pool
+~/.prime/agent/extensions/pi-pool   -> ~/.local/share/pi-pool/current/app/extension
+```
+
+Prime's `models.json` names `~/.config/pi-pool/bin/pi-pool-token`, so it follows
+`current` with no edit. `pi-pool enable` writes that same link path when it exists.
+State stays where it is: `state.json`, `pi-pool.log`, `config.json`, `fallback.json`,
+`rotations/` and `backups/` under `~/.config/pi-pool`, and the accounts under
+tokenmaxxing. The installer keeps the 10 newest releases plus `current` and `previous`.
+A running session keeps the extension code it loaded, from its own release, until it
+is rebuilt; a new session loads `current`.
+
+For a custom state directory, pass the same `PI_POOL_DIR` to the CLI and Prime Agent.
+The CLI rejects state roots inside the code directory.
 
 ## External credential dependencies
 
@@ -390,7 +420,8 @@ per-process mode and the per-session balancing they tuned.
 
 ## Rollback
 
-Remove the extension link `~/.prime/agent/extensions/pi-pool` and restore the previous
-provider configuration from the installer's external backup to stop using the pool hook.
+`install.py rollback` puts the previous release back in one rename and checks both hooks.
+To stop using the pool hook, remove the extension link `~/.prime/agent/extensions/pi-pool`
+and restore the previous provider configuration from your own backup of `models.json`.
 `fallback.json` holds any adopted login; copy an entry back into `auth.json` to restore it.
-Do not copy files over the installed source symlinks.
+Do not edit or copy files under `~/.local/share/pi-pool`; install a commit instead.

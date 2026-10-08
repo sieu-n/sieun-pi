@@ -113,6 +113,13 @@ class RelocatedSource(unittest.TestCase):
         self.assertTrue((self.state / "pi-pool.log").is_file())
         self.assertEqual(self.snapshot(), before)
 
+    def test_enable_names_the_runtime_link_when_the_installer_made_one(self):
+        (self.state / "bin").symlink_to(self.source / "bin", target_is_directory=True)
+        self.run_command([str(self.source / "bin" / "pi-pool"), "enable", "openai-codex"])
+        command = json.loads((self.agent / "models.json").read_text())["providers"]["openai-codex"]["apiKey"]
+        self.assertEqual(shlex.split(command[1:]),
+                         [str(self.state / "bin" / "pi-pool-token"), "--provider", "openai-codex"])
+
     def test_vend_state_paths_do_not_follow_the_install_link(self):
         (self.state / "vend.py").symlink_to(self.source / "vend.py")
         vend = self.load(self.state / "vend.py", "relocated_vend")
