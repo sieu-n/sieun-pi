@@ -109,7 +109,7 @@
     ],
     "frontend": [
       {
-        "model": "anthropic/claude-fable-5-1"
+        "model": "inherit-parent"
       }
     ]
   },
@@ -124,7 +124,7 @@
     ],
     "recommended": {
       "frontend": [
-        "anthropic/claude-fable-5-1",
+        "inherit-parent",
         "anthropic/claude-opus-5-5"
       ]
     },
@@ -135,6 +135,8 @@
       "anthropic/claude-fable-5-1": "MODEL_OK",
       "anthropic/claude-opus-5-5": "MODEL_OK",
       "openai-codex/gpt-6-astra": "blocked: 'You have hit your ChatGPT usage limit (pro plan). Try again in ~9667 min.' If a spawn on it fails, use inherit-parent or a Claude model."
-    }
-  }
+    },
+    "fable": "Owner-pick only. Never set model= to anthropic/claude-fable-5-1 on a spawn. It stays in `allowed` only because the owner runs some threads on Fable by hand; a child of such a thread inherits it through inherit-parent. Changed 2026-10-08 on the owner's request: Fable weekly quota was being used up by agent-chosen Fable children."
+  },
+  "updated_at": "2026-10-08"
 }
