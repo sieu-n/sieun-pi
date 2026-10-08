@@ -10,6 +10,9 @@
  * account-level refusal, such as Consumer Terms not yet accepted, the pool takes
  * the account out and the same turn retries on another one the same way.
  *
+ * A turn that failed because the token hook gave no token, such as a hook the
+ * Mac slept through, loses Prime's lifecycle-failure tag so Prime retries it.
+ *
  * Every judgement lives in `pi-pool-token --cli`. This file parses JSON and
  * formats strings, so the precedence rules and the usage math exist once, in
  * Python. Everything here goes through the public extension API, so it keeps
@@ -226,6 +229,28 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 	return undefined;
 }
 
+/** Prime's error when the apiKey command fails, times out at 10 s, or prints nothing. */
+const HOOK_FAILED = /^Failed to resolve API key for provider "[^"]+" from shell command: .*pi-pool-token/;
+
+/**
+ * A pool hook run that gave no token. Prime runs the hook with a 10 s timeout; on
+ * 2026-10-08 every such failure fell where the Mac, lid closed on battery, went
+ * back to sleep during a dark wake. Prime tags the throw an agent lifecycle
+ * failure, the one kind it never retries. It is a failed credential lookup, so
+ * the tag comes off and Prime's own retry runs the hook again, up to
+ * retry.maxRetries times.
+ */
+function retryHookFailure(message: AgentMessage): AgentMessage | undefined {
+	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
+	if (!HOOK_FAILED.test(message.errorMessage ?? "")) return undefined;
+	if (!message.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure")) return undefined;
+	return {
+		...message,
+		errorMessage: `${message.errorMessage} pi-pool: the token hook gave no token; the retry uses a new hook run.`,
+		diagnostics: message.diagnostics.filter((diagnostic) => diagnostic.type !== "agent_lifecycle_failure"),
+	};
+}
+
 /** Moves a stored /login for a pooled provider into the pool's fallback, so it cannot shadow the pool. */
 async function adoptLogins(ctx: ExtensionContext): Promise<void> {
 	const res = await pool(["adopt-logins"]);
@@ -264,7 +289,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
 	pi.on("message_end", async (event) => {
-		const message = await swapAccount(event.message);
+		const message = retryHookFailure(event.message) ?? (await swapAccount(event.message));
 		return message ? { message } : undefined;
 	});
 

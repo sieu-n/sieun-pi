@@ -366,6 +366,7 @@ the tray line. Prime 0.9.5 ships as one compiled binary, so that patch is gone.
 | account line | one widget line by the editor: `account <email> 5h 25% · week 7% · fable 12%`, plus `→ <email>` when the next request switches. Refreshed at session start, on model change, after every turn, and every 60 seconds |
 | login adoption | at session start it runs `pi-pool adopt-logins` (next section) and tells you if it moved a login |
 | 429 swap | on a 429 it runs `pi-pool limited` and, when another account can serve, drops the reset from the message so Prime retries in about a second on that account (see "A 429 moves the session in the same turn") |
+| hook retry | a turn that failed with "Failed to resolve API key ... pi-pool-token" loses Prime's lifecycle-failure tag, so Prime retries it like any unclassified error |
 | refusal probe | at session start it runs `pi-pool probe`, which sends one free `count_tokens` request per account with a valid token, at most every 6 hours. A refused account gets a 24h cooldown in the pool and `enforcedUntil` in tokenmaxxing's index, so supervised `claude` sessions avoid it too |
 
 Prime 0.9.5 keeps `setStatus` text but its footer never draws it, which is why the account
@@ -411,7 +412,11 @@ per-process mode and the per-session balancing they tuned.
 - Every wait is budgeted under pi's 10s hook timeout. Prime measures that timeout by the
   wall clock and drops the hook's stderr. A hook it kills logs one `hook_killed` line with
   the stack it was in, `wall_sec` and `awake_sec`. A `wall_sec` far above `awake_sec` means
-  the Mac slept while the hook ran; Prime 0.9.8 does not retry that turn.
+  the Mac slept while the hook ran. Prime 0.9.8 tags that failure an agent lifecycle failure
+  and never retries it, so the extension takes the tag off and Prime's own retry runs the
+  hook again, up to `retry.maxRetries` times (`tests/native/hook-timeout.mjs`).
+- A writer killed between its write and its rename leaves `<file>.tmp.<pid>`. The next
+  save of that file removes every such file whose pid is gone.
 - A failure on either provider degrades to `fallback.json` (your own login, a separate
   grant family) rather than "No API key found".
 

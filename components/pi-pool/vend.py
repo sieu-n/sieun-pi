@@ -108,6 +108,28 @@ def save_json(path, data):
         f.write(text)
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+    sweep_dead_writers(path)
+
+
+def sweep_dead_writers(path):
+    """Remove `<path>.tmp.<pid>` files whose writer is gone. A writer killed between
+    the open and the rename leaves one: Prime stops a hook at its 10 s timeout, and
+    on 2026-10-08 six of them, 80 KB to 835 KB each, sat next to state.json."""
+    folder, prefix = os.path.split(path)
+    prefix += ".tmp."
+    for name in os.listdir(folder or "."):
+        pid = name[len(prefix):]
+        if not name.startswith(prefix) or not pid.isdigit() or int(pid) == 0:
+            continue
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            try:
+                os.remove(os.path.join(folder, name))
+            except FileNotFoundError:
+                pass
+        except PermissionError:
+            pass
 
 
 def config():
