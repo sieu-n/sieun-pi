@@ -1464,6 +1464,25 @@ def cmd_probe(rest=()):
 
 
 # ---------------------------------------------------------------------- vend
+def last_vend_account(state, key, provider, accounts, now):
+    """The account this session was last vended, for a request that cannot take
+    the pool flock. None when the session has no vend on file, or that account
+    is off, needs reauth, is cooling down after a refusal, or holds the
+    provider's 429."""
+    if key is None or state.get("version") != 2:
+        return None
+    last = (((state.get("sessions") or {}).get(key.key) or {}).get("vends") or {}).get(provider)
+    prov = (state.get("providers") or {}).get(provider)
+    if not last or not prov:
+        return None
+    account = next((a for a in with_pool_state(accounts, state, provider) if a.id == last["account_id"]), None)
+    if account is None or account.disabled or account.needs_reauth or account.limited_until > now:
+        return None
+    if (prov.get("cooldowns") or {}).get(account.id, 0) > now:
+        return None
+    return account
+
+
 def vend(provider):
     """Resolve one account for this session and write its access token to
     stdout. stdout is the token and nothing else; every other byte goes to
@@ -1473,6 +1492,8 @@ def vend(provider):
     release it, fetch or refresh the credential under tokenmaxxing's own
     lock, then re-take the pool flock to record the vend. The pool flock is
     never held across a refresh, so `pi-pool use` never queues behind one.
+    When the flock stays busy past STATE_LOCK_TIMEOUT, the session keeps the
+    account it was last vended, if that account can still serve.
     """
     cfg = config()
     accounts = load_index(provider)
@@ -1480,17 +1501,27 @@ def vend(provider):
     parent_pid = os.getppid()
     parent = (parent_pid, (proc_info(parent_pid) or {}).get("start")) if key else None
 
-    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
-        state = load_state()
-        now = time.time()
-        if HookWriter(state).prune(cfg, now):
-            save_json(STATE, state)
-        accounts = with_pool_state(accounts, state, provider)
-        accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
-        intent = intent_for(state, key, provider)
-        in_use = in_use_counts(state, provider)
-        cooldowns = dict(state["providers"][provider]["cooldowns"])
-        res = resolve(intent, accounts, in_use, cooldowns, cfg, now)
+    try:
+        with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+            state = load_state()
+            now = time.time()
+            if HookWriter(state).prune(cfg, now):
+                save_json(STATE, state)
+            accounts = with_pool_state(accounts, state, provider)
+            accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
+            intent = intent_for(state, key, provider)
+            in_use = in_use_counts(state, provider)
+            cooldowns = dict(state["providers"][provider]["cooldowns"])
+            res = resolve(intent, accounts, in_use, cooldowns, cfg, now)
+    except TimeoutError:
+        # save_json replaces state.json in one rename, so an unlocked read sees a whole file.
+        account = last_vend_account(load_json(STATE, {}) or {}, key, provider, accounts, time.time())
+        if account is None:
+            raise
+        token, source = credential_for(account, cfg)
+        log("vend_lock_busy", provider=provider, account=account.email, source=source, session=key.key)
+        sys.stdout.write(token)
+        return
 
     if res is None:
         # Vend the soonest-to-reset account rather than nothing, so the caller
@@ -1522,15 +1553,20 @@ def vend(provider):
                 apply_refusal(account, refusal, cfg, now)
                 cooldowns[account.id] = now + cfg["refused_cooldown_sec"]
                 continue
-        with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
-            state = load_state()
-            writer = HookWriter(state)
-            if reason in ("seat_move", "seat_upgrade"):
-                writer.move_seat(provider, account, now)
-            prev = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
-            vended = writer.record_vend(key, provider, account, source, reason,
-                                        res.shadowed, now, parent) if key else None
-            save_json(STATE, state)
+        prev = vended = None
+        try:
+            with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+                state = load_state()
+                writer = HookWriter(state)
+                if reason in ("seat_move", "seat_upgrade"):
+                    writer.move_seat(provider, account, now)
+                prev = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
+                vended = writer.record_vend(key, provider, account, source, reason,
+                                            res.shadowed, now, parent) if key else None
+                save_json(STATE, state)
+        except TimeoutError:
+            # The token is valid; a vend left off the record only skews the next pick.
+            log("vend_unrecorded", provider=provider, account=account.email, session=key and key.key)
         # The hook runs on every provider request, so a line per vend would be a log of
         # thousands. Log the transitions only: a session changing account, and a seat move.
         # `why` says why the pin in `shadowed` did not serve (depleted, limited, ...).

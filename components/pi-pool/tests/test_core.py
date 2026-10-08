@@ -452,6 +452,77 @@ class SessionVend(unittest.TestCase):
                 self.assertEqual(rec["vends"][provider]["account_id"], acct.id)
 
 
+class BusyPoolLock(unittest.TestCase):
+    """A request whose pool flock times out keeps the session's last account."""
+
+    def vended_state(self, account_id="b", limits=None, cooldowns=None, disabled=None):
+        state = state_v2(cooldowns=cooldowns)
+        prov = state["providers"]["anthropic"]
+        prov["limits"], prov["disabled"] = limits or {}, disabled or {}
+        state["sessions"][KEY.key]["vends"]["anthropic"] = {"account_id": account_id, "email": "b@x", "at": NOW - 5, "n": 3}
+        return state
+
+    def run_vend(self, state, busy_calls, key=KEY, accounts=(A, B)):
+        calls, logged, saved = [], [], []
+
+        @contextlib.contextmanager
+        def lock(*args, **kwargs):
+            calls.append(True)
+            if len(calls) in busy_calls:
+                raise TimeoutError("could not lock pool")
+            yield
+
+        output = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for name, value in {"config": CFG, "load_index": list(accounts), "session_key": key,
+                                "load_state": state, "load_json": state,
+                                "credential_for": ("fixture-token", "store"), "proc_info": {"start": "s"}}.items():
+                stack.enter_context(unittest.mock.patch.object(vend, name, return_value=value))
+            stack.enter_context(unittest.mock.patch.object(vend, "Flock", lock))
+            stack.enter_context(unittest.mock.patch.object(vend.time, "time", return_value=NOW))
+            stack.enter_context(unittest.mock.patch.object(vend, "save_json", side_effect=lambda *a: saved.append(a)))
+            stack.enter_context(unittest.mock.patch.object(vend, "log", side_effect=lambda e, **kw: logged.append((e, kw))))
+            stack.enter_context(contextlib.redirect_stdout(output))
+            vend.vend("anthropic")
+        return output.getvalue(), logged, saved
+
+    def test_a_busy_lock_serves_the_last_vended_account_and_logs_it(self):
+        out, logged, saved = self.run_vend(self.vended_state(), busy_calls={1})
+        self.assertEqual(out, "fixture-token")
+        self.assertEqual(logged, [("vend_lock_busy", {"provider": "anthropic", "account": "b@x",
+                                                      "source": "store", "session": KEY.key})])
+        self.assertEqual(saved, [])
+
+    def test_a_busy_lock_refuses_a_last_account_that_cannot_serve(self):
+        cases = {"limited": self.vended_state(limits={"b": {"until": NOW + 600, "at": NOW}}),
+                 "cooldown": self.vended_state(cooldowns={"b": NOW + 600}),
+                 "disabled": self.vended_state(disabled={"b": NOW}),
+                 "gone from the index": self.vended_state(account_id="zz")}
+        for why, state in cases.items():
+            with self.subTest(why=why), self.assertRaises(TimeoutError):
+                self.run_vend(state, busy_calls={1})
+        with self.assertRaises(TimeoutError):
+            self.run_vend(self.vended_state(account_id="e"), busy_calls={1}, accounts=(A, BROKEN))
+
+    def test_a_busy_lock_with_no_vend_on_file_still_fails(self):
+        with self.assertRaises(TimeoutError):
+            self.run_vend(state_v2(), busy_calls={1})
+        with self.assertRaises(TimeoutError):
+            self.run_vend(self.vended_state(), busy_calls={1}, key=None)
+
+    def test_an_expired_limit_does_not_stop_the_busy_lock_path(self):
+        out, _, _ = self.run_vend(self.vended_state(limits={"b": {"until": NOW - 1, "at": NOW - 600}}), busy_calls={1})
+        self.assertEqual(out, "fixture-token")
+
+    def test_a_busy_lock_at_record_time_still_emits_the_token(self):
+        state = self.vended_state()
+        state["providers"]["anthropic"]["seat"] = {"account_id": "b", "since": NOW}
+        out, logged, saved = self.run_vend(state, busy_calls={2})
+        self.assertEqual(out, "fixture-token")
+        self.assertIn(("vend_unrecorded", {"provider": "anthropic", "account": "b@x", "session": KEY.key}), logged)
+        self.assertEqual(saved, [])
+
+
 class IndexV2Windows(unittest.TestCase):
     """tokenmaxxing index v2 windows, classified by windowSeconds and name
     rather than array position, for both providers."""
