@@ -1,0 +1,98 @@
+[
+ {
+  "step": "t+16m: every chat's first check-in from the recorded memory",
+  "due": [
+   "00000000-0000-7000-8000-00000000000a",
+   "00000000-0000-7000-8000-00000000000b",
+   "00000000-0000-7000-8000-00000000000c",
+   "00000000-0000-7000-8000-00000000000d"
+  ],
+  "calls": [
+   "steer 00000000-0000-7000-8000-00000000000a [check-in] What changed:\n- p6 \"Fix: the build machine is out of disk space\" belongs to chat B (correction c1): hand it off with a message to that thread and remove it from this plan\n- p6 \"Fix: the build machine is out of disk space\" has no live owner: start a job, take it yourself, or ask the owner in For you\n\nOpen steps, oldest change first:\n- p5 (live) \"Write: the release notes\" doing, owner thread docs thread (idle), last change 4 h ago\n- p3 (foryou) \"Push: publish the release to the public channel\" blocked, owner job job push (idle), last change 3 h ago\n- p2 (live) \"Build: package the release\" doing, owner job job build (working), last change 76 min ago\n- p4 (waiting) \"Verify: the release checklist passes\" todo, no owner, waits for \"job build reports the package\", last change 76 min ago\n- p7 (waiting) \"Free space on the build machine before the next build\" blocked, no owner, waits for \"chat B frees the space\", last change 76 min ago\n- p6 (orphan) \"Fix: the build machine is out of disk space\" todo, no owner, last change 46 min ago",
+   "steer 00000000-0000-7000-8000-00000000000b [check-in] What changed:\n- p12 (job job cleanup) finished; the board still says doing\n- p12 \"Fix: free disk space on the build machine now\" has no live owner (job job cleanup idle): start a job, take it yourself, or ask the owner in For you\n- p13 \"Wait: the vendor answers the storage ticket\" waits for \"vendor answer on the storage ticket\" for 3 h: chase it now; after 24 h make it a For you todo or replan\n\nOpen steps, oldest change first:\n- p12 (orphan) \"Fix: free disk space on the build machine now\" doing, owner job job cleanup (idle), last change 3 h ago\n- p13 (stale-chase) \"Wait: the vendor answers the storage ticket\" blocked, no owner, waits for \"vendor answer on the storage ticket\", last change 3 h ago\n- p14 (waiting) \"Verify: the health check returns 200 after the cutover\" todo, no owner, waits until 2030-01-16 08:00, last change 2 h ago\n- p15 (waiting) \"Add an alert test for the dashboard\" blocked, no owner, waits for \"chat C ships the dashboard\", last change 76 min ago",
+   "steer 00000000-0000-7000-8000-00000000000c [check-in] What changed:\n- p25 (job job audit): no activity for 56 min\n- p23 \"Run: read the queue snapshot at every check-in\" is due since 11:30: act on it or set a new waitUntil\n\nOpen steps, oldest change first:\n- p23 (due) \"Run: read the queue snapshot at every check-in\" todo, no owner, waits until 2030-01-15 11:30, last change 3 h ago\n- p24 (waiting) \"Prune old CI caches\" blocked, no owner, waits until 2030-01-17 04:00, waits for \"the cache job lands\", last change 2 h ago\n- p25 (live) \"Build: one fix per waste the audit finds\" todo, owner job job audit (working), last change 2 h ago\n- p22 (live) \"Build: the CI dashboard with charts\" doing, owner job job dashboard (working), last change 76 min ago",
+   "steer 00000000-0000-7000-8000-00000000000d [check-in] What changed:\n- p36 \"Ship: the landing page\": job job landing ended at 11:10 and the step was not updated; I put its report in the step's note: update the step now\n- p31 \"Goal: demo apps\" looks done (every step under it is closed): verify and close it\n- p36 \"Ship: the landing page\" looks done (its note says \"Merged\"): verify and close it\n\nOpen steps, oldest change first:\n- p31 (orphan) \"Goal: demo apps\" doing, no owner, last change 8 h ago, looks done\n- p35 (foryou) \"Decide: the owner picks the landing variant\" blocked, no owner, last change 4 h ago\n- p36 (orphan) \"Ship: the landing page\" doing, owner job job landing (idle), last change 3 h ago, looks done\n- p37 (waiting) \"Verify: the landing page passes the browser walk\" todo, no owner, waits until 2030-01-15 14:00, last change 2 h ago"
+  ],
+  "notes": [
+   "00000000-0000-7000-8000-00000000000d [{\"op\":\"plan_update\",\"id\":\"p36\",\"note\":\"Job job landing ended at 11:10, report: the landing page is deployed and the link works\\nMerged and deployed to production.\"}]"
+  ]
+ },
+ {
+  "step": "t+17m: job push and job cleanup take a follow-up task",
+  "calls": [],
+  "notes": []
+ },
+ {
+  "step": "t+20m: job push says it waits; job cleanup ends with no report",
+  "calls": [
+   "steer 00000000-0000-7000-8000-00000000000a [job] job push is waiting for you since 12:19 (last message: \"waiting for your go before I publish the release\")",
+   "steer 00000000-0000-7000-8000-00000000000b [job] job cleanup ended at 12:20 with no report"
+  ],
+  "notes": []
+ },
+ {
+  "step": "t+21m: job dashboard stops on a provider error with no report",
+  "due": [],
+  "calls": [
+   "steer 00000000-0000-7000-8000-00000000000c [check-in] What changed:\n- p22 \"Build: the CI dashboard with charts\": Job job dashboard stopped on a provider error (\"429 rate_limit_error: This request would exceed the rate limit.\") at 12:21 and sent no report: re-brief it with a follow-up, restart it, or replace it"
+  ],
+  "notes": [
+   "00000000-0000-7000-8000-00000000000c [{\"op\":\"plan_update\",\"id\":\"p22\",\"note\":\"Job job dashboard stopped on a provider error (\\\"429 rate_limit_error: This request would exceed the rate limit.\\\") at 12:21 and sent no report: re-brief it with a follow-up, restart it, or replace it\"}]"
+  ]
+ },
+ {
+  "step": "t+32m: the next check-in",
+  "due": [
+   "00000000-0000-7000-8000-00000000000a",
+   "00000000-0000-7000-8000-00000000000b",
+   "00000000-0000-7000-8000-00000000000c",
+   "00000000-0000-7000-8000-00000000000d"
+  ],
+  "calls": [
+   "steer 00000000-0000-7000-8000-00000000000a [check-in] What changed:\n- p2 (job job build): no activity for 33 min\n- p6 \"Fix: the build machine is out of disk space\" has no live owner: start a job, take it yourself, or ask the owner in For you\n\nOpen steps, oldest change first:\n- p5 (live) \"Write: the release notes\" doing, owner thread docs thread (idle), last change 5 h ago\n- p3 (foryou) \"Push: publish the release to the public channel\" blocked, owner job job push (idle), last change 4 h ago\n- p2 (live) \"Build: package the release\" doing, owner job job build (working), last change 92 min ago\n- p4 (waiting) \"Verify: the release checklist passes\" todo, no owner, waits for \"job build reports the package\", last change 92 min ago\n- p7 (waiting) \"Free space on the build machine before the next build\" blocked, no owner, waits for \"chat B frees the space\", last change 92 min ago\n- p6 (orphan) \"Fix: the build machine is out of disk space\" todo, no owner, last change 62 min ago",
+   "steer 00000000-0000-7000-8000-00000000000b [check-in] What changed:\n- p12 \"Fix: free disk space on the build machine now\" has no live owner (job job cleanup idle): start a job, take it yourself, or ask the owner in For you\n- p13 \"Wait: the vendor answers the storage ticket\" waits for \"vendor answer on the storage ticket\" for 4 h: chase it now; after 24 h make it a For you todo or replan\n\nOpen steps, oldest change first:\n- p12 (orphan) \"Fix: free disk space on the build machine now\" doing, owner job job cleanup (idle), last change 4 h ago\n- p13 (stale-chase) \"Wait: the vendor answers the storage ticket\" blocked, no owner, waits for \"vendor answer on the storage ticket\", last change 4 h ago\n- p14 (waiting) \"Verify: the health check returns 200 after the cutover\" todo, no owner, waits until 2030-01-16 08:00, last change 3 h ago\n- p15 (waiting) \"Add an alert test for the dashboard\" blocked, no owner, waits for \"chat C ships the dashboard\", last change 92 min ago",
+   "steer 00000000-0000-7000-8000-00000000000c [check-in] What changed:\n- p22 \"Build: the CI dashboard with charts\" has no live owner (job job dashboard idle): start a job, take it yourself, or ask the owner in For you\n- p23 \"Run: read the queue snapshot at every check-in\" is due since 11:30: act on it or set a new waitUntil\n\nOpen steps, oldest change first:\n- p23 (due) \"Run: read the queue snapshot at every check-in\" todo, no owner, waits until 2030-01-15 11:30, last change 4 h ago\n- p24 (waiting) \"Prune old CI caches\" blocked, no owner, waits until 2030-01-17 04:00, waits for \"the cache job lands\", last change 3 h ago\n- p25 (live) \"Build: one fix per waste the audit finds\" todo, owner job job audit (working), last change 3 h ago\n- p22 (orphan) \"Build: the CI dashboard with charts\" doing, owner job job dashboard (idle), last change 92 min ago"
+  ],
+  "notes": []
+ },
+ {
+  "step": "t+26h: waits passed, chases escalate, fan-out",
+  "due": [
+   "00000000-0000-7000-8000-00000000000a",
+   "00000000-0000-7000-8000-00000000000b",
+   "00000000-0000-7000-8000-00000000000c",
+   "00000000-0000-7000-8000-00000000000d"
+  ],
+  "calls": [
+   "steer 00000000-0000-7000-8000-00000000000a [check-in] 6 items need checking: scope p6, stale-chase p4 p5 p7, orphan p6, job ended p3. Do not check them yourself. Start one check-in job now with this call, then end the turn:\n`await rlm.spawn(open(\"<dir>/check-in-jobs/00000000-0000-7000-8000-00000000000a-2030-01-16-1400.md\").read(), name=\"check-in 14:00\")`\nIt checks each item in its own subagents and sends you board ops and owner lines. Apply them, and tell the owner only what matters.",
+   "steer 00000000-0000-7000-8000-00000000000b [check-in] 5 items need checking: due p14, stale-chase p13 p15, orphan p12, job ended p12. Do not check them yourself. Start one check-in job now with this call, then end the turn:\n`await rlm.spawn(open(\"<dir>/check-in-jobs/00000000-0000-7000-8000-00000000000b-2030-01-16-1400.md\").read(), name=\"check-in 14:00\")`\nIt checks each item in its own subagents and sends you board ops and owner lines. Apply them, and tell the owner only what matters.",
+   "steer 00000000-0000-7000-8000-00000000000b [from chat A] your step p7 \"Free space on the build machine before the next build\" (it waits for \"chat B frees the space\") has waited 27 h: what is left, and when? Answer with `await agent_message.send(answer, receiver_role=\"sibling\", receiver_name=\"chat A\")`.",
+   "steer 00000000-0000-7000-8000-00000000000c [check-in] 3 items need checking: due p23, orphan p22, job ended p22. Do not check them yourself. Start one check-in job now with this call, then end the turn:\n`await rlm.spawn(open(\"<dir>/check-in-jobs/00000000-0000-7000-8000-00000000000c-2030-01-16-1400.md\").read(), name=\"check-in 14:00\")`\nIt checks each item in its own subagents and sends you board ops and owner lines. Apply them, and tell the owner only what matters.",
+   "steer 00000000-0000-7000-8000-00000000000c [from chat B] your step p15 \"Add an alert test for the dashboard\" (it waits for \"chat C ships the dashboard\") has waited 27 h: what is left, and when? Answer with `await agent_message.send(answer, receiver_role=\"sibling\", receiver_name=\"chat B\")`.",
+   "steer 00000000-0000-7000-8000-00000000000d [check-in] 3 items need checking: looks done p31 p36, due p37. Do not check them yourself. Start one check-in job now with this call, then end the turn:\n`await rlm.spawn(open(\"<dir>/check-in-jobs/00000000-0000-7000-8000-00000000000d-2030-01-16-1400.md\").read(), name=\"check-in 14:00\")`\nIt checks each item in its own subagents and sends you board ops and owner lines. Apply them, and tell the owner only what matters.",
+   "steer 00000000-0000-7000-8000-0000000000a1 [from chat A] your step p4 \"Verify: the release checklist passes\" (it waits for \"job build reports the package\") has waited 27 h: what is left, and when? Answer with `await agent_message.send(answer, receiver_role=\"sibling\", receiver_name=\"chat A\")`.",
+   "steer 00000000-0000-7000-8000-0000000000e1 [from chat A] your step p5 \"Write: the release notes\" has waited 30 h: what is left, and when? Answer with `await agent_message.send(answer, receiver_role=\"sibling\", receiver_name=\"chat A\")`."
+  ],
+  "notes": [
+   "00000000-0000-7000-8000-00000000000a [{\"op\":\"plan_update\",\"id\":\"p3\",\"note\":\"Job job push ended at 12:20, report: waiting for your go before I publish the release\"}]",
+   "00000000-0000-7000-8000-00000000000b [{\"op\":\"plan_update\",\"id\":\"p12\",\"note\":\"Job job cleanup ended at 12:20, no report\"}]",
+   "00000000-0000-7000-8000-00000000000c [{\"op\":\"plan_update\",\"id\":\"p22\",\"note\":\"Job job dashboard ended at 12:21, no report\"}]"
+  ]
+ },
+ {
+  "step": "t+26h16m: the check-in after that",
+  "due": [
+   "00000000-0000-7000-8000-00000000000a",
+   "00000000-0000-7000-8000-00000000000b",
+   "00000000-0000-7000-8000-00000000000c",
+   "00000000-0000-7000-8000-00000000000d"
+  ],
+  "calls": [
+   "steer 00000000-0000-7000-8000-00000000000a [check-in] What changed:\n- p4 \"Verify: the release checklist passes\" waits for \"job build reports the package\" for 27 h: make it a For you todo or replan it now (I asked job build at 14:00)\n- p5 \"Write: the release notes\" waits on thread docs thread for 30 h: make it a For you todo or replan it now (I asked thread docs at 14:00)\n- p6 \"Fix: the build machine is out of disk space\" has no live owner: start a job, take it yourself, or ask the owner in For you\n- p7 \"Free space on the build machine before the next build\" waits for \"chat B frees the space\" for 27 h: make it a For you todo or replan it now (I asked chat B at 14:00)\n\nOpen steps, oldest change first:\n- p5 (stale-chase) \"Write: the release notes\" doing, owner thread docs thread (idle), last change 30 h ago\n- p3 (foryou) \"Push: publish the release to the public channel\" blocked, owner job job push (idle), last change 29 h ago\n- p2 (live) \"Build: package the release\" doing, owner job job build (working), last change 27 h ago\n- p4 (stale-chase) \"Verify: the release checklist passes\" todo, no owner, waits for \"job build reports the package\", last change 27 h ago\n- p7 (stale-chase) \"Free space on the build machine before the next build\" blocked, no owner, waits for \"chat B frees the space\", last change 27 h ago\n- p6 (orphan) \"Fix: the build machine is out of disk space\" todo, no owner, last change 27 h ago",
+   "steer 00000000-0000-7000-8000-00000000000b [check-in] What changed:\n- p12 \"Fix: free disk space on the build machine now\" has no live owner (job job cleanup idle): start a job, take it yourself, or ask the owner in For you\n- p13 \"Wait: the vendor answers the storage ticket\" waits for \"vendor answer on the storage ticket\" for 29 h: make it a For you todo or replan it now\n- p14 \"Verify: the health check returns 200 after the cutover\" is due since 08:00: act on it or set a new waitUntil\n- p15 \"Add an alert test for the dashboard\" waits for \"chat C ships the dashboard\" for 27 h: make it a For you todo or replan it now (I asked chat C at 14:00)\n\nOpen steps, oldest change first:\n- p12 (orphan) \"Fix: free disk space on the build machine now\" doing, owner job job cleanup (idle), last change 29 h ago\n- p13 (stale-chase) \"Wait: the vendor answers the storage ticket\" blocked, no owner, waits for \"vendor answer on the storage ticket\", last change 29 h ago\n- p14 (due) \"Verify: the health check returns 200 after the cutover\" todo, no owner, waits until 2030-01-16 08:00, last change 28 h ago\n- p15 (stale-chase) \"Add an alert test for the dashboard\" blocked, no owner, waits for \"chat C ships the dashboard\", last change 27 h ago",
+   "steer 00000000-0000-7000-8000-00000000000c [check-in] What changed:\n- p22 \"Build: the CI dashboard with charts\" has no live owner (job job dashboard idle): start a job, take it yourself, or ask the owner in For you\n- p23 \"Run: read the queue snapshot at every check-in\" is due since 2030-01-15 11:30: act on it or set a new waitUntil\n\nOpen steps, oldest change first:\n- p23 (due) \"Run: read the queue snapshot at every check-in\" todo, no owner, waits until 2030-01-15 11:30, last change 29 h ago\n- p24 (waiting) \"Prune old CI caches\" blocked, no owner, waits until 2030-01-17 04:00, waits for \"the cache job lands\", last change 28 h ago\n- p25 (live) \"Build: one fix per waste the audit finds\" todo, owner job job audit (working), last change 28 h ago\n- p22 (orphan) \"Build: the CI dashboard with charts\" doing, owner job job dashboard (idle), last change 27 h ago",
+   "steer 00000000-0000-7000-8000-00000000000d [check-in] What changed:\n- p37 \"Verify: the landing page passes the browser walk\" is due since 2030-01-15 14:00: act on it or set a new waitUntil\n\nOpen steps, oldest change first:\n- p31 (orphan) \"Goal: demo apps\" doing, no owner, last change 34 h ago, looks done\n- p35 (foryou) \"Decide: the owner picks the landing variant\" blocked, no owner, last change 30 h ago\n- p36 (orphan) \"Ship: the landing page\" doing, owner job job landing (idle), last change 29 h ago, looks done\n- p37 (due) \"Verify: the landing page passes the browser walk\" todo, no owner, waits until 2030-01-15 14:00, last change 28 h ago"
+  ],
+  "notes": []
+ }
+]

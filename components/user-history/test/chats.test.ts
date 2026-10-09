@@ -12,6 +12,8 @@ import { SessionManager } from "prime-agent";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { AttachQueue, ThreadHub } from "../src/chat-threads.ts";
 import { isThreadBusy, isTurnRunning } from "../src/shared/thread-state.ts";
+import { Duties } from "../src/chat-duty-run.ts";
+import { DutyStore } from "../src/chat-duty-store.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatAgent, ChatBoard, ChatWait, ChildAgent, ModelInfo, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
 import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
@@ -175,12 +177,14 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /never have to give the same correction twice/);
   assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or another thread as `thread:<id>` or its session name\) and its next action; otherwise mark it blocked with the exact thing that unblocks it\. A step that waits on someone else is still yours to chase\. Before you mark a step done, check the real state \(the commit, the live service, the report\), never an old note\./);
   assert.ok(brief.includes("End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open " +
-    "For you todo. A `[check-in]` lists what changed, then every open step with its class, owner and time since its last change. In that same " +
+    "For you todo. The check-in is your built-in duty for this end state: it measures it at every check-in and job event, and after your turn " +
+    "it checks again and names each flagged step you left unchanged. A `[check-in]` lists what changed, then every open step with its class, owner and time since its last change. In that same " +
     "turn act on every step whose class needs you: due (its waitUntil passed): act on it or set a new waitUntil; stale-chase (it waits on " +
     "another thread or an event with no progress for 2 h): chase it now, and after 24 h make it a For you todo or replan it; orphan (no live " +
     "owner, no todo, no wait): start a job, take it yourself, or ask the owner in For you. live, foryou and waiting need nothing. A step that " +
     "truly waits on the owner has exactly one For you todo. When a job ends or replies, update its step in that same turn; at the next check-in " +
     "the server writes the job's report into a step you left unchanged. Watching and reporting alone is not progress."), "one end-state rule with the action per class (owner 10-09)");
+  assert.ok(!/board convergence/i.test(brief), "no separate Board convergence duty: the check-in owns board convergence (correction c15)");
   assert.ok(!brief.includes("A step stalled 2 h or more"), "the class rule replaces the old stall bullet");
   assert.ok(CHAT_BRIEF.includes("A check-in turn is triage. Read its lines and decide what to do; do not verify open steps one by one yourself. When a `[check-in]` says to " +
     "start a check-in job, run the exact call it gives and end the turn. The job checks the steps in its own subagents and sends you board ops " +
@@ -681,7 +685,7 @@ test("chats: the scheduler runs each chat at its own interval, skips a paused on
   again.close();
 });
 
-test("chats: a service restart keeps each chat's check-in schedule from its memory; a held check-in leaves one log line; every chat held is told to chatAdded", async () => {
+test("chats: a service restart keeps each chat's check-in schedule from its memory; a held check-in leaves one log line; adopting a chat creates no duty", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const logs: string[] = [];
@@ -692,15 +696,16 @@ test("chats: a service restart keeps each chat's check-in schedule from its memo
   let now = 10 * 60 * 60_000;
   await checkInRecord(join(dir, "check-ins.json")).set("vp", { at: now - 20 * 60_000, jobs: {}, steps: { p7: { sig: JSON.stringify(["doing", "Check the load", "vp", new Date(1_000_000).toISOString(), ""]), at: 0 } },
     answered: [], ready: [] });
-  const added: string[] = [];
+  const store = new DutyStore(dir);
+  const duties = new Duties(store, { isChat: async () => true, notify: async () => {}, tickMs: 0, now: () => now });
   const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    source(dir, { vp: board, fresh: board }, () => now), line => logs.push(line));
-  chats.chatAdded = id => added.push(id);
+    { ...source(dir, { vp: board, fresh: board }, () => now), duty: duties }, line => logs.push(line));
   await chats.adopt();
-  assert.deepEqual(added.sort(), ["fresh", "vp"]);
+  assert.deepEqual([await store.chats(), await store.list("vp")], [[], []], "no Board convergence duty: the check-in is the chat's one built-in duty");
   assert.deepEqual(await chats.tick(), ["vp"], "the chat checked in 20 min before the restart is due at the first wake; the old code waited 15 min from the start");
   await chats.settled();
   assert.ok(calls.some(call => call.startsWith("steer vp [check-in]") && call.includes('p7 "Check the load" is due since')), calls.join(" | "));
+  assert.deepEqual([(await store.read("vp")).duties, (await store.read("vp")).checkIn?.runCount], [[], 1], "the tick is a run of the built-in duty, and no standing duty appears");
   now += 15 * 60_000;
   const threads = fakeThreads(calls);
   const held = new Chats(index, { ...threads, running: () => true, state: () => ({ messages: [{ role: "user", content: "hi", timestamp: now }] }) }, async () => ({ lifecycle: "live" }), "b1",

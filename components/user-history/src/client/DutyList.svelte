@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { DutyView } from "../shared/chat-duties.ts";
+  import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel } from "./duty-cadence.ts";
   import { dutyState, history, lastLabel, metricValue, nextLabel, scheduleLabel, type ChatDuties } from "./duties.svelte.ts";
   import Icon from "./Icon.svelte";
   import IdChip from "./IdChip.svelte";
@@ -9,7 +10,9 @@
   /**
    * The Duties card body: one row per duty with its state dot, name, schedule, next run, the last verdict and the pass and fail history as dots
    * (oldest first; green met, amber missed, red failed, grey skipped). A click on the row opens its goal, the owner's words, each metric against
-   * its target over the last runs, and the last run's output file. Run now and Pause or Resume act through the server.
+   * its target over the last runs, the last run's output file, and the cadence editor (every N minutes or a daily time). Run now and Pause or
+   * Resume act through the server. The check-in is a built-in duty: it carries a Built-in tag, its last run's open steps per class and what it
+   * flagged, handled or left after the chat's turn, and its cadence and pause are the chat's check-in setting (the header's control).
    */
   let { chat, duties, now }: { chat: string; duties: ChatDuties; now: number } = $props();
 
@@ -20,7 +23,20 @@
     const run = history(view)[index]!;
     return `${new Date(run.at).toLocaleString()}: ${VERDICT_WORD[run.verdict]}. ${run.error ?? run.summary}`;
   };
-  const lastRun = (view: DutyView) => view.runs.find(run => run.verdict !== "skipped");
+  const lastRun = (view: DutyView) => view.runs.find(run => run.verdict !== "skipped" && run.trigger !== "after-turn");
+
+  let drafts = $state<Record<string, CadenceDraft>>({});
+  let cadenceError = $state<Record<string, string>>({});
+  const draftOf = (view: DutyView): CadenceDraft => drafts[view.duty.id] ?? cadenceDraft(view.schedule);
+  const setDraft = (view: DutyView, change: Partial<CadenceDraft>) => { drafts = { ...drafts, [view.duty.id]: { ...draftOf(view), ...change } }; };
+  const saveCadence = async (view: DutyView) => {
+    const schedule = cadenceSchedule(draftOf(view), view.builtin !== undefined);
+    if ("error" in schedule) { cadenceError = { ...cadenceError, [view.duty.id]: schedule.error }; return; }
+    cadenceError = { ...cadenceError, [view.duty.id]: "" };
+    await duties.act(view.duty.id, "schedule", schedule);
+    const { [view.duty.id]: _saved, ...rest } = drafts;
+    drafts = rest;
+  };
 </script>
 
 <ul class="duties">
@@ -33,11 +49,12 @@
         <button type="button" class="duty-main" aria-expanded={open[duty.id] === true} onclick={() => toggle(duty.id)}>
           <span class="duty-state">{#if state === "running"}<span class="spinner tiny"></span>{:else}<span class="duty-dot {state}"></span>{/if}</span>
           <span class="duty-name">{duty.name}</span>
-          <span class="duty-when">{scheduleLabel(duty.schedule)} · {nextLabel(view, now)}</span>
+          {#if view.builtin}<span class="duty-tag" use:tooltip={"Built in: the check-in. Its cadence and pause are the header's Check-in control"}>Built-in</span>{/if}
+          <span class="duty-when">{scheduleLabel(view.schedule)} · {nextLabel(view, now)}</span>
         </button>
         <span class="duty-actions">
           <button type="button" class="duty-act" disabled={view.running} onclick={() => void duties.act(duty.id, "run")}>Run now</button>
-          <button type="button" class="duty-act" onclick={() => void duties.act(duty.id, duty.status === "paused" ? "resume" : "pause")}>{duty.status === "paused" ? "Resume" : "Pause"}</button>
+          <button type="button" class="duty-act" onclick={() => void duties.act(duty.id, view.paused ? "resume" : "pause")}>{view.paused ? "Resume" : "Pause"}</button>
         </span>
       </div>
       <p class="duty-last">
@@ -48,6 +65,14 @@
           </span>
         {/if}
       </p>
+      {#if view.builtin}
+        {@const classes = classesLabel(last)}
+        {@const found = flaggedLabel(view)}
+        {#if classes}<p class="duty-found">{classes}</p>{/if}
+        {#if found.flagged}<p class="duty-found">Flagged: {found.flagged}</p>{/if}
+        {#if found.handled}<p class="duty-found handled">Handled after the turn: {found.handled}</p>{/if}
+        {#if found.left}<p class="duty-found left">Still flagged after the turn: {found.left}</p>{/if}
+      {/if}
       {#if open[duty.id]}
         <div class="duty-detail">
           <p class="goal">{duty.goal}</p>
@@ -72,6 +97,24 @@
               <button type="button" class="link-chip file" title={detail} onclick={() => store.openArtifact({ kind: "file", path: detail }, chat)}><Icon name="file" size={11} /><span class="chip-label">Last run output</span></button>
             {/if}
           {/if}
+          <form class="cadence" onsubmit={event => { event.preventDefault(); void saveCadence(view); }}>
+            <span class="cadence-label">Runs</span>
+            {#if view.builtin}
+              <span>every</span>
+            {:else}
+              <select aria-label="Cadence" value={draftOf(view).kind} onchange={event => setDraft(view, { kind: event.currentTarget.value === "daily" ? "daily" : "every" })}>
+                <option value="every">every</option>
+                <option value="daily">daily at</option>
+              </select>
+            {/if}
+            {#if draftOf(view).kind === "every"}
+              <input aria-label="Minutes" type="number" min="1" step="1" value={draftOf(view).minutes} oninput={event => setDraft(view, { minutes: event.currentTarget.valueAsNumber })} /><span>min</span>
+            {:else}
+              <input aria-label="Time" type="time" value={draftOf(view).at} oninput={event => setDraft(view, { at: event.currentTarget.value })} />
+            {/if}
+            <button type="submit" class="duty-act">Save</button>
+            {#if cadenceError[duty.id]}<span class="cadence-error">{cadenceError[duty.id]}</span>{/if}
+          </form>
           <p class="owner-words" use:tooltip={"The owner's words that started this duty"}>"{duty.ownerWords}"</p>
           {#if duty.boardGoal}<p class="board-goal">Fixes go under <IdChip {chat} id={duty.boardGoal} /></p>{/if}
         </div>
@@ -121,4 +164,13 @@
   .owner-words { color: var(--text-faint); font-style: normal; overflow-wrap: anywhere; }
   .board-goal { color: var(--text-faint); }
   .duty-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
+  .duty-tag { flex: none; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
+  .duty-found { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .duty-found.handled { color: var(--success); }
+  .duty-found.left { color: var(--warning); }
+  .cadence { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text-muted); }
+  .cadence-label { color: var(--text-faint); }
+  .cadence input[type="number"] { width: 6ch; }
+  .cadence input, .cadence select { font: inherit; font-size: 12px; padding: 1px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
+  .cadence-error { color: var(--danger); }
 </style>

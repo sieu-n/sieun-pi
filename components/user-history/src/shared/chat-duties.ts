@@ -1,6 +1,11 @@
+import type { ChatBoard, PlanItem } from "./types.ts";
+
 /**
  * Duties: standing work a chat owns. A duty is a goal in the owner's words with numeric targets, a schedule, and a code precheck that measures
  * the targets for 0 tokens. The server runs the precheck when the duty is due; only a miss or an error wakes the chat, with one `[check-in]` line.
+ * After the chat's turn the same check runs again: an item still flagged that the chat did not touch goes back to it by name (`afterTurnCheck`).
+ * Every chat also has one built-in duty, the check-in (`CHECK_IN_DUTY`): its schedule is the chat's check-in setting, its precheck the step
+ * classes (src/chat-checkin.ts) and its runner the chat server's check-in (src/chats.ts), which records each run here.
  * Pure types and rules here; the store is src/chat-duty-store.ts and the runner src/chat-duty-run.ts.
  */
 
@@ -13,8 +18,11 @@ export interface DutyMetric { key: string; label: string; op: "<=" | ">="; targe
  */
 export interface DutyPrecheck { command: string[]; cwd: string; timeoutMs: number }
 export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[] }
-/** One thing the precheck found that a person or a job should read: the chat (session id), when, what kind, and a short excerpt. */
-export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string }
+/**
+ * One thing the precheck found that a person or a job should read: the chat (session id), when, what kind, and a short excerpt. `item` is the
+ * plan item id on the duty's chat board it is about; only such items are checked again after the chat's turn.
+ */
+export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string }
 
 export interface Duty {
   id: string;
@@ -39,18 +47,34 @@ export interface Duty {
   lastSlotAt?: number;
   lastSkippedAt?: number;
 }
-export interface DutyFile { version: 1; duties: Duty[] }
+/** The built-in check-in duty's run state in a chat's duties file; its definition is `CHECK_IN_DUTY` and its schedule the check-in setting. */
+export interface CheckInDutyState { createdAt: number; runCount: number; lastRunAt?: number }
+export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutyState }
 
-export type DutyTrigger = "schedule" | "catch-up" | "owner";
+/**
+ * What started a run: its schedule, a catch-up, the owner's Run now, a job event that wakes the check-in duty (a job that ended with no report,
+ * one that says it waits, one that stopped on an error), or the recheck after the chat's turn.
+ */
+export type DutyTrigger = "schedule" | "catch-up" | "owner" | "job-ended" | "job-waiting" | "job-stopped" | "after-turn";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
 export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean }
-/** One line of `<dataDir>/duties/<chatId>.runs.jsonl`. `detail` is the saved precheck output; `told` says the chat got a line. */
+/**
+ * One line of `<dataDir>/duties/<chatId>.runs.jsonl`. `detail` is the saved precheck output; `told` says the chat got a line. A check-in run
+ * keeps its step counts per class and its flagged items inline (`classes`, `flagged`); a recheck after the chat's turn keeps the items the
+ * chat handled and the ones it left (`handled`, `unresolved`).
+ */
 export interface DutyRunRecord {
   duty: string; at: number; trigger: DutyTrigger; ms: number; verdict: DutyVerdict;
   metrics: Record<string, MetricResult>; summary: string; detail?: string; error?: string; told: boolean;
+  classes?: Record<string, number>; flagged?: FlaggedSlice[]; handled?: string[]; unresolved?: FlaggedSlice[];
 }
-/** What the Duties card shows per duty: the duty, when it runs next, whether a run is going now, and its last runs, newest first. */
-export interface DutyView { duty: Duty; nextAt: number | null; running: boolean; runs: DutyRunRecord[] }
+/** The part of a duty the card shows; the check-in duty has the same fields. */
+export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string };
+/**
+ * What the Duties card shows per duty: the duty, `builtin` for the check-in, its schedule (the check-in's is the chat's check-in setting) and
+ * whether it is paused, when it runs next, whether a run is going now, and its last runs, newest first.
+ */
+export interface DutyView { duty: DutyCard; builtin?: "checkin"; schedule: DutySchedule; paused: boolean; nextAt: number | null; running: boolean; runs: DutyRunRecord[] }
 
 /** A missed daily slot still runs once after the Mac wakes if it is at most this late; later it is recorded as skipped. */
 export const CATCH_UP_MS = 6 * 60 * 60_000;
@@ -149,6 +173,14 @@ export function dutyLine(duty: Duty, record: DutyRunRecord, repeats: readonly st
   return null;
 }
 
+/** A duty schedule from a file or a request: `{ kind: daily, at: HH:MM }` or `{ kind: every, minutes }` with 5 or more whole minutes. Throws otherwise. */
+export function parseSchedule(schedule: unknown): DutySchedule {
+  if (isRecord(schedule) && schedule.kind === "daily" && typeof schedule.at === "string" && HHMM.test(schedule.at)) return { kind: "daily", at: schedule.at };
+  if (isRecord(schedule) && schedule.kind === "every" && typeof schedule.minutes === "number" && Number.isInteger(schedule.minutes) && schedule.minutes >= 5 &&
+    schedule.minutes <= 7 * 24 * 60) return { kind: "every", minutes: schedule.minutes };
+  throw new Error("schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 to 10080).");
+}
+
 /** Parses a duty definition from a file or a request: the fields a person writes. Run state starts empty. Throws with the first bad field. */
 export function parseDutyInput(value: unknown, id: string, now: number): Duty {
   if (!isRecord(value)) throw new Error("A duty is an object.");
@@ -164,11 +196,7 @@ export function parseDutyInput(value: unknown, id: string, now: number): Duty {
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);
     return { key: metric.key, label: metric.label, op: metric.op, target: metric.target, ...(typeof metric.unit === "string" ? { unit: metric.unit } : {}) };
   });
-  if (!isRecord(schedule)) throw new Error("schedule: { kind: daily, at: HH:MM } or { kind: every, minutes }.");
-  let parsedSchedule: DutySchedule;
-  if (schedule.kind === "daily" && typeof schedule.at === "string" && HHMM.test(schedule.at)) parsedSchedule = { kind: "daily", at: schedule.at };
-  else if (schedule.kind === "every" && typeof schedule.minutes === "number" && Number.isInteger(schedule.minutes) && schedule.minutes >= 5) parsedSchedule = { kind: "every", minutes: schedule.minutes };
-  else throw new Error("schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 or more).");
+  const parsedSchedule = parseSchedule(schedule);
   if (!isRecord(precheck) || !Array.isArray(precheck.command) || !precheck.command.length || !precheck.command.every(word => typeof word === "string" && word.length > 0) ||
     !str(precheck.cwd, 1024)) throw new Error("precheck: { command: [argv], cwd, timeoutMs? }.");
   const timeoutMs = typeof precheck.timeoutMs === "number" && precheck.timeoutMs > 0 ? Math.min(precheck.timeoutMs, PRECHECK_TIMEOUT_MS) : PRECHECK_TIMEOUT_MS;
@@ -191,36 +219,6 @@ export function upsertDuty(duties: Duty[], definition: unknown, now: number): st
   return `updated ${existing.id}`;
 }
 
-export const CONVERGENCE_DUTY = "Board convergence";
-/**
- * The duty every chat gets (`Chats.chatAdded`): every hour, the board classes script (scripts/duties/board-classes.ts, run in `cwd`, the
- * user-history component) measures the chat's board, and only a miss wakes the chat.
- */
-export function convergenceDuty(chatId: string, cwd: string): Record<string, unknown> {
-  return {
-    name: CONVERGENCE_DUTY,
-    ownerWords: "look, eventually on it's own all threads should resolve to\nsome items in FOR YOU\nTODO all cleared, only ones blocked by FOR YOU remaining.\n" +
-      "manage stale shit, properly nudge push through, ... is you (chat agent's responsiblitity). and since your job is to make this work on it's own automagically via the right prompts logic add to duties, ..\n" +
-      "todo must be suuuper up to date lauer (i know it need active management, but the child agent must try it's best to return callback when done, main thread and check-in should try it's best to keep it up to date)\n" +
-      "it doesn't seem like it has been working at all.",
-    goal: "Every open plan step is done, moved by a live owner, or blocked only by an open For you todo. The board matches what the jobs reported.",
-    metrics: [
-      { key: "orphan_steps", label: "Open steps with no live owner, todo or wait", op: "<=", target: 0 },
-      { key: "due_late", label: "Steps due for more than one check-in", op: "<=", target: 0 },
-      { key: "stale_chase_24h", label: "Chases over 24 h with no For you todo", op: "<=", target: 0 },
-      { key: "job_end_unrecorded", label: "Steps whose job ended a check-in ago, not updated", op: "<=", target: 0 },
-      { key: "job_end_silent", label: "Steps whose job stopped on an error with no report, not updated", op: "<=", target: 0 },
-      { key: "scope_misses", label: "Open steps the owner gave to another thread", op: "<=", target: 0 },
-    ],
-    schedule: { kind: "every", minutes: 60 },
-    precheck: { command: ["node", "--import", "tsx", "scripts/duties/board-classes.ts", "--chat", chatId], cwd, timeoutMs: 90_000 },
-    onMiss: "In this turn, act on each step the details file lists: an orphan gets a job, you, or one For you todo; a due step gets done or a new waitUntil; " +
-      "a chase over 24 h becomes a For you todo or a new plan; a step whose job ended gets that job's result on the board; a step whose job stopped " +
-      "with no report gets that job re-briefed, restarted or replaced; a step that belongs to another thread is sent to that thread and removed from the plan. If the same miss comes back, " +
-      "send the details file to the thread named realtime layer.",
-  };
-}
-
 /** The next duty id in a chat: d1, d2, ... never reused. */
 export function nextDutyId(duties: readonly Duty[]): string {
   return `d${duties.reduce((max, duty) => Math.max(max, Number(duty.id.slice(1)) || 0), 0) + 1}`;
@@ -229,6 +227,85 @@ export function nextDutyId(duties: readonly Duty[]): string {
 /** A duties file as stored; unreadable duties are dropped rather than failing the chat's whole list. */
 export function parseDutyFile(value: unknown): DutyFile {
   const duties = isRecord(value) && Array.isArray(value.duties) ? value.duties : [];
+  const checkIn = isRecord(value) && isRecord(value.checkIn) && typeof value.checkIn.createdAt === "number" && typeof value.checkIn.runCount === "number"
+    ? { createdAt: value.checkIn.createdAt, runCount: value.checkIn.runCount, ...(typeof value.checkIn.lastRunAt === "number" ? { lastRunAt: value.checkIn.lastRunAt } : {}) } : undefined;
   return { version: 1, duties: duties.filter((duty): duty is Duty => isRecord(duty) && typeof duty.id === "string" && isRecord(duty.schedule) && isRecord(duty.precheck) &&
-    Array.isArray(duty.metrics) && (duty.status === "active" || duty.status === "paused") && typeof duty.runCount === "number") };
+    Array.isArray(duty.metrics) && (duty.status === "active" || duty.status === "paused") && typeof duty.runCount === "number"), ...(checkIn ? { checkIn } : {}) };
+}
+
+export const CHECK_IN_DUTY_ID = "checkin";
+/**
+ * The built-in duty every chat has: the check-in. It runs on the chat's check-in setting (the header's control and this card edit the same
+ * setting) and on job events; its precheck sorts every open step into a class and its prompt is the `[check-in]` steer or the check-in job.
+ * These metrics are what a run measures; the steer lines act on each miss, so a miss needs no line of its own.
+ */
+export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
+  id: CHECK_IN_DUTY_ID,
+  name: "Check-in",
+  ownerWords: "look, eventually on it's own all threads should resolve to\nsome items in FOR YOU\nTODO all cleared, only ones blocked by FOR YOU remaining.\n" +
+    "manage stale shit, properly nudge push through, ... is you (chat agent's responsiblitity).\n" +
+    "그럴거면 check in은 왜있어? checkin이 그렇게 되도록 해야지. check in을 duty로 모델링을 하는건 좋은거 같아",
+  goal: "Every open plan step is done, moved by a live owner, or blocked only by an open For you todo. The board matches what the jobs reported.",
+  metrics: [
+    { key: "orphan_steps", label: "Open steps with no live owner, todo or wait", op: "<=", target: 0 },
+    { key: "due_late", label: "Steps due for more than one check-in", op: "<=", target: 0 },
+    { key: "stale_chase_24h", label: "Chases over 24 h with no For you todo", op: "<=", target: 0 },
+    { key: "job_end_unrecorded", label: "Steps whose job ended a check-in ago, not updated", op: "<=", target: 0 },
+    { key: "job_end_silent", label: "Steps whose job stopped on an error with no report, not updated", op: "<=", target: 0 },
+    { key: "scope_misses", label: "Open steps the owner gave to another thread", op: "<=", target: 0 },
+  ],
+};
+
+/** A flagged item checked again after the chat's turn: the slice, and its plan step as it was when the chat was told (`stepMark`). */
+export interface ArmedItem { slice: FlaggedSlice & { item: string }; mark: string | null }
+
+/** A plan item by id, anywhere in the plan. */
+export function planItem(board: ChatBoard | null, id: string): PlanItem | undefined {
+  const find = (items: readonly PlanItem[]): PlanItem | undefined => {
+    for (const item of items) { if (item.id === id) return item; const below = find(item.children); if (below) return below; }
+    return undefined;
+  };
+  return find(board?.plan ?? []);
+}
+/** What the chat can change on a step to handle it: status, text, owner, waits and note. Null when the step is gone. */
+export function stepMark(board: ChatBoard | null, id: string): string | null {
+  const item = planItem(board, id);
+  return item ? JSON.stringify([item.status, item.text, item.job ?? "", item.waitFor ?? "", item.waitUntil ?? "", item.note ?? ""]) : null;
+}
+/** The flagged items the after-turn recheck follows: those that name a plan item, with their step as the chat saw it. */
+export function armItems(flagged: readonly FlaggedSlice[], board: ChatBoard | null): ArmedItem[] {
+  return flagged.filter((slice): slice is FlaggedSlice & { item: string } => typeof slice.item === "string")
+    .map(slice => ({ slice, mark: stepMark(board, slice.item) }));
+}
+/**
+ * The recheck after the chat's turn: an item is handled when its step changed (a board change, a job started for it, a wait set) or the check no
+ * longer flags it; it is unresolved when the same check flags it again and its step is as it was.
+ */
+export function afterTurnCheck(armed: readonly ArmedItem[], flagged: readonly FlaggedSlice[], board: ChatBoard | null): { handled: string[]; unresolved: FlaggedSlice[] } {
+  const handled: string[] = [];
+  const unresolved: FlaggedSlice[] = [];
+  for (const { slice, mark } of armed) {
+    const again = flagged.find(next => next.item === slice.item && next.kind === slice.kind);
+    if (again && stepMark(board, slice.item) === mark) unresolved.push(again);
+    else handled.push(slice.item);
+  }
+  return { handled: [...new Set(handled)], unresolved };
+}
+/** Flagged slices grouped by their item, in first-seen order: one entry per step, with every kind it was flagged for. */
+export function byItem(slices: readonly FlaggedSlice[]): { item: string; kinds: string[]; excerpt: string }[] {
+  const groups = new Map<string, { item: string; kinds: string[]; excerpt: string }>();
+  for (const slice of slices) {
+    const key = slice.item ?? slice.kind;
+    const group = groups.get(key);
+    if (group) { if (!group.kinds.includes(slice.kind)) group.kinds.push(slice.kind); }
+    else groups.set(key, { item: key, kinds: [slice.kind], excerpt: slice.excerpt });
+  }
+  return [...groups.values()];
+}
+/** The line that sends the unresolved items back to the chat, one per step. */
+export function afterTurnLine(duty: Pick<DutyCard, "id" | "name">, unresolved: readonly FlaggedSlice[]): string {
+  const items = byItem(unresolved);
+  return `duty ${duty.id} "${duty.name}": after your turn the same check still flags ${items.length === 1 ? "this step" : `these ${items.length} steps`} ` +
+    `and the board shows no change on ${items.length === 1 ? "it" : "them"}. Act on each now (a board change, a job for it, or a wait):\n` +
+    items.map(group => `- ${group.item} (${group.kinds.join(", ")}): ${group.excerpt}`).join("\n");
 }

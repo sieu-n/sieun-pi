@@ -1,0 +1,28 @@
+{
+ "corrections": [
+  {
+   "id": "c1",
+   "at": "2030-01-14T03:00:00.000Z",
+   "chat": {
+    "id": "00000000-0000-7000-8000-00000000000a",
+    "name": "chat A"
+   },
+   "words": "machine work goes to chat B",
+   "rule": "Build machine work belongs to chat B; forward it there.",
+   "enforcedBy": "code",
+   "ref": "synthetic",
+   "status": "active",
+   "theme": [
+    "machine",
+    "disk"
+   ],
+   "handoff": {
+    "to": "chat B",
+    "topics": [
+     "build machine",
+     "disk space"
+    ]
+   }
+  }
+ ]
+}

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { ACT_CLASSES, type StepClass } from "../../src/chat-checkin.ts";
+import { ACT_CLASSES, type ConvergenceMisses, NO_MISSES, type StepClass } from "../../src/chat-checkin.ts";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import { placeholderTodo } from "../../src/shared/chat-board.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -12,9 +12,10 @@ import { CHECK_IN_PREFIX, foldReply, serverNote, type TurnStarter } from "../../
 import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
-import { boardClasses, type ConvergenceMisses, daemonSessions, NO_MISSES } from "./board-classes.ts";
+import { boardClasses, daemonSessions } from "./board-classes.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 import { unlinkedJobSentence } from "./job-mentions.ts";
+import { unresolvedAfterTurn } from "./unresolved-after-turn.ts";
 
 const HOUR = 60 * 60_000;
 const WINDOW_MS = 24 * HOUR;
@@ -42,7 +43,7 @@ const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 
-type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
+type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unresolved_after_turn: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -260,7 +261,7 @@ function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
   const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
     newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW),
-    newest("placeholder_todos", FEW), newest("unlinked_job_mentions", FEW)];
+    newest("placeholder_todos", FEW), newest("unlinked_job_mentions", FEW), newest("unresolved_after_turn", FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
     for (const queue of queues) { const next = queue.shift(); if (next && picked.length < MAX_FLAGGED) picked.push(next); }
   }
@@ -276,11 +277,14 @@ async function main(): Promise<void> {
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
-  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0,
+  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unresolved_after_turn: 0,
     ...NO_MISSES },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   await countPlaceholderTodos(new BoardStore(dataDir), ids, now, tally);
+  const unresolved = await unresolvedAfterTurn(dataDir, ids, now - WINDOW_MS, now);
+  tally.metrics.unresolved_after_turn = unresolved.length;
+  tally.flagged.set("unresolved_after_turn", unresolved);
   tally.metrics.dead_hours = tenth(tally.deadMs / HOUR);
   const repeats = repeatsBetween(await new CorrectionLedger(dataDir).read(), now - WINDOW_MS, now);
   tally.metrics.repeat_corrections = repeats.length;

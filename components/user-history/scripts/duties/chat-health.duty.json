@@ -112,6 +112,12 @@
       "label": "Open steps the owner gave to another thread",
       "op": "<=",
       "target": 0
+    },
+    {
+      "key": "unresolved_after_turn",
+      "label": "Flagged items still untouched after the chat's turn",
+      "op": "<=",
+      "target": 0
     }
   ],
   "schedule": {

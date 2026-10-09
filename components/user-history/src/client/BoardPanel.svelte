@@ -47,9 +47,12 @@
   const rateText = (tps: number): string => `${tps < 10 ? tps.toFixed(1) : Math.round(tps)} tok/s`;
   const agentTitle = (agent: ChatAgent): string => `${AGENT_STATE_LABEL[agent.state]}${agent.steps.length ? ` · ${agent.steps.join(", ")}` : ""} · ${AGENT_LINK_LABEL[agent.link]}`;
 
-  /** The chat's standing duties (src/shared/chat-duties.ts), polled while the panel shows; the card appears once the chat has one. */
+  /** The chat's duties (src/shared/chat-duties.ts), the built-in check-in first, polled while the panel shows. */
   const duties = new ChatDuties();
   $effect(() => duties.watch(id));
+  /** The check-in duty's cadence is the header's Check-in setting: a change there reloads the card at once. */
+  let checkInSeen = "";
+  $effect(() => { const text = checkIn.text; if (checkInSeen && text !== checkInSeen) void duties.load(); checkInSeen = text; });
   const dutiesOpen = $derived(ui.boardCards.duties ?? true);
 
   const todos = $derived(groupTodos(board?.todos ?? []));

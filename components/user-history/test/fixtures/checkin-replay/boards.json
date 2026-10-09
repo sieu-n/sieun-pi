@@ -1,0 +1,236 @@
+{
+ "00000000-0000-7000-8000-00000000000a": {
+  "v": 2,
+  "rev": 1,
+  "plan": [
+   {
+    "id": "p1",
+    "text": "Goal: ship the release build",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p2",
+      "text": "Build: package the release",
+      "status": "doing",
+      "job": "job build",
+      "children": []
+     },
+     {
+      "id": "p3",
+      "text": "Push: publish the release to the public channel",
+      "status": "blocked",
+      "job": "job push",
+      "children": []
+     },
+     {
+      "id": "p4",
+      "text": "Verify: the release checklist passes",
+      "status": "todo",
+      "waitFor": "job build reports the package",
+      "children": []
+     },
+     {
+      "id": "p5",
+      "text": "Write: the release notes",
+      "status": "doing",
+      "job": "thread:00000000-0000-7000-8000-0000000000e1",
+      "children": []
+     },
+     {
+      "id": "p6",
+      "text": "Fix: the build machine is out of disk space",
+      "status": "todo",
+      "children": []
+     },
+     {
+      "id": "p7",
+      "text": "Free space on the build machine before the next build",
+      "status": "blocked",
+      "waitFor": "chat B frees the space",
+      "children": []
+     }
+    ]
+   }
+  ],
+  "scratch": [],
+  "todos": [
+   {
+    "id": "t1",
+    "text": "Use the default build flags?",
+    "done": true,
+    "reply": "Yes",
+    "from": "agent",
+    "at": "2030-01-14T21:00:00.000Z"
+   },
+   {
+    "id": "t2",
+    "text": "Publish p3 now?",
+    "done": false,
+    "choices": [
+     "Publish",
+     "Wait"
+    ],
+    "from": "agent",
+    "at": "2030-01-15T00:00:00.000Z"
+   }
+  ],
+  "updatedAt": "2030-01-15T02:30:00.000Z"
+ },
+ "00000000-0000-7000-8000-00000000000b": {
+  "v": 2,
+  "rev": 1,
+  "plan": [
+   {
+    "id": "p11",
+    "text": "Goal: keep the build machine healthy",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p12",
+      "text": "Fix: free disk space on the build machine now",
+      "status": "doing",
+      "job": "job cleanup",
+      "children": []
+     },
+     {
+      "id": "p13",
+      "text": "Wait: the vendor answers the storage ticket",
+      "status": "blocked",
+      "waitFor": "vendor answer on the storage ticket",
+      "children": []
+     },
+     {
+      "id": "p14",
+      "text": "Verify: the health check returns 200 after the cutover",
+      "status": "todo",
+      "waitUntil": "2030-01-15T23:00:00.000Z",
+      "children": []
+     },
+     {
+      "id": "p15",
+      "text": "Add an alert test for the dashboard",
+      "status": "blocked",
+      "waitFor": "chat C ships the dashboard",
+      "children": []
+     }
+    ]
+   }
+  ],
+  "scratch": [],
+  "todos": [],
+  "updatedAt": "2030-01-15T02:30:00.000Z"
+ },
+ "00000000-0000-7000-8000-00000000000c": {
+  "v": 2,
+  "rev": 1,
+  "plan": [
+   {
+    "id": "p21",
+    "text": "Goal: CI dashboard",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p22",
+      "text": "Build: the CI dashboard with charts",
+      "status": "doing",
+      "job": "job dashboard",
+      "children": []
+     },
+     {
+      "id": "p23",
+      "text": "Run: read the queue snapshot at every check-in",
+      "status": "todo",
+      "waitUntil": "2030-01-15T02:30:00.000Z",
+      "children": []
+     },
+     {
+      "id": "p24",
+      "text": "Prune old CI caches",
+      "status": "blocked",
+      "waitUntil": "2030-01-16T19:00:00.000Z",
+      "waitFor": "the cache job lands",
+      "children": []
+     },
+     {
+      "id": "p25",
+      "text": "Build: one fix per waste the audit finds",
+      "status": "todo",
+      "job": "job audit",
+      "children": []
+     }
+    ]
+   }
+  ],
+  "scratch": [],
+  "todos": [],
+  "updatedAt": "2030-01-15T02:30:00.000Z"
+ },
+ "00000000-0000-7000-8000-00000000000d": {
+  "v": 2,
+  "rev": 1,
+  "plan": [
+   {
+    "id": "p31",
+    "text": "Goal: demo apps",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p32",
+      "text": "Build: demo app one",
+      "status": "done",
+      "children": []
+     },
+     {
+      "id": "p33",
+      "text": "Build: demo app two",
+      "status": "done",
+      "children": []
+     }
+    ]
+   },
+   {
+    "id": "p34",
+    "text": "Goal: landing page",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p35",
+      "text": "Decide: the owner picks the landing variant",
+      "status": "blocked",
+      "children": []
+     },
+     {
+      "id": "p36",
+      "text": "Ship: the landing page",
+      "status": "doing",
+      "job": "job landing",
+      "note": "Merged and deployed to production.",
+      "children": []
+     },
+     {
+      "id": "p37",
+      "text": "Verify: the landing page passes the browser walk",
+      "status": "todo",
+      "waitUntil": "2030-01-15T05:00:00.000Z",
+      "children": []
+     }
+    ]
+   }
+  ],
+  "scratch": [],
+  "todos": [
+   {
+    "id": "t1",
+    "text": "Pick the variant for p35: A or B?",
+    "done": false,
+    "choices": [
+     "A",
+     "B"
+    ],
+    "from": "agent",
+    "at": "2030-01-14T23:00:00.000Z"
+   }
+  ],
+  "updatedAt": "2030-01-15T02:30:00.000Z"
+ }
+}

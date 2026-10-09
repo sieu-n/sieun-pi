@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { parseDutyFile, type Duty, type DutyFile, type DutyRunRecord } from "./shared/chat-duties.ts";
@@ -37,6 +37,44 @@ export class DutyStore {
   /** Changes the chat's duties under the lock; `change` edits the list in place and returns its result. */
   async update<R>(chatId: string, change: (duties: Duty[]) => R): Promise<R> {
     return (await transactJsonFile(this.file(chatId), state => change(state.duties))).result;
+  }
+
+  /** Changes the whole duties file under the lock (the check-in duty's run state lives next to the list). */
+  async updateFile<R>(chatId: string, change: (state: DutyFile) => R): Promise<R> {
+    return (await transactJsonFile(this.file(chatId), change)).result;
+  }
+
+  async read(chatId: string): Promise<DutyFile> {
+    try { return await readJsonFile(this.file(chatId)); }
+    catch (error) { if (missing(error)) return { version: 1, duties: [] }; throw error; }
+  }
+
+  /**
+   * Deletes a duty for good: its definition, its run records and its saved outputs and state (`<dutyId>-*.json`, `<dutyId>.*.json`). Returns
+   * whether anything was there, so a second call returns false.
+   */
+  async remove(chatId: string, dutyId: string): Promise<boolean> {
+    const defined = await this.update(chatId, duties => {
+      const at = duties.findIndex(duty => duty.id === dutyId);
+      if (at >= 0) duties.splice(at, 1);
+      return at >= 0;
+    });
+    const runsFile = join(this.dir, this.check(chatId) + ".runs.jsonl");
+    let ran = false;
+    const text = await readFile(runsFile, "utf8").catch(error => { if (missing(error)) return ""; throw error; });
+    const kept = text.split("\n").filter(line => {
+      if (!line.trim()) return false;
+      try { if ((JSON.parse(line) as { duty?: unknown }).duty === dutyId) { ran = true; return false; } } catch { /* an unreadable line stays */ }
+      return true;
+    });
+    if (ran) {
+      await writeFile(runsFile + ".tmp", kept.map(line => line + "\n").join(""), { mode: 0o600 });
+      await rename(runsFile + ".tmp", runsFile);
+    }
+    const files = await readdir(this.chatDir(chatId)).catch(error => { if (missing(error)) return [] as string[]; throw error; });
+    const own = files.filter(name => name.startsWith(dutyId + "-") || name.startsWith(dutyId + "."));
+    for (const name of own) await rm(join(this.chatDir(chatId), name), { force: true });
+    return defined || ran || own.length > 0;
   }
 
   async appendRun(chatId: string, record: DutyRunRecord): Promise<void> {

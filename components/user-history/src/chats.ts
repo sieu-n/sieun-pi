@@ -6,11 +6,14 @@ import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { handoffRules, type Ledger } from "./chat-corrections.ts";
 import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInJobBrief, checkInJobMessage, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
-  endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue, writeCheckInBrief } from "./chat-checkin.ts";
+  endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue, writeCheckInBrief,
+  classCounts, classifyBoard, convergenceMisses, scopeMisses, stepSig } from "./chat-checkin.ts";
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
 import { findingsList, lintOwnerReply, replyCheck, replyNotes } from "./shared/reply-lint.ts";
+import type { CheckInRun, Duties } from "./chat-duty-run.ts";
+import type { PrecheckOutput } from "./shared/chat-duties.ts";
 import { messageText } from "./shared/turns.ts";
 import type { BoardOp, ChatAgent, ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel,
   ThreadMessage } from "./shared/types.ts";
@@ -106,7 +109,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "first. Before adding one, ask yourself whether the CTO would be annoyed to be asked; if so, decide. An ask is an owner todo plus one short line in chat.",
   "Start every job at once, reply in one short message, and end the turn. Never wait inside a turn: job reports and check-ins wake you later.",
   "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open " +
-    "For you todo. A `[check-in]` lists what changed, then every open step with its class, owner and time since its last change. In that same " +
+    "For you todo. The check-in is your built-in duty for this end state: it measures it at every check-in and job event, and after your turn " +
+    "it checks again and names each flagged step you left unchanged. A `[check-in]` lists what changed, then every open step with its class, owner and time since its last change. In that same " +
     "turn act on every step whose class needs you: due (its waitUntil passed): act on it or set a new waitUntil; stale-chase (it waits on " +
     "another thread or an event with no progress for 2 h): chase it now, and after 24 h make it a For you todo or replan it; orphan (no live " +
     "owner, no todo, no wait): start a job, take it yourself, or ask the owner in For you. live, foryou and waiting need nothing. A step that " +
@@ -646,6 +650,11 @@ export interface CheckInSource {
   checkInJobs?: { dir: string; board: (id: string) => string };
   /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
   corrections?: () => Promise<Ledger>;
+  /**
+   * The duty store's side of the check-in duty (src/chat-duty-run.ts): every check-in run (a tick that ran its classes, a job event) is
+   * recorded as a run of the built-in duty, and the end of a chat's turn runs the after-turn recheck. Absent (tests): nothing is recorded.
+   */
+  duty?: Pick<Duties, "recordCheckIn" | "afterTurn">;
 }
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
@@ -692,8 +701,6 @@ export class Chats {
   private readonly brief = chatBrief();
   /** Told when a chat's brief state changes (a reload queued, waiting or done), so the sessions stream sends the rows again. */
   briefChanged: () => void = () => {};
-  /** Told for every chat this server holds: one it creates, adopts at start or restores. The backend gives each its standing duties here. */
-  chatAdded: (id: string) => void = () => {};
   private readonly syncing = new Map<string, Promise<void>>();
   private loaded: Promise<void> | undefined;
   private readonly unobserve: () => void;
@@ -741,7 +748,7 @@ export class Chats {
         for (const child of children) if (childWorking(child) && !before?.some(was => was.id === child.id && childWorking(was))) this.workingSince.set(child.id, this.now());
         if (before) for (const child of endedWithoutReport(before, children)) this.laterNoReport(id, child.id);
       },
-      idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); this.queue(id, () => this.replyCheck(id)); },
+      idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); this.queue(id, () => this.replyCheck(id)); this.afterTurn(id); },
     });
     const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
     if (tickMs > 0) {
@@ -782,7 +789,6 @@ export class Chats {
       ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}), name, kind: "chat" });
     await this.index.add(id);
     this.chatIds.add(id);
-    this.chatAdded(id);
     if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     await this.threads.setSteeringMode(id, "all");
     await this.loads.set(id, this.build, this.brief);
@@ -805,7 +811,6 @@ export class Chats {
         this.log(`chat ${id.slice(0, 8)}: forgotten, ${summary === "missing" ? "the daemon does not list it" : "archived"}`);
         continue;
       }
-      this.chatAdded(id);
       if (this.threads.pin(id)) pinned.push(id);
       else this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     }
@@ -848,7 +853,6 @@ export class Chats {
     if (!sessionFile || !(await fileHasChatMarker(sessionFile))) return false;
     await this.index.add(id);
     this.chatIds.add(id);
-    this.chatAdded(id);
     if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     try { await this.threads.setSteeringMode(id, "all"); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -1238,7 +1242,7 @@ export class Chats {
    * digest against the last tick, kept as the new memory, and a `[check-in]` steer only when a line needs the chat, with every open leaf step
    * listed under the lines. Returns the lines sent.
    */
-  async checkIn(id: string): Promise<string[]> {
+  async checkIn(id: string, trigger: CheckInRun["trigger"] = "schedule"): Promise<string[]> {
     await this.load();
     if (!this.chatIds.has(id)) return [];
     if (this.ownerTurn(id)) { this.hold(id, "an owner turn runs"); return []; }
@@ -1247,29 +1251,22 @@ export class Chats {
     if (this.now() - (this.steeredAt.get(id) ?? -Infinity) < CHECK_IN_MERGE_MS) { this.mergeWaiting.add(id); return []; }
     this.mergeWaiting.delete(id);
     try {
-      let board: ChatBoard | null = null;
-      let boardError: string | undefined;
-      try { board = await this.source.board(id); }
-      catch (error) { boardError = error instanceof Error ? error.message : String(error); this.log(`chat ${id.slice(0, 8)}: check-in board: ${boardError}`); }
-      const rows = await this.source.rows();
-      const said = lastJobMessages(this.messages(id) ?? []);
-      const facts = jobFacts(this.children.get(id) ?? [], board, rows, id).map(fact => {
-        const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
-        const wokeAt = this.workingSince.get(fact.key);
-        return { ...fact, ...(lastMessage ? { lastMessage } : {}), ...(wokeAt !== undefined ? { wokeAt } : {}) };
-      });
+      const { board, boardError, rows, facts, name } = await this.gather(id);
       for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
       if (!checkInDue(facts, board, boardError)) return [];
-      const name = rows.find(row => row.id === id)?.name;
       const previous = await this.source.memory.get(id);
       const jobs = this.source.checkInJobs;
-      const handoffs = this.source.corrections ? await this.source.corrections().then(handoffRules, error => {
-        this.log(`chat ${id.slice(0, 8)}: check-in corrections: ${error instanceof Error ? error.message : String(error)}`);
-        return [];
-      }) : [];
-      const { memory, lines, open, nudges, notes, job } = checkInDigest(previous, facts, board, this.now(),
+      const handoffs = await this.handoffs(id);
+      const at = this.now();
+      const { memory, lines, open, nudges, notes, job, steps, scope } = checkInDigest(previous, facts, board, at,
         { self: name ? [id, name] : [id], ...(name ? { name } : {}), rows, ...(boardError !== undefined ? { boardError } : {}), ...(jobs ? { fanOut: true } : {}),
           handoffs });
+      /** The duty's record of this run: its misses from the same classes, its counts per class, and what it told the chat. */
+      const record = async (run: Pick<CheckInRun, "summary" | "told" | "recheck">) => {
+        if (!this.source.duty || boardError !== undefined) return;
+        const output = convergenceMisses(id, steps, scope, await this.source.memory.ends(id), (await this.source.settings.get(id)).everyMs, at);
+        await this.record(id, { at, trigger, output, classes: classCounts(steps), ...run });
+      };
       let brief: string | undefined;
       if (job && jobs) {
         try { brief = await writeCheckInBrief(jobs.dir, id, job.at, checkInJobBrief(job, { id, name, board: jobs.board(id) })); }
@@ -1295,17 +1292,83 @@ export class Chats {
         await this.threads.prompt(id, { message: checkInJobMessage(CHECK_IN_PREFIX, job, brief), images: [], mode: "steer" });
         this.steeredAt.set(id, this.now());
         this.log(`chat ${id.slice(0, 8)}: check-in job ${job.name} with ${job.items.length} items, brief ${brief}`);
-        return [`start ${job.name}: ${job.items.map(item => `${item.id} ${item.kind}`).join(", ")}`, ...job.lines];
+        const started = [`start ${job.name}: ${job.items.map(item => `${item.id} ${item.kind}`).join(", ")}`, ...job.lines];
+        await record({ summary: started.join(" / ").slice(0, 600), told: true, recheck: false });
+        return started;
       }
       if (lines.length) {
         await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines, open), images: [], mode: "steer" });
         this.steeredAt.set(id, this.now());
       }
+      await record({ summary: lines.length ? lines.join(" / ").slice(0, 600) : "no line: nothing that needs the chat", told: lines.length > 0 });
       return lines;
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
+  }
+
+  /** What a check-in reads: the board (or why it cannot be read), the catalog rows, the chat's name, and its jobs with their last messages. */
+  private async gather(id: string): Promise<{ board: ChatBoard | null; boardError?: string; rows: readonly SessionRow[]; facts: ReturnType<typeof jobFacts>; name?: string }> {
+    let board: ChatBoard | null = null;
+    let boardError: string | undefined;
+    try { board = await this.source.board(id); }
+    catch (error) { boardError = error instanceof Error ? error.message : String(error); this.log(`chat ${id.slice(0, 8)}: check-in board: ${boardError}`); }
+    const rows = await this.source.rows();
+    const said = lastJobMessages(this.messages(id) ?? []);
+    const facts = jobFacts(this.children.get(id) ?? [], board, rows, id).map(fact => {
+      const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
+      const wokeAt = this.workingSince.get(fact.key);
+      return { ...fact, ...(lastMessage ? { lastMessage } : {}), ...(wokeAt !== undefined ? { wokeAt } : {}) };
+    });
+    const name = rows.find(row => row.id === id)?.name;
+    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, ...(name ? { name } : {}) };
+  }
+
+  /** The ledger's handoffs for the scope check; none when the ledger cannot be read (logged). */
+  private async handoffs(id: string): Promise<ReturnType<typeof handoffRules>> {
+    return this.source.corrections ? await this.source.corrections().then(handoffRules, error => {
+      this.log(`chat ${id.slice(0, 8)}: check-in corrections: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }) : [];
+  }
+
+  /**
+   * The check-in duty's precheck alone, with no steer and no memory write: the same classes and misses a tick would find now. A step changed
+   * since the last tick counts as changed now. Null for a thread that is not a chat or a board that cannot be read. The after-turn recheck reads it.
+   */
+  async measure(id: string): Promise<PrecheckOutput | null> {
+    await this.load();
+    if (!this.chatIds.has(id)) return null;
+    const { board, boardError, rows, facts, name } = await this.gather(id);
+    if (boardError !== undefined) return null;
+    const memory = await this.source.memory.get(id);
+    const now = this.now();
+    const firstSeen = Math.min(now, Date.parse(board?.updatedAt ?? "") || now);
+    const self = name ? [id, name] : [id];
+    const steps = classifyBoard(board, facts, item => { const memo = memory?.steps[item.id]; return memo === undefined ? firstSeen : memo.sig === stepSig(item) ? memo.at : now; },
+      new Set(self), rows, now);
+    const output = convergenceMisses(id, steps, scopeMisses(board, await this.handoffs(id), self), await this.source.memory.ends(id), (await this.source.settings.get(id)).everyMs, now);
+    return { ...output, metrics: { ...output.metrics } };
+  }
+
+  /** The owner's Run now on the check-in duty: a check-in at once, in the chat's queue, and its schedule starts over. */
+  runCheckIn(id: string): Promise<void> {
+    return new Promise(resolve => this.queue(id, async () => {
+      try { if (this.chatIds.has(id)) { this.lastCheckIn.set(id, this.now()); await this.checkIn(id, "owner"); } } finally { resolve(); }
+    }));
+  }
+
+  /** Records a check-in duty run; a failure is logged and never stops the check-in. */
+  private async record(id: string, run: CheckInRun): Promise<void> {
+    try { await this.source.duty?.recordCheckIn(id, run); }
+    catch (error) { this.log(`chat ${id.slice(0, 8)}: check-in duty record: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /** The end of a chat's turn: the duty runner checks again what it told the chat. */
+  private afterTurn(id: string): void {
+    if (!this.source.duty || !this.chatIds.has(id)) return;
+    void this.source.duty.afterTurn(id).catch(error => this.log(`chat ${id.slice(0, 8)}: after-turn recheck: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   /** Logs once per reason that a due check-in of the chat is held; the next digest clears it, so a check-in that never runs leaves a line. */
@@ -1338,8 +1401,10 @@ export class Chats {
     this.noticedEnd.set(child.id, { end, ...(waited !== undefined ? { waited } : {}) });
     if (this.stall(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the check-in after its restart tells it`); return; }
     try {
-      await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${noReportNotice(childName(child), lastMessage, wokeAt, end)}`, images: [], mode: "steer" });
+      const notice = noReportNotice(childName(child), lastMessage, wokeAt, end);
+      await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${notice}`, images: [], mode: "steer" });
       await this.toldEnd(id, child.id, end, waited);
+      await this.record(id, { at: this.now(), trigger: waited !== undefined ? "job-waiting" : "job-ended", summary: notice, told: true });
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
@@ -1386,6 +1451,7 @@ export class Chats {
       this.steeredAt.set(chat, this.now());
       await this.source.memory.told(chat, key, { at: end.at, cause: end.cause });
       this.log(`chat ${chat.slice(0, 8)}: job ${name} ended (${end.cause}) with no report; told the chat${note ? ` and noted ${note.step}` : ""}`);
+      await this.record(chat, { at: now, trigger: "job-stopped", summary: line, told: true });
       if (note && this.source.writeBoard) {
         try { await this.source.writeBoard(chat, [{ op: "plan_update", id: note.step, note: note.note }]); }
         catch (error) { this.log(`chat ${chat.slice(0, 8)}: job end note on ${note.step}: ${error instanceof Error ? error.message : String(error)}`); }

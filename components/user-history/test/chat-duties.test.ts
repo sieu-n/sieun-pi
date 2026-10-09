@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
-import { dailySlot, dutyDue, dutyLine, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, repeatMisses, type Duty, type DutyRunRecord } from "../src/shared/chat-duties.ts";
+import { dailySlot, dutyDue, dutyLine, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, parseSchedule, repeatMisses, type Duty, type DutyRunRecord } from "../src/shared/chat-duties.ts";
 
+const run = promisify(execFile);
 const at = (day: number, hours: number, minutes = 0): number => new Date(2026, 9, day, hours, minutes).getTime();
 const input = (command: string[] = ["node", "-e", "0"]) => ({
   name: "Chat health", ownerWords: "keep it healthy", goal: "Chats never sit stopped.", onMiss: "Start a job that reads the details and proposes fixes.", boardGoal: "p87",
@@ -154,4 +157,120 @@ test("Duties: a timeout and bad output are error runs; a slot missed by more tha
   await duties.runNow("chat1", "d1");
   await duties.settled();
   assert.equal((await store.runs("chat1"))[0]!.error, "no valid JSON in OUTPUT_FILE");
+});
+
+test("cadence: a standing duty takes every N minutes or a daily time (a moved daily slot already past waits for tomorrow); the check-in duty's cadence and pause are the chat's check-in setting", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duties-cadence-"));
+  const store = new DutyStore(dir);
+  let now = at(9, 18);
+  await store.update("chat1", duties => { duties.push(parseDutyInput(input(), "d1", at(8, 12))); });
+  const setting = { everyMs: 15 * 60_000, pausedUntil: null as number | "forever" | null };
+  const changes: unknown[] = [];
+  const view = async () => ({ everyMs: setting.everyMs, paused: setting.pausedUntil !== null, pausedUntil: setting.pausedUntil, nextAt: setting.pausedUntil !== null ? null : now + setting.everyMs, lastAt: now });
+  const duties = new Duties(store, { isChat: async () => true, notify: async () => {}, tickMs: 0, now: () => now,
+    checkIn: { view: async id => id === "chat1" ? view() : null, run: async () => {}, measure: async () => null,
+      set: async (_id, change) => { changes.push(change); if (change.everyMs !== undefined) setting.everyMs = change.everyMs; if (change.pause !== undefined) setting.pausedUntil = change.pause === null ? null : "forever"; return view(); } } });
+
+  let views = await duties.view("chat1");
+  assert.deepEqual(views.map(entry => [entry.duty.id, entry.builtin ?? "", entry.schedule, entry.paused]),
+    [["checkin", "checkin", { kind: "every", minutes: 15 }, false], ["d1", "", { kind: "daily", at: "23:07" }, false]], "the check-in comes first, built in, on the chat's setting");
+  assert.equal(views[0]!.duty.name, "Check-in");
+
+  assert.equal(await duties.setSchedule("chat1", "checkin", { kind: "every", minutes: 30 }), true);
+  assert.deepEqual(changes.at(-1), { everyMs: 30 * 60_000 }, "the card's cadence writes the check-in setting the header's control writes");
+  await assert.rejects(duties.setSchedule("chat1", "checkin", { kind: "daily", at: "09:00" }), /every 1 to 240 minutes/);
+  await assert.rejects(duties.setSchedule("chat1", "checkin", { kind: "every", minutes: 241 }), /every 1 to 240 minutes/);
+  assert.equal(await duties.setStatus("chat1", "checkin", "paused"), true);
+  assert.deepEqual(changes.at(-1), { pause: "forever" });
+  views = await duties.view("chat1");
+  assert.deepEqual([views[0]!.paused, views[0]!.duty.status, views[0]!.nextAt], [true, "paused", null]);
+  assert.equal(await duties.setStatus("chat1", "checkin", "active"), true);
+  assert.deepEqual(changes.at(-1), { pause: null });
+
+  assert.equal(await duties.setSchedule("chat1", "d1", { kind: "daily", at: "07:30" }), true);
+  let [d1] = await store.list("chat1");
+  assert.deepEqual([d1!.schedule, d1!.lastSlotAt], [{ kind: "daily", at: "07:30" }, at(9, 7, 30)], "today's 07:30 already passed: no catch-up run for a cadence change");
+  assert.equal(dutyDue(d1!, now).kind, "no");
+  assert.equal(nextRunAt(d1!, now), at(10, 7, 30));
+  assert.equal(await duties.setSchedule("chat1", "d1", { kind: "every", minutes: 45 }), true);
+  [d1] = await store.list("chat1");
+  assert.deepEqual(d1!.schedule, { kind: "every", minutes: 45 });
+  assert.throws(() => parseSchedule({ kind: "every", minutes: 4 }), /5 to 10080/);
+  await assert.rejects(duties.setSchedule("chat1", "d1", { kind: "daily", at: "25:00" }), /schedule/);
+  assert.equal(await duties.setSchedule("chat1", "d9", { kind: "every", minutes: 45 }), false);
+  now = at(9, 19);
+  duties.close();
+});
+
+test("check-in duty record: a told run, a job event and a changed metric are kept; a quiet run with the same metrics at most hourly; the run count sits beside the list", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duties-checkin-"));
+  const store = new DutyStore(dir);
+  const now = at(9, 18);
+  const duties = new Duties(store, { isChat: async () => true, notify: async () => {}, tickMs: 0, now: () => now });
+  const quiet = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 };
+  const run = (minutes: number, metrics = quiet, told = false) => duties.recordCheckIn("chat1", { at: now + minutes * 60_000, trigger: "schedule", summary: "s", told,
+    output: { metrics, flagged: [] }, classes: { live: 2 } });
+  await run(0);
+  await run(15);
+  await run(30, { ...quiet, orphan_steps: 1 });
+  await run(45, { ...quiet, orphan_steps: 1 }, true);
+  await duties.recordCheckIn("chat1", { at: now + 50 * 60_000, trigger: "job-ended", summary: "fixer ended with no report", told: true });
+  await run(60, { ...quiet, orphan_steps: 1 });
+  await run(110, { ...quiet, orphan_steps: 1 });
+  const runs = (await store.runs("chat1")).reverse();
+  assert.deepEqual(runs.map(entry => [(entry.at - now) / 60_000, entry.trigger, entry.verdict]),
+    [[0, "schedule", "met"], [30, "schedule", "missed"], [45, "schedule", "missed"], [50, "job-ended", "missed"], [110, "schedule", "missed"]]);
+  assert.deepEqual([(await store.read("chat1")).checkIn?.runCount, (await store.read("chat1")).duties], [5, []]);
+  assert.deepEqual(runs[0]!.classes, { live: 2 });
+  duties.close();
+});
+
+test("duty store remove: a duty's definition, runs and saved files go; the second run finds nothing; remove.ts by name is idempotent and leaves other duties", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duties-remove-"));
+  const store = new DutyStore(dir);
+  for (const chat of ["c1", "c2"]) {
+    await store.update(chat, duties => {
+      duties.push(parseDutyInput({ ...input(), name: "Board convergence" }, "d1", 0));
+      if (chat === "c2") duties.push(parseDutyInput(input(), "d2", 0));
+    });
+    for (const id of ["d1", "d2"]) await store.appendRun(chat, { duty: id, at: 1, trigger: "schedule", ms: 0, verdict: "met", metrics: {}, summary: "", told: false });
+    await mkdir(store.chatDir(chat), { recursive: true });
+    for (const name of ["d1-261009-2307.json", "d1.state.json", "d1.last-runs.json", "d2.state.json", "d10.state.json"]) await writeFile(join(store.chatDir(chat), name), "{}");
+  }
+  const script = (...args: string[]) => run(process.execPath, ["--import", "tsx", "scripts/duties/remove.ts", "--name", "Board convergence", "--data-dir", dir, ...args],
+    { cwd: join(import.meta.dirname, "..") });
+  assert.equal((await script("--chat", "c1")).stdout, 'removed d1 "Board convergence" from c1\n1 removed\n');
+  assert.equal((await script()).stdout, 'removed d1 "Board convergence" from c2\n1 removed\n');
+  assert.equal((await script()).stdout, 'no duty named "Board convergence"\n', "a second run changes nothing");
+  assert.equal(await store.remove("c1", "d1"), false);
+  assert.deepEqual((await store.list("c2")).map(duty => duty.id), ["d2"]);
+  assert.deepEqual((await store.runs("c2")).map(entry => entry.duty), ["d2"]);
+  assert.deepEqual((await readdir(store.chatDir("c2"))).sort(), ["d10.state.json", "d2.state.json"]);
+});
+
+test("after-turn recheck for a standing duty: a flagged step the chat left unchanged comes back by name once; a step it changed counts as handled", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duties-after-turn-"));
+  const store = new DutyStore(dir);
+  let now = at(9, 18);
+  const flags = join(dir, "flags.json");
+  await writeFile(flags, JSON.stringify([{ kind: "stalls_2h", excerpt: "p5 sat 3 h", item: "p5" }, { kind: "stalls_2h", excerpt: "p6 sat 4 h", item: "p6" }]));
+  const command = ["node", "-e", `const fs = require("fs"); const flagged = JSON.parse(fs.readFileSync(${JSON.stringify(flags)}, "utf8"));
+    fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { stalls_2h: flagged.length, long_replies: 0 }, flagged }))`];
+  await store.update("chat1", duties => { duties.push(parseDutyInput(input(command), "d1", at(8, 12))); });
+  const step = (id: string, note: string) => ({ id, text: id, status: "doing" as const, note, children: [] });
+  const board = { v: 2 as const, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [step("p5", "a"), step("p6", "b")] };
+  const sent: string[] = [];
+  const duties = new Duties(store, { isChat: async () => true, notify: async (_id, message) => { sent.push(message); }, tickMs: 0, now: () => now, board: async () => board });
+  assert.equal(await duties.runNow("chat1", "d1"), true);
+  await duties.settled();
+  assert.equal(sent.length, 1, "the miss told the chat");
+  board.plan[1] = step("p6", "b, restarted the job");
+  now += 60_000;
+  await duties.afterTurn("chat1");
+  assert.match(sent[1]!, /^\[check-in\] duty d1 "Chat health": after your turn the same check still flags this step and the board shows no change on it\. .*\n- p5 \(stalls_2h\): p5 sat 3 h$/s);
+  const [after] = await store.runs("chat1");
+  assert.deepEqual([after!.trigger, after!.handled, after!.unresolved?.map(slice => slice.item), after!.told], ["after-turn", ["p6"], ["p5"], true]);
+  await duties.afterTurn("chat1");
+  assert.equal(sent.length, 2, "one recheck per told run");
+  duties.close();
 });

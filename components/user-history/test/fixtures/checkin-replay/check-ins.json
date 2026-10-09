@@ -1,0 +1,175 @@
+{
+ "chats": {
+  "00000000-0000-7000-8000-00000000000a": {
+   "at": 1894675800000,
+   "jobs": {
+    "sub-a-build": {
+     "state": "working",
+     "activityAt": 1894676340000
+    },
+    "sub-a-push": {
+     "state": "ended",
+     "activityAt": 1894674600000
+    },
+    "thread:00000000-0000-7000-8000-0000000000e1": {
+     "state": "ended",
+     "activityAt": 1894674000000,
+     "messages": 12
+    }
+   },
+   "steps": {
+    "p1": {
+     "sig": "[\"doing\",\"Goal: ship the release build\",\"\"]",
+     "at": 1894658400000
+    },
+    "p2": {
+     "sig": "[\"doing\",\"Build: package the release\",\"job build\"]",
+     "at": 1894672800000
+    },
+    "p3": {
+     "sig": "[\"blocked\",\"Push: publish the release to the public channel\",\"job push\"]",
+     "at": 1894665600000
+    },
+    "p4": {
+     "sig": "[\"todo\",\"Verify: the release checklist passes\",\"\",\"\",\"job build reports the package\"]",
+     "at": 1894672800000
+    },
+    "p5": {
+     "sig": "[\"doing\",\"Write: the release notes\",\"00000000-0000-7000-8000-0000000000e1\"]",
+     "at": 1894662000000
+    },
+    "p6": {
+     "sig": "[\"todo\",\"Fix: the build machine is out of disk space\",\"\"]",
+     "at": 1894674600000
+    },
+    "p7": {
+     "sig": "[\"blocked\",\"Free space on the build machine before the next build\",\"\",\"\",\"chat B frees the space\"]",
+     "at": 1894672800000
+    }
+   },
+   "answered": [
+    "t1"
+   ],
+   "ready": [],
+   "jobAt": 1894676100000
+  },
+  "00000000-0000-7000-8000-00000000000b": {
+   "at": 1894675800000,
+   "jobs": {
+    "sub-b-cleanup": {
+     "state": "working",
+     "activityAt": 1894674600000
+    }
+   },
+   "steps": {
+    "p11": {
+     "sig": "[\"doing\",\"Goal: keep the build machine healthy\",\"\"]",
+     "at": 1894654800000
+    },
+    "p12": {
+     "sig": "[\"doing\",\"Fix: free disk space on the build machine now\",\"job cleanup\"]",
+     "at": 1894665600000
+    },
+    "p13": {
+     "sig": "[\"blocked\",\"Wait: the vendor answers the storage ticket\",\"\",\"\",\"vendor answer on the storage ticket\"]",
+     "at": 1894665600000
+    },
+    "p14": {
+     "sig": "[\"todo\",\"Verify: the health check returns 200 after the cutover\",\"\",\"2030-01-15T23:00:00.000Z\",\"\"]",
+     "at": 1894669200000
+    },
+    "p15": {
+     "sig": "[\"blocked\",\"Add an alert test for the dashboard\",\"\",\"\",\"chat C ships the dashboard\"]",
+     "at": 1894672800000
+    }
+   },
+   "answered": [],
+   "ready": [],
+   "jobAt": 1894676100000
+  },
+  "00000000-0000-7000-8000-00000000000c": {
+   "at": 1894675800000,
+   "jobs": {
+    "sub-c-dashboard": {
+     "state": "working",
+     "activityAt": 1894676280000
+    },
+    "sub-c-audit": {
+     "state": "working",
+     "activityAt": 1894674000000
+    }
+   },
+   "steps": {
+    "p21": {
+     "sig": "[\"doing\",\"Goal: CI dashboard\",\"\"]",
+     "at": 1894654800000
+    },
+    "p22": {
+     "sig": "[\"doing\",\"Build: the CI dashboard with charts\",\"job dashboard\"]",
+     "at": 1894672800000
+    },
+    "p23": {
+     "sig": "[\"todo\",\"Run: read the queue snapshot at every check-in\",\"\",\"2030-01-15T02:30:00.000Z\",\"\"]",
+     "at": 1894665600000
+    },
+    "p24": {
+     "sig": "[\"blocked\",\"Prune old CI caches\",\"\",\"2030-01-16T19:00:00.000Z\",\"the cache job lands\"]",
+     "at": 1894669200000
+    },
+    "p25": {
+     "sig": "[\"todo\",\"Build: one fix per waste the audit finds\",\"job audit\"]",
+     "at": 1894669200000
+    }
+   },
+   "answered": [],
+   "ready": [],
+   "jobAt": 1894676100000
+  },
+  "00000000-0000-7000-8000-00000000000d": {
+   "at": 1894675800000,
+   "jobs": {
+    "sub-d-landing": {
+     "state": "ended",
+     "activityAt": 1894673400000
+    }
+   },
+   "steps": {
+    "p31": {
+     "sig": "[\"doing\",\"Goal: demo apps\",\"\"]",
+     "at": 1894647600000
+    },
+    "p32": {
+     "sig": "[\"done\",\"Build: demo app one\",\"\"]",
+     "at": 1894647600000
+    },
+    "p33": {
+     "sig": "[\"done\",\"Build: demo app two\",\"\"]",
+     "at": 1894647600000
+    },
+    "p34": {
+     "sig": "[\"doing\",\"Goal: landing page\",\"\"]",
+     "at": 1894647600000
+    },
+    "p35": {
+     "sig": "[\"blocked\",\"Decide: the owner picks the landing variant\",\"\"]",
+     "at": 1894662000000
+    },
+    "p36": {
+     "sig": "[\"doing\",\"Ship: the landing page\",\"job landing\"]",
+     "at": 1894665600000,
+     "nh": "1ef8c34e372f",
+     "noteAt": 1894665600000,
+     "ended": 1894673400000
+    },
+    "p37": {
+     "sig": "[\"todo\",\"Verify: the landing page passes the browser walk\",\"\",\"2030-01-15T05:00:00.000Z\",\"\"]",
+     "at": 1894669200000
+    }
+   },
+   "answered": [],
+   "ready": [],
+   "jobAt": 1894676100000
+  }
+ },
+ "ends": {}
+}

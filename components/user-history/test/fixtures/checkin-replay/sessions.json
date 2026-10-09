@@ -1,0 +1,105 @@
+{
+ "capturedAt": 1894676400000,
+ "sessions": [
+  {
+   "sessionId": "00000000-0000-7000-8000-00000000000a",
+   "sessionName": "chat A",
+   "lifecycle": "live",
+   "activity": "idle",
+   "lastActivityAt": "2030-01-15T02:55:00.000Z",
+   "messageCount": 40
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-00000000000b",
+   "sessionName": "chat B",
+   "lifecycle": "live",
+   "activity": "idle",
+   "lastActivityAt": "2030-01-15T02:55:00.000Z",
+   "messageCount": 40
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-00000000000c",
+   "sessionName": "chat C",
+   "lifecycle": "live",
+   "activity": "idle",
+   "lastActivityAt": "2030-01-15T02:55:00.000Z",
+   "messageCount": 40
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-00000000000d",
+   "sessionName": "chat D",
+   "lifecycle": "live",
+   "activity": "idle",
+   "lastActivityAt": "2030-01-15T02:55:00.000Z",
+   "messageCount": 40
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-0000000000e1",
+   "sessionName": "thread docs",
+   "lifecycle": "live",
+   "activity": "idle",
+   "lastActivityAt": "2030-01-15T02:20:00.000Z",
+   "messageCount": 12
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-0000000000a1",
+   "sessionName": "job build",
+   "lifecycle": "live",
+   "activity": "working",
+   "lastActivityAt": "2030-01-15T02:59:00.000Z",
+   "messageCount": 20,
+   "parentSessionId": "00000000-0000-7000-8000-00000000000a",
+   "rlmChildId": "sub-a-build"
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-0000000000a2",
+   "sessionName": "job push",
+   "lifecycle": "live",
+   "activity": "idle",
+   "lastActivityAt": "2030-01-15T02:30:00.000Z",
+   "messageCount": 20,
+   "parentSessionId": "00000000-0000-7000-8000-00000000000a",
+   "rlmChildId": "sub-a-push"
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-0000000000b1",
+   "sessionName": "job cleanup",
+   "lifecycle": "live",
+   "activity": "idle",
+   "lastActivityAt": "2030-01-15T02:40:00.000Z",
+   "messageCount": 20,
+   "parentSessionId": "00000000-0000-7000-8000-00000000000b",
+   "rlmChildId": "sub-b-cleanup"
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-0000000000c1",
+   "sessionName": "job dashboard",
+   "lifecycle": "live",
+   "activity": "working",
+   "lastActivityAt": "2030-01-15T02:58:00.000Z",
+   "messageCount": 20,
+   "parentSessionId": "00000000-0000-7000-8000-00000000000c",
+   "rlmChildId": "sub-c-dashboard"
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-0000000000c2",
+   "sessionName": "job audit",
+   "lifecycle": "live",
+   "activity": "working",
+   "lastActivityAt": "2030-01-15T02:20:00.000Z",
+   "messageCount": 20,
+   "parentSessionId": "00000000-0000-7000-8000-00000000000c",
+   "rlmChildId": "sub-c-audit"
+  },
+  {
+   "sessionId": "00000000-0000-7000-8000-0000000000d1",
+   "sessionName": "job landing",
+   "lifecycle": "live",
+   "activity": "idle",
+   "lastActivityAt": "2030-01-15T02:10:00.000Z",
+   "messageCount": 20,
+   "parentSessionId": "00000000-0000-7000-8000-00000000000d",
+   "rlmChildId": "sub-d-landing"
+  }
+ ]
+}

@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { defaultDaemonSocketPath, getAgentDir, SettingsManager } from "prime-agent";
 import { BoardStore } from "./chat-board-store.ts";
 import { Catalog } from "./chat-catalog.ts";
@@ -15,7 +15,6 @@ import { Chats, extensionBuild, jobRegistry, loadRecord } from "./chats.ts";
 import { Duties } from "./chat-duty-run.ts";
 import { DutyStore } from "./chat-duty-store.ts";
 import { IdIndex } from "./id-index.ts";
-import { CONVERGENCE_DUTY, convergenceDuty } from "./shared/chat-duties.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { UsageService } from "./usage/service.ts";
@@ -69,9 +68,6 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
   };
 }
 
-/** The user-history component, where a duty's precheck script runs. */
-const componentDir = dirname(import.meta.dirname);
-
 export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string } = {}): Promise<ChatBackend> {
   const socketPath = options.socketPath ?? defaultDaemonSocketPath();
   const agentDir = options.agentDir ?? getAgentDir();
@@ -90,11 +86,17 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
+  // Each chat's duties: the standing ones run here; the built-in check-in duty runs in Chats and is recorded here, and its card edits the check-in setting.
+  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id),
+    notify: (id, message) => threads.prompt(id, { message, images: [], mode: "steer" }), log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`),
+    board: id => boards.read(id),
+    checkIn: { view: id => chats.checkInView(id), run: id => chats.runCheckIn(id), measure: id => chats.measure(id),
+      set: async (id, change) => { const view = await chats.setCheckIn(id, change); if (view) await catalog.notify(); return view; } } });
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry: jobRegistry(join(dataDir, "chat-jobs.json")),
       settings: checkInSettings(join(dataDir, "check-in-settings.json")), claude: claudeReader(), fallbacks: fallbackRecord(join(dataDir, "chat-fallbacks.json")),
       awake: working => awake.update(working), writeBoard: (id, ops) => boards.apply(id, ops, "agent"),
-      checkInJobs: { dir: join(dataDir, "check-in-jobs"), board: id => join(boards.dir, id + ".json") }, corrections: () => corrections.read() },
+      checkInJobs: { dir: join(dataDir, "check-in-jobs"), board: id => join(boards.dir, id + ".json") }, corrections: () => corrections.read(), duty: duties },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
@@ -105,11 +107,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   catalog.ratesSource = ids => usage.rates(ids);
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
-  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id),
-    notify: (id, message) => threads.prompt(id, { message, images: [], mode: "steer" }), log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
-  // Every chat converges on its own: the Board convergence duty measures each board hourly and wakes the chat only on a miss.
-  chats.chatAdded = id => { void duties.ensure(id, convergenceDuty(id, componentDir)).then(result => { if (!result.startsWith("unchanged")) process.stderr.write(`duty ${id.slice(0, 8)}: ${result} "${CONVERGENCE_DUTY}"\n`); },
-    error => process.stderr.write(`duty ${id.slice(0, 8)}: ${CONVERGENCE_DUTY}: ${error instanceof Error ? error.message : String(error)}\n`)); };
   let closed = false;
   return {
     catalog, threads, readState, labels, notes, defaults, chats, boards, created, usage, duties,

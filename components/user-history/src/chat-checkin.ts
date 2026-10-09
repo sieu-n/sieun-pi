@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HandoffRule } from "./chat-corrections.ts";
+import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
 import { CHAT_CHECK_IN_LINE, NUDGE_PREFIX } from "./shared/chat-feed.ts";
@@ -9,7 +10,7 @@ import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckI
   type ThreadMessage } from "./shared/types.ts";
 
 /**
- * The server's check-in for a chat: at its own interval (CHECK_IN_MS unless the owner set another, see CheckInSetting) it reads the chat's jobs (its subagents, and every thread an open plan step names as its
+ * The check-in duty's precheck and prompt (src/shared/chat-duties.ts, `CHECK_IN_DUTY`; src/chats.ts runs it). The server's check-in for a chat: at its own interval (CHECK_IN_MS unless the owner set another, see CheckInSetting) it reads the chat's jobs (its subagents, and every thread an open plan step names as its
  * owner) and the board, compares them with what it saw last time, and steers the chat only with the changes that need the VP. No change, no
  * model call.
  */
@@ -430,7 +431,7 @@ const reminderDue = (before: Reminder | undefined, key: string, now: number): bo
  * (`scopeMisses`) gives its scope line when first seen, then every STEP_STALE_MS, and is a `scope` item.
  */
 export function checkInDigest(previous: CheckInMemory | undefined, facts: readonly JobFact[], board: ChatBoard | null, now: number, context: CheckInContext = {}):
-  { memory: CheckInMemory; lines: string[]; open: string[]; nudges: Nudge[]; notes: StepNote[]; job?: CheckInJob } {
+  { memory: CheckInMemory; lines: string[]; open: string[]; nudges: Nudge[]; notes: StepNote[]; job?: CheckInJob; steps: StepView[]; scope: ScopeMiss[] } {
   const lines: string[] = [];
   const jobs: Record<string, JobMemo> = {};
   /** The work a check-in job would take over (`checkInJobDue`), and the lines about it. */
@@ -495,6 +496,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   const firstSeen = Math.min(now, Date.parse(board?.updatedAt ?? "") || now);
   const steps: Record<string, StepMemo> = context.boardError ? { ...previous?.steps } : {};
   const open: { at: number; line: string }[] = [];
+  const views: StepView[] = [];
   const nudges: Nudge[] = [];
   const notes: StepNote[] = [];
   /** The class lines go after every other line: the open-steps list repeats each class, so a fold cuts them first. */
@@ -504,7 +506,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   const visit = (item: PlanItem): boolean => {
     let openBelow = false;
     for (const child of item.children) openBelow = visit(child) || openBelow;
-    const sig = JSON.stringify([item.status, item.text, planJob(item.job) ?? "", ...(item.waitUntil || item.waitFor ? [item.waitUntil ?? "", item.waitFor ?? ""] : [])]);
+    const sig = stepSig(item);
     const before = previous?.steps[item.id];
     const nh = noteHash(item.note);
     const noteAt = before === undefined ? undefined : before.nh === nh ? before.noteAt : now;
@@ -537,6 +539,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     }
     if (!isOpen || openBelow) return isOpen || openBelow;
     const view = stepView(item, memo.at, self, facts, openTodos, context.rows ?? [], now);
+    views.push(view);
     /** An orphan that looks done needs a check and a close, not a new job: its "looks done" line replaces the orphan line. */
     const line = done && view.cls === "orphan" ? null : classLine(view, now);
     if (view.cls === "stale-chase" && view.target && now - (memo.chased ?? -Infinity) >= NUDGE_EVERY_MS) {
@@ -601,7 +604,60 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   const job: CheckInJob | undefined = fanOut ? { at: now, name: `check-in ${clockTime(now)}`,
     items: KIND_ORDER.flatMap(kind => items.filter(item => item.kind === kind)), lines: fold(lines.filter(line => !covered.has(line))) } : undefined;
   return { memory: { at: now, jobs, steps, answered: answered?.map(todo => todo.id) ?? previous?.answered ?? [], ready: ready?.map(step => step.id) ?? previous?.ready ?? [],
-    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}), ...(jobAt !== undefined ? { jobAt } : {}) }, lines: fold(lines), open: listed, nudges, notes, ...(job ? { job } : {}) };
+    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}), ...(jobAt !== undefined ? { jobAt } : {}) }, lines: fold(lines), open: listed, nudges, notes, ...(job ? { job } : {}), steps: views, scope: [...scoped.values()] };
+}
+
+/** What a step's last change compares: its status, text, owner and waits. A note edit is no change, so a chase note does not hide a stall. */
+export const stepSig = (item: PlanItem): string =>
+  JSON.stringify([item.status, item.text, planJob(item.job) ?? "", ...(item.waitUntil || item.waitFor ? [item.waitUntil ?? "", item.waitFor ?? ""] : [])]);
+
+/**
+ * The check-in duty's metrics (`CHECK_IN_DUTY`), each at most 0. `job_end_silent` is a step whose job ended badly (a provider error, an abort,
+ * a stop mid-tool, the length limit) with no report, which the server told the chat at once (the check-in record's told ends), not updated a
+ * check-in later; such a step is counted there and not again in `job_end_unrecorded`. `scope_misses` is an open step on another thread's work
+ * by a ledger handoff (`scopeMisses`, correction c7).
+ */
+export type ConvergenceMisses = { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number; job_end_silent: number; scope_misses: number };
+export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 };
+
+/**
+ * The misses of one chat's classified steps: orphan steps; due steps whose waitUntil passed more than one tick (`everyMs`) ago; stale chases of
+ * 24 h or more (a step with an open For you todo is `foryou`, never a chase); steps whose job ended more than one tick ago, after the step last
+ * changed (`job_end_silent` when the server told that end as a bad one, else `job_end_unrecorded`); and open steps on another thread's work. Each
+ * flagged slice names its step (`item`), so the duty can check it again after the chat's turn.
+ */
+export function convergenceMisses(chat: string, steps: readonly StepView[], scope: readonly ScopeMiss[], told: Readonly<Record<string, ToldEnd>>, everyMs: number, now: number):
+  PrecheckOutput & { metrics: ConvergenceMisses; flagged: FlaggedSlice[] } {
+  const misses: ConvergenceMisses = { ...NO_MISSES };
+  const flagged: FlaggedSlice[] = [];
+  const flag = (kind: keyof ConvergenceMisses, view: StepView, excerpt: string) => { misses[kind]++; flagged.push({ chat, at: now, kind, excerpt, item: view.item.id }); };
+  for (const view of steps) {
+    const line = classLine(view, now) ?? `${view.item.id} ${view.cls}`;
+    if (view.cls === "orphan") flag("orphan_steps", view, line);
+    if (view.cls === "due" && now - Date.parse(view.item.waitUntil!) > everyMs) flag("due_late", view, line);
+    if (view.cls === "stale-chase" && now - view.changedAt >= CHASE_ESCALATE_MS) flag("stale_chase_24h", view, line);
+    const owner = view.owner;
+    const silent = owner && owner.state !== "working" ? told[owner.key] : undefined;
+    if (silent && silent.at > view.changedAt) {
+      if (now - silent.at > everyMs) {
+        flag("job_end_silent", view, `${view.item.id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ${jobEndWords(silent)} ${Math.round((now - silent.at) / 60_000)} min ago with no report and the step has not changed since`);
+      }
+      continue;
+    }
+    const end = owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled && !holdsOnWait(view.item, now) ? owner.activityAt : undefined;
+    if (end !== undefined && end > view.changedAt && now - end > everyMs) {
+      flag("job_end_unrecorded", view, `${view.item.id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ended ${Math.round((now - end) / 60_000)} min ago and the step has not changed since`);
+    }
+  }
+  for (const miss of scope) { misses.scope_misses++; flagged.push({ chat, at: now, kind: "scope_misses", excerpt: scopeLine(miss), item: miss.item.id }); }
+  return { metrics: misses, flagged };
+}
+
+/** Step counts per class, for a check-in run's record. */
+export function classCounts(steps: readonly Pick<StepView, "cls">[]): Record<StepClass, number> {
+  const counts = Object.fromEntries(STEP_CLASSES.map(cls => [cls, 0])) as Record<StepClass, number>;
+  for (const view of steps) counts[view.cls]++;
+  return counts;
 }
 
 /** A nudge the server sends to the thread a stale step waits on: the thread's session id, the step, the text. */

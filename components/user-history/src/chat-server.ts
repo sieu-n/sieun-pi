@@ -720,12 +720,17 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
         }
         case "duties": {
-          // The owner's Run now, Pause and Resume on the Duties card; the reply is the chat's duties after the change.
+          // The owner's Run now, Pause, Resume and cadence on the Duties card; the reply is the chat's duties after the change. The check-in duty's
+          // pause and cadence are the chat's check-in setting, the one the header's control sets.
           if (!backend.duties || !(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
           const duty = text(body.duty, "duty", 16);
           const action = body.action;
-          if (action !== "run" && action !== "pause" && action !== "resume") throw new RequestError(400, "Choose run, pause or resume.");
-          const found = action === "run" ? await backend.duties.runNow(id, duty) || (await backend.duties.view(id)).some(view => view.duty.id === duty)
+          if (action !== "run" && action !== "pause" && action !== "resume" && action !== "schedule") throw new RequestError(400, "Choose run, pause, resume or schedule.");
+          let found: boolean;
+          if (action === "schedule") {
+            try { found = await backend.duties.setSchedule(id, duty, body.schedule); }
+            catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
+          } else found = action === "run" ? await backend.duties.runNow(id, duty) || (await backend.duties.view(id)).some(view => view.duty.id === duty)
             : await backend.duties.setStatus(id, duty, action === "pause" ? "paused" : "active");
           if (!found) throw new RequestError(404, "This chat has no such duty.");
           json(res, 200, { duties: await backend.duties.view(id) }); return;

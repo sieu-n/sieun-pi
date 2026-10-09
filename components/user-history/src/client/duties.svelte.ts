@@ -2,18 +2,18 @@ import { get, post } from "./api.ts";
 import { clockTime } from "./format.ts";
 import type { DutyRunRecord, DutySchedule, DutyView } from "../shared/chat-duties.ts";
 
-export type DutyAction = "run" | "pause" | "resume";
+export type DutyAction = "run" | "pause" | "resume" | "schedule";
 const route = (id: string) => "api/threads/" + encodeURIComponent(id) + "/duties";
 export const dutiesApi = {
   view: (id: string) => get<{ duties: DutyView[] }>(route(id)),
-  act: (id: string, duty: string, action: DutyAction) => post<{ duties: DutyView[] }>(route(id), { duty, action }),
+  act: (id: string, duty: string, action: DutyAction, schedule?: DutySchedule) => post<{ duties: DutyView[] }>(route(id), { duty, action, ...(schedule ? { schedule } : {}) }),
 };
 
 /** The dot a duty row shows: its last verdict, or running, paused, or new before its first run. */
 export type DutyState = "met" | "missed" | "error" | "paused" | "running" | "new";
 export function dutyState(view: DutyView): DutyState {
   if (view.running) return "running";
-  if (view.duty.status === "paused") return "paused";
+  if (view.paused) return "paused";
   const last = view.runs.find(run => run.verdict !== "skipped");
   return last ? last.verdict as Exclude<DutyRunRecord["verdict"], "skipped"> : "new";
 }
@@ -88,10 +88,10 @@ export class ChatDuties {
     catch { if (chat === this.chat) this.views = []; }
   }
 
-  async act(duty: string, action: DutyAction): Promise<void> {
+  async act(duty: string, action: DutyAction, schedule?: DutySchedule): Promise<void> {
     const chat = this.chat;
     try {
-      const { duties } = await dutiesApi.act(chat, duty, action);
+      const { duties } = await dutiesApi.act(chat, duty, action, schedule);
       if (chat !== this.chat) return;
       this.views = duties;
       this.error = null;

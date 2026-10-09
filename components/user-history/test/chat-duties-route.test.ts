@@ -9,7 +9,7 @@ import { DutyStore } from "../src/chat-duty-store.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import { parseDutyInput, type DutyView } from "../src/shared/chat-duties.ts";
 
-test("api/threads/:id/duties: GET lists a chat's duties; POST runs, pauses and resumes one with the write token; non-chats 404, bad input 400", async () => {
+test("api/threads/:id/duties: GET lists a chat's duties; POST runs, pauses, resumes and reschedules one with the write token; non-chats 404, bad input 400", async () => {
   const dir = await mkdtemp(join(tmpdir(), "duties-route-"));
   const store = new DutyStore(dir);
   const now = new Date(2026, 9, 8, 18, 0).getTime();
@@ -40,6 +40,11 @@ test("api/threads/:id/duties: GET lists a chat's duties; POST runs, pauses and r
     const paused = await post("chat1", { duty: "d1", action: "pause" });
     assert.deepEqual([paused.status, paused.body.duties[0]!.duty.status, paused.body.duties[0]!.nextAt], [200, "paused", null]);
     assert.equal((await post("chat1", { duty: "d1", action: "resume" })).body.duties[0]!.duty.status, "active");
+    const moved = await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "every", minutes: 30 } });
+    assert.deepEqual([moved.status, moved.body.duties[0]!.schedule, moved.body.duties[0]!.nextAt], [200, { kind: "every", minutes: 30 }, now + 30 * 60_000]);
+    const bad = await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "every", minutes: 2 } });
+    assert.deepEqual([bad.status, bad.body.error], [400, "schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 to 10080)."]);
+    assert.equal((await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "daily", at: "23:07" } })).status, 200);
     const ran = await post("chat1", { duty: "d1", action: "run" });
     assert.equal(ran.body.duties[0]!.running, true);
     await duties.settled();

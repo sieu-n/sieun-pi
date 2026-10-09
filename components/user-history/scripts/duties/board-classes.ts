@@ -1,21 +1,22 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { ACT_CLASSES, CHASE_ESCALATE_MS, checkInRecord, checkInSettings, classifyBoard, classLine, holdsOnWait, jobEndWords, jobFacts, scopeLine, scopeMisses, STEP_CLASSES, type StepClass,
-  type StepView } from "../../src/chat-checkin.ts";
+import { ACT_CLASSES, checkInRecord, checkInSettings, classCounts, classifyBoard, classLine, type ConvergenceMisses, convergenceMisses, jobFacts, scopeMisses, STEP_CLASSES,
+  type StepClass, type StepView } from "../../src/chat-checkin.ts";
 import { CorrectionLedger, handoffRules } from "../../src/chat-corrections.ts";
-import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";
 import type { ChildAgent, SessionRow } from "../../src/shared/types.ts";
 
 /**
  * Board classes: every open leaf step of every chat board in one class (`stepClass`), from the boards, the check-in memory (each step's last
  * change), the check-in settings (one tick is the chat's interval) and the daemon's session list (jobs and threads).
  *
- * `node --import tsx scripts/duties/board-classes.ts [--chat <id>] [--data-dir <dir>] [--sessions <file>] [--now <ms>]` prints the counts per chat
- * and a line per step to act on. With OUTPUT_FILE set it is the "Board convergence" duty's precheck for `--chat`: it writes the four misses.
+ * Chat health sums the check-in duty's misses over every chat from here, apart from the check-ins themselves, so a check-in that stops running
+ * still shows. `node --import tsx scripts/duties/board-classes.ts [--chat <id>] [--data-dir <dir>] [--sessions <file>] [--now <ms>]` prints
+ * the counts per chat and a line per step to act on.
  */
 
 /** The fields of one `prime-agent sessions --json` entry the classes read. */
@@ -23,14 +24,6 @@ export interface DaemonSession {
   sessionId: string; sessionName?: string; firstMessage?: string; lifecycle?: string; activity?: string; lastActivityAt?: string;
   messageCount?: number; parentSessionId?: string; rlmChildId?: string;
 }
-/**
- * The duty's targets, each at most 0. `job_end_silent` is a step whose job ended badly (a provider error, an abort, a stop mid-tool, the length
- * limit) with no report, which the server told the chat at once (the check-in record's told ends), not updated a check-in later; such a step
- * is counted there and not again in `job_end_unrecorded`. `scope_misses` is an open step on another thread's work by a ledger handoff
- * (`scopeMisses`, correction c7).
- */
-export interface ConvergenceMisses { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number; job_end_silent: number; scope_misses: number }
-export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 };
 export interface ChatClasses {
   id: string; name: string; everyMs: number; open: number; counts: Record<StepClass, number>; misses: ConvergenceMisses;
   steps: StepView[]; flagged: FlaggedSlice[];
@@ -97,12 +90,7 @@ export function chatChildren(sessions: readonly DaemonSession[], chatId: string)
   });
 }
 
-/**
- * The classes of every chat in `<dataDir>/chats.json` (or only `chats`). The duty's misses: orphan steps; due steps whose waitUntil passed more
- * than one tick ago; stale chases of 24 h or more (a step with an open For you todo is `foryou`, never a chase); and steps whose job ended more
- * than one tick ago, after the step last changed: `job_end_silent` when the server told that end as a bad one, else `job_end_unrecorded`; and
- * open steps on another thread's work (`scope_misses`).
- */
+/** The classes of every chat in `<dataDir>/chats.json` (or only `chats`), with the check-in duty's misses (`convergenceMisses`). */
 export async function boardClasses(options: { dataDir: string; now: number; sessions: () => DaemonSession[]; chats?: readonly string[] }): Promise<ChatClasses[]> {
   const { dataDir, now } = options;
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8").catch(() => "{}")) as { ids?: unknown };
@@ -125,31 +113,8 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
     const name = rows.find(row => row.id === id)?.name ?? id;
     const facts = jobFacts(chatChildren(sessions ?? [], id), board, rows, id);
     const steps = classifyBoard(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), rows, now);
-    const counts = Object.fromEntries(STEP_CLASSES.map(cls => [cls, 0])) as Record<StepClass, number>;
-    const misses: ConvergenceMisses = { ...NO_MISSES };
-    const flagged: FlaggedSlice[] = [];
-    const flag = (kind: keyof ConvergenceMisses, view: StepView, excerpt: string) => { misses[kind]++; flagged.push({ chat: id, at: now, kind, excerpt }); };
-    for (const view of steps) {
-      counts[view.cls]++;
-      const line = classLine(view, now) ?? `${view.item.id} ${view.cls}`;
-      if (view.cls === "orphan") flag("orphan_steps", view, line);
-      if (view.cls === "due" && now - Date.parse(view.item.waitUntil!) > everyMs) flag("due_late", view, line);
-      if (view.cls === "stale-chase" && now - view.changedAt >= CHASE_ESCALATE_MS) flag("stale_chase_24h", view, line);
-      const owner = view.owner;
-      const silent = owner && owner.state !== "working" ? told[owner.key] : undefined;
-      if (silent && silent.at > view.changedAt) {
-        if (now - silent.at > everyMs) {
-          flag("job_end_silent", view, `${view.item.id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ${jobEndWords(silent)} ${Math.round((now - silent.at) / 60_000)} min ago with no report and the step has not changed since`);
-        }
-        continue;
-      }
-      const end = owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled && !holdsOnWait(view.item, now) ? owner.activityAt : undefined;
-      if (end !== undefined && end > view.changedAt && now - end > everyMs) {
-        flag("job_end_unrecorded", view, `${view.item.id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ended ${Math.round((now - end) / 60_000)} min ago and the step has not changed since`);
-      }
-    }
-    for (const miss of scopeMisses(board, handoffs, [id, name])) { misses.scope_misses++; flagged.push({ chat: id, at: now, kind: "scope_misses", excerpt: scopeLine(miss) }); }
-    result.push({ id, name, everyMs, open: steps.length, counts, misses, steps, flagged });
+    const { metrics: misses, flagged } = convergenceMisses(id, steps, scopeMisses(board, handoffs, [id, name]), told, everyMs, now);
+    result.push({ id, name, everyMs, open: steps.length, counts: classCounts(steps), misses, steps, flagged });
   }
   return result;
 }
@@ -178,13 +143,7 @@ async function main(): Promise<void> {
   const loaded = sessionsFile ? parseLooseJson(await readFile(sessionsFile, "utf8")) as { sessions?: DaemonSession[] } | DaemonSession[] : undefined;
   const list = (): DaemonSession[] => loaded ? (Array.isArray(loaded) ? loaded : loaded.sessions ?? []) : daemonSessions();
   const chat = arg("--chat");
-  const chats = await boardClasses({ dataDir, now, sessions: list, ...(chat ? { chats: [chat] } : {}) });
-  const output = process.env.OUTPUT_FILE;
-  if (!output) { process.stdout.write(classesReport(chats, now)); return; }
-  const one = chats[0];
-  const result: PrecheckOutput = { metrics: { ...(one?.misses ?? NO_MISSES) }, flagged: one?.flagged ?? [] };
-  await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, JSON.stringify(result, null, 2) + "\n");
+  process.stdout.write(classesReport(await boardClasses({ dataDir, now, sessions: list, ...(chat ? { chats: [chat] } : {}) }), now));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
