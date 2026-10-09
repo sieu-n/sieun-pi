@@ -209,11 +209,13 @@ export function convergenceDuty(chatId: string, cwd: string): Record<string, unk
       { key: "due_late", label: "Steps due for more than one check-in", op: "<=", target: 0 },
       { key: "stale_chase_24h", label: "Chases over 24 h with no For you todo", op: "<=", target: 0 },
       { key: "job_end_unrecorded", label: "Steps whose job ended a check-in ago, not updated", op: "<=", target: 0 },
+      { key: "job_end_silent", label: "Steps whose job stopped on an error with no report, not updated", op: "<=", target: 0 },
     ],
     schedule: { kind: "every", minutes: 60 },
     precheck: { command: ["node", "--import", "tsx", "scripts/duties/board-classes.ts", "--chat", chatId], cwd, timeoutMs: 90_000 },
     onMiss: "In this turn, act on each step the details file lists: an orphan gets a job, you, or one For you todo; a due step gets done or a new waitUntil; " +
-      "a chase over 24 h becomes a For you todo or a new plan; a step whose job ended gets that job's result on the board. If the same miss comes back, " +
+      "a chase over 24 h becomes a For you todo or a new plan; a step whose job ended gets that job's result on the board; a step whose job stopped " +
+      "with no report gets that job re-briefed, restarted or replaced. If the same miss comes back, " +
       "send the details file to the thread named realtime layer.",
   };
 }

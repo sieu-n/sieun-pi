@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
 import { CHAT_CHECK_IN_LINE } from "./shared/chat-feed.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow } from "./shared/types.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow, type StopReason,
+  type ThreadMessage } from "./shared/types.ts";
 
 /**
  * The server's check-in for a chat: at its own interval (CHECK_IN_MS unless the owner set another, see CheckInSetting) it reads the chat's jobs (its subagents, and every thread an open plan step names as its
@@ -518,26 +519,104 @@ export function noReportNotice(name: string, message: JobMessage | undefined, wo
     : `${name} ended at ${clockTime(end)} with no report`;
 }
 
-/** `<data dir>/check-ins.json`: the last tick's memory per chat, through locked-json. */
+/**
+ * How a job's last turn ended when it ended badly (audit 10-09: 51 of 397 finished jobs sent no report; 20 stopped mid-tool, 18 on a provider
+ * error, 7 aborted, 5 at the length limit): `error` a provider error (`error` its message), `aborted`, `mid-tool` (the last message is a tool
+ * call or a tool result the model never answered), `length` the output length limit. `startedAt` is the job's last start: the last user
+ * message or agent message before that end (0 when none).
+ */
+export type JobEndCause = "error" | "aborted" | "mid-tool" | "length";
+export interface JobEnd { cause: JobEndCause; at: number; error?: string; startedAt: number }
+const ENDED_BADLY: Partial<Record<StopReason, JobEndCause>> = { error: "error", aborted: "aborted", length: "length", toolUse: "mid-tool" };
+/** A job's bad end from its transcript, or null when its last turn ended well or a new input waits after it. Notices and summaries are skipped. */
+export function jobEnd(messages: readonly ThreadMessage[]): JobEnd | null {
+  let end: Omit<JobEnd, "startedAt"> | null = null;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (!end) {
+      if (message.role === "user") return null;
+      if (message.role === "toolResult") end = { cause: "mid-tool", at: message.timestamp };
+      else if (message.role === "assistant") {
+        const cause = ENDED_BADLY[message.stopReason];
+        if (!cause) return null;
+        const error = cause === "error" ? message.errorMessage?.trim().replace(/\s+/g, " ") : undefined;
+        end = { cause, at: message.timestamp, ...(error ? { error } : {}) };
+      }
+      continue;
+    }
+    if (message.role === "user" || (message.role === "custom" && message.customType === "agent_message")) return { ...end, startedAt: message.timestamp };
+  }
+  return end ? { ...end, startedAt: 0 } : null;
+}
+/** The cause in plain words: a provider error with the first 120 characters of its message, aborted, stopped mid-tool, the length limit. */
+export function jobEndWords(end: Pick<JobEnd, "cause" | "error">): string {
+  switch (end.cause) {
+    case "error": return `stopped on a provider error${end.error ? ` ("${clip(end.error, 120)}")` : ""}`;
+    case "aborted": return "was aborted";
+    case "mid-tool": return "stopped in the middle of a tool call";
+    case "length": return "hit the output length limit";
+  }
+}
+/** What the server tells the chat about a job that ended badly with no report, and writes at the top of its step's note. */
+export const jobEndText = (name: string, end: Pick<JobEnd, "cause" | "error" | "at">): string =>
+  `Job ${name} ${jobEndWords(end)} at ${clockTime(end.at)} and sent no report: re-brief it with a follow-up, restart it, or replace it`;
+/** The open plan step a job owns (`stepOwner` names one of `names`: its child id, session id or session name), the first in board order. */
+export function ownedStep(board: ChatBoard | null, names: readonly string[]): PlanItem | undefined {
+  let found: PlanItem | undefined;
+  walk(board?.plan ?? [], item => {
+    const owner = stepOwner(item);
+    if (!found && owner !== undefined && OPEN.has(item.status) && names.some(name => name === owner || name === "thread:" + owner)) found = item;
+  });
+  return found;
+}
+/** The `[check-in]` line for a bad job end, led by its step when it has one; the step's note gets `jobEndText` at the top, its old note under it. */
+export function jobEndNotice(name: string, end: Pick<JobEnd, "cause" | "error" | "at">, step?: Pick<PlanItem, "id" | "text" | "note">): { line: string; note?: StepNote } {
+  const text = jobEndText(name, end);
+  if (!step) return { line: text };
+  return { line: `${step.id} ${quote(step.text)}: ${text}`, note: { step: step.id, note: clip(step.note ? `${text}\n${step.note}` : text, BOARD_LIMITS.note) } };
+}
+
+/** `<data dir>/check-ins.json`: the last tick's memory per chat, and the bad job ends told to each chat (`ends`), through locked-json. */
 export interface CheckInRecord {
   get(id: string): Promise<CheckInMemory | undefined>;
   set(id: string, memory: CheckInMemory): Promise<void>;
   forget(id: string): Promise<void>;
+  /** The bad job ends already told to a chat, by job key (a child id, or `thread:<sessionId>` for a root): once per end, across restarts. */
+  ends(id: string): Promise<Record<string, ToldEnd>>;
+  /** Records a told end; ends older than TOLD_END_KEEP_MS before it go. */
+  told(id: string, key: string, end: ToldEnd): Promise<void>;
 }
+/** A bad job end the server told the chat at once: when the job ended and why. Kept apart from the tick's memory, which each digest rewrites. */
+export interface ToldEnd { at: number; cause: JobEndCause }
+export const TOLD_END_KEEP_MS = 7 * 24 * 60 * 60_000;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function parseMemory(value: unknown): CheckInMemory | undefined {
   if (!isRecord(value) || typeof value.at !== "number" || !isRecord(value.jobs) || !Array.isArray(value.answered) || !Array.isArray(value.ready)) return undefined;
   return { ...(value as unknown as CheckInMemory), steps: isRecord(value.steps) ? value.steps as CheckInMemory["steps"] : {} };
 }
+const JOB_END_CAUSES: Record<JobEndCause, true> = { error: true, aborted: true, "mid-tool": true, length: true };
+const isToldEnd = (value: unknown): value is ToldEnd => isRecord(value) && typeof value.at === "number" && typeof value.cause === "string" && value.cause in JOB_END_CAUSES;
 export function checkInRecord(path: string): CheckInRecord {
-  const file: JsonFile<{ chats: Record<string, CheckInMemory> }> = { path, label: "Check-in record", initial: () => ({ chats: {} }), parse(value: unknown) {
+  type State = { chats: Record<string, CheckInMemory>; ends: Record<string, Record<string, ToldEnd>> };
+  const file: JsonFile<State> = { path, label: "Check-in record", initial: () => ({ chats: {}, ends: {} }), parse(value: unknown) {
     const chats = isRecord(value) && isRecord(value.chats) ? value.chats : {};
-    return { chats: Object.fromEntries(Object.entries(chats).flatMap(([id, memo]) => { const parsed = parseMemory(memo); return parsed ? [[id, parsed]] : []; })) };
+    const ends = isRecord(value) && isRecord(value.ends) ? value.ends : {};
+    return { chats: Object.fromEntries(Object.entries(chats).flatMap(([id, memo]) => { const parsed = parseMemory(memo); return parsed ? [[id, parsed]] : []; })),
+      ends: Object.fromEntries(Object.entries(ends).flatMap(([id, told]) => isRecord(told)
+        ? [[id, Object.fromEntries(Object.entries(told).filter((entry): entry is [string, ToldEnd] => isToldEnd(entry[1])))]] : [])) };
   } };
   return {
     async get(id) { return (await snapshotJsonFile(file)).chats[id]; },
     async set(id, memory) { await transactJsonFile(file, state => { state.chats[id] = memory; }); },
-    async forget(id) { await transactJsonFile(file, state => { delete state.chats[id]; }); },
+    async forget(id) { await transactJsonFile(file, state => { delete state.chats[id]; delete state.ends[id]; }); },
+    async ends(id) { return { ...(await snapshotJsonFile(file)).ends[id] }; },
+    async told(id, key, end) {
+      await transactJsonFile(file, state => {
+        const told = state.ends[id] ??= {};
+        for (const [other, entry] of Object.entries(told)) if (end.at - entry.at > TOLD_END_KEEP_MS) delete told[other];
+        told[key] = end;
+      });
+    },
   };
 }
 

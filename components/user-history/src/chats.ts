@@ -5,11 +5,12 @@ import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
-  endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobFacts, lastJobMessages, nextCheckIn, noReportNotice, retryDue } from "./chat-checkin.ts";
+  endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue } from "./chat-checkin.ts";
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
-import type { BoardOp, ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { BoardOp, ChatAgent, ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel,
+  ThreadMessage } from "./shared/types.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -595,6 +596,10 @@ export const ADOPT_SCAN_MS = 10 * 60_000;
 export const ADOPT_RECENT_MS = 7 * 24 * 60 * 60_000;
 /** A job of a chat quiet for longer than this is not looked at for a failed turn. */
 export const JOB_WAKE_WINDOW_MS = 24 * 60 * 60_000;
+/** A bad job end found later than this after it happened (the first wake after a deploy reads a day of jobs) is left to the check-in. */
+export const JOB_END_NOTE_MAX_AGE_MS = 2 * 60 * 60_000;
+/** A job as the scheduler found it in its chat's row: the chat, its Agents entry, and its own row (last activity, message count). */
+interface ChatJob { chat: string; agent: ChatAgent; row?: SessionRow | undefined }
 
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
@@ -884,7 +889,7 @@ export class Chats {
         const stamp = agent.lastActivityAt ?? "";
         if (agent.state === "working" || now - (Date.parse(stamp) || 0) > JOB_WAKE_WINDOW_MS) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); continue; }
         if (this.jobGone.get(threadId) === stamp || (!this.jobWakes.has(threadId) && this.jobQuiet.get(threadId) === stamp)) continue;
-        this.queue(threadId, () => this.wakeJob(threadId, stamp, woke));
+        this.queue(threadId, () => this.wakeJob(threadId, stamp, woke, { chat: row.id, agent, row: rows.find(candidate => candidate.id === threadId) }));
       }
     }
     for (const threadId of this.jobThreads) if (!threads.has(threadId)) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); this.jobGone.delete(threadId); }
@@ -893,16 +898,22 @@ export class Chats {
 
   /**
    * A job whose last turn ended in a transient failure is woken the way the owner did it by hand: abort when a provider retry holds it, a
-   * `continue` steer, resume the queue. Once per failure, on the TRANSIENT_RETRY_BACKOFF_MS schedule, and at once after a sleep.
+   * `continue` steer, resume the queue. Once per failure, on the TRANSIENT_RETRY_BACKOFF_MS schedule, and at once after a sleep. Any other bad
+   * end goes to `jobEndNote`; the wake runs first, so a job it revives gets no note.
    */
-  private async wakeJob(threadId: string, stamp: string, woke: boolean): Promise<void> {
+  private async wakeJob(threadId: string, stamp: string, woke: boolean, job?: ChatJob): Promise<void> {
     const now = this.now();
     try {
       const state = await this.threads.view(threadId);
       const stall = state ? turnStall(turnViewOf(state, this.threads.running(threadId)), now) : null;
       const last = this.jobWakes.get(threadId);
       const action = jobWake({ stall, last, woke, now });
-      if (action === "none") { this.jobWakes.delete(threadId); this.jobQuiet.set(threadId, stamp); return; }
+      if (action === "none") {
+        this.jobWakes.delete(threadId);
+        this.jobQuiet.set(threadId, stamp);
+        if (job && state) this.queue(job.chat, () => this.jobEndNote(threadId, job, state.messages));
+        return;
+      }
       this.jobQuiet.delete(threadId);
       if (action === "wait") { if (!last) this.jobWakes.set(threadId, { failureAt: Number.NaN, attempts: 0, at: stall!.at }); return; }
       const attempts = woke ? 1 : (last?.attempts ?? 0) + 1;
@@ -1236,12 +1247,60 @@ export class Chats {
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
-  /** A job end told by a notice is the check-in's too: its memory sees the job ended (and its message told), so the next digest does not repeat it. */
-  private async toldEnd(id: string, childId: string, end: number, waited: number | undefined): Promise<void> {
+  /**
+   * A job end told by a notice is the check-in's too: its memory sees the job ended (and its message told), so the next digest does not repeat it.
+   * `state` and `messages` are what the digest's fact will say (a thread's message count, so its idle messages are not told again).
+   */
+  private async toldEnd(id: string, key: string, end: number, waited: number | undefined, state: JobState = "ended", messages?: number): Promise<void> {
     const memory = await this.source.memory.get(id);
     if (!memory) return;
-    memory.jobs[childId] = { ...memory.jobs[childId], state: "ended", activityAt: end, ...(waited !== undefined ? { waited } : {}) };
+    memory.jobs[key] = { ...memory.jobs[key], state, activityAt: end, ...(waited !== undefined ? { waited } : {}), ...(messages !== undefined ? { messages } : {}) };
     await this.source.memory.set(id, memory);
+  }
+
+  /**
+   * A job (a subagent, or a root the chat started with rlm.create_session) whose last turn ended on a provider error, an abort, a stop mid-tool
+   * or the length limit, and that sent the chat no report since its last start, is told to the chat at once as one `[check-in]` line with the
+   * cause and the action, and the same text goes at the top of its open step's note (`writeBoard`). Once per end: the end is kept in the
+   * check-in record, so a restart does not tell it again; the check-in memory and the no-report notice see it as told. A cancelled job, a job
+   * at work again, a subagent with no child snapshot, an end older than JOB_END_NOTE_MAX_AGE_MS, and a chat whose transcript the server does not
+   * hold are left out.
+   */
+  private async jobEndNote(threadId: string, job: ChatJob, messages: readonly ThreadMessage[]): Promise<void> {
+    const { chat, agent } = job;
+    if (!this.chatIds.has(chat) || this.threads.running(threadId)) return;
+    const end = jobEnd(messages);
+    const now = this.now();
+    if (!end || now - end.at > JOB_END_NOTE_MAX_AGE_MS) return;
+    const child = agent.childId !== undefined ? this.children.get(chat)?.find(candidate => candidate.id === agent.childId) : undefined;
+    // A subagent the server holds no snapshot of cannot be told apart from a cancelled job or one that replied.
+    if (agent.link === "subagent" ? !child || childWorking(child) || child.status === "cancelled" : false) return;
+    const transcript = this.messages(chat);
+    if (!transcript) return;
+    const said = lastJobMessages(transcript).get(agent.sender);
+    if (child?.repliedSinceTask === true || (said !== undefined && said.at >= end.startedAt)) return;
+    const key = agent.link === "subagent" && agent.childId !== undefined ? agent.childId : "thread:" + threadId;
+    try {
+      if ((await this.source.memory.ends(chat))[key]?.at === end.at) return;
+      const board = await this.source.board(chat).catch(() => null);
+      const step = ownedStep(board, [key, threadId, agent.childId, agent.sender, agent.job, agent.name].filter((name): name is string => Boolean(name)));
+      const name = agent.sender || agent.name;
+      const { line, note } = jobEndNotice(name, end, step);
+      await this.threads.prompt(chat, { message: checkInMessage(CHECK_IN_PREFIX, [line], []), images: [], mode: "steer" });
+      this.steeredAt.set(chat, this.now());
+      await this.source.memory.told(chat, key, { at: end.at, cause: end.cause });
+      this.log(`chat ${chat.slice(0, 8)}: job ${name} ended (${end.cause}) with no report; told the chat${note ? ` and noted ${note.step}` : ""}`);
+      if (note && this.source.writeBoard) {
+        try { await this.source.writeBoard(chat, [{ op: "plan_update", id: note.step, note: note.note }]); }
+        catch (error) { this.log(`chat ${chat.slice(0, 8)}: job end note on ${note.step}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      const activityAt = child?.lastActivityAt ?? (Date.parse(agent.lastActivityAt ?? "") || end.at);
+      if (child) this.noticedEnd.set(child.id, { end: activityAt });
+      const failed = child ? child.status === "error" : Boolean(job.row?.failure);
+      await this.toldEnd(chat, key, activityAt, undefined, failed ? "failed" : "ended", key.startsWith("thread:") ? job.row?.messageCount : undefined);
+    } catch (error) {
+      this.log(`chat ${chat.slice(0, 8)}: job end note for ${agent.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** After each attach: steering `all` again (runtime state), and the old daemon check-in heartbeat cleared, since the server tick replaced it. */

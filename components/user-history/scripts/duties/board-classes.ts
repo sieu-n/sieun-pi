@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { ACT_CLASSES, CHASE_ESCALATE_MS, checkInRecord, checkInSettings, classifyBoard, classLine, jobFacts, STEP_CLASSES, type StepClass, type StepView } from "../../src/chat-checkin.ts";
+import { ACT_CLASSES, CHASE_ESCALATE_MS, checkInRecord, checkInSettings, classifyBoard, classLine, jobEndWords, jobFacts, STEP_CLASSES, type StepClass, type StepView } from "../../src/chat-checkin.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import type { ChildAgent, SessionRow } from "../../src/shared/types.ts";
 
@@ -21,8 +21,13 @@ export interface DaemonSession {
   sessionId: string; sessionName?: string; firstMessage?: string; lifecycle?: string; activity?: string; lastActivityAt?: string;
   messageCount?: number; parentSessionId?: string; rlmChildId?: string;
 }
-/** The duty's targets, each at most 0. */
-export interface ConvergenceMisses { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number }
+/**
+ * The duty's targets, each at most 0. `job_end_silent` is a step whose job ended badly (a provider error, an abort, a stop mid-tool, the length
+ * limit) with no report, which the server told the chat at once (the check-in record's told ends), not updated a check-in later; such a step
+ * is counted there and not again in `job_end_unrecorded`.
+ */
+export interface ConvergenceMisses { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number; job_end_silent: number }
+export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0 };
 export interface ChatClasses {
   id: string; name: string; everyMs: number; open: number; counts: Record<StepClass, number>; misses: ConvergenceMisses;
   steps: StepView[]; flagged: FlaggedSlice[];
@@ -75,7 +80,7 @@ export function chatChildren(sessions: readonly DaemonSession[], chatId: string)
 /**
  * The classes of every chat in `<dataDir>/chats.json` (or only `chats`). The duty's misses: orphan steps; due steps whose waitUntil passed more
  * than one tick ago; stale chases of 24 h or more (a step with an open For you todo is `foryou`, never a chase); and steps whose job ended more
- * than one tick ago, after the step last changed.
+ * than one tick ago, after the step last changed: `job_end_silent` when the server told that end as a bad one, else `job_end_unrecorded`.
  */
 export async function boardClasses(options: { dataDir: string; now: number; sessions: () => DaemonSession[]; chats?: readonly string[] }): Promise<ChatClasses[]> {
   const { dataDir, now } = options;
@@ -89,6 +94,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
   for (const id of ids) {
     const board = await boards.read(id).catch(() => null);
     const memo = await memory.get(id);
+    const told = await memory.ends(id);
     const everyMs = (await settings.get(id)).everyMs;
     const firstSeen = Date.parse(board?.updatedAt ?? "") || now;
     const hasOpen = JSON.stringify(board?.plan ?? []).match(/"status":"(?:todo|doing|blocked)"/) !== null;
@@ -98,7 +104,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
     const facts = jobFacts(chatChildren(sessions ?? [], id), board, rows, id);
     const steps = classifyBoard(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), rows, now);
     const counts = Object.fromEntries(STEP_CLASSES.map(cls => [cls, 0])) as Record<StepClass, number>;
-    const misses: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0 };
+    const misses: ConvergenceMisses = { ...NO_MISSES };
     const flagged: FlaggedSlice[] = [];
     const flag = (kind: keyof ConvergenceMisses, view: StepView, excerpt: string) => { misses[kind]++; flagged.push({ chat: id, at: now, kind, excerpt }); };
     for (const view of steps) {
@@ -108,6 +114,13 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
       if (view.cls === "due" && now - Date.parse(view.item.waitUntil!) > everyMs) flag("due_late", view, line);
       if (view.cls === "stale-chase" && now - view.changedAt >= CHASE_ESCALATE_MS) flag("stale_chase_24h", view, line);
       const owner = view.owner;
+      const silent = owner && owner.state !== "working" ? told[owner.key] : undefined;
+      if (silent && silent.at > view.changedAt) {
+        if (now - silent.at > everyMs) {
+          flag("job_end_silent", view, `${view.item.id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ${jobEndWords(silent)} ${Math.round((now - silent.at) / 60_000)} min ago with no report and the step has not changed since`);
+        }
+        continue;
+      }
       const end = owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled ? owner.activityAt : undefined;
       if (end !== undefined && end > view.changedAt && now - end > everyMs) {
         flag("job_end_unrecorded", view, `${view.item.id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ended ${Math.round((now - end) / 60_000)} min ago and the step has not changed since`);
@@ -145,7 +158,7 @@ async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stdout.write(classesReport(chats, now)); return; }
   const one = chats[0];
-  const result: PrecheckOutput = { metrics: { ...(one?.misses ?? { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0 }) }, flagged: one?.flagged ?? [] };
+  const result: PrecheckOutput = { metrics: { ...(one?.misses ?? NO_MISSES) }, flagged: one?.flagged ?? [] };
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }

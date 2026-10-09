@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { activePause, changeCheckIn, chatCheckIn, parseChatCheckIn, checkInDigest, jobReport, lastJobMessages, checkInDue, checkInLine, checkInMessage, checkInRecord, checkInSettings, endedWithoutReport, nextCheckIn, pauseEnd, validCheckInEvery, jobFacts, readySteps,
-  CHASE_ESCALATE_MS, clockTime, localTime, NUDGE_EVERY_MS, retryDue, STALE_MS, STEP_STALE_MS, stepClass, stepOwner, waitTarget, todoForStep, waitsOnOwner, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
+  CHASE_ESCALATE_MS, clockTime, jobEnd, jobEndNotice, jobEndWords, localTime, NUDGE_EVERY_MS, ownedStep, retryDue, STALE_MS, STEP_STALE_MS, stepClass, stepOwner, TOLD_END_KEEP_MS, waitTarget, todoForStep,
+  waitsOnOwner, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
 import { applyBoardOp, emptyBoard, nextIds, renderBoard } from "../src/shared/chat-board.ts";
 import { chatLines, turnStarter } from "../src/shared/chat-feed.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, SessionRow, ThreadMessage } from "../src/shared/types.ts";
@@ -510,4 +511,55 @@ test("chat check_in: the chat pauses itself for 1h or until 09:00, resumes its o
   assert.equal(await chatCheckIn(settings, "c1", { everyMs: 60 * 60_000 }, now + 420_000), "The chat set its check-in: every 60 min", "the interval still applies");
   assert.deepEqual(await settings.get("c1"), { everyMs: 60 * 60_000, pausedUntil: "forever", pausedBy: "owner" });
   assert.deepEqual(changeCheckIn({ everyMs: 60_000 }, { pause: "forever" }, now, "chat"), { refused: "a chat pauses its check-ins for 1h or until tomorrow 09:00; only the owner pauses them until resumed" });
+});
+
+
+test("job end: each bad end of a job's last turn from its transcript, the words and the step note; a good end, a new input or a running reply is none", () => {
+  const user = (text: string, at: number): ThreadMessage => ({ role: "user", content: text, timestamp: at });
+  const said = (stopReason: "stop" | "error" | "aborted" | "length" | "toolUse", at: number, errorMessage?: string): ThreadMessage =>
+    ({ role: "assistant", content: [], provider: "p", model: "m", stopReason, timestamp: at, ...(errorMessage ? { errorMessage } : {}) });
+  const result: ThreadMessage = { role: "toolResult", toolCallId: "t", toolName: "ipython", content: [], isError: false, timestamp: 40 };
+  const notice: ThreadMessage = { role: "custom", customType: "rlm_child_terminal_notice", content: "[child-exited: no-reply child:x]", timestamp: 60 };
+  const task = user("[task from parent] build it", 10);
+  assert.deepEqual(jobEnd([task, said("toolUse", 20), result, said("error", 50, "429  rate_limit_error:\n too many")]), { cause: "error", at: 50, error: "429 rate_limit_error: too many", startedAt: 10 });
+  assert.deepEqual(jobEnd([task, said("aborted", 30), notice]), { cause: "aborted", at: 30, startedAt: 10 }, "a notice after the end is skipped");
+  assert.deepEqual(jobEnd([task, said("toolUse", 30)]), { cause: "mid-tool", at: 30, startedAt: 10 }, "a tool call that never returned");
+  assert.deepEqual(jobEnd([task, said("toolUse", 30), result]), { cause: "mid-tool", at: 40, startedAt: 10 }, "a tool result the model never answered");
+  assert.deepEqual(jobEnd([task, said("length", 30)]), { cause: "length", at: 30, startedAt: 10 });
+  const followUp: ThreadMessage = { role: "custom", customType: "agent_message", content: "[agent-message from parent]\nalso do y", timestamp: 25 };
+  assert.equal(jobEnd([task, said("stop", 20), followUp, said("length", 30)])!.startedAt, 25, "a follow-up from the chat is the last start");
+  assert.equal(jobEnd([task, said("stop", 30)]), null, "ended well");
+  assert.equal(jobEnd([task, said("error", 30, "x"), user("continue", 40)]), null, "a new input waits after the failure");
+  assert.equal(jobEnd([]), null);
+
+  const at = 1_000_000;
+  const long = "invalid_request_error: " + "x".repeat(200);
+  assert.equal(jobEndWords({ cause: "error", error: long }), `stopped on a provider error ("${long.slice(0, 119)}…")`, "the first 120 characters");
+  assert.equal(jobEndWords({ cause: "error" }), "stopped on a provider error");
+  assert.deepEqual(jobEndNotice("api audit", { cause: "mid-tool", at }), { line: `Job api audit stopped in the middle of a tool call at ${clockTime(at)} and sent no report: re-brief it with a follow-up, restart it, or replace it` });
+  const text = `Job api audit was aborted at ${clockTime(at)} and sent no report: re-brief it with a follow-up, restart it, or replace it`;
+  assert.deepEqual(jobEndNotice("api audit", { cause: "aborted", at }, step("p3", "Audit the API", "doing", { note: "older note" })),
+    { line: `p3 "Audit the API": ${text}`, note: { step: "p3", note: `${text}\nolder note` } }, "the step's note gets the same text on top");
+  assert.match(jobEndNotice("x", { cause: "length", at }).line, /hit the output length limit/);
+
+  const plan = board([step("g", "Goal", "doing", { children: [step("p1", "Old", "done", { job: "api audit" }), step("p2", "Build", "doing", { job: "api audit" }),
+    step("p3", "Root work", "todo", { job: "thread:s-root" })] })]);
+  assert.equal(ownedStep(plan, ["sub-1", "api audit"])?.id, "p2", "the open step it owns, not a done one");
+  assert.equal(ownedStep(plan, ["thread:s-root", "s-root"])?.id, "p3");
+  assert.equal(ownedStep(plan, ["nobody"]), undefined);
+  assert.equal(ownedStep(null, ["api audit"]), undefined);
+});
+
+test("check-in record: told job ends per chat and job, kept apart from the tick's memory; old ones go; forget drops them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "checkin-ends-"));
+  const record = checkInRecord(join(dir, "check-ins.json"));
+  assert.deepEqual(await record.ends("c1"), {});
+  await record.told("c1", "sub-1", { at: 1_000, cause: "error" });
+  await record.set("c1", { at: 5, jobs: {}, steps: {}, answered: [], ready: [] });
+  assert.deepEqual(await record.ends("c1"), { "sub-1": { at: 1_000, cause: "error" } }, "a digest's memory write keeps the told ends");
+  await record.told("c1", "thread:s-root", { at: 1_000 + TOLD_END_KEEP_MS + 1, cause: "length" });
+  assert.deepEqual(await record.ends("c1"), { "thread:s-root": { at: 1_000 + TOLD_END_KEEP_MS + 1, cause: "length" } }, "an end older than a week before the new one goes");
+  assert.deepEqual(await checkInRecord(join(dir, "check-ins.json")).ends("c1"), { "thread:s-root": { at: 1_000 + TOLD_END_KEEP_MS + 1, cause: "length" } }, "read back from the file");
+  await record.forget("c1");
+  assert.deepEqual(await record.ends("c1"), {});
 });

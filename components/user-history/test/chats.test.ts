@@ -1329,3 +1329,86 @@ test("chats: a job whose session is gone (not in the catalog, or listed active w
   chats.close();
 });
 
+test("chats: a job that ends on a provider error, an abort, a stop mid-tool or the length limit with no report is told to the chat at once, with its step's note; once per end, across a restart; a transient failure is woken instead, and a job that reported, a cancelled one and an old end are not told", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  let now = 1_000_000_000;
+  const endAt = now;
+  const agent = (sessionId: string, sender: string, link: ChatAgent["link"], childId?: string, at = endAt): ChatAgent =>
+    ({ key: childId ? `child:${childId}` : `thread:${sessionId}`, sessionId, ...(childId ? { childId } : {}), name: sender, job: sender, sender, link, state: "done",
+      lastActivityAt: new Date(at).toISOString(), steps: [] });
+  let agents: ChatAgent[] = [agent("j1", "api audit", "subagent", "sub-1"), agent("r1", "root work", "root"), agent("k1", "fixer", "subagent", "sub-k"),
+    agent("rep1", "reporter", "subagent", "sub-rep"), agent("can1", "cancelled one", "subagent", "sub-can"), agent("r2", "talker", "root"),
+    agent("old1", "old one", "subagent", "sub-old")];
+  const rows = (): SessionRow[] => [row("c1", new Date(now).toISOString(), { chat: true, agents }), row("r1", new Date(endAt).toISOString(), { name: "root work", messageCount: 9 })];
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
+    { id: "p2", text: "Build the API", status: "doing", job: "api audit", note: "started 10:00", children: [] },
+    { id: "p3", text: "Root work", status: "todo", job: "thread:r1", children: [] }] }] };
+  const written: string[] = [];
+  const make = () => new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, { c1: board }, () => now, rows), writeBoard: async (id, ops) => { written.push(`${id} ${JSON.stringify(ops)}`); } }, line => lines.push(line));
+  let chats = make();
+  await chats.adopt();
+  await checkInRecord(join(dir, "check-ins.json")).set("c1", { at: endAt - 60_000, jobs: { "sub-1": { state: "working", activityAt: endAt - 60_000 } }, steps: {}, answered: [], ready: [] });
+  const child = (id: string, name: string, extra: Partial<ChildAgent> = {}): ChildAgent =>
+    ({ id, label: name, sessionName: name, status: "done", repliedSinceTask: false, lastActivityAt: endAt, ...extra });
+  threads.fire().children("c1", [child("sub-1", "api audit"), child("sub-k", "fixer"), child("sub-rep", "reporter", { repliedSinceTask: true }),
+    child("sub-can", "cancelled one", { status: "cancelled" }), child("sub-old", "old one")]);
+  threads.transcripts.set("c1", [ownerAsks("go", endAt - 9_000),
+    { role: "custom", customType: "agent_message", content: "[agent-message from talker]\nhalf done, here is what I have", timestamp: endAt - 1_000 }]);
+  const task = (at: number): ThreadMessage => ownerAsks("[task from parent] build it", at);
+  const said = (stopReason: "error" | "aborted" | "length" | "toolUse" | "stop", at: number, errorMessage?: string): ThreadMessage =>
+    ({ role: "assistant", content: [], provider: "p", model: "m", stopReason, timestamp: at, ...(errorMessage ? { errorMessage } : {}) });
+  const quota = "429 rate_limit_error: This request would exceed your account's rate limit. Please try again later.";
+  threads.views.set("j1", { messages: [task(endAt - 5_000), said("error", endAt, quota)] });
+  threads.views.set("r1", { messages: [task(endAt - 5_000), said("length", endAt)] });
+  threads.views.set("k1", { messages: [task(endAt - 5_000), said("error", endAt, TOKEN_FAILURE)] });
+  threads.views.set("rep1", { messages: [task(endAt - 5_000), said("aborted", endAt)] });
+  threads.views.set("can1", { messages: [task(endAt - 5_000), said("aborted", endAt)] });
+  threads.views.set("r2", { messages: [task(endAt - 5_000), said("toolUse", endAt)] });
+  threads.views.set("old1", { messages: [task(endAt - 3 * 60 * 60_000), said("toolUse", endAt - 3 * 60 * 60_000)] });
+  agents = agents.map(entry => entry.sessionId === "old1" ? agent("old1", "old one", "subagent", "sub-old", endAt - 3 * 60 * 60_000) : entry);
+  const step = async (seconds = 30) => { now += seconds * 1000; calls.length = 0; await chats.tick(); await chats.settled(); return calls.filter(call => !call.startsWith("pin") && !call.startsWith("steering")); };
+  const tail = "and sent no report: re-brief it with a follow-up, restart it, or replace it";
+  const apiText = `Job api audit stopped on a provider error ("${quota}") at ${clockTime(endAt)} ${tail}`;
+  const rootText = `Job root work hit the output length limit at ${clockTime(endAt)} ${tail}`;
+
+  const first = await step();
+  assert.deepEqual(first.sort(), [
+    "restart k1 continue",
+    `steer c1 [check-in] What changed:\n- p2 "Build the API": ${apiText}`,
+    `steer c1 [check-in] What changed:\n- p3 "Root work": ${rootText}`,
+  ], "at once: the error and the length limit with their steps; the transient failure is woken, not told; the reporter, the cancelled job, the root that wrote since its start and an end 3 h old are not told");
+  assert.deepEqual(written.sort(), [
+    `c1 ${JSON.stringify([{ op: "plan_update", id: "p2", note: `${apiText}\nstarted 10:00` }])}`,
+    `c1 ${JSON.stringify([{ op: "plan_update", id: "p3", note: rootText }])}`,
+  ], "the same text tops each step's note");
+  assert.deepEqual(await step(), [], "once per end");
+  now += 60_000;
+  const digest = await chats.checkIn("c1");
+  assert.ok(digest.length > 0 && !digest.some(line => /api audit (failed|finished)/.test(line)), `the next check-in does not tell the same end again: ${digest.join(" | ")}`);
+  assert.deepEqual(Object.keys(await checkInRecord(join(dir, "check-ins.json")).ends("c1")).sort(), ["sub-1", "thread:r1"]);
+
+  threads.views.set("k1", { messages: [task(endAt - 5_000), said("error", endAt, TOKEN_FAILURE), ownerAsks("continue", now), said("stop", now)] });
+  agents = agents.map(entry => entry.sessionId === "k1" ? agent("k1", "fixer", "subagent", "sub-k", now) : entry);
+  assert.deepEqual(await step(), [], "the wake revived the job and it ended well: no note");
+
+  chats.close();
+  chats = make();
+  await chats.adopt();
+  threads.fire().children("c1", [child("sub-1", "api audit"), child("sub-rep", "reporter", { repliedSinceTask: true }), child("sub-can", "cancelled one", { status: "cancelled" })]);
+  assert.deepEqual((await step()).filter(call => call.startsWith("steer")), [], "a service restart does not tell the same ends again");
+
+  threads.views.set("j1", { messages: [task(endAt - 5_000), said("error", endAt, quota), { role: "custom", customType: "agent_message", content: "[agent-message from parent]\ntry again", timestamp: now },
+    said("toolUse", now + 1_000)] });
+  agents = agents.map(entry => entry.sessionId === "j1" ? agent("j1", "api audit", "subagent", "sub-1", now + 1_000) : entry);
+  const again = await step();
+  assert.deepEqual(again, [`steer c1 [check-in] What changed:\n- p2 "Build the API": Job api audit stopped in the middle of a tool call at ${clockTime(now - 29_000)} ${tail}`],
+    "a new end after a re-brief is told once more");
+  assert.match(lines.join("\n"), /chat c1: job api audit ended \(error\) with no report; told the chat and noted p2/);
+  chats.close();
+});

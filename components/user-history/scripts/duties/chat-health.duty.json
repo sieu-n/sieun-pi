@@ -76,6 +76,12 @@
       "label": "Steps whose job ended a check-in ago, not updated",
       "op": "<=",
       "target": 0
+    },
+    {
+      "key": "job_end_silent",
+      "label": "Steps whose job stopped on an error with no report, not updated",
+      "op": "<=",
+      "target": 0
     }
   ],
   "schedule": {
