@@ -25,7 +25,7 @@ const FEW = 5;
 const CORRECTION = /\b(?:i told you|i (?:already )?(?:said|asked)|didn['\u2019]?t i (?:say|ask|request|tell)|not what i|you didn['\u2019]?t|you did not|you (?:were|are) wrong|(?:that|this|it) (?:is|was) wrong|why did you|why (?:is|are) (?:nothing|you)|stop (?:doing|saying|writing|asking)|never (?:says?|does|do|writes?|uses?|asks?)|don['\u2019]?t (?:do|say|write|use|ask|force)|(?:dont|don['\u2019]?t|do not) (?:get it|understand)|explain (?:it |this )?(?:more|again)|are you sure|what the fuck|wtf|you should have|(?:it|this) doesn['\u2019]?t happen again|always (?:message|reply|write|answer|talk|speak))\b|^again\b/i;
 /** Quoted text is someone else's words, such as an agent quoting the owner's earlier question. */
 const QUOTED = /[\u201c"][^\u201d"]*[\u201d"]/g;
-/** The note the pool's extension appends to a provider error it retries on another account: the provider failed, not sieun-pi. */
+/** The note the pool's extension appends to an error it retries: on a provider error the provider failed, not sieun-pi; on a token hook failure it is a break only if the retry also fails. */
 const POOL_RETRY_NOTE = / pi-pool: [\s\S]*; the retry uses [\s\S]*$/;
 /** An open-steps row of a check-in, with the step's class: `- p9 (stale-chase) "..." blocked, ..., last change 20 h ago`. */
 const CLASS_ROW = /^- (p\d+) \(([a-z-]+)\) /;
@@ -94,6 +94,8 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
   let turn: Turn | undefined;
   let settled = true;
   let failure: Failure | undefined;
+  /** The latest token hook failure the pool queued a retry for. It is a break only if the turn ends on it; a later request that gets past the hook clears it. */
+  let hookRetry: Failure | undefined;
 
   /**
    * `stalls_2h`: a step the check-ins listed in an act class (due, stale-chase, orphan) at every listing for STALL_MS or more. Its first such row
@@ -137,6 +139,11 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     }
     failure = undefined;
   };
+  const breakSieunPi = (broken: Failure) => { tally.metrics.sieun_pi_breaks++; flag("sieun_pi_breaks", broken.at, broken.reason, signature("error", broken.reason)); };
+  const settleHookRetry = () => {
+    if (hookRetry && inWindow(hookRetry.at)) breakSieunPi(hookRetry);
+    hookRetry = undefined;
+  };
 
   for await (const line of createInterface({ input: stream, crlfDelay: Infinity })) {
     if (!line) continue;
@@ -146,6 +153,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     const at = message.timestamp;
     if (message.role === "user") {
       settleFailure(at);
+      settleHookRetry();
       const text = messageText(message).trim();
       if (serverNote(text)) {
         if (settled) openTurn("agent", at);
@@ -162,6 +170,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       if (inWindow(at) && own && CORRECTION.test(own.replace(QUOTED, ""))) { tally.metrics.corrections++; flag("corrections", at, own); }
     } else if (message.role === "assistant") {
       failure = undefined;
+      hookRetry = undefined;
       settled = message.stopReason !== "toolUse";
       const text = messageText(message).trim();
       if (turn && text) { turn.lastText = text; turn.lastTextAt = at; }
@@ -175,16 +184,21 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       if (inWindow(at)) for (const said of ownerFacingTexts(message)) for (const link of wikiArticles(said)) tally.links.set(chat, [...tally.links.get(chat) ?? [], { at, link }]);
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         failure = { at, reason: message.errorMessage?.trim() || `stopReason ${message.stopReason}` };
-        if (inWindow(at) && SIEUN_PI.test(failure.reason.replace(POOL_RETRY_NOTE, ""))) { tally.metrics.sieun_pi_breaks++; flag("sieun_pi_breaks", at, failure.reason, signature("error", failure.reason)); }
+        if (SIEUN_PI.test(failure.reason.replace(POOL_RETRY_NOTE, ""))) {
+          if (POOL_RETRY_NOTE.test(failure.reason)) hookRetry = failure;
+          else if (inWindow(at)) breakSieunPi(failure);
+        }
       }
     } else if (message.role === "custom" && isPromptCustom(message)) {
       settleFailure(at);
+      settleHookRetry();
       if (settled) openTurn("agent", at);
       settled = false;
     }
   }
   closeTurn();
   settleFailure(undefined);
+  settleHookRetry();
   for (const [step, { at, row }] of stalls) { tally.metrics.stalls_2h++; flag("stalls_2h", at, row, `stalls_2h:${chat}:${step}`); }
   return true;
 }

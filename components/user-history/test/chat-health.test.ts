@@ -216,6 +216,30 @@ test("chat health: owner directions and status questions are not corrections, a 
   }
 });
 
+test("chat health: a token hook failure the pool retried is a sieun-pi break only when its turn ends on it, once per turn", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    // 2026-10-09: hooks killed under load or in a dark wake, retried by the pool's extension. The first turn's retry got a token; the second
+    // turn failed every retry and ended, so the check-in restarted it. That second turn is the one break, however many attempts it took.
+    const hookRetried = `${API_KEY_ERROR} pi-pool: the token hook gave no token; the retry uses a new hook run.`;
+    const lines: Line[] = [
+      user(ago(3 * HOUR), "go on"), reply(ago(3 * HOUR) + 10_000, "", "error", { errorMessage: hookRetried }), reply(ago(3 * HOUR) + 25_000, "done"),
+      user(ago(2 * HOUR), "and the rest"), ...[10, 45, 75, 105].map(second => reply(ago(2 * HOUR) + second * 1_000, "", "error", { errorMessage: hookRetried })),
+      user(ago(2 * HOUR) + 2 * MIN, "[check-in] Your last turn failed. Re-check the board and continue."), reply(ago(2 * HOUR) + 3 * MIN, "done"),
+    ];
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-h"] }));
+    await writeFile(join(dir, "chat-h.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.equal(health.metrics.sieun_pi_breaks, 1);
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "sieun_pi_breaks").map(slice => slice.at), [ago(2 * HOUR) + 105_000]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("chat health recheck: each fix names the metrics its subject targets, with today's value; one that names none is for a person to judge", () => {
   assert.deepEqual(fixTargets("fix(user-history): long owner replies get a reply rule; text on wake-ups is notes; a stalled step sets waitUntil"), ["long_replies", "off_brief", "stalls_2h"]);
   assert.deepEqual(fixTargets("fix(user-history): plain derived thread names"), []);
