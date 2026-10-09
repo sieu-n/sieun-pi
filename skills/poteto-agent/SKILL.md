@@ -32,6 +32,9 @@ which continues an existing child in its own context instead of starting a new o
 
 ## Fan-out
 
+- One job = one goal. A chat hands each goal, or each step of a goal, to its own job. Never give one job several goals.
+- A job splits its work into subagents, one per unit of output: one per article, page, module, or account. For example, the job "do today's SEO iteration" spawns research subagents, then one subagent per article to draft it. One context that writes 10 articles makes each one worse, because quality drops per item when a single context produces many outputs.
+- The job plans, coordinates, and checks its subagents' results itself. Each item is made in a fresh context.
 - A job with 2 or more independent parts spawns one sub-job per part and coordinates them.
 - A job past 150 tool calls or 60 active minutes splits the remaining work into sub-jobs. At the `RLM_MAX_DEPTH` ceiling, it tells its parent that the work needs a split.
 - Work of 1 to 3 tool calls stays inline. Do not spawn for it.
