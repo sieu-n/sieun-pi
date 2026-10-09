@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { resolve, dirname, basename } from 'node:path';
 import { isInsideRepo } from '../../repo-hooks/project.mjs';
 import { SHELLS, effective, lex } from '../../repo-hooks/shell.mjs';
@@ -11,6 +12,11 @@ const DENY_EXCEPT = {
   worktree: (a) => a[0] === 'list',
 };
 
+/** The shell expands `~` and `$HOME` before git sees the path; resolve() does not. */
+const expandHome = (p) => p.replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, homedir());
+
+const isForcePush = (a) => a.some((w) => /^-[^-]*f/.test(w) || w === '--force' || w === '--force-with-lease' || w.startsWith('--force-with-lease=') || w.startsWith('+'));
+
 const WHOLE_TREE = new Set(['.', ':/', ':/.', '-A', '--all', '*']);
 
 const JUDGES = {
@@ -20,7 +26,7 @@ const JUDGES = {
   worktree: (a) => !DENY_EXCEPT.worktree(a) && 'worktree write (worktrees are banned here)',
   branch: (a) => a.some((w) => w === '-D') && 'force branch delete',
   push: (a) => {
-    if (a.some((w) => /^-[^-]*f/.test(w) || w === '--force' || w === '--force-with-lease' || w.startsWith('--force-with-lease=') || w.startsWith('+'))) {
+    if (isForcePush(a)) {
       return 'force push (land.sh/promote.sh own forced refs)';
     }
     if (a.some((w) => ['main', 'refs/heads/main'].includes(w.split(':').pop()))) return 'push to main (use ./scripts/repo/promote.sh)';
@@ -32,12 +38,12 @@ function parseGit(eff, cwd) {
   let i = 1, dir = cwd, gitDir = null;
   while (i < eff.length) {
     const a = eff[i];
-    if (a === '-C') { dir = resolve(dir, eff[i + 1] ?? '.'); i += 2; continue; }
+    if (a === '-C') { dir = resolve(dir, expandHome(eff[i + 1] ?? '.')); i += 2; continue; }
     if (a === '-c' || a === '--config-env') { i += 2; continue; }
-    if (a === '--git-dir') { gitDir = resolve(dir, eff[i + 1] ?? '.'); i += 2; continue; }
-    if (a.startsWith('--git-dir=')) { gitDir = resolve(dir, a.slice(10)); i++; continue; }
-    if (a === '--work-tree') { dir = resolve(dir, eff[i + 1] ?? '.'); i += 2; continue; }
-    if (a.startsWith('--work-tree=')) { dir = resolve(dir, a.slice(12)); i++; continue; }
+    if (a === '--git-dir') { gitDir = resolve(dir, expandHome(eff[i + 1] ?? '.')); i += 2; continue; }
+    if (a.startsWith('--git-dir=')) { gitDir = resolve(dir, expandHome(a.slice(10))); i++; continue; }
+    if (a === '--work-tree') { dir = resolve(dir, expandHome(eff[i + 1] ?? '.')); i += 2; continue; }
+    if (a.startsWith('--work-tree=')) { dir = resolve(dir, expandHome(a.slice(12))); i++; continue; }
     if (a.startsWith('-')) { i++; continue; }
     break;
   }
@@ -66,7 +72,7 @@ function analyze(command, { cwd, repoRoot }) {
     const eff = effective(argv);
     if (!eff.length) continue;
     const cmd = basename(eff[0]);
-    if (cmd === 'cd' && eff[1] && !eff[1].startsWith('-')) { runningCwd = resolve(runningCwd, eff[1]); continue; }
+    if (cmd === 'cd' && eff[1] && !eff[1].startsWith('-')) { runningCwd = resolve(runningCwd, expandHome(eff[1])); continue; }
     if (cmd === 'git' || eff[0].endsWith('/git')) {
       const bad = judgeGit(eff, { cwd: runningCwd, repoRoot });
       if (bad) return bad;
@@ -81,4 +87,4 @@ function analyze(command, { cwd, repoRoot }) {
   return null;
 }
 
-export { analyze, judgeGit, parseGit };
+export { analyze, expandHome, isForcePush, judgeGit, parseGit };

@@ -1,0 +1,133 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import * as guard from "../components/virev/ext-impl/virev/git-guard.mjs";
+
+// The owner's sieun-pi checkout, rebuilt in a temp HOME: two commits on a fake origin, two local ones.
+const root = mkdtempSync(join(tmpdir(), "virev-sieun-pi-"));
+const home = join(root, "home");
+const project = join(root, "auto-sns-agent");
+const remote = join(root, "remote/sieu-n/sieun-pi.git");
+const checkout = join(home, "Documents/Github/sieun-pi");
+const copy = join(root, "elsewhere/pi-copy");
+const atOrigin = join(root, "elsewhere/at-origin");
+const other = join(root, "other-repo");
+mkdirSync(join(project, ".git"), { recursive: true });
+const configPath = join(root, "virev-projects.json");
+writeFileSync(configPath, JSON.stringify({ projects: [{ root: project, policy: "auto-sns-agent" }] }));
+const gitConfig = join(root, "gitconfig");
+writeFileSync(gitConfig, "[user]\n\tname = test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n");
+
+const saved = Object.fromEntries(["HOME", "VIREV_PROJECTS_FILE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"].map((k) => [k, process.env[k]]));
+Object.assign(process.env, { HOME: home, VIREV_PROJECTS_FILE: configPath, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1" });
+test.after(() => {
+  for (const [key, value] of Object.entries(saved)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
+const git = (dir, ...args) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+function commit(dir, name) {
+  writeFileSync(join(dir, name), name);
+  git(dir, "add", name);
+  git(dir, "commit", "-q", "-m", name);
+}
+mkdirSync(remote, { recursive: true });
+git(remote, "init", "-q", "--bare");
+mkdirSync(checkout, { recursive: true });
+git(checkout, "init", "-q");
+git(checkout, "remote", "add", "origin", remote);
+commit(checkout, "c1");
+commit(checkout, "c2");
+git(checkout, "push", "-q", "-u", "origin", "main");
+commit(checkout, "c3");
+commit(checkout, "c4");
+for (const dir of [copy, atOrigin]) execFileSync("git", ["clone", "-q", remote, dir]);
+commit(copy, "c3");
+mkdirSync(other, { recursive: true });
+git(other, "init", "-q");
+git(other, "remote", "add", "origin", join(root, "remote/someone/else.git"));
+commit(other, "o1");
+commit(other, "o2");
+git(other, "update-ref", "refs/remotes/origin/main", "HEAD");
+
+async function verdict(command, toolName = "bash") {
+  const input = toolName === "bash" ? { command } : { code: `handle = bash(${JSON.stringify(command)})` };
+  return guard.onToolCall({ type: "tool_call", toolCallId: "sieun-pi", toolName, input }, { cwd: project });
+}
+
+const allowed = [
+  "cd ~/Documents/Github/sieun-pi && git rebase -i origin/main",
+  "cd $HOME/Documents/Github/sieun-pi && git rebase origin/main",
+  "git -C ~/Documents/Github/sieun-pi rebase -i HEAD~2",
+  `cd '${checkout}' && git rebase`,
+  `git -C '${checkout}' rebase --onto origin/main HEAD~1`,
+  `git -C '${checkout}' -c core.editor=true rebase -i --exec 'echo ok' origin/main main`,
+  `git -C '${checkout}' commit --amend --no-edit`,
+  `git -C '${checkout}' push origin main`,
+  `git -C '${checkout}' reset --soft HEAD~1`,
+  `git -C '${copy}' rebase -i origin/main`,
+  `git -C '${copy}' commit --amend -m c3`,
+  `git -C '${other}' rebase -i --root`,
+  `git -C '${other}' push --force origin main`,
+  "cd ~ && git status",
+];
+for (const command of allowed) {
+  for (const toolName of ["bash", "ipython"]) {
+    test(`${toolName} allows ${command}`, async () => {
+      assert.equal(await verdict(command, toolName), undefined);
+    });
+  }
+}
+
+const blocked = [
+  ["cd ~/Documents/Github/sieun-pi && git rebase -i HEAD~3", /commits already on a remote branch/],
+  ["cd ~/Documents/Github/sieun-pi && git rebase -i origin/main~1", /commits already on a remote branch/],
+  [`git -C '${checkout}' rebase --root`, /commits already on a remote branch/],
+  [`git -C '${checkout}' rebase --onto HEAD~3 HEAD~3`, /commits already on a remote branch/],
+  [`git -C '${checkout}' rebase no-such-ref`, /could not prove/],
+  [`git -C '${atOrigin}' commit --amend --no-edit`, /HEAD is already on a remote branch/],
+  [`git -C '${copy}' rebase HEAD~2`, /commits already on a remote branch/],
+  ["cd ~/Documents/Github/sieun-pi && git push --force origin main", /force/],
+  [`git -C '${checkout}' push -f origin main`, /force/],
+  [`git -C '${checkout}' push --force-with-lease origin main`, /force/],
+  [`git -C '${checkout}' push origin +main`, /force/],
+  [`git -C '${copy}' push --force-with-lease=main origin main`, /force/],
+  ["cd ~/Documents/Github/sieun-pi && git reset --hard origin/main", /reset --hard/],
+  [`bash -lc "cd '${checkout}' && git rebase -i HEAD~3"`, /commits already on a remote branch/],
+];
+for (const [command, reason] of blocked) {
+  for (const toolName of ["bash", "ipython"]) {
+    test(`${toolName} blocks ${command}`, async () => {
+      const result = await verdict(command, toolName);
+      assert.equal(result?.block, true);
+      assert.match(result.reason, reason);
+      assert.match(result.reason, /local checkout is ground truth/);
+    });
+  }
+}
+
+test("rebase steps are allowed while a rebase is in progress", async () => {
+  const step = join(root, "elsewhere/step");
+  execFileSync("git", ["clone", "-q", remote, step]);
+  commit(step, "s1");
+  commit(step, "s2");
+  assert.throws(() => git(step, "rebase", "-q", "--exec", "false", "origin/main"));
+  for (const action of ["--continue", "--skip", "--abort", "--edit-todo", "--show-current-patch"]) {
+    assert.equal(await verdict(`cd '${step}' && git rebase ${action}`), undefined, action);
+  }
+  git(step, "rebase", "--abort");
+});
+
+test("the auto-sns-agent checkout keeps its own rules", async () => {
+  for (const command of ["git rebase -i origin/main", "git reset --hard", "git push --force", "git stash"]) {
+    assert.equal((await verdict(command))?.block, true, command);
+    assert.doesNotMatch((await verdict(command)).reason, /ground truth/);
+  }
+  assert.equal(await verdict("git commit --amend --no-edit"), undefined);
+});

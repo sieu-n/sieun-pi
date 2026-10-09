@@ -1,6 +1,7 @@
 import { basename, join, resolve } from "node:path";
 import * as gitGuard from "./agent-git-guard.mjs";
 import { judge } from "./agent-guards.mjs";
+import { SIEUN_PI_TAIL, judgeSieunPi } from "./sieun-pi.mjs";
 import { SHELLS, effective, lex, stripHeredocs } from "../../repo-hooks/shell.mjs";
 import { log } from "../../ext-impl/virev/log.mjs";
 
@@ -14,12 +15,14 @@ function collectGitVerdicts(command, project, depth, out) {
 		if (!eff.length) continue;
 		const name = basename(eff[0]);
 		if (name === "cd" && eff[1] && !eff[1].startsWith("-")) {
-			running = resolve(running, eff[1]);
+			running = resolve(running, gitGuard.expandHome(eff[1]));
 			continue;
 		}
 		if (name === "git" || eff[0].endsWith("/git")) {
 			const reason = gitGuard.judgeGit(eff, { ...project, cwd: running });
 			if (reason) out.push({ eff, reason, cwd: running });
+			const own = reason ? null : judgeSieunPi(eff, running);
+			if (own) out.push({ eff, reason: own, cwd: running, tail: SIEUN_PI_TAIL });
 			continue;
 		}
 		if (SHELLS.has(name)) {
@@ -62,7 +65,7 @@ export function judgeShellText(text, project) {
 			});
 			continue;
 		}
-		verdicts.push({ level: "block", command: printable, reason: `${BLOCK_PREFIX} ${hit.reason}. ${BLOCK_TAIL}` });
+		verdicts.push({ level: "block", command: printable, reason: `${BLOCK_PREFIX} ${hit.reason}. ${hit.tail ?? BLOCK_TAIL}` });
 	}
 
 	try {

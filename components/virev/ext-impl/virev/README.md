@@ -67,6 +67,10 @@ The guard blocks shared-tree changes such as reset, stash writes, forced pushes,
 It warns and allows new-branch creation without discard flags through `git checkout -b` and `git switch -c`.
 The bundled project checks also reject manual `convex dev --once`, duplicate Convex watchers, and the local checks listed in `policies/auto-sns-agent/agent-guards.mjs`.
 Read commands and named-file staging stay allowed.
+A command that targets the sieun-pi checkout from such a session follows `policies/auto-sns-agent/sieun-pi.mjs` instead.
+sieun-pi has one contributor, so `git rebase` and `git commit --amend` are allowed while no remote branch holds a commit they rewrite.
+Force pushes, `git reset --hard`, and rewrites of commits already on a remote stay blocked there.
+Paths that start with `~` or `$HOME` resolve to the home directory before the guard picks a checkout.
 
 Python extraction covers Prime Agent's `bash("...")`, `await bash("...")`, literal subprocess calls, `%%bash`, and `!` escapes.
 Python comments and quoted call examples are not invocations.
