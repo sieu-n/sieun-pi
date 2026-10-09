@@ -151,3 +151,14 @@ test("board classes: a step on another thread's work is a scope miss; chat healt
       excerpt: 't3 "Read: GitHub Pro vs Team, the link lands here when ready" is a placeholder in For you: make it a plan step and send the link in a chat message when it exists' }]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("scope: a step's text may name any topic, its note only a phrase of two or more words (VP of CI 10-09: p56 flagged for 'swap' in a note)", () => {
+  const plan = board([step("p1", "Goal", "doing", { children: [
+    step("p2", "Always-on CI dashboard with charts", "doing", { note: "The ops thread's board gets CPU, memory, swap and Docker VM numbers for both Airs." }),
+    step("p3", "A services test flakes under load on a busy runner", "doing"),
+    step("p4", "Cut swap on this Mac", "todo"),
+    step("p5", "Watch the build", "doing", { note: "Mac load average went over 60 again during the build." }),
+  ] })]);
+  assert.deepEqual(scopeMisses(plan, [RULE], ["ci", "VP of CI"]).map(miss => `${miss.item.id} ${miss.topic}`), ["p4 swap", "p5 Mac load"],
+    "no false positive on a one-word topic in a note or a bare 'load'; the step text and a phrase in a note still flag (no false negative)");
+});

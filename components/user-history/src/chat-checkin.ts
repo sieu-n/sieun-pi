@@ -366,7 +366,9 @@ export function scopeMisses(board: ChatBoard | null, rules: readonly HandoffRule
     if (OPEN.has(item.status)) {
       const text = `${item.text}\n${item.note ?? ""}`;
       for (const rule of mine) {
-        const topic = matchTopic(text, rule.topics);
+        // The step's own text may name any topic; its note only a phrase of two or more words, because notes mention machines as context
+        // (VP of CI 10-09: p56 "CI dashboard" was flagged for "swap" in a note about the ops thread's Grafana panels).
+        const topic = matchTopic(item.text, rule.topics) ?? matchTopic(item.note ?? "", rule.topics.filter(topic => /\s/.test(topic.trim())));
         if (topic === undefined) continue;
         if (HANDED_OFF.test(text) || namesTarget(item.waitFor, rule.to) || namesTarget(stepOwner(item), rule.to)) return;
         misses.push({ item, rule, topic });
