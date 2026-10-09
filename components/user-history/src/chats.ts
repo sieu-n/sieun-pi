@@ -128,6 +128,9 @@ export const CHAT_BRIEF: readonly string[] = [
     "A correction changes the brief or a skill, never only a local note: send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., " +
     "receiver_role=\"sibling\", receiver_name=\"realtime layer\")` for a brief or code change, or call `await refine.run()` aimed at a global skill or prompt entry. " +
     "A local memory alone does not count. The owner should never have to give the same correction twice.",
+  "Corrections ledger: in the same turn the owner corrects you, call `correction_add` with the owner's exact words, a one-line rule, theme key words " +
+    "and what enforces it (brief, code or test, with its ref). The active corrections reach every chat as a `[corrections]` message before each call. " +
+    "When the tool says repeat, treat it as a sev: start a job that fixes it in code or a test, not only prompt text, and record the fix with its id.",
   `Shell: only \`bash()\` commands that start with ${SHELL_LIST}, with no pipes, redirects or chaining. No edit(), no write-mode open(), no git writes.`,
 ];
 
@@ -452,7 +455,7 @@ export function briefNote(before: readonly string[], after: readonly string[]): 
 }
 
 /** The source files a chat session runs as its extension. A change in any of them is a new build; a chat that loaded an older one is reloaded. */
-const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts"];
+const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts", "chat-corrections.ts"];
 /** A short hash of the extension sources on disk now. */
 export function extensionBuild(dir: string = import.meta.dirname): string {
   const hash = createHash("sha256");
@@ -594,14 +597,14 @@ export interface CheckInSource {
   awake?: (working: boolean) => void;
   /** Applies ops to a chat's board as the agent: the check-in's note on a step whose job ended unrecorded. Absent: no note is written. */
   writeBoard?: (id: string, ops: BoardOp[]) => Promise<unknown>;
-}
-
-/** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
   /**
    * Where check-in job briefs go (`<data dir>/check-in-jobs`) and each chat's board file, which the brief names. Absent: a tick never hands its
    * items to a check-in job.
    */
   checkInJobs?: { dir: string; board: (id: string) => string };
+}
+
+/** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
 export const CHECK_IN_TICK_MS = 30_000;
 /** How often the scheduler looks for chats the index lost, and how recent a thread must be to be looked at. */
 export const ADOPT_SCAN_MS = 10 * 60_000;
@@ -1237,15 +1240,15 @@ export class Chats {
           this.log(`chat ${id.slice(0, 8)}: nudged thread ${nudge.id.slice(0, 8)} about ${nudge.step}`);
         } catch (error) { this.log(`chat ${id.slice(0, 8)}: nudge ${nudge.id.slice(0, 8)} about ${nudge.step}: ${error instanceof Error ? error.message : String(error)}`); }
       }
-      if (lines.length) {
-        await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines, open), images: [], mode: "steer" });
-        this.steeredAt.set(id, this.now());
       if (job && brief) {
         await this.threads.prompt(id, { message: checkInJobMessage(CHECK_IN_PREFIX, job, brief), images: [], mode: "steer" });
         this.steeredAt.set(id, this.now());
         this.log(`chat ${id.slice(0, 8)}: check-in job ${job.name} with ${job.items.length} items, brief ${brief}`);
         return [`start ${job.name}: ${job.items.map(item => `${item.id} ${item.kind}`).join(", ")}`, ...job.lines];
       }
+      if (lines.length) {
+        await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines, open), images: [], mode: "steer" });
+        this.steeredAt.set(id, this.now());
       }
       return lines;
     } catch (error) {

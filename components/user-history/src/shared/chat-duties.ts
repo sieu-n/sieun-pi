@@ -158,7 +158,7 @@ export function parseDutyInput(value: unknown, id: string, now: number): Duty {
   if (!str(goal, 400)) throw new Error("goal: what good means, in plain words.");
   if (!str(onMiss, 1000)) throw new Error("onMiss: what the chat does on a miss.");
   if (boardGoal !== undefined && !(typeof boardGoal === "string" && /^p\d+$/.test(boardGoal))) throw new Error("boardGoal: a plan item id like p87.");
-  if (!Array.isArray(metrics) || !metrics.length || metrics.length > 12) throw new Error("metrics: 1 to 12.");
+  if (!Array.isArray(metrics) || !metrics.length || metrics.length > 20) throw new Error("metrics: 1 to 20.");
   const parsedMetrics = metrics.map((metric: unknown, index): DutyMetric => {
     if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label, 80) || (metric.op !== "<=" && metric.op !== ">=") ||
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);

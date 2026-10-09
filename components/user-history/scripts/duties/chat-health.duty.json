@@ -10,6 +10,18 @@
       "target": 1
     },
     {
+      "key": "repeat_corrections",
+      "label": "Owner corrections given again (ledger repeats)",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "unlinked_job_mentions",
+      "label": "Messages to the owner naming a job with no job: link",
+      "op": "<=",
+      "target": 0
+    },
+    {
       "key": "recurred",
       "label": "Problems flagged before that came back",
       "op": "<=",
@@ -98,6 +110,6 @@
     "cwd": "/Users/sieunpark/Documents/Github/sieun-pi/components/user-history",
     "timeoutMs": 120000
   },
-  "onMiss": "Start one job that reads the details file and judges each flagged item. Each problem gets a root fix with a test, or stays an open step that names the cause; a retry or a workaround does not close it. Route each fix: the chat brief (send the owner's words to the realtime layer thread), code with a unit test in components/user-history/test, or a skill. Everything flagged today is on the watch list for the next 7 days, so a recurred item means an earlier fix did not hold: reopen it. A sieun_pi_breaks item breaks the rule that prime-agent runs without sieun-pi. Each fix names the metric it must move. A recheck item is a fix(user-history) commit from the day before with today's value of the metric its subject names: if that metric still misses, the fix did not hold; reopen it.",
+  "onMiss": "Start one job that reads the details file and judges each flagged item. Each problem gets a root fix with a test, or stays an open step that names the cause; a retry or a workaround does not close it. Route each fix: the chat brief (send the owner's words to the realtime layer thread), code with a unit test in components/user-history/test, or a skill. Everything flagged today is on the watch list for the next 7 days, so a recurred item means an earlier fix did not hold: reopen it. A sieun_pi_breaks item breaks the rule that prime-agent runs without sieun-pi. Each fix names the metric it must move. A recheck item is a fix(user-history) commit from the day before with today's value of the metric its subject names: if that metric still misses, the fix did not hold; reopen it. A repeat_corrections item is a correction in corrections.json the owner had to give again in that chat: a sev; its fix is code or a test, and the chat records it with correction_add id.",
   "boardGoal": "p86"
 }

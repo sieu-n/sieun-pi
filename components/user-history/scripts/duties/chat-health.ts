@@ -3,12 +3,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHECK_IN_PREFIX, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
 import { boardClasses, type ConvergenceMisses, daemonSessions, NO_MISSES } from "./board-classes.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
+import { unlinkedJobSentence } from "./job-mentions.ts";
 
 const HOUR = 60 * 60_000;
 const WINDOW_MS = 24 * HOUR;
@@ -36,7 +38,7 @@ const STALL_TAIL = " with no board change";
 /** The status at the end of a stall row's head: a step that moved from doing to blocked is still one step. */
 const STALL_STATUS = / is \w+$/;
 
-type Metrics = { corrections: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
+type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -141,6 +143,13 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       settled = message.stopReason !== "toolUse";
       const text = messageText(message).trim();
       if (turn && text) { turn.lastText = text; turn.lastTextAt = at; }
+      const told = Array.isArray(message.content) ? message.content.flatMap(part => part.type === "toolCall" && part.name === "tell_owner" &&
+        typeof part.arguments?.text === "string" ? [part.arguments.text] : []) : [];
+      // What the owner reads: text on a turn the owner started, and tell_owner on any turn. Text on a wake-up is notes, shown folded.
+      for (const said of inWindow(at) ? [...(turn?.starter === "owner" ? [text] : []), ...told] : []) {
+        const sentence = unlinkedJobSentence(said);
+        if (sentence) { tally.metrics.unlinked_job_mentions++; flag("unlinked_job_mentions", at, sentence); }
+      }
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         failure = { at, reason: message.errorMessage?.trim() || `stopReason ${message.stopReason}` };
         if (inWindow(at) && SIEUN_PI.test(failure.reason.replace(POOL_RETRY_NOTE, ""))) { tally.metrics.sieun_pi_breaks++; flag("sieun_pi_breaks", at, failure.reason, signature("error", failure.reason)); }
@@ -188,9 +197,9 @@ async function readWatch(file: string | undefined): Promise<Watch> {
 /** Yesterday's fixes to recheck, recurrences and corrections first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
-  const picked = [...newest("recheck"), ...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
+  const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
   const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("off_brief", 2 * FEW),
-    newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW)];
+    newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("unlinked_job_mentions", FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
     for (const queue of queues) { const next = queue.shift(); if (next && picked.length < MAX_FLAGGED) picked.push(next); }
   }
@@ -206,11 +215,15 @@ async function main(): Promise<void> {
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
-  const tally: Tally = { metrics: { corrections: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0,
+  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0,
     ...NO_MISSES },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   tally.metrics.dead_hours = tenth(tally.deadMs / HOUR);
+  const repeats = repeatsBetween(await new CorrectionLedger(dataDir).read(), now - WINDOW_MS, now);
+  tally.metrics.repeat_corrections = repeats.length;
+  tally.flagged.set("repeat_corrections", repeats.map(({ entry, repeat }) => ({ chat: repeat.chat.id, at: Date.parse(repeat.at), kind: "repeat_corrections",
+    excerpt: clip(`${entry.id} "${entry.rule}" repeated in ${repeat.chat.name || repeat.chat.id} (first ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}): ${repeat.words}`) })));
   for (const chat of await boardClasses({ dataDir, now, sessions: daemonSessions, chats: ids })) {
     for (const [key, value] of Object.entries(chat.misses) as [keyof ConvergenceMisses, number][]) tally.metrics[key] += value;
     for (const slice of chat.flagged) { const list = tally.flagged.get(slice.kind as Kind) ?? []; list.push(slice); tally.flagged.set(slice.kind as Kind, list); }

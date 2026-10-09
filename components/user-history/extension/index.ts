@@ -9,6 +9,7 @@ import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, cha
 import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/chat-checkin.ts";
+import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, ledgerPrompt, parseCorrectionCall } from "../src/chat-corrections.ts";
 import type { ChatAgent } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -119,6 +120,47 @@ export default function historyExtension(pi: ExtensionAPI): void {
     } catch { return []; }
   };
   const jobs = () => jobRegistry(join(dataDir(), "chat-jobs.json"));
+  const corrections = () => new CorrectionLedger(dataDir());
+  // The owner's corrections reach a chat before every model call, read live from <data dir>/corrections.json. The context event runs for
+  // every call of every turn kind (owner prompts, agent-message wakes, heartbeats, check-ins, tool-call continuations), unlike before_agent_start,
+  // which agent-message wakes skip. The ledger goes first, so the cached prefix changes only when the ledger does. Any error fails open.
+  pi.on("context", async event => {
+    if (!marked) return undefined;
+    try {
+      const text = ledgerPrompt(await corrections().read());
+      return text ? { messages: [{ role: "user", content: [{ type: "text", text }], timestamp: 0 }, ...event.messages] } : undefined;
+    } catch { return undefined; }
+  });
+  // correction_add exists only in a chat: registered at the chat's session_start, so jobs and other sessions never see it.
+  let correctionTool = false;
+  const registerCorrectionTool = () => {
+    if (correctionTool) return;
+    correctionTool = true;
+    pi.registerTool({
+      name: CORRECTION_TOOL,
+      label: "Record an owner correction",
+      description: "Record the owner's correction of how chats work, in the same turn the owner gives it. Every chat reads the active corrections " +
+        "before each model call. A correction whose theme matches an earlier one is recorded as a repeat and reopens it: a repeat is a sev, and " +
+        "its fix must be code or a test. With id instead of words, record that the fix for that correction landed (enforcedBy, ref) or retire it.",
+      parameters: {
+        type: "object",
+        properties: {
+          words: { type: "string", description: "The owner's message, verbatim, in the owner's language." },
+          rule: { type: "string", description: "The rule in one plain English line every chat follows, like 'Job reports stay folded; the chat sends a short message with a job: link.'" },
+          theme: { type: "string", description: "3 to 6 key words naming what the correction is about (job report folded link). Reuse an earlier entry's words when it is the same thing." },
+          enforcedBy: { type: "string", enum: [...ENFORCEMENTS], description: "What holds the rule now: the chat brief, code, or a test." },
+          ref: { type: "string", description: "The brief bullet, file, commit or test name that enforces it, or 'pending <job>' while the fix is in flight." },
+          id: { type: "string", description: "A correction id (c3) to update instead of adding: its fix landed (enforcedBy, ref) or status retired." },
+          status: { type: "string", enum: ["active", "retired"], description: "With id: active (default) or retired." },
+        },
+      },
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        const call = parseCorrectionCall(params);
+        const chat = { id: ctx.sessionManager.getSessionId(), name: ctx.sessionManager.getSessionName()?.trim() ?? "" };
+        return { content: [{ type: "text", text: correctionResult(await corrections().apply(call, chat)) }], details: undefined };
+      },
+    });
+  };
   // The marker is written once, at the first session_start of a flagged root, and read back on every later start. Children (depth > 0) inherit
   // the flag and the active tool list through the runtime config, so they drop the tool. Any error fails open.
   let marked = false;
@@ -155,6 +197,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const tools = withChatTool(pi.getActiveTools(), mode.active);
       if (tools) pi.setActiveTools(tools);
     } catch { marked = false; }
+    if (marked) registerCorrectionTool();
     await findJob(ctx).catch(() => {});
   });
   pi.on("before_agent_start", async (event, ctx) => {
