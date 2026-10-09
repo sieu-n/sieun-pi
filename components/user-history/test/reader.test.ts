@@ -160,3 +160,18 @@ test("an owner todo's text renders links like a bubble: a wiki: target and a web
   assert.match(html, /<a [^>]*href="https:\/\/github.com\/pricing"/);
   assert.equal(renderInline("Approve the price?"), "Approve the price?");
 });
+
+test("image targets render as inline thumbnails, links stay inline text (10-09 'image bugging?')", () => {
+  const thumbOf = (html: string) => /<img class="reply-image thumb" src="([^"]+)"/.exec(html)?.[1];
+  const wikiPng = "api/local-image?path=" + encodeURIComponent("~/Documents/Github/auto-sns-agent/apps/llm-wiki/content/sessions/2026/10/05/x/data/live-sidebar.png");
+  const bare = renderMarkdown("1) Sidebar: apps/llm-wiki/content/sessions/2026/10/05/x/data/live-sidebar.png. 2) Next.");
+  assert.equal(thumbOf(bare), wikiPng, "a bare .png path through the wiki folder is the image");
+  assert.doesNotMatch(bare, /artifact-link/);
+  assert.match(bare, /live-sidebar\.png"[^>]*>\. 2\) Next\./, "the period after the path stays in the sentence");
+  assert.equal(thumbOf(renderMarkdown("See [the sidebar](wiki:sessions/2026/10/05/x/data/live-sidebar.png) here.")), wikiPng, "a markdown link to a .png");
+  assert.equal(thumbOf(renderMarkdown("See [shot](/Users/me/shot.png).")), "api/local-image?path=" + encodeURIComponent("/Users/me/shot.png"));
+  assert.match(renderMarkdown("![variant A](/Users/me/a.png)"), /<img class="reply-image" src="api\/local-image\?path=%2FUsers%2Fme%2Fa\.png" alt="variant A"/, "![alt](abs path) stays the full image");
+  assert.match(renderMarkdown("![wiki shot](wiki:sessions/x/a.png)"), /<img class="reply-image" src="api\/local-image\?path=~%2FDocuments/, "![alt](wiki:...png) loads from the wiki folder");
+  const page = renderMarkdown("Read [chat links explained](wiki:sessions/2026/10/09/1926-chat-link-rendering/article.html), then reply.");
+  assert.match(page, /<button type="button" class="artifact-link" data-target="wiki:sessions\/2026\/10\/09\/1926-chat-link-rendering\/article.html"[^>]*>chat links explained<\/button>, then reply\./, "a .html wiki page is still a reader link, inline before its comma");
+});

@@ -1,5 +1,5 @@
 import { Marked, type Token, type TokenizerAndRendererExtension } from "marked";
-import { normalizeArtifactTarget } from "../shared/artifact-link.ts";
+import { normalizeArtifactTarget, WIKI_CONTENT_HOME } from "../shared/artifact-link.ts";
 import { idClass, type MentionIndex } from "./board.ts";
 
 export function escapeHtml(text: string): string {
@@ -96,6 +96,20 @@ function artifactTarget(href: string): string | null {
   if (!target) return null;
   return WEB_LINK.test(href) ? (target.startsWith("thread:") ? target : null) : target;
 }
+/**
+ * An image file a link target names (`file:/x.png`, `wiki:sessions/.../x.png`, a bare path to one) shows as the image, not a link to a page the
+ * reader cannot show: a small inline thumbnail in the text flow that opens full size on click (10-09, "image bugging?").
+ */
+const IMAGE_FILE = /\.(?:png|jpe?g|gif|webp|svg)$/i;
+function targetImage(target: string): string | null {
+  if (!IMAGE_FILE.test(target)) return null;
+  if (target.startsWith("file:")) return imageSource(target.slice(5), renderCwd);
+  if (target.startsWith("wiki:")) return imageSource(WIKI_CONTENT_HOME + "/" + target.slice(5), "");
+  return null;
+}
+const thumb = (src: string, alt: string, source: string): string =>
+  `<img class="reply-image thumb" src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(source)}" loading="lazy" data-source="${escapeHtml(source)}">`;
+const fileName = (path: string): string => path.split("/").at(-1) || path;
 const artifactButton = (target: string, inner: string, tip: string): string =>
   `<button type="button" class="artifact-link" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${escapeHtml(tip)}">${inner}</button>`;
 
@@ -125,7 +139,11 @@ const bareTargets: TokenizerAndRendererExtension = {
     const found = bareTarget(src);
     return found ? { type: "bareTarget", raw: found.raw, target: found.target } : undefined;
   },
-  renderer(token) { return artifactButton(String(token.target), escapeHtml(token.raw), String(token.target)); },
+  renderer(token) {
+    const target = String(token.target);
+    const image = targetImage(target);
+    return image ? thumb(image, fileName(String(token.raw)), String(token.raw)) : artifactButton(target, escapeHtml(token.raw), target);
+  },
 };
 
 const marked = new Marked({
@@ -145,12 +163,15 @@ const marked = new Marked({
       const text = this.parser.parseInline(tokens);
       const tip = escapeHtml(title ? `${title} (${href})` : href);
       const target = artifactTarget(href);
+      const image = target ? targetImage(target) : null;
+      if (image) return thumb(image, tokens.map(token => token.raw).join("") || fileName(href), href);
       if (target) return artifactButton(target, text, title ? `${title} (${href})` : href);
       if (WEB_LINK.test(href)) return `<a href="${escapeHtml(href)}" title="${tip}" target="_blank" rel="noopener noreferrer">${text}</a>`;
       return `<span class="path-link" title="${tip}">${text}</span>`;
     },
     image({ href, title, text }) {
-      const src = imageSource(href, renderCwd);
+      const named = /^(?:wiki|file):/.test(href) ? normalizeArtifactTarget(href) : null;
+      const src = named ? targetImage(named) : imageSource(href, renderCwd);
       if (!src) return `<span class="inert-image">Image: ${escapeHtml(text || href)}</span>`;
       const label = escapeHtml(title || text || href);
       return `<img class="reply-image" src="${escapeHtml(src)}" alt="${escapeHtml(text)}" title="${label}" loading="lazy" data-source="${escapeHtml(href)}">`;

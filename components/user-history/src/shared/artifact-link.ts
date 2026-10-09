@@ -15,6 +15,8 @@ export type ArtifactTarget =
   | { kind: "url"; url: string };
 
 export const WIKI_ORIGIN = "http://localhost:5176";
+/** The llm-wiki content folder under the home folder: the server reads pages from it, and the page loads a wiki image from it through api/local-image. */
+export const WIKI_CONTENT_HOME = "~/Documents/Github/auto-sns-agent/apps/llm-wiki/content";
 const THREAD = /^([a-zA-Z0-9_-]{1,128})(?:@(\d{1,16}))?$/;
 const JOB = /^[^\s/]{1,128}$/;
 /** Session ids are UUIDs; a URL whose hash is one (or the chat's port) is a pasted chat link. */

@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { WIKI_ORIGIN } from "./shared/artifact-link.ts";
+import { WIKI_CONTENT_HOME, WIKI_ORIGIN } from "./shared/artifact-link.ts";
 import { LocalFileError, readLocalText } from "./chat-render.ts";
 
 /**
@@ -12,7 +12,7 @@ export type WikiPageView = { path: string; title: string; url: string; dir: stri
 
 export const WIKI_TIMEOUT_MS = 5000;
 /** The llm-wiki checkout the dev server serves; the page's file is read from here when the dev server is down. */
-export const WIKI_CONTENT_DIR = join(homedir(), "Documents/Github/auto-sns-agent/apps/llm-wiki/content");
+export const WIKI_CONTENT_DIR = join(homedir(), WIKI_CONTENT_HOME.slice(2));
 const MAX_PATH = 2048;
 
 export function wikiPagePath(path: string): string {
