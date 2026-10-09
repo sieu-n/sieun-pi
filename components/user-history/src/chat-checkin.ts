@@ -76,11 +76,13 @@ export interface StepMemo { sig: string; at: number; nh?: string; noteAt?: numbe
 
 /** The words of a text that can tell one step from another: five letters or more, not a common word. */
 const distinctiveWords = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{4,}/g)?.filter(word => !STOP_WORDS.has(word)) ?? []);
-/** Whether an open agent todo is about the step: it names the step's id, else it shares a distinctive word with the step's text. */
-export function todoForStep(step: Pick<PlanItem, "id" | "text">, todos: readonly Pick<OwnerTodo, "text">[]): boolean {
+/** Whether an open agent todo is about the step: it names the step's id, the step's wait names the todo's id, or it shares a distinctive word with
+ * the step's text or wait (a step that "waits for the gateway todo" is covered by the gateway todo). */
+export function todoForStep(step: Pick<PlanItem, "id" | "text" | "waitFor">, todos: readonly (Pick<OwnerTodo, "text"> & Partial<Pick<OwnerTodo, "id">>)[]): boolean {
   const id = new RegExp(`\\b${step.id}\\b`);
-  const words = distinctiveWords(step.text);
-  return todos.some(todo => id.test(todo.text) || [...distinctiveWords(todo.text)].some(word => words.has(word)));
+  const named = new Set(step.waitFor?.match(/\bt\d+\b/g) ?? []);
+  const words = distinctiveWords(`${step.text} ${step.waitFor ?? ""}`);
+  return todos.some(todo => id.test(todo.text) || (todo.id !== undefined && named.has(todo.id)) || [...distinctiveWords(todo.text)].some(word => words.has(word)));
 }
 /** Whether an open step waits on the owner: its note says so (WAITS_ON_OWNER). */
 export const waitsOnOwner = (item: PlanItem): boolean => item.status === "blocked" && WAITS_ON_OWNER.test(item.note ?? "");

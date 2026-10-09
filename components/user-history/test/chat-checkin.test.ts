@@ -473,6 +473,12 @@ test("check-in digest: a step whose note waits on the owner with no ask for it i
   const doneAsk = plan("blocked", "needs your go", [{ id: "t2", text: "p2: go ahead?", choices: ["Go", "Wait"], done: true, from: "agent", at: "2026-10-08T00:00:00Z" }]);
   assert.deepEqual(noClass(checkInDigest(undefined, [], doneAsk, now, self).lines), [], "the owner already answered the ask for this step: no new question");
   assert.equal(todoForStep({ id: "p9", text: "Sign in to Stripe" }, [{ text: "Approve the deploy?" }]), false);
+  const t8 = { id: "t8", text: "The revised page is ready. Approve it and start?" };
+  assert.equal(todoForStep({ id: "p14", text: "Build: move callers over in small steps", waitFor: "owner approves the page in For you (todo t8)" }, [t8]), true,
+    "a step whose wait names the todo id is covered by that todo");
+  assert.equal(todoForStep({ id: "p15", text: "Verify: a CLIProxy failure falls back", waitFor: "the owner's gateway approval" }, [{ id: "t9", text: "Approve the gateway design?" }]), true,
+    "a todo that shares a distinctive word with the step's wait covers it");
+  assert.equal(todoForStep({ id: "p14", text: "Build: move callers over", waitFor: "todo t8" }, [{ id: "t18", text: "Pick a region?" }]), false, "t8 is not t18");
   assert.equal(waitsOnOwner(step("p9", "Build", "blocked")), false, "blocked alone is the board shape, not an owner wait");
   assert.equal(waitsOnOwner(step("p9", "Build", "todo", { note: "Decide: A or B" })), false, "only a blocked step waits on the owner");
   assert.equal(waitsOnOwner(step("p9", "Build", "blocked", { note: "waits on the owner's choice: A or B" })), true);
