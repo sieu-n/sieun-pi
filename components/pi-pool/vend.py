@@ -1255,6 +1255,9 @@ class HookWriter:
             "account_id": account.id, "email": account.email, "source": source,
             "reason": reason, "shadowed": list(shadowed) if shadowed else None,
             "at": now, "n": (prev.get("n", 0) + 1) if same else 1,
+            # since when the tree has been on this account: a 429 from a request sent
+            # before it belongs to the account the tree had then (cmd_limited --since)
+            "from": prev.get("from", prev.get("at", now)) if same else now,
         }
         return rec["vends"][provider]
 
@@ -1753,7 +1756,7 @@ def vend(provider):
 # ------------------------------------------------------------------------ CLI
 def parse_flags(rest, provider_default="anthropic"):
     provider, session, as_json, force, follow, new_session, positional = provider_default, None, False, False, False, False, []
-    model, source, clear, until = None, None, False, None
+    model, source, clear, until, since = None, None, False, None, None
     i = 0
     while i < len(rest):
         tok = rest[i]
@@ -1782,12 +1785,15 @@ def parse_flags(rest, provider_default="anthropic"):
         elif tok == "--until":
             i += 1
             until = float(rest[i])
+        elif tok == "--since":
+            i += 1
+            since = float(rest[i])
         else:
             positional.append(tok)
         i += 1
     return {"provider": provider, "session": session, "json": as_json,
             "force": force, "follow": follow, "new_session": new_session, "positional": positional,
-            "model": model, "source": source, "clear": clear, "until": until}
+            "model": model, "source": source, "clear": clear, "until": until, "since": since}
 
 
 def session_key_for(session_arg, state):
@@ -2913,7 +2919,7 @@ def cmd_limited(rest):
     f = parse_flags(rest)
     provider, until = f["provider"], f["until"]
     if until is None:
-        raise SystemExit("usage: pi-pool limited --until <epoch sec> [--provider <p>] [--session <id>]")
+        raise SystemExit("usage: pi-pool limited --until <epoch sec> [--since <epoch sec>] [--provider <p>] [--session <id>]")
     cfg, now = config(), time.time()
     accounts = load_index(provider)
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
@@ -2924,9 +2930,23 @@ def cmd_limited(rest):
         if not last:
             print(json.dumps({"error": f"no {provider} vend on file for this session"}))
             return 2
-        HookWriter(state).set_limit(provider, last["account_id"], until, key, now)
-        save_json(STATE, state)
-        nxt = next_account(state, key, provider, accounts, cfg, now)
+        # A request sent before the tree moved to its current account failed on an
+        # earlier one, whose limit an earlier report recorded. 2026-10-08 22:28: the
+        # in-flight requests of one tree re-reported one Codex account's 429 after each
+        # move, and all three codex accounts got its reset (limited 4d16h, at 0% and 8% used).
+        stale = f["since"] is not None and last.get("from", last.get("at", 0)) > f["since"]
+        if stale:
+            nxt = None
+        else:
+            HookWriter(state).set_limit(provider, last["account_id"], until, key, now)
+            save_json(STATE, state)
+            nxt = next_account(state, key, provider, accounts, cfg, now)
+    if stale:
+        out = {"account": None, "until": round(until), "next": last["email"], "stale": True}
+        log("limited_stale", provider=provider, current=last["email"], session=key.key,
+            sent=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(f["since"])))
+        print(json.dumps(out))
+        return 0
     out = {"account": last["email"], "until": round(until), "next": nxt.email if nxt else None}
     log("limited", provider=provider, account=last["email"], session=key.key,
         until=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(until)), next=out["next"])
@@ -3435,9 +3455,11 @@ USAGE = """usage: pi-pool [command]
                                   for that model instead of the session's recorded ones
   who [--json] [--session <id>] [--model <id>]
                                   what this session resolves to now, per provider
-  limited --until <epoch sec> [--provider <p>] [--session <id>]
+  limited --until <epoch sec> [--since <epoch sec>] [--provider <p>] [--session <id>]
                                   the provider answered 429 for this session's account; every
-                                  pin yields to it until then. Prints the next account or null
+                                  pin yields to it until then. Prints the next account or null.
+                                  --since: when the failed request was sent; a request sent before
+                                  the session moved to its account marks nothing ("stale")
   refused <error text> [--provider <p>] [--session <id>]
                                   a request failed with an account-level refusal (terms not
                                   accepted, OAuth off); cool this session's account down for

@@ -156,6 +156,24 @@ class LimitedSurvivesARestart(PoolFixture):
         self.assertEqual([(e["event"], e["account"], e["next"]) for e in events if e["event"] == "limited"],
                          [("limited", "c@x", "d@x")])
 
+    def test_a_429_from_a_request_sent_before_the_session_moved_marks_nothing(self):
+        until = time.time() + 3600
+        code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
+                             "--since", str(time.time()))
+        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x"}, out)
+        moved = time.time()
+        state = self.state()
+        state["sessions"][self.SESSION]["vends"]["openai-codex"] = {"account_id": self.D, "email": "d@x", "at": moved, "from": moved, "n": 1}
+        self.write_state(state)
+        code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
+                             "--since", str(moved - 5))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out), {"account": None, "until": round(until), "next": "d@x", "stale": True})
+        self.assertEqual(set(self.state()["providers"]["openai-codex"]["limits"]), {self.C}, "d@x is not marked with c@x's reset")
+        code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
+                             "--since", str(moved + 1))
+        self.assertEqual(json.loads(out)["account"], "d@x", "a request sent on d@x marks d@x")
+
     def test_with_no_other_account_next_is_null(self):
         until = time.time() + 3600
         state = self.state()

@@ -172,7 +172,7 @@ async function recordModel(ctx: ExtensionContext, model = ctx.model): Promise<vo
 const RESET_PHRASE = /(?:try again|resets?|available)[^.]{0,80}?(?:~\s*)?\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b\.?/gi;
 
 /** `pi-pool-token --cli limited` answer. `next` is null when no other account can serve. */
-interface LimitedReply { account: string; until: number; next: string | null }
+interface LimitedReply { account: string | null; until: number; next: string | null; stale?: boolean }
 /** `pi-pool-token --cli refused` answer. `reason` is null when the text names no account-level refusal. */
 interface RefusedReply { account?: string; reason: string | null; next?: string | null }
 
@@ -209,12 +209,14 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 	const withDetails = (next: Record<string, unknown>) => message.diagnostics?.map((diagnostic) => (diagnostic === failure ? { ...diagnostic, details: next } : diagnostic));
 	if (details.status === 429 && typeof details.retryAfterMs === "number") {
 		const until = (Date.now() + details.retryAfterMs) / 1000;
-		const reply = await poolJson<LimitedReply>(["limited", "--provider", message.provider, "--until", String(until)]);
+		// The request was sent at the message's timestamp: a 429 from before this tree moved accounts marks nothing.
+		const reply = await poolJson<LimitedReply>(["limited", "--provider", message.provider, "--until", String(until), "--since", String(message.timestamp / 1000)]);
 		if (!reply?.next) return undefined;
 		const { retryAfterMs: _reset, ...rest } = details;
+		const said = reply.stale ? `pi-pool: this 429 came from the account the session already left` : `pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}`;
 		return {
 			...message,
-			errorMessage: `${original} pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}; the retry uses ${reply.next}.`.trim(),
+			errorMessage: `${original} ${said}; the retry uses ${reply.next}.`.trim(),
 			diagnostics: withDetails(rest),
 		};
 	}
