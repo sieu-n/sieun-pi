@@ -549,7 +549,7 @@ test("chats: the check-in reads the ledger's handoffs: a step on another thread'
   const now = 100_000_000;
   const logs: string[] = [];
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [],
-    plan: [{ id: "p1", text: "Find what eats memory", status: "doing", job: "c1", note: "swap at 12 GB", children: [] }] };
+    plan: [{ id: "p1", text: "Find what eats swap", status: "doing", job: "c1", note: "at 12 GB", children: [] }] };
   const ledger: Ledger = { corrections: [{ id: "c7", at: "", chat: { id: "vp", name: "dev VP" }, words: "w", rule: "Machine work goes to ops guy.", enforcedBy: "code",
     ref: "pending commit", status: "reopened", theme: ["mac"], repeats: [], handoff: { to: "ops guy (+observability)", topics: ["swap", "M1 Air"] } }] };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
@@ -559,7 +559,7 @@ test("chats: the check-in reads the ledger's handoffs: a step on another thread'
   await chats.settled();
   calls.length = 0;
   const lines = await chats.checkIn("c1");
-  assert.deepEqual(lines, ['p1 "Find what eats memory" belongs to ops guy (+observability) (correction c7): hand it off with a message to that thread and remove it from this plan']);
+  assert.deepEqual(lines, ['p1 "Find what eats swap" belongs to ops guy (+observability) (correction c7): hand it off with a message to that thread and remove it from this plan']);
   assert.equal(calls.length, 1, logs.join("\n"));
   chats.close();
 });
