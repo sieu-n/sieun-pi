@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
 import { CHAT_CHECK_IN_LINE } from "./shared/chat-feed.ts";
@@ -11,16 +12,13 @@ import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckI
 export const CHECK_IN_MS = 15 * 60_000;
 /** A job that runs with no activity for this long is reported once as stale, until its activity moves again. */
 export const STALE_MS = 30 * 60_000;
-/** A thread that owns a todo or doing step and stays idle this long is reported, once per idle stretch. */
-export const THREAD_IDLE_MS = 60 * 60_000;
 /** A check-in this soon after the last steer the server sent the chat waits and joins the next one. */
 export const CHECK_IN_MERGE_MS = 60_000;
-/** An open step with no board change and no owner activity for this long is reported, once per stretch of this length. */
+/**
+ * Progress within this long keeps a step `live` or `waiting` (`stepClass`): its owner's activity, or its own last change. Past it, a step
+ * that waits on another thread or an event is a stale chase. A board read error and an ask overflow are told again after this long too.
+ */
 export const STEP_STALE_MS = 2 * 60 * 60_000;
-/** A step with `waitFor` is left alone for this long after the chat last changed it; then it counts as quiet like any other. */
-export const STEP_WAIT_FOR_MS = 24 * 60 * 60_000;
-/** A todo or doing step the chat itself owns that has not moved for this long is pushed, once per stretch of this length. */
-export const OWN_STEP_MS = 60 * 60_000;
 /**
  * A blocked step whose note says it waits on the owner's choice or action ("waits on the owner's approval", "needs your go", "owner must decide",
  * "waiting for you to sign in"). A single word such as "owner" or "go" is not enough: notes name the owner and land events ("delete after land 25
@@ -52,19 +50,20 @@ export interface JobFact {
   /** A subagent's last agent message to the chat (`lastJobMessages`), and when the server last saw it start working. */
   lastMessage?: JobMessage; wokeAt?: number;
 }
-/** One agent message a job sent the chat: when, and its first line. */
-export interface JobMessage { at: number; text: string }
+/** One agent message a job sent the chat: when, its first line, and its first 160 characters with the lines joined (the report a step note quotes). */
+export interface JobMessage { at: number; text: string; head?: string }
 /** `failedAt`/`retries`/`retriedAt`: an owner of an open step that stays failed is reported again on the RETRY_BACKOFF_MS schedule. */
 export interface JobMemo {
   state: JobState; activityAt?: number; messages?: number; stale?: true; failedAt?: number; retries?: number; retriedAt?: number;
-  /** The time of the job message last reported as waiting, and the activity time of the thread owner last reported as idle. */
-  waited?: number; idle?: number;
+  /** The time of the job message last reported as waiting. */
+  waited?: number;
 }
 /**
- * One plan item as last seen: what it said, when that last changed, when it was last reported as quiet, the `sig` at which it was reported as
- * waiting on the owner with no ask, and the `waitUntil` already reported as come.
+ * One plan item as last seen: what it said (`sig`: status, text, owner, waits) and when that last changed, its note's hash and when that last
+ * changed, the `sig` at which it was reported as waiting on the owner with no ask, when the server last nudged the thread it waits on, and
+ * the end of its job seen unrecorded (`ended`) and already written into its note (`noted`).
  */
-export interface StepMemo { sig: string; at: number; nudged?: number; asked?: string; due?: string }
+export interface StepMemo { sig: string; at: number; nh?: string; noteAt?: number; asked?: string; chased?: number; ended?: number; noted?: number }
 
 /** The words of a text that can tell one step from another: five letters or more, not a common word. */
 const distinctiveWords = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{4,}/g)?.filter(word => !STOP_WORDS.has(word)) ?? []);
@@ -86,8 +85,11 @@ export interface CheckInMemory {
   at: number; jobs: Record<string, JobMemo>; steps: Record<string, StepMemo>; answered: string[]; ready: string[];
   boardError?: Reminder; asks?: Reminder;
 }
-/** What the digest needs besides the facts and the board: the chat's own id and name (a step it owns says "you"), and a board read error. */
-export interface CheckInContext { self?: readonly string[]; boardError?: string }
+/**
+ * What the digest needs besides the facts and the board: the chat's own id and name (a step it owns says "you"; `name` signs a nudge), a board
+ * read error, and the catalog rows (the threads a step's `waitFor` can name).
+ */
+export interface CheckInContext { self?: readonly string[]; name?: string; boardError?: string; rows?: readonly Pick<SessionRow, "id" | "name" | "archived">[] }
 
 const OPEN: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 const CLOSED: ReadonlySet<PlanStatus> = new Set(["done", "dropped"]);
@@ -177,32 +179,134 @@ function ago(ms: number): string {
   return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
 }
 
-/** What a quiet-step line asks of the chat. */
-export const STALL_ACT = ": change it at this check-in (chase the blocker, start a job, add one owner todo, or set waitUntil or waitFor)";
+/**
+ * The class of one open leaf step at a tick; every chat converges to steps that are `live`, `foryou` or `waiting`. `live`: its owner is a job
+ * at work, a thread active in the last STEP_STALE_MS, or the chat itself on a step it changed in that time. `foryou`: an open owner todo covers
+ * it (`todoForStep`). `waiting`: its `waitUntil` is ahead, or its `waitFor` (or thread owner) has seen progress within STEP_STALE_MS. The three
+ * the chat must act on at once: `due` (its `waitUntil` passed and it has not changed since), `stale-chase` (it waits on another thread or an
+ * event with no progress for STEP_STALE_MS), `orphan` (no live owner, no todo, no wait).
+ */
+export type StepClass = "live" | "foryou" | "waiting" | "due" | "stale-chase" | "orphan";
+export const STEP_CLASSES: readonly StepClass[] = ["live", "foryou", "waiting", "due", "stale-chase", "orphan"];
+/** The classes a check-in line asks the chat to act on, every tick while they hold. */
+export const ACT_CLASSES: ReadonlySet<StepClass> = new Set(["due", "stale-chase", "orphan"]);
+/** A chase this old must become a For you todo or a new plan. */
+export const CHASE_ESCALATE_MS = 24 * 60 * 60_000;
+/** The thread a stale step waits on is nudged by the server at most this often per step. */
+export const NUDGE_EVERY_MS = 2 * 60 * 60_000;
+
+/** What the class of one open leaf step depends on: its last change (status, text, owner or wait), whether the chat owns it, its owner's fact. */
+export interface StepFacts { item: PlanItem; changedAt: number; mine: boolean; owner?: JobFact | undefined; openTodos: readonly Pick<OwnerTodo, "id" | "text">[] }
+export function stepClass({ item, changedAt, mine, owner, openTodos }: StepFacts, now: number): StepClass {
+  const thread = owner?.key.startsWith("thread:") === true;
+  if (owner?.state === "working") return "live";
+  if (thread && owner!.state !== "failed" && now - (owner!.activityAt ?? 0) < STEP_STALE_MS) return "live";
+  if (todoForStep(item, openTodos)) return "foryou";
+  const until = Date.parse(item.waitUntil ?? "");
+  if (Number.isFinite(until) && until > now) return "waiting";
+  if (Number.isFinite(until) && changedAt < until) return "due";
+  if (mine && now - changedAt < STEP_STALE_MS) return "live";
+  if (item.waitFor !== undefined || thread) return now - Math.max(changedAt, thread ? owner!.activityAt ?? 0 : 0) < STEP_STALE_MS ? "waiting" : "stale-chase";
+  return "orphan";
+}
+
+/**
+ * The thread a step's `waitFor` names, so the server can nudge it: a `thread:<id>` link, a session id, or a session name of at least 6
+ * characters as whole words (the longest one wins). Never the chat itself, never an archived thread.
+ */
+export function waitTarget(waitFor: string | undefined, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>): { id: string; name: string } | undefined {
+  if (!waitFor) return undefined;
+  const text = waitFor.toLowerCase();
+  const linked = /\bthread:([a-zA-Z0-9_-]{1,128})/.exec(waitFor)?.[1];
+  let best: { id: string; name: string } | undefined;
+  for (const row of rows) {
+    if (row.archived || self.has(row.id) || self.has(row.name)) continue;
+    if (row.id === linked || waitFor.includes(row.id)) return { id: row.id, name: row.name };
+    const name = row.name.trim().toLowerCase();
+    if (name.length < 6 || (best && best.name.length >= name.length)) continue;
+    const at = text.indexOf(name);
+    if (at >= 0 && !/[a-z0-9]/.test(text[at - 1] ?? "") && !/[a-z0-9]/.test(text[at + name.length] ?? "")) best = { id: row.id, name: row.name.trim() };
+  }
+  return best;
+}
+
+/**
+ * Every open leaf step of a board (an open item with no open child) with its class, in board order. `changedAt` gives each step's last change
+ * (the check-in memory); `self` holds the chat's id and name, so a step it owns is `mine`.
+ */
+export function classifyBoard(board: ChatBoard | null, facts: readonly JobFact[], changedAt: (item: PlanItem) => number, self: ReadonlySet<string>,
+  rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], now: number): StepView[] {
+  const openTodos = (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done);
+  const views: StepView[] = [];
+  const visit = (item: PlanItem): boolean => {
+    let openBelow = false;
+    for (const child of item.children) openBelow = visit(child) || openBelow;
+    if (!OPEN.has(item.status)) return openBelow;
+    if (!openBelow) views.push(stepView(item, changedAt(item), self, facts, openTodos, rows, now));
+    return true;
+  };
+  for (const item of board?.plan ?? []) visit(item);
+  return views;
+}
+/** One open leaf step's view: its owner (none when the chat owns it), its class, and the thread a stale chase goes to. */
+export function stepView(item: PlanItem, changedAt: number, self: ReadonlySet<string>, facts: readonly JobFact[], openTodos: readonly Pick<OwnerTodo, "id" | "text">[],
+  rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], now: number): StepView {
+  const mine = self.has(stepOwner(item) ?? "");
+  const owner = mine ? undefined : ownerOf(item, facts);
+  const base = { item, changedAt, mine, owner, openTodos };
+  const cls = stepClass(base, now);
+  const thread = owner?.key.startsWith("thread:") ? { id: owner.key.slice("thread:".length), name: owner.name } : undefined;
+  const target = cls === "stale-chase" ? waitTarget(item.waitFor, rows, self) ?? thread : undefined;
+  return { ...base, cls, ...(target ? { target } : {}) };
+}
+
+/** One open leaf step as the check-in sees it: its class and what the line about it names. */
+export interface StepView extends StepFacts { cls: StepClass; target?: { id: string; name: string } | undefined }
+
+/** The line a step in an ACT_CLASSES class gives at every tick, naming what the chat must do now; null for the others. */
+export function classLine(view: StepView, now: number): string | null {
+  const { item, cls, changedAt, owner, mine } = view;
+  const head = `${item.id} ${quote(item.text)}`;
+  if (cls === "due") {
+    const until = Date.parse(item.waitUntil!);
+    return `${head} is due since ${now - until < 24 * 60 * 60_000 ? clockTime(until) : localTime(until)}: act on it or set a new waitUntil`;
+  }
+  if (cls === "stale-chase") {
+    const on = item.waitFor !== undefined ? `waits for ${quote(item.waitFor)}` : `waits on ${owner ? ownerLabel(owner) : "its owner"}`;
+    const age = now - changedAt;
+    return age >= CHASE_ESCALATE_MS ? `${head} ${on} for ${ago(age)}: make it a For you todo or replan it now`
+      : `${head} ${on} for ${ago(age)}: chase it now; after 24 h make it a For you todo or replan`;
+  }
+  if (cls === "orphan") {
+    if (mine) return `${head} is yours and has not moved for ${ago(now - changedAt)}: start a job, do it now, or ask the owner in For you`;
+    const who = owner ? ` (${ownerLabel(owner)} ${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? ` (${item.job} not found)` : "";
+    return `${head} has no live owner${who}: start a job, take it yourself, or ask the owner in For you`;
+  }
+  return null;
+}
 
 /** Whether a reminder for `key` is due: a new or changed condition at once, the same one again after STEP_STALE_MS. */
 const reminderDue = (before: Reminder | undefined, key: string, now: number): boolean => before?.key !== key || now - before.at >= STEP_STALE_MS;
 
 /**
- * One tick: the memory to keep, the lines that need the VP, and every open leaf step (an open item with no open child) as a line, oldest change
- * first, to list under them. With no memory (the first tick) only conditions are reported (a stale job or step, a ready step); transitions need
- * a before. A job counts as finished when it was working last tick, or when it is new since then and its last activity came after it; a
- * cancelled one gives no line, one whose last message since its wake says it waits gives that message once, and a message since its wake is
- * its report. A thread owner gives no line for going idle: it is reported when it posted messages since the last tick, and once per idle
- * stretch when it owns a todo or doing step and stays idle THREAD_IDLE_MS. An owner of an open step
- * that stays failed is reported again on the RETRY_BACKOFF_MS schedule. A plan item's last change is when its status, text or owner last
- * differed (the board's `updatedAt` for one never seen before); a note edit is no change. An open item with no open child that had no change,
- * no change below it and no owner activity for STEP_STALE_MS is reported, once per stretch of that length, as a line the chat must act on. A
- * step that waits on purpose is not: one with `waitUntil` still ahead, or with `waitFor` for STEP_WAIT_FOR_MS after its last change. When its
- * `waitUntil` passes, that is reported once, and the quiet count starts again from then. A board read error keeps the last
- * steps and is reported, and so are more open owner asks than BOARD_LIMITS.openAsks; each again every STEP_STALE_MS while it holds.
+ * One tick: the memory to keep, the lines that need the VP, every open leaf step (an open item with no open child) as a line with its class,
+ * oldest change first, to list under them, the nudges the server sends to the threads stale steps wait on, and the notes it writes on steps
+ * whose job ended unrecorded. With no memory (the first tick) only conditions are reported (a stale job, a step's class, a ready step);
+ * transitions need a before. A job counts as finished when it was working last tick, or when it is new since then and its last activity came
+ * after it; a cancelled one gives no line, one whose last message since its wake says it waits gives that message once, and a message since its
+ * wake is its report. A thread owner gives no line for going idle: it is reported when it posted messages since the last tick. An owner of an
+ * open step that stays failed is reported again on the RETRY_BACKOFF_MS schedule. A plan item's last change is when its status, text, owner or
+ * wait last differed (the board's `updatedAt` for one never seen before); a note edit is no change. Each open leaf step gets its class
+ * (`stepClass`), and every step in ACT_CLASSES gives its line (`classLine`) at every tick while it holds. A stale chase whose `waitFor` names a
+ * thread (`waitTarget`), or whose owner is a thread, nudges that thread at most every NUDGE_EVERY_MS. A step whose job (a subagent) ended or
+ * replied after the step's last change or note edit, and is still not updated at the next tick, gets that job's report written into its note,
+ * once per end, with a line. A board read error keeps the last steps and is reported, and so are more open owner asks than
+ * BOARD_LIMITS.openAsks; each again every STEP_STALE_MS while it holds.
  */
 export function checkInDigest(previous: CheckInMemory | undefined, facts: readonly JobFact[], board: ChatBoard | null, now: number, context: CheckInContext = {}):
-  { memory: CheckInMemory; lines: string[]; open: string[] } {
+  { memory: CheckInMemory; lines: string[]; open: string[]; nudges: Nudge[]; notes: StepNote[] } {
   const lines: string[] = [];
   const jobs: Record<string, JobMemo> = {};
-  /** Steps whose thread owner was just reported idle: their quiet-step line would say the same. */
-  const idleSteps = new Set<string>();
   for (const fact of facts) {
     const before = previous?.jobs[fact.key];
     const label = factLabel(fact);
@@ -212,7 +316,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     const ended = fact.state !== "working" && (wasWorking || (before !== undefined && before.state !== fact.state));
     const report = jobReport(fact);
     const memo: JobMemo = { state: fact.state, ...(fact.activityAt !== undefined ? { activityAt: fact.activityAt } : {}), ...(fact.messages !== undefined ? { messages: fact.messages } : {}),
-      ...(before?.waited !== undefined ? { waited: before.waited } : {}), ...(before?.idle !== undefined && before.idle === fact.activityAt ? { idle: before.idle } : {}) };
+      ...(before?.waited !== undefined ? { waited: before.waited } : {}) };
     const added = before?.messages !== undefined && fact.messages !== undefined ? fact.messages - before.messages : 0;
     const jobEnded = ended && !thread && !fact.cancelled && fact.state === "ended";
     if (ended && fact.state === "failed") lines.push(`${label} failed${fact.error ? `: ${clip(fact.error, 120)}` : ""}${stale}`);
@@ -221,12 +325,6 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
       memo.waited = report.waits.at;
     } else if (jobEnded) lines.push(`${label} finished${report.reported ? "" : " with no report"}${stale}`);
     else if ((!ended || thread) && fact.state !== "working" && added > 0) lines.push(`${label} has ${added} new ${added === 1 ? "message" : "messages"} and is ${STATE_WORD[fact.state]}${stale}`);
-    if (thread && fact.state === "ended" && fact.item && (fact.item.status === "todo" || fact.item.status === "doing") && fact.activityAt !== undefined &&
-      now - fact.activityAt >= THREAD_IDLE_MS && memo.idle !== fact.activityAt) {
-      lines.push(`${label} idle for ${ago(now - fact.activityAt)}`);
-      memo.idle = fact.activityAt;
-      idleSteps.add(fact.item.id);
-    }
     if (fact.state === "working" && fact.activityAt !== undefined && now - fact.activityAt > STALE_MS) {
       memo.stale = true;
       if (!(before?.stale && before.activityAt === fact.activityAt)) lines.push(`${label}: no activity for ${Math.round((now - fact.activityAt) / 60_000)} min`);
@@ -246,48 +344,60 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   }
 
   const self = new Set(context.self ?? []);
+  const chatName = context.name ?? context.self?.[1] ?? context.self?.[0] ?? "the chat";
   const openTodos = (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done);
   /** Asks already answered: a step whose question the owner answered does not need a new one. */
   const answeredTodos = (board?.todos ?? []).filter(todo => todo.done || (todo.reply ?? "").trim() !== "");
   const firstSeen = Math.min(now, Date.parse(board?.updatedAt ?? "") || now);
   const steps: Record<string, StepMemo> = context.boardError ? { ...previous?.steps } : {};
   const open: { at: number; line: string }[] = [];
-  /** Visits an item after its children; returns when it or anything below it last moved (a board change or owner activity). */
-  const visit = (item: PlanItem): { moved: number; open: boolean } => {
-    let moved = 0, openBelow = false;
-    for (const child of item.children) { const below = visit(child); moved = Math.max(moved, below.moved); openBelow ||= below.open; }
+  const nudges: Nudge[] = [];
+  const notes: StepNote[] = [];
+  /** The class lines go after every other line: the open-steps list repeats each class, so a fold cuts them first. */
+  const classLines: string[] = [];
+  /** Visits an item after its children; returns whether it or anything below it is open. */
+  const visit = (item: PlanItem): boolean => {
+    let openBelow = false;
+    for (const child of item.children) openBelow = visit(child) || openBelow;
     const sig = JSON.stringify([item.status, item.text, planJob(item.job) ?? "", ...(item.waitUntil || item.waitFor ? [item.waitUntil ?? "", item.waitFor ?? ""] : [])]);
     const before = previous?.steps[item.id];
-    const memo: StepMemo = { sig, at: before ? before.sig === sig ? before.at : now : firstSeen, ...(before?.nudged !== undefined ? { nudged: before.nudged } : {}),
-      ...(before?.due !== undefined && before.due === item.waitUntil ? { due: before.due } : {}) };
-    const mine = self.has(stepOwner(item) ?? "");
-    const owner = mine ? undefined : ownerOf(item, facts);
-    moved = Math.max(moved, memo.at, owner?.activityAt ?? 0);
+    const nh = noteHash(item.note);
+    const noteAt = before === undefined ? undefined : before.nh === nh ? before.noteAt : now;
+    const memo: StepMemo = { sig, at: before ? before.sig === sig ? before.at : now : firstSeen, ...(nh ? { nh } : {}), ...(noteAt !== undefined ? { noteAt } : {}),
+      ...(before?.chased !== undefined ? { chased: before.chased } : {}), ...(before?.noted !== undefined ? { noted: before.noted } : {}) };
+    steps[item.id] = memo;
     const isOpen = OPEN.has(item.status);
-    const until = Date.parse(item.waitUntil ?? "");
-    const waiting = (Number.isFinite(until) && until > now) || (item.waitFor !== undefined && now - memo.at < STEP_WAIT_FOR_MS);
-    if (isOpen && !openBelow && Number.isFinite(until) && until <= now && memo.due !== item.waitUntil) {
-      lines.push(`${item.id} was waiting until ${localTime(until)}; that time has come`);
-      memo.due = item.waitUntil!;
-      memo.nudged = now;
-    } else if (!waiting && mine && !openBelow && (item.status === "todo" || item.status === "doing") && now - Math.max(moved, memo.nudged ?? 0) >= OWN_STEP_MS) {
-      lines.push(`${item.id} is yours and has not moved for ${ago(now - moved)}: act now, start a job or decide`);
-      memo.nudged = now;
-    } else if (!waiting && isOpen && !openBelow && now - Math.max(moved, memo.nudged ?? 0) >= STEP_STALE_MS) {
-      if (!idleSteps.has(item.id)) lines.push(`${item.id} ${quote(item.text)} is ${item.status} with no board change and no owner activity for ${ago(now - moved)}${STALL_ACT}`);
-      memo.nudged = now;
+    if (!isOpen || openBelow) return isOpen || openBelow;
+    const view = stepView(item, memo.at, self, facts, openTodos, context.rows ?? [], now);
+    const line = classLine(view, now);
+    if (view.cls === "stale-chase" && view.target && now - (memo.chased ?? -Infinity) >= NUDGE_EVERY_MS) {
+      nudges.push({ id: view.target.id, step: item.id, message: nudgeMessage(chatName, item, now - memo.at) });
+      memo.chased = now;
     }
-    if (isOpen && !openBelow && waitsOnOwner(item) && !todoForStep(item, openTodos) && !todoForStep(item, answeredTodos)) {
+    if (line) classLines.push(view.cls === "stale-chase" && view.target && memo.chased !== undefined ? `${line} (I asked ${clip(view.target.name, 40)} at ${clockTime(memo.chased)})` : line);
+    const owner = view.owner;
+    if (owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled) {
+      const end = Math.max(owner.activityAt ?? 0, owner.lastMessage?.at ?? 0);
+      if (end > Math.max(memo.at, memo.noteAt ?? 0)) {
+        if (before?.ended === end && memo.noted !== end) {
+          const report = owner.lastMessage ? `report: ${owner.lastMessage.head ?? owner.lastMessage.text}` : "no report";
+          const auto = `Job ${owner.name} ended at ${clockTime(end)}, ${clip(report, 168)}`;
+          notes.push({ step: item.id, note: clip(item.note ? `${auto}\n${item.note}` : auto, BOARD_LIMITS.note) });
+          lines.push(`${item.id} ${quote(item.text)}: job ${owner.name} ended at ${clockTime(end)} and the step was not updated; I put its report in the step's note: update the step now`);
+          memo.noted = end;
+        }
+        memo.ended = end;
+      }
+    }
+    if (waitsOnOwner(item) && !todoForStep(item, openTodos) && !todoForStep(item, answeredTodos)) {
       if (before?.asked !== sig) lines.push(`${item.id} waits on the owner but For you has no question for it: add one with choices`);
       memo.asked = sig;
     }
-    if (isOpen && !openBelow) {
-      const who = mine ? "owner you" : owner ? `owner ${ownerLabel(owner)} (${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? `owner ${item.job} (not found)` : "no owner";
-      const waits = `${Number.isFinite(until) ? `, waits until ${localTime(until)}` : ""}${item.waitFor ? `, waits for ${quote(item.waitFor)}` : ""}`;
-      open.push({ at: memo.at, line: `${item.id} ${quote(item.text)} ${item.status}, ${who}${waits}, last change ${ago(now - memo.at)} ago` });
-    }
-    steps[item.id] = memo;
-    return { moved, open: isOpen || openBelow };
+    const who = view.mine ? "owner you" : owner ? `owner ${ownerLabel(owner)} (${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? `owner ${item.job} (not found)` : "no owner";
+    const until = Date.parse(item.waitUntil ?? "");
+    const waits = `${Number.isFinite(until) ? `, waits until ${localTime(until)}` : ""}${item.waitFor ? `, waits for ${quote(item.waitFor)}` : ""}`;
+    open.push({ at: memo.at, line: `${item.id} (${view.cls}) ${quote(item.text)} ${item.status}, ${who}${waits}, last change ${ago(now - memo.at)} ago` });
+    return true;
   };
   for (const item of board?.plan ?? []) visit(item);
 
@@ -306,12 +416,26 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   if (previous && answered) for (const todo of answered) if (!previous.answered.includes(todo.id)) lines.push(`owner answered ${todo.id} ${quote(todo.text)}: ${clip(todo.reply!, 120)}`);
   const ready = context.boardError ? undefined : readySteps(board);
   if (ready) for (const step of ready) if (!previous?.ready.includes(step.id)) lines.push(`${step.id} ${quote(step.text)} can start: the steps before it are done and it has no job`);
+  lines.push(...classLines);
   const shown = lines.length > MAX_LINES ? [...lines.slice(0, MAX_LINES - 1), `and ${lines.length - MAX_LINES + 1} more`] : lines;
   const sorted = open.sort((a, b) => a.at - b.at).map(entry => entry.line);
   const listed = sorted.length > MAX_OPEN ? [...sorted.slice(0, MAX_OPEN - 1), `and ${sorted.length - MAX_OPEN + 1} more`] : sorted;
   return { memory: { at: now, jobs, steps, answered: answered?.map(todo => todo.id) ?? previous?.answered ?? [], ready: ready?.map(step => step.id) ?? previous?.ready ?? [],
-    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}) }, lines: shown, open: listed };
+    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}) }, lines: shown, open: listed, nudges, notes };
 }
+
+/** A nudge the server sends to the thread a stale step waits on: the thread's session id, the step, the text. */
+export interface Nudge { id: string; step: string; message: string }
+/** A note the server writes on a step whose job ended unrecorded: the whole new note, the job's line first. */
+export interface StepNote { step: string; note: string }
+/** The text a thread a step waits on gets, in the owner's words: who asks, which step, how long, and how to answer. */
+export function nudgeMessage(chat: string, item: Pick<PlanItem, "id" | "text" | "waitFor">, age: number): string {
+  const waits = item.waitFor ? ` (it waits for ${quote(item.waitFor)})` : "";
+  return `[from ${chat}] your step ${item.id} ${quote(item.text)}${waits} has waited ${ago(age)}: what is left, and when? ` +
+    `Answer with \`await agent_message.send(answer, receiver_role="sibling", receiver_name="${chat}")\`.`;
+}
+/** A short hash of a step's note, so the memory sees a note edit without keeping the text. */
+const noteHash = (note: string | undefined): string | undefined => note ? createHash("sha256").update(note).digest("hex").slice(0, 12) : undefined;
 
 /** The steer text for a tick that wakes the chat: what changed, then every open plan item so none is skipped. */
 export const checkInMessage = (prefix: string, lines: readonly string[], open: readonly string[]): string =>
@@ -367,7 +491,8 @@ export function lastJobMessages(messages: readonly { role: string; customType?: 
       : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
     const header = /^\s*\[agent-message from\s+(?:child:)?([^\]]+)\]/.exec(text);
     if (!header) continue;
-    last.set(header[1]!.trim(), { at: message.timestamp ?? 0, text: text.slice(header[0].length).split("\n").map(line => line.trim()).find(Boolean) ?? "" });
+    const body = text.slice(header[0].length);
+    last.set(header[1]!.trim(), { at: message.timestamp ?? 0, text: body.split("\n").map(line => line.trim()).find(Boolean) ?? "", head: body.replace(/\s+/g, " ").trim().slice(0, 160) });
   }
   return last;
 }

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DutyStore } from "../../src/chat-duty-store.ts";
-import { nextDutyId, parseDutyInput } from "../../src/shared/chat-duties.ts";
+import { upsertDuty } from "../../src/shared/chat-duties.ts";
 
 /**
  * `node --import tsx scripts/duties/add.ts <chatId> <duty.json> [--data-dir <dir>]`: adds the duty to the chat, or updates the definition of the
@@ -16,13 +16,5 @@ if (!chatId || !file) { process.stderr.write("usage: add.ts <chatId> <duty.json>
 const definition: unknown = JSON.parse(await readFile(file, "utf8"));
 const store = new DutyStore(dataDir);
 const now = Date.now();
-const result = await store.update(chatId, duties => {
-  const parsed = parseDutyInput(definition, nextDutyId(duties), now);
-  const existing = duties.find(duty => duty.name === parsed.name);
-  if (!existing) { duties.push(parsed); return `added ${parsed.id}`; }
-  const { id: _id, status: _status, createdAt: _createdAt, updatedAt: _updatedAt, runCount: _runCount, ...fields } = parsed;
-  if (JSON.stringify({ ...existing, ...fields, updatedAt: existing.updatedAt }) === JSON.stringify(existing)) return `unchanged ${existing.id}`;
-  Object.assign(existing, fields, { updatedAt: now });
-  return `updated ${existing.id}`;
-});
+const result = await store.update(chatId, duties => upsertDuty(duties, definition, now));
 process.stdout.write(`${result} "${(definition as { name?: string }).name}" in ${chatId}\n`);

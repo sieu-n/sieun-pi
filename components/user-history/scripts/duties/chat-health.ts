@@ -7,6 +7,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 import { CHECK_IN_PREFIX, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
+import { boardClasses, type ConvergenceMisses, daemonSessions } from "./board-classes.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 
 const HOUR = 60 * 60_000;
@@ -23,6 +24,8 @@ const QUOTED = /[\u201c"][^\u201d"]*[\u201d"]/g;
 /** The note the pool's extension appends to a provider error it retries on another account: the provider failed, not sieun-pi. */
 const POOL_RETRY_NOTE = / pi-pool: [\s\S]*; the retry uses [\s\S]*$/;
 const STALL = /with no board change and no owner activity for (\d+) (min|h|d)\b/;
+/** An open-steps row a check-in lists with a class the chat must act on: `- p9 (stale-chase) "..." blocked, ..., last change 20 h ago`. */
+const CLASS_ROW = /^- (p\d+) \((?:due|stale-chase|orphan)\) .*last change (\d+) (min|h|d) ago$/;
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'\u2019._/-]*/gu;
 const BOARD_PREFIX = "[board] ";
 const BOARD_ANSWER = " and answered: ";
@@ -33,7 +36,7 @@ const STALL_TAIL = " with no board change";
 /** The status at the end of a stall row's head: a step that moved from doing to blocked is still one step. */
 const STALL_STATUS = / is \w+$/;
 
-type Metrics = { corrections: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number };
+type Metrics = { corrections: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -123,6 +126,8 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
           for (const row of text.split("\n")) {
             const stall = STALL.exec(row);
             if (stall && stallHours(Number(stall[1]), stall[2]!) >= 2) stalls.set(row.slice(0, row.indexOf(STALL_TAIL)).replace(STALL_STATUS, "").trim(), { at, row: row.trim() });
+            const open = CLASS_ROW.exec(row.trim());
+            if (open && stallHours(Number(open[2]), open[3]!) >= 2) stalls.set(open[1]!, { at, row: row.trim() });
           }
         }
         continue;
@@ -184,7 +189,8 @@ async function readWatch(file: string | undefined): Promise<Watch> {
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
   const picked = [...newest("recheck"), ...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
-  const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("off_brief", 2 * FEW)];
+  const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("off_brief", 2 * FEW),
+    newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
     for (const queue of queues) { const next = queue.shift(); if (next && picked.length < MAX_FLAGGED) picked.push(next); }
   }
@@ -200,14 +206,19 @@ async function main(): Promise<void> {
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
-  const tally: Tally = { metrics: { corrections: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0 },
+  const tally: Tally = { metrics: { corrections: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0,
+    orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0 },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   tally.metrics.dead_hours = tenth(tally.deadMs / HOUR);
+  for (const chat of await boardClasses({ dataDir, now, sessions: daemonSessions, chats: ids })) {
+    for (const [key, value] of Object.entries(chat.misses) as [keyof ConvergenceMisses, number][]) tally.metrics[key] += value;
+    for (const slice of chat.flagged) { const list = tally.flagged.get(slice.kind as Kind) ?? []; list.push(slice); tally.flagged.set(slice.kind as Kind, list); }
+  }
   tally.metrics.long_replies = tally.ownerTurns ? tenth(100 * tally.longTurns / tally.ownerTurns) : 0;
   const watch = watchRecurrences(tally.seen, await readWatch(process.env.STATE_FILE), now, tally);
   const fixes = fixCommits(process.env.CHAT_HEALTH_GIT_DIR || join(import.meta.dirname, "..", ".."), now - 2 * WINDOW_MS, now - WINDOW_MS);
-  tally.flagged.set("recheck", recheckSlices(fixes, tally.metrics).map(slice => ({ ...slice, excerpt: clip(slice.excerpt) })));
+  tally.flagged.set("recheck", recheckSlices(fixes, { ...tally.metrics }).map(slice => ({ ...slice, excerpt: clip(slice.excerpt) })));
   const result: PrecheckOutput = { metrics: { ...tally.metrics }, flagged: pickFlagged(tally.flagged) };
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

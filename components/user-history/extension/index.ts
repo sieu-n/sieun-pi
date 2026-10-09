@@ -36,8 +36,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
           type: "array",
           description: "Board ops. plan_set {items:[{text,status?,job?,note?,waitUntil?,waitFor?,children?}]} replaces the plan. plan_add {text,parent?,status?,job?,waitUntil?,waitFor?} " +
             "adds a goal, or a step under parent. plan_update {id,text?,status?,job?,note?,waitUntil?,waitFor?} (null clears job, note, waitUntil or waitFor). " +
-            "waitUntil (an ISO date-time) or waitFor (the event, in a few words) marks a step that waits on purpose: the check-in skips it until that time, " +
-            "or for 24 h after you last changed it. plan_remove {id} removes an item and its steps. " +
+            "waitUntil (an ISO date-time) or waitFor (the event or thread, in a few words) marks a step that waits on purpose: the check-in leaves it until " +
+            "that time and then has you act on it, or for 2 h after you last changed it and then has you chase it (a thread named in waitFor is nudged every 2 h); " +
+            "after 24 h a chase must become a For you todo or a new plan. plan_remove {id} removes an item and its steps. " +
             "scratch_add {text,parent?,links?} adds one note, or a note under the note parent; scratch_update {id,text?,links?} (links replaces the list, [] clears it); " +
             "scratch_remove {id} removes a note and the notes under it. " +
             "A link is {label,target}, up to 5 per bullet; target is job:<name> (a job's report), thread:<sessionId> or thread:<sessionId>@<message " +

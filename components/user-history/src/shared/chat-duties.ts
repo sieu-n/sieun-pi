@@ -177,6 +177,47 @@ export function parseDutyInput(value: unknown, id: string, now: number): Duty {
     status: "active", createdAt: now, updatedAt: now, runCount: 0 };
 }
 
+/**
+ * Adds a duty definition to a chat's duties, or updates the definition of the duty with the same name and keeps its run state, so applying it
+ * twice changes nothing. Returns what it did: "added d3", "updated d1" or "unchanged d1".
+ */
+export function upsertDuty(duties: Duty[], definition: unknown, now: number): string {
+  const parsed = parseDutyInput(definition, nextDutyId(duties), now);
+  const existing = duties.find(duty => duty.name === parsed.name);
+  if (!existing) { duties.push(parsed); return `added ${parsed.id}`; }
+  const { id: _id, status: _status, createdAt: _createdAt, updatedAt: _updatedAt, runCount: _runCount, ...fields } = parsed;
+  if (JSON.stringify({ ...existing, ...fields, updatedAt: existing.updatedAt }) === JSON.stringify(existing)) return `unchanged ${existing.id}`;
+  Object.assign(existing, fields, { updatedAt: now });
+  return `updated ${existing.id}`;
+}
+
+export const CONVERGENCE_DUTY = "Board convergence";
+/**
+ * The duty every chat gets (`Chats.chatAdded`): every hour, the board classes script (scripts/duties/board-classes.ts, run in `cwd`, the
+ * user-history component) measures the chat's board, and only a miss wakes the chat.
+ */
+export function convergenceDuty(chatId: string, cwd: string): Record<string, unknown> {
+  return {
+    name: CONVERGENCE_DUTY,
+    ownerWords: "look, eventually on it's own all threads should resolve to\nsome items in FOR YOU\nTODO all cleared, only ones blocked by FOR YOU remaining.\n" +
+      "manage stale shit, properly nudge push through, ... is you (chat agent's responsiblitity). and since your job is to make this work on it's own automagically via the right prompts logic add to duties, ..\n" +
+      "todo must be suuuper up to date lauer (i know it need active management, but the child agent must try it's best to return callback when done, main thread and check-in should try it's best to keep it up to date)\n" +
+      "it doesn't seem like it has been working at all.",
+    goal: "Every open plan step is done, moved by a live owner, or blocked only by an open For you todo. The board matches what the jobs reported.",
+    metrics: [
+      { key: "orphan_steps", label: "Open steps with no live owner, todo or wait", op: "<=", target: 0 },
+      { key: "due_late", label: "Steps due for more than one check-in", op: "<=", target: 0 },
+      { key: "stale_chase_24h", label: "Chases over 24 h with no For you todo", op: "<=", target: 0 },
+      { key: "job_end_unrecorded", label: "Steps whose job ended a check-in ago, not updated", op: "<=", target: 0 },
+    ],
+    schedule: { kind: "every", minutes: 60 },
+    precheck: { command: ["node", "--import", "tsx", "scripts/duties/board-classes.ts", "--chat", chatId], cwd, timeoutMs: 90_000 },
+    onMiss: "In this turn, act on each step the details file lists: an orphan gets a job, you, or one For you todo; a due step gets done or a new waitUntil; " +
+      "a chase over 24 h becomes a For you todo or a new plan; a step whose job ended gets that job's result on the board. If the same miss comes back, " +
+      "send the details file to the thread named realtime layer.",
+  };
+}
+
 /** The next duty id in a chat: d1, d2, ... never reused. */
 export function nextDutyId(duties: readonly Duty[]): string {
   return `d${duties.reduce((max, duty) => Math.max(max, Number(duty.id.slice(1)) || 0), 0) + 1}`;

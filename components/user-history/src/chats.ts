@@ -9,7 +9,7 @@ import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, chec
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
-import type { ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { BoardOp, ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -89,10 +89,13 @@ export const CHAT_BRIEF: readonly string[] = [
     "and note the decision in the scratchpad. Keep at most 3 open owner todos; each is one short question with 2 to 4 `choices`, your recommendation " +
     "first. Before adding one, ask yourself whether the CTO would be annoyed to be asked; if so, decide. An ask is an owner todo plus one short line in chat.",
   "Start every job at once, reply in one short message, and end the turn. Never wait inside a turn: job reports and check-ins wake you later.",
-  "A `[check-in]` message lists what changed, then every open step with its owner and the time since its last change. On a `[check-in]`, act on " +
-    "every open step, not only the one that changed: start what can start, re-brief, replace or unblock a stuck owner, do or assign the commit, " +
-    "restart or check a step waits on, and if a step truly waits on the owner make sure exactly one owner todo exists for it. Watching and reporting " +
-    "alone is not progress. A stuck owner gets at most one message. If it has not moved by the next check-in, or its last turn ended in an error, " +
+  "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open " +
+    "For you todo. A `[check-in]` lists what changed, then every open step with its class, owner and time since its last change. In that same " +
+    "turn act on every step whose class needs you: due (its waitUntil passed): act on it or set a new waitUntil; stale-chase (it waits on " +
+    "another thread or an event with no progress for 2 h): chase it now, and after 24 h make it a For you todo or replan it; orphan (no live " +
+    "owner, no todo, no wait): start a job, take it yourself, or ask the owner in For you. live, foryou and waiting need nothing. A step that " +
+    "truly waits on the owner has exactly one For you todo. When a job ends or replies, update its step in that same turn; at the next check-in " +
+    "the server writes the job's report into a step you left unchanged. Watching and reporting alone is not progress. A stuck owner gets at most one message. If it has not moved by the next check-in, or its last turn ended in an error, " +
     "replace it with a job in that check-in. A takeover you promised for the next check-in is due at that check-in: do it, do not restate it. " +
     "Never ask the owner to relay a message to another thread. Make the board match reality (statuses, notes with links), send a job only its own plan item, not the whole board, and " +
     "stay quiet unless a goal finished, something is blocked, or you need a decision (one tell_owner). `[job] <name> ended at <time> with no report` means " +
@@ -100,10 +103,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "`[job] <name> is waiting for you since <time>` or a check-in line `<step> (job <name>) waits: \"...\"` means the job waits on you or on something " +
     "you can get it (a slot, a go, an answer): answer it or get it, do not replace it. Never start a second job on a step whose job " +
     "may still run: `rlm.list_subagents()` can say completed for a job a reply woke again, so check its activity first.",
-  "Never wait on the owner for a choice you can make yourself; a step you own moves every check-in or you start a job for it.",
   "After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it " +
     "waiting on purpose; finished jobs hold memory.",
-  "A step stalled 2 h or more must change at this check-in: chase the blocker, start a job, add one owner todo, or set waitUntil/waitFor.",
   "If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it.",
   "When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
     "instead of leaving the step blocked with a note. When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot " +
@@ -286,7 +287,8 @@ export interface ChatJobOf { chat: string; root: boolean }
 
 export function jobReplyGuideline(job: ChatJobOf): string {
   const send = job.root ? `await agent_message.send(report, receiver_role="sibling", receiver_name="${job.chat}")` : `await agent_message.send(report, receiver_role="parent")`;
-  return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you are done, failed or blocked, send it one report with \`${send}\`. ` +
+  return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you finish, fail or get blocked, send your report to ${job.root ? "the chat" : "the parent"} first; ` +
+    `that is how the board updates: \`${send}\`. ` +
     "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
     "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report.";
 }
@@ -575,6 +577,8 @@ export interface CheckInSource {
   fallbacks?: FallbackRecord;
   /** Told at each wake whether any chat or any of its jobs works now; the service holds the Mac awake while it does (src/chat-awake.ts). */
   awake?: (working: boolean) => void;
+  /** Applies ops to a chat's board as the agent: the check-in's note on a step whose job ended unrecorded. Absent: no note is written. */
+  writeBoard?: (id: string, ops: BoardOp[]) => Promise<unknown>;
 }
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
@@ -602,6 +606,8 @@ export class Chats {
    */
   private readonly workingSince = new Map<string, number>();
   private readonly noticedEnd = new Map<string, { end: number; waited?: number }>();
+  /** Why each chat's due check-in was last held (logged once per reason), until its next digest runs. */
+  private readonly held = new Map<string, string>();
   /** When the server last steered each chat with a `[check-in]` (a digest or a restart), and the chats whose check-in waits to join the next. */
   private readonly steeredAt = new Map<string, number>();
   private readonly mergeWaiting = new Set<string>();
@@ -613,12 +619,14 @@ export class Chats {
   private readonly brief = chatBrief();
   /** Told when a chat's brief state changes (a reload queued, waiting or done), so the sessions stream sends the rows again. */
   briefChanged: () => void = () => {};
+  /** Told for every chat this server holds: one it creates, adopts at start or restores. The backend gives each its standing duties here. */
+  chatAdded: (id: string) => void = () => {};
   private readonly syncing = new Map<string, Promise<void>>();
   private loaded: Promise<void> | undefined;
   private readonly unobserve: () => void;
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
-  /** When the scheduler last ran each chat's check-in; a chat it has not run yet counts from the service start, as the old single tick did. */
+  /** When each chat's check-in last ran: the check-in memory's time after a restart, the service start for a chat with none. */
   private readonly lastCheckIn = new Map<string, number>();
   private readonly started: number;
   /** Restarts sent per chat since its last turn that ended well: how many, and when the last one went. */
@@ -678,8 +686,18 @@ export class Chats {
 
   async settled(): Promise<void> { while (this.syncing.size) await Promise.all([...this.syncing.values()]); }
 
+  /**
+   * The index, and each chat's last check-in from the check-in memory, so a service restart keeps every chat's schedule instead of starting it
+   * over (10-09: three restarts in 16 min kept a 15-min chat from any check-in).
+   */
   private load(): Promise<void> {
-    return this.loaded ??= this.index.ids().then(ids => { for (const id of ids) this.chatIds.add(id); });
+    return this.loaded ??= this.index.ids().then(async ids => {
+      for (const id of ids) {
+        this.chatIds.add(id);
+        const at = (await this.source.memory.get(id).catch(() => undefined))?.at;
+        if (at !== undefined && !this.lastCheckIn.has(id)) this.lastCheckIn.set(id, Math.min(at, this.now()));
+      }
+    });
   }
 
   async ids(): Promise<ReadonlySet<string>> { await this.load(); return this.chatIds; }
@@ -691,6 +709,7 @@ export class Chats {
       ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}), name, kind: "chat" });
     await this.index.add(id);
     this.chatIds.add(id);
+    this.chatAdded(id);
     if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     await this.threads.setSteeringMode(id, "all");
     await this.loads.set(id, this.build, this.brief);
@@ -713,6 +732,7 @@ export class Chats {
         this.log(`chat ${id.slice(0, 8)}: forgotten, ${summary === "missing" ? "the daemon does not list it" : "archived"}`);
         continue;
       }
+      this.chatAdded(id);
       if (this.threads.pin(id)) pinned.push(id);
       else this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     }
@@ -755,6 +775,7 @@ export class Chats {
     if (!sessionFile || !(await fileHasChatMarker(sessionFile))) return false;
     await this.index.add(id);
     this.chatIds.add(id);
+    this.chatAdded(id);
     if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     try { await this.threads.setSteeringMode(id, "all"); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }
@@ -803,7 +824,8 @@ export class Chats {
       this.queue(id, () => this.revive(id, woke));
       const next = nextCheckIn(setting, this.lastCheckIn.get(id) ?? this.started, now);
       const merged = this.mergeWaiting.has(id) && now - (this.steeredAt.get(id) ?? 0) >= CHECK_IN_MERGE_MS;
-      if ((!merged && (next === null || next > now)) || this.ownerTurn(id)) continue;
+      if (!merged && (next === null || next > now)) continue;
+      if (this.ownerTurn(id)) { this.hold(id, "an owner turn runs"); continue; }
       due.push(id);
       this.lastCheckIn.set(id, now);
       this.queue(id, async () => { await this.checkIn(id); });
@@ -1126,7 +1148,10 @@ export class Chats {
    */
   async checkIn(id: string): Promise<string[]> {
     await this.load();
-    if (!this.chatIds.has(id) || this.ownerTurn(id) || this.stall(id)) return [];
+    if (!this.chatIds.has(id)) return [];
+    if (this.ownerTurn(id)) { this.hold(id, "an owner turn runs"); return []; }
+    const stall = this.stall(id);
+    if (stall) { this.hold(id, `its last turn is stalled (${stall.error})`); return []; }
     if (this.now() - (this.steeredAt.get(id) ?? -Infinity) < CHECK_IN_MERGE_MS) { this.mergeWaiting.add(id); return []; }
     this.mergeWaiting.delete(id);
     try {
@@ -1144,9 +1169,20 @@ export class Chats {
       for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
       if (!checkInDue(facts, board, boardError)) return [];
       const name = rows.find(row => row.id === id)?.name;
-      const { memory, lines, open } = checkInDigest(await this.source.memory.get(id), facts, board, this.now(),
-        { self: name ? [id, name] : [id], ...(boardError !== undefined ? { boardError } : {}) });
+      const { memory, lines, open, nudges, notes } = checkInDigest(await this.source.memory.get(id), facts, board, this.now(),
+        { self: name ? [id, name] : [id], ...(name ? { name } : {}), rows, ...(boardError !== undefined ? { boardError } : {}) });
       await this.source.memory.set(id, memory);
+      this.held.delete(id);
+      if (notes.length && this.source.writeBoard) {
+        try { await this.source.writeBoard(id, notes.map(entry => ({ op: "plan_update", id: entry.step, note: entry.note }))); }
+        catch (error) { this.log(`chat ${id.slice(0, 8)}: check-in note on ${notes.map(entry => entry.step).join(", ")}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+      for (const nudge of nudges) {
+        try {
+          await this.threads.prompt(nudge.id, { message: nudge.message, images: [], mode: "steer" });
+          this.log(`chat ${id.slice(0, 8)}: nudged thread ${nudge.id.slice(0, 8)} about ${nudge.step}`);
+        } catch (error) { this.log(`chat ${id.slice(0, 8)}: nudge ${nudge.id.slice(0, 8)} about ${nudge.step}: ${error instanceof Error ? error.message : String(error)}`); }
+      }
       if (lines.length) {
         await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines, open), images: [], mode: "steer" });
         this.steeredAt.set(id, this.now());
@@ -1156,6 +1192,13 @@ export class Chats {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
+  }
+
+  /** Logs once per reason that a due check-in of the chat is held; the next digest clears it, so a check-in that never runs leaves a line. */
+  private hold(id: string, reason: string): void {
+    if (this.held.get(id) === reason) return;
+    this.held.set(id, reason);
+    this.log(`chat ${id.slice(0, 8)}: check-in held: ${reason}`);
   }
 
   /**

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
+import { checkInRecord, checkInSettings, clockTime, localTime } from "../src/chat-checkin.ts";
 import { fallbackRecord } from "../src/chat-fallback.ts";
 import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
   jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, type ThreadView, withChatTool } from "../src/chats.ts";
@@ -142,7 +142,6 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.ok(brief.includes("A correction changes the brief or a skill, never only a local note: send the owner's exact words to the thread named `realtime layer` with " +
     '`await agent_message.send(..., receiver_role="sibling", receiver_name="realtime layer")` for a brief or code change, or call `await refine.run()` aimed at a global skill or prompt entry. ' +
     "A local memory alone does not count."), "corrections change the brief or a skill");
-  assert.ok(CHAT_BRIEF.includes("Never wait on the owner for a choice you can make yourself; a step you own moves every check-in or you start a job for it."), "own steps move");
   assert.ok(CHAT_BRIEF.includes("If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it."),
     "talk first is a proposal with a default that starts at the next check-in");
   assert.equal(CHAT_BRIEF[1], "Call a feature live only for what you saw on the real screen, and say what you checked.", "live means seen, the item after the first");
@@ -151,9 +150,15 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /receiver_role="sibling", receiver_name="realtime layer"/);
   assert.match(brief, /await refine\.run\(\)/);
   assert.match(brief, /never have to give the same correction twice/);
-  assert.match(brief, /A `\[check-in\]` message lists what changed, then every open step with its owner/);
   assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or another thread as `thread:<id>` or its session name\) and its next action; otherwise mark it blocked with the exact thing that unblocks it\. A step that waits on someone else is still yours to chase\. Before you mark a step done, check the real state \(the commit, the live service, the report\), never an old note\./);
-  assert.match(brief, /On a `\[check-in\]`, act on every open step, not only the one that changed: start what can start, re-brief, replace or unblock a stuck owner, do or assign the commit, restart or check a step waits on, and if a step truly waits on the owner make sure exactly one owner todo exists for it\. Watching and reporting alone is not progress\./);
+  assert.ok(brief.includes("End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open " +
+    "For you todo. A `[check-in]` lists what changed, then every open step with its class, owner and time since its last change. In that same " +
+    "turn act on every step whose class needs you: due (its waitUntil passed): act on it or set a new waitUntil; stale-chase (it waits on " +
+    "another thread or an event with no progress for 2 h): chase it now, and after 24 h make it a For you todo or replan it; orphan (no live " +
+    "owner, no todo, no wait): start a job, take it yourself, or ask the owner in For you. live, foryou and waiting need nothing. A step that " +
+    "truly waits on the owner has exactly one For you todo. When a job ends or replies, update its step in that same turn; at the next check-in " +
+    "the server writes the job's report into a step you left unchanged. Watching and reporting alone is not progress."), "one end-state rule with the action per class (owner 10-09)");
+  assert.ok(!brief.includes("A step stalled 2 h or more"), "the class rule replaces the old stall bullet");
   assert.match(brief, /Make the board match reality/);
   assert.match(brief, /send a job only its own plan item, not the whole board/);
   assert.ok(brief.includes("no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides"), "replies read straight through (owner 10-08)");
@@ -176,7 +181,6 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.ok(brief.includes("Owner reply: at most 3 short sentences or 60 words, bullets included; a status answer is one line per goal. If the owner asks you to explain, " +
     "or the answer needs more, write a wiki article page (a job, or a scratch note with a link if one exists) and reply with one or two lines and the link."));
   // Stalled steps (chat health stalls_2h, 24 steps quiet 2 h or more after 7f24e91).
-  assert.ok(CHAT_BRIEF.includes("A step stalled 2 h or more must change at this check-in: chase the blocker, start a job, add one owner todo, or set waitUntil/waitFor."));
   assert.match(brief, /`\[job\] <name> ended at <time> with no report` means/);
   assert.ok(CHAT_BRIEF.includes("After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it waiting on purpose; finished jobs hold memory."));
   assert.match(brief, /`\[job\] <name> is waiting for you since <time>` or a check-in line `<step> \(job <name>\) waits: "\.\.\."` means the job waits on you/);
@@ -192,7 +196,7 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
   assert.deepEqual(jobOf({ depth: 0, marked: false, registered: "Feature X" }), { chat: "Feature X", root: true });
   assert.equal(jobOf({ depth: 0, marked: true, registered: "Feature X" }), null, "a chat is never a job");
   assert.equal(jobOf({ depth: 0, marked: false, registered: undefined }), null);
-  assert.equal(jobReplyGuideline({ chat: "chat-ab12", root: false }), 'You are a job of the chat chat-ab12. When you are done, failed or blocked, send it one report with `await agent_message.send(report, receiver_role="parent")`. ' +
+  assert.equal(jobReplyGuideline({ chat: "chat-ab12", root: false }), 'You are a job of the chat chat-ab12. When you finish, fail or get blocked, send your report to the parent first; that is how the board updates: `await agent_message.send(report, receiver_role="parent")`. ' +
     "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
     "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report.");
   assert.match(jobReplyGuideline({ chat: "Feature X", root: true }), /receiver_role="sibling", receiver_name="Feature X"/);
@@ -399,7 +403,8 @@ test("chats: the check-in tick steers only what changed, stays quiet with no cha
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Reach chats from Slack", status: "doing", children: [
-    { id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] }, { id: "p3", text: "Build", status: "blocked", children: [] }] }] };
+    { id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] },
+    { id: "p3", text: "Build", status: "blocked", waitUntil: new Date(1_000_000 + 86_400_000).toISOString(), children: [] }] }] };
   let now = 1_000_000;
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now));
   await chats.adopt();
@@ -414,11 +419,17 @@ test("chats: the check-in tick steers only what changed, stays quiet with no cha
   await chats.settled();
   now += 60_000;
   const lines = await chats.checkIn("c1");
-  assert.deepEqual(lines, ["p2 (job api-audit) finished; the board still says doing"]);
-  assert.deepEqual(calls, ["steer c1 [check-in] What changed:\n- p2 (job api-audit) finished; the board still says doing\n\nOpen steps, oldest change first:\n" +
-    '- p2 "Plan" doing, owner job api-audit (idle), last change 2 min ago\n- p3 "Build" blocked, no owner, last change 2 min ago'], "the goal p1 has open steps below it and is not listed");
+  const orphan = 'p2 "Plan" has no live owner (job api-audit idle): start a job, take it yourself, or ask the owner in For you';
+  assert.deepEqual(lines, ["p2 (job api-audit) finished; the board still says doing", orphan]);
+  assert.deepEqual(calls, [`steer c1 [check-in] What changed:\n- p2 (job api-audit) finished; the board still says doing\n- ${orphan}\n\nOpen steps, oldest change first:\n` +
+    '- p2 (orphan) "Plan" doing, owner job api-audit (idle), last change 2 min ago\n- p3 (waiting) "Build" blocked, no owner, waits until ' +
+    `${localTime(1_000_000 + 86_400_000)}, last change 2 min ago`], "the goal p1 has open steps below it and is not listed");
   calls.length = 0;
-  assert.deepEqual(await chats.checkIn("c1"), [], "reported once");
+  now += 61_000;
+  assert.deepEqual(await chats.checkIn("c1"), [`p2 "Plan": job api-audit ended at ${clockTime(1_060_000)} and the step was not updated; I put its report in the step's note: update the step now`, orphan],
+    "the finish is told once; the orphan step is told at every tick until the chat acts; a step left unchanged a tick after its job ended gets the report note");
+  calls.length = 0;
+  now += 61_000;
   board.plan = [{ ...board.plan[0]!, status: "done", children: board.plan[0]!.children.map(step => ({ ...step, status: "done" as const })) }];
   assert.deepEqual(await chats.checkIn("c1"), [], "no job at work and no open step: paused");
   assert.deepEqual(calls, []);
@@ -452,7 +463,7 @@ test("chats: a job told as waiting is not told again by the next check-in", asyn
   calls.length = 0;
   now += 120_000;
   const lines = await chats.checkIn("c1");
-  assert.ok(!lines.some(line => line.includes("api-audit")), `the notice told this end: ${JSON.stringify(lines)}`);
+  assert.ok(!lines.some(line => /api-audit\) (?:waits|finished)/.test(line)), `the notice told this end: ${JSON.stringify(lines)}`);
   chats.close();
 });
 
@@ -473,7 +484,7 @@ test("chats: a check-in less than 60 s after the last steer waits and joins the 
   await chats.checkIn("c1");
   threads.fire().children("c1", [job("k1", "api-audit", false), job("k2", "docs", true)]);
   now += 60_000;
-  assert.deepEqual(await chats.checkIn("c1"), ["p2 (job api-audit) finished; the board still says doing"]);
+  assert.deepEqual((await chats.checkIn("c1"))[0], "p2 (job api-audit) finished; the board still says doing");
   threads.fire().children("c1", [job("k1", "api-audit", false), job("k2", "docs", false)]);
   now += 10_000;
   calls.length = 0;
@@ -547,6 +558,40 @@ test("chats: the scheduler runs each chat at its own interval, skips a paused on
   assert.deepEqual(await again.tick(), ["fast"], "the slow chat waits 15 min after the restart, the resumed one 5");
   await again.settled();
   again.close();
+});
+
+test("chats: a service restart keeps each chat's check-in schedule from its memory; a held check-in leaves one log line; every chat held is told to chatAdded", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const logs: string[] = [];
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  for (const id of ["vp", "fresh"]) await index.add(id);
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
+    { id: "p7", text: "Check the load", status: "doing", job: "vp", waitUntil: new Date(1_000_000).toISOString(), children: [] }] }] };
+  let now = 10 * 60 * 60_000;
+  await checkInRecord(join(dir, "check-ins.json")).set("vp", { at: now - 20 * 60_000, jobs: {}, steps: { p7: { sig: JSON.stringify(["doing", "Check the load", "vp", new Date(1_000_000).toISOString(), ""]), at: 0 } },
+    answered: [], ready: [] });
+  const added: string[] = [];
+  const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    source(dir, { vp: board, fresh: board }, () => now), line => logs.push(line));
+  chats.chatAdded = id => added.push(id);
+  await chats.adopt();
+  assert.deepEqual(added.sort(), ["fresh", "vp"]);
+  assert.deepEqual(await chats.tick(), ["vp"], "the chat checked in 20 min before the restart is due at the first wake; the old code waited 15 min from the start");
+  await chats.settled();
+  assert.ok(calls.some(call => call.startsWith("steer vp [check-in]") && call.includes('p7 "Check the load" is due since')), calls.join(" | "));
+  now += 15 * 60_000;
+  const threads = fakeThreads(calls);
+  const held = new Chats(index, { ...threads, running: () => true, state: () => ({ messages: [{ role: "user", content: "hi", timestamp: now }] }) }, async () => ({ lifecycle: "live" }), "b1",
+    loadRecord(join(dir, "extension-loads.json")), source(dir, { vp: board, fresh: board }, () => now), line => logs.push(line));
+  now += 15 * 60_000;
+  await held.tick();
+  now += 30_000;
+  await held.tick();
+  assert.deepEqual(logs.filter(line => line.includes("check-in held")).sort(), ["chat fresh: check-in held: an owner turn runs", "chat vp: check-in held: an owner turn runs"],
+    "one line per chat and reason, not one per wake");
+  chats.close();
+  held.close();
 });
 
 test("chats: adopt pins what the daemon still lists, forgets archived and missing, keeps an unknown one while the daemon is down", async () => {

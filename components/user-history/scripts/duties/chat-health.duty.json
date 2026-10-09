@@ -52,6 +52,30 @@
       "label": "Times a chat did not behave as briefed",
       "op": "<=",
       "target": 0
+    },
+    {
+      "key": "orphan_steps",
+      "label": "Open steps with no live owner, todo or wait",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "due_late",
+      "label": "Steps due for more than one check-in",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "stale_chase_24h",
+      "label": "Chases over 24 h with no For you todo",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "job_end_unrecorded",
+      "label": "Steps whose job ended a check-in ago, not updated",
+      "op": "<=",
+      "target": 0
     }
   ],
   "schedule": {

@@ -3,7 +3,7 @@ import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
-import { dutyDue, dutyLine, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, repeatMisses, type Duty, type DutyRunRecord, type DutyTrigger, type DutyView,
+import { dutyDue, dutyLine, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, repeatMisses, upsertDuty, type Duty, type DutyRunRecord, type DutyTrigger, type DutyView,
   type PrecheckOutput } from "./shared/chat-duties.ts";
 
 /** What the runner needs from the server: which threads are chats, and a way to steer a chat. Tests pass fakes. */
@@ -85,6 +85,12 @@ export class Duties {
       .finally(() => this.running.delete(key));
     this.running.set(key, run);
     return true;
+  }
+
+  /** Gives the chat a duty definition, or updates the one with the same name (`upsertDuty`); a second call changes nothing. Returns what it did. */
+  async ensure(chatId: string, definition: unknown): Promise<string> {
+    const now = this.now();
+    return this.store.update(chatId, duties => upsertDuty(duties, definition, now));
   }
 
   /** The owner's "Run now": false when the duty is unknown or already running. Paused duties run too; the pause only stops the schedule. */
