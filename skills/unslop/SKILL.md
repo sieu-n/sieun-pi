@@ -32,8 +32,10 @@ One standard for every word sent to this user. It merges two sources:
   `plain_language_applies_to_chat_not_just_wiki`, and
   `failure_reports_name_component_error_and_own_cause`.
 
-llm-wiki pages add one page-level standard on top of this file: the page reads like a blog
-article, and a subagent writes it. That standard lives only in auto-sns-agent's
+llm-wiki pages add one page-level standard on top of this file: the page is in the 메르 style,
+and a subagent writes it. The body is numbered short lines, one plain sentence each, with a
+mermaid diagram or image for every flow, structure or comparison, short sections, and no prose
+paragraphs. That standard lives only in auto-sns-agent's
 `.agents/skills/apps/llm-wiki/references/writing.md` (read it with
 `node scripts/skills/read-skill.mjs apps/llm-wiki/references/writing.md`), and
 `apps/llm-wiki/scripts/prose-lint.mjs` enforces both files on every page write and commit.
@@ -71,8 +73,9 @@ mid-sentence colons. This section is where the hits are. Run it first.
    dropped mid-paragraph are all out (owner, 2026-10-08 and 2026-10-09). Write the plain sentence.
 4a. **Every bullet is one normal, complete sentence.** It has a subject and a verb and ends in a
    period. No fragments, no `label: value` pairs, no clauses stuffed together with semicolons or
-   comma chains. Two ideas are two bullets. Use a list only for parallel items; everything else is
-   a paragraph.
+   comma chains. Two ideas are two bullets. In chat and docs, use a list only for parallel items;
+   everything else is a paragraph. An llm-wiki page is the exception: its body is numbered
+   one-sentence lines, and a paragraph there is one or two sentences of connective text.
 
 5. **Sentence case headings.** No title case.
 6. **No decorative emoji.** Not in headings, not as status ticks in bullets.
