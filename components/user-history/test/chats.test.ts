@@ -162,6 +162,7 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /Make the board match reality/);
   assert.match(brief, /send a job only its own plan item, not the whole board/);
   assert.ok(brief.includes("no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides"), "replies read straight through (owner 10-08)");
+  assert.ok(brief.includes("Job and thread names are not internal names and are exempt: they always appear, as links. Whenever a reply starts, steers, mentions or reports on a job, name it by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough)"), "jobs are named as links (owner 10-09)");
   assert.ok(brief.includes("Write like a text message from a coworker: short, casual, a few lines, spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence."), "casual spoken style (owner 10-08)");
   assert.ok(brief.includes("Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, and translate any Korean."), "relays to agents in English with the meaning (owner 10-08)");
   assert.ok(brief.includes("When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot per variant inline in the chat message itself"), "UI picks show links and screenshots inline (owner 10-09)");
