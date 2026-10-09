@@ -184,3 +184,13 @@ test("a job link whose name has spaces is one link: [label](job:a b c), and job:
   assert.match(renderInline("Ask [secrets walkthrough](job:secrets walkthrough) first"), /data-target="job:secrets walkthrough"[^>]*><svg [^>]+><path d="[^"]+"\/><\/svg>secrets walkthrough<\/a> first/);
   assert.doesNotMatch(renderMarkdown("[a](job:x/y z)"), /data-target="job:x\/y z"/, "a slash is still no job name");
 });
+
+test("a job or thread link shows exactly one icon, also when its label is a job name (10-09: the icon showed twice)", () => {
+  const index = mentionIndex("c1", null, ["realtime layer", "VP of CI", "w20"]);
+  const icons = (html: string) => (html.match(/<svg/g) ?? []).length;
+  for (const text of ["Asked [realtime layer](job:realtime layer) to do it", "Asked [VP of CI](job:VP%20of%20CI)", "Asked [w20](job:w20)", "Asked realtime layer", "Asked [realtime layer](thread:01a0fd18-88e0-7168-8e3b-b0bc53da3610)"]) {
+    assert.equal(icons(renderMarkdown(text, "", index)), 1, text);
+    assert.equal(icons(renderInline(text, index)), 1, text);
+  }
+  assert.equal(icons(renderMarkdown("Ask realtime layer, then [VP of CI](job:VP of CI).", "", index)), 2, "two links, two icons");
+});

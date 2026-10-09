@@ -162,7 +162,12 @@ const spacedLinks: TokenizerAndRendererExtension = {
     if (!match || !/\s/.test(match[2]!)) return undefined;
     const target = normalizeArtifactTarget(match[2]!);
     if (!target) return undefined;
-    return { type: "spacedLink", raw: match[0], target, tokens: this.lexer.inlineTokens(match[1]!) };
+    // The label is link text: a job name or a bare target in it stays text, as marked does for its own links (inLink), or the link shows
+    // a second icon inside it (10-09: "[realtime layer](job:realtime layer)" drew the job icon twice).
+    const inLink = this.lexer.state.inLink;
+    this.lexer.state.inLink = true;
+    try { return { type: "spacedLink", raw: match[0], target, tokens: this.lexer.inlineTokens(match[1]!) }; }
+    finally { this.lexer.state.inLink = inLink; }
   },
   renderer(token) { return artifactButton(String(token.target), this.parser.parseInline(token.tokens ?? []), String(token.target)); },
 };
