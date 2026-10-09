@@ -153,3 +153,10 @@ test("reportExcerpt keeps the first 12 blocks whole (a fence or a table is one b
   assert.equal(reportExcerpt("Files:\n\n    apps/x.ts  the route\n    apps/y.ts  the lib\n\nDone.", 2).text, "Files:\n\n    apps/x.ts  the route\n    apps/y.ts  the lib", "an indented code block keeps its indent");
   assert.match(renderMarkdown(reportExcerpt(text, 3).text), /diagram-block/, "the cut text still renders the fence as a diagram");
 });
+
+test("an owner todo's text renders links like a bubble: a wiki: target and a web URL become clickable, plain text stays text", () => {
+  const html = renderInline("Read the article [GitHub Pro explained](wiki:sessions/2026/10/09/github-pro/report.html) or https://github.com/pricing first");
+  assert.match(html, /class="artifact-link" data-target="wiki:sessions\/2026\/10\/09\/github-pro\/report.html"/);
+  assert.match(html, /<a [^>]*href="https:\/\/github.com\/pricing"/);
+  assert.equal(renderInline("Approve the price?"), "Approve the price?");
+});

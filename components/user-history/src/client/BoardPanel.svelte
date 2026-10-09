@@ -13,6 +13,9 @@
   import IdChip from "./IdChip.svelte";
   import PlanMark from "./PlanMark.svelte";
   import { tooltip } from "./ui/tooltip.ts";
+  import { renderInline } from "./markdown.ts";
+  import { proseClick } from "./prose.ts";
+  import { parseArtifactTarget } from "../shared/artifact-link.ts";
 
   /**
    * The chat's board as cards, in this order: the plan the chat keeps (read-only here), For you (the chat's asks, each a question with its
@@ -130,6 +133,13 @@
 
   const todoLabel = (todo: OwnerTodo) => todo.from === "owner" ? "Your note" : "Ask from the chat";
   /** The step text is a span, not a button, so it wraps like the rest of the line; Enter and Space open it like a button would. */
+  /** A link in a todo (a wiki page, a file, a job, a thread, a web URL) opens like it does in a chat bubble; editing is the pencil button. */
+  function onTodoClick(event: MouseEvent): void {
+    const click = proseClick(event);
+    if (click?.kind === "artifact") { const target = parseArtifactTarget(click.target); if (target) store.openArtifact(target, id); }
+    else if (click?.kind === "mention") store.openPlan(id, click.id);
+    else if (click?.kind === "job") store.openArtifact({ kind: "job", name: click.name }, id);
+  }
   const onStepKey = (job: string) => (event: KeyboardEvent) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onjob(job); } };
 </script>
 
@@ -204,7 +214,11 @@
     {#if editing?.id === todo.id}
       <input class="field inline" bind:value={editing.text} aria-label="Edit {todo.text}" use:focusEnd onkeydown={onKey(saveEdit, () => { editing = null; })} onblur={saveEdit} />
     {:else}
-      <button type="button" class="ask-text" title="{todoLabel(todo)}. Click to edit" onclick={() => { editing = { id: todo.id, text: todo.text }; }}>{todo.text}</button>
+      <div class="ask-line">
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+        <div class="ask-text prose-inline" title={todoLabel(todo)} onclick={onTodoClick}>{@html renderInline(todo.text)}</div>
+        <button type="button" class="icon-button small edit" aria-label="Edit {todo.text}" use:tooltip={"Edit"} onclick={() => { editing = { id: todo.id, text: todo.text }; }}><Icon name="pencil" size={12} /></button>
+      </div>
     {/if}
     {#if answering?.id === todo.id}
       <input class="field inline" bind:value={answering.text} placeholder="Your reply, Enter sends" aria-label="Reply to {todo.text}" use:focusEnd
@@ -409,8 +423,13 @@
   /* `.ask`, not `.todo`: a plan row carries its status as a class, and "todo" is one of them. */
   .ask { display: flex; flex-direction: column; gap: 6px; padding: 5px 0; }
   .ask + .ask { border-top: 1px solid var(--border); padding-top: 9px; }
-  .ask-text { display: block; width: 100%; text-align: left; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; border-radius: 4px; padding: 0 3px; margin: 0 -3px; }
-  .ask-text:hover { background: var(--bg-hover); }
+  .ask-line { display: flex; align-items: flex-start; gap: 4px; }
+  .ask-text { flex: 1; min-width: 0; text-align: left; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+  .ask-text :global(a), .ask-text :global(.artifact-link) { color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em; font: inherit; padding: 0; cursor: pointer; }
+  .ask-text :global(code) { font-family: var(--mono); font-size: 0.9em; }
+  .ask-line .edit { flex: none; width: 22px; height: 22px; color: var(--text-faint); opacity: 0; transition: opacity 0.12s; }
+  .ask:hover .ask-line .edit, .ask-line .edit:focus-visible { opacity: 1; }
+  @media (hover: none) { .ask-line .edit { opacity: 1; } }
   .ask.done .ask-text { color: var(--text-muted); }
   .ask.done.mine .ask-text { color: var(--text-faint); text-decoration: line-through; }
   .field.inline { width: 100%; min-width: 0; height: 26px; font-size: 13px; padding: 0 8px; }
