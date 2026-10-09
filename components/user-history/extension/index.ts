@@ -5,7 +5,7 @@ import { agentLines } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, fileChatName, hasChatMarker, JOB_REPLY_TOOL, jobOf,
-  jobPersonaGuideline, jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool } from "../src/chats.ts";
+  jobPersonaGuideline, jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool, withReplyCap } from "../src/chats.ts";
 import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/chat-checkin.ts";
@@ -123,13 +123,16 @@ export default function historyExtension(pi: ExtensionAPI): void {
   const corrections = () => new CorrectionLedger(dataDir());
   // The owner's corrections reach a chat before every model call, read live from <data dir>/corrections.json. The context event runs for
   // every call of every turn kind (owner prompts, agent-message wakes, heartbeats, check-ins, tool-call continuations), unlike before_agent_start,
-  // which agent-message wakes skip. The ledger goes first, so the cached prefix changes only when the ledger does. Any error fails open.
+  // which agent-message wakes skip. The ledger goes first, so the cached prefix changes only when the ledger does. Each owner message carries
+  // the reply cap (withReplyCap). Any error fails open.
   pi.on("context", async event => {
     if (!marked) return undefined;
+    let messages = event.messages;
+    try { messages = withReplyCap(messages) ?? messages; } catch { /* no cap */ }
     try {
       const text = ledgerPrompt(await corrections().read());
-      return text ? { messages: [{ role: "user", content: [{ type: "text", text }], timestamp: 0 }, ...event.messages] } : undefined;
-    } catch { return undefined; }
+      return text ? { messages: [{ role: "user", content: [{ type: "text", text }], timestamp: 0 }, ...messages] } : { messages };
+    } catch { return { messages }; }
   });
   // correction_add exists only in a chat: registered at the chat's session_start, so jobs and other sessions never see it.
   let correctionTool = false;

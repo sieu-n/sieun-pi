@@ -7,7 +7,7 @@ import { BoardStore } from "../../src/chat-board-store.ts";
 import { ACT_CLASSES, ARTICLE_LINK_WINDOW_MS, type ArticleLink, articleLinkMisses, ownerFacingTexts, type StepClass, wikiArticles } from "../../src/chat-checkin.ts";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { CHECK_IN_PREFIX, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
+import { CHECK_IN_PREFIX, foldReply, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
 import { boardClasses, type ConvergenceMisses, daemonSessions, NO_MISSES } from "./board-classes.ts";
@@ -17,7 +17,6 @@ import { unlinkedJobSentence } from "./job-mentions.ts";
 const HOUR = 60 * 60_000;
 const WINDOW_MS = 24 * HOUR;
 const DEAD_AFTER_MS = 25 * 60_000;
-const LONG_WORDS = 60;
 const MAX_FLAGGED = 40;
 const EXCERPT = 300;
 const FEW = 5;
@@ -124,8 +123,8 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     if (!turn || !inWindow(turn.at)) return;
     if (turn.starter === "owner" && turn.lastText) {
       tally.ownerTurns++;
-      const count = words(turn.lastText);
-      if (count > LONG_WORDS) { tally.longTurns++; flag("long_replies", turn.lastTextAt, `${count} words: ${turn.lastText}`); }
+      // Long is what the page folds under "More": words outside code fences, a markdown link one word. A diagram or a link list the owner sees whole is not long.
+      if (foldReply(turn.lastText).folded) { tally.longTurns++; flag("long_replies", turn.lastTextAt, `${words(turn.lastText)} words: ${turn.lastText}`); }
     }
   };
   const openTurn = (starter: TurnStarter, at: number) => { closeTurn(); turn = { starter, at, lastText: "", lastTextAt: at }; };

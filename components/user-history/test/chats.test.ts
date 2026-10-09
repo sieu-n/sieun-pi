@@ -7,7 +7,7 @@ import { checkInRecord, checkInSettings, clockTime, localTime } from "../src/cha
 import type { Ledger } from "../src/chat-corrections.ts";
 import { fallbackRecord } from "../src/chat-fallback.ts";
 import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
-  jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, type ThreadView, withChatTool } from "../src/chats.ts";
+  jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, REPLY_CAP_NOTE, TELL_OWNER_LIMIT, tellOwner, type ThreadView, withChatTool, withReplyCap } from "../src/chats.ts";
 import { SessionManager } from "prime-agent";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { AttachQueue, ThreadHub } from "../src/chat-threads.ts";
@@ -118,6 +118,28 @@ test("chat marker: written once in a flagged root, read back later, never in a c
   assert.deepEqual(withChatTool(["ipython", "chat_board"], true), ["ipython", "chat_board", "tell_owner"], "a chat that loaded the pre-tell_owner build gets the new tool on reload");
   assert.deepEqual(withChatTool(["ipython", "chat_board", "bash", "tell_owner"], false), ["ipython", "bash"], "a child drops the inherited tools");
   assert.deepEqual(withChatTool(["ipython"], false), null);
+});
+
+test("the reply cap follows every message the owner typed, and no server note, wake, reply or tool result", () => {
+  const cap = { type: "text", text: REPLY_CAP_NOTE };
+  const image = { type: "image", data: "x", mimeType: "image/png" };
+  const messages = [
+    { role: "user", content: "why is CI slow?", timestamp: 1 },
+    { role: "assistant", content: [{ type: "text", text: "One runner." }], timestamp: 2 },
+    { role: "user", content: [{ type: "text", text: "[check-in] What changed:\n- nothing new" }], timestamp: 3 },
+    { role: "user", content: [{ type: "text", text: "[job] build-x finished" }], timestamp: 4 },
+    { role: "custom", customType: "agent_message", content: "[agent-message from worker]\n\nDone.", timestamp: 5 },
+    { role: "toolResult", toolCallId: "c1", content: [{ type: "text", text: "ok" }], timestamp: 6 },
+    { role: "user", content: [{ type: "text", text: "[board] Owner checked \"x\" and answered: close them" }, image], timestamp: 7 },
+  ];
+  const view = withReplyCap(messages);
+  assert.deepEqual(view?.map(message => message.content), [
+    [{ type: "text", text: "why is CI slow?" }, cap], messages[1]!.content, messages[2]!.content, messages[3]!.content, messages[4]!.content, messages[5]!.content,
+    [{ type: "text", text: "[board] Owner checked \"x\" and answered: close them" }, image, cap],
+  ]);
+  assert.equal(messages[0]!.content, "why is CI slow?", "the transcript is not changed");
+  assert.equal(withReplyCap(messages.slice(1, 6)), undefined, "no owner message, no new view");
+  assert.match(REPLY_CAP_NOTE, /at most 60 words, bullets included/);
 });
 
 test("tell_owner takes up to the limit and refuses longer or empty text", () => {

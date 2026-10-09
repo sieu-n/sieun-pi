@@ -7,7 +7,7 @@ import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { applyCorrection, type ChatRef, CORRECTION_TOOL, CorrectionLedger, correctionResult, type Ledger, LEDGER_PROMPT_LINES, ledgerPrompt, matchCorrection,
   parseCorrectionCall, parseLedger, repeatsBetween, themeOverlap, themeTokens } from "../src/chat-corrections.ts";
-import { CHAT_BRIEF, CHAT_MODE_ENTRY } from "../src/chats.ts";
+import { CHAT_BRIEF, CHAT_MODE_ENTRY, REPLY_CAP_NOTE } from "../src/chats.ts";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
 import { BACKFILL, backfill } from "../scripts/corrections-backfill.ts";
 import { unlinkedJobSentence } from "../scripts/duties/job-mentions.ts";
@@ -138,7 +138,8 @@ test("extension: the context hook puts the live ledger first in a chat's every m
     await other.run("session_start", {}, false);
     const chat = loadExtension(dataDir);
     await chat.run("session_start", {}, true);
-    assert.equal(await chat.run("context", { messages }, true), undefined, "no ledger, no message");
+    const capped = [{ ...messages[0]!, content: [...messages[0]!.content, { type: "text", text: REPLY_CAP_NOTE }] }];
+    assert.deepEqual(await chat.run("context", { messages }, true), { messages: capped }, "no ledger: only the reply cap on the owner's message");
     await new CorrectionLedger(dataDir).apply(add("one", "first theme words", "Rule one."), VP, "2026-10-09T10:00:00.000Z");
     const first = await chat.run("context", { messages }, true) as { messages: { content: { text: string }[] }[] };
     assert.equal(first.messages.length, 2);
@@ -148,7 +149,7 @@ test("extension: the context hook puts the live ledger first in a chat's every m
     assert.match(next.messages[0]!.content[0]!.text, /\n- c2 Rule two\.\n- c1 Rule one\.$/, "read live: no reload between the calls");
     assert.equal(await other.run("context", { messages }, false), undefined);
     await writeFile(join(dataDir, "corrections.json"), "not json");
-    assert.equal(await chat.run("context", { messages }, true), undefined, "a broken file fails open");
+    assert.deepEqual(await chat.run("context", { messages }, true), { messages: capped }, "a broken file fails open: no ledger, the reply cap stays");
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 

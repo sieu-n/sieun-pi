@@ -122,6 +122,29 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
   }
 });
 
+test("chat health: a reply is long when the page folds it, so a diagram or a link list the owner sees whole is not long", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  const diagram = "```mermaid\nflowchart LR\n" + Array.from({ length: 20 }, (_, index) => `  A${index}[Agent test push] --> B${index}[Prod keys]`).join("\n") + "\n```";
+  const links = Array.from({ length: 6 }, (_, index) => `- [variant ${index}](http://localhost:5180/configure?scenario=kbeauty-brand&v.watchlist=v${index})`).join("\n");
+  const chat: Line[] = [
+    user(ago(3 * HOUR), "show me why"), reply(ago(3 * HOUR) + MIN, `${wordsOf(40)}\n\n${diagram}`),
+    user(ago(2 * HOUR), "send the links"), reply(ago(2 * HOUR) + MIN, `Open each one:\n\n${links}`),
+    user(ago(1 * HOUR), "and the rest?"), reply(ago(1 * HOUR) + MIN, `${wordsOf(55)} [the page](wiki:a/b/c.html) ${wordsOf(5)}`),
+  ];
+  try {
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat"] }));
+    await writeFile(join(dir, "chat.jsonl"), chat.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.equal(health.metrics.long_replies, 33.3);
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "long_replies").map(slice => slice.excerpt.split(":")[0]), ["64 words"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("chat health: no owner turns gives long_replies 0; no OUTPUT_FILE exits nonzero with a message", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
   try {

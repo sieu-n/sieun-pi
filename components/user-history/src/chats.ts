@@ -9,7 +9,8 @@ import { activePause, ARTICLE_LINK_WINDOW_MS, articleLinks, changeCheckIn, CHECK
   endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue, writeCheckInBrief } from "./chat-checkin.ts";
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
-import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
+import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
+import { messageText } from "./shared/turns.ts";
 import type { BoardOp, ChatAgent, ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel,
   ThreadMessage } from "./shared/types.ts";
 
@@ -171,6 +172,29 @@ export function withChatTool(active: readonly string[], on: boolean): string[] |
   const missing = CHAT_TOOLS.filter(name => !active.includes(name));
   if (on) return missing.length ? [...active, ...missing] : null;
   return missing.length === CHAT_TOOLS.length ? null : active.filter(name => !CHAT_TOOLS.includes(name));
+}
+
+/**
+ * The line the context hook adds to every message the owner typed in a chat: the brief's reply cap, read next to the message it governs.
+ * Chat health long_replies, 10-09: after the cap entered the brief (4be3ceb) the median owner reply was 68 words and 65% ran past 60.
+ */
+export const REPLY_CAP_NOTE = `[reply cap] Answer this in at most ${REPLY_FOLD_WORDS} words, bullets included: the answer first, then at most 3 short lines. ` +
+  `Anything longer goes in a wiki page; reply with its link. The page folds every word past ${REPLY_FOLD_WORDS} under More.`;
+
+type ContextMessage = { role: string; content?: unknown };
+/** The model's view of a chat with REPLY_CAP_NOTE after each message the owner typed; undefined when there is none. Every owner message gets it, so the cached prefix holds. */
+export function withReplyCap<M extends ContextMessage>(messages: readonly M[]): M[] | undefined {
+  let capped = false;
+  const view = messages.map(message => {
+    const content = message.content;
+    if (message.role !== "user" || !(typeof content === "string" || Array.isArray(content))) return message;
+    const text = messageText({ content: content as string | { type: string; text?: string }[] }).trim();
+    if (!text || serverNote(text)) return message;
+    capped = true;
+    const note = { type: "text", text: REPLY_CAP_NOTE };
+    return { ...message, content: typeof content === "string" ? [{ type: "text", text: content }, note] : [...content, note] };
+  });
+  return capped ? view : undefined;
 }
 
 /** What `tell_owner` answers: the text reaches the owner as a bubble, or it is refused as too long (the feed shows a refused call as nothing). */
