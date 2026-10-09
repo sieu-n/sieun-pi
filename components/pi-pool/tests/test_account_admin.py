@@ -156,6 +156,17 @@ class LimitedSurvivesARestart(PoolFixture):
         self.assertEqual([(e["event"], e["account"], e["next"]) for e in events if e["event"] == "limited"],
                          [("limited", "c@x", "d@x")])
 
+    def test_unlimited_drops_a_false_limit_and_leaves_the_others(self):
+        until = time.time() + 3600
+        self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
+        self.assertEqual(set(self.state()["providers"]["openai-codex"]["limits"]), {self.C})
+        code, out = self.cli("unlimited", "c@x", "--provider", "openai-codex")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.startswith("c@x is no longer limited (was until "), out)
+        self.assertEqual(self.state()["providers"]["openai-codex"]["limits"], {})
+        self.assertTrue(self.rows("openai-codex")["c@x"]["usable"])
+        self.assertEqual(self.cli("unlimited", "c@x", "--provider", "openai-codex"), (0, "c@x has no limit on file"))
+
     def test_a_429_from_a_request_sent_before_the_session_moved_marks_nothing(self):
         until = time.time() + 3600
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),

@@ -3110,6 +3110,31 @@ def cmd_toggle(rest, off):
     return 0
 
 
+def cmd_unlimited(rest):
+    """`pi-pool unlimited <email|id>`: drop a `pi-pool limited` record the provider
+    never meant for this account (2026-10-09: one 429 from one Codex account was
+    re-reported after each move and marked all three Codex accounts until
+    10-14). A real limit comes back on the next 429."""
+    f = parse_flags(rest)
+    provider, positional = f["provider"], f["positional"]
+    if len(positional) != 1:
+        raise SystemExit("usage: pi-pool unlimited <email|id> [--provider <p>]")
+    accounts = load_index(provider)
+    account = find_account(accounts, positional[0])
+    if account is None:
+        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.email for a in accounts)})")
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        limit = (state["providers"][provider].get("limits") or {}).pop(account.id, None)
+        if limit is None:
+            print(f"{account.email} has no limit on file")
+            return 0
+        save_json(STATE, state)
+    log("limit_dropped", provider=provider, account=account.email, reason="unlimited")
+    print(f"{account.email} is no longer limited (was until {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(limit['until']))})")
+    return 0
+
+
 def cmd_rm(rest):
     """Remove an account the way tokenmaxxing does (`tokenmaxxing rm`, which
     deletes its credential store), then drop every pin and flag that
@@ -3460,6 +3485,9 @@ USAGE = """usage: pi-pool [command]
                                   pin yields to it until then. Prints the next account or null.
                                   --since: when the failed request was sent; a request sent before
                                   the session moved to its account marks nothing ("stale")
+  unlimited <email|id> [--provider <p>]
+                                  drop a limited record that was not this account's (a real
+                                  limit comes back on the next 429)
   refused <error text> [--provider <p>] [--session <id>]
                                   a request failed with an account-level refusal (terms not
                                   accepted, OAuth off); cool this session's account down for
@@ -3501,7 +3529,7 @@ def cli(args):
         "resets": cmd_resets, "reset": cmd_reset,
         "off": lambda rest: cmd_toggle(rest, True), "on": lambda rest: cmd_toggle(rest, False),
         "rm": cmd_rm, "login": cmd_login, "model": cmd_model, "limited": cmd_limited,
-        "refused": cmd_refused,
+        "refused": cmd_refused, "unlimited": cmd_unlimited,
     }
     if cmd in handlers:
         return handlers[cmd](rest)
