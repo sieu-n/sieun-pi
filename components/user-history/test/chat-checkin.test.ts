@@ -288,6 +288,10 @@ test("check-in digest: a step whose job ended after its last change and is still
   assert.deepEqual(recorded.notes, [], "a note the chat wrote after the end counts as the update");
   const cancelled = checkInDigest(told.memory, [{ ...ended, cancelled: true }], plan("started"), end + 16 * MIN);
   assert.deepEqual(cancelled.notes, [], "a job the chat deleted was read first");
+  const holdingPlan = board([step("p1", "Goal", "doing", { children: [step("p2", "Fix the dates", "doing", { job: "dates fix", note: "started", waitFor: "a free CI slot" })] })]);
+  const holdFirst = checkInDigest(undefined, [working], holdingPlan, start);
+  const holdTold = checkInDigest(holdFirst.memory, [ended], holdingPlan, end + MIN);
+  assert.deepEqual(checkInDigest(holdTold.memory, [ended], holdingPlan, end + 16 * MIN).notes, [], "a job idle under a step that names its wait is holding, not unrecorded (Crawler VP 10-09)");
 });
 test("check-in message: what changed, then every open step with owner and age, oldest change first, at most 30", () => {
   const now = 10 * STEP_STALE_MS;

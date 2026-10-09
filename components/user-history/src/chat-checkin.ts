@@ -377,7 +377,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     }
     if (line) classLines.push(view.cls === "stale-chase" && view.target && memo.chased !== undefined ? `${line} (I asked ${clip(view.target.name, 40)} at ${clockTime(memo.chased)})` : line);
     const owner = view.owner;
-    if (owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled) {
+    if (owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled && !holdsOnWait(item, now)) {
       const end = Math.max(owner.activityAt ?? 0, owner.lastMessage?.at ?? 0);
       if (end > Math.max(memo.at, memo.noteAt ?? 0)) {
         if (before?.ended === end && memo.noted !== end) {
@@ -427,6 +427,15 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
 
 /** A nudge the server sends to the thread a stale step waits on: the thread's session id, the step, the text. */
 export interface Nudge { id: string; step: string; message: string }
+/**
+ * A step that names its wait (a `waitFor`, or a `waitUntil` still ahead): a job that went idle under it is holding on purpose (Crawler VP 10-09:
+ * obs-p0 idled for a CI slot and was flagged "ended, unrecorded" every hour). Its end is not "unrecorded"; the wait's own class (waiting, then
+ * stale-chase after 2 h without change, or due) keeps the step moving. A bad end (error, abort, length) is still told at once.
+ */
+export function holdsOnWait(item: Pick<PlanItem, "waitFor" | "waitUntil">, now: number): boolean {
+  return item.waitFor !== undefined || Date.parse(item.waitUntil ?? "") > now;
+}
+
 /** A note the server writes on a step whose job ended unrecorded: the whole new note, the job's line first. */
 export interface StepNote { step: string; note: string }
 /** The text a thread a step waits on gets, in the owner's words: who asks, which step, how long, and how to answer. */

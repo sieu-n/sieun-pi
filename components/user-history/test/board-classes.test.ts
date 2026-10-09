@@ -91,3 +91,22 @@ test("board classes: a step whose job the server told as a bad end with no repor
   const [before] = await boardClasses({ dataDir: dir, now: NOW, sessions: () => parsed.sessions });
   assert.deepEqual([before!.misses.job_end_unrecorded, before!.misses.job_end_silent], [1, 0], "a told end before the step's last change is no silent end");
 });
+
+test("board classes: a job idle under a step that names its wait is holding, not ended unrecorded (Crawler VP 10-09: obs-p0 held a CI slot)", async () => {
+  const { dir, sessions } = await fixture();
+  const parsed = parseLooseJson(await readFile(sessions, "utf8")) as { sessions: DaemonSession[] };
+  const file = join(dir, "boards", "c1.json");
+  const board = JSON.parse(await readFile(file, "utf8")) as ChatBoard;
+  const p5 = board.plan[0]!.children.find(item => item.id === "p5")!;
+  p5.waitFor = "a free CI slot";
+  await writeFile(file, JSON.stringify(board));
+  const [chat] = await boardClasses({ dataDir: dir, now: NOW, sessions: () => parsed.sessions });
+  assert.equal(chat!.misses.job_end_unrecorded, 0);
+  delete p5.waitFor;
+  p5.waitUntil = new Date(NOW + HOUR).toISOString();
+  await writeFile(file, JSON.stringify(board));
+  assert.equal((await boardClasses({ dataDir: dir, now: NOW, sessions: () => parsed.sessions }))[0]!.misses.job_end_unrecorded, 0, "a waitUntil still ahead holds too");
+  p5.waitUntil = new Date(NOW - 2 * HOUR).toISOString();
+  await writeFile(file, JSON.stringify(board));
+  assert.equal((await boardClasses({ dataDir: dir, now: NOW, sessions: () => parsed.sessions }))[0]!.misses.job_end_unrecorded, 1, "a passed waitUntil holds nothing");
+});

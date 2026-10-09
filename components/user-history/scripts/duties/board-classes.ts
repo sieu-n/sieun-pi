@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { ACT_CLASSES, CHASE_ESCALATE_MS, checkInRecord, checkInSettings, classifyBoard, classLine, jobEndWords, jobFacts, STEP_CLASSES, type StepClass, type StepView } from "../../src/chat-checkin.ts";
+import { ACT_CLASSES, CHASE_ESCALATE_MS, checkInRecord, checkInSettings, classifyBoard, classLine, holdsOnWait, jobEndWords, jobFacts, STEP_CLASSES, type StepClass, type StepView } from "../../src/chat-checkin.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import type { ChildAgent, SessionRow } from "../../src/shared/types.ts";
 
@@ -121,7 +121,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
         }
         continue;
       }
-      const end = owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled ? owner.activityAt : undefined;
+      const end = owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled && !holdsOnWait(view.item, now) ? owner.activityAt : undefined;
       if (end !== undefined && end > view.changedAt && now - end > everyMs) {
         flag("job_end_unrecorded", view, `${view.item.id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ended ${Math.round((now - end) / 60_000)} min ago and the step has not changed since`);
       }
