@@ -29,3 +29,10 @@ Cursor's "resume the existing poteto-agent rather than spawning a sibling"
 rule maps to `await rlm.list_subagents()` plus
 `await agent_message.send(msg, receiver_role="child", receiver_name=<name>)`,
 which continues an existing child in its own context instead of starting a new one.
+
+## Fan-out
+
+- A job with 2 or more independent parts spawns one sub-job per part and coordinates them.
+- A job past 150 tool calls or 60 active minutes splits the remaining work into sub-jobs. At the `RLM_MAX_DEPTH` ceiling, it tells its parent that the work needs a split.
+- Work of 1 to 3 tool calls stays inline. Do not spawn for it.
+- To steer a live job, send it a follow-up with `agent_message.send(..., receiver_role="child", receiver_name=...)`. Do not spawn a "-2" copy of it.
