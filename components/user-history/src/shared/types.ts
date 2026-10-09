@@ -214,6 +214,10 @@ export interface SessionRow {
   agents?: ChatAgent[];
   /** Chats only: plan steps done and in total (dropped ones left out), for the sidebar line; absent with no plan. */
   plan?: { done: number; total: number };
+  /** Chats only: open For you todos on its board, the sidebar's "N for you"; absent at 0. */
+  forYou?: number;
+  /** Chats only, with `unread`: the feed rows that came after the read marker (the chat's replies and folded update runs); absent when not known. */
+  unreadCount?: number;
   /** Chats only: the check-in schedule the owner set (`<dataDir>/check-in-settings.json`). */
   checkIn?: CheckInState;
   /** Chats only: the brief it last loaded against the current one (Settings > Chats). */

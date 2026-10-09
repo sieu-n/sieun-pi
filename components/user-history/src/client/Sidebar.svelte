@@ -42,6 +42,7 @@
   /** Chats sit first, in the grouped order; a chat's own check-in heartbeat never makes it a heartbeat row. */
   const chats = $derived(shown.filter(row => row.chat).sort(compareRows));
   const chatsNeeding = $derived(chats.filter(needsResponse).length);
+  const forYouTotal = $derived(chats.reduce((sum, row) => sum + (row.forYou ?? 0), 0));
   /** Heartbeat threads sit in their own section above Needs response, in the same order as the grouped list. */
   const beats = $derived(shown.filter(row => !row.chat && tabOf(row) === "heartbeats").sort(compareRows));
   const beatsNeeding = $derived(beats.filter(needsResponse).length);
@@ -174,6 +175,7 @@
             <span class="title" class:strong={needsResponse(row) || (row.chat && row.unread)}>{row.name}</span>
             {#if row.working}<span class="run" role="img" aria-label={pulse?.text ? "Working, " + pulse.text : "Working"}><StatusMark status="working" level={pulse?.level ?? "live"} /></span>{/if}
             {#if !row.working && row.failure}<span class="dot failed" role="img" aria-label="Last turn failed"></span>
+            {:else if row.chat && row.unread && row.unreadCount}<span class="unread-count" role="img" aria-label="{row.unreadCount} unread">{row.unreadCount > 99 ? "99+" : row.unreadCount}</span>
             {:else if row.chat ? row.unread : needsResponse(row)}<span class="dot" role="img" aria-label={row.chat ? "New since you left" : "Needs response"}></span>{/if}
           </span>
           {#if ui.sidebarView === "tags"}
@@ -186,6 +188,7 @@
           {#if row.chat}
           {@const running = (row.agents ?? []).filter(agent => agent.state === "working").length}
           <span class="line sub" title={[money(row.cost), row.model ? modelShort(row.model) : ""].filter(Boolean).join(", ")}>
+            {#if row.forYou}<span class="meta foryou">{row.forYou} for you</span>{/if}
             {#if row.plan}<span class="meta date">{row.plan.done} of {row.plan.total} done</span>{/if}
             {#if running}<span class="meta working">{running} {running === 1 ? "agent" : "agents"} running</span>
             {:else if pulse && pulse.level !== "live"}<span class="meta working {pulse.level}">{pulse.text}</span>{/if}
@@ -270,7 +273,7 @@
     </div>
     <div class="list" bind:this={list}>
       {#if chats.length}
-        <div class="group-label chats-label">Chats <span class="count">{chats.length}</span>{#if chatsNeeding}<span class="dot small" role="img" aria-label="{chatsNeeding} need a response"></span>{/if}</div>
+        <div class="group-label chats-label">Chats <span class="count">{chats.length}</span>{#if forYouTotal}<span class="foryou-total" use:tooltip={"Open For you todos across all chats"}>{forYouTotal} for you</span>{/if}{#if chatsNeeding}<span class="dot small" role="img" aria-label="{chatsNeeding} need a response"></span>{/if}</div>
         {#each chats as row (row.id)}{@render threadRow(row)}{/each}
       {/if}
       {#if beats.length}
@@ -442,6 +445,9 @@
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .dot.failed { background: var(--danger); }
   .dot.small { width: 6px; height: 6px; }
+  .unread-count { flex: none; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 600; line-height: 17px; text-align: center; font-variant-numeric: tabular-nums; }
+  .meta.foryou { color: var(--warning, #b45309); font-weight: 600; }
+  .foryou-total { margin-left: auto; font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--warning, #b45309); }
   .actions { position: absolute; right: 4px; top: 3px; display: none; align-items: center; gap: 0; padding-left: 14px; border-radius: var(--radius-small);
     background: linear-gradient(to right, transparent, var(--row-bg) 12px); }
   .row:hover .actions, .row.held .actions, .actions:focus-within { display: inline-flex; }

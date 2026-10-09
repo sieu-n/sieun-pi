@@ -186,6 +186,12 @@ export function collapseUpdates(lines: readonly ChatLine[]): ChatItem[] {
   return items;
 }
 
+/** How many feed rows the owner has not read: the chat's replies and folded update runs with a message after `since` (the read marker, ms). */
+export function unreadCount(messages: readonly ThreadMessage[], since: number, nameOf: NameOf = () => undefined): number {
+  return collapseUpdates(chatLines(messages, nameOf)).filter(item =>
+    item.kind === "agent" ? item.at > since : item.kind === "updates" ? item.entries.some(entry => entry.at > since) : false).length;
+}
+
 /** A session titled by its first message can run long; the folded line clips each name to this. */
 const NAME_LIMIT = 32;
 const clipName = (name: string): string => name.length > NAME_LIMIT ? name.slice(0, NAME_LIMIT - 1).trimEnd() + "\u2026" : name;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatFeed, chatLines, collapseUpdates, foldReply, isJobReport, REPORT_MIN_CHARS, REPLY_FOLD_WORDS, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
+import { chatFeed, chatLines, collapseUpdates, foldReply, isJobReport, REPORT_MIN_CHARS, unreadCount, REPLY_FOLD_WORDS, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, CustomMessage, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -186,4 +186,14 @@ test("isJobReport: a long or structured message from one of the chat's own jobs 
   assert.equal(isJobReport(job("w31 board convergence", "Starting now."), jobs), false, "a ping stays folded");
   assert.equal(isJobReport(job("VP of CI", long), jobs), false, "a sibling thread is not this chat's job");
   assert.equal(isJobReport({ kind: "notes", id: "m2", text: long, at: 1 } as never, jobs), false);
+});
+
+test("unreadCount: the chat's replies and folded update runs after the read marker count once each; the owner's own messages and older rows do not (owner 10-09)", () => {
+  const user = (text: string, at: number): UserMessage => ({ role: "user", content: text, timestamp: at } as UserMessage);
+  const reply = (text: string, at: number): AssistantMessage => ({ role: "assistant", content: [{ type: "text", text }], timestamp: at, stopReason: "stop" } as unknown as AssistantMessage);
+  const job = (from: string, text: string, at: number): CustomMessage => ({ role: "custom", customType: "agent_message", content: `[agent-message from ${from}]\n\n${text}`, display: true, timestamp: at } as unknown as CustomMessage);
+  const messages: ThreadMessage[] = [user("go", 1), reply("on it", 2), user("and this", 10), reply("sure", 11), job("w1", "done", 12), job("w2", "done", 13), reply("both done", 14)];
+  assert.equal(unreadCount(messages, 5), 2, "a reply, then one folded run (two job messages and the chat's notes on that agent turn)");
+  assert.equal(unreadCount(messages, 14), 0);
+  assert.equal(unreadCount(messages, 0), 3);
 });
