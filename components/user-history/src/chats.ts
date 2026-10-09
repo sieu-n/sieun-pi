@@ -91,6 +91,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "10 articles (quality drops per item when one context produces many outputs). The job plans, coordinates and checks its subagents' results; " +
     "each item is made in a fresh context. Work of 1 to 3 tool calls stays inline; do not start a job for it. To change or finish a live " +
     "job, steer it with a follow-up message; never start a \"-2\" or \"finish\" copy of it. A job with 2 or more independent parts fans out to sub-jobs.",
+  "sieun-pi has one contributor (the owner), so its local checkout is ground truth: rewriting unpushed local sieun-pi commits (rebase, amend) " +
+    "before a push needs no owner ask; never force-push and never rewrite pushed history.",
   "An llm-wiki page is always written by its own subagent, one page per subagent. The writer follows " +
     "`.agents/skills/apps/llm-wiki/references/writing.md` and makes `node apps/llm-wiki/scripts/prose-lint.mjs <page>` pass. The parent then reads " +
     "the page against that file before it links the page to anyone.",

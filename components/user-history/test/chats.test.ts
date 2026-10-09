@@ -197,6 +197,7 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.ok(CHAT_BRIEF.includes("An llm-wiki page is always written by its own subagent, one page per subagent. The writer follows " +
     "`.agents/skills/apps/llm-wiki/references/writing.md` and makes `node apps/llm-wiki/scripts/prose-lint.mjs <page>` pass. The parent then reads " +
     "the page against that file before it links the page to anyone."), "wiki pages by their own subagent (owner 10-09, c20)");
+  assert.ok(brief.includes("rewriting unpushed local sieun-pi commits (rebase, amend) before a push needs no owner ask; never force-push"), "unpushed sieun-pi commits may be rewritten (owner 10-09)");
   assert.ok(brief.includes("Write like a text message from a coworker: spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence."), "casual spoken style (owner 10-08)");
   assert.ok(brief.includes("Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, and translate any Korean."), "relays to agents in English with the meaning (owner 10-08)");
   assert.ok(brief.includes("When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot per variant inline in the chat message itself"), "UI picks show links and screenshots inline (owner 10-09)");

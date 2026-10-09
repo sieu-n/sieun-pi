@@ -200,7 +200,7 @@ On macOS the main instance runs as the LaunchAgent `com.sieun.agent-chat` (`~/Li
 
 ## Mac app
 
-The chat installs as an app from Chrome or Aside with no native build: its own window and a Dock icon that survive reboots.
+The chat installs as an app from Chrome (or another Chromium browser that offers Install; Aside cannot install web apps) with no native build: its own window and a Dock icon that survive reboots.
 
 - The page links `manifest.webmanifest` (`appManifest` in `src/chat-assets.ts`): name "Prime Agent chat", `display: standalone`, and `id`, `start_url` and `scope` all `./`, so the app opens the capability URL it was installed from and one capability is one app. The icons (a white four-point spark on a violet tile) are drawn in code by `src/chat-icon.ts` on first request: 192 and 512 px on the macOS icon grid, a full-bleed 512 px maskable icon, a 180 px Apple touch icon for a phone home screen, and 32 and 64 px favicons drawn edge to edge for the tab. The page policy adds only `manifest-src 'self'`.
 - Install: open the chat on this Mac, then use the browser menu (Install page as app, or the install icon in the address bar). Remove it from the app window's menu.
