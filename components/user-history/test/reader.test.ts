@@ -175,3 +175,11 @@ test("image targets render as inline thumbnails, links stay inline text (10-09 '
   const page = renderMarkdown("Read [chat links explained](wiki:sessions/2026/10/09/1926-chat-link-rendering/article.html), then reply.");
   assert.match(page, /<a class="artifact-link" role="link" tabindex="0" data-target="wiki:sessions\/2026\/10\/09\/1926-chat-link-rendering\/article.html"[^>]*>chat links explained<\/a>, then reply\./, "a .html wiki page is still a reader link, inline before its comma");
 });
+
+test("a job link whose name has spaces is one link: [label](job:a b c), and job:a%20b reads as the same job (10-09)", () => {
+  const html = renderMarkdown("See [browser to aside](job:browser to aside) now, then [census](thread:01a11af8-0000-7000-8000-000000000000).");
+  assert.match(html, /<a class="artifact-link" role="link" tabindex="0" data-target="job:browser to aside"[^>]*>browser to aside<\/a> now, then <a class="artifact-link"[^>]*data-target="thread:01a11af8-0000-7000-8000-000000000000"/);
+  assert.match(renderMarkdown("[x](job:browser%20to%20aside)"), /data-target="job:browser to aside"/);
+  assert.match(renderInline("Ask [secrets walkthrough](job:secrets walkthrough) first"), /data-target="job:secrets walkthrough"[^>]*>secrets walkthrough<\/a> first/);
+  assert.doesNotMatch(renderMarkdown("[a](job:x/y z)"), /data-target="job:x\/y z"/, "a slash is still no job name");
+});

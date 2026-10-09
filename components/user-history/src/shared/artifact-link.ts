@@ -18,7 +18,8 @@ export const WIKI_ORIGIN = "http://localhost:5176";
 /** The llm-wiki content folder under the home folder: the server reads pages from it, and the page loads a wiki image from it through api/local-image. */
 export const WIKI_CONTENT_HOME = "~/Documents/Github/auto-sns-agent/apps/llm-wiki/content";
 const THREAD = /^([a-zA-Z0-9_-]{1,128})(?:@(\d{1,16}))?$/;
-const JOB = /^[^\s/]{1,128}$/;
+/** A job's name: up to 128 characters, no slash or line break, spaces allowed inside (job names are plain words, 10-09: "browser to aside"). */
+const JOB = /^(?=.{1,128}$)[^\s/](?:[^/\n\r\t]*[^\s/])?$/;
 /** Session ids are UUIDs; a URL whose hash is one (or the chat's port) is a pasted chat link. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CHAT_PORT = "5182";
@@ -67,6 +68,11 @@ export function normalizeArtifactTarget(input: string): string | null {
       const path = page ? wikiPath(decode(page[1]!)) : null;
       if (path) return "wiki:" + path;
     }
+  }
+  if (text.startsWith("job:") && text.includes("%")) {
+    // A markdown link cannot hold a space, so a chat may write job:browser%20to%20aside; the stored form has the space.
+    const decoded = "job:" + decode(text.slice(4));
+    if (parseArtifactTarget(decoded)) return decoded;
   }
   return parseArtifactTarget(text) ? text : null;
 }

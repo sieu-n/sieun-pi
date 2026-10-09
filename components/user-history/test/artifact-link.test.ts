@@ -6,12 +6,14 @@ const SESSION = "01a112e2-f720-75db-b51a-84cfbdbcffa0";
 
 test("artifact link: each target form parses; malformed ones are null", () => {
   assert.deepEqual(parseArtifactTarget("job:w6-report"), { kind: "job", name: "w6-report" });
+  assert.deepEqual(parseArtifactTarget("job:browser to aside"), { kind: "job", name: "browser to aside" }, "job names are plain words with spaces (10-09)");
+  for (const bad of ["job: lead", "job:trail ", "job:a\nb", "job:a/b c"]) assert.equal(parseArtifactTarget(bad), null, bad);
   assert.deepEqual(parseArtifactTarget(`thread:${SESSION}`), { kind: "thread", sessionId: SESSION });
   assert.deepEqual(parseArtifactTarget(`thread:${SESSION}@1759800000000`), { kind: "thread", sessionId: SESSION, at: 1759800000000 });
   assert.deepEqual(parseArtifactTarget("wiki:sessions/2026/10/05/a.md"), { kind: "wiki", path: "sessions/2026/10/05/a.md" });
   assert.deepEqual(parseArtifactTarget("file:/Users/me/report.md"), { kind: "file", path: "/Users/me/report.md" });
   assert.deepEqual(parseArtifactTarget("https://example.com/a?b=1"), { kind: "url", url: "https://example.com/a?b=1" });
-  for (const bad of ["", " job:a", "job:", "job:a b", "job:a/b", "thread:", "thread:a@b", "thread:a@", "thread:a b", "wiki:", "wiki:/abs", "wiki:a/../b",
+  for (const bad of ["", " job:a", "job:", "job:a/b", "thread:", "thread:a@b", "thread:a@", "thread:a b", "wiki:", "wiki:/abs", "wiki:a/../b",
     "file:relative.md", "ftp://x", "javascript:alert(1)", "mailto:a@b.c", "plain words"]) {
     assert.equal(parseArtifactTarget(bad), null, bad);
   }

@@ -313,3 +313,8 @@ test("planCounts: every non-dropped step at any depth, and the done ones, for th
   assert.deepEqual(countPlan([item("p1", "doing", [item("p2", "done"), item("p3", "dropped"), item("p4", "todo", [item("p5", "done")])]), item("p6", "done")]), { done: 3, total: 5 });
   assert.deepEqual(countPlan([]), { done: 0, total: 0 });
 });
+
+test("chat board: a scratch link to a job whose name has spaces is accepted (10-09: job:browser to aside)", () => {
+  const { board } = run(emptyBoard(T0), parseBoardOps([{ op: "scratch_add", text: "Aside migration", links: [{ label: "browser to aside", target: "job:browser to aside" }] }]));
+  assert.deepEqual(board.scratch[0]!.links, [{ label: "browser to aside", target: "job:browser to aside" }]);
+});

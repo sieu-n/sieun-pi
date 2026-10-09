@@ -148,9 +148,28 @@ const bareTargets: TokenizerAndRendererExtension = {
   },
 };
 
+/**
+ * `[label](job:name with spaces)`: CommonMark ends a link destination at a space, so a job link the brief asks for (job names are plain words)
+ * fell apart into text and a `job:<first word>` link. A link whose target is an artifact form and holds spaces is read whole here.
+ */
+const SPACED_LINK = /^\[([^\]\n]{1,300})\]\(((?:job|thread|wiki|file):[^()\n]{1,500}?)\)/;
+const spacedLinks: TokenizerAndRendererExtension = {
+  name: "spacedLink",
+  level: "inline",
+  start(src) { const index = src.search(/\[[^\]\n]{1,300}\]\((?:job|thread|wiki|file):[^()\n]* /); return index >= 0 ? index : undefined; },
+  tokenizer(src) {
+    const match = SPACED_LINK.exec(src);
+    if (!match || !/\s/.test(match[2]!)) return undefined;
+    const target = normalizeArtifactTarget(match[2]!);
+    if (!target) return undefined;
+    return { type: "spacedLink", raw: match[0], target, tokens: this.lexer.inlineTokens(match[1]!) };
+  },
+  renderer(token) { return artifactButton(String(token.target), this.parser.parseInline(token.tokens ?? []), String(token.target)); },
+};
+
 const marked = new Marked({
   gfm: true,
-  extensions: [mentions, jobMentions, bareTargets],
+  extensions: [spacedLinks, mentions, jobMentions, bareTargets],
   async: false,
   // Raw HTML is escaped, so a literal <table> in the output always came from the table renderer.
   hooks: { postprocess: html => html.replaceAll("<table>", '<div class="table-wrap"><table>').replaceAll("</table>", "</table></div>") },
