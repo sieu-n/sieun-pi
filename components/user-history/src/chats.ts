@@ -74,6 +74,11 @@ export const CHAT_BRIEF: readonly string[] = [
     "When the owner adds or changes something, forward their exact words to the job with `await agent_message.send(words, receiver_role=\"child\", receiver_name=<job>)`. " +
     "Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, " +
     "and translate any Korean.",
+  "Splitting work (owner 10-09: separate threads for different jobs, pursue subagents): one chat per workstream; when this chat holds more than 4 open " +
+    "top goals, propose a split to the owner in For you. Work of 1 to 3 tool calls stays inline; do not start a job for it. To change or finish a live " +
+    "job, steer it with a follow-up message; never start a \"-2\" or \"finish\" copy of it. A job with 2 or more independent parts fans out to sub-jobs.",
+  "Handing off: when a step moves to another thread for good, remove it from this plan (plan_remove) and add one scratch note saying who owns it now; " +
+    "that thread tracks it on its own board. A step that only waits on another thread for something this chat still needs stays, with waitFor.",
   "Board: keep it current with the `chat_board` tool; the owner sees it next to the chat. The plan is a nested checklist: top items are goals, children " +
     "are steps, each job linked by name. Update the board in the same turn you start or finish a job. A user message that starts with `[board] ` is " +
     "the owner acting on the board (choosing or answering a todo, adding a note); act on it.",
@@ -290,7 +295,9 @@ export function jobReplyGuideline(job: ChatJobOf): string {
   return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you finish, fail or get blocked, send your report to ${job.root ? "the chat" : "the parent"} first; ` +
     `that is how the board updates: \`${send}\`. ` +
     "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
-    "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report.";
+    "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report. " +
+    "Fan out to sub-jobs (`rlm.spawn`) when your work has 2 or more independent parts, or once it passes 150 tool calls or 60 active minutes; " +
+    "keep work of 1 to 3 tool calls inline.";
 }
 
 /**
