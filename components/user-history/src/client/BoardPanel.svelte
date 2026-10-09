@@ -425,7 +425,7 @@
   .ask + .ask { border-top: 1px solid var(--border); padding-top: 9px; }
   .ask-line { display: flex; align-items: flex-start; gap: 4px; }
   .ask-text { flex: 1; min-width: 0; text-align: left; font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
-  .ask-text :global(a), .ask-text :global(.artifact-link) { color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em; font: inherit; padding: 0; cursor: pointer; }
+  .ask-text :global(a), .ask-text :global(.artifact-link) { display: inline; text-align: left; color: var(--accent); text-decoration: underline; text-underline-offset: 0.15em; font: inherit; padding: 0; margin: 0; cursor: pointer; overflow-wrap: anywhere; word-break: break-word; }
   .ask-text :global(code) { font-family: var(--mono); font-size: 0.9em; }
   .ask-line .edit { flex: none; width: 22px; height: 22px; color: var(--text-faint); opacity: 0; transition: opacity 0.12s; }
   .ask:hover .ask-line .edit, .ask-line .edit:focus-visible { opacity: 1; }
