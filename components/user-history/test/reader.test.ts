@@ -67,17 +67,17 @@ test("bubbleBlocks: lone images and diagram fences become cards, inline ones sta
 });
 
 test("bare link targets in prose open like a markdown link: wiki:, file:, job:, thread:, absolute and wiki content paths, URLs and board ids", () => {
-  const button = (target: string, text: string) => `<button type="button" class="artifact-link" data-target="${target}" title="${target}">${text}</button>`;
+  const button = (target: string, text: string) => `<a class="artifact-link" role="link" tabindex="0" data-target="${target}" title="${target}">${text}</a>`;
   const owner = "Sorry. Here it is: wiki:sessions/2026/10/08/2321-github-pro-explained/article.html. Short version: $4 a month.";
   assert.equal(renderMarkdown(owner), `<p>Sorry. Here it is: ${button("wiki:sessions/2026/10/08/2321-github-pro-explained/article.html", "wiki:sessions/2026/10/08/2321-github-pro-explained/article.html")}. Short version: $4 a month.</p>\n`);
-  assert.match(renderMarkdown("log at file:/Users/me/a_b/run.log, done"), /data-target="file:\/Users\/me\/a_b\/run.log"[^>]*>file:\/Users\/me\/a_b\/run.log<\/button>, done/);
-  assert.match(renderMarkdown("see /Users/me/Documents/notes.md."), /data-target="file:\/Users\/me\/Documents\/notes.md"[^>]*>\/Users\/me\/Documents\/notes.md<\/button>\./);
-  assert.match(renderMarkdown("page apps/llm-wiki/content/sessions/a/load-audit.md."), /data-target="wiki:sessions\/a\/load-audit.md"[^>]*>apps\/llm-wiki\/content\/sessions\/a\/load-audit.md<\/button>\./);
+  assert.match(renderMarkdown("log at file:/Users/me/a_b/run.log, done"), /data-target="file:\/Users\/me\/a_b\/run.log"[^>]*>file:\/Users\/me\/a_b\/run.log<\/a>, done/);
+  assert.match(renderMarkdown("see /Users/me/Documents/notes.md."), /data-target="file:\/Users\/me\/Documents\/notes.md"[^>]*>\/Users\/me\/Documents\/notes.md<\/a>\./);
+  assert.match(renderMarkdown("page apps/llm-wiki/content/sessions/a/load-audit.md."), /data-target="wiki:sessions\/a\/load-audit.md"[^>]*>apps\/llm-wiki\/content\/sessions\/a\/load-audit.md<\/a>\./);
   assert.match(renderMarkdown("at /Users/me/Github/auto-sns-agent/apps/llm-wiki/content/sessions/a/index.html"), /data-target="wiki:sessions\/a\/index.html"/);
   assert.match(renderMarkdown("report job:readme-check and thread:abc@12"), /data-target="job:readme-check"[\s\S]*data-target="thread:abc@12"/);
-  assert.match(renderMarkdown("(wiki:sessions/a/b.html)"), /\(<button[^>]*data-target="wiki:sessions\/a\/b.html"[^>]*>wiki:sessions\/a\/b.html<\/button>\)/);
-  assert.match(renderMarkdown("**wiki:sessions/a/b.html**"), /<strong><button[^>]*data-target="wiki:sessions\/a\/b.html"/);
-  assert.match(renderMarkdown("the page is `wiki:sessions/a/b.html`"), /<button type="button" class="artifact-link" data-target="wiki:sessions\/a\/b.html"[^>]*><code>wiki:sessions\/a\/b.html<\/code><\/button>/);
+  assert.match(renderMarkdown("(wiki:sessions/a/b.html)"), /\(<a [^>]*data-target="wiki:sessions\/a\/b.html"[^>]*>wiki:sessions\/a\/b.html<\/a>\)/);
+  assert.match(renderMarkdown("**wiki:sessions/a/b.html**"), /<strong><a [^>]*data-target="wiki:sessions\/a\/b.html"/);
+  assert.match(renderMarkdown("the page is `wiki:sessions/a/b.html`"), /<a class="artifact-link" role="link" tabindex="0" data-target="wiki:sessions\/a\/b.html"[^>]*><code>wiki:sessions\/a\/b.html<\/code><\/a>/);
   assert.match(renderMarkdown("open https://example.com/a now"), /<a href="https:\/\/example.com\/a"[^>]*target="_blank"/);
   assert.match(renderInline("my note wiki:sessions/a/b.html"), /data-target="wiki:sessions\/a\/b.html"/);
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], scratch: [], plan: [{ id: "p7", text: "Ship it", status: "doing", children: [] }] };
@@ -88,7 +88,7 @@ test("bare link targets in prose open like a markdown link: wiki:, file:, job:, 
 });
 
 test("markdown links: artifact targets and chat permalinks become reader buttons, web links stay anchors", () => {
-  assert.match(renderMarkdown("[report](job:readme-check)"), /<button type="button" class="artifact-link" data-target="job:readme-check"/);
+  assert.match(renderMarkdown("[report](job:readme-check)"), /<a class="artifact-link" role="link" tabindex="0" data-target="job:readme-check"/);
   assert.match(renderMarkdown("[msg](thread:abc@12)"), /data-target="thread:abc@12"/);
   assert.match(renderMarkdown("[file](/Users/me/r.md)"), /data-target="file:\/Users\/me\/r.md"/);
   assert.match(renderMarkdown("[page](wiki:sessions/a)"), /data-target="wiki:sessions\/a"/);
@@ -125,7 +125,7 @@ test("job mentions: a whole-word job name, bare or alone in a code span, becomes
   assert.deepEqual(chips(html), ["w20-preview", "w20"], "the longest name wins where one starts another");
   assert.deepEqual(chips(renderMarkdown("api.reviewer and api-reviewer and apixreviewer", "", index)), ["api.reviewer"], "a dot in a name is literal");
   assert.deepEqual(chips(renderMarkdown("`w20 x` `w20-probe` in code\n```\nw20 block\n```\n[w20](https://x.com/w20) https://x.com/w20 xw20 w20x w20-probe w20s job:w20 (w20) w20's", "", index)), ["w20", "w20"], "code, links, words and hyphenated words keep the name");
-  assert.match(renderMarkdown("job:w20", "", index), /<button type="button" class="artifact-link" data-target="job:w20" data-preview-chat="chat-1" data-preview-job="w20"/, "a bare job: target is a link to the job's report");
+  assert.match(renderMarkdown("job:w20", "", index), /<a class="artifact-link" role="link" tabindex="0" data-target="job:w20" data-preview-chat="chat-1" data-preview-job="w20"/, "a bare job: target is a link to the job's report");
   assert.equal(renderMarkdown("`w20` ran", "", index), renderMarkdown("w20 ran", "", index), "a code span that is one job name is the same chip");
   assert.deepEqual(chips(renderMarkdown("`w20` and `w20-preview` and `api.reviewer`", "", index)), ["w20", "w20-preview", "api.reviewer"]);
   assert.match(renderMarkdown("`w20`"), /<code>w20<\/code>/, "no index: the code span stays code");
@@ -135,7 +135,7 @@ test("job mentions: a whole-word job name, bare or alone in a code span, becomes
   assert.deepEqual(chips(renderMarkdown("w20")), [], "no index, no chips");
   assert.equal(mentionIndex("chat-1", null, ["w20"])!.titles.size, 0);
   assert.notEqual(mentionIndex("chat-1", null, ["w20"])!.key, mentionIndex("chat-1", null, ["w20", "w21"])!.key, "a new job changes the cache key");
-  assert.match(renderMarkdown("[report](job:w20)", "", index), /class="artifact-link" data-target="job:w20" data-preview-chat="chat-1" data-preview-job="w20"/, "a job link carries the preview too");
+  assert.match(renderMarkdown("[report](job:w20)", "", index), /class="artifact-link" role="link" tabindex="0" data-target="job:w20" data-preview-chat="chat-1" data-preview-job="w20"/, "a job link carries the preview too");
   assert.doesNotMatch(renderMarkdown("[report](job:w20)"), /data-preview/, "no index, no preview on a link");
 });
 
@@ -156,7 +156,7 @@ test("reportExcerpt keeps the first 12 blocks whole (a fence or a table is one b
 
 test("an owner todo's text renders links like a bubble: a wiki: target and a web URL become clickable, plain text stays text", () => {
   const html = renderInline("Read the article [GitHub Pro explained](wiki:sessions/2026/10/09/github-pro/report.html) or https://github.com/pricing first");
-  assert.match(html, /class="artifact-link" data-target="wiki:sessions\/2026\/10\/09\/github-pro\/report.html"/);
+  assert.match(html, /class="artifact-link" role="link" tabindex="0" data-target="wiki:sessions\/2026\/10\/09\/github-pro\/report.html"/);
   assert.match(html, /<a [^>]*href="https:\/\/github.com\/pricing"/);
   assert.equal(renderInline("Approve the price?"), "Approve the price?");
 });
@@ -173,5 +173,5 @@ test("image targets render as inline thumbnails, links stay inline text (10-09 '
   assert.match(renderMarkdown("![variant A](/Users/me/a.png)"), /<img class="reply-image" src="api\/local-image\?path=%2FUsers%2Fme%2Fa\.png" alt="variant A"/, "![alt](abs path) stays the full image");
   assert.match(renderMarkdown("![wiki shot](wiki:sessions/x/a.png)"), /<img class="reply-image" src="api\/local-image\?path=~%2FDocuments/, "![alt](wiki:...png) loads from the wiki folder");
   const page = renderMarkdown("Read [chat links explained](wiki:sessions/2026/10/09/1926-chat-link-rendering/article.html), then reply.");
-  assert.match(page, /<button type="button" class="artifact-link" data-target="wiki:sessions\/2026\/10\/09\/1926-chat-link-rendering\/article.html"[^>]*>chat links explained<\/button>, then reply\./, "a .html wiki page is still a reader link, inline before its comma");
+  assert.match(page, /<a class="artifact-link" role="link" tabindex="0" data-target="wiki:sessions\/2026\/10\/09\/1926-chat-link-rendering\/article.html"[^>]*>chat links explained<\/a>, then reply\./, "a .html wiki page is still a reader link, inline before its comma");
 });

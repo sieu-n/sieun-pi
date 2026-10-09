@@ -111,7 +111,9 @@ const thumb = (src: string, alt: string, source: string): string =>
   `<img class="reply-image thumb" src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" title="${escapeHtml(source)}" loading="lazy" data-source="${escapeHtml(source)}">`;
 const fileName = (path: string): string => path.split("/").at(-1) || path;
 const artifactButton = (target: string, inner: string, tip: string): string =>
-  `<button type="button" class="artifact-link" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${escapeHtml(tip)}">${inner}</button>`;
+  // An <a> without href, not a <button>: a button lays out as an inline block, so a long label broke out of the sentence as its own centered
+  // block (10-09). The view's click handler opens it; Enter on a focused one clicks it (App's key handler).
+  `<a class="artifact-link" role="link" tabindex="0" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${escapeHtml(tip)}">${inner}</a>`;
 
 /**
  * A link target the chat wrote bare in prose (`wiki:<path>`, `file:/path`, `job:<name>`, `thread:<id>`, an absolute path, or a path through
@@ -250,11 +252,11 @@ export function reportExcerpt(text: string, limit = 12): { text: string; cut: bo
   return { text: blocks.slice(0, limit).map(token => token.raw.trimEnd()).join("\n\n"), cut: blocks.length > limit };
 }
 
-/** The artifact target of a clicked `.artifact-link` button in rendered markdown, or null. */
+/** The artifact target of a clicked `.artifact-link` in rendered markdown, or null. */
 export function artifactFromClick(event: MouseEvent): string | null {
   const target = event.target;
   if (!(target instanceof Element)) return null;
-  const button = target.closest<HTMLElement>("button.artifact-link");
+  const button = target.closest<HTMLElement>(".artifact-link");
   if (!button?.dataset.target) return null;
   event.preventDefault();
   return button.dataset.target;

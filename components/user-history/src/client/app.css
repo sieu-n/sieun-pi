@@ -108,8 +108,8 @@ a { color: var(--accent); }
 .prose .reply-image { display: block; max-height: 480px; margin: 0.4em 0 1em; border: 1px solid var(--border); border-radius: var(--radius); cursor: zoom-in; background: var(--bg-sunken); }
 /* An image a link or a bare path names sits in the text flow as a thumbnail; a click opens it full size. */
 .prose img.reply-image.thumb, .said img.reply-image.thumb { display: inline-block; vertical-align: middle; max-width: min(100%, 220px); max-height: 120px; margin: 2px 2px; }
-/* A link to an artifact is a button for the click handler, but it reads as text: inline, wrapping with the sentence, never a centered block. */
-button.artifact-link { display: inline; text-align: inherit; vertical-align: baseline; white-space: normal; overflow-wrap: anywhere; line-height: inherit; }
+/* A link to an artifact reads as text: inline, wrapping with the sentence, never a centered block. */
+.artifact-link { display: inline; cursor: pointer; overflow-wrap: anywhere; }
 /* Diagram blocks show their source until the sandboxed frame reports a drawing; then the switch picks one. */
 .prose .diagram-switch { display: none; gap: 2px; margin-left: auto; margin-right: 6px; }
 .prose .diagram-ready .diagram-switch { display: inline-flex; }
