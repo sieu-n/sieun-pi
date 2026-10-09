@@ -169,7 +169,9 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.ok(brief.includes("when the article is ready, put its link in your reply and in that todo (the owner's own view), never only in a board note."), "asked-for articles reach the owner's view (owner 10-09)");
   assert.ok(brief.includes("Job reports stay folded in the feed. The owner sees only what you send. When a job reports, send a short message with the outcome and a link to the report (job:<name>), plus the decision or next step if one is needed. Do not paste the report."), "job reports stay folded; the chat mentions and links them (owner 10-09)");
   assert.ok(!brief.includes("shows open in the chat feed"), "the raw-report rule is gone");
-  assert.ok(brief.includes("one chat per workstream; when this chat holds more than 4 open top goals, propose a split to the owner in For you"), "split a crowded chat (owner 10-09)");
+  assert.ok(!brief.includes("propose a split"), "a chat with many goals is fine (owner 10-09)");
+  assert.ok(brief.includes("One job = one goal: hand each goal (or step) to its own job, never one job for several goals."), "one goal per job (owner 10-09)");
+  assert.ok(brief.includes("then one subagent per article to draft it, never one context writing 10 articles") && brief.includes("The job plans, coordinates and checks its subagents' results"), "jobs fan out one subagent per output item (owner 10-09)");
   assert.ok(brief.includes("Work of 1 to 3 tool calls stays inline") && brief.includes("never start a \"-2\" or \"finish\" copy of it"), "inline small work, steer live jobs (owner 10-09)");
   assert.ok(brief.includes("when a step moves to another thread for good, remove it from this plan (plan_remove) and add one scratch note saying who owns it now"), "handed-off steps leave the plan (owner 10-09)");
   assert.ok(brief.includes("No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works."), "plain board notes (owner correction 10-08)");
@@ -204,7 +206,8 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
     "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
     "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report. " +
     "Fan out to sub-jobs (`rlm.spawn`) when your work has 2 or more independent parts, or once it passes 150 tool calls or 60 active minutes; " +
-    "keep work of 1 to 3 tool calls inline.");
+    "keep work of 1 to 3 tool calls inline. Give each unit of output (an article, a page, a report section) its own subagent, never one context " +
+    "for many; you plan, coordinate and check their results.");
   assert.match(jobReplyGuideline({ chat: "Feature X", root: true }), /receiver_role="sibling", receiver_name="Feature X"/);
   assert.match(jobReplyGuideline({ chat: "", root: false }), /^You are a job of the chat\. /);
 

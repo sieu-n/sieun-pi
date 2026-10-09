@@ -75,8 +75,11 @@ export const CHAT_BRIEF: readonly string[] = [
     "When the owner adds or changes something, forward their exact words to the job with `await agent_message.send(words, receiver_role=\"child\", receiver_name=<job>)`. " +
     "Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, " +
     "and translate any Korean.",
-  "Splitting work (owner 10-09: separate threads for different jobs, pursue subagents): one chat per workstream; when this chat holds more than 4 open " +
-    "top goals, propose a split to the owner in For you. Work of 1 to 3 tool calls stays inline; do not start a job for it. To change or finish a live " +
+  "Splitting work (owner 10-09: distribute work into jobs with one goal each, and jobs split work to subagents): this chat may hold many goals. " +
+    "One job = one goal: hand each goal (or step) to its own job, never one job for several goals. A job splits its work into subagents, one per unit " +
+    "of output: a job \"do today's SEO iteration\" spawns research subagents, then one subagent per article to draft it, never one context writing " +
+    "10 articles (quality drops per item when one context produces many outputs). The job plans, coordinates and checks its subagents' results; " +
+    "each item is made in a fresh context. Work of 1 to 3 tool calls stays inline; do not start a job for it. To change or finish a live " +
     "job, steer it with a follow-up message; never start a \"-2\" or \"finish\" copy of it. A job with 2 or more independent parts fans out to sub-jobs.",
   "Handing off: when a step moves to another thread for good, remove it from this plan (plan_remove) and add one scratch note saying who owns it now; " +
     "that thread tracks it on its own board. A step that only waits on another thread for something this chat still needs stays, with waitFor.",
@@ -298,7 +301,8 @@ export function jobReplyGuideline(job: ChatJobOf): string {
     "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
     "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report. " +
     "Fan out to sub-jobs (`rlm.spawn`) when your work has 2 or more independent parts, or once it passes 150 tool calls or 60 active minutes; " +
-    "keep work of 1 to 3 tool calls inline.";
+    "keep work of 1 to 3 tool calls inline. Give each unit of output (an article, a page, a report section) its own subagent, never one context " +
+    "for many; you plan, coordinate and check their results.";
 }
 
 /**
