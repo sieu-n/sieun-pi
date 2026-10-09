@@ -628,8 +628,15 @@ test("check-in digest with fan-out: a tick past the threshold returns a check-in
     "It checks each item in its own subagents and sends you board ops and owner lines. Apply them, and tell the owner only what matters.");
   const brief = checkInJobBrief(tick.job, { id: "c-self", name: "dev VP", board: "/data/boards/c-self.json" });
   assert.ok(brief.startsWith('# Check-in job for the chat "dev VP"\n\nYou are the check-in job of the chat "dev VP" (session id c-self)'), brief.slice(0, 200));
-  for (const part of ["/data/boards/c-self.json", "one per kind of work you find, each with a fresh context and one narrow job", "A verifier per goal",
-    "A chaser", "only the chat can message other threads", "A scope checker", "A cleaner", "Messages: one line per thread", "## Items (5)", "### Look done", "- p1 (orphan) \"Ship the landing page\" doing, no owner", "### Due", "### Orphan",
+  assert.deepEqual(tick.job.items.map(item => item.goal ?? "-"), ["p1", "p4", "p4", "p4", "-"], "each item's goal");
+  assert.ok(brief.includes("## How to work\n\nDo not check the items yourself. Start at least these subagents, each with a fresh context and only its own items: " +
+    "one verifier per goal and one per other kind. You may split further, never merge:\n" +
+    "- A verifier for the goal p1: p1\n- A verifier for the goal p4: p7 p6 p5\n- One for job ended: usage audit\n"), brief);
+  assert.ok(!brief.includes("stays inline") && !brief.includes("not a fixed list"), "no room to check inline");
+  const single = { ...tick.job, items: tick.job.items.slice(0, 1) };
+  assert.ok(checkInJobBrief(single, { id: "c-self", board: "/b.json" }).includes("## How to work\n\nThere is a single item: check it yourself against the real state"),
+    "a single item is checked inline");
+  for (const part of ["/data/boards/c-self.json", "only the chat can message other threads", "Messages: one line per thread", "## Items (5)", "### Look done", "- p1 (orphan) \"Ship the landing page\" doing, no owner", "### Due", "### Orphan",
     "### Job ended", "job usage audit ended with no report", 'receiver_role="parent"', "Board ops: one chat_board op JSON per line", "Owner lines: at most 3"]) {
     assert.ok(brief.includes(part), part);
   }

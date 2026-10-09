@@ -32,13 +32,17 @@ export interface Correction {
   /** Key words a later correction on the same thing shares. */
   theme: string[];
   repeats: CorrectionRepeat[];
+  /** The thread that owns this work: a step on its topics in any other chat is handed off to it (`handoffSteps`, the check-in's scope line). */
+  handoff?: Handoff;
 }
+/** A thread (its name or id, as `waitTarget` resolves it) and the key words of the work that belongs to it. */
+export interface Handoff { to: string; topics: string[] }
 export interface Ledger { corrections: Correction[] }
 
 /** A new correction from the owner. */
-export interface CorrectionInput { words: string; rule: string; theme: string[]; enforcedBy: Enforcement; ref: string }
-/** A fix that landed (or a retired rule): the entry's enforcement, ref and status change. */
-export interface CorrectionFix { id: string; enforcedBy?: Enforcement; ref?: string; status: CorrectionStatus }
+export interface CorrectionInput { words: string; rule: string; theme: string[]; enforcedBy: Enforcement; ref: string; handoff?: Handoff }
+/** A fix that landed (or a retired rule): the entry's enforcement, ref, status or handoff change; an absent field stays as it is. */
+export interface CorrectionFix { id: string; enforcedBy?: Enforcement; ref?: string; status?: CorrectionStatus; handoff?: Handoff }
 export type CorrectionCall = { kind: "add"; input: CorrectionInput } | { kind: "fix"; fix: CorrectionFix };
 export type CorrectionOutcome =
   | { kind: "added"; entry: Correction }
@@ -92,7 +96,8 @@ export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: Chat
     if (!entry) throw new Error(`No correction ${call.fix.id}`);
     if (call.fix.enforcedBy) entry.enforcedBy = call.fix.enforcedBy;
     if (call.fix.ref) entry.ref = call.fix.ref;
-    entry.status = call.fix.status;
+    if (call.fix.status) entry.status = call.fix.status;
+    if (call.fix.handoff) entry.handoff = call.fix.handoff;
     return { kind: "fixed", entry };
   }
   const { input } = call;
@@ -103,10 +108,11 @@ export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: Chat
     const repeat = { at, chat, words: input.words };
     earlier.repeats.push(repeat);
     earlier.status = "reopened";
+    if (input.handoff && !earlier.handoff) earlier.handoff = input.handoff;
     return { kind: "repeat", entry: earlier, repeat };
   }
   const entry: Correction = { id: nextId(ledger), at, chat, words: input.words, rule: input.rule, enforcedBy: input.enforcedBy, ref: input.ref,
-    status: "active", theme: input.theme, repeats: [] };
+    status: "active", theme: input.theme, repeats: [], ...(input.handoff ? { handoff: input.handoff } : {}) };
   ledger.corrections.push(entry);
   return { kind: "added", entry };
 }
@@ -120,20 +126,36 @@ const oneOf = <T extends string>(value: unknown, allowed: readonly T[], field: s
   return value as T;
 };
 
-/** The tool's arguments: `id` marks a fix (enforcedBy, ref, status), else a new correction (words, rule, theme, enforcedBy, ref). */
+/** A handoff argument or field: `to` a thread name or id, `topics` a list or a comma-separated string of key words or phrases. Throws on a bad one. */
+export function parseHandoff(value: unknown): Handoff {
+  const record = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+  const list = Array.isArray(record.topics) ? record.topics : typeof record.topics === "string" ? record.topics.split(",") : [];
+  const topics = [...new Set(list.filter((topic): topic is string => typeof topic === "string").map(topic => topic.replace(/\s+/g, " ").trim()).filter(Boolean))];
+  if (!topics.length) throw new Error("handoff.topics needs key words");
+  return { to: text(record.to, "handoff.to"), topics };
+}
+
+/**
+ * The tool's arguments: `id` marks a fix (enforcedBy, ref, status, handoff), else a new correction (words, rule, theme, enforcedBy, ref, and an
+ * optional handoff). A fix that names enforcedBy or ref and no status sets the entry active: the fix landed.
+ */
 export function parseCorrectionCall(value: unknown): CorrectionCall {
   const input = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+  const handoff = input.handoff === undefined ? {} : { handoff: parseHandoff(input.handoff) };
   if (input.id !== undefined) {
     const id = text(input.id, "id");
     if (!/^c\d+$/.test(id)) throw new Error(`id is a correction id like c3, not ${id}`);
-    return { kind: "fix", fix: { id, status: input.status === undefined ? "active" : oneOf(input.status, CORRECTION_STATUSES, "status"),
+    const landed = input.enforcedBy !== undefined || input.ref !== undefined;
+    const status = input.status !== undefined ? oneOf(input.status, CORRECTION_STATUSES, "status") : landed ? "active" : undefined;
+    if (!status && !landed && input.handoff === undefined) throw new Error("a fix gives enforcedBy, ref, status or handoff");
+    return { kind: "fix", fix: { id, ...(status ? { status } : {}),
       ...(input.enforcedBy === undefined ? {} : { enforcedBy: oneOf(input.enforcedBy, ENFORCEMENTS, "enforcedBy") }),
-      ...(input.ref === undefined ? {} : { ref: text(input.ref, "ref") }) } };
+      ...(input.ref === undefined ? {} : { ref: text(input.ref, "ref") }), ...handoff } };
   }
   const theme = themeTokens(Array.isArray(input.theme) ? input.theme.filter((word): word is string => typeof word === "string") : text(input.theme, "theme"));
   if (!theme.length) throw new Error("theme needs key words");
   return { kind: "add", input: { words: text(input.words, "words"), rule: text(input.rule, "rule").replace(/\s+/g, " "), theme,
-    enforcedBy: oneOf(input.enforcedBy, ENFORCEMENTS, "enforcedBy"), ref: text(input.ref, "ref") } };
+    enforcedBy: oneOf(input.enforcedBy, ENFORCEMENTS, "enforcedBy"), ref: text(input.ref, "ref"), ...handoff } };
 }
 
 /** What the tool tells the chat. A repeat says it is a sev and that the fix must be code or a test. */
@@ -142,7 +164,8 @@ export function correctionResult(outcome: CorrectionOutcome): string {
   switch (outcome.kind) {
     case "added": return `Recorded ${entry.id}: ${entry.rule} (enforced by ${entry.enforcedBy}: ${entry.ref}). Every chat reads it from its next model call.`;
     case "known": return `Already recorded as ${entry.id}: ${entry.rule}. Nothing changed.`;
-    case "fixed": return `Updated ${entry.id}: enforced by ${entry.enforcedBy} (${entry.ref}), ${entry.status}.`;
+    case "fixed": return `Updated ${entry.id}: enforced by ${entry.enforcedBy} (${entry.ref}), ${entry.status}` +
+      `${entry.handoff ? `; steps on ${entry.handoff.topics.join(", ")} go to ${entry.handoff.to}` : ""}.`;
     case "repeat": return `Repeat of ${entry.id} "${entry.rule}", first given ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}; ` +
       `the owner has now repeated it ${entry.repeats.length} time${entry.repeats.length === 1 ? "" : "s"}, so ${entry.id} is reopened. ` +
       `A repeat is a sev: the earlier fix (${entry.enforcedBy}: ${entry.ref}) did not hold. Fix it in code or a test, not only more prompt text: ` +
@@ -153,6 +176,11 @@ export function correctionResult(outcome: CorrectionOutcome): string {
 const ref = (value: unknown): ChatRef => {
   const record = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
   return { id: typeof record.id === "string" ? record.id : "", name: typeof record.name === "string" ? record.name : "" };
+};
+/** A stored handoff, dropped (not the entry) when it is bad. */
+const handoffField = (value: unknown): { handoff?: Handoff } => {
+  if (value === undefined) return {};
+  try { return { handoff: parseHandoff(value) }; } catch { return {}; }
 };
 /** Reads the file; an entry with a bad field is dropped rather than failing every chat's context. */
 export function parseLedger(value: unknown): Ledger {
@@ -169,7 +197,8 @@ export function parseLedger(value: unknown): Ledger {
       theme: Array.isArray(entry.theme) ? entry.theme.filter((word): word is string => typeof word === "string") : [],
       repeats: Array.isArray(entry.repeats) ? entry.repeats.flatMap(repeat => typeof repeat === "object" && repeat !== null &&
         typeof (repeat as CorrectionRepeat).at === "string" && typeof (repeat as CorrectionRepeat).words === "string"
-        ? [{ at: (repeat as CorrectionRepeat).at, chat: ref((repeat as CorrectionRepeat).chat), words: (repeat as CorrectionRepeat).words }] : []) : [] });
+        ? [{ at: (repeat as CorrectionRepeat).at, chat: ref((repeat as CorrectionRepeat).chat), words: (repeat as CorrectionRepeat).words }] : []) : [],
+      ...handoffField(entry.handoff) });
   }
   return { corrections };
 }
@@ -199,7 +228,8 @@ export function ledgerPrompt(ledger: Ledger): string | null {
     .sort((a, b) => Number(b.status === "reopened") - Number(a.status === "reopened") || lastAt(b).localeCompare(lastAt(a)));
   if (!live.length) return null;
   const lines = live.slice(0, LEDGER_PROMPT_LINES).map(entry =>
-    `- ${entry.id}${entry.status === "reopened" ? ` (reopened: the owner repeated it ${entry.repeats.length}x; fix it in code or a test)` : ""} ${entry.rule}`);
+    `- ${entry.id}${entry.status === "reopened" ? ` (reopened: the owner repeated it ${entry.repeats.length}x; fix it in code or a test)` : ""} ${entry.rule}` +
+    (entry.handoff ? ` Steps on ${entry.handoff.topics.join(", ")} belong to ${entry.handoff.to}.` : ""));
   const more = live.length - lines.length;
   return [`[corrections] The owner's corrections, live from the ledger. Each one holds in this chat now; the owner must never give one twice. ` +
     `Record a new correction with ${CORRECTION_TOOL} in the same turn.`, ...lines, ...(more > 0 ? [`and ${more} older ones in ${CORRECTIONS_FILE}`] : [])].join("\n");
@@ -211,3 +241,8 @@ export function repeatsBetween(ledger: Ledger, since: number, until: number): { 
     .filter(({ repeat }) => { const at = Date.parse(repeat.at); return at >= since && at <= until; })
     .sort((a, b) => a.repeat.at.localeCompare(b.repeat.at));
 }
+
+/** A handoff in force: the correction that set it (not retired), the thread that owns the work, and its topics. */
+export interface HandoffRule extends Handoff { correction: string }
+export const handoffRules = (ledger: Ledger): HandoffRule[] =>
+  ledger.corrections.flatMap(entry => entry.status !== "retired" && entry.handoff ? [{ correction: entry.id, to: entry.handoff.to, topics: entry.handoff.topics }] : []);

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInJobBrief, checkInJobMessage, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
+import { handoffRules, type Ledger } from "./chat-corrections.ts";
+import { activePause, ARTICLE_LINK_WINDOW_MS, articleLinks, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInJobBrief, checkInJobMessage, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
   endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue, writeCheckInBrief } from "./chat-checkin.ts";
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
@@ -602,6 +603,8 @@ export interface CheckInSource {
    * items to a check-in job.
    */
   checkInJobs?: { dir: string; board: (id: string) => string };
+  /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
+  corrections?: () => Promise<Ledger>;
 }
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
@@ -1217,8 +1220,14 @@ export class Chats {
       const name = rows.find(row => row.id === id)?.name;
       const previous = await this.source.memory.get(id);
       const jobs = this.source.checkInJobs;
+      const handoffs = this.source.corrections ? await this.source.corrections().then(handoffRules, error => {
+        this.log(`chat ${id.slice(0, 8)}: check-in corrections: ${error instanceof Error ? error.message : String(error)}`);
+        return [];
+      }) : [];
+      const links = articleLinks(this.messages(id) ?? [], this.now() - ARTICLE_LINK_WINDOW_MS);
       const { memory, lines, open, nudges, notes, job } = checkInDigest(previous, facts, board, this.now(),
-        { self: name ? [id, name] : [id], ...(name ? { name } : {}), rows, ...(boardError !== undefined ? { boardError } : {}), ...(jobs ? { fanOut: true } : {}) });
+        { self: name ? [id, name] : [id], ...(name ? { name } : {}), rows, ...(boardError !== undefined ? { boardError } : {}), ...(jobs ? { fanOut: true } : {}),
+          handoffs, articleLinks: links });
       let brief: string | undefined;
       if (job && jobs) {
         try { brief = await writeCheckInBrief(jobs.dir, id, job.at, checkInJobBrief(job, { id, name, board: jobs.board(id) })); }

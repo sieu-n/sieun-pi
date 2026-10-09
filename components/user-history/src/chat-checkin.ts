@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { HandoffRule } from "./chat-corrections.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
 import { CHAT_CHECK_IN_LINE } from "./shared/chat-feed.ts";
+import { messageText } from "./shared/turns.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow, type StopReason,
   type ThreadMessage } from "./shared/types.ts";
 
@@ -68,7 +70,9 @@ export interface JobMemo {
  */
 export interface StepMemo { sig: string; at: number; nh?: string; noteAt?: number; asked?: string; chased?: number; ended?: number; noted?: number;
   /** When its "looks done" line was last told (`looksDone`). */
-  done?: number }
+  done?: number;
+  /** When its scope line (`scopeLine`: it belongs to another thread) was last told. */
+  scope?: number }
 
 /** The words of a text that can tell one step from another: five letters or more, not a common word. */
 const distinctiveWords = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{4,}/g)?.filter(word => !STOP_WORDS.has(word)) ?? []);
@@ -91,6 +95,8 @@ export interface CheckInMemory {
   boardError?: Reminder; asks?: Reminder;
   /** When the server last told the chat to start a check-in job (`checkInJobDue`), kept across restarts. */
   jobAt?: number;
+  /** The (todo, article link) pairs already told (`articleLinkKey`): each once. */
+  linked?: string[];
 }
 /**
  * What the digest needs besides the facts and the board: the chat's own id and name (a step it owns says "you"; `name` signs a nudge), a board
@@ -98,7 +104,11 @@ export interface CheckInMemory {
  */
 export interface CheckInContext { self?: readonly string[]; name?: string; boardError?: string; rows?: readonly Pick<SessionRow, "id" | "name" | "archived">[];
   /** The server can write a check-in job's brief: a tick past the threshold returns `job` (`checkInJobDue`). */
-  fanOut?: boolean }
+  fanOut?: boolean;
+  /** The ledger's handoffs (`handoffRules`): an open step on another thread's topics gets the scope line. */
+  handoffs?: readonly HandoffRule[];
+  /** The `wiki:` articles the chat linked to the owner (`articleLinks`): one an explanation todo lacks gets a line. */
+  articleLinks?: readonly ArticleLink[] }
 
 const OPEN: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 const CLOSED: ReadonlySet<PlanStatus> = new Set(["done", "dropped"]);
@@ -312,14 +322,112 @@ export function looksDone(item: Pick<PlanItem, "status" | "note" | "children">):
   return said ? `its note says "${said[0]}"` : null;
 }
 
+/** The whole-word, case-insensitive pattern of a phrase: its words joined by spaces or hyphens, a plural `s` allowed at the end. */
+const phrasePattern = (phrase: string): RegExp | null => {
+  const words = phrase.toLowerCase().match(/[\p{L}\p{N}]+/gu);
+  return words ? new RegExp(`(?<![\\p{L}\\p{N}])${words.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s-]+")}s?(?![\\p{L}\\p{N}])`, "iu") : null;
+};
+/** The first topic the text names as whole words, or undefined. */
+export function matchTopic(text: string, topics: readonly string[]): string | undefined {
+  return topics.find(topic => phrasePattern(topic)?.test(text) === true);
+}
 /**
- * The kinds of work a check-in job takes over: the three ACT_CLASSES, an open item that looks done (`looksDone`), and a job that ended with no
- * report or whose step was not updated after it ended.
+ * The names a handoff's `to` goes by: each comma-separated name in it, with and without its parenthesis ("ops guy (+observability)" is also
+ * "ops guy"); session ids and `thread:` links are left to `namesTarget`.
  */
-export type CheckInKind = "due" | "stale-chase" | "orphan" | "looks done" | "job ended";
-const KIND_ORDER: readonly CheckInKind[] = ["looks done", "due", "stale-chase", "orphan", "job ended"];
+const targetNames = (to: string): string[] => {
+  const bare = to.replace(/\bthread:\S+|[0-9a-f]{8}-[0-9a-f-]{20,}/gi, " ");
+  return [...new Set([...bare.split(","), ...bare.replace(/\([^)]*\)/g, " ").split(",")].map(name => name.replace(/\s+/g, " ").trim()).filter(name => name.length >= 3))];
+};
+/** Whether a text names a handoff's target: one of its names as whole words, or a session id that `to` holds. */
+export function namesTarget(text: string | undefined, to: string): boolean {
+  if (!text) return false;
+  const ids = to.match(/[0-9a-f]{8}-[0-9a-f-]{20,}/gi) ?? [];
+  return ids.some(id => text.includes(id)) || targetNames(to).some(name => phrasePattern(name)?.test(text) === true);
+}
+/** Whether the chat (its session id and name, `self`) is a handoff's target, so the work is its own: `to` holds its id, or they share a name. */
+export function isHandoffTarget(to: string, self: readonly string[]): boolean {
+  const names = new Set(targetNames(to).map(name => name.toLowerCase()));
+  return self.some(own => own.trim() !== "" && (to.includes(own.trim()) && /^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(own.trim()) ||
+    targetNames(own).some(name => names.has(name.toLowerCase()))));
+}
+/** A step that says its work was already handed off ("handed off to ops guy", "handed over"). */
+const HANDED_OFF = /\bhanded[\s-]*(?:it\s+|this\s+)?(?:off|over)\b|\bhanded\s+to\b/i;
+
+/** An open plan item whose work belongs to another thread by a ledger handoff: the rule, and the topic its text or note names. */
+export interface ScopeMiss { item: PlanItem; rule: HandoffRule; topic: string }
+/**
+ * The open plan items of a chat (session id and name in `self`) that belong to another thread (correction c7, owner 10-09: machine management goes to
+ * ops guy and never runs in another chat): the text or note names a handoff topic as whole words. Not in the target chat itself, and not an item
+ * that says it was handed off, or whose owner or `waitFor` names the target. An item that matches covers the items under it. Board order.
+ */
+export function scopeMisses(board: ChatBoard | null, rules: readonly HandoffRule[], self: readonly string[]): ScopeMiss[] {
+  const mine = rules.filter(rule => !isHandoffTarget(rule.to, self));
+  const misses: ScopeMiss[] = [];
+  const visit = (item: PlanItem) => {
+    if (OPEN.has(item.status)) {
+      const text = `${item.text}\n${item.note ?? ""}`;
+      for (const rule of mine) {
+        const topic = matchTopic(text, rule.topics);
+        if (topic === undefined) continue;
+        if (HANDED_OFF.test(text) || namesTarget(item.waitFor, rule.to) || namesTarget(stepOwner(item), rule.to)) return;
+        misses.push({ item, rule, topic });
+        return;
+      }
+    }
+    item.children.forEach(visit);
+  };
+  (board?.plan ?? []).forEach(visit);
+  return misses;
+}
+/** The line for a step that belongs to another thread. */
+export const scopeLine = ({ item, rule }: ScopeMiss): string =>
+  `${item.id} ${quote(item.text)} belongs to ${rule.to} (correction ${rule.correction}): hand it off with a message to that thread and remove it from this plan`;
+
+/** A `wiki:` article (an .html or .md page) the chat linked in a message to the owner, and when. */
+export interface ArticleLink { at: number; link: string }
+const WIKI_ARTICLE = /\bwiki:[^\s`"'<>()[\]#]+?\.(?:html|md)(?=[\s`"'<>()[\].,;:!?*#]|$)/gi;
+/** The `wiki:` article links in a text, each once, without a `#` part. */
+export const wikiArticles = (text: string): string[] => [...new Set(text.match(WIKI_ARTICLE) ?? [])];
+/** What the owner reads of an assistant message: its text and its tell_owner texts. Empty for any other message. */
+export function ownerFacingTexts(message: ThreadMessage): string[] {
+  if (message.role !== "assistant") return [];
+  const told = message.content.flatMap(part => part.type === "toolCall" && part.name === "tell_owner" && typeof part.arguments.text === "string" ? [part.arguments.text] : []);
+  return [messageText(message), ...told].filter(text => text.trim() !== "");
+}
+/** Every article link in the chat's assistant and tell_owner messages at or after `since`, oldest first. */
+export const articleLinks = (messages: readonly ThreadMessage[], since: number): ArticleLink[] =>
+  messages.flatMap(message => message.timestamp >= since ? ownerFacingTexts(message).flatMap(text => wikiArticles(text).map(link => ({ at: message.timestamp, link }))) : []);
+/** A For you todo that asks for an explanation: its text starts with "Explanation" or says explain. */
+export const explanationTodo = (todo: Pick<OwnerTodo, "text">): boolean => /^\W*explanation\b|\bexplain/i.test(todo.text);
+/** The article links window: Chat health and the check-in look at links from the last 24 h. */
+export const ARTICLE_LINK_WINDOW_MS = 24 * 60 * 60_000;
+/** An open explanation todo and an article the chat linked since that is in no todo (correction c5: the link goes in the reply and in that todo). */
+export interface ArticleLinkMiss { todo: OwnerTodo; link: string; at: number }
+/**
+ * Each open explanation todo (`explanationTodo`) paired with each article linked at or after `since` that no todo on the board names yet: the
+ * todo must carry the link the reply gave. A link once per todo, at its last mention.
+ */
+export function articleLinkMisses(todos: readonly OwnerTodo[], links: readonly ArticleLink[], since: number): ArticleLinkMiss[] {
+  const named = todos.map(todo => `${todo.text}\n${todo.reply ?? ""}`).join("\n");
+  const latest = new Map<string, number>();
+  for (const { link, at } of links) if (at >= since && !named.includes(link)) latest.set(link, Math.max(at, latest.get(link) ?? -Infinity));
+  return todos.filter(todo => !todo.done && explanationTodo(todo)).flatMap(todo => [...latest].map(([link, at]) => ({ todo, link, at })));
+}
+export const articleLinkKey = (miss: Pick<ArticleLinkMiss, "todo" | "link">): string => `${miss.todo.id} ${miss.link}`;
+export const articleLinkLine = ({ todo, link }: Pick<ArticleLinkMiss, "todo" | "link">): string =>
+  `${todo.id} asks for an explanation and your reply linked ${link}: put the link in ${todo.id}`;
+
+/**
+ * The kinds of work a check-in job takes over: the three ACT_CLASSES, an open item that looks done (`looksDone`), an open item that belongs to
+ * another thread (`scopeMisses`), and a job that ended with no report or whose step was not updated after it ended.
+ */
+export type CheckInKind = "due" | "stale-chase" | "orphan" | "looks done" | "scope" | "job ended";
+const KIND_ORDER: readonly CheckInKind[] = ["looks done", "scope", "due", "stale-chase", "orphan", "job ended"];
 /** One item for a check-in job: its kind, its plan item id (a job name for a job with no step), the line the chat would get, and what a checker needs. */
-export interface CheckInItem { kind: CheckInKind; id: string; line: string; facts: string }
+export interface CheckInItem { kind: CheckInKind; id: string; line: string; facts: string;
+  /** The top-level plan item (the goal) the item's step is under; none for a job with no step. */
+  goal?: string }
 /** A check-in job to start: when, its name, its items, and the tick's other lines, which stay the chat's own. */
 export interface CheckInJob { at: number; name: string; items: CheckInItem[]; lines: string[] }
 /** A chat starts a check-in job at most this often. */
@@ -355,7 +463,9 @@ const reminderDue = (before: Reminder | undefined, key: string, now: number): bo
  * thread (`waitTarget`), or whose owner is a thread, nudges that thread at most every NUDGE_EVERY_MS. A step whose job (a subagent) ended or
  * replied after the step's last change or note edit, and is still not updated at the next tick, gets that job's report written into its note,
  * once per end, with a line. A board read error keeps the last steps and is reported, and so are more open owner asks than
- * BOARD_LIMITS.openAsks; each again every STEP_STALE_MS while it holds.
+ * BOARD_LIMITS.openAsks; each again every STEP_STALE_MS while it holds. An open item on another thread's work by a ledger handoff
+ * (`scopeMisses`) gives its scope line when first seen, then every STEP_STALE_MS, and is a `scope` item. An open explanation todo that lacks
+ * an article the chat linked in the last 24 h (`articleLinkMisses`) gives its line once per todo and link.
  */
 export function checkInDigest(previous: CheckInMemory | undefined, facts: readonly JobFact[], board: ChatBoard | null, now: number, context: CheckInContext = {}):
   { memory: CheckInMemory; lines: string[]; open: string[]; nudges: Nudge[]; notes: StepNote[]; job?: CheckInJob } {
@@ -364,7 +474,14 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   /** The work a check-in job would take over (`checkInJobDue`), and the lines about it. */
   const items: CheckInItem[] = [];
   const covered = new Set<string>();
-  const take = (item: CheckInItem) => { items.push(item); covered.add(item.line); };
+  /** Each plan item's goal: the top-level item it is under, or itself. */
+  const goalOf = new Map<string, string>();
+  for (const top of board?.plan ?? []) walk([top], item => goalOf.set(item.id, top.id));
+  const take = (item: CheckInItem) => {
+    const goal = goalOf.get(item.id);
+    items.push(goal !== undefined ? { ...item, goal } : item);
+    covered.add(item.line);
+  };
   for (const fact of facts) {
     const before = previous?.jobs[fact.key];
     const label = factLabel(fact);
@@ -420,6 +537,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   const notes: StepNote[] = [];
   /** The class lines go after every other line: the open-steps list repeats each class, so a fold cuts them first. */
   const classLines: string[] = [];
+  const scoped = new Map(scopeMisses(board, context.handoffs ?? [], context.self ?? []).map(miss => [miss.item.id, miss]));
   /** Visits an item after its children; returns whether it or anything below it is open. */
   const visit = (item: PlanItem): boolean => {
     let openBelow = false;
@@ -434,6 +552,16 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     const isOpen = OPEN.has(item.status);
     const done = looksDone(item);
     const noteFacts = item.note ? `; note: "${clip(item.note.replace(/\s+/g, " "), 600)}"` : "";
+    const scope = scoped.get(item.id);
+    /** A step on another thread's work, told when first seen, then again every STEP_STALE_MS while it stays. */
+    if (scope) {
+      const line = scopeLine(scope);
+      const tell = before?.scope === undefined || now - before.scope >= STEP_STALE_MS;
+      memo.scope = tell ? now : before!.scope!;
+      if (tell) classLines.push(line);
+      take({ kind: "scope", id: item.id, line, facts: `${item.id} ${quote(item.text)} ${item.status}, belongs to ${scope.rule.to} by correction ${scope.rule.correction} ` +
+        `(topic "${scope.topic}")${noteFacts}` });
+    }
     /** A "looks done" item, told when it starts or its note changes, then again every STEP_STALE_MS while it holds. */
     const tellDone = (reason: string, facts: string) => {
       const line = `${item.id} ${quote(item.text)} looks done (${reason}): verify and close it`;
@@ -501,6 +629,9 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   if (previous && answered) for (const todo of answered) if (!previous.answered.includes(todo.id)) lines.push(`owner answered ${todo.id} ${quote(todo.text)}: ${clip(todo.reply!, 120)}`);
   const ready = context.boardError ? undefined : readySteps(board);
   if (ready) for (const step of ready) if (!previous?.ready.includes(step.id)) lines.push(`${step.id} ${quote(step.text)} can start: the steps before it are done and it has no job`);
+  const linkMisses = context.boardError ? undefined : articleLinkMisses(board?.todos ?? [], context.articleLinks ?? [], now - ARTICLE_LINK_WINDOW_MS);
+  const linked = linkMisses?.map(articleLinkKey);
+  if (linkMisses) for (const miss of linkMisses) if (!previous?.linked?.includes(articleLinkKey(miss))) lines.push(articleLinkLine(miss));
   lines.push(...classLines);
   const fold = (all: readonly string[]) => all.length > MAX_LINES ? [...all.slice(0, MAX_LINES - 1), `and ${all.length - MAX_LINES + 1} more`] : [...all];
   const sorted = open.sort((a, b) => a.at - b.at).map(entry => entry.line);
@@ -511,7 +642,8 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   const job: CheckInJob | undefined = fanOut ? { at: now, name: `check-in ${clockTime(now)}`,
     items: KIND_ORDER.flatMap(kind => items.filter(item => item.kind === kind)), lines: fold(lines.filter(line => !covered.has(line))) } : undefined;
   return { memory: { at: now, jobs, steps, answered: answered?.map(todo => todo.id) ?? previous?.answered ?? [], ready: ready?.map(step => step.id) ?? previous?.ready ?? [],
-    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}), ...(jobAt !== undefined ? { jobAt } : {}) }, lines: fold(lines), open: listed, nudges, notes, ...(job ? { job } : {}) };
+    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}), ...(jobAt !== undefined ? { jobAt } : {}),
+    ...((linked ?? previous?.linked)?.length ? { linked: linked ?? previous!.linked! } : {}) }, lines: fold(lines), open: listed, nudges, notes, ...(job ? { job } : {}) };
 }
 
 /** A nudge the server sends to the thread a stale step waits on: the thread's session id, the step, the text. */
@@ -545,21 +677,41 @@ export const checkInMessage = (prefix: string, lines: readonly string[], open: r
 export interface CheckInJobChat { id: string; name?: string | undefined; board: string }
 const KIND_HEAD: Record<CheckInKind, string> = {
   "looks done": "Look done (check the real state: close, keep or reopen)",
+  scope: "Scope (the owner gave this work to another thread: hand it off and remove it from the plan)",
   due: "Due (the wait time passed)",
   "stale-chase": "Stale chase (waits on another thread or an event, no progress for 2 h)",
   orphan: "Orphan (no live owner, no todo, no wait)",
   "job ended": "Job ended (no report, or the step was not updated after it)",
 };
+/** The kinds a goal's verifier takes; each other kind gets its own subagent. */
+const VERIFIED: ReadonlySet<CheckInKind> = new Set(["looks done", "due", "orphan"]);
+/**
+ * The subagents a check-in job must start (frontend bro 10-09: the first check-in job checked its 6 items inline): one verifier per goal for its
+ * looks-done, due and orphan items, and one per other kind. None for a single item, which the job checks itself.
+ */
+export function checkInSubagents(items: readonly CheckInItem[]): string[] {
+  if (items.length < 2) return [];
+  const goals = new Map<string, string[]>();
+  for (const item of items) if (VERIFIED.has(item.kind)) goals.set(item.goal ?? item.id, [...goals.get(item.goal ?? item.id) ?? [], item.id]);
+  const verifiers = [...goals].map(([goal, ids]) => `- A verifier for the goal ${goal}: ${[...new Set(ids)].join(" ")}`);
+  const others = KIND_ORDER.filter(kind => !VERIFIED.has(kind)).flatMap(kind => {
+    const ids = items.filter(item => item.kind === kind).map(item => item.id);
+    return ids.length ? [`- One for ${kind}: ${[...new Set(ids)].join(" ")}`] : [];
+  });
+  return [...verifiers, ...others];
+}
+
 /** The Python call the chat runs to start a check-in job from its brief file. */
 export const checkInJobCall = (path: string, name: string): string => `await rlm.spawn(open(${JSON.stringify(path)}).read(), name=${JSON.stringify(name)})`;
 
 /**
  * The brief of a check-in job (owner 10-09: "it should spawn subagents to see different things, not the main agent sequentially checking"):
- * the chat only triages; this job maps the items to subagents by the kinds of work it finds, each with a fresh context, and sends the chat back
- * board ops and owner lines.
+ * the chat only triages; this job starts the subagents `checkInSubagents` names, each with a fresh context, and sends the chat back board ops
+ * and owner lines. It checks inline only a single item.
  */
 export function checkInJobBrief(job: CheckInJob, chat: CheckInJobChat): string {
   const name = chat.name ?? chat.id;
+  const subagents = checkInSubagents(job.items);
   const sections = KIND_ORDER.flatMap(kind => {
     const mine = job.items.filter(item => item.kind === kind);
     return mine.length ? [`### ${KIND_HEAD[kind]}\n${mine.map(item => `- ${item.facts}`).join("\n")}`] : [];
@@ -570,21 +722,22 @@ export function checkInJobBrief(job: CheckInJob, chat: CheckInJobChat): string {
       `Its board is the JSON file ${chat.board} (plan, scratch, todos): read it for the full notes and for the owner's rulings in the scratch notes. ` +
       "Do not edit the board and do not do the steps' own work: send the chat what to change.",
     "## How to work",
-    "Map the items below to subagents, one per kind of work you find, each with a fresh context and one narrow job. Decide the split from the items; " +
-      "these are examples, not a fixed list:\n" +
-      "- A verifier per goal: checks each step that looks done or waits against the real state (the commit on the remote, the live page, the " +
-      "production sha, the other thread's last message) and says close, keep or reopen, with what it saw.\n" +
-      "- A chaser: for each stale wait, works out what is left and writes the question with an ETA ask that the chat sends to that thread " +
-      "(only the chat can message other threads).\n" +
-      "- A scope checker: reads the scratch notes for owner rulings and flags steps the owner already gave to another thread, to hand off.\n" +
-      "- A cleaner: lists the chat's finished jobs to delete (they are your siblings in `await agent_observe.list_agents()`).\n" +
-      "Start each with `await rlm.spawn(brief, name=...)`, all at once. Each brief carries only its own items and ends with " +
-      "`await agent_message.send(report, receiver_role=\"parent\")`. End your turn and read each reply as it comes. Delete each subagent after you " +
-      "read its report. A check of 1 to 3 tool calls stays inline.",
+    subagents.length
+      ? "Do not check the items yourself. Start at least these subagents, each with a fresh context and only its own items: one verifier per goal " +
+        "and one per other kind. You may split further, never merge:\n" + subagents.join("\n") + "\n" +
+        "A verifier checks each of its steps against the real state (the commit on the remote, the live page, the production sha, the other " +
+        "thread's last message) and says close, keep or reopen, with what it saw. A stale-chase subagent works out what is left and writes the " +
+        "question with an ETA ask that the chat sends to that thread (only the chat can message other threads). A scope subagent reads the scratch " +
+        "notes for owner rulings and confirms which thread each step goes to. A job-ended subagent reads that job's last messages and says what the " +
+        "step should become.\n" +
+        "Start them all at once with `await rlm.spawn(brief, name=...)`. Each brief ends with `await agent_message.send(report, receiver_role=\"parent\")`. " +
+        "End your turn and read each reply as it comes. Delete each subagent after you read its report."
+      : "There is a single item: check it yourself against the real state (the commit on the remote, the live page, the production sha, the other " +
+        "thread's last message), with no subagent.",
     `## Items (${job.items.length})`,
     ...sections,
     "## Reply",
-    "When every subagent has reported, send the chat one message with `await agent_message.send(report, receiver_role=\"parent\")`, then end:\n" +
+    "When every check has reported, send the chat one message with `await agent_message.send(report, receiver_role=\"parent\")`, then end:\n" +
       "- Board ops: one chat_board op JSON per line, for example " +
       "`{\"op\":\"plan_update\",\"id\":\"p4\",\"status\":\"done\",\"note\":\"live on production at 4f1c2a, checked on the live page\"}`. " +
       "Close a step only on evidence you name in its note.\n" +

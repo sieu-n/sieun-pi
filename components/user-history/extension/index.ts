@@ -141,7 +141,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
       label: "Record an owner correction",
       description: "Record the owner's correction of how chats work, in the same turn the owner gives it. Every chat reads the active corrections " +
         "before each model call. A correction whose theme matches an earlier one is recorded as a repeat and reopens it: a repeat is a sev, and " +
-        "its fix must be code or a test. With id instead of words, record that the fix for that correction landed (enforcedBy, ref) or retire it.",
+        "its fix must be code or a test. With id instead of words, record that the fix for that correction landed (enforcedBy, ref), set its handoff, or retire it.",
       parameters: {
         type: "object",
         properties: {
@@ -151,7 +151,16 @@ export default function historyExtension(pi: ExtensionAPI): void {
           enforcedBy: { type: "string", enum: [...ENFORCEMENTS], description: "What holds the rule now: the chat brief, code, or a test." },
           ref: { type: "string", description: "The brief bullet, file, commit or test name that enforces it, or 'pending <job>' while the fix is in flight." },
           id: { type: "string", description: "A correction id (c3) to update instead of adding: its fix landed (enforcedBy, ref) or status retired." },
-          status: { type: "string", enum: ["active", "retired"], description: "With id: active (default) or retired." },
+          status: { type: "string", enum: ["active", "retired"], description: "With id: active (the default when enforcedBy or ref is given) or retired." },
+          handoff: {
+            type: "object", description: "When the correction gives work to one thread: that thread and the work's key words. A check-in then flags " +
+              "every open step on those words in any other chat, to hand off. With id, sets it on that correction.",
+            properties: {
+              to: { type: "string", description: "The thread's name or id, like 'ops guy (+observability)'." },
+              topics: { type: "array", items: { type: "string" }, description: "Words or short phrases a step on that work names, like 'M1 Air', 'swap'." },
+            },
+            required: ["to", "topics"],
+          },
         },
       },
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

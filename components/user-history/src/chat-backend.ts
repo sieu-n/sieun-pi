@@ -8,6 +8,7 @@ import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord, checkInSettings } from "./chat-checkin.ts";
+import { CorrectionLedger } from "./chat-corrections.ts";
 import { fallbackRecord } from "./chat-fallback.ts";
 import { claudeReader } from "./chat-pool.ts";
 import { Chats, extensionBuild, jobRegistry, loadRecord } from "./chats.ts";
@@ -87,12 +88,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const awake = new IdleSleepHold(line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: id => chats.links(id), briefs: () => chats.briefs() }, new ThreadOrigins(created));
   const boards = new BoardStore(dataDir);
+  const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry: jobRegistry(join(dataDir, "chat-jobs.json")),
       settings: checkInSettings(join(dataDir, "check-in-settings.json")), claude: claudeReader(), fallbacks: fallbackRecord(join(dataDir, "chat-fallbacks.json")),
       awake: working => awake.update(working), writeBoard: (id, ops) => boards.apply(id, ops, "agent"),
-      checkInJobs: { dir: join(dataDir, "check-in-jobs"), board: id => join(boards.dir, id + ".json") } },
+      checkInJobs: { dir: join(dataDir, "check-in-jobs"), board: id => join(boards.dir, id + ".json") }, corrections: () => corrections.read() },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),

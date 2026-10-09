@@ -22,6 +22,12 @@
       "target": 0
     },
     {
+      "key": "article_link_not_in_todo",
+      "label": "Explanation todos missing the article link the chat sent",
+      "op": "<=",
+      "target": 0
+    },
+    {
       "key": "recurred",
       "label": "Problems flagged before that came back",
       "op": "<=",
@@ -92,6 +98,12 @@
     {
       "key": "job_end_silent",
       "label": "Steps whose job stopped on an error with no report, not updated",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "scope_misses",
+      "label": "Open steps the owner gave to another thread",
       "op": "<=",
       "target": 0
     }

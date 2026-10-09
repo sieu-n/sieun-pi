@@ -56,7 +56,7 @@ test("ledger: a new correction is c1 and active; the same words again change not
   assert.equal(ledger.corrections[1]!.status, "retired");
   assert.equal(matchCorrection(ledger, themeTokens("mac load ops guy"))?.id, "c2", "a retired entry still catches a repeat");
   assert.equal(applyCorrection(ledger, add("new one", "brand fresh theme"), VP, "2026-10-09T14:00:00.000Z").entry.id, "c3");
-  assert.throws(() => applyCorrection(ledger, parseCorrectionCall({ id: "c9" }), VP, ""), /No correction c9/);
+  assert.throws(() => applyCorrection(ledger, parseCorrectionCall({ id: "c9", status: "retired" }), VP, ""), /No correction c9/);
   assert.throws(() => parseCorrectionCall({ words: "x", rule: "r", theme: "t", enforcedBy: "memory", ref: "r" }), /enforcedBy is one of brief, code, test/);
   assert.throws(() => parseCorrectionCall({ words: "x", rule: "r", theme: "the a", enforcedBy: "code", ref: "r" }), /theme needs key words/);
   assert.deepEqual(parseLedger({ corrections: [{ id: "c1" }, ...ledger.corrections] }), ledger, "a broken entry is dropped, the rest read back");

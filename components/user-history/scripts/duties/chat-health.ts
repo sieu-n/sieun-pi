@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { BoardStore } from "../../src/chat-board-store.ts";
+import { ARTICLE_LINK_WINDOW_MS, type ArticleLink, articleLinkMisses, ownerFacingTexts, wikiArticles } from "../../src/chat-checkin.ts";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHECK_IN_PREFIX, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
@@ -38,7 +40,7 @@ const STALL_TAIL = " with no board change";
 /** The status at the end of a stall row's head: a step that moved from doing to blocked is still one step. */
 const STALL_STATUS = / is \w+$/;
 
-type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
+type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; article_link_not_in_todo: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -46,7 +48,9 @@ interface Seen { signature: string; slice: FlaggedSlice }
 type Watch = Record<string, { firstAt: number; lastRun: number }>;
 interface Turn { starter: TurnStarter; at: number; lastText: string; lastTextAt: number }
 interface Failure { at: number; reason: string }
-interface Tally { metrics: Metrics; deadMs: number; ownerTurns: number; longTurns: number; flagged: Map<Kind, FlaggedSlice[]>; seen: Seen[] }
+interface Tally { metrics: Metrics; deadMs: number; ownerTurns: number; longTurns: number; flagged: Map<Kind, FlaggedSlice[]>; seen: Seen[];
+  /** The `wiki:` articles each chat linked to the owner in the window, for `article_link_not_in_todo`. */
+  links: Map<string, ArticleLink[]> }
 
 const clip = (text: string): string => text.slice(0, EXCERPT);
 const words = (text: string): number => text.match(WORD)?.length ?? 0;
@@ -150,6 +154,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
         const sentence = unlinkedJobSentence(said);
         if (sentence) { tally.metrics.unlinked_job_mentions++; flag("unlinked_job_mentions", at, sentence); }
       }
+      if (inWindow(at)) for (const said of ownerFacingTexts(message)) for (const link of wikiArticles(said)) tally.links.set(chat, [...tally.links.get(chat) ?? [], { at, link }]);
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         failure = { at, reason: message.errorMessage?.trim() || `stopReason ${message.stopReason}` };
         if (inWindow(at) && SIEUN_PI.test(failure.reason.replace(POOL_RETRY_NOTE, ""))) { tally.metrics.sieun_pi_breaks++; flag("sieun_pi_breaks", at, failure.reason, signature("error", failure.reason)); }
@@ -164,6 +169,22 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
   settleFailure(undefined);
   for (const [step, { at, row }] of stalls) { tally.metrics.stalls_2h++; flag("stalls_2h", at, row, `stalls_2h:${chat}:${step}`); }
   return true;
+}
+
+/**
+ * `article_link_not_in_todo` (correction c5: an explanation the owner asked for is an owner todo until it is done, and the article's link goes in
+ * the reply and in that todo): each open explanation todo of a chat's board, with each article the chat linked in the window that no todo names.
+ */
+async function countArticleLinks(boards: BoardStore, now: number, tally: Tally): Promise<void> {
+  const flagged: FlaggedSlice[] = [];
+  for (const [chat, links] of tally.links) {
+    const board = await boards.read(chat).catch(() => null);
+    for (const miss of articleLinkMisses(board?.todos ?? [], links, now - ARTICLE_LINK_WINDOW_MS)) {
+      flagged.push({ chat, at: miss.at, kind: "article_link_not_in_todo", excerpt: clip(`${miss.todo.id} "${miss.todo.text}" lacks ${miss.link}, linked to the owner at ${new Date(miss.at).toISOString()}`) });
+    }
+  }
+  tally.metrics.article_link_not_in_todo = flagged.length;
+  tally.flagged.set("article_link_not_in_todo", flagged);
 }
 
 /** Round one decimal. */
@@ -199,7 +220,8 @@ function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
   const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
   const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("off_brief", 2 * FEW),
-    newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("unlinked_job_mentions", FEW)];
+    newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW),
+    newest("article_link_not_in_todo", FEW), newest("unlinked_job_mentions", FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
     for (const queue of queues) { const next = queue.shift(); if (next && picked.length < MAX_FLAGGED) picked.push(next); }
   }
@@ -215,10 +237,11 @@ async function main(): Promise<void> {
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
-  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0,
+  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, article_link_not_in_todo: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0,
     ...NO_MISSES },
-    deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
+    deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [], links: new Map() };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
+  await countArticleLinks(new BoardStore(dataDir), now, tally);
   tally.metrics.dead_hours = tenth(tally.deadMs / HOUR);
   const repeats = repeatsBetween(await new CorrectionLedger(dataDir).read(), now - WINDOW_MS, now);
   tally.metrics.repeat_corrections = repeats.length;

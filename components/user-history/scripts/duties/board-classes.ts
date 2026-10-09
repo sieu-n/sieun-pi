@@ -4,7 +4,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { ACT_CLASSES, CHASE_ESCALATE_MS, checkInRecord, checkInSettings, classifyBoard, classLine, holdsOnWait, jobEndWords, jobFacts, STEP_CLASSES, type StepClass, type StepView } from "../../src/chat-checkin.ts";
+import { ACT_CLASSES, CHASE_ESCALATE_MS, checkInRecord, checkInSettings, classifyBoard, classLine, holdsOnWait, jobEndWords, jobFacts, scopeLine, scopeMisses, STEP_CLASSES, type StepClass,
+  type StepView } from "../../src/chat-checkin.ts";
+import { CorrectionLedger, handoffRules } from "../../src/chat-corrections.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import type { ChildAgent, SessionRow } from "../../src/shared/types.ts";
 
@@ -24,10 +26,11 @@ export interface DaemonSession {
 /**
  * The duty's targets, each at most 0. `job_end_silent` is a step whose job ended badly (a provider error, an abort, a stop mid-tool, the length
  * limit) with no report, which the server told the chat at once (the check-in record's told ends), not updated a check-in later; such a step
- * is counted there and not again in `job_end_unrecorded`.
+ * is counted there and not again in `job_end_unrecorded`. `scope_misses` is an open step on another thread's work by a ledger handoff
+ * (`scopeMisses`, correction c7).
  */
-export interface ConvergenceMisses { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number; job_end_silent: number }
-export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0 };
+export interface ConvergenceMisses { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number; job_end_silent: number; scope_misses: number }
+export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 };
 export interface ChatClasses {
   id: string; name: string; everyMs: number; open: number; counts: Record<StepClass, number>; misses: ConvergenceMisses;
   steps: StepView[]; flagged: FlaggedSlice[];
@@ -80,7 +83,8 @@ export function chatChildren(sessions: readonly DaemonSession[], chatId: string)
 /**
  * The classes of every chat in `<dataDir>/chats.json` (or only `chats`). The duty's misses: orphan steps; due steps whose waitUntil passed more
  * than one tick ago; stale chases of 24 h or more (a step with an open For you todo is `foryou`, never a chase); and steps whose job ended more
- * than one tick ago, after the step last changed: `job_end_silent` when the server told that end as a bad one, else `job_end_unrecorded`.
+ * than one tick ago, after the step last changed: `job_end_silent` when the server told that end as a bad one, else `job_end_unrecorded`; and
+ * open steps on another thread's work (`scope_misses`).
  */
 export async function boardClasses(options: { dataDir: string; now: number; sessions: () => DaemonSession[]; chats?: readonly string[] }): Promise<ChatClasses[]> {
   const { dataDir, now } = options;
@@ -89,6 +93,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
   const boards = new BoardStore(dataDir);
   const memory = checkInRecord(join(dataDir, "check-ins.json"));
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
+  const handoffs = handoffRules(await new CorrectionLedger(dataDir).read());
   let sessions: DaemonSession[] | undefined;
   const result: ChatClasses[] = [];
   for (const id of ids) {
@@ -126,6 +131,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
         flag("job_end_unrecorded", view, `${view.item.id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ended ${Math.round((now - end) / 60_000)} min ago and the step has not changed since`);
       }
     }
+    for (const miss of scopeMisses(board, handoffs, [id, name])) { misses.scope_misses++; flagged.push({ chat: id, at: now, kind: "scope_misses", excerpt: scopeLine(miss) }); }
     result.push({ id, name, everyMs, open: steps.length, counts, misses, steps, flagged });
   }
   return result;
@@ -140,6 +146,7 @@ export function classesReport(chats: readonly ChatClasses[], now: number): strin
     const misses = Object.entries(chat.misses).map(([key, value]) => `${key} ${value}`).join(", ");
     lines.push(`${chat.id.slice(0, 8)} ${chat.name}: ${STEP_CLASSES.map(cls => `${cls} ${chat.counts[cls]}`).join(", ")} (open ${chat.open}); duty: ${misses}`);
     for (const view of chat.steps) if (ACT_CLASSES.has(view.cls)) lines.push(`  ${view.cls}: ${classLine(view, now)}`);
+    for (const slice of chat.flagged) if (slice.kind === "scope_misses") lines.push(`  scope: ${slice.excerpt}`);
   }
   lines.push("", `All chats: ${STEP_CLASSES.map(cls => `${cls} ${total[cls]}`).join(", ")}`);
   return lines.join("\n") + "\n";

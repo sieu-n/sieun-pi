@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { checkInRecord, checkInSettings, clockTime, localTime } from "../src/chat-checkin.ts";
+import type { Ledger } from "../src/chat-corrections.ts";
 import { fallbackRecord } from "../src/chat-fallback.ts";
 import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
   jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, TELL_OWNER_LIMIT, tellOwner, type ThreadView, withChatTool } from "../src/chats.ts";
@@ -500,6 +501,33 @@ test("chats: a check-in tick with work of several kinds tells the chat to start 
   board.plan = board.plan.map(goal => ({ ...goal, status: "done" as const, children: goal.children.map(child => ({ ...child, status: "done" as const })) }));
   assert.deepEqual(await chats.checkIn("c1"), [], "a quiet tick: no steer, no job");
   assert.deepEqual(calls, []);
+  chats.close();
+});
+
+test("chats: the check-in reads the ledger's handoffs and the chat's article links: a step on another thread's work and an explanation todo without its link are lines", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  const now = 100_000_000;
+  const logs: string[] = [];
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [{ id: "t3", text: "Explanation: GitHub Pro vs Team", done: false, from: "agent", at: "" }],
+    plan: [{ id: "p1", text: "Find what eats memory", status: "doing", job: "c1", note: "swap at 12 GB", children: [] }] };
+  const ledger: Ledger = { corrections: [{ id: "c7", at: "", chat: { id: "vp", name: "dev VP" }, words: "w", rule: "Machine work goes to ops guy.", enforcedBy: "code",
+    ref: "pending commit", status: "reopened", theme: ["mac"], repeats: [], handoff: { to: "ops guy (+observability)", topics: ["swap", "M1 Air"] } }] };
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, { c1: board }, () => now), corrections: async () => ledger }, line => logs.push(line));
+  await chats.adopt();
+  threads.transcripts.set("c1", [{ role: "assistant", provider: "p", model: "m", stopReason: "stop", timestamp: now - 60_000,
+    content: [{ type: "text", text: "Ready: [GitHub Pro](wiki:sessions/x/pro.html)" }] }]);
+  threads.fire().live("c1", []);
+  await chats.settled();
+  calls.length = 0;
+  const lines = await chats.checkIn("c1");
+  assert.deepEqual(lines, ["t3 asks for an explanation and your reply linked wiki:sessions/x/pro.html: put the link in t3",
+    'p1 "Find what eats memory" belongs to ops guy (+observability) (correction c7): hand it off with a message to that thread and remove it from this plan']);
+  assert.equal(calls.length, 1, logs.join("\n"));
   chats.close();
 });
 
