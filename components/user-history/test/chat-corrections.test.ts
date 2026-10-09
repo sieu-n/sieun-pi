@@ -185,6 +185,17 @@ test("unlinked job mentions: a job named as a noun with no job: link anywhere in
     ["Ran `rlm.spawn(job)` and [x](wiki:jobs/page.html)", null],
     ["job_reply and job-name and jobless", null],
     ["Nothing to report.", null],
+    // A job word that points at no one agent job (Chat health 10-09 triage: 12 of 89 flagged messages were only these).
+    ["Job reports are folded again and open in full when you click them.", null],
+    ["Wiki, file and job paths are clickable now.", null],
+    ["On our M1, every CI job runs as the same user, so any job could read the billing keys.", null],
+    ["Land 28 is now in its deploy job.", null],
+    ["Your split rule is live now: one goal per job, and each job spawns one subagent per output.", null],
+    ["Jobs must report back when they finish.", null],
+    ["Check-ins now hand bigger work to check-in jobs.", null],
+    ["My tools are back. I can't reach my jobs this check-in.", "I can't reach my jobs this check-in."],
+    ["The job reports in 10 min.", "The job reports in 10 min."],
+    ["Check-ins now hand bigger work to a check-in job.", "Check-ins now hand bigger work to a check-in job."],
   ];
   for (const [text, sentence] of cases) assert.equal(unlinkedJobSentence(text), sentence, text);
 });

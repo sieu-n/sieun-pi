@@ -18,8 +18,13 @@ export const OWNER_RETRY_MARK = "The owner's message is still unanswered: ";
 export const CHAT_CHECK_IN_LINE = "The chat set its check-in: ";
 /** A line the server writes into a chat's transcript without starting a turn (the model switch to and from the fallback); the feed shows it as a notice. */
 export const CHAT_NOTICE = "chat_notice";
-/** Who sent a server note ("check-in", "jobs"), or undefined for a message the owner typed. */
-export function serverNote(text: string): string | undefined { return SERVER_NOTES.find(([prefix]) => text.startsWith(prefix))?.[1]; }
+/** The server's nudge to a thread a stale step waits on, in the asking chat's name: `[from <chat>] your step ...`. The owner did not type it. */
+export const NUDGE_PREFIX = "[from ";
+/** Who sent a server note ("check-in", "jobs", or the chat a nudge asks for), or undefined for a message the owner typed. */
+export function serverNote(text: string): string | undefined {
+  if (text.startsWith(NUDGE_PREFIX)) { const end = text.indexOf("]"); return end > NUDGE_PREFIX.length ? text.slice(NUDGE_PREFIX.length, end) : undefined; }
+  return SERVER_NOTES.find(([prefix]) => text.startsWith(prefix))?.[1];
+}
 
 /**
  * One message of a chat as a line, before the feed collapses the quiet ones. Who started the turn decides what the chat's own text is:

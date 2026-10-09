@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { HandoffRule } from "./chat-corrections.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
-import { CHAT_CHECK_IN_LINE } from "./shared/chat-feed.ts";
+import { CHAT_CHECK_IN_LINE, NUDGE_PREFIX } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow, type StopReason,
   type ThreadMessage } from "./shared/types.ts";
@@ -662,7 +662,7 @@ export interface StepNote { step: string; note: string }
 /** The text a thread a step waits on gets, in the owner's words: who asks, which step, how long, and how to answer. */
 export function nudgeMessage(chat: string, item: Pick<PlanItem, "id" | "text" | "waitFor">, age: number): string {
   const waits = item.waitFor ? ` (it waits for ${quote(item.waitFor)})` : "";
-  return `[from ${chat}] your step ${item.id} ${quote(item.text)}${waits} has waited ${ago(age)}: what is left, and when? ` +
+  return `${NUDGE_PREFIX}${chat}] your step ${item.id} ${quote(item.text)}${waits} has waited ${ago(age)}: what is left, and when? ` +
     `Answer with \`await agent_message.send(answer, receiver_role="sibling", receiver_name="${chat}")\`.`;
 }
 /** A short hash of a step's note, so the memory sees a note edit without keeping the text. */

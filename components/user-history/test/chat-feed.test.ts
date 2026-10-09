@@ -65,6 +65,15 @@ test("a turn another agent started hides the chat's text; only tell_owner reache
   assert.deepEqual(chatLines(refused).map(line => line.kind === "agent" ? line.text : line.kind), ["job", "Short."], "a refused tell_owner shows nothing");
 });
 
+test("a stale-step nudge from another chat is a server note: its turn is not the owner's, and its sender is the asking chat", () => {
+  const nudge = '[from Crawler VP] your step p46 "Build snapshot tables" has waited 3 h: what is left, and when?';
+  const messages: ThreadMessage[] = [user(nudge, 1000), assistant([{ type: "text", text: "These are my notes. Nothing needs the owner." }], 1100)];
+  assert.equal(turnStarter(messages), "agent");
+  const lines = chatLines(messages);
+  assert.deepEqual(kinds(lines), ["job", "notes"]);
+  assert.equal(lines[0]?.kind === "job" ? lines[0].from : "", "Crawler VP");
+});
+
 test("a wake-up that lands mid-run joins the owner's turn, so the answer the owner waits for still shows", () => {
   const messages: ThreadMessage[] = [
     user("how far is the audit?", 1000),
