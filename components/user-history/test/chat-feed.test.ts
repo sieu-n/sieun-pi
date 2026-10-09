@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatFeed, chatLines, collapseUpdates, foldReply, isJobReport, REPORT_MIN_CHARS, unreadCount, REPLY_FOLD_WORDS, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
+import { chatFeed, chatLines, collapseUpdates, foldReply, unreadCount, REPLY_FOLD_WORDS, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, CustomMessage, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -176,18 +176,6 @@ test("an owner-turn reply over 60 words folds after its 60th word; fences are no
   assert.deepEqual(lines.slice(1).map(line => line.kind === "agent" ? [line.text.length > 20, line.told ?? false] : []), [[true, false], [false, true]], "the fold applies to the reply, not to tell_owner");
 });
 
-test("isJobReport: a long or structured message from one of the chat's own jobs shows open in the feed; pings, other threads and the chat's notes stay folded (owner 10-09)", () => {
-  const jobs = new Set(["w31 board convergence"]);
-  const job = (from: string, body: string) => ({ kind: "job" as const, id: "m1", from, title: body.split("\n")[0]!, body, at: 1 });
-  const long = "Done. " + "The classifier now covers every open step. ".repeat(10);
-  assert.ok(long.length >= REPORT_MIN_CHARS);
-  assert.equal(isJobReport(job("w31 board convergence", long), jobs), true);
-  assert.equal(isJobReport(job("w31 board convergence", "## Result\n\n| chat | orphan |\n|---|---|\n| VP | 0 |\n| CI | 0 |"), jobs), true, "a short table is a report");
-  assert.equal(isJobReport(job("w31 board convergence", "Starting now."), jobs), false, "a ping stays folded");
-  assert.equal(isJobReport(job("VP of CI", long), jobs), false, "a sibling thread is not this chat's job");
-  assert.equal(isJobReport({ kind: "notes", id: "m2", text: long, at: 1 } as never, jobs), false);
-});
-
 test("unreadCount: the chat's replies and folded update runs after the read marker count once each; the owner's own messages and older rows do not (owner 10-09)", () => {
   const user = (text: string, at: number): UserMessage => ({ role: "user", content: text, timestamp: at } as UserMessage);
   const reply = (text: string, at: number): AssistantMessage => ({ role: "assistant", content: [{ type: "text", text }], timestamp: at, stopReason: "stop" } as unknown as AssistantMessage);
@@ -196,4 +184,10 @@ test("unreadCount: the chat's replies and folded update runs after the read mark
   assert.equal(unreadCount(messages, 5), 2, "a reply, then one folded run (two job messages and the chat's notes on that agent turn)");
   assert.equal(unreadCount(messages, 14), 0);
   assert.equal(unreadCount(messages, 0), 3);
+});
+
+test("a long, structured job report stays folded in the updates line; the feed shows only owner messages and what the chat sends (owner 10-09)", () => {
+  const long = "## Result\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n" + "Detail line. ".repeat(60);
+  const items = chatFeed({ messages: [report("posthog key setup", long, 5)], streaming: null, wait: null } as never);
+  assert.deepEqual(items.map(item => item.kind), ["updates"]);
 });

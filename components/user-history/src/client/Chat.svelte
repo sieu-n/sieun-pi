@@ -10,7 +10,7 @@
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobNames, jobViews, reportsFor, spawnCalls, updatesJob } from "./jobs.ts";
   import { boardActionText, isBoardAction, mentionIndex, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { chatFeed, chatLines, foldReply, isJobReport, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
+  import { chatFeed, chatLines, foldReply, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { bubbleBlocks, renderInline, renderMarkdown } from "./markdown.ts";
   import { diagrams } from "./diagrams.ts";
@@ -97,9 +97,7 @@
   const asks = $derived(openAgentTodos(board));
   const cwd = $derived(thread?.info.cwd ?? row?.cwd ?? "");
   /** The board's ids and titles and the jobs' names, for the mention chips in every bubble; a new board rev or job re-renders the feed once. */
-  const jobList = $derived(jobNames(row, thread, sessionId => store.session(sessionId)));
-  const jobSet = $derived(new Set(jobList));
-  const mentions = $derived(mentionIndex(id, board, jobList));
+  const mentions = $derived(mentionIndex(id, board, jobNames(row, thread, sessionId => store.session(sessionId))));
   const planView = $derived(store.planView?.chat === id ? store.planView : null);
   const closePlan = () => { if (store.planView?.chat === id) store.planView = null; };
   const applyBoard = (next: ChatBoard, ops: BoardOp[]) => store.boardOps(id, next, ops);
@@ -337,22 +335,6 @@
               <span class="updates-mark"><Icon name="chevronRight" size={12} /></span>
             </button>
           </div>
-          {#each item.entries.filter(entry => isJobReport(entry, jobSet)) as report (report.id)}
-            {@const html = renderMarkdown(report.body, cwd, mentions)}
-            {@const key = `${id}:${report.id}`}
-            {@const long = report.body.length > 2400}
-            <div class="line report" data-at={report.at}>
-              <div class="report-raw" class:clamped={long && !unfolded.has(key)}>
-                <button type="button" class="report-head" title="Open {report.from}" data-preview-chat={id} data-preview-job={report.from} onclick={() => store.openArtifact({ kind: "job", name: report.from }, id)}>
-                  <Icon name="file" size={12} /><span class="report-from">{report.from}</span><span class="dot-sep"></span><span>reported {clockTime(report.at)}</span>
-                </button>
-                <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-                <div class="prose bubble-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: false }}>{@html html}</div>
-                {#if long && !unfolded.has(key)}<button type="button" class="more" aria-label="Show the whole report" onclick={() => unfolded.add(key)}>Show all</button>{/if}
-                {#if report.clipped}<button type="button" class="more" onclick={() => readUpdates(item)}>Read the whole message</button>{/if}
-              </div>
-            </div>
-          {/each}
         {:else}
           <div class="notice">{item.text}</div>
         {/if}
@@ -542,12 +524,6 @@
   .typing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes typing { 0%, 60%, 100% { opacity: 0.35; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
   /* A folded run of updates: one muted line, centered like a notice, that opens the reader. */
-  .line.report { margin: 4px 0 8px; }
-  .report-raw { position: relative; width: 100%; max-width: min(100%, 760px); padding: 10px 14px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elevated, var(--bg)); }
-  .report-raw.clamped .bubble-prose { max-height: 34rem; overflow: hidden; mask-image: linear-gradient(to bottom, #000 80%, transparent); }
-  .report-head { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 12px; color: var(--text-faint); }
-  .report-head:hover { color: var(--text-muted); }
-  .report-from { font-weight: 600; color: var(--text-muted); }
   .line.updates { justify-content: center; margin: 2px 0; border-radius: 999px; }
   .updates-line { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 3px 8px 3px 10px; border-radius: 999px; font-size: 12.5px; line-height: 1.4; color: var(--text-faint); transition: background-color 0.12s, color 0.12s; }
   .updates-line:hover { background: var(--bg-hover); color: var(--text-muted); }
