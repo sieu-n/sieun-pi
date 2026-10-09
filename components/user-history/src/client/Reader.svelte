@@ -3,7 +3,8 @@
   import { api, type LocalFile, type WikiPage } from "./api.ts";
   import { store } from "./store.svelte.ts";
   import { clockTime } from "./format.ts";
-  import { renderMarkdown, renderInline } from "./markdown.ts";
+  import { renderMarkdown } from "./markdown.ts";
+  import { renderSaid, replyExcerpt } from "./reply.ts";
   import { diagrams, pageFrame, type PageHost } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
   import { chatFeed, chatLines, updatesLabel, type ChatItem, type ChatLine, type Update } from "../shared/chat-feed.ts";
@@ -178,7 +179,9 @@
       case "wiki": { const path = view.path; return [{ label: "Open in wiki", run: () => openWiki(path) }]; }
       case "message": {
         const { thread: id, at } = view;
-        return [...(fullThread ? [fullThread] : []), { label: "Go to message", run: () => { onclose(); store.select(id, at); } }];
+        const text = message && (message.kind === "user" || message.kind === "agent") ? message.text : null;
+        const reply: Action[] = text === null ? [] : [{ label: "Reply", run: () => { onclose(); if (store.selectedId !== id) store.select(id); store.replyQuote = { chat: id, text: replyExcerpt(text) }; } }];
+        return [...(fullThread ? [fullThread] : []), ...reply, { label: "Go to message", run: () => { onclose(); store.select(id, at); } }];
       }
       case "updates": return [];
     }
@@ -269,7 +272,7 @@
       {:else if !message}<p class="snapshot">That link points at a message this thread does not have.</p>
       {:else if message.kind === "user"}
         <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-        <div class="said" onclick={onProseClick}>{@html renderInline(message.text, mentions)}</div>
+        <div class="said" onclick={onProseClick}>{@html renderSaid(message.text, mentions)}</div>
       {:else if message.kind === "agent" || message.kind === "notes"}{@render prose(message.text, cwd)}
       {:else if message.kind === "job"}{@render prose(body(message), cwd)}
       {:else}<p class="snapshot">{message.text}</p>{/if}

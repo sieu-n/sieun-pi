@@ -12,7 +12,8 @@
   import { isThreadBusy } from "../shared/thread-state.ts";
   import { chatFeed, chatLines, foldReply, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
-  import { bubbleBlocks, renderInline, renderMarkdown } from "./markdown.ts";
+  import { bubbleBlocks, renderMarkdown } from "./markdown.ts";
+  import { renderSaid, replyExcerpt } from "./reply.ts";
   import { diagrams } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
   import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
@@ -27,6 +28,7 @@
   import ModelPicker from "./ModelPicker.svelte";
   import Icon from "./Icon.svelte";
   import Lightbox from "./ui/Lightbox.svelte";
+  import Floating from "./ui/Floating.svelte";
   import { tooltip } from "./ui/tooltip.ts";
   import { longpress } from "./ui/longpress.ts";
   import { labels } from "./labels.ts";
@@ -266,12 +268,21 @@
   async function copyLink(at: number): Promise<void> {
     store.toast(await copyPermalink(id, at) ? "Link copied" : "Could not copy the link", "info");
   }
+  /** Reply on a bubble: the composer gets a quote of that message (owner, 10-09: a `> ...` paste above his answer, as a button). */
+  function reply(text: string): void { store.replyQuote = { chat: id, text: replyExcerpt(text) }; }
+  /** The bubble menu a long press opens on touch, where the hover buttons never show: Reply and Copy link. */
+  let pressed = $state<{ anchor: HTMLElement; at: number; text: string } | null>(null);
+  const press = (at: number, text: string) => (anchor: HTMLElement) => { pressed = { anchor, at, text }; };
+  const closeMenu = () => { pressed = null; };
 
   const send = (text: string, images: ImageInput[]) => { pinned = true; return store.sendChat(id, text, images); };
 </script>
 
-{#snippet linkButton(at: number)}
-  <button type="button" class="icon-button small link-button" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(at)}><Icon name="link" size={13} /></button>
+{#snippet actions(at: number, text: string)}
+  <span class="actions">
+    <button type="button" class="icon-button small" aria-label="Reply to this message" use:tooltip={"Reply"} onclick={() => reply(text)}><Icon name="reply" size={13} /></button>
+    <button type="button" class="icon-button small" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(at)}><Icon name="link" size={13} /></button>
+  </span>
 {/snippet}
 
 {#snippet setup()}
@@ -291,8 +302,8 @@
           <div class="owner-action" class:pending={item.pending}><Icon name="check" size={12} /><span>{boardActionText(item.text)}</span></div>
         {:else if item.kind === "user"}
           <div class="line user" data-at={item.at}>
-            {#if !item.pending}{@render linkButton(item.at)}{/if}
-            <div class="bubble mine" class:pending={item.pending} use:longpress={() => void copyLink(item.at)}>
+            {#if !item.pending}{@render actions(item.at, item.text)}{/if}
+            <div class="bubble mine" class:pending={item.pending} use:longpress={press(item.at, item.text)}>
               {#if item.images.length}
                 <div class="images">
                   {#each item.images as image, position (image.url + position)}
@@ -301,7 +312,7 @@
                 </div>
               {/if}
               <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-              {#if item.text}<div class="text said" onclick={onProseClick}>{@html renderInline(item.text, mentions)}</div>{/if}
+              {#if item.text}<div class="text said" onclick={onProseClick}>{@html renderSaid(item.text, mentions)}</div>{/if}
             </div>
           </div>
         {:else if item.kind === "agent"}
@@ -313,19 +324,19 @@
                 {@const html = renderMarkdown(block.text, cwd, mentions)}
                 {@const streaming = item.streaming ?? false}
                 {#if block.kind === "prose"}
-                  <div class="bubble theirs" use:longpress={() => void copyLink(item.at)}>
+                  <div class="bubble theirs" use:longpress={press(item.at, item.text)}>
                     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
                     <div class="prose bubble-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming }}>{@html html}{#if streaming && position === blocks.length - 1}<span class="caret"></span>{/if}</div>
                     {#if fold?.folded && position === blocks.length - 1}<button type="button" class="more" aria-label="Show the whole reply" onclick={() => unfolded.add(`${id}:${item.id}`)}>More</button>{/if}
                   </div>
                 {:else}
                   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-                  <div class="card prose {block.kind}" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming && block.kind === "diagram" && !block.closed }} use:longpress={() => void copyLink(item.at)}>{@html html}</div>
+                  <div class="card prose {block.kind}" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming && block.kind === "diagram" && !block.closed }} use:longpress={press(item.at, item.text)}>{@html html}</div>
                 {/if}
               {/each}
               {#if !blocks.length && item.streaming}<div class="bubble theirs"><span class="caret"></span></div>{/if}
             </div>
-            {#if !item.streaming}{@render linkButton(item.at)}{/if}
+            {#if !item.streaming}{@render actions(item.at, item.text)}{/if}
           </div>
         {:else if item.kind === "updates"}
           {@const label = updatesLabel(item)}
@@ -435,6 +446,13 @@
   {#if lightbox}
     <Lightbox images={lightbox.images} index={lightbox.index} onclose={() => { lightbox = null; }} />
   {/if}
+  {#if pressed}
+    {@const { anchor, at, text } = pressed}
+    <Floating {anchor} width={180} role="menu" label="Message" onclose={closeMenu}>
+      <button type="button" class="menu-item" role="menuitem" data-autofocus onclick={() => { closeMenu(); reply(text); }}><Icon name="reply" size={14} />Reply</button>
+      <button type="button" class="menu-item" role="menuitem" onclick={() => { closeMenu(); void copyLink(at); }}><Icon name="link" size={14} />Copy link</button>
+    </Floating>
+  {/if}
 </div>
 
 <style>
@@ -476,8 +494,10 @@
   .line { display: flex; align-items: flex-end; gap: 4px; border-radius: 20px; }
   .line.user { justify-content: flex-end; }
   .line.agent { justify-content: flex-start; }
-  .link-button { flex: none; margin-bottom: 4px; color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
-  .line:hover .link-button, .link-button:focus-visible { opacity: 1; }
+  /* Reply and Copy link beside the bubble, shown on hover (a long press opens the same two as a menu on touch); the owner's side mirrors the order. */
+  .actions { display: inline-flex; flex: none; align-items: center; gap: 2px; margin-bottom: 4px; color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
+  .line.user .actions { flex-direction: row-reverse; }
+  .line:hover .actions, .actions:focus-within { opacity: 1; }
   .line:global(.linked) { animation: linked 2s ease-out; }
   @keyframes linked { from { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } to { background: transparent; box-shadow: none; } }
   .bubble { max-width: min(82%, 560px); min-width: 0; padding: 8px 14px; border-radius: 18px; font-size: 15.5px; line-height: 1.45; }
@@ -486,6 +506,9 @@
   .bubble.mine.pending { opacity: 0.55; }
   .bubble.theirs { background: var(--user-bubble); border-bottom-left-radius: 5px; }
   .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* The quote a Reply put on top: small and muted, a bar on the left, the owner's text under it. */
+  .said :global(blockquote.quote) { margin: 0 0 6px; padding: 2px 0 2px 9px; border-left: 2.5px solid color-mix(in srgb, currentColor 40%, transparent); font-size: 13px; line-height: 1.4; color: color-mix(in srgb, currentColor 72%, transparent); }
+  .said :global(blockquote.quote:last-child) { margin-bottom: 0; }
   .said :global(a) { color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
   .said :global(code) { font-family: var(--mono); font-size: 0.88em; padding: 0.05em 0.3em; border-radius: 4px; background: color-mix(in srgb, currentColor 16%, transparent); }
   .said :global(.artifact-link) { font: inherit; color: inherit; text-decoration: underline; padding: 0; }

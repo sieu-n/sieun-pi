@@ -65,7 +65,7 @@
   let caret = $state(0);
   let lightbox = $state<number | null>(null);
 
-  $effect(() => { drafts.set(draftKey, { text, images }); });
+  $effect(() => { drafts.set(draftKey, { text, images, quote: null }); });
   $effect(() => {
     void text;
     const node = textarea;

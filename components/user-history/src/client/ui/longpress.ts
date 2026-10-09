@@ -1,5 +1,6 @@
-/** Calls `fn` after a 500 ms touch or pen press that stays within 8 px, so a phone gets the action a mouse gets on hover. */
-export function longpress(node: HTMLElement, fn: () => void) {
+/** Calls `fn` with the node after a 500 ms touch or pen press that stays within 8 px, so a phone gets the action a mouse gets on hover. */
+export function longpress(node: HTMLElement, fn: (node: HTMLElement) => void) {
+  let current = fn;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let start = { x: 0, y: 0 };
   const clear = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
@@ -7,7 +8,7 @@ export function longpress(node: HTMLElement, fn: () => void) {
     if (event.pointerType === "mouse") return;
     clear();
     start = { x: event.clientX, y: event.clientY };
-    timer = setTimeout(() => { timer = null; fn(); }, 500);
+    timer = setTimeout(() => { timer = null; current(node); }, 500);
   };
   const move = (event: PointerEvent) => { if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) clear(); };
   const ends = ["pointerup", "pointercancel", "pointerleave"] as const;
@@ -15,6 +16,7 @@ export function longpress(node: HTMLElement, fn: () => void) {
   node.addEventListener("pointermove", move);
   for (const name of ends) node.addEventListener(name, clear);
   return {
+    update(next: (node: HTMLElement) => void) { current = next; },
     destroy() {
       clear();
       node.removeEventListener("pointerdown", down);

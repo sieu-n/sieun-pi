@@ -36,6 +36,8 @@ class Store {
   jobDrawer = $state.raw<{ chat: string; job: string } | null>(null);
   /** A message link to land on (`#<id>@<ms>`): the open thread scrolls to it and clears this. */
   jump = $state.raw<{ id: string; at: number } | null>(null);
+  /** A Reply the owner started (`replyExcerpt` of the message): the chat's composer takes it as its quote and clears this. */
+  replyQuote = $state.raw<{ chat: string; text: string } | null>(null);
   /** The reader modal: a job's report, a file, a wiki page or one message. Null when closed. */
   reader = $state.raw<ReaderView | null>(null);
   /** The plan view modal of a chat: its whole board as a tree, scrolled to `focus` (a plan step or note id) when set. Null when closed. */
