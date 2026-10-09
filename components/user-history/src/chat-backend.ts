@@ -91,7 +91,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry: jobRegistry(join(dataDir, "chat-jobs.json")),
       settings: checkInSettings(join(dataDir, "check-in-settings.json")), claude: claudeReader(), fallbacks: fallbackRecord(join(dataDir, "chat-fallbacks.json")),
-      awake: working => awake.update(working), writeBoard: (id, ops) => boards.apply(id, ops, "agent") },
+      awake: working => awake.update(working), writeBoard: (id, ops) => boards.apply(id, ops, "agent"),
+      checkInJobs: { dir: join(dataDir, "check-in-jobs"), board: id => join(boards.dir, id + ".json") } },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),

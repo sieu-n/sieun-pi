@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { activePause, changeCheckIn, chatCheckIn, parseChatCheckIn, checkInDigest, jobReport, lastJobMessages, checkInDue, checkInLine, checkInMessage, checkInRecord, checkInSettings, endedWithoutReport, nextCheckIn, pauseEnd, validCheckInEvery, jobFacts, readySteps,
   CHASE_ESCALATE_MS, clockTime, jobEnd, jobEndNotice, jobEndWords, localTime, NUDGE_EVERY_MS, ownedStep, retryDue, STALE_MS, STEP_STALE_MS, stepClass, stepOwner, TOLD_END_KEEP_MS, waitTarget, todoForStep,
-  waitsOnOwner, type CheckInMemory, type JobFact } from "../src/chat-checkin.ts";
+  waitsOnOwner, type CheckInMemory, type JobFact, looksDone, checkInJobDue, CHECK_IN_JOB_EVERY_MS, checkInJobBrief, checkInJobMessage, writeCheckInBrief, CHECK_IN_BRIEFS_KEPT } from "../src/chat-checkin.ts";
 import { applyBoardOp, emptyBoard, nextIds, renderBoard } from "../src/shared/chat-board.ts";
 import { chatLines, turnStarter } from "../src/shared/chat-feed.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, SessionRow, ThreadMessage } from "../src/shared/types.ts";
@@ -566,4 +566,109 @@ test("check-in record: told job ends per chat and job, kept apart from the tick'
   assert.deepEqual(await checkInRecord(join(dir, "check-ins.json")).ends("c1"), { "thread:s-root": { at: 1_000 + TOLD_END_KEEP_MS + 1, cause: "length" } }, "read back from the file");
   await record.forget("c1");
   assert.deepEqual(await record.ends("c1"), {});
+});
+
+test("looks done: an open item with every step under it closed, or a note that says it shipped; a wait or a negation is not done", () => {
+  assert.equal(looksDone(step("p1", "Goal", "doing", { children: [step("p2", "Build", "done"), step("p3", "Verify", "dropped")] })), "every step under it is closed");
+  assert.equal(looksDone(step("p1", "Goal", "doing", { children: [step("p2", "Build", "done"), step("p3", "Verify", "todo")] })), null, "an open step under it");
+  assert.equal(looksDone(step("p1", "Goal", "doing")), null, "a goal with no steps yet is not done");
+  assert.equal(looksDone(step("p1", "Goal", "done", { children: [step("p2", "Build", "done")] })), null, "a closed item");
+  assert.equal(looksDone(step("p4", "Ship", "doing", { note: "Now live on production at 4f1c2a." })), 'its note says "Now live"');
+  assert.equal(looksDone(step("p4", "Ship", "doing", { note: "Checked: live on staging.virev.ai" })), 'its note says "live on staging"');
+  assert.equal(looksDone(step("p4", "Ship", "blocked", { note: "PR 812 merged, staging green" })), 'its note says "merged"');
+  assert.equal(looksDone(step("p4", "Ship", "doing", { note: "Deployed to prod by land 25" })), 'its note says "Deployed"');
+  assert.equal(looksDone(step("p4", "Ship", "doing", { note: "Reviewed after the call, deployed at 14:10" })), 'its note says "deployed"', "a comma ends the clause");
+  for (const note of ["not merged yet", "close after it is deployed", "waits until landed", "to be released on Monday", "a live owner runs it", "not yet deployed", "waits until the PR is merged"]) {
+    assert.equal(looksDone(step("p4", "Ship", "doing", { note })), null, note);
+  }
+});
+
+test("check-in job due: 3 items or 2 kinds, never while a check-in job works, at most once an hour", () => {
+  const now = 10 * CHECK_IN_JOB_EVERY_MS;
+  const orphan = { kind: "orphan" as const };
+  assert.equal(checkInJobDue([orphan, orphan], [], undefined, now), false, "2 items of one kind");
+  assert.equal(checkInJobDue([orphan, orphan, orphan], [], undefined, now), true, "3 items");
+  assert.equal(checkInJobDue([orphan, { kind: "looks done" }], [], undefined, now), true, "2 kinds");
+  assert.equal(checkInJobDue([orphan, orphan, orphan], [{ name: "check-in 14:30", state: "working" }], undefined, now), false, "a check-in job still works");
+  assert.equal(checkInJobDue([orphan, orphan, orphan], [{ name: "check-in 14:30", state: "ended" }, { name: "docs check-in", state: "working" }], undefined, now), true,
+    "an ended check-in job, and a job that only mentions a check-in, do not hold it");
+  assert.equal(checkInJobDue([orphan, orphan, orphan], [], now - CHECK_IN_JOB_EVERY_MS + 1, now), false, "within the hour");
+  assert.equal(checkInJobDue([orphan, orphan, orphan], [], now - CHECK_IN_JOB_EVERY_MS, now), true, "an hour after the last one");
+});
+
+test("check-in digest with fan-out: a tick past the threshold returns a check-in job with its items by kind and the other lines; the hour limit and a quiet tick give none", () => {
+  const start = 100 * STEP_STALE_MS;
+  const context = { self: ["c-self", "dev VP"], name: "dev VP", fanOut: true };
+  const until = new Date(start + 30 * MIN).toISOString();
+  const plan = board([
+    step("p1", "Ship the landing page", "doing", { children: [step("p2", "Build", "done"), step("p3", "Verify", "done")] }),
+    step("p4", "Usage panel", "doing", { children: [step("p5", "Wire the API", "todo"), step("p6", "Check the load", "blocked", { waitUntil: until }),
+      step("p7", "Land the fix", "doing", { note: "PR 812 merged, now live on production" })] }),
+  ]);
+  const first = checkInDigest(undefined, [], plan, start, context);
+  assert.deepEqual(first.job?.items.map(item => `${item.id} ${item.kind}`), ["p1 looks done", "p7 looks done", "p5 orphan"], "3 items of 2 kinds on the first tick; p6 waits");
+  assert.deepEqual(first.job?.lines, ['p5 "Wire the API" can start: the steps before it are done and it has no job'], "a line that is not an item stays the chat's");
+  assert.equal(first.memory.jobAt, start);
+  const soon = checkInDigest(first.memory, [], plan, start + 15 * MIN, context);
+  assert.equal(soon.job, undefined, "within the hour: the plain lines");
+  assert.deepEqual(soon.lines, ['p5 "Wire the API" has no live owner: start a job, take it yourself, or ask the owner in For you'], "the look-done lines wait 2 h");
+  assert.equal(soon.memory.jobAt, start, "the hour limit stays in the memory");
+  const at = start + 2 * STEP_STALE_MS;
+  const owner: JobFact = { key: "k1", name: "usage audit", state: "ended", activityAt: at - MIN, replied: false };
+  const tick = checkInDigest({ ...soon.memory, jobs: { k1: { state: "working" } } }, [owner], plan, at, context);
+  assert.ok(tick.job, tick.lines.join(" | "));
+  assert.equal(tick.job.name, `check-in ${clockTime(at)}`);
+  assert.deepEqual(tick.job.items.map(item => `${item.id} ${item.kind}`), ["p1 looks done", "p7 looks done", "p6 due", "p5 orphan", "usage audit job ended"]);
+  assert.deepEqual(tick.job.lines, [], "every line of this tick is the job's");
+  assert.equal(tick.memory.jobAt, at);
+  assert.ok(tick.job.items[1]!.facts.includes('note: "PR 812 merged, now live on production"'), tick.job.items[1]!.facts);
+  assert.deepEqual(checkInJobMessage("[check-in] ", tick.job, "/data/check-in-jobs/c-self-x.md"),
+    `[check-in] 5 items need checking: looks done p1 p7, due p6, orphan p5, job ended usage audit. Do not check them yourself. ` +
+    `Start one check-in job now with this call, then end the turn:\n\`await rlm.spawn(open("/data/check-in-jobs/c-self-x.md").read(), name="check-in ${clockTime(at)}")\`\n` +
+    "It checks each item in its own subagents and sends you board ops and owner lines. Apply them, and tell the owner only what matters.");
+  const brief = checkInJobBrief(tick.job, { id: "c-self", name: "dev VP", board: "/data/boards/c-self.json" });
+  assert.ok(brief.startsWith('# Check-in job for the chat "dev VP"\n\nYou are the check-in job of the chat "dev VP" (session id c-self)'), brief.slice(0, 200));
+  for (const part of ["/data/boards/c-self.json", "one per kind of work you find, each with a fresh context and one narrow job", "A verifier per goal",
+    "A chaser", "only the chat can message other threads", "A scope checker", "A cleaner", "Messages: one line per thread", "## Items (5)", "### Look done", "- p1 (orphan) \"Ship the landing page\" doing, no owner", "### Due", "### Orphan",
+    "### Job ended", "job usage audit ended with no report", 'receiver_role="parent"', "Board ops: one chat_board op JSON per line", "Owner lines: at most 3"]) {
+    assert.ok(brief.includes(part), part);
+  }
+  const later = checkInDigest(tick.memory, [owner], plan, at + 15 * MIN, context);
+  assert.equal(later.job, undefined, "within the hour again");
+  assert.ok(later.lines.some(line => line.startsWith('p5 "Wire the API" has no live owner')), later.lines.join(" | "));
+  const hour = checkInDigest(later.memory, [owner], plan, at + CHECK_IN_JOB_EVERY_MS, context);
+  assert.ok(hour.job, "an hour later: again");
+  const done = board([step("p1", "Ship the landing page", "done", { children: [step("p2", "Build", "done")] })]);
+  const quiet = checkInDigest(hour.memory, [], done, at + 3 * CHECK_IN_JOB_EVERY_MS, context);
+  assert.deepEqual([quiet.lines, quiet.job], [[], undefined], "a quiet tick: no line, no job");
+  assert.equal(checkInDigest(tick.memory, [owner], plan, at + 2 * CHECK_IN_JOB_EVERY_MS, { ...context, fanOut: false }).job, undefined, "no fan-out without a brief folder");
+});
+
+test("check-in digest: a step that looks done is told at once, again when its note changes or after 2 h; an orphan that looks done gets only that line", () => {
+  const start = 100 * STEP_STALE_MS;
+  const plan = (note: string) => board([step("p1", "Goal", "doing", { children: [step("p2", "Land", "doing", { note })] })]);
+  const first = checkInDigest(undefined, [], plan("deployed to production"), start);
+  assert.deepEqual(first.lines, ['p2 "Land" looks done (its note says "deployed"): verify and close it']);
+  assert.ok(first.open[0]!.endsWith(", looks done"), first.open[0]);
+  assert.deepEqual(checkInDigest(first.memory, [], plan("deployed to production"), start + 15 * MIN).lines, [], "told once");
+  assert.equal(checkInDigest(first.memory, [], plan("deployed to production, sha 4f1c2a"), start + 15 * MIN).lines.length, 1,
+    "a note edit tells it again");
+  assert.equal(checkInDigest(first.memory, [], plan("deployed to production"), start + STEP_STALE_MS).lines.length, 1, "again after 2 h");
+  const goal = board([step("p1", "Usage panel", "doing", { note: "Shipped on 10-08, live on production", children: [step("p2", "Verify", "todo", { waitFor: "the owner's look" })] })]);
+  const shipped = checkInDigest(undefined, [], goal, start, { fanOut: true });
+  assert.deepEqual(shipped.lines, ['p2 "Verify" can start: the steps before it are done and it has no job', 'p1 "Usage panel" looks done (its note says "Shipped"): verify and close it'],
+    "a goal whose note says shipped, with open steps under it");
+  assert.equal(shipped.job, undefined, "one item of one kind");
+});
+
+test("check-in briefs: written under the folder by chat and time; a chat keeps its last few", async () => {
+  const dir = join(await mkdtemp(join(tmpdir(), "briefs-")), "check-in-jobs");
+  const base = Date.parse("2026-10-09T05:00:00Z");
+  for (let index = 0; index < CHECK_IN_BRIEFS_KEPT + 2; index++) await writeCheckInBrief(dir, "c1", base + index * CHECK_IN_JOB_EVERY_MS, `brief ${index}`);
+  const other = await writeCheckInBrief(dir, "c2", base, "other");
+  const files = (await readdir(dir)).sort();
+  assert.equal(files.filter(file => file.startsWith("c1-")).length, CHECK_IN_BRIEFS_KEPT);
+  assert.ok(files.includes(`c1-${localTime(base + (CHECK_IN_BRIEFS_KEPT + 1) * CHECK_IN_JOB_EVERY_MS).replace(" ", "-").replace(":", "")}.md`), files.join(" "));
+  assert.ok(!files.includes(`c1-${localTime(base).replace(" ", "-").replace(":", "")}.md`), "the oldest went");
+  assert.equal(await readFile(other, "utf8"), "other");
 });

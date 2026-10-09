@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
 import { CHAT_CHECK_IN_LINE } from "./shared/chat-feed.ts";
@@ -64,7 +66,9 @@ export interface JobMemo {
  * changed, the `sig` at which it was reported as waiting on the owner with no ask, when the server last nudged the thread it waits on, and
  * the end of its job seen unrecorded (`ended`) and already written into its note (`noted`).
  */
-export interface StepMemo { sig: string; at: number; nh?: string; noteAt?: number; asked?: string; chased?: number; ended?: number; noted?: number }
+export interface StepMemo { sig: string; at: number; nh?: string; noteAt?: number; asked?: string; chased?: number; ended?: number; noted?: number;
+  /** When its "looks done" line was last told (`looksDone`). */
+  done?: number }
 
 /** The words of a text that can tell one step from another: five letters or more, not a common word. */
 const distinctiveWords = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{4,}/g)?.filter(word => !STOP_WORDS.has(word)) ?? []);
@@ -85,12 +89,16 @@ export interface Reminder { key: string; at: number }
 export interface CheckInMemory {
   at: number; jobs: Record<string, JobMemo>; steps: Record<string, StepMemo>; answered: string[]; ready: string[];
   boardError?: Reminder; asks?: Reminder;
+  /** When the server last told the chat to start a check-in job (`checkInJobDue`), kept across restarts. */
+  jobAt?: number;
 }
 /**
  * What the digest needs besides the facts and the board: the chat's own id and name (a step it owns says "you"; `name` signs a nudge), a board
  * read error, and the catalog rows (the threads a step's `waitFor` can name).
  */
-export interface CheckInContext { self?: readonly string[]; name?: string; boardError?: string; rows?: readonly Pick<SessionRow, "id" | "name" | "archived">[] }
+export interface CheckInContext { self?: readonly string[]; name?: string; boardError?: string; rows?: readonly Pick<SessionRow, "id" | "name" | "archived">[];
+  /** The server can write a check-in job's brief: a tick past the threshold returns `job` (`checkInJobDue`). */
+  fanOut?: boolean }
 
 const OPEN: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 const CLOSED: ReadonlySet<PlanStatus> = new Set(["done", "dropped"]);
@@ -167,6 +175,7 @@ export function readySteps(board: ChatBoard | null): PlanItem[] {
   return ready;
 }
 
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 const clip = (text: string, max = 60) => text.length > max ? text.slice(0, max - 1) + "…" : text;
 const quote = (text: string) => `"${clip(text)}"`;
 const ownerLabel = (fact: JobFact) => fact.key.startsWith("thread:") ? `${clip(fact.name, 40)} thread` : `job ${fact.name}`;
@@ -286,6 +295,50 @@ export function classLine(view: StepView, now: number): string | null {
   return null;
 }
 
+/**
+ * A note that says the work shipped: shipped, merged, deployed, landed, released, or live (is live, now live, live on production), unless a
+ * word up to three words before it, in the same clause, makes it a condition or a wait ("not merged", "after it is deployed", "until landed",
+ * "to be released").
+ */
+const SAYS_SHIPPED = /(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on)\s+(?:\w+\s+){0,3})\b(?:shipped|merged|deployed|landed|released|(?:is|are|now|went|already)\s+live|live\s+on\s+(?:prod|production|staging|main))\b/i;
+/**
+ * Why an open plan item looks done, or null: every item under it is closed, or its note says it shipped (SAYS_SHIPPED). The check-in then
+ * asks for a check against the real state (dev env VP 10-09: a goal stayed open after it was live on production).
+ */
+export function looksDone(item: Pick<PlanItem, "status" | "note" | "children">): string | null {
+  if (!OPEN.has(item.status)) return null;
+  if (item.children.length > 0 && item.children.every(child => CLOSED.has(child.status))) return "every step under it is closed";
+  const said = SAYS_SHIPPED.exec(item.note ?? "");
+  return said ? `its note says "${said[0]}"` : null;
+}
+
+/**
+ * The kinds of work a check-in job takes over: the three ACT_CLASSES, an open item that looks done (`looksDone`), and a job that ended with no
+ * report or whose step was not updated after it ended.
+ */
+export type CheckInKind = "due" | "stale-chase" | "orphan" | "looks done" | "job ended";
+const KIND_ORDER: readonly CheckInKind[] = ["looks done", "due", "stale-chase", "orphan", "job ended"];
+/** One item for a check-in job: its kind, its plan item id (a job name for a job with no step), the line the chat would get, and what a checker needs. */
+export interface CheckInItem { kind: CheckInKind; id: string; line: string; facts: string }
+/** A check-in job to start: when, its name, its items, and the tick's other lines, which stay the chat's own. */
+export interface CheckInJob { at: number; name: string; items: CheckInItem[]; lines: string[] }
+/** A chat starts a check-in job at most this often. */
+export const CHECK_IN_JOB_EVERY_MS = 60 * 60_000;
+/** A tick needs a check-in job at this many items, or this many kinds of item. */
+export const CHECK_IN_JOB_MIN_ITEMS = 3;
+export const CHECK_IN_JOB_MIN_KINDS = 2;
+/** A check-in job's name: `check-in HH:MM`. */
+export const isCheckInJob = (name: string): boolean => /^check-in\b/i.test(name.trim());
+/**
+ * Whether a tick hands its items to a check-in job: at least CHECK_IN_JOB_MIN_ITEMS items or CHECK_IN_JOB_MIN_KINDS kinds, no check-in job of
+ * the chat at work, and none started in the last CHECK_IN_JOB_EVERY_MS (`jobAt`, from the check-in memory).
+ */
+export function checkInJobDue(items: readonly Pick<CheckInItem, "kind">[], facts: readonly Pick<JobFact, "name" | "state">[], jobAt: number | undefined, now: number): boolean {
+  if (items.length < CHECK_IN_JOB_MIN_ITEMS && new Set(items.map(item => item.kind)).size < CHECK_IN_JOB_MIN_KINDS) return false;
+  if (facts.some(fact => fact.state === "working" && isCheckInJob(fact.name))) return false;
+  return jobAt === undefined || now - jobAt >= CHECK_IN_JOB_EVERY_MS;
+}
+
 /** Whether a reminder for `key` is due: a new or changed condition at once, the same one again after STEP_STALE_MS. */
 const reminderDue = (before: Reminder | undefined, key: string, now: number): boolean => before?.key !== key || now - before.at >= STEP_STALE_MS;
 
@@ -305,9 +358,13 @@ const reminderDue = (before: Reminder | undefined, key: string, now: number): bo
  * BOARD_LIMITS.openAsks; each again every STEP_STALE_MS while it holds.
  */
 export function checkInDigest(previous: CheckInMemory | undefined, facts: readonly JobFact[], board: ChatBoard | null, now: number, context: CheckInContext = {}):
-  { memory: CheckInMemory; lines: string[]; open: string[]; nudges: Nudge[]; notes: StepNote[] } {
+  { memory: CheckInMemory; lines: string[]; open: string[]; nudges: Nudge[]; notes: StepNote[]; job?: CheckInJob } {
   const lines: string[] = [];
   const jobs: Record<string, JobMemo> = {};
+  /** The work a check-in job would take over (`checkInJobDue`), and the lines about it. */
+  const items: CheckInItem[] = [];
+  const covered = new Set<string>();
+  const take = (item: CheckInItem) => { items.push(item); covered.add(item.line); };
   for (const fact of facts) {
     const before = previous?.jobs[fact.key];
     const label = factLabel(fact);
@@ -324,7 +381,14 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     else if (jobEnded && report.waits) {
       if (before?.waited !== report.waits.at) lines.push(`${label} waits: ${quote(report.waits.text)}`);
       memo.waited = report.waits.at;
-    } else if (jobEnded) lines.push(`${label} finished${report.reported ? "" : " with no report"}${stale}`);
+    } else if (jobEnded) {
+      const line = `${label} finished${report.reported ? "" : " with no report"}${stale}`;
+      lines.push(line);
+      if (!report.reported && !isCheckInJob(fact.name)) {
+        take({ kind: "job ended", id: fact.item?.id ?? fact.name, line,
+          facts: `job ${fact.name} ended with no report${fact.item ? ` on ${fact.item.id} ${quote(fact.item.text)} (${fact.item.status})` : ""}` });
+      }
+    }
     else if ((!ended || thread) && fact.state !== "working" && added > 0) lines.push(`${label} has ${added} new ${added === 1 ? "message" : "messages"} and is ${STATE_WORD[fact.state]}${stale}`);
     if (fact.state === "working" && fact.activityAt !== undefined && now - fact.activityAt > STALE_MS) {
       memo.stale = true;
@@ -368,14 +432,29 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
       ...(before?.chased !== undefined ? { chased: before.chased } : {}), ...(before?.noted !== undefined ? { noted: before.noted } : {}) };
     steps[item.id] = memo;
     const isOpen = OPEN.has(item.status);
+    const done = looksDone(item);
+    const noteFacts = item.note ? `; note: "${clip(item.note.replace(/\s+/g, " "), 600)}"` : "";
+    /** A "looks done" item, told when it starts or its note changes, then again every STEP_STALE_MS while it holds. */
+    const tellDone = (reason: string, facts: string) => {
+      const line = `${item.id} ${quote(item.text)} looks done (${reason}): verify and close it`;
+      const tell = before?.done === undefined || (memo.noteAt ?? 0) > before.done || now - before.done >= STEP_STALE_MS;
+      memo.done = tell || before?.done === undefined ? now : before.done;
+      if (tell) classLines.push(line);
+      take({ kind: "looks done", id: item.id, line, facts: facts + noteFacts });
+    };
+    if (isOpen && openBelow && done) {
+      tellDone(done, `${item.id} ${quote(item.text)} ${item.status}, ${plural(item.children.filter(child => OPEN.has(child.status)).length, "open step")} under it`);
+    }
     if (!isOpen || openBelow) return isOpen || openBelow;
     const view = stepView(item, memo.at, self, facts, openTodos, context.rows ?? [], now);
-    const line = classLine(view, now);
+    /** An orphan that looks done needs a check and a close, not a new job: its "looks done" line replaces the orphan line. */
+    const line = done && view.cls === "orphan" ? null : classLine(view, now);
     if (view.cls === "stale-chase" && view.target && now - (memo.chased ?? -Infinity) >= NUDGE_EVERY_MS) {
       nudges.push({ id: view.target.id, step: item.id, message: nudgeMessage(chatName, item, now - memo.at) });
       memo.chased = now;
     }
-    if (line) classLines.push(view.cls === "stale-chase" && view.target && memo.chased !== undefined ? `${line} (I asked ${clip(view.target.name, 40)} at ${clockTime(memo.chased)})` : line);
+    const told = line && (view.cls === "stale-chase" && view.target && memo.chased !== undefined ? `${line} (I asked ${clip(view.target.name, 40)} at ${clockTime(memo.chased)})` : line);
+    if (told) classLines.push(told);
     const owner = view.owner;
     if (owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled && !holdsOnWait(item, now)) {
       const end = Math.max(owner.activityAt ?? 0, owner.lastMessage?.at ?? 0);
@@ -384,7 +463,9 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
           const report = owner.lastMessage ? `report: ${owner.lastMessage.head ?? owner.lastMessage.text}` : "no report";
           const auto = `Job ${owner.name} ended at ${clockTime(end)}, ${clip(report, 168)}`;
           notes.push({ step: item.id, note: clip(item.note ? `${auto}\n${item.note}` : auto, BOARD_LIMITS.note) });
-          lines.push(`${item.id} ${quote(item.text)}: job ${owner.name} ended at ${clockTime(end)} and the step was not updated; I put its report in the step's note: update the step now`);
+          const ended = `${item.id} ${quote(item.text)}: job ${owner.name} ended at ${clockTime(end)} and the step was not updated; I put its report in the step's note: update the step now`;
+          lines.push(ended);
+          if (!isCheckInJob(owner.name)) take({ kind: "job ended", id: item.id, line: ended, facts: `${item.id} ${quote(item.text)} ${item.status}, job ${owner.name} ended at ${clockTime(end)}, ${report}` });
           memo.noted = end;
         }
         memo.ended = end;
@@ -397,7 +478,10 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
     const who = view.mine ? "owner you" : owner ? `owner ${ownerLabel(owner)} (${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? `owner ${item.job} (not found)` : "no owner";
     const until = Date.parse(item.waitUntil ?? "");
     const waits = `${Number.isFinite(until) ? `, waits until ${localTime(until)}` : ""}${item.waitFor ? `, waits for ${quote(item.waitFor)}` : ""}`;
-    open.push({ at: memo.at, line: `${item.id} (${view.cls}) ${quote(item.text)} ${item.status}, ${who}${waits}, last change ${ago(now - memo.at)} ago` });
+    const openLine = `${item.id} (${view.cls}) ${quote(item.text)} ${item.status}, ${who}${waits}, last change ${ago(now - memo.at)} ago${done ? ", looks done" : ""}`;
+    open.push({ at: memo.at, line: openLine });
+    if (done) tellDone(done, openLine);
+    else if (told && ACT_CLASSES.has(view.cls)) take({ kind: view.cls as CheckInKind, id: item.id, line: told, facts: openLine + noteFacts });
     return true;
   };
   for (const item of board?.plan ?? []) visit(item);
@@ -418,11 +502,16 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   const ready = context.boardError ? undefined : readySteps(board);
   if (ready) for (const step of ready) if (!previous?.ready.includes(step.id)) lines.push(`${step.id} ${quote(step.text)} can start: the steps before it are done and it has no job`);
   lines.push(...classLines);
-  const shown = lines.length > MAX_LINES ? [...lines.slice(0, MAX_LINES - 1), `and ${lines.length - MAX_LINES + 1} more`] : lines;
+  const fold = (all: readonly string[]) => all.length > MAX_LINES ? [...all.slice(0, MAX_LINES - 1), `and ${all.length - MAX_LINES + 1} more`] : [...all];
   const sorted = open.sort((a, b) => a.at - b.at).map(entry => entry.line);
   const listed = sorted.length > MAX_OPEN ? [...sorted.slice(0, MAX_OPEN - 1), `and ${sorted.length - MAX_OPEN + 1} more`] : sorted;
+  /** A quiet tick (no line) never starts a job. */
+  const fanOut = context.fanOut === true && lines.length > 0 && checkInJobDue(items, facts, previous?.jobAt, now);
+  const jobAt = fanOut ? now : previous?.jobAt;
+  const job: CheckInJob | undefined = fanOut ? { at: now, name: `check-in ${clockTime(now)}`,
+    items: KIND_ORDER.flatMap(kind => items.filter(item => item.kind === kind)), lines: fold(lines.filter(line => !covered.has(line))) } : undefined;
   return { memory: { at: now, jobs, steps, answered: answered?.map(todo => todo.id) ?? previous?.answered ?? [], ready: ready?.map(step => step.id) ?? previous?.ready ?? [],
-    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}) }, lines: shown, open: listed, nudges, notes };
+    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}), ...(jobAt !== undefined ? { jobAt } : {}) }, lines: fold(lines), open: listed, nudges, notes, ...(job ? { job } : {}) };
 }
 
 /** A nudge the server sends to the thread a stale step waits on: the thread's session id, the step, the text. */
@@ -451,6 +540,82 @@ const noteHash = (note: string | undefined): string | undefined => note ? create
 export const checkInMessage = (prefix: string, lines: readonly string[], open: readonly string[]): string =>
   `${prefix}What changed:\n${lines.map(line => `- ${line}`).join("\n")}` +
   (open.length ? `\n\nOpen steps, oldest change first:\n${open.map(line => `- ${line}`).join("\n")}` : "");
+
+/** What a check-in job's brief names besides its items: the chat's session id and name, and its board file. */
+export interface CheckInJobChat { id: string; name?: string | undefined; board: string }
+const KIND_HEAD: Record<CheckInKind, string> = {
+  "looks done": "Look done (check the real state: close, keep or reopen)",
+  due: "Due (the wait time passed)",
+  "stale-chase": "Stale chase (waits on another thread or an event, no progress for 2 h)",
+  orphan: "Orphan (no live owner, no todo, no wait)",
+  "job ended": "Job ended (no report, or the step was not updated after it)",
+};
+/** The Python call the chat runs to start a check-in job from its brief file. */
+export const checkInJobCall = (path: string, name: string): string => `await rlm.spawn(open(${JSON.stringify(path)}).read(), name=${JSON.stringify(name)})`;
+
+/**
+ * The brief of a check-in job (owner 10-09: "it should spawn subagents to see different things, not the main agent sequentially checking"):
+ * the chat only triages; this job maps the items to subagents by the kinds of work it finds, each with a fresh context, and sends the chat back
+ * board ops and owner lines.
+ */
+export function checkInJobBrief(job: CheckInJob, chat: CheckInJobChat): string {
+  const name = chat.name ?? chat.id;
+  const sections = KIND_ORDER.flatMap(kind => {
+    const mine = job.items.filter(item => item.kind === kind);
+    return mine.length ? [`### ${KIND_HEAD[kind]}\n${mine.map(item => `- ${item.facts}`).join("\n")}`] : [];
+  });
+  return [
+    `# Check-in job for the chat "${name}"`,
+    `You are the check-in job of the chat "${name}" (session id ${chat.id}), started ${localTime(job.at)}. The chat only triages; you check. ` +
+      `Its board is the JSON file ${chat.board} (plan, scratch, todos): read it for the full notes and for the owner's rulings in the scratch notes. ` +
+      "Do not edit the board and do not do the steps' own work: send the chat what to change.",
+    "## How to work",
+    "Map the items below to subagents, one per kind of work you find, each with a fresh context and one narrow job. Decide the split from the items; " +
+      "these are examples, not a fixed list:\n" +
+      "- A verifier per goal: checks each step that looks done or waits against the real state (the commit on the remote, the live page, the " +
+      "production sha, the other thread's last message) and says close, keep or reopen, with what it saw.\n" +
+      "- A chaser: for each stale wait, works out what is left and writes the question with an ETA ask that the chat sends to that thread " +
+      "(only the chat can message other threads).\n" +
+      "- A scope checker: reads the scratch notes for owner rulings and flags steps the owner already gave to another thread, to hand off.\n" +
+      "- A cleaner: lists the chat's finished jobs to delete (they are your siblings in `await agent_observe.list_agents()`).\n" +
+      "Start each with `await rlm.spawn(brief, name=...)`, all at once. Each brief carries only its own items and ends with " +
+      "`await agent_message.send(report, receiver_role=\"parent\")`. End your turn and read each reply as it comes. Delete each subagent after you " +
+      "read its report. A check of 1 to 3 tool calls stays inline.",
+    `## Items (${job.items.length})`,
+    ...sections,
+    "## Reply",
+    "When every subagent has reported, send the chat one message with `await agent_message.send(report, receiver_role=\"parent\")`, then end:\n" +
+      "- Board ops: one chat_board op JSON per line, for example " +
+      "`{\"op\":\"plan_update\",\"id\":\"p4\",\"status\":\"done\",\"note\":\"live on production at 4f1c2a, checked on the live page\"}`. " +
+      "Close a step only on evidence you name in its note.\n" +
+      "- Messages: one line per thread the chat should nudge, its name and the question, or \"none\".\n" +
+      "- Owner lines: at most 3 short plain lines the owner should hear, or \"none\".",
+  ].join("\n\n") + "\n";
+}
+
+/** The `[check-in]` steer that hands a tick's items to a check-in job: the items by kind, the call, then the tick's other lines. */
+export function checkInJobMessage(prefix: string, job: CheckInJob, path: string): string {
+  const kinds = KIND_ORDER.flatMap(kind => {
+    const ids = job.items.filter(item => item.kind === kind).map(item => item.id);
+    return ids.length ? [`${kind} ${[...new Set(ids)].join(" ")}`] : [];
+  });
+  return `${prefix}${job.items.length} items need checking: ${kinds.join(", ")}. Do not check them yourself. ` +
+    `Start one check-in job now with this call, then end the turn:\n\`${checkInJobCall(path, job.name)}\`\n` +
+    "It checks each item in its own subagents and sends you board ops and owner lines. Apply them, and tell the owner only what matters." +
+    (job.lines.length ? `\n\nWhat changed:\n${job.lines.map(line => `- ${line}`).join("\n")}` : "");
+}
+
+/** Brief files a chat keeps in the check-in jobs folder; older ones are deleted when a new one is written. */
+export const CHECK_IN_BRIEFS_KEPT = 5;
+/** Writes a check-in job's brief to `<dir>/<chat>-<YYYY-MM-DD-HHMM>.md`, keeps the chat's last CHECK_IN_BRIEFS_KEPT, and returns the path. */
+export async function writeCheckInBrief(dir: string, chat: string, at: number, text: string): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, `${chat}-${localTime(at).replace(" ", "-").replace(":", "")}.md`);
+  await writeFile(path, text);
+  const mine = (await readdir(dir)).filter(file => file.startsWith(chat + "-") && file.endsWith(".md")).sort();
+  for (const old of mine.slice(0, -CHECK_IN_BRIEFS_KEPT)) await rm(join(dir, old), { force: true });
+  return path;
+}
 
 /**
  * Subagents that just ended a follow-up task (one sent after the first, so the status did not change) without messaging the chat. The daemon's

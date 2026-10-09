@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
-  endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue } from "./chat-checkin.ts";
+import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInJobBrief, checkInJobMessage, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
+  endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue, writeCheckInBrief } from "./chat-checkin.ts";
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
@@ -112,6 +112,9 @@ export const CHAT_BRIEF: readonly string[] = [
     "`[job] <name> is waiting for you since <time>` or a check-in line `<step> (job <name>) waits: \"...\"` means the job waits on you or on something " +
     "you can get it (a slot, a go, an answer): answer it or get it, do not replace it. Never start a second job on a step whose job " +
     "may still run: `rlm.list_subagents()` can say completed for a job a reply woke again, so check its activity first.",
+  "A check-in turn is triage. Read its lines and decide what to do; do not verify open steps one by one yourself. When a `[check-in]` says to " +
+    "start a check-in job, run the exact call it gives and end the turn. The job checks the steps in its own subagents and sends you board ops " +
+    "and owner lines. Apply them, tell the owner only what matters, and delete the job like any finished job.",
   "After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it " +
     "waiting on purpose; finished jobs hold memory.",
   "If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it.",
@@ -594,6 +597,11 @@ export interface CheckInSource {
 }
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
+  /**
+   * Where check-in job briefs go (`<data dir>/check-in-jobs`) and each chat's board file, which the brief names. Absent: a tick never hands its
+   * items to a check-in job.
+   */
+  checkInJobs?: { dir: string; board: (id: string) => string };
 export const CHECK_IN_TICK_MS = 30_000;
 /** How often the scheduler looks for chats the index lost, and how recent a thread must be to be looked at. */
 export const ADOPT_SCAN_MS = 10 * 60_000;
@@ -1204,8 +1212,19 @@ export class Chats {
       for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
       if (!checkInDue(facts, board, boardError)) return [];
       const name = rows.find(row => row.id === id)?.name;
-      const { memory, lines, open, nudges, notes } = checkInDigest(await this.source.memory.get(id), facts, board, this.now(),
-        { self: name ? [id, name] : [id], ...(name ? { name } : {}), rows, ...(boardError !== undefined ? { boardError } : {}) });
+      const previous = await this.source.memory.get(id);
+      const jobs = this.source.checkInJobs;
+      const { memory, lines, open, nudges, notes, job } = checkInDigest(previous, facts, board, this.now(),
+        { self: name ? [id, name] : [id], ...(name ? { name } : {}), rows, ...(boardError !== undefined ? { boardError } : {}), ...(jobs ? { fanOut: true } : {}) });
+      let brief: string | undefined;
+      if (job && jobs) {
+        try { brief = await writeCheckInBrief(jobs.dir, id, job.at, checkInJobBrief(job, { id, name, board: jobs.board(id) })); }
+        catch (error) {
+          this.log(`chat ${id.slice(0, 8)}: check-in job brief: ${error instanceof Error ? error.message : String(error)}`);
+          if (previous?.jobAt !== undefined) memory.jobAt = previous.jobAt;
+          else delete memory.jobAt;
+        }
+      }
       await this.source.memory.set(id, memory);
       this.held.delete(id);
       if (notes.length && this.source.writeBoard) {
@@ -1221,6 +1240,12 @@ export class Chats {
       if (lines.length) {
         await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines, open), images: [], mode: "steer" });
         this.steeredAt.set(id, this.now());
+      if (job && brief) {
+        await this.threads.prompt(id, { message: checkInJobMessage(CHECK_IN_PREFIX, job, brief), images: [], mode: "steer" });
+        this.steeredAt.set(id, this.now());
+        this.log(`chat ${id.slice(0, 8)}: check-in job ${job.name} with ${job.items.length} items, brief ${brief}`);
+        return [`start ${job.name}: ${job.items.map(item => `${item.id} ${item.kind}`).join(", ")}`, ...job.lines];
+      }
       }
       return lines;
     } catch (error) {
