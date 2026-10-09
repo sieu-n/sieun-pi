@@ -26,13 +26,13 @@ const custom = (at: number, customType: string, content: string): Line => ({ typ
 
 const API_KEY_ERROR = "Failed to resolve API key for provider \"anthropic\" from shell command: /Users/x/.config/pi-pool/bin/pi-pool-token";
 
-const CHECK_IN = [
-  "[check-in] What changed:",
-  "- p5 \"a\" is todo with no board change and no owner activity for 8 h",
-  "- p6 \"b\" is todo with no board change and no owner activity for 90 min",
-  "- p7 \"c\" is doing with no board change and no owner activity for 130 min",
-  "- p8 \"d\" is doing with no board change and no owner activity for 3 d",
-].join("\n");
+const openSteps = (rows: readonly string[]) => `\n\nOpen steps, oldest change first:\n${rows.map(row => `- ${row}`).join("\n")}`;
+const CHECK_IN = "[check-in] What changed:\n- p5 \"a\" is due since 08:00: act on it or set a new waitUntil" + openSteps([
+  "p5 (due) \"a\" doing, owner you, waits until 2026-10-08 08:00, last change 8 h ago",
+  "p6 (waiting) \"b\" blocked, owner you, waits for \"land 30\", last change 90 min ago",
+  "p7 (stale-chase) \"c\" blocked, owner you, waits for \"land 31\", last change 130 min ago",
+  "p8 (stale-chase) \"d\" blocked, owner you, waits for \"land 32\", last change 3 d ago",
+]);
 
 const chatA: Line[] = [
   { type: "session", id: "a", timestamp: new Date(ago(31 * HOUR)).toISOString() },
@@ -69,7 +69,8 @@ const chatA: Line[] = [
 ];
 
 const chatB: Line[] = [
-  user(ago(26 * HOUR), "[check-in] What changed:\n- nothing new"),
+  user(ago(26 * HOUR), "[check-in] What changed:\n- nothing new" + openSteps(["p5 (orphan) \"a\" todo, no owner, last change 7 h ago",
+    "p7 (waiting) \"c\" blocked, owner you, waits for \"land 31\", last change 30 min ago", "p8 (stale-chase) \"d\" blocked, owner you, waits for \"land 32\", last change 2 d ago"])),
   reply(ago(26 * HOUR) + MIN, wordsOf(3)),
   custom(ago(5 * HOUR), "agent_message", "[agent-message from worker]\n\nDone."),
   reply(ago(5 * HOUR) + MIN, "Noted, filing it."),
@@ -102,15 +103,16 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, article_link_not_in_todo: 0, stalls_2h: 6, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 });
+    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, article_link_not_in_todo: 0, stalls_2h: 2, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 });
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 3).map(slice => [slice.chat, slice.excerpt]), [["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]]);
     const kinds = (kind: string) => flagged.filter(slice => slice.kind === kind);
     assert.deepEqual(kinds("unretried_errors").map(slice => slice.excerpt), [`1.5 h with no new message after: ${API_KEY_ERROR}`, "2.0 h with no new message after: stopReason aborted"]);
     assert.deepEqual(kinds("long_replies").map(slice => slice.excerpt.split(":")[0]), ["61 words", "70 words"]);
-    assert.equal(kinds("stalls_2h").length, 6);
-    assert.ok(kinds("stalls_2h").some(slice => slice.chat === "chat-a" && slice.excerpt.includes("p8") && slice.at === ago(3 * HOUR)), "a step counts once, at its latest check-in row");
-    assert.ok(kinds("stalls_2h").every(slice => !slice.excerpt.includes("90 min")));
+    assert.deepEqual(kinds("stalls_2h").map(slice => [slice.chat, slice.at, slice.excerpt.slice(0, slice.excerpt.indexOf(" (", slice.excerpt.indexOf(": - ")))]), [
+      ["chat-b", ago(1 * HOUR), "due for 25 h since the check-in told the chat: - p5"],
+      ["chat-b", ago(1 * HOUR), "stale-chase for 25 h since the check-in told the chat: - p8"],
+    ], "a step counts once, at its latest act row; an orphan that turned due is one run; chat-a's hour of listings and p7's run after waiting are no stall");
     assert.deepEqual(kinds("sieun_pi_breaks").map(slice => slice.excerpt), [API_KEY_ERROR]);
     assert.deepEqual(kinds("off_brief").map(slice => slice.excerpt), ["repeated line: [job] build-x finished; don't wait", `repeated line: ${CHECK_IN}`.slice(0, 300)],
       "text on a wake is the chat's notes (the brief allows it since W27); only repeated server lines are off brief");
@@ -165,7 +167,7 @@ test("chat health: a problem a run flagged is watched; the next run counts it on
   }
 });
 
-test("chat health: owner directions and status questions are not corrections, a quoted question is not the owner's, a provider error the pool retried is not a sieun-pi break, and a stalled step counts once", async () => {
+test("chat health: owner directions and status questions are not corrections, a quoted question is not the owner's, a provider error the pool retried is not a sieun-pi break, and a stalled step is one the check-ins kept listing in an act class for 2 h", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
   try {
     const corrections = [
@@ -187,8 +189,14 @@ test("chat health: owner directions and status questions are not corrections, a 
     ];
     const retried = "Provider rate limit exceeded (rate_limit_error, 429): Please try again later. pi-pool: a@x is limited until 2026-10-08T13:20:00.000Z; the retry uses b@x.";
     const lines: Line[] = [...corrections, ...notCorrections].flatMap((text, index) => [user(ago(20 * HOUR) + index * MIN, text), reply(ago(20 * HOUR) + index * MIN + 1_000, "ok")]);
-    lines.push(user(ago(4 * HOUR), "[check-in] What changed:\n- p9 \"x\" is doing with no board change and no owner activity for 3 h"), reply(ago(4 * HOUR) + MIN, ""),
-      user(ago(3 * HOUR), "[check-in] What changed:\n- p9 \"x\" is blocked with no board change and no owner activity for 4 h"), reply(ago(3 * HOUR) + MIN, ""));
+    const row = (step: string, cls: string) => `${step} (${cls}) "${step} text" blocked, owner you, last change 9 h ago`;
+    const checkIns: [number, string[]][] = [
+      [5, [row("p9", "orphan"), row("p10", "stale-chase"), row("p11", "due"), row("p12", "stale-chase")]],
+      [4, [row("p9", "stale-chase"), row("p11", "live"), "and 2 more"]],
+      [3, [row("p9", "stale-chase"), row("p11", "due"), row("p12", "stale-chase")]],
+      [2, [row("p9", "stale-chase"), row("p10", "stale-chase"), row("p11", "due"), row("p12", "stale-chase")]],
+    ];
+    for (const [hours, rows] of checkIns) lines.push(user(ago(hours * HOUR), `[check-in] What changed:\n- tick ${hours}${openSteps(rows)}`), reply(ago(hours * HOUR) + MIN, ""));
     lines.push(user(ago(2 * HOUR), "go"), reply(ago(2 * HOUR) + 1_000, "", "error", { errorMessage: retried }), reply(ago(2 * HOUR) + 20_000, "done"));
     await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-c"] }));
     await writeFile(join(dir, "chat-c.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
@@ -199,7 +207,10 @@ test("chat health: owner directions and status questions are not corrections, a 
     assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "corrections").map(slice => slice.excerpt).sort(), [...corrections].sort());
     assert.equal(health.metrics.sieun_pi_breaks, 0);
     assert.equal(health.metrics.unretried_errors, 0);
-    assert.equal(health.metrics.stalls_2h, 1, "a step that moved from doing to blocked is one stalled step");
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "stalls_2h").map(slice => slice.excerpt.split(":")[0]).sort(),
+      ["stale-chase for 3 h since the check-in told the chat", "stale-chase for 3 h since the check-in told the chat"]);
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "stalls_2h").map(slice => /p\d+/.exec(slice.excerpt.split(": ")[1]!)![0]).sort(), ["p12", "p9"],
+      "p9 went orphan to stale-chase, one run; a folded list keeps p12's run; p11 turned live and p10 left a full list, so each run restarted");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

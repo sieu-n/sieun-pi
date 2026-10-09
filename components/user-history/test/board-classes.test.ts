@@ -110,3 +110,15 @@ test("board classes: a job idle under a step that names its wait is holding, not
   await writeFile(file, JSON.stringify(board));
   assert.equal((await boardClasses({ dataDir: dir, now: NOW, sessions: () => parsed.sessions }))[0]!.misses.job_end_unrecorded, 1, "a passed waitUntil holds nothing");
 });
+
+test("board classes: a job whose own turn ended while its subagent works is live, not an orphan (01a115e2 10-09: google serp waited on exp-http-final)", async () => {
+  const { dir, sessions } = await fixture();
+  const parsed = parseLooseJson(await readFile(sessions, "utf8")) as { sessions: DaemonSession[] };
+  const grandchild: DaemonSession = { sessionId: "s-probe", sessionName: "probe run", parentSessionId: "s-dates", rlmChildId: "sub-3", lifecycle: "live", activity: "working",
+    lastActivityAt: new Date(NOW - 60_000).toISOString() };
+  const [chat] = await boardClasses({ dataDir: dir, now: NOW, sessions: () => [...parsed.sessions, grandchild] });
+  assert.equal(chat!.steps.find(view => view.item.id === "p5")!.cls, "live");
+  assert.equal(chat!.misses.orphan_steps, 1);
+  const [archived] = await boardClasses({ dataDir: dir, now: NOW, sessions: () => [...parsed.sessions, { ...grandchild, lifecycle: "archived" }] });
+  assert.equal(archived!.steps.find(view => view.item.id === "p5")!.cls, "orphan", "an archived subagent holds nothing");
+});

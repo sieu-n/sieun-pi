@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { ARTICLE_LINK_WINDOW_MS, type ArticleLink, articleLinkMisses, ownerFacingTexts, wikiArticles } from "../../src/chat-checkin.ts";
+import { ACT_CLASSES, ARTICLE_LINK_WINDOW_MS, type ArticleLink, articleLinkMisses, ownerFacingTexts, type StepClass, wikiArticles } from "../../src/chat-checkin.ts";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHECK_IN_PREFIX, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
@@ -27,18 +27,19 @@ const CORRECTION = /\b(?:i told you|i (?:already )?(?:said|asked)|didn['\u2019]?
 const QUOTED = /[\u201c"][^\u201d"]*[\u201d"]/g;
 /** The note the pool's extension appends to a provider error it retries on another account: the provider failed, not sieun-pi. */
 const POOL_RETRY_NOTE = / pi-pool: [\s\S]*; the retry uses [\s\S]*$/;
-const STALL = /with no board change and no owner activity for (\d+) (min|h|d)\b/;
-/** An open-steps row a check-in lists with a class the chat must act on: `- p9 (stale-chase) "..." blocked, ..., last change 20 h ago`. */
-const CLASS_ROW = /^- (p\d+) \((?:due|stale-chase|orphan)\) .*last change (\d+) (min|h|d) ago$/;
+/** An open-steps row of a check-in, with the step's class: `- p9 (stale-chase) "..." blocked, ..., last change 20 h ago`. */
+const CLASS_ROW = /^- (p\d+) \(([a-z-]+)\) /;
+/** The head of a check-in's open-steps list, and its fold line: a list without the fold names every open step. */
+const OPEN_STEPS = "\n\nOpen steps, oldest change first:\n";
+const OPEN_FOLD = /^- and \d+ more$/m;
+/** A step the check-ins kept listing in a class the chat must act on (ACT_CLASSES) for this long is stalled: the chat was told and did not move it. */
+const STALL_MS = 2 * HOUR;
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'\u2019._/-]*/gu;
 const BOARD_PREFIX = "[board] ";
 const BOARD_ANSWER = " and answered: ";
 const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
-const STALL_TAIL = " with no board change";
-/** The status at the end of a stall row's head: a step that moved from doing to blocked is still one step. */
-const STALL_STATUS = / is \w+$/;
 
 type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; article_link_not_in_todo: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
@@ -54,7 +55,6 @@ interface Tally { metrics: Metrics; deadMs: number; ownerTurns: number; longTurn
 
 const clip = (text: string): string => text.slice(0, EXCERPT);
 const words = (text: string): number => text.match(WORD)?.length ?? 0;
-const stallHours = (count: number, unit: string): number => unit === "d" ? count * 24 : unit === "h" ? count : count / 60;
 const signature = (kind: string, text: string): string => `${kind}:${text.toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ").slice(0, 160)}`;
 
 /** The part of an owner message the owner wrote: a board answer after "and answered: ", none for a board choice, and no injected skill text. */
@@ -87,12 +87,37 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     if (watch) tally.seen.push({ signature: watch, slice });
   };
   const seen = new Set<string>();
-  /** Each step a check-in reported stalled 2 h or more, by its row before the time: every check-in repeats the row, and the step counts once at its latest row. */
+  /** Since when the check-ins have listed each step in an act class without a break; a row in another class, or a full list without it, ends the run. */
+  const acting = new Map<string, number>();
+  /** Each step listed in an act class for STALL_MS or more, by its id, at its latest such row. */
   const stalls = new Map<string, { at: number; row: string }>();
   let turn: Turn | undefined;
   let settled = true;
   let failure: Failure | undefined;
 
+  /**
+   * `stalls_2h`: a step the check-ins listed in an act class (due, stale-chase, orphan) at every listing for STALL_MS or more. Its first such row
+   * is the check-in telling the chat; a chat that sets a wait, a todo or an owner by the next tick moved the step, whatever its last change.
+   */
+  const countStalls = (text: string, at: number) => {
+    const head = text.indexOf(OPEN_STEPS);
+    if (head < 0) return;
+    const listed = text.slice(head + OPEN_STEPS.length);
+    const seenSteps = new Set<string>();
+    for (const line of listed.split("\n")) {
+      const row = line.trim();
+      const open = CLASS_ROW.exec(row);
+      if (!open) continue;
+      const step = open[1]!;
+      const cls = open[2] as StepClass;
+      seenSteps.add(step);
+      if (!ACT_CLASSES.has(cls)) { acting.delete(step); continue; }
+      const since = acting.get(step) ?? at;
+      acting.set(step, since);
+      if (inWindow(at) && at - since >= STALL_MS) stalls.set(step, { at, row: `${cls} for ${Math.round((at - since) / HOUR)} h since the check-in told the chat: ${row}` });
+    }
+    if (!OPEN_FOLD.test(listed)) for (const step of acting.keys()) if (!seenSteps.has(step)) acting.delete(step);
+  };
   const closeTurn = () => {
     if (!turn || !inWindow(turn.at)) return;
     if (turn.starter === "owner" && turn.lastText) {
@@ -125,17 +150,10 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       if (serverNote(text)) {
         if (settled) openTurn("agent", at);
         settled = false;
+        if (text.startsWith(CHECK_IN_PREFIX)) countStalls(text, at);
         if (!inWindow(at)) continue;
         if (seen.has(text)) { tally.metrics.off_brief++; flag("off_brief", at, `repeated line: ${text}`, signature("repeat", text)); }
         seen.add(text);
-        if (text.startsWith(CHECK_IN_PREFIX)) {
-          for (const row of text.split("\n")) {
-            const stall = STALL.exec(row);
-            if (stall && stallHours(Number(stall[1]), stall[2]!) >= 2) stalls.set(row.slice(0, row.indexOf(STALL_TAIL)).replace(STALL_STATUS, "").trim(), { at, row: row.trim() });
-            const open = CLASS_ROW.exec(row.trim());
-            if (open && stallHours(Number(open[2]), open[3]!) >= 2) stalls.set(open[1]!, { at, row: row.trim() });
-          }
-        }
         continue;
       }
       openTurn("owner", at);

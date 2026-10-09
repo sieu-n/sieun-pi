@@ -65,18 +65,35 @@ export function daemonSessions(): DaemonSession[] {
 }
 
 const ms = (iso: string | undefined): number | undefined => { const at = Date.parse(iso ?? ""); return Number.isFinite(at) ? at : undefined; };
+/**
+ * The sessions at work: each working session and every session above it. A job whose own turn ended while its subagent runs is working, as the
+ * server's catalog counts it (`isWorking` with the subtree); 10-09 the job google serp idled at 14:02Z waiting on its exp-http-final subagent and
+ * this duty called its step an orphan.
+ */
+export function workingSessions(sessions: readonly DaemonSession[]): Set<string> {
+  const parent = new Map(sessions.map(session => [session.sessionId, session.parentSessionId]));
+  const working = new Set<string>();
+  for (const session of sessions) {
+    if (session.activity !== "working" || session.lifecycle === "archived") continue;
+    for (let id: string | undefined = session.sessionId; id !== undefined && !working.has(id); id = parent.get(id)) working.add(id);
+  }
+  return working;
+}
+
 /** The catalog rows the check-in reads, from the daemon's sessions. */
 export function sessionRows(sessions: readonly DaemonSession[]): SessionRow[] {
+  const working = workingSessions(sessions);
   return sessions.map(session => ({ id: session.sessionId, name: (session.sessionName || session.firstMessage || session.sessionId).trim(),
-    archived: session.lifecycle === "archived", working: session.activity === "working", messageCount: session.messageCount ?? 0,
+    archived: session.lifecycle === "archived", working: working.has(session.sessionId), messageCount: session.messageCount ?? 0,
     ...(session.lastActivityAt ? { lastActivityAt: session.lastActivityAt } : {}) }) as SessionRow);
 }
 /** A chat's direct subagents still listed (a deleted job is archived), as the server's child snapshots. */
 export function chatChildren(sessions: readonly DaemonSession[], chatId: string): ChildAgent[] {
+  const working = workingSessions(sessions);
   return sessions.filter(session => session.parentSessionId === chatId && session.rlmChildId && session.lifecycle !== "archived").map(session => {
     const at = ms(session.lastActivityAt);
     return { id: session.rlmChildId!, label: session.sessionName ?? session.rlmChildId!, ...(session.sessionName ? { sessionName: session.sessionName } : {}),
-      status: session.activity === "working" ? "running" : "done", ...(at !== undefined ? { lastActivityAt: at } : {}) } as ChildAgent;
+      status: working.has(session.sessionId) ? "running" : "done", ...(at !== undefined ? { lastActivityAt: at } : {}) } as ChildAgent;
   });
 }
 
