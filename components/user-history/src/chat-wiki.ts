@@ -54,8 +54,10 @@ export async function readWikiPage(path: string, fetchImpl: typeof fetch = fetch
   if (typeof record.content !== "string") throw new LocalFileError(502, "The wiki sent no page text.");
   const title = typeof record.title === "string" && record.title ? record.title : wikiTitle(record.content, clean);
   const head = { path: clean, title, url, dir };
-  if (record.kind === "html") return { ...head, kind: "html", html: record.content };
-  if (record.kind === "md") return { ...head, kind: "markdown", text: stripFrontmatter(record.content) };
+  // The file's own extension decides the format. The API's `kind` is the page's frontmatter kind (report, decision, session-artifact, ...);
+  // it only read "html" for older pages, so every page with another frontmatter kind was refused (10-09: chat links explained, kind "report").
+  if (/\.html?$/i.test(clean)) return { ...head, kind: "html", html: record.content };
+  if (/\.md$/i.test(clean)) return { ...head, kind: "markdown", text: stripFrontmatter(record.content) };
   throw new LocalFileError(415, "Only .html and .md wiki pages show here.");
 }
 

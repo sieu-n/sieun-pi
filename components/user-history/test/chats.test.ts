@@ -162,6 +162,7 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.ok(brief.includes("When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot per variant inline in the chat message itself"), "UI picks show links and screenshots inline (owner 10-09)");
   assert.ok(brief.includes("open it in the owner's Aside browser through the aside-browser skill and complete the Google or GitHub sign-in there. Ask the owner only when no OAuth path works"), "logins through Aside, not owner todos (owner 10-09)");
   assert.ok(brief.includes("when the article is ready, put its link in your reply and in that todo (the owner's own view), never only in a board note."), "asked-for articles reach the owner's view (owner 10-09)");
+  assert.ok(brief.includes("A job's own report shows open in the chat feed, rendered as written: do not paraphrase it into a weaker summary"), "job reports are read raw (owner 10-09)");
   assert.ok(brief.includes("No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works."), "plain board notes (owner correction 10-08)");
   // Audit 2026-10-08 (0409-chat-usage-audit): each line names the counter it should lower at the next audit.
   // Stalls and owner corrections: one chase, then a job.

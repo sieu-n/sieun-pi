@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatFeed, chatLines, collapseUpdates, foldReply, REPLY_FOLD_WORDS, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
+import { chatFeed, chatLines, collapseUpdates, foldReply, isJobReport, REPORT_MIN_CHARS, REPLY_FOLD_WORDS, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, CustomMessage, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -174,4 +174,16 @@ test("an owner-turn reply over 60 words folds after its 60th word; fences are no
   assert.deepEqual(foldReply(`${words(59)} last, ${words(5, 61)}`), { shown: `${words(59)} last…`, folded: true }, "no trailing comma before the mark");
   const lines = chatLines([user("status?", 1000), assistant([{ type: "text", text: words(80) }, tell("t9", "Short note.")], 1100)]);
   assert.deepEqual(lines.slice(1).map(line => line.kind === "agent" ? [line.text.length > 20, line.told ?? false] : []), [[true, false], [false, true]], "the fold applies to the reply, not to tell_owner");
+});
+
+test("isJobReport: a long or structured message from one of the chat's own jobs shows open in the feed; pings, other threads and the chat's notes stay folded (owner 10-09)", () => {
+  const jobs = new Set(["w31 board convergence"]);
+  const job = (from: string, body: string) => ({ kind: "job" as const, id: "m1", from, title: body.split("\n")[0]!, body, at: 1 });
+  const long = "Done. " + "The classifier now covers every open step. ".repeat(10);
+  assert.ok(long.length >= REPORT_MIN_CHARS);
+  assert.equal(isJobReport(job("w31 board convergence", long), jobs), true);
+  assert.equal(isJobReport(job("w31 board convergence", "## Result\n\n| chat | orphan |\n|---|---|\n| VP | 0 |\n| CI | 0 |"), jobs), true, "a short table is a report");
+  assert.equal(isJobReport(job("w31 board convergence", "Starting now."), jobs), false, "a ping stays folded");
+  assert.equal(isJobReport(job("VP of CI", long), jobs), false, "a sibling thread is not this chat's job");
+  assert.equal(isJobReport({ kind: "notes", id: "m2", text: long, at: 1 } as never, jobs), false);
 });

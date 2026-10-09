@@ -160,6 +160,14 @@ export function turnStarter(messages: readonly ThreadMessage[]): TurnStarter {
   return starter;
 }
 
+/** A job report the feed shows as written, open, under its updates line: a message from one of the chat's own jobs that is long or carries markdown structure (a heading, a table, a list, a code or diagram block). A short ping stays folded. */
+export const REPORT_MIN_CHARS = 280;
+const REPORT_SHAPE = /^(?:#{1,6} |\|.*\||```|\s*(?:[-*]|\d+\.) )/m;
+export function isJobReport(entry: Update, jobs: ReadonlySet<string>): entry is Extract<Update, { kind: "job" }> {
+  if (entry.kind !== "job" || !jobs.has(entry.from)) return false;
+  return entry.body.length >= REPORT_MIN_CHARS || (entry.body.length >= 40 && REPORT_SHAPE.test(entry.body));
+}
+
 const isUpdate = (line: ChatLine): line is Update => line.kind === "job" || line.kind === "notes";
 
 /** The lines with every run of quiet ones (job messages, the chat's notes) folded into one updates item, keyed by its first line. */
