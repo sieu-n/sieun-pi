@@ -66,6 +66,27 @@ test("bubbleBlocks: lone images and diagram fences become cards, inline ones sta
   assert.deepEqual(bubbleBlocks(""), []);
 });
 
+test("bare link targets in prose open like a markdown link: wiki:, file:, job:, thread:, absolute and wiki content paths, URLs and board ids", () => {
+  const button = (target: string, text: string) => `<button type="button" class="artifact-link" data-target="${target}" title="${target}">${text}</button>`;
+  const owner = "Sorry. Here it is: wiki:sessions/2026/10/08/2321-github-pro-explained/article.html. Short version: $4 a month.";
+  assert.equal(renderMarkdown(owner), `<p>Sorry. Here it is: ${button("wiki:sessions/2026/10/08/2321-github-pro-explained/article.html", "wiki:sessions/2026/10/08/2321-github-pro-explained/article.html")}. Short version: $4 a month.</p>\n`);
+  assert.match(renderMarkdown("log at file:/Users/me/a_b/run.log, done"), /data-target="file:\/Users\/me\/a_b\/run.log"[^>]*>file:\/Users\/me\/a_b\/run.log<\/button>, done/);
+  assert.match(renderMarkdown("see /Users/me/Documents/notes.md."), /data-target="file:\/Users\/me\/Documents\/notes.md"[^>]*>\/Users\/me\/Documents\/notes.md<\/button>\./);
+  assert.match(renderMarkdown("page apps/llm-wiki/content/sessions/a/load-audit.md."), /data-target="wiki:sessions\/a\/load-audit.md"[^>]*>apps\/llm-wiki\/content\/sessions\/a\/load-audit.md<\/button>\./);
+  assert.match(renderMarkdown("at /Users/me/Github/auto-sns-agent/apps/llm-wiki/content/sessions/a/index.html"), /data-target="wiki:sessions\/a\/index.html"/);
+  assert.match(renderMarkdown("report job:readme-check and thread:abc@12"), /data-target="job:readme-check"[\s\S]*data-target="thread:abc@12"/);
+  assert.match(renderMarkdown("(wiki:sessions/a/b.html)"), /\(<button[^>]*data-target="wiki:sessions\/a\/b.html"[^>]*>wiki:sessions\/a\/b.html<\/button>\)/);
+  assert.match(renderMarkdown("**wiki:sessions/a/b.html**"), /<strong><button[^>]*data-target="wiki:sessions\/a\/b.html"/);
+  assert.match(renderMarkdown("the page is `wiki:sessions/a/b.html`"), /<button type="button" class="artifact-link" data-target="wiki:sessions\/a\/b.html"[^>]*><code>wiki:sessions\/a\/b.html<\/code><\/button>/);
+  assert.match(renderMarkdown("open https://example.com/a now"), /<a href="https:\/\/example.com\/a"[^>]*target="_blank"/);
+  assert.match(renderInline("my note wiki:sessions/a/b.html"), /data-target="wiki:sessions\/a\/b.html"/);
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], scratch: [], plan: [{ id: "p7", text: "Ship it", status: "doing", children: [] }] };
+  assert.match(renderMarkdown("next is p7 wiki:sessions/a/b.html", "", mentionIndex("c1", board)), /data-mention="p7"[\s\S]*data-target="wiki:sessions\/a\/b.html"/);
+  for (const text of ["and/or 1/2", "xwiki:a/b.html", "`/Users/me/x y`", "wiki:a/../b.html", "~/Documents/x.md", "a /tmp path", "http://x/wiki:a/b.html", "[label](https://x.com) /a"]) {
+    assert.doesNotMatch(renderMarkdown(text), /artifact-link/, text);
+  }
+});
+
 test("markdown links: artifact targets and chat permalinks become reader buttons, web links stay anchors", () => {
   assert.match(renderMarkdown("[report](job:readme-check)"), /<button type="button" class="artifact-link" data-target="job:readme-check"/);
   assert.match(renderMarkdown("[msg](thread:abc@12)"), /data-target="thread:abc@12"/);
@@ -103,7 +124,8 @@ test("job mentions: a whole-word job name, bare or alone in a code span, becomes
   assert.match(html, /<button type="button" class="mention-chip job-chip" data-job="w20-preview" data-preview-chat="chat-1" data-preview-job="w20-preview"><svg [^>]+><path d="[^"]+"\/><\/svg>w20-preview<\/button>, then /);
   assert.deepEqual(chips(html), ["w20-preview", "w20"], "the longest name wins where one starts another");
   assert.deepEqual(chips(renderMarkdown("api.reviewer and api-reviewer and apixreviewer", "", index)), ["api.reviewer"], "a dot in a name is literal");
-  assert.deepEqual(chips(renderMarkdown("`w20 x` `w20-probe` in code\n```\nw20 block\n```\n[w20](https://x.com/w20) https://x.com/w20 xw20 w20x w20-probe w20s job:w20 (w20) w20's", "", index)), ["w20", "w20", "w20"], "code, links, words and hyphenated words keep the name");
+  assert.deepEqual(chips(renderMarkdown("`w20 x` `w20-probe` in code\n```\nw20 block\n```\n[w20](https://x.com/w20) https://x.com/w20 xw20 w20x w20-probe w20s job:w20 (w20) w20's", "", index)), ["w20", "w20"], "code, links, words and hyphenated words keep the name");
+  assert.match(renderMarkdown("job:w20", "", index), /<button type="button" class="artifact-link" data-target="job:w20" data-preview-chat="chat-1" data-preview-job="w20"/, "a bare job: target is a link to the job's report");
   assert.equal(renderMarkdown("`w20` ran", "", index), renderMarkdown("w20 ran", "", index), "a code span that is one job name is the same chip");
   assert.deepEqual(chips(renderMarkdown("`w20` and `w20-preview` and `api.reviewer`", "", index)), ["w20", "w20-preview", "api.reviewer"]);
   assert.match(renderMarkdown("`w20`"), /<code>w20<\/code>/, "no index: the code span stays code");

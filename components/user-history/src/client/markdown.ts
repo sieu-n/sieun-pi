@@ -96,21 +96,56 @@ function artifactTarget(href: string): string | null {
   if (!target) return null;
   return WEB_LINK.test(href) ? (target.startsWith("thread:") ? target : null) : target;
 }
+const artifactButton = (target: string, inner: string, tip: string): string =>
+  `<button type="button" class="artifact-link" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${escapeHtml(tip)}">${inner}</button>`;
+
+/**
+ * A link target the chat wrote bare in prose (`wiki:<path>`, `file:/path`, `job:<name>`, `thread:<id>`, an absolute path, or a path through
+ * `apps/llm-wiki/content/`) is the same button a markdown link to it gets; a bare URL is marked's own autolink. A target inside a word,
+ * a link or a code block stays text, and trailing sentence punctuation stays outside the link. A code span that holds exactly one target
+ * is a link too, like a job name in backticks.
+ */
+const BARE_TARGET = /^(?:wiki:|file:|job:|thread:|\/(?=[A-Za-z][^\s/]*\/\S)|apps\/llm-wiki\/content\/)[^\s<>()[\]`"'*]+/;
+const BARE_TARGET_START = /(^|[^\w~./:-])(?:wiki:|file:|job:|thread:|\/[A-Za-z]|apps\/llm-wiki\/content\/)/;
+const WIKI_CONTENT = /^(?:\/.*?\/)?apps\/llm-wiki\/content\//;
+function bareTarget(text: string): { raw: string; target: string } | null {
+  const match = BARE_TARGET.exec(text);
+  if (!match) return null;
+  const raw = match[0].replace(/[.,;:!?]+$/, "");
+  const content = WIKI_CONTENT.exec(raw);
+  const target = normalizeArtifactTarget(content ? "wiki:" + raw.slice(content[0].length) : raw);
+  return target ? { raw, target } : null;
+}
+const bareTargets: TokenizerAndRendererExtension = {
+  name: "bareTarget",
+  level: "inline",
+  start(src) { const match = BARE_TARGET_START.exec(src); return match ? match.index + match[1]!.length : undefined; },
+  tokenizer(src, tokens) {
+    if (this.lexer.state.inLink || /[\w~./:-]$/.test(tokens.at(-1)?.raw ?? "")) return undefined;
+    const found = bareTarget(src);
+    return found ? { type: "bareTarget", raw: found.raw, target: found.target } : undefined;
+  },
+  renderer(token) { return artifactButton(String(token.target), escapeHtml(token.raw), String(token.target)); },
+};
 
 const marked = new Marked({
   gfm: true,
-  extensions: [mentions, jobMentions],
+  extensions: [mentions, jobMentions, bareTargets],
   async: false,
   // Raw HTML is escaped, so a literal <table> in the output always came from the table renderer.
   hooks: { postprocess: html => html.replaceAll("<table>", '<div class="table-wrap"><table>').replaceAll("</table>", "</table></div>") },
   renderer: {
     html({ text }) { return escapeHtml(text); },
-    codespan({ text }) { return isJobName(text) ? jobChip(text) : false; },
+    codespan({ text }) {
+      if (isJobName(text)) return jobChip(text);
+      const found = bareTarget(text);
+      return found?.raw === text ? artifactButton(found.target, `<code>${escapeHtml(text)}</code>`, found.target) : false;
+    },
     link({ href, title, tokens }) {
       const text = this.parser.parseInline(tokens);
       const tip = escapeHtml(title ? `${title} (${href})` : href);
       const target = artifactTarget(href);
-      if (target) return `<button type="button" class="artifact-link" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${tip}">${text}</button>`;
+      if (target) return artifactButton(target, text, title ? `${title} (${href})` : href);
       if (WEB_LINK.test(href)) return `<a href="${escapeHtml(href)}" title="${tip}" target="_blank" rel="noopener noreferrer">${text}</a>`;
       return `<span class="path-link" title="${tip}">${text}</span>`;
     },
