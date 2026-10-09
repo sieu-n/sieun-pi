@@ -3,11 +3,13 @@ import type { ChatBackend } from "./chat-backend.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { runCommand, type Runner } from "./chat-remote.ts";
 import { chatLines } from "./shared/chat-feed.ts";
-import type { SlackInput, SlackView, ThreadEvent, ThreadMessage } from "./shared/types.ts";
+import { channelName, channelNameError, parseChannelRef } from "./shared/slack-channel.ts";
+import type { SlackChannelOption, SlackChatInput, SlackChatLink, SlackInput, SlackView, ThreadEvent, ThreadMessage } from "./shared/types.ts";
 
 /**
- * The Slack bridge: one private channel `#vp-<chat name>` per chat the owner syncs, through Socket Mode (one outbound WebSocket, no public URL).
- * Sync is off for every chat until the owner turns it on in the chat's header or on the new-chat screen; archiving the chat archives its channel.
+ * The Slack bridge: one channel per chat the owner syncs (`#vp-<chat name>` by default, private by default), through Socket Mode (one outbound
+ * WebSocket, no public URL). Sync is off for every chat until the owner connects it from the chat's header or the new-chat screen, where the
+ * channel's name and visibility are set; archiving the chat archives its channel.
  * In: an owner message in a chat's channel is a steer to that chat, the same call the browser composer makes.
  * Out: the agent lines of `chatLines()` (owner-turn replies and `tell_owner` pings), the lines the browser feed shows on the left.
  * Browser-typed owner messages are not mirrored. Only the configured owner member id in the bot's own team is accepted.
@@ -167,19 +169,20 @@ export interface SlackChats {
 }
 
 /**
- * A chat the owner synced: its channel (id and name), the chat name at link time, `since` (older lines are never posted), `seen` (the newest owner
- * message ts handled) and the posted line keys. `archived` is true while the chat is archived: the channel is archived too, and an unarchive opens it again.
+ * A chat the owner synced: its channel (id, name, private or public), the chat name at link time, `since` (older lines are never posted), `seen` (the
+ * newest owner message ts handled) and the posted line keys. `archived` is true while the chat is archived: the channel is archived too, and an
+ * unarchive opens it again.
  */
-export interface SlackLink { channel: string; channelName: string; name: string; since: number; seen: string; posted: string[]; archived: boolean }
+export interface SlackLink { channel: string; channelName: string; isPrivate: boolean; name: string; since: number; seen: string; posted: string[]; archived: boolean }
 /** `enabled` connects the workspace; `links` holds only the chats the owner synced. `migrations` lists the one-time changes already applied. */
 export interface SlackState { enabled: boolean; ownerUserId: string | null; teamId: string | null; teamName: string | null; links: Record<string, SlackLink>; migrations: string[] }
 
 function parseLink(id: string, value: unknown): SlackLink | null {
   if (!isRecord(value) || typeof value.channel !== "string" || typeof value.name !== "string" || typeof value.since !== "number" || typeof value.seen !== "string" ||
     !Array.isArray(value.posted) || !value.posted.every(key => typeof key === "string")) return null;
-  // Links written before opt-in carry no channel name or archived flag: the name is the one the bridge gave the channel then.
-  return { channel: value.channel, channelName: typeof value.channelName === "string" ? value.channelName : channelName(value.name, id), name: value.name, since: value.since,
-    seen: value.seen, posted: value.posted as string[], archived: value.archived === true };
+  // Links written before opt-in carry no channel name or archived flag: the name is the one the bridge gave the channel then. Every channel was private before the setup dialog.
+  return { channel: value.channel, channelName: typeof value.channelName === "string" ? value.channelName : channelName(value.name, id), isPrivate: value.isPrivate !== false,
+    name: value.name, since: value.since, seen: value.seen, posted: value.posted as string[], archived: value.archived === true };
 }
 export function slackStateFile(path: string): JsonFile<SlackState> {
   return { path, label: "Slack bridge state", initial: () => ({ enabled: false, ownerUserId: null, teamId: null, teamName: null, links: {}, migrations: [] }), parse(value) {
@@ -194,12 +197,6 @@ export function slackStateFile(path: string): JsonFile<SlackState> {
 
 /** A Slack member id: U or W, then letters and digits. */
 export const isMemberId = (value: string): boolean => /^[UW][A-Z0-9]{5,20}$/.test(value);
-
-/** `vp-<slug>` in Slack's channel alphabet (lowercase letters, digits, `-`, `_`), at most 80 characters; the id stands in for a name with no ASCII. */
-export function channelName(chatName: string, id: string): string {
-  const slug = chatName.toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9_-]+/g, "-").replace(/-+/g, "-").replace(/^[-_]+|[-_]+$/g, "");
-  return ("vp-" + (slug || id.slice(0, 8))).slice(0, 80).replace(/[-_]+$/, "");
-}
 
 /** Slack message text back to plain markdown: links, mentions and channel refs unwrapped, then the three HTML escapes. */
 export function slackToMarkdown(text: string): string {
@@ -263,8 +260,8 @@ export function tsAfter(a: string, b: string): boolean {
 }
 const nowTs = (now: number): string => (now / 1000).toFixed(6);
 
-/** What the HTTP server needs: the Settings view, the switch and owner id, a token re-check, and a chat's sync switch. */
-export type SlackControl = Pick<SlackBridge, "view" | "set" | "check" | "setChat">;
+/** What the HTTP server needs: the Settings view, the switch and owner id, a token re-check, and a chat's channel (connect, rename, stop, the channel list). */
+export type SlackControl = Pick<SlackBridge, "view" | "set" | "check" | "chat" | "channels">;
 
 /**
  * The bridge runs in the main instance only, so a test or extra instance never opens a second Socket Mode connection (Slack would split the
@@ -288,6 +285,8 @@ export function slackChats(backend: ChatBackend): SlackChats {
 }
 
 type Status = { state: SlackView["state"]; message: string };
+/** A channel a chat is about to be linked to, with the chat name at link time. */
+type Target = { channel: string; channelName: string; isPrivate: boolean; chatName: string };
 type Connection = { api: SlackCall; socket: SocketMode };
 export type SlackBridgeOptions = {
   /** `<dataDir>/slack.json`. */
@@ -403,25 +402,66 @@ export class SlackBridge {
 
   view(editable: boolean): SlackView {
     const state = this.state;
-    const chats = Object.fromEntries(Object.entries(state?.links ?? {}).filter(([, link]) => !link.archived).map(([id, link]) => [id, link.channelName]));
+    const chats = Object.fromEntries(Object.entries(state?.links ?? {}).filter(([, link]) => !link.archived)
+      .map(([id, link]): [string, SlackChatLink] => [id, { channel: link.channel, name: link.channelName, isPrivate: link.isPrivate }]));
     return { ...this.status, enabled: state?.enabled ?? false, ownerUserId: state?.ownerUserId ?? null, teamId: state?.teamId ?? null, teamName: state?.teamName ?? null,
       channels: Object.keys(chats).length, chats, tokenSource: this.tokenSource, keychainService: KEYCHAIN_SERVICE, editable };
   }
 
   /**
-   * A chat's sync switch. On creates its private channel (or opens its archived one again); off archives the channel and drops the link.
-   * Both need a live connection; the error says so otherwise.
+   * A chat's Slack control, one call per dialog action, each needing a live connection. Every action runs on the chat's queue, so repeated or
+   * concurrent calls run one after another and converge:
+   * `connect` is idempotent: a synced chat keeps its channel (the body's name is ignored), an archived link is opened again, and a chat with no link
+   * gets one, created with the given name (or reused when the bot is already in a channel of that name) or the `existing` channel the owner picked.
+   * `rename` renames the channel; `stop` archives the channel and drops the link.
+   * Returns the chat's channel after the action, null once sync is off.
    */
-  async setChat(id: string, on: boolean): Promise<void> {
+  async chat(id: string, input: SlackChatInput): Promise<SlackChatLink | null> {
     if (!this.connection || this.status.state !== "on") throw new Error("Slack is not connected. Connect it in Settings > Slack.");
-    await this.queue(id, async () => {
+    if (input.action !== "stop") {
+      const error = input.action === "rename" || input.name !== undefined ? channelNameError(input.name ?? "") : null;
+      if (error) throw new Error(error);
+    }
+    return this.queue(id, async () => {
       const link = this.state!.links[id];
-      if (!on) { if (link) await this.unlink(id, "sync turned off"); return; }
-      this.parked.delete(id);
-      if (!link) await this.link(id);
-      else if (link.archived) await this.reopen(id);
-      await this.watchChat(id);
+      if (input.action === "stop") { if (link) await this.unlink(id, "sync turned off"); return null; }
+      if (input.action === "rename") {
+        if (!link || link.archived) throw new Error("This chat is not synced to Slack.");
+        await this.rename(id, input.name);
+      } else {
+        this.parked.delete(id);
+        if (!link) await this.link(id, input);
+        else if (link.archived) await this.reopen(id);
+        await this.watchChat(id);
+      }
+      const after = this.state!.links[id]!;
+      return { channel: after.channel, name: after.channelName, isPrivate: after.isPrivate };
     }, true);
+  }
+
+  /** The unarchived channels the bot can see (its private ones, plus public ones when the token has channels:read); null when it cannot list. */
+  async channels(): Promise<SlackChannelOption[] | null> {
+    const api = this.connection?.api;
+    if (!api || this.status.state !== "on") return null;
+    const out: SlackChannelOption[] = [];
+    for (const types of ["private_channel", "public_channel"]) {
+      let cursor: string | undefined;
+      for (let page = 0; page < 5; page++) {
+        let listed: Record<string, unknown>;
+        try { listed = await api("conversations.list", { types, exclude_archived: true, limit: 200, cursor }); }
+        catch (error) {
+          if (error instanceof SlackApiError && error.code === "missing_scope" && types === "public_channel") break;
+          if (types === "private_channel" && page === 0) return null;
+          throw error;
+        }
+        for (const channel of Array.isArray(listed.channels) ? listed.channels.filter(isRecord) : []) {
+          if (typeof channel.id === "string" && typeof channel.name === "string" && channel.is_member === true) out.push({ id: channel.id, name: channel.name, isPrivate: channel.is_private === true });
+        }
+        cursor = isRecord(listed.response_metadata) && typeof listed.response_metadata.next_cursor === "string" ? listed.response_metadata.next_cursor : "";
+        if (!cursor) break;
+      }
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** Settings: the switch and the owner id. Any change, and `check`, reads the tokens again and reconnects. */
@@ -444,9 +484,11 @@ export class SlackBridge {
    * Tasks of one key (a chat id) run one after another, so a live event and the catch-up never handle one message twice. A failed task is logged,
    * or with `rethrow` handed to the caller instead.
    */
-  private queue(key: string, task: () => Promise<void>, rethrow = false): Promise<void> {
+  private queue<T = void>(key: string, task: () => Promise<T>, rethrow: true): Promise<T>;
+  private queue(key: string, task: () => Promise<void>, rethrow?: false): Promise<void>;
+  private queue<T>(key: string, task: () => Promise<T>, rethrow = false): Promise<T | void> {
     const run = (this.queues.get(key) ?? Promise.resolve()).then(task);
-    const next = run.catch(error => { if (!rethrow) this.log(`slack ${key.slice(0, 8)}: ${errorText(error)}`); });
+    const next: Promise<void> = run.then(() => {}, error => { if (!rethrow) this.log(`slack ${key.slice(0, 8)}: ${errorText(error)}`); });
     this.queues.set(key, next);
     void next.finally(() => { if (this.queues.get(key) === next) this.queues.delete(key); });
     return rethrow ? run : next;
@@ -496,21 +538,50 @@ export class SlackBridge {
     this.log(`slack: opt-in migration done, ${Object.keys(this.state.links).length} chat(s) still synced`);
   }
 
-  /** A new private channel for the chat, invited the owner; a taken name gets the chat id's first four characters. */
-  private async createChannel(id: string): Promise<{ channel: string; channelName: string; chatName: string }> {
+  /**
+   * The chat's channel: created with `name` (the chat's `vp-<slug>` by default), private unless asked otherwise, with the owner invited. A taken
+   * name is reused when the bot is already in that channel; otherwise the name gets the chat id's first four characters.
+   */
+  private async createChannel(id: string, setup: { name?: string; isPrivate?: boolean }): Promise<Target> {
     const api = this.connection!.api;
     const chatName = (await this.options.chats.name(id))?.trim() || id.slice(0, 8);
-    const base = channelName(chatName, id);
+    const base = setup.name ?? channelName(chatName, id);
+    const isPrivate = setup.isPrivate ?? true;
     for (const name of [base, `${base.slice(0, 75)}-${id.slice(0, 4)}`]) {
       let created: Record<string, unknown>;
-      try { created = await api("conversations.create", { name, is_private: true }); }
-      catch (error) { if (error instanceof SlackApiError && error.code === "name_taken") continue; throw error; }
+      try { created = await api("conversations.create", { name, is_private: isPrivate }); }
+      catch (error) {
+        if (!(error instanceof SlackApiError && error.code === "name_taken")) throw error;
+        const found = await this.findChannel({ name });
+        if (found) { await this.invite(found.id); return { channel: found.id, channelName: found.name, isPrivate: found.isPrivate, chatName }; }
+        continue;
+      }
       const channel = isRecord(created.channel) ? created.channel : {};
       if (typeof channel.id !== "string") throw new Error("conversations.create returned no channel.");
       await this.invite(channel.id);
-      return { channel: channel.id, channelName: typeof channel.name === "string" ? channel.name : name, chatName };
+      return { channel: channel.id, channelName: typeof channel.name === "string" ? channel.name : name, isPrivate, chatName };
     }
     throw new Error(`No channel name left for ${base}.`);
+  }
+
+  /** A channel the bot is in, by id (conversations.info) or by name (the list); null when there is none or the bot cannot see it. */
+  private async findChannel(ref: { id: string } | { name: string }): Promise<SlackChannelOption | null> {
+    if ("name" in ref) return (await this.channels().catch(() => null))?.find(channel => channel.name === ref.name) ?? null;
+    const info = await this.connection!.api("conversations.info", { channel: ref.id }).catch(() => null);
+    const channel = info && isRecord(info.channel) ? info.channel : null;
+    if (!channel || typeof channel.id !== "string" || typeof channel.name !== "string" || channel.is_member !== true || channel.is_archived === true) return null;
+    return { id: channel.id, name: channel.name, isPrivate: channel.is_private === true };
+  }
+
+  /** The channel the owner picked in the dialog: an id or `#name` of a channel the bot is already in. */
+  private async existingChannel(id: string, existing: string): Promise<Target> {
+    const ref = parseChannelRef(existing);
+    if (!ref) throw new Error("Enter a channel id or #name.");
+    const found = await this.findChannel(ref);
+    if (!found) throw new Error(`No channel ${"id" in ref ? ref.id : "#" + ref.name} that the bot is in. Invite the bot to it first, or create a new channel.`);
+    await this.invite(found.id);
+    const chatName = (await this.options.chats.name(id))?.trim() || id.slice(0, 8);
+    return { channel: found.id, channelName: found.name, isPrivate: found.isPrivate, chatName };
   }
 
   private invite(channel: string): Promise<unknown> {
@@ -518,18 +589,31 @@ export class SlackBridge {
       .catch(error => { if (!(error instanceof SlackApiError && error.code === "already_in_channel")) throw error; });
   }
 
-  private async link(id: string): Promise<void> {
-    const { channel, channelName: name, chatName } = await this.createChannel(id);
+  private async link(id: string, input: { name?: string; isPrivate?: boolean; existing?: string }): Promise<void> {
+    const { channel, channelName: name, isPrivate, chatName } = input.existing !== undefined ? await this.existingChannel(id, input.existing) : await this.createChannel(id, input);
     const now = this.now();
-    await this.save(next => { next.links[id] = { channel, channelName: name, name: chatName, since: now, seen: nowTs(now), posted: [], archived: false }; });
+    await this.save(next => { next.links[id] = { channel, channelName: name, isPrivate, name: chatName, since: now, seen: nowTs(now), posted: [], archived: false }; });
     await this.post(channel, `Linked to the chat *${chatName}*. What you write here goes to the chat; its replies and pings come back here.`);
     this.log(`slack ${id.slice(0, 8)}: linked to ${channel} #${name}`);
+  }
+
+  /** conversations.rename; the same name is a no-op. Slack's answer carries the name it kept. */
+  private async rename(id: string, name: string): Promise<void> {
+    const link = this.state!.links[id]!;
+    if (link.channelName === name) return;
+    let renamed: Record<string, unknown>;
+    try { renamed = await this.connection!.api("conversations.rename", { channel: link.channel, name }); }
+    catch (error) { throw error instanceof SlackApiError && error.code === "name_taken" ? new Error(`#${name} is taken by another channel.`) : error; }
+    const channel = isRecord(renamed.channel) ? renamed.channel : {};
+    const kept = typeof channel.name === "string" ? channel.name : name;
+    await this.save(next => { const entry = next.links[id]; if (entry) entry.channelName = kept; });
+    this.log(`slack ${id.slice(0, 8)}: renamed ${link.channel} #${link.channelName} to #${kept}`);
   }
 
   /** The chat is back from the archive: its channel is unarchived, or replaced by a new one when Slack refuses (the bot left it on archive). */
   private async reopen(id: string): Promise<void> {
     const link = this.state!.links[id]!;
-    let target: { channel: string; channelName: string };
+    let target: { channel: string; channelName: string; isPrivate: boolean };
     try {
       await this.connection!.api("conversations.unarchive", { channel: link.channel })
         .catch(error => { if (!(error instanceof SlackApiError && error.code === "not_archived")) throw error; });
@@ -537,9 +621,9 @@ export class SlackBridge {
       target = link;
     } catch (error) {
       if (!(error instanceof SlackApiError) || error.code === "ratelimited") throw error;
-      target = await this.createChannel(id);
+      target = await this.createChannel(id, { name: link.channelName, isPrivate: link.isPrivate });
     }
-    await this.save(next => { const entry = next.links[id]; if (entry) Object.assign(entry, { channel: target.channel, channelName: target.channelName, archived: false }); });
+    await this.save(next => { const entry = next.links[id]; if (entry) Object.assign(entry, { channel: target.channel, channelName: target.channelName, isPrivate: target.isPrivate, archived: false }); });
     await this.post(target.channel, `The chat *${link.name}* is back from the archive. What you write here goes to the chat again.`);
     this.log(`slack ${id.slice(0, 8)}: chat unarchived, ${target.channel} #${target.channelName} open again`);
   }

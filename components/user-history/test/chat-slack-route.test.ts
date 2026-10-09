@@ -26,6 +26,8 @@ async function setup(connected = true) {
     calls.push({ method, args });
     if (method === "auth.test") return { ok: true, team_id: "T0TEAM001", team: "Company" };
     if (method === "conversations.create") return { ok: true, channel: { id: "G0" + String(args.name).length, name: args.name } };
+    if (method === "conversations.rename") return { ok: true, channel: { id: args.channel, name: args.name } };
+    if (method === "conversations.list") return { ok: true, channels: [] };
     return { ok: true };
   };
   const bridge = new SlackBridge({ path: join(dir, "slack.json"), chats, tokens: async () => ({ bot: "xoxb-t", app: "xapp-t", source: "keychain" }),
@@ -51,26 +53,42 @@ async function setup(connected = true) {
   return { bridge, server, post, calls, ids, get notified() { return notified; } };
 }
 
-test("api/threads/:id/slack turns a chat's sync on and off with the write token; non-chats 404, bad input 400", async () => {
+test("api/threads/:id/slack connects a chat (idempotent, with a name and visibility), renames and stops with the write token; non-chats 404, bad input 400", async () => {
   const s = await setup();
   try {
-    assert.equal((await s.post(`api/threads/${CHAT}/slack`, { on: true }, "wrong")).status, 403);
-    assert.equal((await s.post(`api/threads/${CHAT}/slack`, { on: "yes" })).status, 400);
-    assert.equal((await s.post("api/threads/plain/slack", { on: true })).status, 404);
-    const on = await s.post(`api/threads/${CHAT}/slack`, { on: true });
-    assert.equal(on.status, 200);
-    assert.deepEqual(on.body.chats, { [CHAT]: "vp-route-chat" });
+    assert.equal((await s.post(`api/threads/${CHAT}/slack`, { action: "connect" }, "wrong")).status, 403);
+    assert.equal((await s.post(`api/threads/${CHAT}/slack`, { on: true })).status, 400);
+    assert.equal((await s.post(`api/threads/${CHAT}/slack`, { action: "connect", name: "Bad Name" })).status, 400);
+    assert.equal((await s.post(`api/threads/${CHAT}/slack`, { action: "connect", isPrivate: "no" })).status, 400);
+    assert.equal((await s.post(`api/threads/${CHAT}/slack`, { action: "rename" })).status, 400);
+    assert.equal((await s.post("api/threads/plain/slack", { action: "connect" })).status, 404);
+    assert.ok(!s.calls.some(call => call.method === "conversations.create"));
+    // A double click: two connects in flight at once make one channel, and both answer with it.
+    const [first, second] = await Promise.all([s.post(`api/threads/${CHAT}/slack`, { action: "connect", name: "vp-ops", isPrivate: false }), s.post(`api/threads/${CHAT}/slack`, { action: "connect" })]);
+    assert.deepEqual([first.status, second.status], [200, 200]);
+    // Whichever request reached the bridge first named the channel; the other got that same channel back.
+    const creates = s.calls.filter(call => call.method === "conversations.create");
+    assert.equal(creates.length, 1);
+    const made = creates[0]!.args.name === "vp-ops" ? { channel: "G06", name: "vp-ops", isPrivate: false } : { channel: "G013", name: "vp-route-chat", isPrivate: true };
+    assert.deepEqual(first.body.chats, { [CHAT]: made });
+    assert.deepEqual(second.body.chats, first.body.chats);
+    const third = await s.post(`api/threads/${CHAT}/slack`, { action: "connect", name: "vp-other" });
+    assert.deepEqual([third.status, third.body.chats], [200, first.body.chats], "already connected returns the existing channel");
     assert.equal(s.calls.filter(call => call.method === "conversations.create").length, 1);
-    const off = await s.post(`api/threads/${CHAT}/slack`, { on: false });
+    const renamed = await s.post(`api/threads/${CHAT}/slack`, { action: "rename", name: "vp-ops-2" });
+    assert.deepEqual([renamed.status, renamed.body.chats[CHAT]!.name], [200, "vp-ops-2"]);
+    const off = await s.post(`api/threads/${CHAT}/slack`, { action: "stop" });
     assert.deepEqual([off.status, off.body.chats], [200, {}]);
     assert.ok(s.calls.some(call => call.method === "conversations.archive"));
+    const list = await fetch(s.server.url + "api/slack/channels");
+    assert.deepEqual([list.status, await list.json()], [200, { channels: [] }]);
   } finally { await s.server.close(); s.bridge.close(); }
 });
 
 test("api/threads/:id/slack answers 409 while Slack is not connected", async () => {
   const s = await setup(false);
   try {
-    const refused = await s.post(`api/threads/${CHAT}/slack`, { on: true });
+    const refused = await s.post(`api/threads/${CHAT}/slack`, { action: "connect" });
     assert.equal(refused.status, 409);
     assert.match(refused.body.error!, /Slack is not connected/);
     assert.ok(!s.calls.some(call => call.method === "conversations.create"));
@@ -80,7 +98,7 @@ test("api/threads/:id/slack answers 409 while Slack is not connected", async () 
 test("archiving a synced chat archives its channel; a new chat created with slack true is synced, one without is not", async () => {
   const s = await setup();
   try {
-    await s.post(`api/threads/${CHAT}/slack`, { on: true });
+    await s.post(`api/threads/${CHAT}/slack`, { action: "connect" });
     assert.equal((await s.post(`api/threads/${CHAT}/archive`, {})).status, 200);
     assert.equal(s.notified, 1, "the archive tells the catalog watchers, the bridge among them");
     await s.bridge.sync(false);
@@ -90,9 +108,10 @@ test("archiving a synced chat archives its channel; a new chat created with slac
 
     const plain = await s.post("api/threads", { requestId: "q".repeat(24), cwd: tmpdir(), message: "hi", images: [], kind: "chat" });
     assert.deepEqual([plain.status, plain.body.id, s.bridge.view(true).chats], [200, NEW, {}]);
-    const created = await s.post("api/threads", { requestId: "r".repeat(24), cwd: tmpdir(), message: "hi", images: [], kind: "chat", slack: true });
+    const created = await s.post("api/threads", { requestId: "r".repeat(24), cwd: tmpdir(), message: "hi", images: [], kind: "chat", slack: { name: "vp-new-one", isPrivate: true } });
     assert.deepEqual([created.status, created.body.id, created.body.notice], [200, NEW, undefined]);
-    assert.deepEqual(s.bridge.view(true).chats, { [NEW]: "vp-new-one" });
+    assert.deepEqual(s.bridge.view(true).chats, { [NEW]: { channel: "G010", name: "vp-new-one", isPrivate: true } });
     assert.equal((await s.post("api/threads", { requestId: "s".repeat(24), cwd: tmpdir(), message: "hi", images: [], kind: "chat", slack: "yes" })).status, 400);
+    assert.equal((await s.post("api/threads", { requestId: "t".repeat(24), cwd: tmpdir(), message: "hi", images: [], kind: "chat", slack: { name: "Bad Name" } })).status, 400);
   } finally { await s.server.close(); s.bridge.close(); }
 });

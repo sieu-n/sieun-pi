@@ -21,7 +21,8 @@ import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
+import { channelNameError } from "./shared/slack-channel.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
@@ -253,6 +254,44 @@ function parseSlackInput(body: Record<string, unknown>): SlackInput {
   return input;
 }
 
+/** The chat header's Slack dialog: connect (with the channel's name and visibility, or an existing channel), rename, or stop. */
+function parseSlackChatInput(body: Record<string, unknown>): SlackChatInput {
+  const name = (): string => {
+    if (typeof body.name !== "string") throw new RequestError(400, "name must be a channel name.");
+    const error = channelNameError(body.name);
+    if (error) throw new RequestError(400, error);
+    return body.name;
+  };
+  switch (body.action) {
+    case "connect": {
+      const input: SlackChatInput = { action: "connect" };
+      if (body.existing !== undefined) {
+        if (typeof body.existing !== "string" || !body.existing.trim()) throw new RequestError(400, "existing must be a channel id or #name.");
+        input.existing = body.existing.trim();
+      } else {
+        if (body.name !== undefined) input.name = name();
+        if (body.isPrivate !== undefined) { if (typeof body.isPrivate !== "boolean") throw new RequestError(400, "isPrivate must be true or false."); input.isPrivate = body.isPrivate; }
+      }
+      return input;
+    }
+    case "rename": return { action: "rename", name: name() };
+    case "stop": return { action: "stop" };
+    default: throw new RequestError(400, "action must be connect, rename or stop.");
+  }
+}
+
+/** A new chat's Slack channel: absent for no sync, else its name (the default when empty) and visibility. */
+function parseSlackSetup(value: unknown): SlackChannelSetup | undefined {
+  if (value === undefined || value === null || value === false) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) throw new RequestError(400, "slack must be { name, isPrivate } or absent.");
+  const setup = value as Record<string, unknown>;
+  if (typeof setup.name !== "string") throw new RequestError(400, "slack.name must be a channel name.");
+  const error = channelNameError(setup.name);
+  if (error) throw new RequestError(400, error);
+  if (setup.isPrivate !== undefined && typeof setup.isPrivate !== "boolean") throw new RequestError(400, "slack.isPrivate must be true or false.");
+  return { name: setup.name, isPrivate: setup.isPrivate !== false };
+}
+
 function parseRemoteInput(body: Record<string, unknown>): RemoteAccessInput {
   const input: RemoteAccessInput = {};
   if (body.tailscale !== undefined) { if (typeof body.tailscale !== "boolean") throw new RequestError(400, "tailscale must be true or false."); input.tailscale = body.tailscale; }
@@ -437,6 +476,11 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
         if (route === "api/remote") { json(res, 200, remote.view(origin === `http://${host}`)); return; }
         if (route === "api/slack") { json(res, 200, slack ? slack.view(origin === `http://${host}`) : null); return; }
+        if (route === "api/slack/channels") {
+          // The setup dialog's existing-channel list; null when the bot cannot list, so the dialog shows a field for an id or #name instead.
+          if (!slack) throw new RequestError(409, "This chat instance runs no Slack bridge.");
+          json(res, 200, { channels: await slack.channels().catch(() => null) }); return;
+        }
         if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
         if (route.startsWith("api/usage/")) {
           const analytics = backend.usage;
@@ -550,8 +594,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const account = parseNewChatAccount(body.account);
         const name = typeof body.name === "string" ? text(body.name, "name", 200).trim() : "";
         const kind = parseKind(body.kind);
-        if (body.slack !== undefined && typeof body.slack !== "boolean") throw new RequestError(400, "slack must be true or false.");
-        const syncSlack = body.slack === true && kind === "chat";
+        const syncSlack = kind === "chat" ? parseSlackSetup(body.slack) : undefined;
         const fingerprint = createHash("sha256").update(JSON.stringify([cwd, provider, modelId, thinkingLevel, message, images, account, name, kind, syncSlack])).digest("hex");
         let creation = creations.get(id);
         if (creation && creation.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to another new chat.");
@@ -577,7 +620,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             await backend.threads.prompt(thread.id, { message, images, mode: kind === "chat" ? "steer" : "followUp" });
             // The chat exists either way; a Slack refusal comes back as a notice and the header switch can try again.
             if (syncSlack) {
-              const failure = !slack ? "This chat instance runs no Slack bridge." : await slack.setChat(thread.id, true).then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
+              const failure = !slack ? "This chat instance runs no Slack bridge." : await slack.chat(thread.id, { action: "connect", ...syncSlack }).then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error));
               if (failure) return { id: thread.id, notice: `Not synced to Slack: ${failure}` };
             }
             return { id: thread.id };
@@ -690,12 +733,13 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (await backend.chats.restore(id)) await backend.catalog.notify();
           break;
         case "slack": {
-          // A chat's own sync switch, like archive: any page with the write token may flip it. Connecting the workspace stays Mac-only (api/slack).
+          // A chat's own channel, like archive: any page with the write token may change it. Connecting the workspace stays Mac-only (api/slack).
+          // Connect is idempotent: the bridge runs the actions of one chat in turn, so a double click or two tabs make one channel.
           if (!slack) throw new RequestError(409, "This chat instance runs no Slack bridge.");
           if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
-          if (typeof body.on !== "boolean") throw new RequestError(400, "on must be true or false.");
+          const input = parseSlackChatInput(body);
           if (slack.view(false).state !== "on") throw new RequestError(409, "Slack is not connected. Connect it in Settings > Slack.");
-          await slack.setChat(id, body.on);
+          await slack.chat(id, input).catch(error => { throw new RequestError(400, error instanceof Error ? error.message : String(error)); });
           json(res, 200, slack.view(origin === `http://${host}`)); return;
         }
         case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;

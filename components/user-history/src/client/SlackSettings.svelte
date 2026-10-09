@@ -66,7 +66,7 @@
       <Checkbox visual checked={view.enabled} />
       <span class="text">
         <span class="label">Connect Slack</span>
-        <span class="note">No chat is synced until you turn on Sync to Slack in its header or when you create it. A synced chat gets a private channel #vp-&lt;chat name&gt;: what you write there goes to the chat, its replies and pings come back. Archiving the chat archives the channel. Messages you type here are not copied to Slack.</span>
+        <span class="note">No chat is synced until you press Connect to Slack in its header or on the new-chat screen. There you name the channel (#vp-&lt;chat name&gt; by default), choose private or public, or pick a channel the bot is already in. What you write in the channel goes to the chat; its replies and pings come back. Archiving the chat archives the channel. Messages you type here are not copied to Slack.</span>
       </span>
     </button>
 

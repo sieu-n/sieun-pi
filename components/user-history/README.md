@@ -153,17 +153,20 @@ Keep the full URL private. Anyone who can reach the service and has that URL can
 
 ## Slack
 
-The main instance can sync a chat to a private Slack channel `#vp-<chat name>`. It uses Socket Mode: one outbound WebSocket from this Mac, no public URL.
+The main instance can sync a chat to a Slack channel, `#vp-<chat name>` and private by default. It uses Socket Mode: one outbound WebSocket from this Mac, no public URL.
 The bridge is off by default. With no tokens it stays off and the service runs as before.
-Sync is opt-in per chat and off for every chat by default. Turn it on with the Slack button at the top right of a chat, or with "Sync to Slack" next to poteto-mode when you create a chat (shown while Slack is connected).
-Turning it off archives the channel. Archiving the chat archives its channel too; unarchiving the chat opens the same channel again (a new one if Slack refuses).
+Sync is opt-in per chat and off for every chat by default. "Connect to Slack" at the top right of a chat opens the setup dialog: the channel name (prefilled, checked the way Slack checks it: lowercase letters, numbers, hyphens and underscores, at most 80 characters), private or public, or an existing channel the bot is in (a list when the bot can list channels, else a field for an id or `#name`). The Slack button next to poteto-mode on the new-chat screen opens the same dialog for a chat you are about to create.
+A connected chat shows the Slack mark and `#name`; clicking it opens the same dialog on the channel, with an Open in Slack link, a rename, and "Stop syncing" behind a confirm. A click never turns sync off.
+Connect is idempotent: a chat that is already synced keeps its channel, a name that is taken is reused when the bot is in that channel, and repeated or concurrent connects (a double click, two tabs) make one channel because the bridge runs one chat's actions in turn.
+Stop syncing archives the channel. Archiving the chat (after its confirm) archives its channel too; unarchiving the chat opens the same channel again (a new one if Slack refuses).
 
 - In: a message you write in a chat's channel is a steer to that chat, the same call as the browser composer. An hourglass reaction stays on it until the turn ends.
 - Out: the lines the browser feed shows on the left: replies on turns you started and `tell_owner` pings. Job reports and the chat's own notes stay quiet. Messages you type in the browser are not copied to Slack.
 - Only your member id, in the team the bot token belongs to, is accepted. Bot posts, edits and deletes are dropped.
 - Each line is posted once, keyed by message timestamp plus `toolCallId`, so compaction does not repost. Lines from before a chat was linked are never posted.
 - After a reconnect (the Mac slept) the bridge reads each channel with `conversations.history` since the last handled message, because Socket Mode does not replay missed events.
-- State lives in `<data dir>/slack.json`: the workspace connection and one link per synced chat (`archived` while the chat is archived).
+- State lives in `<data dir>/slack.json`: the workspace connection and one link per synced chat (`channelName`, `isPrivate`, `archived` while the chat is archived).
+- Public channels need the `channels:manage`, `channels:read`, `channels:history` scopes and the `message.channels` event from the manifest; an app installed before 2026-10-09 has to be reinstalled from the manifest for them.
 - A synced chat whose feed does not open (its session is gone) is parked: one log line, then a quiet retry after 1 minute, doubling up to 30 minutes, so a dead session costs no daemon attach on every catalog update.
 - Sync became opt-in on 2026-10-08. At the first connect after that, the bridge unlinked and archived every channel it had linked before, except `#vp-slack-bridge-probe`, and recorded `opt-in-2026-10-08` under `migrations` in slack.json so it never runs again.
 - Text only for now: files you attach in Slack are not forwarded.
@@ -177,7 +180,7 @@ security add-generic-password -U -s sieun-pi-slack -a app-token -w   # xapp-
 ```
 
 `SIEUN_PI_SLACK_BOT_TOKEN` and `SIEUN_PI_SLACK_APP_TOKEN` work instead, for example through `dotenvx run -- sieun-pi chat serve`.
-Then open Settings > Slack on the Mac, enter your member id and turn on "Connect Slack". Then turn on sync in each chat you want in Slack. The refresh button reads the tokens again without a restart.
+Then open Settings > Slack on the Mac, enter your member id and turn on "Connect Slack". Then press "Connect to Slack" in each chat you want in Slack. The refresh button reads the tokens again without a restart.
 Only the main instance runs the bridge, so a test instance never opens a second Socket Mode connection; `SIEUN_PI_SLACK=1` or `0` overrides that.
 Anyone who can post as your Slack account can drive agents with full access to this Mac, and workspace admins can read the channels. Use 2FA on that account.
 

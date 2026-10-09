@@ -5,7 +5,7 @@
   import { ui } from "./ui.svelte.ts";
   import { labels, type TagSelection } from "./labels.ts";
   import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
-  import type { ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, Progress, SendMode, ThinkingLevel, Workspace } from "../shared/types.ts";
+  import type { ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, Progress, SendMode, SlackChannelSetup, ThinkingLevel, Workspace } from "../shared/types.ts";
   import { relativeTime, shortPath } from "./format.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import Composer from "./Composer.svelte";
@@ -21,6 +21,8 @@
   import PriorityPicker from "./PriorityPicker.svelte";
   import ProgressPicker from "./ProgressPicker.svelte";
   import Lightbox from "./ui/Lightbox.svelte";
+  import SlackLogo from "./SlackLogo.svelte";
+  import SlackChannelDialog, { type SlackConnectInput } from "./SlackChannelDialog.svelte";
 
   let { narrow }: { narrow: boolean } = $props();
   let workspaces = $state<Workspace[]>([]);
@@ -37,8 +39,9 @@
   let kind = $state<"thread" | "chat">("thread");
   /** Starts a new thread's or chat's first message with /skill:poteto-mode. On for every new one; a message that already starts with "/" is sent as typed. */
   let poteto = $state(true);
-  /** Syncs a new chat to its own private Slack channel. Off by default; offered only for a chat while Slack is connected. */
-  let slack = $state(false);
+  /** The new chat's Slack channel (name, private or public), chosen in the Slack dialog. Null by default; offered only for a chat while Slack is connected. */
+  let slack = $state<SlackChannelSetup | null>(null);
+  let slackOpen = $state(false);
   const slackOffered = $derived(kind === "chat" && store.slack?.state === "on");
   const closePopover = () => { workspaceOpen = false; };
   let lightbox = $state<number | null>(null);
@@ -116,12 +119,12 @@
     const chosen = activeModel;
     const name = threadName.trim();
     const message = poteto && !text.trimStart().startsWith("/") ? `/skill:poteto-mode ${text}` : text;
-    const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), ...(slack && slackOffered ? { slack: true } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
+    const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), ...(slack && slackOffered ? { slack } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
     threadName = "";
     poteto = true;
-    slack = false;
+    slack = null;
     draftTags = filterTags();
     draftPriority = 0;
     draftProgress = "none";
@@ -197,7 +200,10 @@
               defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
             <label class="bar-button check" use:tooltip={"Start with /skill:poteto-mode"}><input type="checkbox" bind:checked={poteto} /><span>poteto-mode</span></label>
             {#if slackOffered}
-              <label class="bar-button check" use:tooltip={"Give this chat a private Slack channel: write there to steer it, its replies come back"}><input type="checkbox" bind:checked={slack} /><span>Sync to Slack</span></label>
+              <button type="button" class="bar-button" class:slack-on={slack !== null} aria-haspopup="dialog" aria-expanded={slackOpen}
+                use:tooltip={slack ? `Slack channel #${slack.name}. Change it or drop it` : "Give this chat a Slack channel: write there to steer it, its replies come back"} onclick={() => { slackOpen = true; }}>
+                <SlackLogo size={13} /><span class="label">{slack ? `#${slack.name}` : "Slack"}</span>
+              </button>
             {/if}
           </div>
           <div class="group" role="group" aria-label="Labels for the new thread">
@@ -224,6 +230,10 @@
 
 {#if lightbox !== null && store.pending}
   <Lightbox images={store.pending.images.map((image, index) => ({ src: "data:" + image.mimeType + ";base64," + image.data, alt: `Image ${index + 1}` }))} index={lightbox} onclose={() => { lightbox = null; }} />
+{/if}
+{#if slackOpen}
+  <SlackChannelDialog chatName={threadName} draft={slack} onconnect={async (input: SlackConnectInput) => { if ("name" in input) slack = input; return true; }}
+    onclear={() => { slack = null; }} onclose={() => { slackOpen = false; }} />
 {/if}
 {#if labelPicker}
   {#if labelPicker.field === "name"}
@@ -262,6 +272,7 @@
   .options-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-top: 8px; padding: 0 4px; }
   .group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
   .group .bar-button { gap: 6px; }
+  .slack-on { color: var(--accent-bold); background: var(--accent-soft); }
   .check { cursor: pointer; user-select: none; }
   .check input { margin: 0; accent-color: var(--accent, currentColor); cursor: pointer; }
   .options-row :global(.bar-button), .options-row :global(.account) { height: 26px; font-size: 12.5px; }

@@ -3,8 +3,9 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { channelName, chunks, fallbackText, loadSlackTokens, OPT_IN_MIGRATION, outboundLines, runsSlack, SlackApiError, SlackBridge, slackToMarkdown, tsAfter, WORKING_REACTION,
+import { chunks, fallbackText, loadSlackTokens, OPT_IN_MIGRATION, outboundLines, runsSlack, SlackApiError, SlackBridge, slackToMarkdown, tsAfter, WORKING_REACTION,
   type SlackChats, type SlackTokens, type SocketListener, type SocketMode } from "../src/chat-slack.ts";
+import { channelName, channelNameError, defaultChannelName, parseChannelRef } from "../src/shared/slack-channel.ts";
 import type { AssistantMessage, ThreadEvent, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -26,6 +27,21 @@ test("channel names are vp-<slug> in Slack's alphabet; a name with no ASCII uses
   assert.equal(channelName("Café   déjà_vu", CHAT), "vp-cafe-deja_vu");
   assert.equal(channelName("슬랙 연결", CHAT), "vp-11111111");
   assert.equal(channelName("x".repeat(200), CHAT).length, 80);
+});
+
+test("channel name validation follows Slack: lowercase, digits, hyphens, underscores, no spaces, at most 80 characters", () => {
+  assert.equal(channelNameError("vp-reach-chats_2"), null);
+  assert.equal(channelNameError(""), "Enter a channel name.");
+  assert.equal(channelNameError("vp chat"), "No spaces.");
+  assert.equal(channelNameError("VP-chat"), "Lowercase only.");
+  assert.equal(channelNameError("vp.chat"), "Only lowercase letters, numbers, hyphens and underscores.");
+  assert.equal(channelNameError("vp-" + "a".repeat(78)), "At most 80 characters.");
+  assert.equal(channelNameError("a".repeat(80)), null);
+  assert.equal(defaultChannelName("Reach chats from Slack!"), "vp-reach-chats-from-slack");
+  assert.equal(defaultChannelName("  ", new Date("2026-10-09T03:00:00Z")), "vp-chat-2026-10-09");
+  assert.deepEqual(parseChannelRef(" #VP-Ops "), { name: "vp-ops" });
+  assert.deepEqual(parseChannelRef("C0123ABCDE"), { id: "C0123ABCDE" });
+  assert.equal(parseChannelRef("   "), null);
 });
 
 test("Slack text comes back as markdown; the fallback escapes Slack's control characters", () => {
@@ -87,7 +103,9 @@ class FakeSocket implements SocketMode {
 }
 
 type Call = { method: string; args: Record<string, unknown> };
-function harness(options: { tokens?: SlackTokens | null; history?: Record<string, unknown>[]; taken?: string; refuseUnarchive?: boolean } = {}) {
+function harness(options: { tokens?: SlackTokens | null; history?: Record<string, unknown>[]; taken?: string; refuseUnarchive?: boolean;
+  /** What conversations.list answers (both types), and what conversations.info answers for any id. */
+  listed?: Record<string, unknown>[]; listError?: Error; info?: Record<string, unknown> } = {}) {
   const calls: Call[] = [];
   const prompts: { id: string; message: string }[] = [];
   const listeners = new Map<string, (event: ThreadEvent) => void>();
@@ -120,6 +138,9 @@ function harness(options: { tokens?: SlackTokens | null; history?: Record<string
       return { ok: true, channel: { id: channels++ ? `G0CHANNEL${channels}` : "G0CHANNEL", name: args.name } };
     }
     if (method === "conversations.unarchive" && options.refuseUnarchive) throw new SlackApiError("not_in_channel");
+    if (method === "conversations.list") { if (options.listError) throw options.listError; return { ok: true, channels: args.types === "private_channel" ? options.listed ?? [] : [] }; }
+    if (method === "conversations.info") return options.info ? { ok: true, channel: options.info } : { ok: true };
+    if (method === "conversations.rename") return { ok: true, channel: { id: args.channel, name: args.name } };
     if (method === "conversations.history") { const out = { ok: true, messages: history }; history = []; return out; }
     return { ok: true };
   };
@@ -150,10 +171,10 @@ async function connected(h: ReturnType<typeof harness>, dir?: string) {
   return { bridge, dir };
 }
 
-/** Connected, with sync turned on for CHAT the way the header switch does. */
+/** Connected, with CHAT connected to Slack the way the header dialog does, with the default name. */
 async function linked(h: ReturnType<typeof harness>) {
   const { bridge, dir } = await connected(h);
-  await bridge.setChat(CHAT, true);
+  await bridge.chat(CHAT, { action: "connect" });
   await bridge.settled();
   return { bridge, dir };
 }
@@ -178,7 +199,7 @@ test("sync is off for every chat until it is turned on; on gives the chat a priv
   assert.ok(!h.calls.some(call => call.method === "conversations.create"), "no channel before the owner opts in");
   assert.ok(!h.listeners.has(CHAT));
   assert.deepEqual(bridge.view(true).chats, {});
-  await bridge.setChat(CHAT, true);
+  await bridge.chat(CHAT, { action: "connect" });
   await bridge.settled();
   const create = h.calls.find(call => call.method === "conversations.create")!;
   assert.deepEqual(create.args, { name: "vp-slack-bridge", is_private: true });
@@ -188,11 +209,11 @@ test("sync is off for every chat until it is turned on; on gives the chat a priv
   const view = bridge.view(true);
   assert.equal(view.teamId, TEAM);
   assert.equal(view.channels, 1);
-  assert.deepEqual(view.chats, { [CHAT]: "vp-slack-bridge" });
+  assert.deepEqual(view.chats, { [CHAT]: { channel: "G0CHANNEL", name: "vp-slack-bridge", isPrivate: true } });
   const saved = JSON.parse(await readFile(join(dir, "slack.json"), "utf8"));
   assert.deepEqual([saved.links[CHAT].channel, saved.links[CHAT].channelName, saved.links[CHAT].archived], ["G0CHANNEL", "vp-slack-bridge", false]);
   // Turning it on again, or a later sync, creates nothing new.
-  await bridge.setChat(CHAT, true);
+  await bridge.chat(CHAT, { action: "connect" });
   await bridge.sync(false);
   await bridge.settled();
   assert.equal(h.calls.filter(call => call.method === "conversations.create").length, 1);
@@ -203,7 +224,7 @@ test("sync is off for every chat until it is turned on; on gives the chat a priv
 test("turning sync off archives the channel and drops the link; a chat nobody synced is never touched", async () => {
   const h = harness();
   const { bridge } = await linked(h);
-  await bridge.setChat(CHAT, false);
+  await bridge.chat(CHAT, { action: "stop" });
   assert.deepEqual(h.calls.find(call => call.method === "conversations.archive")!.args, { channel: "G0CHANNEL" });
   assert.deepEqual(bridge.view(true).chats, {});
   assert.ok(!h.listeners.has(CHAT));
@@ -218,9 +239,9 @@ test("the chat switch needs a live connection", async () => {
   const h = harness();
   const bridge = await h.make(dir);
   await bridge.start();
-  await assert.rejects(bridge.setChat(CHAT, true), /Slack is not connected/);
+  await assert.rejects(bridge.chat(CHAT, { action: "connect" }), /Slack is not connected/);
   await bridge.set({ enabled: true, ownerUserId: OWNER });
-  await assert.rejects(bridge.setChat(CHAT, true), /Slack is not connected/, "connecting, no hello yet");
+  await assert.rejects(bridge.chat(CHAT, { action: "connect" }), /Slack is not connected/, "connecting, no hello yet");
   assert.ok(!h.calls.some(call => call.method === "conversations.create"));
 });
 
@@ -306,6 +327,69 @@ test("a taken channel name gets the chat id's first four characters", async () =
   assert.equal(bridge.view(true).channels, 1);
 });
 
+test("connect is idempotent: concurrent and repeated connects make one channel, and a connected chat keeps its channel whatever the body says", async () => {
+  const h = harness();
+  const { bridge } = await connected(h);
+  const results = await Promise.all([bridge.chat(CHAT, { action: "connect", name: "vp-first" }), bridge.chat(CHAT, { action: "connect", name: "vp-second" }), bridge.chat(CHAT, { action: "connect" })]);
+  assert.equal(h.calls.filter(call => call.method === "conversations.create").length, 1);
+  assert.deepEqual(h.calls.find(call => call.method === "conversations.create")!.args, { name: "vp-first", is_private: true });
+  assert.deepEqual(results, Array(3).fill({ channel: "G0CHANNEL", name: "vp-first", isPrivate: true }));
+  const again = await bridge.chat(CHAT, { action: "connect", name: "vp-third", isPrivate: false });
+  assert.deepEqual(again, { channel: "G0CHANNEL", name: "vp-first", isPrivate: true });
+  assert.equal(h.calls.filter(call => call.method === "conversations.create").length, 1);
+  assert.equal(posts(h.calls).filter(post => post.startsWith("Linked to the chat")).length, 1);
+});
+
+test("connect takes a name and visibility, refuses a name Slack would refuse, and reuses a taken name when the bot is in that channel", async () => {
+  const h = harness({ taken: "vp-ops", listed: [{ id: "C0OPS", name: "vp-ops", is_member: true, is_private: false }] });
+  const { bridge } = await connected(h);
+  await assert.rejects(bridge.chat(CHAT, { action: "connect", name: "VP Ops" }), /No spaces/);
+  assert.ok(!h.calls.some(call => call.method === "conversations.create"));
+  const link = await bridge.chat(CHAT, { action: "connect", name: "vp-ops", isPrivate: false });
+  assert.deepEqual(h.calls.find(call => call.method === "conversations.create")!.args, { name: "vp-ops", is_private: false });
+  assert.deepEqual(link, { channel: "C0OPS", name: "vp-ops", isPrivate: false });
+  assert.deepEqual(h.calls.find(call => call.method === "conversations.invite")!.args, { channel: "C0OPS", users: OWNER });
+  assert.equal(h.calls.filter(call => call.method === "conversations.create").length, 1, "no suffixed name once the channel was reused");
+});
+
+test("connect to an existing channel by #name or id; a channel the bot is not in is refused", async () => {
+  const h = harness({ listed: [{ id: "G0SHARED", name: "ops-room", is_member: true, is_private: true }], info: { id: "C0BYID", name: "by-id", is_member: true } });
+  const { bridge } = await connected(h);
+  assert.deepEqual(await bridge.chat(CHAT, { action: "connect", existing: "#Ops-Room" }), { channel: "G0SHARED", name: "ops-room", isPrivate: true });
+  assert.ok(!h.calls.some(call => call.method === "conversations.create"));
+  await bridge.chat(CHAT, { action: "stop" });
+  await assert.rejects(bridge.chat(CHAT, { action: "connect", existing: "#nowhere" }), /No channel #nowhere that the bot is in/);
+  assert.deepEqual(await bridge.chat(CHAT, { action: "connect", existing: "C0BYID" }), { channel: "C0BYID", name: "by-id", isPrivate: false });
+  assert.deepEqual(h.calls.find(call => call.method === "conversations.info")!.args, { channel: "C0BYID" });
+});
+
+test("rename changes the channel name and keeps the link; the same name is a no-op; stop archives and drops the link; a chat not synced cannot be renamed", async () => {
+  const h = harness();
+  const { bridge, dir } = await linked(h);
+  assert.deepEqual(await bridge.chat(CHAT, { action: "rename", name: "vp-renamed" }), { channel: "G0CHANNEL", name: "vp-renamed", isPrivate: true });
+  assert.deepEqual(h.calls.find(call => call.method === "conversations.rename")!.args, { channel: "G0CHANNEL", name: "vp-renamed" });
+  await bridge.chat(CHAT, { action: "rename", name: "vp-renamed" });
+  assert.equal(h.calls.filter(call => call.method === "conversations.rename").length, 1);
+  await assert.rejects(bridge.chat(CHAT, { action: "rename", name: "Bad Name" }), /No spaces/);
+  const saved = JSON.parse(await readFile(join(dir, "slack.json"), "utf8"));
+  assert.equal(saved.links[CHAT].channelName, "vp-renamed");
+  assert.ok(h.listeners.has(CHAT));
+  assert.equal(await bridge.chat(CHAT, { action: "stop" }), null);
+  assert.deepEqual(h.calls.find(call => call.method === "conversations.archive")!.args, { channel: "G0CHANNEL" });
+  assert.equal(await bridge.chat(CHAT, { action: "stop" }), null, "stop twice is quiet");
+  assert.equal(h.calls.filter(call => call.method === "conversations.archive").length, 1);
+  await assert.rejects(bridge.chat(CHAT, { action: "rename", name: "vp-x" }), /not synced/);
+});
+
+test("channels lists the unarchived channels the bot is in; null when the bot cannot list", async () => {
+  const h = harness({ listed: [{ id: "G0B", name: "b-room", is_member: true, is_private: true }, { id: "C0A", name: "a-room", is_member: true, is_private: false }, { id: "C0X", name: "not-in", is_member: false }] });
+  const { bridge } = await connected(h);
+  assert.deepEqual(await bridge.channels(), [{ id: "C0A", name: "a-room", isPrivate: false }, { id: "G0B", name: "b-room", isPrivate: true }]);
+  const closed = harness({ listError: new SlackApiError("missing_scope") });
+  const other = await connected(closed);
+  assert.equal(await other.bridge.channels(), null);
+});
+
 test("archiving a chat archives its channel and keeps the link; unarchiving opens the same channel again", async () => {
   const h = harness();
   const { bridge, dir } = await linked(h);
@@ -325,7 +409,7 @@ test("archiving a chat archives its channel and keeps the link; unarchiving open
   await bridge.sync(false);
   await bridge.settled();
   assert.deepEqual(h.calls.find(call => call.method === "conversations.unarchive")!.args, { channel: "G0CHANNEL" });
-  assert.deepEqual(bridge.view(true).chats, { [CHAT]: "vp-slack-bridge" });
+  assert.deepEqual(bridge.view(true).chats, { [CHAT]: { channel: "G0CHANNEL", name: "vp-slack-bridge", isPrivate: true } });
   assert.match(posts(h.calls).at(-1)!, /back from the archive/);
   assert.ok(h.listeners.has(CHAT));
 });
@@ -340,7 +424,7 @@ test("when Slack refuses to unarchive, an unarchived chat gets a new channel", a
   await bridge.sync(false);
   await bridge.settled();
   assert.equal(h.calls.filter(call => call.method === "conversations.create").length, 2);
-  assert.equal(bridge.view(true).chats[CHAT], "vp-slack-bridge");
+  assert.deepEqual(bridge.view(true).chats[CHAT], { channel: "G0CHANNEL2", name: "vp-slack-bridge", isPrivate: true });
   assert.equal(h.calls.filter(call => call.method === "chat.postMessage").at(-1)!.args.channel, "G0CHANNEL2");
 });
 
@@ -402,14 +486,14 @@ test("the opt-in migration runs once: every earlier link but the probe's is drop
   await bridge.sync(false);
   await bridge.settled();
   assert.deepEqual(h.calls.filter(call => call.method === "conversations.archive").map(call => call.args.channel).sort(), ["C0ONE", "C0TWO"]);
-  assert.deepEqual(bridge.view(true).chats, { [PROBE]: "vp-slack-bridge-probe" });
+  assert.deepEqual(bridge.view(true).chats, { [PROBE]: { channel: "C0PROBE", name: "vp-slack-bridge-probe", isPrivate: true } });
   assert.ok(h.listeners.has(PROBE) && !h.listeners.has(CHAT) && !h.listeners.has(OTHER));
   const saved = JSON.parse(await readFile(join(dir, "slack.json"), "utf8"));
   assert.deepEqual(saved.migrations, [OPT_IN_MIGRATION]);
   assert.deepEqual(Object.keys(saved.links), [PROBE]);
   assert.equal(h.logs.filter(line => line.includes("sync is opt-in now")).length, 2);
   // A chat synced after the migration survives every later reconnect.
-  await bridge.setChat(OTHER, true);
+  await bridge.chat(OTHER, { action: "connect" });
   h.socket.listener!.hello();
   await new Promise(resolve => setImmediate(resolve));
   await bridge.settled();

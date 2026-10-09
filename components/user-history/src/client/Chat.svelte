@@ -25,6 +25,8 @@
   import AccountChip from "./AccountChip.svelte";
   import CheckInControl, { checkInStatus } from "./CheckInControl.svelte";
   import SlackSync from "./SlackSync.svelte";
+  import ConfirmDialog from "./ConfirmDialog.svelte";
+  import { archivePrompt } from "./archive-confirm.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import Icon from "./Icon.svelte";
   import Lightbox from "./ui/Lightbox.svelte";
@@ -210,7 +212,10 @@
   const modelLabel = $derived((thread?.info.model?.name ?? row?.model ?? "Model") + ((thread?.info.thinkingLevel ?? row?.thinkingLevel) ? " · " + (thread?.info.thinkingLevel ?? row?.thinkingLevel) : ""));
   const chooseModel = (model: ModelInfo) => store.run(api.setModel(id, model.provider, model.id));
   const chooseEffort = (level: ThinkingLevel | null) => { if (level) void store.run(api.setThinking(id, level)); };
-  function archive(): void { void labels.archive([id]); }
+  /** The archive button asks first; the confirm names the chat and what happens to its turn and its Slack channel. */
+  let archiveAsk = $state(false);
+  const archiveWords = $derived(archivePrompt({ name: row?.name ?? "", busy, slackChannel: store.slack?.chats[id]?.name ?? null }));
+  function archive(): void { archiveAsk = false; void labels.archive([id]); }
 
   let scroller: HTMLElement | undefined = $state();
   let column: HTMLElement | undefined = $state();
@@ -385,7 +390,7 @@
       {#if !narrow}{@render setup()}{/if}
       {#if row && !row.archived}
         <SlackSync {id} {narrow} />
-        <button type="button" class="icon-button" aria-label="Archive chat" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
+        <button type="button" class="icon-button" aria-label="Archive chat" aria-haspopup="dialog" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={() => { archiveAsk = true; }}><Icon name="archive" size={16} /></button>
       {/if}
       {#if !narrow}
         <button type="button" class="icon-button panel-toggle" class:on={ui.boardOpen} aria-pressed={ui.boardOpen} aria-label="{ui.boardOpen ? 'Hide' : 'Show'} the board panel" use:tooltip={ui.boardOpen ? "Hide board" : "Show board"} onclick={() => ui.setBoardOpen(!ui.boardOpen)}>
@@ -445,6 +450,9 @@
   {/if}
   {#if lightbox}
     <Lightbox images={lightbox.images} index={lightbox.index} onclose={() => { lightbox = null; }} />
+  {/if}
+  {#if archiveAsk}
+    <ConfirmDialog title={archiveWords.title} body={archiveWords.body} label={archiveWords.label} danger onconfirm={archive} onclose={() => { archiveAsk = false; }} />
   {/if}
   {#if pressed}
     {@const { anchor, at, text } = pressed}

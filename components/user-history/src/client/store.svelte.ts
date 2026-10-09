@@ -3,14 +3,14 @@ import { hasUnsentDrafts } from "./drafts.ts";
 import { retryFeeds } from "./feeds.ts";
 import { applyThreadEvent } from "../shared/thread-state.ts";
 import type { PendingSend } from "../shared/chat-feed.ts";
-import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackView, Tag, ThreadState } from "../shared/types.ts";
+import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionRow, SlackChannelSetup, SlackChatInput, SlackView, Tag, ThreadState } from "../shared/types.ts";
 import { hashFor, parseHash } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
 /** `kind` "chat" creates a chat thread (the server marks the session and lists it under Chats); absent means a normal thread. */
-export interface PendingChat { cwd: string; name?: string; kind?: "chat"; slack?: boolean; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
+export interface PendingChat { cwd: string; name?: string; kind?: "chat"; slack?: SlackChannelSetup; message: string; images: ImageInput[]; provider?: string; modelId?: string; thinkingLevel?: string; account?: NewChatAccount; startedAt: number }
 /** How long `createChat` waits for the sessions stream to list a new chat before showing it, so the chat view opens instead of the thread view. */
 const NEW_ROW_WAIT_MS = 3000;
 
@@ -230,9 +230,9 @@ class Store {
     try { this.slack = await api.slack(); } catch { /* the header keeps its last view; Settings shows the error */ }
   }
 
-  /** A chat's Slack sync switch; false when the server refused (the error is a toast). */
-  async setChatSlack(id: string, on: boolean): Promise<boolean> {
-    const view = await this.run(api.setChatSlack(id, on));
+  /** A chat's Slack dialog action (connect, rename, stop); false when the server refused (the error is a toast). */
+  async slackChat(id: string, input: SlackChatInput): Promise<boolean> {
+    const view = await this.run(api.slackChat(id, input));
     if (view) this.slack = view;
     return view !== undefined;
   }

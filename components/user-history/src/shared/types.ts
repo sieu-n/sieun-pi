@@ -393,8 +393,8 @@ export interface SlackView {
   teamName: string | null;
   /** Chats synced to a channel now. */
   channels: number;
-  /** Each synced chat's channel name (without #), by chat id. A chat not listed is not synced; sync is off until the owner turns it on. */
-  chats: Record<string, string>;
+  /** Each synced chat's channel, by chat id. A chat not listed is not synced; sync is off until the owner turns it on. */
+  chats: Record<string, SlackChatLink>;
   tokenSource: "keychain" | "environment" | null;
   /** The Keychain service the tokens are read from. */
   keychainService: string;
@@ -402,6 +402,20 @@ export interface SlackView {
   editable: boolean;
 }
 export interface SlackInput { enabled?: boolean; ownerUserId?: string | null }
+/** A synced chat's channel as the header shows it: the id (for the Open in Slack link), the name without `#`, and whether it is private. */
+export interface SlackChatLink { channel: string; name: string; isPrivate: boolean }
+/** The channel a chat gets when it is synced: a name in Slack's alphabet and private (the default) or public. */
+export interface SlackChannelSetup { name: string; isPrivate: boolean }
+/** A channel the bot can see, for the setup dialog's existing-channel list. */
+export interface SlackChannelOption { id: string; name: string; isPrivate: boolean }
+/**
+ * A chat's Slack control. `connect` is idempotent: a chat already synced keeps its channel whatever the body says. Without `existing` the
+ * channel is created (or reused by name); `existing` is a channel id or `#name` the bot is already in.
+ */
+export type SlackChatInput =
+  | { action: "connect"; name?: string; isPrivate?: boolean; existing?: string }
+  | { action: "rename"; name: string }
+  | { action: "stop" };
 
 /** A chat-client SDK update. `failed` comes back after a restart until the daemon version changes or Retry succeeds. */
 export interface SdkUpdateState { state: "idle" | "running" | "failed" | "restarting"; target?: string; message: string; log: string[]; at?: string }

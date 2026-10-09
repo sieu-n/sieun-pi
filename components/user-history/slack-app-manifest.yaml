@@ -5,11 +5,11 @@
 #   2. Basic Information > App-Level Tokens > Generate, scope connections:write, copy the token (xapp-).
 #   3. security add-generic-password -U -s sieun-pi-slack -a bot-token -w   (paste the xoxb- token)
 #      security add-generic-password -U -s sieun-pi-slack -a app-token -w   (paste the xapp- token)
-#   4. Chat Settings > Slack: enter your member id, turn on "Link chats to Slack".
+#   4. Chat Settings > Slack: enter your member id, turn on "Connect Slack". Then "Connect to Slack" in a chat's header.
 # Socket Mode needs no Request URL: the chat service opens one outbound WebSocket.
 display_information:
   name: VP chats
-  description: Links each sieun-pi chat to a private channel. Only the owner's messages reach the chats.
+  description: Links each sieun-pi chat to a channel (private by default). Only the owner's messages reach the chats.
   background_color: "#1f2937"
 features:
   bot_user:
@@ -20,10 +20,14 @@ oauth_config:
     bot:
       # post replies and pings
       - chat:write
-      # private channels: create, invite the owner, archive (groups:write); read owner messages (groups:history); list (groups:read)
+      # private channels: create, invite the owner, rename, archive (groups:write); read owner messages (groups:history); list (groups:read)
       - groups:write
       - groups:history
       - groups:read
+      # public channels, when the setup dialog's Public is chosen: the same three
+      - channels:manage
+      - channels:read
+      - channels:history
       # the working reaction on an owner message
       - reactions:write
       # images in and out (phase 2)
@@ -32,8 +36,9 @@ oauth_config:
 settings:
   event_subscriptions:
     bot_events:
-      # messages in the private channels the bot is in
+      # messages in the private and public channels the bot is in
       - message.groups
+      - message.channels
   interactivity:
     is_enabled: false
   org_deploy_enabled: false
