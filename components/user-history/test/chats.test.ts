@@ -1098,6 +1098,25 @@ test("chats: Claude cannot serve (the pool token failed): the chat moves to GPT-
   chats.close();
 });
 
+test("chats: a turn that fails on the fallback goes back to Claude once Claude serves, instead of retrying on the fallback", async () => {
+  const { chats, threads, clock, fallbacks, info, step } = await fallbackChat({ serves: false, freeAt: null });
+  info(OPUS);
+  threads.transcripts.set("c1", [ownerAsks("drill turn 1", clock.now), reply("error", clock.now, TOKEN_FAILURE)]);
+  assert.equal((await step())[0], "model c1 openai-codex/gpt-6-sol");
+  const CODEX_REFUSED = "Codex error: The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.";
+  info(SOL, { thinkingLevel: "medium" });
+  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] retry", clock.now), reply("error", clock.now, CODEX_REFUSED));
+  assert.deepEqual(await step(), [], "Claude is still down: the failed fallback turn waits on the usual schedule");
+  clock.claude = { serves: true, freeAt: null };
+  const calls = await step();
+  assert.deepEqual(calls.slice(0, 3), ["model c1 anthropic/claude-opus-5-5", "thinking c1 high", "notice c1 A Claude account is free again; switched back to Claude Opus 5.5."],
+    "back to Opus at the level it had");
+  assert.match(calls[3] ?? "", new RegExp(`^restart c1 \\[check-in\\] Your last turn failed at .*${CODEX_REFUSED.replace(/[.()']/g, ".")}`), "the failed turn restarts on Claude now");
+  assert.equal(calls.length, 4);
+  assert.equal(await fallbacks.get("c1"), undefined);
+  chats.close();
+});
+
 test("chats: the switch keeps the thinking level the new model supports; a 429 switches only when the pool has no usable account; no Codex model: the owner sees the wait", async () => {
   const served = await fallbackChat({ serves: true, freeAt: null });
   served.info(OPUS);

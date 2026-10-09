@@ -968,6 +968,8 @@ export class Chats {
       return;
     }
     const provider = state.info?.model?.provider ?? null;
+    // A turn that failed on the fallback goes back to Claude once Claude serves (10-09 drill: Codex refused gpt-6-sol and the chat retried it there).
+    if (provider !== "anthropic" && await this.switchBack(id, stall)) return;
     const claude = provider === "anthropic" ? await this.claude() : null;
     const down = claudeDown(stall.error, provider, claude);
     if (down && await this.switchToFallback(id, stall)) return;
@@ -1029,28 +1031,39 @@ export class Chats {
     }
   }
 
-  /** Between turns, a chat on the fallback goes back to its model once Claude serves again; a chat the owner moved off the fallback keeps its model. */
-  private async switchBack(id: string): Promise<void> {
+  /**
+   * A chat on the fallback goes back to its model once Claude serves again: between turns, or after a turn that failed on the fallback (`stall`),
+   * which then restarts on Claude now. A chat the owner moved off the fallback keeps its model. True when a failed turn went back and restarted.
+   */
+  private async switchBack(id: string, stall: Stall | null = null): Promise<boolean> {
     const fallbacks = this.source.fallbacks;
     const info = this.threads.state?.(id)?.info;
-    if (!fallbacks || !info?.model) return;
+    if (!fallbacks || !info?.model) return false;
     try {
       const entry = await fallbacks.get(id);
-      if (!entry) return;
-      const busy = this.threads.busy(id);
+      if (!entry) return false;
+      const busy = stall === null && this.threads.busy(id);
       const decision = switchBack(entry, info.model, busy, busy ? null : await this.claude());
-      if (decision === "keep") return;
+      if (decision === "keep") return false;
       if (decision === "back") {
         const { provider, id: modelId, thinkingLevel } = entry.original;
         const name = (await this.threads.models(id)).models.find(model => model.provider === provider && model.id === modelId)?.name ?? modelId;
+        if (stall?.retrying) await this.threads.abort(id);
         await this.threads.setModel(id, provider, modelId);
         await this.keepThinking(id, thinkingLevel);
         await this.threads.notice(id, switchedBackNotice(name));
         this.log(`chat ${id.slice(0, 8)}: Claude serves again; switched back to ${provider}/${modelId}`);
       }
       await fallbacks.forget(id);
+      if (decision !== "back" || stall === null) return false;
+      this.threads.setWait(id, null);
+      this.revivals.set(id, { attempts: 1, at: this.now() });
+      await this.threads.restart(id, revivalMessage(stall));
+      this.steeredAt.set(id, this.now());
+      return true;
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: switch back: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 
