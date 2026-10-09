@@ -1,5 +1,6 @@
 import { parseArtifactTarget, normalizeArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
 import { findItem, walkItems } from "../shared/chat-board.ts";
+import { ARTIFACT_ICON, type IconName } from "./icons.ts";
 import type { AgentLink, AgentState, ArtifactLink, ChatBoard, OwnerTodo, PlanItem, PlanStatus } from "../shared/types.ts";
 
 export const PLAN_STATUS_LABEL: Record<PlanStatus, string> = { todo: "To do", doing: "In progress", done: "Done", blocked: "Blocked", dropped: "Dropped" };
@@ -140,13 +141,11 @@ export const isBoardAction = (text: string): boolean => text.startsWith(BOARD_PR
 export const boardActionText = (text: string): string => text.slice(BOARD_PREFIX.length).trim();
 
 /** The chip for a note's link: what kind of thing it opens, its icon, and the parsed target (null when the stored target is not one the page can open). */
-export type LinkIcon = "bolt" | "message" | "book" | "file" | "globe" | "link";
-export type LinkChip = { kind: ArtifactTarget["kind"] | "broken"; icon: LinkIcon; label: string; target: ArtifactTarget | null };
-const LINK_ICON: Record<ArtifactTarget["kind"] | "broken", LinkIcon> = { job: "bolt", thread: "message", wiki: "book", file: "file", url: "globe", broken: "link" };
+export type LinkChip = { kind: ArtifactTarget["kind"] | "broken"; icon: IconName; label: string; target: ArtifactTarget | null };
 export function linkChip(link: ArtifactLink): LinkChip {
   const target = parseArtifactTarget(link.target);
   const kind = target?.kind ?? "broken";
-  return { kind, icon: LINK_ICON[kind], label: link.label.trim() || linkLabel(link.target), target };
+  return { kind, icon: ARTIFACT_ICON[kind], label: link.label.trim() || linkLabel(link.target), target };
 }
 
 /** A label for a link the owner pasted: the job name, the file or page name, the site, or a short thread id. */

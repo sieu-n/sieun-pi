@@ -157,7 +157,7 @@
     </div>
     <span class="total">{rows.length} of {filter.archived ? store.sessions.length : store.sessions.length - archivedCount}</span>
     <button type="button" class="button small" aria-haspopup="menu" aria-expanded={columnsAnchor !== null}
-      onclick={event => { columnsAnchor = columnsAnchor ? null : event.currentTarget as HTMLElement; }}><Icon name="list" size={13} />Columns</button>
+      onclick={event => { columnsAnchor = columnsAnchor ? null : event.currentTarget as HTMLElement; }}><Icon name="columns" size={13} />Columns</button>
   {/snippet}
   <div class="view">
     {#if selectedIds.length}

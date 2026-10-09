@@ -17,7 +17,8 @@
   import { mentionIndex } from "./board.ts";
   import type { ChildUsage } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
-  import Icon, { type IconName } from "./Icon.svelte";
+  import Icon from "./Icon.svelte";
+  import type { IconName } from "./icons.ts";
   import Lightbox from "./ui/Lightbox.svelte";
 
   /**
@@ -29,7 +30,7 @@
    */
   let { view, narrow, onclose }: { view: ReaderView; narrow: boolean; onclose: () => void } = $props();
 
-  const ICON: Record<ReaderView["kind"], IconName> = { job: "bolt", file: "file", wiki: "book", message: "message", updates: "list" };
+  const ICON: Record<ReaderView["kind"], IconName> = { job: "briefcase", file: "file", wiki: "page", message: "message", updates: "list" };
   const thread = $derived(view.kind === "job" || view.kind === "message" || view.kind === "updates" ? view.thread : null);
   const snapshot = $derived(thread ? store.thread(thread)?.state ?? null : null);
   const entry = $derived(thread ? store.thread(thread) : undefined);
@@ -232,7 +233,7 @@
           {@const path = linkedPath}
           <section class="linked">
             <div class="linked-head">
-              <Icon name="book" size={13} /><span class="linked-title">Full report: {wiki?.result?.title ?? fileName(path)}</span>
+              <Icon name="page" size={13} /><span class="linked-title">Full report: {wiki?.result?.title ?? fileName(path)}</span>
               <button type="button" class="button small" onclick={() => openWiki(path)}>Open report</button>
             </div>
             {@render page(path)}
@@ -303,7 +304,6 @@
   .snapshot { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 0; color: var(--text-faint); font-size: 13px; }
   .snapshot.error { color: var(--danger); }
   .reader-prose { font-size: 14.5px; }
-  .reader-prose :global(.artifact-link) { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.18em; font: inherit; padding: 0; }
   .fold { display: inline-flex; align-items: center; gap: 5px; margin-top: 18px; padding: 3px 6px 3px 2px; border-radius: 4px; font-size: 12.5px; color: var(--text-faint); }
   .fold:hover { color: var(--text); background: var(--bg-hover); }
   .chev { display: inline-flex; transform: rotate(-90deg); transition: transform 0.12s; }

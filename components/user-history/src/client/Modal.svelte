@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { tooltip } from "./ui/tooltip.ts";
-  import Icon, { type IconName } from "./Icon.svelte";
+  import Icon from "./Icon.svelte";
+  import type { IconName } from "./icons.ts";
 
   /** `tall` fixes the height at `height` (the reader, the plan view), so a long document scrolls inside a frame that does not grow and shrink while it loads. */
   let { title, onclose, width = "720px", height = "86vh", full = false, tall = false, icon, header, children }: {

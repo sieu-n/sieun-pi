@@ -108,8 +108,10 @@ a { color: var(--accent); }
 .prose .reply-image { display: block; max-height: 480px; margin: 0.4em 0 1em; border: 1px solid var(--border); border-radius: var(--radius); cursor: zoom-in; background: var(--bg-sunken); }
 /* An image a link or a bare path names sits in the text flow as a thumbnail; a click opens it full size. */
 .prose img.reply-image.thumb, .said img.reply-image.thumb { display: inline-block; vertical-align: middle; max-width: min(100%, 220px); max-height: 120px; margin: 2px 2px; }
-/* A link to an artifact reads as text: inline, wrapping with the sentence, never a centered block. */
-.artifact-link { display: inline; cursor: pointer; overflow-wrap: anywhere; }
+/* A link to an artifact (a job, a thread, a wiki page, a file) reads as text: underlined, inline, wrapping with the sentence, with a small icon of what it opens in front. */
+.artifact-link { display: inline; cursor: pointer; overflow-wrap: anywhere; color: var(--accent); font: inherit; padding: 0; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.18em; }
+.artifact-link:hover, .artifact-link:focus-visible { text-decoration-color: currentColor; }
+.link-icon { display: inline-block; width: 0.95em; height: 0.95em; margin-right: 0.3em; vertical-align: -0.12em; flex: none; }
 /* Diagram blocks show their source until the sandboxed frame reports a drawing; then the switch picks one. */
 .prose .diagram-switch { display: none; gap: 2px; margin-left: auto; margin-right: 6px; }
 .prose .diagram-ready .diagram-switch { display: inline-flex; }
@@ -147,19 +149,18 @@ a { color: var(--accent); }
 .icon-button svg { width: 18px; height: 18px; }
 .icon-button.small { width: 24px; height: 24px; }
 .icon-button.small svg { width: 14px; height: 14px; }
-/* A note's link chip (the board panel, the plan view): what it opens, with an icon; a button one opens the reader, the thread or a tab. */
-.link-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 0 7px 0 6px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-sunken); font-size: 11.5px; line-height: 18px; color: var(--text-muted); }
-button.link-chip:hover { border-color: var(--accent); color: var(--accent-bold); background: var(--accent-soft); }
-.link-chip.broken { border-style: dashed; color: var(--text-faint); }
-.link-chip .chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A note's link (the board panel, the plan view, a duty's last run): the icon of what it opens and an underlined label; a button one opens the reader, the thread or a tab. */
+.link-chip { display: inline-flex; align-items: center; gap: 0.3em; max-width: 220px; padding: 0; font-size: 12px; line-height: 18px; color: var(--accent); }
+.link-chip .chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.15em; }
+button.link-chip:hover .chip-label, button.link-chip:focus-visible .chip-label { text-decoration-color: currentColor; }
+.link-chip.broken { color: var(--text-faint); }
+.link-chip.broken .chip-label { text-decoration-style: dashed; text-decoration-color: currentColor; }
 .id-0 { --dot: var(--id-0); } .id-1 { --dot: var(--id-1); } .id-2 { --dot: var(--id-2); } .id-3 { --dot: var(--id-3); } .id-4 { --dot: var(--id-4); }
 .id-5 { --dot: var(--id-5); } .id-6 { --dot: var(--id-6); } .id-7 { --dot: var(--id-7); } .id-8 { --dot: var(--id-8); } .id-9 { --dot: var(--id-9); }
 /* A board id mentioned in chat text: the item's dot and id in a faint pill tinted with the dot color; a click opens the plan view on it. */
 .mention-chip { white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; vertical-align: baseline; padding: 0 6px 0 5px; margin: 0 1px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--dot) 45%, transparent); background: color-mix(in srgb, var(--dot) 12%, transparent); font-family: var(--mono); font-size: 0.8em; line-height: 1.5; color: inherit; font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color 0.12s, border-color 0.12s; }
 .mention-chip:hover, .mention-chip:focus-visible { background: color-mix(in srgb, var(--dot) 26%, transparent); border-color: var(--dot); }
 .mention-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot); flex: none; }
-.mention-chip.job-chip { --dot: var(--accent); gap: 3px; padding-left: 4px; font-family: inherit; font-size: 0.86em; font-weight: 500; }
-.mention-chip.job-chip svg { flex: none; color: var(--accent-bold); }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elevated); font-size: 13px; color: var(--text-muted); white-space: nowrap; max-width: 100%; }
 .chip:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
 .chip.active { background: var(--accent-soft); border-color: transparent; color: var(--accent-bold); }

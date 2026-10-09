@@ -87,9 +87,9 @@ test("a [board] user message is an owner action line", () => {
 });
 
 test("linkChip names the kind and icon of a link, and a target the page cannot open is a broken chip", () => {
-  assert.deepEqual(linkChip({ label: "ux-email", target: "job:ux-email" }), { kind: "job", icon: "bolt", label: "ux-email", target: { kind: "job", name: "ux-email" } });
+  assert.deepEqual(linkChip({ label: "ux-email", target: "job:ux-email" }), { kind: "job", icon: "briefcase", label: "ux-email", target: { kind: "job", name: "ux-email" } });
   assert.equal(linkChip({ label: "", target: "thread:01a112e2-f720-75db-b51a-84cfbdbcffa0@1759780000000" }).label, "message in 01a112e2");
-  assert.equal(linkChip({ label: "Audit", target: "wiki:sessions/2026/10/06/audit" }).icon, "book");
+  assert.equal(linkChip({ label: "Audit", target: "wiki:sessions/2026/10/06/audit" }).icon, "page");
   assert.equal(linkChip({ label: "", target: "file:/Users/me/report.md" }).label, "report.md");
   assert.equal(linkChip({ label: "", target: "https://www.example.com/docs/page/" }).label, "example.com/docs/page");
   assert.deepEqual(linkChip({ label: "old", target: "ftp://x" }), { kind: "broken", icon: "link", label: "old", target: null });

@@ -67,7 +67,7 @@
   {:else}<span class="fold"></span>{/if}
 {/snippet}
 
-<Modal title="Plan" icon="note" width="min(1100px, 94vw)" height="88vh" tall full={narrow} {onclose}>
+<Modal title="Plan" icon="plan" width="min(1100px, 94vw)" height="88vh" tall full={narrow} {onclose}>
   {#snippet header()}
     {#if totals.total}<span class="count">{totals.done} of {totals.total} done</span>{/if}
     <span class="tools">
@@ -93,7 +93,7 @@
                 {#if item.job}
                   {@const owner = item.job}
                   {@const preview = previewJob(owner)}
-                  <button type="button" class="owner" title={preview ? undefined : "Open " + ownerName(owner)} data-preview-chat={chat} data-preview-job={preview} onclick={() => { onclose(); onjob(owner); }}><Icon name="bolt" size={11} /><span class="owner-name">{ownerName(owner)}</span></button>
+                  <button type="button" class="owner" title={preview ? undefined : "Open " + ownerName(owner)} data-preview-chat={chat} data-preview-job={preview} onclick={() => { onclose(); onjob(owner); }}><Icon name="briefcase" size={11} /><span class="owner-name">{ownerName(owner)}</span></button>
                 {/if}
               </p>
               {#if item.note}<p class="note">{item.note}</p>{/if}

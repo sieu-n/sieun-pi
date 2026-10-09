@@ -120,7 +120,7 @@
     <div bind:this={node} class="report-card panel-surface fade-in" popover="manual" role="dialog" aria-label="Report from {name}" use:float={open.anchor}
       style={placement ? placementStyle(placement) + `;max-height:${placement.maxHeight}px` : "opacity:0"}>
       <div class="head">
-        <Icon name="bolt" size={12} /><span class="name">{name}</span>
+        <Icon name="briefcase" size={12} /><span class="name">{name}</span>
         {#if latest}<span class="sep"></span><span>{clockTime(latest.at)}</span><span class="sep"></span><span>{count}</span>{/if}
       </div>
       {#if entry?.error && !snapshot}<p class="note error">{entry.error}</p>
@@ -133,7 +133,7 @@
           {#if linkedPath}
             {@const path = linkedPath}
             <div class="linked">
-              <button type="button" class="linked-open" onclick={openFull}><Icon name="book" size={12} /><span class="linked-label">Full report: <span class="linked-title">{linkedName}</span></span></button>
+              <button type="button" class="linked-open" onclick={openFull}><Icon name="page" size={12} /><span class="linked-label">Full report: <span class="linked-title">{linkedName}</span></span></button>
               <button type="button" class="linked-wiki" title="Open on the wiki" aria-label="Open {linkedName} on the wiki" onclick={() => window.open(wikiUrl(path), "_blank", "noopener")}><Icon name="external" size={12} /></button>
             </div>
           {/if}
@@ -160,7 +160,6 @@
   .card-prose :global(.code-block), .card-prose :global(.table-wrap) { max-width: 100%; }
   .card-prose :global(pre) { padding: 0.6em 0.8em; }
   .card-prose :global(.reply-image) { max-height: 160px; }
-  .card-prose :global(.artifact-link) { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.18em; font: inherit; padding: 0; }
   .bottom { position: sticky; bottom: 0; border-top: 1px solid var(--border); background: var(--bg-elevated); }
   .linked { display: flex; align-items: center; gap: 2px; margin: 6px 8px 0; padding: 2px 2px 2px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-sunken); font-size: 12.5px; }
   .linked-open { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; padding: 4px 0; text-align: left; color: var(--text-muted); }

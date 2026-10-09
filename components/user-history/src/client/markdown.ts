@@ -1,6 +1,7 @@
 import { Marked, type Token, type TokenizerAndRendererExtension } from "marked";
 import { normalizeArtifactTarget, WIKI_CONTENT_HOME } from "../shared/artifact-link.ts";
 import { idClass, type MentionIndex } from "./board.ts";
+import { inlineIcon, targetIcon } from "./icons.ts";
 
 export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
@@ -39,14 +40,13 @@ const mentions: TokenizerAndRendererExtension = {
 };
 
 /**
- * A job of the chat named as a whole word becomes a chip with a bolt: hover previews its latest report, a click opens the report in the
+ * A job of the chat named as a whole word becomes a link with the job icon: hover previews its latest report, a click opens the report in the
  * reader. The same rules as board ids: not inside a code block, a link or a word (a hyphenated word counts as one word, so the job `w20`
  * is not a chip inside `w20-probe`). The longest name wins where one job's name starts another's. One exception to the code rule: a code
  * span that holds exactly a job name is a chip too, because the chats write job names in backticks (every mention in the VP chat did).
  */
-const BOLT = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 3L5 13h6l-1 8 8-10h-6z"/></svg>';
 const previewAttributes = (job: string): string => renderIndex ? ` data-preview-chat="${escapeHtml(renderIndex.chatId)}" data-preview-job="${escapeHtml(job)}"` : "";
-const jobChip = (name: string): string => `<button type="button" class="mention-chip job-chip" data-job="${escapeHtml(name)}"${previewAttributes(name)}>${BOLT}${escapeHtml(name)}</button>`;
+const jobChip = (name: string): string => `<a class="artifact-link job-link" role="link" tabindex="0" data-job="${escapeHtml(name)}"${previewAttributes(name)}>${inlineIcon("briefcase")}${escapeHtml(name)}</a>`;
 const jobMentions: TokenizerAndRendererExtension = {
   name: "jobMention",
   level: "inline",
@@ -113,7 +113,7 @@ const fileName = (path: string): string => path.split("/").at(-1) || path;
 const artifactButton = (target: string, inner: string, tip: string): string =>
   // An <a> without href, not a <button>: a button lays out as an inline block, so a long label broke out of the sentence as its own centered
   // block (10-09). The view's click handler opens it; Enter on a focused one clicks it (App's key handler).
-  `<a class="artifact-link" role="link" tabindex="0" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${escapeHtml(tip)}">${inner}</a>`;
+  `<a class="artifact-link" role="link" tabindex="0" data-target="${escapeHtml(target)}"${target.startsWith("job:") ? previewAttributes(target.slice(4)) : ""} title="${escapeHtml(tip)}">${inlineIcon(targetIcon(target))}${inner}</a>`;
 
 /**
  * A link target the chat wrote bare in prose (`wiki:<path>`, `file:/path`, `job:<name>`, `thread:<id>`, an absolute path, or a path through
@@ -291,11 +291,11 @@ export function mentionFromClick(event: MouseEvent): string | null {
   return chip.dataset.mention;
 }
 
-/** The job name of a clicked `.job-chip` in rendered text, or null. */
+/** The job name of a clicked `.job-link` in rendered text, or null. */
 export function jobFromClick(event: MouseEvent): string | null {
   const target = event.target;
   if (!(target instanceof Element)) return null;
-  const chip = target.closest<HTMLElement>("button.job-chip");
+  const chip = target.closest<HTMLElement>("a.job-link");
   if (!chip?.dataset.job) return null;
   event.preventDefault();
   return chip.dataset.job;

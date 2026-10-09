@@ -307,7 +307,7 @@
     <PoolMeters />
     <div class="foot">
       <button type="button" class="foot-button" use:tooltip={"Settings"} onclick={() => { store.drawer = "accounts"; }}><Icon name="settings" size={15} /><span>Settings</span></button>
-      <button type="button" class="icon-button small" aria-label="Agents view" use:tooltip={"Agents view ⌘K"} onclick={() => { ui.agentsOpen = true; }}><Icon name="list" /></button>
+      <button type="button" class="icon-button small" aria-label="Agents view" use:tooltip={"Agents view ⌘K"} onclick={() => { ui.agentsOpen = true; }}><Icon name="table" /></button>
       <InterruptedRuns />
     </div>
   </div>

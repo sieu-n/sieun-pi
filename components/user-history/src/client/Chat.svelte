@@ -389,7 +389,7 @@
       {/if}
       {#if !narrow}
         <button type="button" class="icon-button panel-toggle" class:on={ui.boardOpen} aria-pressed={ui.boardOpen} aria-label="{ui.boardOpen ? 'Hide' : 'Show'} the board panel" use:tooltip={ui.boardOpen ? "Hide board" : "Show board"} onclick={() => ui.setBoardOpen(!ui.boardOpen)}>
-          <Icon name="note" size={16} />{#if asks && !ui.boardOpen}<span class="dot corner" role="img" aria-label="{asks} waiting on you"></span>{/if}
+          <Icon name="plan" size={16} />{#if asks && !ui.boardOpen}<span class="dot corner" role="img" aria-label="{asks} waiting on you"></span>{/if}
         </button>
       {/if}
     </div>
@@ -511,7 +511,7 @@
   .said :global(blockquote.quote:last-child) { margin-bottom: 0; }
   .said :global(a) { color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
   .said :global(code) { font-family: var(--mono); font-size: 0.88em; padding: 0.05em 0.3em; border-radius: 4px; background: color-mix(in srgb, currentColor 16%, transparent); }
-  .said :global(.artifact-link) { font: inherit; color: inherit; text-decoration: underline; padding: 0; }
+  .said :global(.artifact-link) { color: inherit; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); }
   /* In the owner's bubble the pill takes the bubble text color; the dot keeps the item's color with a thin ring so it reads on the tint. */
   .said :global(.mention-chip) { border-color: color-mix(in srgb, currentColor 55%, transparent); background: color-mix(in srgb, currentColor 16%, transparent); }
   .said :global(.mention-chip .dot) { box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 70%, transparent); }
@@ -528,8 +528,6 @@
   .bubble-prose :global(.code-block), .bubble-prose :global(.table-wrap) { max-width: 100%; background: var(--bg-elevated); }
   .bubble-prose :global(pre) { padding: 0.7em 0.9em; }
   .bubble-prose :global(.reply-image) { display: inline-block; vertical-align: middle; max-height: 180px; margin: 0.2em 0; }
-  .bubble-prose :global(.artifact-link) { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent); text-underline-offset: 0.18em; font: inherit; padding: 0; }
-  .bubble-prose :global(.artifact-link:hover), .bubble-prose :global(a:hover) { text-decoration-color: currentColor; }
   /* A standalone image or diagram: a wide card under the bubble, up to the feed width. */
   .card { align-self: stretch; max-width: 100%; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-elevated); overflow: hidden; }
   .card :global(p) { margin: 0; }
