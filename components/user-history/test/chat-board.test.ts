@@ -244,7 +244,7 @@ test("chat board: the owner may change todos and the scratchpad, never the plan;
 
 test("chat board: render shows this chat's target, the nested checklist, todos with choices and answers, and the scratch bullets with links", () => {
   assert.match(renderBoard(null), new RegExp(`^${REPLY_RULE.replace(/[.;]/g, "\\$&")}\nThe board is empty`), "the reply rule leads every board the agent reads");
-  assert.equal(REPLY_RULE, "Reply rule: at most 60 words; explain in an article and link it.");
+  assert.equal(REPLY_RULE, "Reply rule: at most 60 words; explain in an article and put its link in the reply and the owner todo.");
   assert.match(renderBoard(null, "s-1"), /^Reply rule: .*\nThis chat: thread:s-1\nThe board is empty/);
   const { board } = run(emptyBoard(T0), [
     { op: "plan_add", text: "Goal", status: "doing" },
@@ -298,7 +298,7 @@ test("extension: chat_board writes the chat's board under agent-chat-data-dir an
   assert.ok(tool.promptGuidelines?.some(line => line.includes("CTO")));
   const ctx = { sessionManager: { getSessionId: () => "s-1" } };
   const added = await tool.execute("c1", { ops: [{ op: "plan_add", text: "Goal", status: "doing" }, { op: "todo_add", text: "Approve" }] }, undefined, undefined, ctx);
-  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nReply rule: at most 60 words; explain in an article and link it\.\nThis chat: thread:s-1\nCheck-in: every 15 min\nBoard rev 2/);
+  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nReply rule: at most 60 words; explain in an article and put its link in the reply and the owner todo\.\nThis chat: thread:s-1\nCheck-in: every 15 min\nBoard rev 2/);
   assert.equal((await new BoardStore(dataDir).read("s-1"))?.rev, 2);
   await checkInSettings(join(dataDir, "check-in-settings.json")).update("s-1", () => ({ everyMs: 15 * 60_000, pausedUntil: "forever" }));
   assert.match((await tool.execute("c2", { ops: [] }, undefined, undefined, ctx)).content[0]!.text, /^Reply rule: .*\nThis chat: thread:s-1\nCheck-in: paused until the owner resumes it\nBoard rev 2/,

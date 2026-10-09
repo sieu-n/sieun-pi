@@ -348,7 +348,7 @@ function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInpu
 }
 
 /** The first line of every board the agent reads, so the reply cap is in its context each turn. */
-export const REPLY_RULE = "Reply rule: at most 60 words; explain in an article and link it.";
+export const REPLY_RULE = "Reply rule: at most 60 words; explain in an article and put its link in the reply and the owner todo.";
 
 /**
  * The board as compact text for the agent: the reply rule, this chat's own link target and its check-in line, the plan as an indented checklist, the owner's todos
