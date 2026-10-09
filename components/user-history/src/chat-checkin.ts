@@ -5,7 +5,6 @@ import type { HandoffRule } from "./chat-corrections.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
 import { CHAT_CHECK_IN_LINE, NUDGE_PREFIX } from "./shared/chat-feed.ts";
-import { messageText } from "./shared/turns.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type ChildAgent, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow, type StopReason,
   type ThreadMessage } from "./shared/types.ts";
 
@@ -97,8 +96,6 @@ export interface CheckInMemory {
   boardError?: Reminder; asks?: Reminder;
   /** When the server last told the chat to start a check-in job (`checkInJobDue`), kept across restarts. */
   jobAt?: number;
-  /** The (todo, article link) pairs already told (`articleLinkKey`): each once. */
-  linked?: string[];
 }
 /**
  * What the digest needs besides the facts and the board: the chat's own id and name (a step it owns says "you"; `name` signs a nudge), a board
@@ -108,9 +105,7 @@ export interface CheckInContext { self?: readonly string[]; name?: string; board
   /** The server can write a check-in job's brief: a tick past the threshold returns `job` (`checkInJobDue`). */
   fanOut?: boolean;
   /** The ledger's handoffs (`handoffRules`): an open step on another thread's topics gets the scope line. */
-  handoffs?: readonly HandoffRule[];
-  /** The `wiki:` articles the chat linked to the owner (`articleLinks`): one an explanation todo lacks gets a line. */
-  articleLinks?: readonly ArticleLink[] }
+  handoffs?: readonly HandoffRule[] }
 
 const OPEN: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 const CLOSED: ReadonlySet<PlanStatus> = new Set(["done", "dropped"]);
@@ -386,40 +381,6 @@ export function scopeMisses(board: ChatBoard | null, rules: readonly HandoffRule
 export const scopeLine = ({ item, rule }: ScopeMiss): string =>
   `${item.id} ${quote(item.text)} belongs to ${rule.to} (correction ${rule.correction}): hand it off with a message to that thread and remove it from this plan`;
 
-/** A `wiki:` article (an .html or .md page) the chat linked in a message to the owner, and when. */
-export interface ArticleLink { at: number; link: string }
-const WIKI_ARTICLE = /\bwiki:[^\s`"'<>()[\]#]+?\.(?:html|md)(?=[\s`"'<>()[\].,;:!?*#]|$)/gi;
-/** The `wiki:` article links in a text, each once, without a `#` part. */
-export const wikiArticles = (text: string): string[] => [...new Set(text.match(WIKI_ARTICLE) ?? [])];
-/** What the owner reads of an assistant message: its text and its tell_owner texts. Empty for any other message. */
-export function ownerFacingTexts(message: ThreadMessage): string[] {
-  if (message.role !== "assistant") return [];
-  const told = message.content.flatMap(part => part.type === "toolCall" && part.name === "tell_owner" && typeof part.arguments.text === "string" ? [part.arguments.text] : []);
-  return [messageText(message), ...told].filter(text => text.trim() !== "");
-}
-/** Every article link in the chat's assistant and tell_owner messages at or after `since`, oldest first. */
-export const articleLinks = (messages: readonly ThreadMessage[], since: number): ArticleLink[] =>
-  messages.flatMap(message => message.timestamp >= since ? ownerFacingTexts(message).flatMap(text => wikiArticles(text).map(link => ({ at: message.timestamp, link }))) : []);
-/** A For you todo that asks for an explanation: its text starts with "Explanation" or says explain. */
-export const explanationTodo = (todo: Pick<OwnerTodo, "text">): boolean => /^\W*explanation\b|\bexplain/i.test(todo.text);
-/** The article links window: Chat health and the check-in look at links from the last 24 h. */
-export const ARTICLE_LINK_WINDOW_MS = 24 * 60 * 60_000;
-/** An open explanation todo and an article the chat linked since that is in no todo (correction c5: the link goes in the reply and in that todo). */
-export interface ArticleLinkMiss { todo: OwnerTodo; link: string; at: number }
-/**
- * Each open explanation todo (`explanationTodo`) paired with each article linked at or after `since` that no todo on the board names yet: the
- * todo must carry the link the reply gave. A link once per todo, at its last mention.
- */
-export function articleLinkMisses(todos: readonly OwnerTodo[], links: readonly ArticleLink[], since: number): ArticleLinkMiss[] {
-  const named = todos.map(todo => `${todo.text}\n${todo.reply ?? ""}`).join("\n");
-  const latest = new Map<string, number>();
-  for (const { link, at } of links) if (at >= since && !named.includes(link)) latest.set(link, Math.max(at, latest.get(link) ?? -Infinity));
-  return todos.filter(todo => !todo.done && explanationTodo(todo)).flatMap(todo => [...latest].map(([link, at]) => ({ todo, link, at })));
-}
-export const articleLinkKey = (miss: Pick<ArticleLinkMiss, "todo" | "link">): string => `${miss.todo.id} ${miss.link}`;
-export const articleLinkLine = ({ todo, link }: Pick<ArticleLinkMiss, "todo" | "link">): string =>
-  `${todo.id} asks for an explanation and your reply linked ${link}: put the link in ${todo.id}`;
-
 /**
  * The kinds of work a check-in job takes over: the three ACT_CLASSES, an open item that looks done (`looksDone`), an open item that belongs to
  * another thread (`scopeMisses`), and a job that ended with no report or whose step was not updated after it ended.
@@ -466,8 +427,7 @@ const reminderDue = (before: Reminder | undefined, key: string, now: number): bo
  * replied after the step's last change or note edit, and is still not updated at the next tick, gets that job's report written into its note,
  * once per end, with a line. A board read error keeps the last steps and is reported, and so are more open owner asks than
  * BOARD_LIMITS.openAsks; each again every STEP_STALE_MS while it holds. An open item on another thread's work by a ledger handoff
- * (`scopeMisses`) gives its scope line when first seen, then every STEP_STALE_MS, and is a `scope` item. An open explanation todo that lacks
- * an article the chat linked in the last 24 h (`articleLinkMisses`) gives its line once per todo and link.
+ * (`scopeMisses`) gives its scope line when first seen, then every STEP_STALE_MS, and is a `scope` item.
  */
 export function checkInDigest(previous: CheckInMemory | undefined, facts: readonly JobFact[], board: ChatBoard | null, now: number, context: CheckInContext = {}):
   { memory: CheckInMemory; lines: string[]; open: string[]; nudges: Nudge[]; notes: StepNote[]; job?: CheckInJob } {
@@ -631,9 +591,6 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   if (previous && answered) for (const todo of answered) if (!previous.answered.includes(todo.id)) lines.push(`owner answered ${todo.id} ${quote(todo.text)}: ${clip(todo.reply!, 120)}`);
   const ready = context.boardError ? undefined : readySteps(board);
   if (ready) for (const step of ready) if (!previous?.ready.includes(step.id)) lines.push(`${step.id} ${quote(step.text)} can start: the steps before it are done and it has no job`);
-  const linkMisses = context.boardError ? undefined : articleLinkMisses(board?.todos ?? [], context.articleLinks ?? [], now - ARTICLE_LINK_WINDOW_MS);
-  const linked = linkMisses?.map(articleLinkKey);
-  if (linkMisses) for (const miss of linkMisses) if (!previous?.linked?.includes(articleLinkKey(miss))) lines.push(articleLinkLine(miss));
   lines.push(...classLines);
   const fold = (all: readonly string[]) => all.length > MAX_LINES ? [...all.slice(0, MAX_LINES - 1), `and ${all.length - MAX_LINES + 1} more`] : [...all];
   const sorted = open.sort((a, b) => a.at - b.at).map(entry => entry.line);
@@ -644,8 +601,7 @@ export function checkInDigest(previous: CheckInMemory | undefined, facts: readon
   const job: CheckInJob | undefined = fanOut ? { at: now, name: `check-in ${clockTime(now)}`,
     items: KIND_ORDER.flatMap(kind => items.filter(item => item.kind === kind)), lines: fold(lines.filter(line => !covered.has(line))) } : undefined;
   return { memory: { at: now, jobs, steps, answered: answered?.map(todo => todo.id) ?? previous?.answered ?? [], ready: ready?.map(step => step.id) ?? previous?.ready ?? [],
-    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}), ...(jobAt !== undefined ? { jobAt } : {}),
-    ...((linked ?? previous?.linked)?.length ? { linked: linked ?? previous!.linked! } : {}) }, lines: fold(lines), open: listed, nudges, notes, ...(job ? { job } : {}) };
+    ...(boardError ? { boardError } : {}), ...(asks ? { asks } : {}), ...(jobAt !== undefined ? { jobAt } : {}) }, lines: fold(lines), open: listed, nudges, notes, ...(job ? { job } : {}) };
 }
 
 /** A nudge the server sends to the thread a stale step waits on: the thread's session id, the step, the text. */

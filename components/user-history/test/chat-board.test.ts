@@ -8,7 +8,7 @@ import { BoardStore } from "../src/chat-board-store.ts";
 import { checkInSettings } from "../src/chat-checkin.ts";
 import { applyThreadEvent } from "../src/shared/thread-state.ts";
 import type { ThreadState } from "../src/shared/types.ts";
-import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, migrateBoard, nextIds, parseBoardOps, renderBoard, REPLY_RULE } from "../src/shared/chat-board.ts";
+import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, migrateBoard, nextIds, parseBoardOps, PLACEHOLDER_TODO_ERROR, placeholderTodo, renderBoard, REPLY_RULE } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "../src/shared/types.ts";
 
 const T0 = "2026-10-06T00:00:00.000Z";
@@ -185,6 +185,26 @@ test("chat board: an agent todo offers 2 to 4 choices; tapping one steers 'chose
   assert.equal(run(oneDone, [{ op: "todo_add", text: "d" }]).board.todos.length, 4, "a checked ask frees a slot");
 });
 
+test("chat board: the agent cannot add a placeholder todo or rename one into it; a todo with choices and the owner's own todos pass (owner 10-09)", () => {
+  const placeholders = ["Read: GitHub Pro vs Team, the link lands here when ready", "  read: the pool article", "Pool explainer: link lands in t3",
+    "Article on swap, lands here", "Cost report when ready", "I'll send it when it's ready", "Team plan when it\u2019s ready", "Notes when it is ready"];
+  for (const text of placeholders) {
+    assert.equal(placeholderTodo({ text }), true, text);
+    assert.throws(() => run(emptyBoard(T0), parseBoardOps([{ op: "todo_add", text }])), (error: unknown) => error instanceof BoardError && error.kind === "invalid" &&
+      error.message === PLACEHOLDER_TODO_ERROR, text);
+  }
+  assert.match(PLACEHOLDER_TODO_ERROR, /track it as a plan step, and when the article exists, send its link in a chat message/);
+  for (const text of ["Pick the price", "Approve the Read replica cost", "Ready to deploy?", "Sign the contract"]) assert.equal(placeholderTodo({ text }), false, text);
+  assert.equal(placeholderTodo({ text: "Read: which plan?", choices: ["Pro", "Team"] }), false, "an ask with choices is real");
+  assert.equal(run(emptyBoard(T0), [{ op: "todo_add", text: "Read: which plan?", choices: ["Pro", "Team"] }]).board.todos.length, 1);
+  assert.equal(run(emptyBoard(T0), [{ op: "todo_add", text: "Read: the pool article" }], "owner").board.todos.length, 1, "the owner's own todo");
+  const asked = run(emptyBoard(T0), [{ op: "todo_add", text: "Approve the spend" }]).board;
+  throwsKind(() => run(asked, [{ op: "todo_update", id: "t1", text: "Read: spend report, link lands here" }]), "invalid");
+  assert.equal(run(asked, [{ op: "todo_update", id: "t1", text: "Approve the $40 spend" }]).board.todos[0]!.text, "Approve the $40 spend", "a real rename");
+  const old: ChatBoard = { ...emptyBoard(T0), todos: [{ id: "t1", text: "Read: x, the link lands here when ready", done: false, from: "agent", at: T0 }] };
+  assert.equal(run(old, [{ op: "todo_update", id: "t1", done: true }]).board.todos[0]!.done, true, "an old placeholder can still be checked off");
+});
+
 test("chat board: a v1 file migrates to bullets, one per non-empty line; a v2 file passes; anything else throws", () => {
   const v1 = { v: 1, rev: 4, plan: [], todos: [], updatedAt: T0, scratchpad: "- Decision: Resend\n\n* picks pending\nplain line\n" };
   assert.deepEqual(migrateBoard(v1), { v: 2, rev: 4, plan: [], todos: [], updatedAt: T0, scratch: [
@@ -244,7 +264,7 @@ test("chat board: the owner may change todos and the scratchpad, never the plan;
 
 test("chat board: render shows this chat's target, the nested checklist, todos with choices and answers, and the scratch bullets with links", () => {
   assert.match(renderBoard(null), new RegExp(`^${REPLY_RULE.replace(/[.;]/g, "\\$&")}\nThe board is empty`), "the reply rule leads every board the agent reads");
-  assert.equal(REPLY_RULE, "Reply rule: at most 60 words; explain in an article and put its link in the reply and the owner todo.");
+  assert.equal(REPLY_RULE, "Reply rule: at most 60 words; explain in an article and link it in your message.");
   assert.match(renderBoard(null, "s-1"), /^Reply rule: .*\nThis chat: thread:s-1\nThe board is empty/);
   const { board } = run(emptyBoard(T0), [
     { op: "plan_add", text: "Goal", status: "doing" },
@@ -298,7 +318,7 @@ test("extension: chat_board writes the chat's board under agent-chat-data-dir an
   assert.ok(tool.promptGuidelines?.some(line => line.includes("CTO")));
   const ctx = { sessionManager: { getSessionId: () => "s-1" } };
   const added = await tool.execute("c1", { ops: [{ op: "plan_add", text: "Goal", status: "doing" }, { op: "todo_add", text: "Approve" }] }, undefined, undefined, ctx);
-  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nReply rule: at most 60 words; explain in an article and put its link in the reply and the owner todo\.\nThis chat: thread:s-1\nCheck-in: every 15 min\nBoard rev 2/);
+  assert.match(added.content[0]!.text, /^Added p1 "Goal"\nAdded a todo t1 "Approve"\nReply rule: at most 60 words; explain in an article and link it in your message\.\nThis chat: thread:s-1\nCheck-in: every 15 min\nBoard rev 2/);
   assert.equal((await new BoardStore(dataDir).read("s-1"))?.rev, 2);
   await checkInSettings(join(dataDir, "check-in-settings.json")).update("s-1", () => ({ everyMs: 15 * 60_000, pausedUntil: "forever" }));
   assert.match((await tool.execute("c2", { ops: [] }, undefined, undefined, ctx)).content[0]!.text, /^Reply rule: .*\nThis chat: thread:s-1\nCheck-in: paused until the owner resumes it\nBoard rev 2/,

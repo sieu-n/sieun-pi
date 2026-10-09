@@ -145,6 +145,16 @@ function choices(value: unknown): string[] {
   return list;
 }
 
+/**
+ * A todo that only holds a place for something not ready yet ("Read: ... the link lands here when ready"). Owner 10-09: "what the fuck is  this???".
+ * For you holds only what the owner must decide or do now; a pending explanation is a plan step, and its link goes in a chat message when it exists.
+ * A todo with choices is a real ask and never a placeholder.
+ */
+const PLACEHOLDER = /^read:|lands here|link lands|when ready|when it['\u2019]?s ready|when it is ready/i;
+export const placeholderTodo = (todo: Pick<OwnerTodo, "text" | "choices">): boolean => !todo.choices?.length && PLACEHOLDER.test(todo.text.trim());
+export const PLACEHOLDER_TODO_ERROR = "This todo holds a place for something not ready. For you holds only what the owner must decide or do now: track it as a plan step, " +
+  "and when the article exists, send its link in a chat message (tell_owner on a wake-up).";
+
 /** Parses one untrusted op (an HTTP body or a tool call). The reducer trusts its input after this. */
 export function parseBoardOp(value: unknown): BoardOp {
   if (!isRecord(value)) invalid("Each op must be an object with an op field.");
@@ -306,6 +316,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         invalid(`The owner already has ${BOARD_LIMITS.openAsks} open asks. Decide this yourself and note it in the scratchpad, or remove an ask first.`);
       }
       const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), from: actor, at: now };
+      if (actor === "agent" && placeholderTodo(todo)) invalid(PLACEHOLDER_TODO_ERROR);
       return done({ todos: [...board.todos, todo] },
         `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}${todo.choices ? ` with choices ${todo.choices.map(quote).join(" / ")}` : ""}`);
     }
@@ -313,7 +324,11 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
       const next: OwnerTodo = { ...todo };
       const parts: string[] = [];
-      if (op.text !== undefined && op.text !== todo.text) { next.text = op.text; parts.push(`renamed ${quote(todo.text)} to ${quote(op.text)}`); }
+      if (op.text !== undefined && op.text !== todo.text) {
+        next.text = op.text;
+        if (actor === "agent" && placeholderTodo(next)) invalid(PLACEHOLDER_TODO_ERROR);
+        parts.push(`renamed ${quote(todo.text)} to ${quote(op.text)}`);
+      }
       // The first part names the todo, later parts say "it".
       const label = () => parts.length ? "it" : quote(next.text);
       // A reply that is one of the offered choices is a tap: "chose X for Q", which also covers the check that comes with it.
@@ -348,7 +363,7 @@ function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInpu
 }
 
 /** The first line of every board the agent reads, so the reply cap is in its context each turn. */
-export const REPLY_RULE = "Reply rule: at most 60 words; explain in an article and put its link in the reply and the owner todo.";
+export const REPLY_RULE = "Reply rule: at most 60 words; explain in an article and link it in your message.";
 
 /**
  * The board as compact text for the agent: the reply rule, this chat's own link target and its check-in line, the plan as an indented checklist, the owner's todos

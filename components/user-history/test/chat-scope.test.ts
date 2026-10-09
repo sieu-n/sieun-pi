@@ -6,11 +6,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { boardClasses, type DaemonSession } from "../scripts/duties/board-classes.ts";
 import { fixArgs } from "../scripts/corrections-fix.ts";
-import { articleLinkLine, articleLinkMisses, articleLinks, checkInDigest, checkInJobBrief, checkInJobMessage, explanationTodo, isHandoffTarget, matchTopic, scopeLine, scopeMisses,
-  STEP_STALE_MS, wikiArticles } from "../src/chat-checkin.ts";
+import { checkInDigest, checkInJobBrief, checkInJobMessage, isHandoffTarget, matchTopic, scopeLine, scopeMisses, STEP_STALE_MS } from "../src/chat-checkin.ts";
 import { applyCorrection, type ChatRef, CorrectionLedger, correctionResult, handoffRules, type HandoffRule, type Ledger, ledgerPrompt, parseCorrectionCall, parseLedger } from "../src/chat-corrections.ts";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
-import type { ChatBoard, OwnerTodo, PlanItem, ThreadMessage } from "../src/shared/types.ts";
+import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -22,8 +21,6 @@ const RULE: HandoffRule = { correction: "c7", to: OPS, topics: TOPICS };
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
 const board = (plan: PlanItem[], todos: OwnerTodo[] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", scratch: [], todos, plan });
 const todo = (id: string, text: string, extra: Partial<OwnerTodo> = {}): OwnerTodo => ({ id, text, done: false, from: "agent", at: "", ...extra });
-const said = (at: number, text: string, told?: string): ThreadMessage => ({ role: "assistant", provider: "p", model: "m", stopReason: told ? "toolUse" : "stop", timestamp: at,
-  content: [{ type: "text", text }, ...(told ? [{ type: "toolCall" as const, id: "t", name: "tell_owner", arguments: { text: told } }] : [])] });
 
 test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad one is dropped alone, the prompt names it, a retired entry has none", async () => {
   const ledger: Ledger = { corrections: [] };
@@ -121,44 +118,7 @@ test("check-in digest: a step on another thread's work gives the scope line, aga
   assert.equal(checkInDigest(undefined, [], plan, NOW, { ...context, fanOut: true, handoffs: [] }).job, undefined, "without the handoff: one kind, one item");
 });
 
-test("article links: wiki: .html and .md links in replies and tell_owner; an explanation todo lacking one in the last 24 h is a miss", () => {
-  assert.deepEqual(wikiArticles("Here: [GitHub Pro](wiki:sessions/a/article.html), and wiki:sessions/b/notes.md#part. Not wiki:sessions/c/shot.png or `wiki:x`."),
-    ["wiki:sessions/a/article.html", "wiki:sessions/b/notes.md"]);
-  const links = articleLinks([said(NOW - 30 * HOUR, "wiki:old/a.html"), said(NOW - HOUR, "Ready: [it](wiki:s/pro.html)", "Read wiki:s/pro.html and wiki:s/b.md"),
-    { role: "user", content: "wiki:s/user.html", timestamp: NOW } as ThreadMessage], NOW - 24 * HOUR);
-  assert.deepEqual(links, [{ at: NOW - HOUR, link: "wiki:s/pro.html" }, { at: NOW - HOUR, link: "wiki:s/pro.html" }, { at: NOW - HOUR, link: "wiki:s/b.md" }]);
-  assert.equal(explanationTodo({ text: "Explanation: GitHub Pro vs Team" }), true);
-  assert.equal(explanationTodo({ text: "Read why we explain the pool" }), true);
-  assert.equal(explanationTodo({ text: "Pick the price" }), false);
-  const since = NOW - 24 * HOUR;
-  const ask = todo("t3", "Explanation: GitHub Pro vs Team");
-  const found = [{ at: NOW - HOUR, link: "wiki:s/pro.html" }];
-  assert.deepEqual(articleLinkMisses([ask], found, since).map(miss => `${miss.todo.id} ${miss.link}`), ["t3 wiki:s/pro.html"], "missing");
-  assert.deepEqual(articleLinkMisses([{ ...ask, text: ask.text + " [read](wiki:s/pro.html)" }], found, since), [], "the link is in the todo");
-  assert.deepEqual(articleLinkMisses([todo("t4", "Pick the price")], found, since), [], "not an explanation todo");
-  assert.deepEqual(articleLinkMisses([ask], [{ at: NOW - 25 * HOUR, link: "wiki:s/pro.html" }], since), [], "older than 24 h");
-  assert.deepEqual(articleLinkMisses([{ ...ask, done: true }], found, since), [], "a done todo");
-  assert.deepEqual(articleLinkMisses([ask, todo("t5", "Done: see wiki:s/pro.html")], found, since), [], "another todo already names it");
-  assert.equal(articleLinkLine({ todo: ask, link: "wiki:s/pro.html" }), "t3 asks for an explanation and your reply linked wiki:s/pro.html: put the link in t3");
-});
-
-test("check-in digest: an explanation todo that lacks a linked article is told once per todo and link", () => {
-  const plan = board([step("p1", "Write it", "doing", { job: "vp" })], [todo("t3", "Explanation: GitHub Pro vs Team")]);
-  const context = { self: ["vp", "dev VP"], articleLinks: [{ at: NOW - HOUR, link: "wiki:s/pro.html" }] };
-  const line = "t3 asks for an explanation and your reply linked wiki:s/pro.html: put the link in t3";
-  const first = checkInDigest(undefined, [], plan, NOW, context);
-  assert.deepEqual(first.lines, [line]);
-  assert.deepEqual(first.memory.linked, ["t3 wiki:s/pro.html"]);
-  const again = checkInDigest(first.memory, [], plan, NOW + 15 * MIN, context);
-  assert.deepEqual(again.lines, [], "once per (todo, link)");
-  const second = checkInDigest(again.memory, [], plan, NOW + 30 * MIN, { ...context, articleLinks: [...context.articleLinks, { at: NOW, link: "wiki:s/team.md" }] });
-  assert.deepEqual(second.lines, ["t3 asks for an explanation and your reply linked wiki:s/team.md: put the link in t3"]);
-  const fixed = board(plan.plan, [todo("t3", "Explanation: GitHub Pro vs Team, [read](wiki:s/pro.html) [team](wiki:s/team.md)")]);
-  const done = checkInDigest(second.memory, [], fixed, NOW + 45 * MIN, second.memory && { ...context, articleLinks: [...context.articleLinks, { at: NOW, link: "wiki:s/team.md" }] });
-  assert.deepEqual([done.lines, done.memory.linked], [[], undefined], "the links went in the todo");
-});
-
-test("board classes: a step on another thread's work is a scope miss; chat health counts scope_misses and article_link_not_in_todo per chat", async () => {
+test("board classes: a step on another thread's work is a scope miss; chat health counts scope_misses and placeholder_todos per chat", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scope-health-"));
   try {
     await mkdir(join(dir, "boards"), { recursive: true });
@@ -174,21 +134,20 @@ test("board classes: a step on another thread's work is a scope miss; chat healt
     assert.deepEqual(chats[0]!.flagged.filter(slice => slice.kind === "scope_misses").map(slice => slice.excerpt),
       [`p1 "Lower the Mac load" belongs to ${OPS} (correction c1): hand it off with a message to that thread and remove it from this plan`]);
 
-    // Chat health: closed plans (the daemon's sessions are not read), one explanation todo per chat.
-    await writeFile(join(dir, "boards", "vp.json"), JSON.stringify(board([step("p2", "Docs", "done")], [todo("t3", "Explanation: GitHub Pro vs Team")])));
-    await writeFile(join(dir, "boards", "ops.json"), JSON.stringify(board([], [todo("t1", "Explanation: swap [read](wiki:s/swap.html)")])));
-    const line = (message: ThreadMessage) => JSON.stringify({ type: "message", message });
-    await writeFile(join(dir, "vp.jsonl"), [line(said(NOW - HOUR, "Ready: [GitHub Pro](wiki:s/pro.html)")), line(said(NOW - 30 * HOUR, "Old: wiki:s/old.html"))].join("\n") + "\n");
-    await writeFile(join(dir, "ops.jsonl"), line(said(NOW - HOUR, "status", "Here: wiki:s/swap.html")) + "\n");
+    // Chat health: closed plans (the daemon's sessions are not read); placeholder todos from the agent, open, with no choices.
+    await writeFile(join(dir, "boards", "vp.json"), JSON.stringify(board([step("p2", "Docs", "done")], [todo("t3", "Read: GitHub Pro vs Team, the link lands here when ready", { at: new Date(NOW - HOUR).toISOString() }),
+      todo("t4", "Read: done one, when ready", { done: true }), todo("t5", "Read: which plan?", { choices: ["Pro", "Team"] }), todo("t6", "Pick the price")])));
+    await writeFile(join(dir, "boards", "ops.json"), JSON.stringify(board([], [todo("t1", "Read: my own note", { from: "owner" })])));
     const output = join(dir, "health.json");
     const result = spawnSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "..", "scripts", "duties", "chat-health.ts")], { cwd: join(import.meta.dirname, ".."),
       encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", CHAT_HEALTH_GIT_DIR: "/nonexistent", OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW),
         CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir } });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.equal(health.metrics.article_link_not_in_todo, 1);
+    assert.equal(health.metrics.placeholder_todos, 1);
+    assert.equal(health.metrics.article_link_not_in_todo, undefined, "c5's row is gone");
     assert.equal(health.metrics.scope_misses, 0);
-    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "article_link_not_in_todo"), [{ chat: "vp", at: NOW - HOUR, kind: "article_link_not_in_todo",
-      excerpt: `t3 "Explanation: GitHub Pro vs Team" lacks wiki:s/pro.html, linked to the owner at ${new Date(NOW - HOUR).toISOString()}` }]);
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "placeholder_todos"), [{ chat: "vp", at: NOW - HOUR, kind: "placeholder_todos",
+      excerpt: 't3 "Read: GitHub Pro vs Team, the link lands here when ready" is a placeholder in For you: make it a plan step and send the link in a chat message when it exists' }]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

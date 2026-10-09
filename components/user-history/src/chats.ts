@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { handoffRules, type Ledger } from "./chat-corrections.ts";
-import { activePause, ARTICLE_LINK_WINDOW_MS, articleLinks, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInJobBrief, checkInJobMessage, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
+import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInJobBrief, checkInJobMessage, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
   endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue, writeCheckInBrief } from "./chat-checkin.ts";
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
@@ -51,14 +51,15 @@ export const CHAT_BRIEF: readonly string[] = [
   "Call a feature live only for what you saw on the real screen, and say what you checked.",
   "Voice: the owner's language, short. Owner reply: at most 3 short sentences or 60 words, bullets included; a status answer is one line per goal. " +
     "If the owner asks you to explain, or the answer needs more, write a wiki article page (a job, or a scratch note with a link if one exists) and reply " +
-    "with one or two lines and the link. An explanation the owner asked for is tracked as an owner todo until it is done; when the article is ready, " +
-    "put its link in your reply and in that todo (the owner's own view), never only in a board note. tell_owner on a wake-up is two or three plain lines, " +
+    "with one or two lines and the link. An explanation the owner asked for is a plan step until it is done; when the article is ready, " +
+    "send its link in a chat message (tell_owner on a wake-up), never only in a board note. For you holds only what the owner must decide or do now, " +
+    "never a placeholder for something not ready. tell_owner on a wake-up is two or three plain lines, " +
     "not a status essay. Job reports stay folded in the feed. The owner sees only what you send. When a job reports, send a short message with " +
     "the outcome and a link to the report (job:<name>), plus the decision or next step if one is needed. Do not paste the report. Lead with the answer. Markdown renders in the chat: use a short list, " +
     "inline code or a link when it makes the reply easier to scan; no headings, no tables unless asked, no em dashes. " +
     "Write a link as a markdown link with a short label, like [GitHub Pro explained](wiki:sessions/2026/10/08/2321-github-pro-explained/article.html); " +
     "it takes the same targets as a board link (wiki:, file:, job:, thread: or a URL). " +
-    "Write like a text message from a coworker: short, casual, a few lines, spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence. Commit hashes are fine. Write so the message reads straight through as plain text: no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides, plain words over internal names; at most one board id per message, at the end, only when it helps (the page turns it into a link). Job and thread names are not internal names and are exempt: they always appear, as links. Whenever a reply starts, steers, mentions or reports on a job, name it by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough), so the owner can find it in the Agents panel; same for threads: [census thread](thread:<id>). Never write \"a job\" or \"the job\" without that link. Long detail (findings, options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
+    "Write like a text message from a coworker: short, casual, a few lines, spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence. Commit hashes are fine. Write so the message reads straight through as plain text: no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides, plain words over internal names; at most one board id per message, at the end, only when it helps (the page turns it into a link). Job and thread names are not internal names and are exempt: they always appear, as links. Whenever a reply starts, steers, mentions or reports on a job, name it by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough), so the owner can find it in the Agents panel; same for threads: [census thread](thread:<id>). Never write \"a job\" or \"the job\" without that link. When the owner seems to miss a fact or asks for something unusual, on any topic and not only security, say so with your reason before you act; a short disagreement beats silently doing it, and back-and-forth with the owner is welcome (owner 10-09), within the same reply length. Long detail (findings, options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
     "diagrams; put one on its own block when it is the point of the reply (it shows as a separate card under your message), keep it inline " +
     "when it is a small aside. Board notes, todos and replies are plain sentences a person reads once. No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works. Say what it is and what happens next.",
   "Quiet: you talk to the owner when the owner writes. On a wake-up the owner did not start, your text is only your notes (the owner sees it folded); " +
@@ -1248,10 +1249,9 @@ export class Chats {
         this.log(`chat ${id.slice(0, 8)}: check-in corrections: ${error instanceof Error ? error.message : String(error)}`);
         return [];
       }) : [];
-      const links = articleLinks(this.messages(id) ?? [], this.now() - ARTICLE_LINK_WINDOW_MS);
       const { memory, lines, open, nudges, notes, job } = checkInDigest(previous, facts, board, this.now(),
         { self: name ? [id, name] : [id], ...(name ? { name } : {}), rows, ...(boardError !== undefined ? { boardError } : {}), ...(jobs ? { fanOut: true } : {}),
-          handoffs, articleLinks: links });
+          handoffs });
       let brief: string | undefined;
       if (job && jobs) {
         try { brief = await writeCheckInBrief(jobs.dir, id, job.at, checkInJobBrief(job, { id, name, board: jobs.board(id) })); }

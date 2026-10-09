@@ -189,11 +189,15 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.match(brief, /send a job only its own plan item, not the whole board/);
   assert.ok(brief.includes("no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides"), "replies read straight through (owner 10-08)");
   assert.ok(brief.includes("Job and thread names are not internal names and are exempt: they always appear, as links. Whenever a reply starts, steers, mentions or reports on a job, name it by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough)"), "jobs are named as links (owner 10-09)");
+  assert.ok(brief.includes("When the owner seems to miss a fact or asks for something unusual, on any topic and not only security, say so with your reason before you act"), "push back with a reason (owner 10-09, c16)");
   assert.ok(brief.includes("Write like a text message from a coworker: short, casual, a few lines, spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence."), "casual spoken style (owner 10-08)");
   assert.ok(brief.includes("Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, and translate any Korean."), "relays to agents in English with the meaning (owner 10-08)");
   assert.ok(brief.includes("When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot per variant inline in the chat message itself"), "UI picks show links and screenshots inline (owner 10-09)");
   assert.ok(brief.includes("open it in the owner's Aside browser through the aside-browser skill and complete the Google or GitHub sign-in there. Ask the owner only when no OAuth path works"), "logins through Aside, not owner todos (owner 10-09)");
-  assert.ok(brief.includes("when the article is ready, put its link in your reply and in that todo (the owner's own view), never only in a board note."), "asked-for articles reach the owner's view (owner 10-09)");
+  assert.ok(brief.includes("An explanation the owner asked for is a plan step until it is done; when the article is ready, send its link in a chat message " +
+    "(tell_owner on a wake-up), never only in a board note. For you holds only what the owner must decide or do now, never a placeholder for something not ready."),
+    "a pending explanation is a plan step; its link goes in a chat message (owner 10-09)");
+  assert.ok(!brief.includes("tracked as an owner todo") && !brief.includes("in that todo"), "no placeholder todos in For you (owner 10-09)");
   assert.ok(brief.includes("Job reports stay folded in the feed. The owner sees only what you send. When a job reports, send a short message with the outcome and a link to the report (job:<name>), plus the decision or next step if one is needed. Do not paste the report."), "job reports stay folded; the chat mentions and links them (owner 10-09)");
   assert.ok(!brief.includes("shows open in the chat feed"), "the raw-report rule is gone");
   assert.ok(!brief.includes("propose a split"), "a chat with many goals is fine (owner 10-09)");
@@ -526,7 +530,7 @@ test("chats: a check-in tick with work of several kinds tells the chat to start 
   chats.close();
 });
 
-test("chats: the check-in reads the ledger's handoffs and the chat's article links: a step on another thread's work and an explanation todo without its link are lines", async () => {
+test("chats: the check-in reads the ledger's handoffs: a step on another thread's work is a line", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
@@ -534,21 +538,18 @@ test("chats: the check-in reads the ledger's handoffs and the chat's article lin
   await index.add("c1");
   const now = 100_000_000;
   const logs: string[] = [];
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [{ id: "t3", text: "Explanation: GitHub Pro vs Team", done: false, from: "agent", at: "" }],
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [],
     plan: [{ id: "p1", text: "Find what eats memory", status: "doing", job: "c1", note: "swap at 12 GB", children: [] }] };
   const ledger: Ledger = { corrections: [{ id: "c7", at: "", chat: { id: "vp", name: "dev VP" }, words: "w", rule: "Machine work goes to ops guy.", enforcedBy: "code",
     ref: "pending commit", status: "reopened", theme: ["mac"], repeats: [], handoff: { to: "ops guy (+observability)", topics: ["swap", "M1 Air"] } }] };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
     { ...source(dir, { c1: board }, () => now), corrections: async () => ledger }, line => logs.push(line));
   await chats.adopt();
-  threads.transcripts.set("c1", [{ role: "assistant", provider: "p", model: "m", stopReason: "stop", timestamp: now - 60_000,
-    content: [{ type: "text", text: "Ready: [GitHub Pro](wiki:sessions/x/pro.html)" }] }]);
   threads.fire().live("c1", []);
   await chats.settled();
   calls.length = 0;
   const lines = await chats.checkIn("c1");
-  assert.deepEqual(lines, ["t3 asks for an explanation and your reply linked wiki:sessions/x/pro.html: put the link in t3",
-    'p1 "Find what eats memory" belongs to ops guy (+observability) (correction c7): hand it off with a message to that thread and remove it from this plan']);
+  assert.deepEqual(lines, ['p1 "Find what eats memory" belongs to ops guy (+observability) (correction c7): hand it off with a message to that thread and remove it from this plan']);
   assert.equal(calls.length, 1, logs.join("\n"));
   chats.close();
 });

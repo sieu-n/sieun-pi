@@ -103,7 +103,7 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, article_link_not_in_todo: 0, stalls_2h: 2, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 });
+    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 2, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 });
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 3).map(slice => [slice.chat, slice.excerpt]), [["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]]);
     const kinds = (kind: string) => flagged.filter(slice => slice.kind === kind);
@@ -152,7 +152,7 @@ test("chat health: no owner turns gives long_replies 0; no OUTPUT_FILE exits non
     const output = join(dir, "health.json");
     const empty = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(empty.status, 0, empty.stderr);
-    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, article_link_not_in_todo: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 }, flagged: [] });
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 }, flagged: [] });
     const missing = run({ CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /OUTPUT_FILE/);
@@ -308,6 +308,7 @@ test("chat health duty: the definition parses as a duty, so scripts/duties/add.t
   const duty = parseDutyInput(definition, "d1", 0);
   assert.ok(duty.metrics.some(metric => metric.key === "repeat_corrections" && metric.target === 0));
   assert.ok(duty.metrics.some(metric => metric.key === "unlinked_job_mentions" && metric.target === 0));
-  assert.ok(duty.metrics.some(metric => metric.key === "article_link_not_in_todo" && metric.target === 0));
+  assert.ok(duty.metrics.some(metric => metric.key === "placeholder_todos" && metric.target === 0));
+  assert.ok(!duty.metrics.some(metric => metric.key === "article_link_not_in_todo"), "c5's row is gone (superseded by c14)");
   assert.ok(duty.metrics.some(metric => metric.key === "scope_misses" && metric.target === 0));
 });

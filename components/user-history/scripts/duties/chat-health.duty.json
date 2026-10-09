@@ -22,8 +22,8 @@
       "target": 0
     },
     {
-      "key": "article_link_not_in_todo",
-      "label": "Explanation todos missing the article link the chat sent",
+      "key": "placeholder_todos",
+      "label": "For you todos that only hold a place for something not ready",
       "op": "<=",
       "target": 0
     },
