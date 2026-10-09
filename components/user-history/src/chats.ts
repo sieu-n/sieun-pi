@@ -10,6 +10,7 @@ import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, chec
 import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
   switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
 import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
+import { findingsList, lintOwnerReply, replyCheck, replyNotes } from "./shared/reply-lint.ts";
 import { messageText } from "./shared/turns.ts";
 import type { BoardOp, ChatAgent, ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel,
   ThreadMessage } from "./shared/types.ts";
@@ -32,6 +33,7 @@ export const CHAT_BOARD_TOOL = "chat_board";
 export const CHAT_TOOLS: readonly string[] = [CHAT_BOARD_TOOL, TELL_OWNER_TOOL];
 export const TELL_OWNER_TOO_LONG = "shorter: one or two sentences";
 export const TELL_OWNER_DONE = "told the owner";
+export const TELL_OWNER_REFUSED = "Refused: the owner did not see it. Rewrite it and call tell_owner again:";
 /** The prompt of the daemon heartbeat that did the check-in before the server tick; an attach clears a heartbeat whose prompt starts with it. */
 export const OLD_CHECK_IN = "Check-in. Read the board";
 /** A job quiet this long with no report is told to the chat; shorter gaps are a job between tool calls or one that a reply woke again. */
@@ -185,26 +187,38 @@ export const REPLY_CAP_NOTE = `[reply cap] Answer this in at most ${REPLY_FOLD_W
   `Anything longer goes in a wiki page; reply with its link. The page folds every word past ${REPLY_FOLD_WORDS} under More.`;
 
 type ContextMessage = { role: string; content?: unknown };
-/** The model's view of a chat with REPLY_CAP_NOTE after each message the owner typed; undefined when there is none. Every owner message gets it, so the cached prefix holds. */
+/**
+ * The model's view of a chat with REPLY_CAP_NOTE after each message the owner typed, and after it the reply lint's findings on the reply the
+ * owner read before that message (`replyNotes`); undefined when there is no owner message. Every owner message gets its notes from the
+ * messages before it, so the cached prefix holds.
+ */
 export function withReplyCap<M extends ContextMessage>(messages: readonly M[]): M[] | undefined {
   let capped = false;
-  const view = messages.map(message => {
+  const checks = replyNotes(messages as unknown as readonly ThreadMessage[]);
+  const view = messages.map((message, index) => {
     const content = message.content;
     if (message.role !== "user" || !(typeof content === "string" || Array.isArray(content))) return message;
     const text = messageText({ content: content as string | { type: string; text?: string }[] }).trim();
     if (!text || serverNote(text)) return message;
     capped = true;
-    const note = { type: "text", text: REPLY_CAP_NOTE };
-    return { ...message, content: typeof content === "string" ? [{ type: "text", text: content }, note] : [...content, note] };
+    const check = checks.get(index);
+    const notes = [{ type: "text", text: REPLY_CAP_NOTE }, ...(check ? [{ type: "text", text: check }] : [])];
+    return { ...message, content: typeof content === "string" ? [{ type: "text", text: content }, ...notes] : [...content, ...notes] };
   });
   return capped ? view : undefined;
 }
 
-/** What `tell_owner` answers: the text reaches the owner as a bubble, or it is refused as too long (the feed shows a refused call as nothing). */
-export function tellOwner(text: unknown): { ok: true; text: string } | { ok: false; text: string } {
+/**
+ * What `tell_owner` answers: the text reaches the owner as a bubble, or it is refused as too long or for reply-lint findings, which come back
+ * with their fixes so the chat rewrites it in the same turn (the feed shows a refused call as nothing). `ownerText` is the owner's last message:
+ * a word the owner used is not jargon.
+ */
+export function tellOwner(text: unknown, ownerText = ""): { ok: true; text: string } | { ok: false; text: string } {
   const told = typeof text === "string" ? text.trim() : "";
   if (!told) return { ok: false, text: "nothing to tell: give text" };
   if (told.length > TELL_OWNER_LIMIT) return { ok: false, text: TELL_OWNER_TOO_LONG };
+  const findings = lintOwnerReply(told, ownerText);
+  if (findings.length) return { ok: false, text: `${TELL_OWNER_REFUSED}\n${findingsList(findings)}` };
   return { ok: true, text: TELL_OWNER_DONE };
 }
 
@@ -668,6 +682,8 @@ export class Chats {
   /** When the server last steered each chat with a `[check-in]` (a digest or a restart), and the chats whose check-in waits to join the next. */
   private readonly steeredAt = new Map<string, number>();
   private readonly mergeWaiting = new Set<string>();
+  /** The time of each chat's last owner reply the reply lint looked at at a turn's end: one `[reply check]` per reply. */
+  private readonly replyChecked = new Map<string, number>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
   /** Chats the owner's Update all chats reloads even on the current build; each leaves the set once its reload ran. */
@@ -725,7 +741,7 @@ export class Chats {
         for (const child of children) if (childWorking(child) && !before?.some(was => was.id === child.id && childWorking(was))) this.workingSince.set(child.id, this.now());
         if (before) for (const child of endedWithoutReport(before, children)) this.laterNoReport(id, child.id);
       },
-      idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); },
+      idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); this.queue(id, () => this.replyCheck(id)); },
     });
     const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
     if (tickMs > 0) {
@@ -1424,6 +1440,20 @@ export class Chats {
       if (!this.reloadWaiting.has(id)) this.forced.delete(id);
       if (action !== null || forced) this.briefChanged();
     }
+  }
+
+  /**
+   * At a turn's end: when the chat's last reply on an owner turn, sent since this server started, has reply-lint findings (`replyCheck`), one
+   * `[reply check]` steer naming them, once per reply. The chat's final text cannot be stopped before the owner reads it; this asks for a
+   * corrected short reply when it misled, and the model's view carries the findings into the next owner message either way.
+   */
+  private async replyCheck(id: string): Promise<void> {
+    const messages = this.chatIds.has(id) ? this.messages(id) : undefined;
+    const check = messages && replyCheck(messages);
+    if (!check || check.at < this.started || this.replyChecked.get(id) === check.at) return;
+    this.replyChecked.set(id, check.at);
+    try { await this.threads.prompt(id, { message: check.message, images: [], mode: "steer" }); }
+    catch (error) { this.log(`chat ${id.slice(0, 8)}: reply check: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /** The owner's Update all chats: every chat reloads onto the current extension and brief, an idle one now, a busy one at the end of its turn. */

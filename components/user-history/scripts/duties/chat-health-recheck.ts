@@ -8,6 +8,7 @@ const FIX_SUBJECT = "fix(user-history)";
 /** The metric a fix's subject names, by the words it uses; a subject can name several. */
 const TARGETS: readonly (readonly [string, RegExp])[] = [
   ["long_replies", /\b(?:long (?:owner )?repl(?:y|ies)|60 words|reply rule|reply cap)\b/i],
+  ["slop_replies", /\b(?:slop|reply lint|reply check)\b/i],
   ["off_brief", /\b(?:wakes?|wake-ups?|off[- ]brief|repeat(?:s|ed)?|notices?|tell_owner)\b/i],
   ["stalls_2h", /\b(?:stall(?:s|ed)?|stuck|quiet steps?|waitUntil|waitFor)\b/i],
   ["corrections", /\bcorrections?\b/i],

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
 import { fixTargets, recheckSlices } from "../scripts/duties/chat-health-recheck.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
+import { CLEAN_REPLIES, SLOP_REPLIES } from "./reply-lint-replies.ts";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const MIN = 60_000;
@@ -103,12 +104,13 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 2, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 });
+    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 2, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, slop_replies: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 });
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 3).map(slice => [slice.chat, slice.excerpt]), [["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]]);
     const kinds = (kind: string) => flagged.filter(slice => slice.kind === kind);
     assert.deepEqual(kinds("unretried_errors").map(slice => slice.excerpt), [`1.5 h with no new message after: ${API_KEY_ERROR}`, "2.0 h with no new message after: stopReason aborted"]);
     assert.deepEqual(kinds("long_replies").map(slice => slice.excerpt.split(":")[0]), ["61 words", "70 words"]);
+    assert.deepEqual(kinds("slop_replies").map(slice => [slice.chat, slice.excerpt.split(":")[0]]), [["chat-a", "6 bullets"], ["chat-a", "7 bullets"]], "length alone is long_replies");
     assert.deepEqual(kinds("stalls_2h").map(slice => [slice.chat, slice.at, slice.excerpt.slice(0, slice.excerpt.indexOf(" (", slice.excerpt.indexOf(": - ")))]), [
       ["chat-b", ago(1 * HOUR), "due for 25 h since the check-in told the chat: - p5"],
       ["chat-b", ago(1 * HOUR), "stale-chase for 25 h since the check-in told the chat: - p8"],
@@ -145,6 +147,35 @@ test("chat health: a reply is long when the page folds it, so a diagram or a lin
   }
 });
 
+test("chat health: slop_replies counts owner replies the reply lint flags for more than length, quoting the findings, with the owner's words spared", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  const stages = SLOP_REPLIES["two stages"]!, builtIn = SLOP_REPLIES["built-in duty"]!, pro = SLOP_REPLIES["pro bullets"]!, clean = CLEAN_REPLIES["clean pro check"]!;
+  const chat: Line[] = [
+    user(ago(5 * HOUR), stages.owner), reply(ago(5 * HOUR) + MIN, stages.reply),
+    user(ago(4 * HOUR), builtIn.owner), reply(ago(4 * HOUR) + MIN, builtIn.reply),
+    user(ago(3 * HOUR), pro.owner), reply(ago(3 * HOUR) + MIN, pro.reply),
+    user(ago(2 * HOUR), clean.owner), reply(ago(2 * HOUR) + MIN, clean.reply),
+    user(ago(1 * HOUR), "[check-in] What changed"), reply(ago(1 * HOUR) + MIN, "Update: notes on a wake-up \u2014 the owner reads them folded."),
+  ];
+  try {
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["dev-vp"] }));
+    await writeFile(join(dir, "dev-vp.jsonl"), chat.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.equal(health.metrics.slop_replies, 3, "the two stages, the built-in duty and the 4 bullets; not the clean one, not wake-up notes");
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "slop_replies").map(slice => [slice.chat, slice.excerpt.slice(0, slice.excerpt.indexOf(": "))]), [
+      ["dev-vp", "4 bullets"],
+      ["dev-vp", 'internal terms "기본으로 들어가", "보드 관리"'],
+      ["dev-vp", 'label opener "**코드 체크.**", "**프롬프트.**"; abstract words "단계", "계산"'],
+    ], "newest first; duty is spared since the owner said it");
+    assert.deepEqual(fixTargets("fix(user-history): a reply lint runs before the owner sees slop"), ["slop_replies"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("chat health: no owner turns gives long_replies 0; no OUTPUT_FILE exits nonzero with a message", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
   try {
@@ -152,7 +183,7 @@ test("chat health: no owner turns gives long_replies 0; no OUTPUT_FILE exits non
     const output = join(dir, "health.json");
     const empty = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(empty.status, 0, empty.stderr);
-    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 }, flagged: [] });
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 }, flagged: [] });
     const missing = run({ CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /OUTPUT_FILE/);

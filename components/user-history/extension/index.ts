@@ -10,7 +10,8 @@ import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-bo
 import { ImageFitter } from "../src/context-images.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/chat-checkin.ts";
 import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, ledgerPrompt, parseCorrectionCall } from "../src/chat-corrections.ts";
-import type { ChatAgent } from "../src/shared/types.ts";
+import { lastOwnerText } from "../src/shared/reply-lint.ts";
+import type { ChatAgent, ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
   const images = new ImageFitter();
@@ -88,15 +89,17 @@ export default function historyExtension(pi: ExtensionAPI): void {
     name: TELL_OWNER_TOOL,
     label: "Tell the owner",
     description: "Say one or two sentences to the owner on a turn the owner did not start (a job report, another thread, a check-in). " +
-      `Up to ${TELL_OWNER_LIMIT} characters; longer is refused. Call it once per wake-up, at the end, only when a goal finished, something failed ` +
+      `Up to ${TELL_OWNER_LIMIT} characters; longer is refused, and so is text the reply lint flags (labels, dashes, jargon, abstract words), with the fixes. Call it once per wake-up, at the end, only when a goal finished, something failed ` +
       "or is blocked, or you need a decision. On a turn the owner started, reply with text instead.",
     parameters: {
       type: "object",
       properties: { text: { type: "string", description: `What the owner reads: one or two casual spoken sentences that read straight through, with no ids, hashes or asides; up to ${TELL_OWNER_LIMIT} characters.` } },
       required: ["text"],
     },
-    async execute(_toolCallId, params) {
-      const result = tellOwner((params as { text?: unknown }).text);
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      let owner = "";
+      try { owner = lastOwnerText(ctx.sessionManager.getBranch().flatMap(entry => entry.type === "message" ? [entry.message as ThreadMessage] : [])); } catch { /* no owner words */ }
+      const result = tellOwner((params as { text?: unknown }).text, owner);
       if (!result.ok) throw new Error(result.text);
       return { content: [{ type: "text", text: result.text }], details: undefined };
     },

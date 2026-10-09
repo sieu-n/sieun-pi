@@ -66,6 +66,12 @@
       "unit": "%"
     },
     {
+      "key": "slop_replies",
+      "label": "Owner replies with labels, dashes, jargon or abstract words",
+      "op": "<=",
+      "target": 0
+    },
+    {
       "key": "off_brief",
       "label": "Times a chat did not behave as briefed",
       "op": "<=",

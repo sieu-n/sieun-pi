@@ -11,7 +11,9 @@ export const TELL_OWNER_LIMIT = 400;
 /** A user message the chat server sends on its own: the check-in digest and the no-report notice. The feed folds them into updates and the turn they start is not the owner's. */
 export const CHECK_IN_PREFIX = "[check-in] ";
 export const JOB_NOTICE_PREFIX = "[job] ";
-const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"]];
+/** The server's note after an owner-turn reply that failed the reply lint (src/shared/reply-lint.ts); the turn it starts is not the owner's. */
+export const REPLY_CHECK_PREFIX = "[reply check] ";
+const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"], [REPLY_CHECK_PREFIX, "reply check"]];
 /** In a server note that restarts a failed owner turn: the turn it starts stays the owner's, so the chat's answer is a bubble and check-ins wait. */
 export const OWNER_RETRY_MARK = "The owner's message is still unanswered: ";
 /** The first line of a chat_board result when the chat changed its own check-in; the feed shows that line as a notice. */
@@ -240,22 +242,46 @@ export function waitText(wait: ChatWait): string {
 
 /** An owner-turn reply longer than this many words shows only its first ones, with "More" to show the rest. */
 export const REPLY_FOLD_WORDS = 60;
-const FENCE = /^\s*(?:```|~~~)/;
+export const FENCE = /^\s*(?:```|~~~)/;
+/** One counted piece of a line: an image, a markdown link (its label's words), a code span (one word), a bare URL (none), or any other token. */
+const WORD_UNIT = /!\[[^\]]*\]\([^)]*\)|\[([^\]]*)\]\([^)]*\)|`[^`]+`|https?:\/\/\S+|\S+/gu;
+const HAS_WORD = /[\p{L}\p{N}]/u;
+const unitWords = (unit: string, label: string | undefined): number => {
+  if (unit.startsWith("![") || /^https?:\/\//.test(unit)) return 0;
+  if (label !== undefined) return label.split(/\s+/).filter(word => HAS_WORD.test(word)).length;
+  if (unit.startsWith("`") && unit.endsWith("`") && unit.length > 1) return 1;
+  return HAS_WORD.test(unit) ? 1 : 0;
+};
 /**
- * The part of an owner-turn reply shown before "More": the text up to its `limit`-th word, then "…"; `folded` false when the reply has no
- * more words than that. Words are counted outside code fences (a diagram is not words), so a cut never falls inside a fence.
+ * The words the page counts in a reply, each piece with its offset: outside code fences (a diagram is not words), a markdown link counts its
+ * label's words, a code span one word, an image or a bare URL none, and a list mark ("-", "3.") none.
  */
-export function foldReply(text: string, limit = REPLY_FOLD_WORDS): { shown: string; folded: boolean } {
-  let words = 0, offset = 0, fence = false;
+function* replyWordUnits(text: string): Generator<{ at: number; words: number }> {
+  let offset = 0, fence = false;
   for (const line of text.split(/(?<=\n)/)) {
     if (FENCE.test(line)) fence = !fence;
     else if (!fence) {
-      for (const match of line.matchAll(/\S+/g)) {
-        if (!/[\p{L}\p{N}]/u.test(match[0]) || ++words <= limit) continue;
-        return { shown: text.slice(0, offset + match.index!).trimEnd().replace(/[\s,;:—-]+$/, "") + "…", folded: true };
-      }
+      const mark = /^\s*\d+[.)](?=\s)/.exec(line)?.[0].length ?? 0;
+      for (const match of line.matchAll(WORD_UNIT)) yield { at: offset + match.index!, words: match.index! + match[0].length === mark ? 0 : unitWords(match[0], match[1]) };
     }
     offset += line.length;
+  }
+}
+/** How many words the page counts in a reply (`foldReply` folds past REPLY_FOLD_WORDS of them). */
+export function replyWordCount(text: string): number {
+  let words = 0;
+  for (const unit of replyWordUnits(text)) words += unit.words;
+  return words;
+}
+/**
+ * The part of an owner-turn reply shown before "More": the text up to its `limit`-th word (`replyWordUnits`), then "…"; `folded` false when the
+ * reply has no more words than that. A cut never falls inside a fence or a link.
+ */
+export function foldReply(text: string, limit = REPLY_FOLD_WORDS): { shown: string; folded: boolean } {
+  let words = 0;
+  for (const unit of replyWordUnits(text)) {
+    if ((words += unit.words) <= limit) continue;
+    return { shown: text.slice(0, unit.at).trimEnd().replace(/[\s,;:—-]+$/, "") + "…", folded: true };
   }
   return { shown: text, folded: false };
 }

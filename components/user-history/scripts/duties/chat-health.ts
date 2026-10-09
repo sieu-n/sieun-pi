@@ -9,6 +9,7 @@ import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts"
 import { placeholderTodo } from "../../src/shared/chat-board.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHECK_IN_PREFIX, foldReply, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
+import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
 import { boardClasses, type ConvergenceMisses, daemonSessions, NO_MISSES } from "./board-classes.ts";
@@ -41,7 +42,7 @@ const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 
-type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
+type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -124,8 +125,13 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       tally.ownerTurns++;
       // Long is what the page folds under "More": words outside code fences, a markdown link one word. A diagram or a link list the owner sees whole is not long.
       if (foldReply(turn.lastText).folded) { tally.longTurns++; flag("long_replies", turn.lastTextAt, `${words(turn.lastText)} words: ${turn.lastText}`); }
+      // slop_replies: the reply lint's findings other than length (src/shared/reply-lint.ts), with the owner's words of that turn spared.
+      const slop = lintOwnerReply(turn.lastText, ownerSaid).filter(finding => finding.kind !== "long");
+      if (slop.length) { tally.metrics.slop_replies++; flag("slop_replies", turn.lastTextAt, `${findingsLine(slop)}: ${turn.lastText}`); }
     }
   };
+  /** The owner's words in the message that started the latest owner turn: a word the owner used is not jargon in the reply. */
+  let ownerSaid = "";
   const openTurn = (starter: TurnStarter, at: number) => { closeTurn(); turn = { starter, at, lastText: "", lastTextAt: at }; };
   const settleFailure = (nextAt: number | undefined) => {
     if (!failure) return;
@@ -165,6 +171,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       openTurn("owner", at);
       settled = false;
       const own = ownerWords(text);
+      ownerSaid = own;
       if (inWindow(at) && own && CORRECTION.test(own.replace(QUOTED, ""))) { tally.metrics.corrections++; flag("corrections", at, own); }
     } else if (message.role === "assistant") {
       failure = undefined;
@@ -251,7 +258,7 @@ async function readWatch(file: string | undefined): Promise<Watch> {
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
   const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
-  const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("off_brief", 2 * FEW),
+  const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
     newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW),
     newest("placeholder_todos", FEW), newest("unlinked_job_mentions", FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
@@ -269,7 +276,7 @@ async function main(): Promise<void> {
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
-  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0,
+  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0,
     ...NO_MISSES },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
