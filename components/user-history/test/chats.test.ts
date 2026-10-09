@@ -190,7 +190,7 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
   assert.ok(brief.includes("no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides"), "replies read straight through (owner 10-08)");
   assert.ok(brief.includes("Job and thread names are not internal names and are exempt: they always appear, as links. Whenever a reply starts, steers, mentions or reports on a job, name it by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough)"), "jobs are named as links (owner 10-09)");
   assert.ok(brief.includes("When the owner seems to miss a fact or asks for something unusual, on any topic and not only security, say so with your reason before you act"), "push back with a reason (owner 10-09, c16)");
-  assert.ok(brief.includes("Write like a text message from a coworker: short, casual, a few lines, spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence."), "casual spoken style (owner 10-08)");
+  assert.ok(brief.includes("Write like a text message from a coworker: spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence."), "casual spoken style (owner 10-08)");
   assert.ok(brief.includes("Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, and translate any Korean."), "relays to agents in English with the meaning (owner 10-08)");
   assert.ok(brief.includes("When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot per variant inline in the chat message itself"), "UI picks show links and screenshots inline (owner 10-09)");
   assert.ok(brief.includes("open it in the owner's Aside browser through the aside-browser skill and complete the Google or GitHub sign-in there. Ask the owner only when no OAuth path works"), "logins through Aside, not owner todos (owner 10-09)");
@@ -215,8 +215,11 @@ test("brief: the board shape and corrections-stick bullets, and the check-in bul
     "If a goal finished, something is blocked or you need a decision, call tell_owner once. Never write 'nothing needs you', 'already handled', or a relay line."));
   assert.doesNotMatch(brief, /end the turn with no text|end with no text/, "the old no-text rule is gone");
   // Replies over 60 words (chat health long_replies, 19 of 21 over 60 words after 22c3ba4): a concrete cap, and longer answers go to an article.
-  assert.ok(brief.includes("Owner reply: at most 3 short sentences or 60 words, bullets included; a status answer is one line per goal. If the owner asks you to explain, " +
-    "or the answer needs more, write a wiki article page (a job, or a scratch note with a link if one exists) and reply with one or two lines and the link."));
+  // long_replies stayed at 66% over 60 words after 130ba16 (Chat health 10-09): the cap is its own bullet with a concrete shape.
+  assert.ok(CHAT_BRIEF.includes("Owner reply: 60 words at most, bullets and links included: one answer line, then at most 3 short lines. Starting or steering a job is one line " +
+    "with its job link; its plan goes on the board. Anything longer is a wiki page: one line and the link."));
+  assert.ok(brief.includes("Voice: the owner's language, short. If the owner asks you to explain, or the answer needs more, write a wiki article page (a job, or a scratch note with a link if one exists) and reply with one or two lines and the link."));
+  assert.ok(brief.includes("When you mean jobs in general (a kind of job, or a rule for jobs), write the plural with no link"), "general jobs need no link (10-09)");
   // Stalled steps (chat health stalls_2h, 24 steps quiet 2 h or more after 7f24e91).
   assert.match(brief, /`\[job\] <name> ended at <time> with no report` means/);
   assert.ok(CHAT_BRIEF.includes("After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it waiting on purpose; finished jobs hold memory."));
