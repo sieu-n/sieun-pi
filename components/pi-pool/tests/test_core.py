@@ -153,6 +153,18 @@ class CodexPlanTier(unittest.TestCase):
         r = self.resolve([self.FREE, self.PLUS], current="f")
         self.assertEqual((r.account.id, r.reason), ("p", "upgrade"))
 
+    def test_a_new_session_draws_only_from_the_highest_usable_plan(self):
+        for seed in range(20):
+            state = {"version": 2, "providers": {"anthropic": vend.empty_provider_state(), "openai-codex": vend.empty_provider_state()},
+                     "sessions": {KEY.key: {"uuid": KEY.uuid, "active_id": KEY.active_id, "pins": {}, "vends": {}, "last_seen": NOW}}}
+            intent = vend.intent_for(state, KEY, "openai-codex")
+            r = vend.resolve(intent, [self.FREE, self.PLUS], {}, {}, CFG, NOW, rng=random.Random(seed))
+            self.assertEqual((r.account.id, r.reason), ("p", "new"), seed)
+
+    def test_a_new_session_takes_the_free_account_when_no_paid_one_serves(self):
+        r = self.resolve([self.FREE, self.PLUS_DEPLETED])
+        self.assertEqual((r.account.id, r.reason), ("f", "new"))
+
     def test_a_plus_account_does_not_move_to_a_free_account(self):
         r = self.resolve([self.FREE, self.PLUS], current="p")
         self.assertEqual((r.account.id, r.reason), ("p", "stay"))

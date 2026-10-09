@@ -1208,6 +1208,13 @@ def resolve(intent, accounts, in_use, cooldowns, cfg, now, rng=random):
         left = (intent.current, why or "asked")
 
     weights = switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=(intent.current,))
+    # A new session or a move draws only from the highest codex plan that can serve, the
+    # rule "upgrade" applies to a current account: a draw that landed on the free account
+    # sent the first request of a new session there, and the API refused gpt-6-sol on it
+    # (2026-10-09 drill). Anthropic accounts have no plan, so this keeps every one.
+    if weights:
+        top = max(plan_tier(a) for a, _ in weights)
+        weights = [p for p in weights if plan_tier(p[0]) == top]
     if not weights:
         if left and left[1] == "asked":
             return Resolution(by_id[intent.current], "stay", shadowed)
