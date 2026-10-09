@@ -1,6 +1,6 @@
 ---
 name: unslop
-description: "The single writing standard for this user. Cut AI tells from any text before sending it. Always apply to chat replies, reports, commits, PR bodies, and every published article - llm-wiki pages, SEO articles, landing page copy, blog posts, and docs. Any text a human will read, including text written by scripts/seo-agent or into apps/llm-wiki/content. Merges pstack's unslop with the user's own writing rules and the auto-sns-agent plain-language file, so there is one standard and not two."
+description: "The single writing standard for this user. Cut AI tells from any text before sending it. Always apply to chat replies, reports, commits, PR bodies, and every published article - llm-wiki pages, SEO articles, landing page copy, blog posts, and docs. Any text a human will read, including text written by scripts/seo-agent or into apps/llm-wiki/content. Merges pstack's unslop with the user's own writing rules, so there is one standard and not two. llm-wiki page shape lives in auto-sns-agent's llm-wiki writing reference."
 ---
 
 # Unslop
@@ -12,7 +12,7 @@ Always, to any text a human will read. Named surfaces, because these are the one
 | surface | where |
 |---|---|
 | chat replies and status reports | this conversation |
-| llm-wiki articles | `apps/llm-wiki/content/**` |
+| llm-wiki articles | `apps/llm-wiki/content/**`, plus the page standard in the llm-wiki skill's `references/writing.md` |
 | SEO articles | anything written by `scripts/seo-agent` |
 | landing and marketing copy | `apps/search` public routes |
 | blog posts and docs | any `.md` meant for a reader |
@@ -25,15 +25,18 @@ A slopped SEO article or landing page ships the slop to every visitor and stays 
 Do not announce that you applied this skill. Do not print a rule checklist before the text.
 Return the cleaned text only.
 
-One standard for every word sent to this user. It merges three sources:
+One standard for every word sent to this user. It merges two sources:
 
 - pstack `unslop` (31 rules), for the formatting and punctuation tells.
-- `auto-sns-agent/.agents/skills/apps/llm-wiki/references/plain-language.md`, for words and
-  sentence mechanics. Read it with
-  `node scripts/skills/read-skill.mjs apps/llm-wiki/references/plain-language.md`.
 - The user's own prompt notes `writing_no_editorialising_headers_or_slogans`,
   `plain_language_applies_to_chat_not_just_wiki`, and
   `failure_reports_name_component_error_and_own_cause`.
+
+llm-wiki pages add one page-level standard on top of this file: the page reads like a blog
+article, and a subagent writes it. That standard lives only in auto-sns-agent's
+`.agents/skills/apps/llm-wiki/references/writing.md` (read it with
+`node scripts/skills/read-skill.mjs apps/llm-wiki/references/writing.md`), and
+`apps/llm-wiki/scripts/prose-lint.mjs` enforces both files on every page write and commit.
 
 If any of those seem to disagree, this file wins. Do not maintain a second writing standard.
 
@@ -63,11 +66,14 @@ mid-sentence colons. This section is where the hits are. Run it first.
 3. **Bold inside a paragraph marks a short label, nothing else.** Bolding a clause or a whole
    sentence to make it sound important is the slogan rule in markup form. Keep mid-paragraph bold
    under about 40 characters, and aim for 2 or 3 bold spans in a message.
-4. **A bold lead-in that opens a paragraph is exempt from the length limit, if it ends in a
-   period.** `**Dev transition, 18 of 19 retired tables verified empty.** clearProspects was...`
-   is fine and keeps a status report scannable. Two shapes are not: `**Runbook:** the runbook now
-   covers...`, where the colon label restates the line, and a bold sentence dropped in the middle
-   of a paragraph for emphasis.
+4. **No label opens a paragraph or a bullet.** A bold lead-in (`**Layer 1, LLM proxy.** As
+   in...`), a colon label (`**Runbook:** the runbook...`, `Live now: ...`) and a bold sentence
+   dropped mid-paragraph are all out (owner, 2026-10-08 and 2026-10-09). Write the plain sentence.
+4a. **Every bullet is one normal, complete sentence.** It has a subject and a verb and ends in a
+   period. No fragments, no `label: value` pairs, no clauses stuffed together with semicolons or
+   comma chains. Two ideas are two bullets. Use a list only for parallel items; everything else is
+   a paragraph.
+
 5. **Sentence case headings.** No title case.
 6. **No decorative emoji.** Not in headings, not as status ticks in bullets.
 7. **Straight quotes only.** No curly quotes or apostrophes.

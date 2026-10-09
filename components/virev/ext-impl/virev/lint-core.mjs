@@ -101,7 +101,6 @@ function stripMask(s) {
 /* ---------------------------------------------------------------- rule tables */
 const BOLD = re("\\*\\*([\\s\\S]+?)\\*\\*", "gu");
 const QUOTE = re('"[^"\\n]{1,200}"', "gu");
-const PARA_STARTS = re(`(?:^|\\n)[ \\t]*(?:[-*+]${SC}+|[${D}]+\\.${SC}+)?`, "gu");
 const HARD = [
     ["1 em dash", re(`[\\u2014]|(?<=[${W}]) [-\\u2013]{1,2} (?=[${W}])|(?<=[${W}])--(?=[${W}])`, "gu")],
     ["6 emoji", re("[\\u{1F300}-\\u{1FAFF}\\u2705\\u274C\\u2728\\u26A0\\u2714\\u2717\\uFE0F]", "gu")],
@@ -233,10 +232,6 @@ function inQuoteAt(ranges, pos) {
     return false;
 }
 function boldHits(m) {
-    const starts = new Set();
-    for (const ps of findAll(PARA_STARTS, m.t)) {
-        starts.add(m.tMap[ps.index + ps[0].length]);
-    }
     const out = [];
     for (const b of findAll(BOLD, m.t)) {
         const g = b[1];
@@ -247,9 +242,6 @@ function boldHits(m) {
         if (visLen < 0.5 * cpLen(g))
             continue; /* mostly code or a path, not emphasis */
         const startCp = m.tMap[b.index];
-        if (starts.has(startCp) && vis.replace(TRAILING_WS, "").endsWith(".")) {
-            continue; /* rule 4 lead-in exemption */
-        }
         out.push([startCp, cpSlice(vis, 0, 70)]);
     }
     return out;
@@ -378,6 +370,7 @@ export function selfTest() {
     check("code point pos after non-BMP", emoji.map((h) => h.pos), [0, 11]);
     check("colon before list is skipped", rules("note:\n- a"), []);
     check("colon mid sentence", rules("note: this is fine"), ["2 mid-sentence colon"]);
+    check("long bold lead-in is a label", rules("**Layer one forwards every LLM call to the proxy.** It is stateless."), ["3/4 bold over 40 chars"]);
     check("heuristic frag joins newlines", lintText("very\nlong").map((h) => h.frag), ["very long"]);
     return fails;
 }
