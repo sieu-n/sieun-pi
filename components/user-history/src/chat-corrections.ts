@@ -101,9 +101,11 @@ export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: Chat
     return { kind: "fixed", entry };
   }
   const { input } = call;
-  const known = ledger.corrections.find(entry => sameWords(entry.words, input.words) || entry.repeats.some(repeat => sameWords(repeat.words, input.words)));
-  if (known) return { kind: "known", entry: known };
+  // One owner message can repeat two corrections ("unslop ... where is the link?"): the same words count once per entry their theme matches.
+  const recorded = (entry: Correction) => sameWords(entry.words, input.words) || entry.repeats.some(repeat => sameWords(repeat.words, input.words));
   const earlier = matchCorrection(ledger, input.theme);
+  const known = earlier ? (recorded(earlier) ? earlier : undefined) : ledger.corrections.find(recorded);
+  if (known) return { kind: "known", entry: known };
   if (earlier) {
     const repeat = { at, chat, words: input.words };
     earlier.repeats.push(repeat);

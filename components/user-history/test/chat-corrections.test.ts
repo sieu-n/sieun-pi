@@ -62,6 +62,18 @@ test("ledger: a new correction is c1 and active; the same words again change not
   assert.deepEqual(parseLedger({ corrections: [{ id: "c1" }, ...ledger.corrections] }), ledger, "a broken entry is dropped, the rest read back");
 });
 
+test("ledger: one owner message that repeats two corrections records a repeat on each; the same call again records nothing", () => {
+  const ledger: Ledger = { corrections: [] };
+  applyCorrection(ledger, add("talk plain, no slop", "reply plain text slop"), VP, "2026-10-09T08:00:00.000Z");
+  const words = "unslop, you are talking so much slop. where the hell is the link?";
+  assert.equal(applyCorrection(ledger, add(words, "explanation article link todo"), CI, "2026-10-09T10:00:00.000Z").kind, "added");
+  const slop = applyCorrection(ledger, add(words, "reply plain text slop"), CI, "2026-10-09T10:00:00.000Z");
+  assert.equal(slop.kind, "repeat", "the same words repeat c1 too");
+  assert.equal(slop.entry.id, "c1");
+  assert.equal(applyCorrection(ledger, add(words, "reply plain text slop"), CI, "2026-10-09T10:01:00.000Z").kind, "known", "a retried call records nothing");
+  assert.equal(repeatsBetween(ledger, Date.parse("2026-10-09T00:00:00Z"), Date.parse("2026-10-10T00:00:00Z")).length, 1);
+});
+
 test("ledger prompt: active and reopened rules, reopened first then newest, capped; retired ones and an empty ledger give nothing", () => {
   const ledger: Ledger = { corrections: [] };
   assert.equal(ledgerPrompt(ledger), null);
