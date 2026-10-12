@@ -6,9 +6,10 @@ import type { ThreadMessage } from "./types.ts";
  * The reply lint: what in a reply to the owner breaks the reply rules (correction c1/c18, owner 10-08 and 10-09: "unslop, you are talking so
  * much slop", "두번째 단계가 뭐고 pi server가 뭘계산한다는거야"). tell_owner refuses text with findings; the chat server sends a `[reply check]`
  * after an owner turn whose last reply had findings; the model's view carries the findings of the reply before each owner message; Chat
- * health counts replies with findings other than length (slop_replies).
+ * health counts replies with findings other than length (slop_replies). A limit with a rate or size and no measured saturation is a finding too
+ * (c43, owner 10-12: "what is the bottleneck actual IOPS? CPU? RAM??????").
  */
-export type FindingKind = "long" | "bullets" | "heading" | "label" | "dash" | "bold" | "abstract" | "jargon";
+export type FindingKind = "long" | "bullets" | "heading" | "label" | "dash" | "bold" | "abstract" | "jargon" | "unmeasured";
 export interface Finding { kind: FindingKind; what: string; hint: string }
 
 const BULLETS_MAX = 3;
@@ -74,7 +75,49 @@ const HINTS: Record<FindingKind, string> = {
   bold: `bold only a short label, at most ${BOLD_MAX} per reply, or none`,
   abstract: "name the real thing instead: what runs, what it reads or counts, the number",
   jargon: "these are our internal names the owner did not use; say what it does for the owner in plain words",
+  unmeasured: "name the resource you measured and how full it was (disk 95% busy, CPU 400%, p99 latency 40 ms, 429s on 40% of calls), " +
+    "or say plainly it is a caution line nobody measured (c43)",
 };
+
+/**
+ * A capacity claim (c43): a cap, ceiling, limit, max, bottleneck or ban word with a rate or size in the same sentence ("caps new profiles near
+ * 2,200 a minute", "50 pages per account before a ban"). A count with no rate ("at most 6 open goals") is a rule, not a capacity claim.
+ */
+const CAP_WORD = new RegExp([
+  "(?<!all[- ])\\bcap(?:s|ped|ping)?\\b", "\\bceilings?\\b", "\\blimit(?:s|ed|ing)?\\b", "(?<!\\p{Lu}\\p{L}*\\s)\\bmax(?:imum|es|ed)?\\b",
+  "\\bbottleneck(?:s|ed)?\\b", "\\btops? out\\b", "\\bonly fits?\\b", "\\b(?:can't|cannot|can not|won't) (?:carry|handle|fit|keep up|go past|exceed)\\b",
+  "\\b(?:can|could) only\\b", "\\bup to\\s+(?:about\\s+|~)?\\d", "\\bban risk\\b", "\\bbefore\\b(?:\\s+\\S+){0,4}\\s+bans?\\b",
+  "\\bbanned (?:after|past|above|over|beyond)\\b", "최대", "한계", "상한", "병목",
+].join("|"), "iu");
+const NOT_CAP = /(?:\bnot|n't|\bno)\s+(?:the\s+|a\s+|our\s+)?$/i;
+const PER = "second|sec|minute|min|hour|hr|day|account|profile|proxy|ip|worker|core|request|call|session";
+const RATE = new RegExp([
+  `\\d[\\d,.]*\\s*[kKmM]?\\s*(?:[\\p{L}]+\\s+){0,2}(?:a|an|per|each|every)\\s+(?:${PER})s?\\b`,
+  "\\d[\\d,.]*\\s*[kKmM]?\\s*(?:[\\p{L}]+\\s*)?\\/\\s*(?:(?:s|sec|min|m|h|hr|hour|day|d)\\b|초|분)",
+  "\\d[\\d,.]*\\s*(?:KB|MB|GB|TB|IOPS|rps|qps|rpm)\\b", "(?:분당|초당|시간당|계정당|하루)[^.\\d]{0,8}\\d",
+].join("|"), "u");
+/** Measured saturation of a named resource ("disk 95% busy", "CPU 400%", "p99 latency 40 ms", "429s on 40% of calls"). */
+const RESOURCE = "cpu|cores?|disk|nvme|ssd|iowait|io|iops|ram|memory|mem|rss|swap|network|bandwidth|nic|gpu|database|db|postgres|clickhouse|redis|" +
+  "opensearch|convex|proxy|proxies|pool|queue|connections?|디스크|메모리|램|네트워크|대역폭";
+const MEASURED = new RegExp([
+  `(?:\\b(?:${RESOURCE})\\b)[^.\\n]{0,40}?\\d+(?:\\.\\d+)?\\s*%`,
+  `\\d+(?:\\.\\d+)?\\s*%\\s*(?:busy|utili[sz](?:ed|ation)|used|full|saturated|iowait|(?:of\\s+)?(?:the\\s+)?(?:${RESOURCE})\\b)`,
+  "\\bp(?:50|90|95|99|999)\\b[^.\\n]{0,30}?\\d+(?:\\.\\d+)?\\s*(?:ms|s|sec|seconds)\\b", "\\blatency\\b[^.\\n]{0,30}?\\d+(?:\\.\\d+)?\\s*(?:ms|s|sec|seconds)\\b",
+  "\\b(?:429|5\\d\\d)s?\\b[^.\\n]{0,30}?\\d+(?:\\.\\d+)?\\s*%", "\\d+(?:\\.\\d+)?\\s*%[^.\\n]{0,30}?\\b(?:429s?|5\\d\\ds?|errors?|timeouts?|failed|failures?)\\b",
+  "\\d[\\d,]*\\s+(?:429s|timeouts|errors)\\b",
+].join("|"), "iu");
+/** The reply says the limit is a caution line or was never measured. */
+const UNMEASURED_SAID = /\b(?:not measured|unmeasured|never measured|nobody measured|no one measured|(?:haven't|have not|didn't|did not) measure[ds]?|caution line|safety line)\b|측정\s*(?:안|하지\s*않|전)|미측정|안전선|주의선/iu;
+
+/** The capacity claims in the reply's prose with no measured saturation and no plain "not measured" anywhere in the reply. */
+function unmeasuredLimits(lines: readonly { words: string }[]): string[] {
+  const prose = lines.map(line => line.words).join("\n");
+  if (MEASURED.test(prose) || UNMEASURED_SAID.test(prose)) return [];
+  return lines.flatMap(line => line.words.split(/(?<=[.!?\u3002])\s+/)).flatMap(sentence => {
+    const cap = CAP_WORD.exec(sentence);
+    return cap && !NOT_CAP.test(sentence.slice(0, cap.index)) && RATE.test(sentence) ? [clipQuote(sentence.slice(cap.index).replace(/\s*\u00a7\s*/g, " ").trim(), 60)] : [];
+  });
+}
 
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
 const LINK = /\[([^\]]*)\]\([^)]*\)/g;
@@ -158,6 +201,8 @@ export function lintOwnerReply(text: string, ownerText = ""): Finding[] {
   }
   if (found.abstract.length) add("abstract", `abstract words ${quoteList(found.abstract)}`);
   if (found.jargon.length) add("jargon", `internal terms ${quoteList(found.jargon)}`);
+  const limits = unmeasuredLimits(lines);
+  if (limits.length) add("unmeasured", `limit with no measurement ${quoteList(limits)}`);
   return findings;
 }
 
