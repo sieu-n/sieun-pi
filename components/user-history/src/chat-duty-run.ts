@@ -128,7 +128,7 @@ export class Duties {
   /** The run going per `<chatId>/<dutyId>`; a second start shares it. */
   private readonly running = new Map<string, Promise<CheckInStart | void>>();
   /** What each standing duty run going now does, with its start time, for the record of a slot it holds up. */
-  private readonly steps = new Map<string, { at: number; step: "measuring" | "starting its job" }>();
+  private readonly steps = new Map<string, { at: number; step: "reading the catalog" | "measuring" | "starting its job" }>();
   /** Duty jobs whose archive `stopEnded` queued, so each is queued once. */
   private readonly stopped = new Set<string>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
@@ -205,10 +205,14 @@ export class Duties {
     this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: skipped a slot missed by more than 6 h`);
   }
 
-  /** Records a slot that came while the duty's last run still goes, so every slot has a record; the next slot is one interval later. */
+  /**
+   * Records a slot that came while the duty's last run still goes, so every slot has a record; the next slot is one interval later. A run still
+   * reading the catalog has not taken its slot yet: it takes this one or leaves it due.
+   */
   private async skipBusy(chatId: string, duty: Duty, slot: number): Promise<void> {
     const at = this.now();
     const going = this.steps.get(`${chatId}/${duty.id}`);
+    if (going?.step === "reading the catalog") return;
     const summary = `${STILL_GOING} ${going?.step ?? "going"}${going ? ` (run of ${new Date(going.at).toTimeString().slice(0, 5)}, ${Math.round((at - going.at) / 1000)} s ago)` : ""}`;
     await this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === duty.id);
@@ -348,15 +352,16 @@ export class Duties {
 
   /**
    * Starts the duty job of one run: null when the slot already has its job (a re-entrant tick or a restart), skipped while the duty's last job
-   * still works, else the last job is retired (its archive queued) and a new one starts with the brief. A chat the catalog does not list is
-   * skipped too. A last job stuck past `stuckAfterMs` of the duty's schedule is retired and replaced like a finished one.
+   * still works, else the last job is retired (its archive queued) and a new one starts with the brief. A chat the daemon's list does not show is
+   * skipped too, and a list that fails throws. The chat comes first, so whether the last job works is read from a catalog that lists it. A last
+   * job stuck past `stuckAfterMs` of the duty's schedule is retired and replaced like a finished one.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
     brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus">): Promise<Launched> {
+    const chat = await this.host.jobs.chat(chatId);
     const previous = await this.previous(chatId, dutyId, schedule, slot);
     if (previous === null || "skipped" in previous) return previous;
     const { last, replaced } = previous;
-    const chat = await this.host.jobs.chat(chatId);
     if (!chat) return { skipped: "skipped: the catalog does not list the chat" };
     if (last) await this.host.jobs.retire(last).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: retire ${last.name}: ${message(error)}`));
     const name = dutyJobName(brief.duty.name, chat.name, at);
@@ -370,9 +375,14 @@ export class Duties {
   private async run(chatId: string, dutyId: string, trigger: DutyTrigger, slot: number | null): Promise<void> {
     const duty = (await this.store.list(chatId)).find(entry => entry.id === dutyId);
     if (!duty) return;
+    const key = `${chatId}/${dutyId}`;
+    // A run whose chat the catalog cannot list yet (no rows after a restart while the daemon's full list times out) measures nothing and
+    // leaves its slot due for the next tick, instead of measuring and then losing the slot's job.
+    this.steps.set(key, { at: this.now(), step: "reading the catalog" });
+    try { await this.host.jobs.chat(chatId); }
+    catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: waits for the catalog: ${message(error)}`); return; }
     const started = this.now();
     const at = slot ?? started;
-    const key = `${chatId}/${dutyId}`;
     this.steps.set(key, { at: started, step: "measuring" });
     await this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === dutyId);

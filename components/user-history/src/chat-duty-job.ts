@@ -15,7 +15,11 @@ import type { SessionRow } from "./shared/types.ts";
 export interface DutyChat { id: string; name: string; cwd: string; board: string }
 /** What the duty runner needs to start and retire duty jobs; the backend wires it to the thread hub, the catalog and the job registry. */
 export interface DutyJobHost {
-  /** The chat as a duty job needs it; null when the catalog does not list it. */
+  /**
+   * The chat as a duty job needs it. A chat with no catalog row gets one full list of the daemon's sessions and a second look: null when that
+   * list does not show it either, and a rejection when the list fails. After a restart the catalog has no rows until a full list answers
+   * (10-12 16:07 to 16:27Z the list timed out at 30 s and 14 duty runs of 7 chats lost their job as "the catalog does not list the chat").
+   */
   chat(chatId: string): Promise<DutyChat | null>;
   /** Whether a duty job still works: its own turn, or a subagent below it. False when it is gone. */
   working(job: DutyJobRef): Promise<boolean>;
@@ -206,7 +210,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   };
   return {
     async chat(chatId) {
-      const found = await row(chatId);
+      let found = await row(chatId);
+      if (!found && input.refresh) {
+        await input.refresh().catch(error => { throw new Error(`the catalog cannot list the chat: ${reason(error)}`); });
+        found = await row(chatId);
+      }
       return found ? { id: chatId, name: found.name.trim() || chatId, cwd: found.cwd, board: input.board(chatId) } : null;
     },
     async working(job) { return (await row(job.id))?.working === true; },
