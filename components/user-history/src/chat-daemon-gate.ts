@@ -1,37 +1,47 @@
 import { type CheckInSettings, daemonPause, daemonResume } from "./chat-checkin.ts";
-import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
 
 /**
  * The daemon health gate. At 17:58Z on 10-09 the daemon stopped answering (load 293) while 9 chats kept starting check-in jobs. The duty
- * runner's wake lets the gate time one daemon `list` a minute; the duty archive queue reports each archive try (its `kill`). The daemon is
- * unhealthy after UNHEALTHY_SAMPLES bad samples in a row (a list over DAEMON_LIST_OK_MS, a failed list, or a failed or slow kill) and healthy
- * again after HEALTHY_PROBES lists in a row within DAEMON_LIST_OK_MS. Going unhealthy pauses the check-in of every chat outside `keep` that is
- * not paused already, as `pausedBy: "daemon"`; going healthy resumes only those, chat i of n at now + i * interval / n. Each change writes one
- * log line and tells the `tell` chat one line through its steer path. After a restart, a chat still paused by the daemon starts the gate as
- * unhealthy, so it resumes on its own.
+ * runner's wake lets the gate send one daemon roster `list` a minute; the duty archive queue reports each archive try (its `kill`). A sample is
+ * bad when the daemon did not answer: a list that failed or ran past prime-agent's own request timeout, or a failed archive. The daemon is
+ * unhealthy after UNHEALTHY_SAMPLES bad samples in a row and healthy again after HEALTHY_PROBES answered lists in a row. Going unhealthy
+ * pauses the check-in of every chat outside `keep` that is not paused already, as `pausedBy: "daemon"`; going healthy resumes only those,
+ * chat i of n at now + i * interval / n. Each change writes one log line. The gate posts nothing into a chat: daemon health is server state,
+ * no chat can act on it, and each chat's check-in card already shows "paused while the daemon is slow" (10-12 KST: 33 such lines in the AI
+ * harness VP chat, each a steer that woke it for a turn). After a restart, a chat still paused by the daemon starts the gate as unhealthy, so
+ * it resumes on its own.
+ *
+ * No answer time counts as slow by itself. The old 5 s bar had no measurement behind it (c43) and fired on lists that answered: on 10-12 the
+ * gate paused 17 times, 10 of them on a list that answered in 5.1 s to 11.6 s and 1 on an archive that worked in 17.7 s. The probe lists
+ * the roster only (the `list` command without `all`), because `all` adds the daemon's disk scan of every saved session (measured 10-12
+ * 23:30 KST: 7.7 MB and 1,135 rows in 16.6 s against 1.3 MB and 377 rows in 0.4 s for the roster list right after it).
  */
 export const DAEMON_PROBE_EVERY_MS = 60_000;
-export const DAEMON_LIST_OK_MS = 5_000;
-/** A probe's list gives up after this; it counts as a bad sample. */
-export const DAEMON_PROBE_TIMEOUT_MS = 15_000;
-/** An archive try (dispose, kill with the supervisor's 2 s stop window, then a list) slower than this counts as a bad sample. */
-export const DAEMON_KILL_OK_MS = 15_000;
 export const HEALTHY_PROBES = 3;
 export const UNHEALTHY_SAMPLES = 2;
 
 type Health = "healthy" | "unhealthy";
 
+/** The daemon request the probe needs: prime-agent's `DaemonClient.request`. */
+export type DaemonRequest = (command: { type: "list" }, timeoutMs: undefined, options: { recoverable: false }) => Promise<{ success: boolean; error?: string }>;
+
+/**
+ * One roster list for the probe. The timeout is left to prime-agent's DaemonClient default (DEFAULT_DAEMON_REQUEST_TIMEOUT_MS, 30 s in
+ * dist/modes/daemon/daemon-client.js), the same bound every other daemon request from this server and from agent_message has.
+ */
+export async function rosterList(request: DaemonRequest): Promise<void> {
+  const response = await request({ type: "list" }, undefined, { recoverable: false });
+  if (!response.success) throw new Error(response.error);
+}
+
 export interface DaemonGateInput {
-  /** One daemon `list`, rejecting on failure or after `timeoutMs`. */
-  list(timeoutMs: number): Promise<void>;
+  /** One daemon roster list (rosterList), rejecting when the daemon did not answer. */
+  list(): Promise<void>;
   settings: CheckInSettings;
   /** Every chat's id. */
   chats(): Promise<Iterable<string>>;
   /** Chats whose check-in the gate never pauses: the `daemonGateChat` in configuration.json. */
   keep: ReadonlySet<string>;
-  /** The chat told of each pause and resume; none: only the log. */
-  tell?: string;
-  steer(chatId: string, message: string): Promise<void>;
   /** Told after the gate changed settings, so open pages show it. */
   changed?(): Promise<void>;
   now?: () => number;
@@ -65,17 +75,17 @@ export class DaemonGate {
       this.lastProbe = this.now();
       const started = this.now();
       let failure: string | undefined;
-      try { await this.input.list(DAEMON_PROBE_TIMEOUT_MS); }
+      try { await this.input.list(); }
       catch (error) { failure = message(error); }
       const ms = this.now() - started;
-      await this.sample(failure === undefined && ms <= DAEMON_LIST_OK_MS, failure ? `list failed after ${seconds(ms)}: ${failure}` : `list took ${seconds(ms)}`, true);
+      await this.sample(failure === undefined, failure ? `list failed after ${seconds(ms)}: ${failure}` : `list took ${seconds(ms)}`, true);
     })().finally(() => { this.probing = undefined; });
   }
 
-  /** An archive try from the duty archive queue: a failed or slow one is a bad sample; a fast one does not count toward healthy. */
+  /** An archive try from the duty archive queue: a failed one is a bad sample; one that worked does not count toward healthy. */
   kill(ms: number, ok: boolean): Promise<void> {
-    if (ok && ms <= DAEMON_KILL_OK_MS) return Promise.resolve();
-    return this.sample(false, ok ? `an archive took ${seconds(ms)}` : `an archive failed after ${seconds(ms)}`, false);
+    if (ok) return Promise.resolve();
+    return this.sample(false, `an archive failed after ${seconds(ms)}`, false);
   }
 
   /** The gate's state for the tests and the log: unknown before the first sample. */
@@ -110,8 +120,6 @@ export class DaemonGate {
     }
     await this.input.changed?.().catch(() => {});
     this.input.log?.(`daemon gate: unhealthy (${what}, ${UNHEALTHY_SAMPLES} bad samples in a row); paused the check-in of ${paused.length} chats: ${paused.join(", ") || "none"}`);
-    await this.tell(`${CHECK_IN_PREFIX}The daemon is slow (${what}), so the server paused the check-in of ${paused.length} chats; they resume on their own after ` +
-      `${HEALTHY_PROBES} lists in a row within ${DAEMON_LIST_OK_MS / 1000} s.`);
   }
 
   private async resume(): Promise<void> {
@@ -129,13 +137,7 @@ export class DaemonGate {
       if (changed) resumed.push(id);
     }
     await this.input.changed?.().catch(() => {});
-    this.input.log?.(`daemon gate: healthy (${HEALTHY_PROBES} lists in a row within ${DAEMON_LIST_OK_MS / 1000} s); resumed the check-in of ${resumed.length} chats, ` +
+    this.input.log?.(`daemon gate: healthy (${HEALTHY_PROBES} answered lists in a row); resumed the check-in of ${resumed.length} chats, ` +
       `staggered over their interval: ${resumed.join(", ") || "none"}`);
-    await this.tell(`${CHECK_IN_PREFIX}The daemon answers again, so the server resumed the check-in of ${resumed.length} chats, spread over their interval.`);
-  }
-
-  private async tell(line: string): Promise<void> {
-    if (!this.input.tell) return;
-    await this.input.steer(this.input.tell, line).catch(error => this.input.log?.(`daemon gate: could not tell ${this.input.tell}: ${message(error)}`));
   }
 }

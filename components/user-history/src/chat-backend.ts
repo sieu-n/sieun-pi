@@ -16,7 +16,7 @@ import { briefCheckRecord, Chats, extensionBuild, jobRegistry, loadRecord, reply
 import { Duties } from "./chat-duty-run.ts";
 import { archiveDutyJob, dutyJobHost } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
-import { DaemonGate } from "./chat-daemon-gate.ts";
+import { DaemonGate, rosterList } from "./chat-daemon-gate.ts";
 import { DutyStore } from "./chat-duty-store.ts";
 import { IdIndex } from "./id-index.ts";
 import { newChatStore, type NewChatStore } from "./chat-new-chat.ts";
@@ -107,14 +107,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // scheduled and measured in Chats and handed here, and its card edits the check-in setting.
   const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
-  // While the daemon is slow the gate pauses every chat's check-in but the configured daemonGateChat's, and resumes them when it answers again.
+  // While the daemon does not answer the gate pauses every chat's check-in but the configured daemonGateChat's, and resumes them when it
+  // answers again. It writes only the service log; it posts nothing into a chat.
   const keep = options.daemonGateChat ?? undefined;
-  const gate = new DaemonGate({ settings, chats: () => chats.ids(), keep: new Set(keep ? [keep] : []), ...(keep ? { tell: keep } : {}), log: dutyLog,
-    steer: (id, message) => threads.prompt(id, { message, images: [], mode: "steer" }), changed: () => catalog.notify(),
-    list: async timeoutMs => {
+  const gate = new DaemonGate({ settings, chats: () => chats.ids(), keep: new Set(keep ? [keep] : []), log: dutyLog, changed: () => catalog.notify(),
+    list: async () => {
       await catalog.connect();
-      const response = await catalog.client.request({ type: "list", all: true }, timeoutMs, { recoverable: false });
-      if (!response.success) throw new Error(response.error);
+      await rosterList((command, timeoutMs, options) => catalog.client.request(command, timeoutMs, options));
     } });
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog,
