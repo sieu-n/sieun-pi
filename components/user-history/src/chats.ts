@@ -12,7 +12,7 @@ import { MERGE_RULE, MERGE_RULE_SHORT } from "./shared/chat-board.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, checkInDue, checkInPrecheck, checkInPrecheckText, CheckInRefused, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName,
   childWorking, classCounts, convergenceMisses, DEFAULT_CHECK_IN, type DutyRef, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText, jobFacts, lastJobMessages, nextCheckIn,
   noReportNotice, retryDue } from "./chat-checkin.ts";
-import { type ClaudeState, claudeDown, failureCause, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
+import { checkInLane, type ClaudeState, claudeDown, failureCause, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, messageIdNote, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { findingsList, lintOwnerReply, replyCheck, replyNotes } from "./shared/reply-lint.ts";
 import { briefCheck, briefCheckNote, ownerMessages, turnOwnerAt } from "./shared/brief-check.ts";
@@ -756,6 +756,8 @@ export class Chats {
   private readonly started: number;
   /** Restarts sent per chat since its last turn that ended well: how many, and when the last one went. */
   private readonly revivals = new Map<string, { attempts: number; at: number }>();
+  /** Chats with a revive queued and not yet run, so a chat whose queue is held gets one waiting revive, not one per wake. */
+  private readonly reviving = new Set<string>();
   /** When each chat's current stall was first seen, for a provider retry whose failed reply the hub does not hold. */
   private readonly stallSeen = new Map<string, number>();
   /** Wakes sent per stranded step-owner thread: how many, and when the last one went. */
@@ -976,9 +978,13 @@ export class Chats {
 
   /**
    * One scheduler wake: queues the check-in of every chat whose interval has passed since its last one and that is not paused; the time is
-   * taken before the run is queued, so a second wake in the same slot does not queue it again. Every chat that is not paused is also checked for a failed
-   * last turn (`revive`), and so are its jobs (`jobs`); a wake that follows a sleep restarts every transient failure at once. Every
-   * ADOPT_SCAN_MS the session files are scanned for chats the index lost. Returns the ids checked in.
+   * taken before the run is queued, so a second wake in the same slot does not queue it again. Every chat the owner has not paused is also
+   * checked for a failed last turn (`revive`), and so are its jobs (`jobs`); a wake that follows a sleep restarts every transient failure at
+   * once. A pause by the daemon gate or by the chat itself stops only check-ins: on 10-12 the gate paused 7 chats from 13:35Z on, and their
+   * failed turns would have waited for the resume. A check-in runs in its own lane (`checkInLane`), so a revive never waits behind a check-in
+   * whose duty job start hangs: on 10-11 from 20:35Z to 10-12 01:42Z no chat got a revive or a check-in while the hub attached sessions in
+   * under 0.3 s, and 4 chats aborted by the 19:08Z Prime update sat 0.5 to 7.7 h (unretried_errors, dead_hours). Every ADOPT_SCAN_MS the
+   * session files are scanned for chats the index lost. Returns the ids checked in.
    */
   async tick(): Promise<string[]> {
     await this.load();
@@ -993,16 +999,18 @@ export class Chats {
     for (const id of this.chatIds) {
       if (this.children.has(id) && now - (this.cleanedAt.get(id) ?? -Infinity) >= JOB_CLEANUP_EVERY_MS) { this.cleanedAt.set(id, now); this.queue(id, () => this.cleanJobs(id)); }
       const setting = settings[id] ?? DEFAULT_CHECK_IN;
-      if (activePause(setting, now) !== null) continue;
+      const paused = activePause(setting, now) !== null;
+      if (paused && ownerPause(setting)) continue;
       active.add(id);
-      this.queue(id, () => this.revive(id, woke));
+      if (!this.reviving.has(id)) { this.reviving.add(id); this.queue(id, () => this.revive(id, woke).finally(() => this.reviving.delete(id))); }
+      if (paused) continue;
       // A chat with no check-in on record is due now, not one interval after this service started: every release restart pushed ops guy's
       // 2 h check-in back again (10-12: none from 10-10 11:33Z on, with its owner pause lifted at 05:28Z).
       const next = nextCheckIn(setting, this.lastCheckIn.get(id) ?? now - setting.everyMs, now);
       if (next === null || next > now) continue;
       due.push(id);
       this.lastCheckIn.set(id, now);
-      this.queue(id, async () => { await this.checkIn(id); });
+      this.queue(checkInLane(id), async () => { await this.checkIn(id); });
     }
     this.queue("#jobs", () => this.jobs(active, woke));
     return due;
@@ -1342,9 +1350,9 @@ export class Chats {
     });
   }
 
-  /** The owner's Run now on the check-in duty: a check-in at once, in the chat's queue, and its schedule starts over. */
+  /** The owner's Run now on the check-in duty: a check-in at once, in the chat's check-in lane, and its schedule starts over. */
   runCheckIn(id: string): Promise<void> {
-    return new Promise(resolve => this.queue(id, async () => {
+    return new Promise(resolve => this.queue(checkInLane(id), async () => {
       try { if (this.chatIds.has(id)) { this.lastCheckIn.set(id, this.now()); await this.checkIn(id, "owner"); } } finally { resolve(); }
     }));
   }

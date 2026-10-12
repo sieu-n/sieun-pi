@@ -2,6 +2,15 @@ import { clockTime, RETRY_BACKOFF_MS } from "./chat-checkin.ts";
 import { CHECK_IN_PREFIX, OWNER_RETRY_MARK, serverNote, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import type { ChatWait, ThreadMessage } from "./shared/types.ts";
+import type { CheckInSetting } from "./chat-checkin.ts";
+
+/**
+ * Whether a check-in pause is the owner's. The owner's pause also stops failed-turn restarts; a pause by the daemon gate (`daemon`) or by the
+ * chat itself (`agent`) stops only its check-ins, and a failed turn still gets its restart.
+ */
+export const ownerPause = (setting: Pick<CheckInSetting, "pausedBy">): boolean => setting.pausedBy !== "daemon" && setting.pausedBy !== "agent";
+/** The queue lane of a chat's check-in: apart from the chat's own lane, where its revive runs, so a check-in that waits never holds a revive. */
+export const checkInLane = (id: string): string => `checkin:${id}`;
 
 /** The pool's answer about Claude now: whether any account can serve, and when the first one that cannot frees up (epoch ms, null when unknown). */
 export interface ClaudeState { serves: boolean; freeAt: number | null }
