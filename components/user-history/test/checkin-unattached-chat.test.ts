@@ -308,3 +308,31 @@ test("check-in of a chat that is not attached finds its subagent jobs through th
   assert.match(run.findings, /p92 \(live\) "Connections from the shipped screen[^\n]*owner job connections from scratch \(working\)/);
   assert.match(run.findings, /p94 \(live\) "Inbox into Staging[^\n]*owner job inbox into staging \(working\)/, "a job whose own subagents run is at work");
 });
+
+test("check-in waits while the catalog has no rows and the hub has not attached the chat, instead of flagging every job missing (frontend bro 10-13 01:09 and 01:24)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "checkin-blind-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add(CHAT);
+  const board: ChatBoard = { plan: [P103], scratch: [], todos: [] } as unknown as ChatBoard;
+  const threads = {
+    state: () => undefined, async view() { return null; }, busy: () => false, running: () => false, setWait() {},
+    async restart() {}, async prompt() {}, async notice() {}, async deleteSubagent() {}, pin: () => true, unpin() {}, async setSteeringMode() {},
+    async heartbeat() { return undefined; }, async clearHeartbeat() {}, async reload() {},
+    observe(_next: Observer) { return () => {}; },
+  } as unknown as ChatThreads;
+  const runs: CheckInRun[] = [];
+  const memory = checkInRecord(join(dir, "check-ins.json"));
+  const source: CheckInSource = {
+    board: async () => board, rows: async () => [], memory, replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
+    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
+    duty: { async checkIn(_id, run) { runs.push(run); } },
+  };
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
+  await chats.adopt();
+  await chats.settled();
+  await chats.tick();
+  await chats.settled();
+  chats.close();
+  assert.deepEqual(runs.map(run => run.output.flagged.filter(slice => slice.kind === "orphan_steps").length), [], "no run with false orphans");
+  assert.equal(await memory.get(CHAT), undefined, "no flag streak kept from a blind read");
+});

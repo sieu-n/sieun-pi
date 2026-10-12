@@ -658,6 +658,14 @@ export class Chats {
     if (!this.chatIds.has(id)) return;
     try {
       const { board, boardError, rows, facts, name } = await this.gather(id);
+      // With no catalog rows yet and no hub children, every job of the chat reads as missing (frontend bro 10-13 01:09 and 01:24, while the
+      // daemon's list timed out after restarts: 7 false orphans each, and the duty runner skipped both runs anyway).
+      if (!rows.length && !this.children.has(id)) {
+        this.log(`chat ${id.slice(0, 8)}: check-in waits: the catalog has no rows yet and the hub has not attached the chat, so its jobs cannot be read`);
+        const everyMs = (await this.source.settings.get(id)).everyMs;
+        if (everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, this.now() - everyMs + CHECK_IN_RETRY_MS);
+        return;
+      }
       for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
       if (!checkInDue(facts, board, boardError)) return;
       const at = this.now();

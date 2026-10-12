@@ -305,8 +305,9 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
 });
 
 type Observer = Parameters<ChatThreads["observe"]>[0];
-/** A check-in source with no timer: an empty board unless one is given, no catalog rows, and its memory in `dir`. */
-function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () => 0, rows: () => SessionRow[] = () => []): CheckInSource {
+/** A check-in source with no timer: an empty board unless one is given, one unrelated catalog row (a catalog that has listed), and its memory in `dir`. */
+const LISTED: SessionRow[] = [{ id: "other-session", name: "other" } as SessionRow];
+function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () => 0, rows: () => SessionRow[] = () => LISTED): CheckInSource {
   return { board: async id => boards[id] ?? null, rows: async () => rows(), memory: checkInRecord(join(dir, "check-ins.json")),
     replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now, noReportGraceMs: 0 };
 }

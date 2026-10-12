@@ -10,7 +10,7 @@ import { Chats } from "../src/chats.ts";
 import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { IdIndex } from "../src/id-index.ts";
-import type { ChatBoard, ThreadMessage } from "../src/shared/types.ts";
+import type { ChatBoard, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 
 // The failed-turn restart (`revive`) of a chat must not wait on its check-in or on a pause the owner did not set.
 // 10-11 19:08Z: a Prime update aborted the turns of 4 chats. From 20:35Z to 10-12 01:42Z the service ran no revive and no check-in for any
@@ -48,7 +48,7 @@ async function setup(duty: CheckInSource["duty"], hung?: { start: number; runnin
   await index.add("c1");
   let now = hung?.start ?? 1_000_000_000;
   const settingsFile = join(dir, "check-in-settings.json");
-  const source: CheckInSource = { board: async () => board, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")),
+  const source: CheckInSource = { board: async () => board, rows: async () => [{ id: "c1", name: "c1" } as SessionRow], memory: checkInRecord(join(dir, "check-ins.json")),
     replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(settingsFile), tickMs: 0, now: () => now, noReportGraceMs: 0,
     ...(duty ? { duty } : {}) };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
