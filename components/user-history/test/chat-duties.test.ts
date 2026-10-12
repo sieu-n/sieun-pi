@@ -10,7 +10,7 @@ import { archiveDutyJob, type DutyChat, dutyJobBrief, type DutyJobHost, dutyJobH
 import { OWNER_UI } from "../src/chat-checkin.ts";
 import { jobRegistry } from "../src/chats.ts";
 import type { SessionRow } from "../src/shared/types.ts";
-import { CHECK_IN_FOCUS, type CheckInRun, Duties, STILL_WORKING, stuckAfterMs } from "../src/chat-duty-run.ts";
+import { CHECK_IN_FOCUS, type CheckInRun, Duties, STILL_GOING, STILL_WORKING, stuckAfterMs } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { CHECK_IN_DUTY, dailySlot, dutyDue, type DutyJobRef, dutyNameProblem, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, parseSchedule, repeatMisses, type Duty,
   type DutyRunRecord, metricSizeProblem } from "../src/shared/chat-duties.ts";
@@ -461,6 +461,31 @@ test("Duties: a 10-minute duty measures but starts no job while its job works up
     [0, "met", "s1"], [80, "met", `all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`],
     [90, "met", `all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`], [100, "met", "s2"]]);
   assert.match(runs[3]!.summary, / \(replaced stuck job chat system dev VP 23:07, working 100 min\)$/);
+  duties.close();
+});
+
+test("Duties: a slot that comes while the last run still starts its job gets a skipped record, once per slot (ops guy 10-12: the 14:45Z slot left none)", async () => {
+  const now = { at: at(8, 23, 7) };
+  const { store, jobs, duties } = await setup(script(writeOutput({ orphans: 0, long_replies: 5 })), now);
+  await store.update("chat1", list => { list[0]!.schedule = { kind: "every", minutes: 10 }; list[0]!.createdAt = now.at - 10 * 60_000; });
+  let release = () => {};
+  let started = () => {};
+  const starting = new Promise<void>(resolve => { started = resolve; });
+  const fast = jobs.host.start;
+  jobs.host.start = async (...args) => { started(); await new Promise<void>(resolve => { release = resolve; }); jobs.host.start = fast; return fast(...args); };
+  const start = now.at;
+  const tickAt = async (minutes: number) => { now.at = start + minutes * 60_000; await duties.tick(); };
+  await tickAt(0);
+  await starting;
+  for (const minutes of [5, 10, 10.5, 15, 20]) await tickAt(minutes);
+  release();
+  await duties.settled();
+  await tickAt(30);
+  await duties.settled();
+  const runs = (await store.runs("chat1")).reverse();
+  assert.deepEqual(runs.map(entry => [(entry.at - start) / 60_000, entry.verdict, entry.job?.id ?? entry.summary]), [
+    [10, "skipped", `${STILL_GOING} starting its job (run of 23:07, 600 s ago)`], [20, "skipped", `${STILL_GOING} starting its job (run of 23:07, 1200 s ago)`],
+    [0, "met", "s1"], [30, "met", "s2"]], "slots 0, 10, 20 and 30 each have one record");
   duties.close();
 });
 

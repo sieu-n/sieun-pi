@@ -69,6 +69,11 @@ export type CheckInStart = "done" | "failed";
  * after its summary (ops guy 10-10 to 10-12: 220 of 293 Local dev servers runs skipped the precheck too); a check-in run is recorded as skipped.
  */
 export const STILL_WORKING = "skipped: previous run still working";
+/**
+ * Why a slot of a standing duty ran nothing: its last run was still measuring or starting its job (ops guy 10-12: the 14:35Z run took 19 min
+ * to start its job under load, and the 14:45Z slot left no record).
+ */
+export const STILL_GOING = "skipped: previous run still";
 /** A duty job may work this long before a later run counts it as stuck, however short its duty's interval. */
 export const STUCK_MIN_MS = 90 * 60_000;
 /**
@@ -111,7 +116,7 @@ function checkInMinutes(value: unknown): number {
 }
 
 /**
- * Runs each chat's due duties on the server: a skip policy on overlap (a duty with a run going starts no other), one catch-up for a daily slot
+ * Runs each chat's due duties on the server: a skip policy on overlap (a duty with a run going starts no other, and each slot it holds up gets a skipped record), one catch-up for a daily slot
  * missed by at most CATCH_UP_MS, the precheck with the file contract and its timeout, the measure against the targets, and then one duty job
  * per run with the precheck as context (src/chat-duty-job.ts), met or missed. One job per duty per slot: a run whose slot already has a job
  * starts none, and while the duty's last job still works a run measures but starts no job and says so in its summary, unless that job is stuck past
@@ -122,6 +127,8 @@ function checkInMinutes(value: unknown): number {
 export class Duties {
   /** The run going per `<chatId>/<dutyId>`; a second start shares it. */
   private readonly running = new Map<string, Promise<CheckInStart | void>>();
+  /** What each standing duty run going now does, with its start time, for the record of a slot it holds up. */
+  private readonly steps = new Map<string, { at: number; step: "measuring" | "starting its job" }>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -149,7 +156,7 @@ export class Duties {
       for (const duty of await this.store.list(chatId)) {
         const due = dutyDue(duty, this.now());
         if (due.kind === "skip") await this.skip(chatId, duty, due.slot);
-        else if (due.kind === "run") this.start(chatId, duty.id, due.trigger, due.slot);
+        else if (due.kind === "run" && !this.start(chatId, duty.id, due.trigger, due.slot)) await this.skipBusy(chatId, duty, due.slot);
       }
     }
   }
@@ -162,12 +169,28 @@ export class Duties {
     this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: skipped a slot missed by more than 6 h`);
   }
 
+  /** Records a slot that came while the duty's last run still goes, so every slot has a record; the next slot is one interval later. */
+  private async skipBusy(chatId: string, duty: Duty, slot: number): Promise<void> {
+    const at = this.now();
+    const going = this.steps.get(`${chatId}/${duty.id}`);
+    const summary = `${STILL_GOING} ${going?.step ?? "going"}${going ? ` (run of ${new Date(going.at).toTimeString().slice(0, 5)}, ${Math.round((at - going.at) / 1000)} s ago)` : ""}`;
+    await this.store.update(chatId, duties => {
+      const found = duties.find(entry => entry.id === duty.id);
+      if (!found) return;
+      found.lastSkippedAt = at;
+      if (found.schedule.kind === "every") found.lastRunAt = at;
+      else found.lastSlotAt = slot;
+    });
+    await this.store.appendRun(chatId, { duty: duty.id, at, slot, trigger: "schedule", ms: 0, verdict: "skipped", metrics: {}, summary });
+    this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: ${summary}`);
+  }
+
   /** Starts a run unless one is going; false when it was already running. */
   private start(chatId: string, dutyId: string, trigger: DutyTrigger, slot: number | null): boolean {
     const key = `${chatId}/${dutyId}`;
     if (this.running.has(key)) return false;
     const run = this.run(chatId, dutyId, trigger, slot).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${message(error)}`))
-      .finally(() => this.running.delete(key));
+      .finally(() => { this.running.delete(key); this.steps.delete(key); });
     this.running.set(key, run);
     return true;
   }
@@ -313,12 +336,18 @@ export class Duties {
     if (!duty) return;
     const started = this.now();
     const at = slot ?? started;
+    const key = `${chatId}/${dutyId}`;
+    this.steps.set(key, { at: started, step: "measuring" });
+    await this.store.update(chatId, duties => {
+      const found = duties.find(entry => entry.id === dutyId);
+      if (!found) return;
+      found.lastRunAt = started;
+      if (slot !== null && found.schedule.kind === "daily") found.lastSlotAt = slot;
+    });
     const markRun = (pause: boolean) => this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === dutyId);
       if (!found) return;
       found.runCount += 1;
-      found.lastRunAt = started;
-      if (slot !== null && found.schedule.kind === "daily") found.lastSlotAt = slot;
       if (pause) { found.status = "paused"; found.updatedAt = this.now(); }
     });
     if ((await this.previous(chatId, dutyId, duty.schedule, at)) === null) return;
@@ -347,6 +376,7 @@ export class Duties {
       ...(repeats.length ? [`Missed in the last run too: ${repeats.join(", ")}.`] : []),
       ...(flagged.length ? [`### Flagged\n${flagged.map(slice => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`).join("\n")}`] : []),
     ].join("\n\n");
+    this.steps.set(key, { at: started, step: "starting its job" });
     try {
       const launched = await this.launch(chatId, dutyId, duty.schedule, at, started,
         { duty, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings });
