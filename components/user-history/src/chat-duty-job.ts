@@ -27,10 +27,11 @@ export interface DutyJobHost {
    */
   retire(job: DutyJobRef): Promise<void>;
   /**
-   * The jobs among `jobs` whose turn has ended: listed, not archived, not working, past their brief (2 or more messages) and not settled on a
-   * failed model call (the chat's revive restarts those). One catalog read for all of them. A host without it (test fakes) stops no job early.
+   * The duty jobs to archive now, with one catalog read: each `last` job (its duty's newest) whose turn has ended, listed, not archived, not
+   * working, past its brief (2 or more messages) and not settled on a failed model call (the chat's revive restarts those), and each `older` job
+   * that is still listed, not archived and not working. A host without it (test fakes) stops no job early.
    */
-  ended?(jobs: readonly DutyJobRef[]): Promise<DutyJobRef[]>;
+  ended?(last: readonly DutyJobRef[], older?: readonly DutyJobRef[]): Promise<DutyJobRef[]>;
   /** Queues the archive of an ended duty job, so its worker and Python kernel stop; it stays registered until the next run retires it. */
   stop?(job: DutyJobRef): Promise<void>;
 }
@@ -174,12 +175,17 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     queue = next.catch(() => {});
     return next;
   };
-  const find = async (chat: DutyChat, name: string): Promise<string | undefined> => {
+  /**
+   * An unregistered live session with the job's name in the chat's folder, made since `since`. An older one is a past job with the same clock
+   * time: 10-12 13:24Z the 22:24 Local dev servers start adopted the 10-10 22:24 job, its brief failed, and that session stayed loaded.
+   */
+  const find = async (chat: DutyChat, name: string, since: number): Promise<string | undefined> => {
     for (const wait of waits) {
       if (wait > 0) await sleep(wait);
       await input.refresh?.().catch(() => {});
       for (const candidate of await input.rows().catch(() => [])) {
-        if (candidate.name === name && candidate.cwd === chat.cwd && !candidate.archived && await input.registry.chatOf(candidate.id) === undefined) return candidate.id;
+        if (candidate.name !== name || candidate.cwd !== chat.cwd || candidate.archived || Date.parse(candidate.created ?? "") < since) continue;
+        if (await input.registry.chatOf(candidate.id) === undefined) return candidate.id;
       }
     }
     return undefined;
@@ -187,10 +193,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   const createOrAdopt = async (chat: DutyChat, first: string): Promise<{ id: string; name: string }> => {
     let cause = "";
     let name = first;
+    const since = (input.now ?? Date.now)();
     for (let tries = 1; tries <= CREATE_TRIES; tries++) {
       try { return { id: (await input.threads.create({ cwd: chat.cwd, name, timeoutMs: DUTY_CREATE_TIMEOUT_MS })).id, name }; }
       catch (error) { cause = reason(error); }
-      const found = await find(chat, name);
+      const found = await find(chat, name, since);
       if (found) { input.log?.(`duty job ${name}: the create failed (${cause}) but the session exists; adopting it`); return { id: found, name }; }
       input.log?.(`duty job ${name}: create ${tries} of ${CREATE_TRIES} failed and no session appeared: ${cause}`);
       if (NAME_TAKEN.test(cause)) name = datedName(first, (input.now ?? Date.now)());
@@ -220,13 +227,12 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       await input.registry.remove([job.id]);
       await input.archives.add(job);
     },
-    async ended(jobs) {
-      if (!jobs.length) return [];
+    async ended(last, older = []) {
+      if (!last.length && !older.length) return [];
       const byId = new Map((await input.rows()).map(candidate => [candidate.id, candidate]));
-      return jobs.filter(job => {
-        const found = byId.get(job.id);
-        return found !== undefined && !found.archived && !found.working && found.messageCount >= 2 && found.failure === undefined;
-      });
+      const idle = (job: DutyJobRef) => { const found = byId.get(job.id); return found !== undefined && !found.archived && !found.working ? found : undefined; };
+      return [...last.filter(job => { const found = idle(job); return found !== undefined && found.messageCount >= 2 && found.failure === undefined; }),
+        ...older.filter(job => idle(job) !== undefined)];
     },
     stop: job => input.archives.add(job),
   };

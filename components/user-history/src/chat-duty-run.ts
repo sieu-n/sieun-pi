@@ -167,26 +167,33 @@ export class Duties {
   }
 
   /**
-   * Archives each duty's last job once its turn has ended, instead of at the next run: an ended job kept its worker and Python kernel until then
-   * (10-13 00:10 KST: 6 ended duty jobs held 1.9 GB on a 32 GB Mac with 30.4 of 30.7 GB swap used, and a daemon gate pause kept the 22:15 to
-   * 22:33 check-in jobs 88 to 102 min). A duty with a run going is left to that run. Each job is queued once; an agent message resumes it.
+   * Archives each duty's last job once its turn has ended, instead of at the next run, and any older duty job still up: an ended job kept its
+   * worker and Python kernel until then (10-13 00:10 KST: 6 ended duty jobs held 1.9 GB on a 32 GB Mac with 30.4 of 30.7 GB swap used, and a
+   * daemon gate pause kept the 22:15 to 22:33 check-in jobs 88 to 102 min). An older job is one a later run retired whose archive did not stop it:
+   * "local dev servers ops guy (+observability) 22:24" of 10-10 was still loaded on 10-13 after its file said archived. A duty with a run going
+   * keeps its last job for that run. Each job is queued once; an agent message resumes it.
    */
   private async stopEnded(chats: readonly string[]): Promise<void> {
     const jobs = this.host.jobs;
     if (!jobs.ended || !jobs.stop) return;
     const last: DutyJobRef[] = [];
+    const older = new Map<string, DutyJobRef>();
     for (const chatId of chats) {
       const seen = new Set<string>();
       for (const run of await this.store.runs(chatId)) {
-        if (!run.job || seen.has(run.duty)) continue;
+        if (!run.job) continue;
+        const newest = !seen.has(run.duty);
         seen.add(run.duty);
-        if (!this.stopped.has(run.job.id) && !this.running.has(`${chatId}/${run.duty}`)) last.push(run.job);
+        if (this.stopped.has(run.job.id)) continue;
+        if (!newest) older.set(run.job.id, run.job);
+        else if (!this.running.has(`${chatId}/${run.duty}`)) last.push(run.job);
       }
     }
-    for (const job of await jobs.ended(last)) {
+    for (const job of last) older.delete(job.id);
+    for (const job of await jobs.ended(last, [...older.values()])) {
       this.stopped.add(job.id);
       await jobs.stop(job);
-      this.log(`duty job ${job.name}: its turn ended; queued its archive`);
+      this.log(`duty job ${job.name}: ${older.has(job.id) ? "an older job still up" : "its turn ended"}; queued its archive`);
     }
   }
 
