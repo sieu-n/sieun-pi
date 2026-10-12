@@ -186,7 +186,7 @@ class KernelGuardBase(unittest.TestCase):
         self.runner = self.tmp / "runner.py"
         self.runner.write_text(RUNNER)
 
-    def run_cells(self, *cells, env=None):
+    def run_cells(self, *cells, env=None, python=(sys.executable,)):
         environ = {k: v for k, v in os.environ.items() if k not in {"PYTHONPATH", "OWNER_OK", "PYTHONSTARTUP"}}
         environ.update({
             "HOME": str(self.tmp / "home"),
@@ -199,10 +199,14 @@ class KernelGuardBase(unittest.TestCase):
         })
         environ.update(env or {})
         spec = json.dumps({"guard": str(GUARD), "cells": list(cells)})
-        proc = subprocess.run([sys.executable, "-B", str(self.runner)], input=spec, capture_output=True, text=True, cwd=self.tmp, env=environ, timeout=180)
+        proc = subprocess.run([*python, "-B", str(self.runner)], input=spec, capture_output=True, text=True, cwd=self.tmp, env=environ, timeout=180)
         lines = [line for line in proc.stdout.splitlines() if line.startswith("{")]
         self.assertTrue(lines, f"runner gave no result\nstdout: {proc.stdout}\nstderr: {proc.stderr}")
         return json.loads(lines[-1])
+
+    def sends(self):
+        path = self.tmp / "chat" / "sends.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def fake_runs(self):
         return [line for line in self.fake_log.read_text().splitlines() if line]
@@ -361,6 +365,64 @@ class CellApproval(KernelGuardBase):
         self.assert_refused(self.run_cells(f"# OWNER_OK={CHAT}/t2\n" + local_post("api.resend.com")), "not a go")
         self.assert_refused(self.run_cells(f"# OWNER_OK={CHAT}/t9\n" + local_post("api.resend.com")), "no todo t9")
         self.assertEqual(self.server.hits, [])
+
+
+RAW_POST = (
+    "import os, socket\n"
+    "s = socket.create_connection(('127.0.0.1', int(os.environ['PORT'])), timeout=5)\n"
+    "s.sendall(b'POST /emails HTTP/1.1\\r\\nHost: api.resend.com\\r\\nContent-Length: 2\\r\\n\\r\\n{}')\n"
+    "RESULT = s.recv(64).decode()\n"
+)
+
+AIOHTTP_POST = (
+    "import aiohttp, os\n"
+    "async with aiohttp.ClientSession() as session:\n"
+    "    async with session.post(f\"http://127.0.0.1:{os.environ['PORT']}/emails\", json={}, headers={'Host': 'api.resend.com'}) as response:\n"
+    "        RESULT = response.status\n"
+)
+
+
+class SendsTheRequestLayersMiss(KernelGuardBase):
+    """p345: aiohttp and raw-socket writes left no send log line, because the guard only wrapped httpx, requests and urllib."""
+
+    def assert_one_line(self, decision):
+        lines = [line for line in self.sends() if "api.resend.com" in line["target"]]
+        self.assertEqual([(line["decision"], line["layer"]) for line in lines], [(decision, "kernel")], self.sends())
+
+    def test_a_raw_socket_post_is_refused_and_logged(self):
+        self.assert_refused(self.run_cells(RAW_POST))
+        self.assertEqual(self.server.hits, [])
+        self.assert_one_line("refused")
+
+    def test_a_raw_socket_post_with_an_approved_owner_ok_leaves_one_allowed_line(self):
+        out = self.run_cells(f"# OWNER_OK={CHAT}/t1\n" + RAW_POST)
+        self.assert_passed(out)
+        self.assertEqual(self.server.hits, [["POST", "/emails", "api.resend.com"]])
+        self.assert_one_line("allowed")
+
+    def test_an_http_client_post_with_an_approved_owner_ok_leaves_one_allowed_line(self):
+        self.assert_passed(self.run_cells(f"# OWNER_OK={CHAT}/t1\n" + local_post("api.resend.com")))
+        self.assert_one_line("allowed")
+
+    def test_a_tls_write_through_ssl_object_is_refused(self):
+        # asyncio TLS, which aiohttp and httpx's AsyncClient use over https, writes the plain request through ssl.SSLObject.write.
+        out = self.run_cells(
+            "import ssl\n"
+            "tls = ssl.create_default_context().wrap_bio(ssl.MemoryBIO(), ssl.MemoryBIO(), server_hostname='api.resend.com')\n"
+            "tls.write(b'POST /emails HTTP/1.1\\r\\nHost: api.resend.com\\r\\n\\r\\n')\n"
+        )
+        self.assert_refused(out)
+        self.assert_one_line("refused")
+
+    def test_an_aiohttp_post_is_refused_and_logged(self):
+        python = ("uv", "run", "--no-project", "--offline", "--quiet", "--with", "aiohttp", "--python", sys.executable, "python")
+        if not shutil.which("uv") or subprocess.run([*python, "-c", "import aiohttp"], capture_output=True).returncode:
+            self.skipTest("aiohttp is not in the uv cache")
+        cache = subprocess.run(["uv", "cache", "dir"], capture_output=True, text=True).stdout.strip()
+        out = self.run_cells(AIOHTTP_POST, python=python, env={"UV_CACHE_DIR": cache})
+        self.assertIsNotNone(out["error"], out)
+        self.assertEqual(self.server.hits, [])
+        self.assert_one_line("refused")
 
 
 CHILD_POST = (

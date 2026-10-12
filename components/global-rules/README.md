@@ -37,7 +37,9 @@ The aside-browser skill holds the runtime check for webmail, ticket, contact and
 It prepends one line to each ipython cell, and that line runs `kernel-guard.py` once per kernel.
 From then on the kernel checks each send as it happens, so a command, URL or MCP tool built at run time is judged like a literal one.
 It checks every subprocess (`bash()`, `subprocess`, `os.system`) whose text names a send tool, with shell variables from the process environment filled in, through `send-check.ts`, which runs the tool_call guard's own rules.
-It checks HTTP writes from `httpx`, `httpx2`, `requests` and `urllib` against `send-targets.json` in Python, connects to SMTP ports 25, 465, 587 and 2525 on any non-local host, and every `rlm.mcp.call_tool` call that may send.
+It checks HTTP writes from `httpx` and `httpx2`, and every HTTP/1 request written to a socket, against `send-targets.json` in Python.
+The socket check covers `requests`, `urllib`, `http.client`, raw `socket` and `ssl` writes, and asyncio TLS such as `aiohttp`, whose request it reads at `ssl.SSLObject.write` before encryption.
+It also checks connects to SMTP ports 25, 465, 587 and 2525 on any non-local host, and every `rlm.mcp.call_tool` call that may send.
 It puts `python-child/` first on `PYTHONPATH`, so a Python process the kernel starts, such as a helper script or a `uv run` command, installs the same guard through `sitecustomize.py` and then runs the next `sitecustomize` on its path.
 A refused call raises `SendRefused` with the same text as the tool_call guard.
 A call passes when a cell on the stack carries an approved `OWNER_OK=<chat id>/<todo id>`, or, in a child process, when `OWNER_OK` is in its environment.
@@ -103,9 +105,9 @@ Each log line names the rule and the session cwd, for example `[guard] block rul
 The tool_call guard reads literal command text. The kernel guard checks the calls a Python process makes at run time. Neither is a sandbox.
 The tool_call guard skips cells over 200,000 characters.
 The kernel's `os.chdir` is invisible to the tool_call guard, so a bare git command is judged against the session cwd.
-The send guard misses a command decoded at run time and piped to a shell (`base64 -d | sh`), a Node process that sends from a module the script imports, `aiohttp` and raw-socket HTTP writes, the private `rlm.mcp._registry`, a body-only WHMCS ticket call sent through `http.client`, a desktop send through an app it does not name, a cua-driver drag, `System Events` keystrokes, and a desktop click on a panel or sheet above layer 0, because `list_windows` lists only layer-0 windows.
+The send guard misses a command decoded at run time and piped to a shell (`base64 -d | sh`), a Node process that sends from a module the script imports, an HTTP request whose request line is split over several socket writes, HTTP/2, the private `rlm.mcp._registry`, a body-only WHMCS ticket call sent through `http.client`, a desktop send through an app it does not name, a cua-driver drag, `System Events` keystrokes, and a desktop click on a panel or sheet above layer 0, because `list_windows` lists only layer-0 windows.
 It also misses a desktop click on Send in a window that no snapshot has shown and that the guard cannot read, and a desktop click whose coordinates come from a downscaled `get_desktop_state` taken outside the proxy, such as a `cua-driver call` in a shell.
-In the Aside browser it misses Tab then Enter on a webmail page, selectors built at run time (`atob`), and Gmail inside another site's iframe.
+In the Aside browser it misses Tab then Enter on a webmail page, selectors built at run time (`atob`), Gmail inside another site's iframe, and a mouse call through another name (`const m = page.mouse; m.click(x, y)`).
 The merge guard misses a `gh` alias made before it saw the `gh alias set` call (`gh m 123` runs `pr merge` unseen), a merge or push whose command or URL is built at runtime, and a helper script that merges or pushes.
 A handler error lets the call run and writes `handler error, failing open` to the log, because a bug here must not stop every tool call on the machine. The kernel guard also lets a call run when Node or `send-check.ts` cannot run.
 

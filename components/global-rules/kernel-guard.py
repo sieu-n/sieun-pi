@@ -6,6 +6,7 @@ each subprocess, HTTP write, SMTP connect and MCP call as it happens, with the t
 A call passes when a cell on the stack carries an approved OWNER_OK=<chat id>/<todo id>, the same token the tool_call guard reads.
 """
 
+import contextvars
 import json
 import linecache
 import os
@@ -29,6 +30,7 @@ MCP_HINT = re.compile(r"send|reply|forward|post|comment|message|submit|create|in
 WRITE = frozenset({"POST", "PUT", "PATCH"})
 OWN_PACKAGES = ("aside_browser",)
 state = threading.local()
+WRITING = contextvars.ContextVar("global_rules_send_guard_writing", default=False)
 
 
 def load_targets() -> list:
@@ -127,8 +129,10 @@ def on_shell(args, cwd, env) -> None:
 
 
 def on_http_bytes(data) -> None:
-    """http.client (urllib, requests): the request line and Host header of a write."""
-    head = bytes(data[:8192]) if isinstance(data, (bytes, bytearray, memoryview)) else b""
+    """A socket or TLS write that starts an HTTP/1 request: its request line and Host header."""
+    if not isinstance(data, (bytes, bytearray, memoryview)) or bytes(data[:4]) not in (b"POST", b"PUT ", b"PATC"):
+        return
+    head = bytes(data[:8192])
     m = re.match(rb"(POST|PUT|PATCH) (\S+) HTTP/", head)
     if not m:
         return
@@ -159,8 +163,6 @@ def hook(event: str, args: tuple) -> None:
         on_shell(args[0], None, None)
     elif event == "socket.connect":
         on_connect(args[1])
-    elif event == "http.client.send":
-        on_http_bytes(args[1])
 
 
 def request_body(request) -> str:
@@ -175,13 +177,49 @@ def guarded_send(original, is_async: bool):
     if is_async:
         async def send(self, request, *args, **kwargs):
             on_http(request.method, str(request.url), request_body(request))
-            return await original(self, request, *args, **kwargs)
+            token = WRITING.set(True)
+            try:
+                return await original(self, request, *args, **kwargs)
+            finally:
+                WRITING.reset(token)
     else:
         def send(self, request, *args, **kwargs):
             on_http(request.method, str(request.url), request_body(request))
-            return original(self, request, *args, **kwargs)
+            token = WRITING.set(True)
+            try:
+                return original(self, request, *args, **kwargs)
+            finally:
+                WRITING.reset(token)
     send.send_guarded = True
     return send
+
+
+def guarded_write(original):
+    def write(self, data, *args, **kwargs):
+        if WRITING.get():
+            return original(self, data, *args, **kwargs)
+        token = WRITING.set(True)
+        try:
+            on_http_bytes(data)
+            return original(self, data, *args, **kwargs)
+        finally:
+            WRITING.reset(token)
+
+    write.send_guarded = True
+    return write
+
+
+def wrap_sockets() -> None:
+    """Every HTTP/1 write in plain text: http.client and raw sockets through socket and ssl.SSLSocket, and asyncio TLS
+    (aiohttp, httpx's AsyncClient) through ssl.SSLObject.write, which gets the request before it is encrypted."""
+    import socket
+    import ssl
+
+    for cls, names in ((socket.socket, ("send", "sendall")), (ssl.SSLSocket, ("send", "sendall", "write")), (ssl.SSLObject, ("write",))):
+        for name in names:
+            original = getattr(cls, name)
+            if not getattr(original, "send_guarded", False):
+                setattr(cls, name, guarded_write(original))
 
 
 def wrap_http(module_name: str) -> None:
@@ -244,6 +282,7 @@ def install() -> None:
     wrap_mcp()
     for name in ("httpx", "httpx2"):
         wrap_http(name)
+    wrap_sockets()
     sys.addaudithook(hook)
 
 
