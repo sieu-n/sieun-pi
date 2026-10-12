@@ -70,8 +70,12 @@ test("blocked on others: a path or dated folder name in the note is not a blocke
   assert.equal(p168.output.metrics.blocked_on_others, 0);
   const slug = { ...P168, note: "The script is in 1952-thread-job-split-audit, data folder." };
   assert.deepEqual(blocked(boardOf(240, step("p168", P168.text, slug))).precheck.blocked, [], "a dated folder name alone, with its punctuation, is no blocker either");
-  const real = { ...P168, note: P168.note + " The other thread owns the script now." };
+  // With no waitUntil, so the planned end (`plannedEnd`) does not park it.
+  const { waitUntil: _date, ...undated } = P168;
+  const real = { ...undated, note: P168.note + " The other thread owns the script now." };
   assert.deepEqual(blocked(boardOf(240, step("p168", P168.text, real))).precheck.blocked.map(block => block.on), ["thread"], "a real word in the same note still counts");
+  assert.deepEqual(blocked(boardOf(240, step("p168", P168.text, { ...real, waitUntil: P168.waitUntil }))).precheck.blocked, [],
+    "the same step with its waitUntil a day ahead waits on schedule");
   assert.deepEqual(blocked(boardOf(70, step("p2", "Land the DM worker", { waitFor: "CI on ci/concierge-dm" }))).precheck.blocked.map(block => block.on), ["CI"],
     "the path token drops out, the word CI next to it stays");
 });

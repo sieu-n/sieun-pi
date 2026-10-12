@@ -413,14 +413,36 @@ const othersWord = (text: string | undefined): string | undefined =>
  * An open step blocked on CI, the release queue or another thread with nobody fixing it (W56, owner 10-10: when CI or the like blocks
  * a step, work out how to fix it and get involved): it waits (a waitFor, or blocked), its waitFor or note names such a blocker or
  * its waitFor or owner is another thread, it has not changed for BLOCKED_MS, and no job of it is working. A step an open For you todo covers
- * waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). `on` names the blocker.
+ * waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
+ * schedule, whose `plannedEnd` plus PLANNED_END_GRACE_MS is still ahead, is not blocked yet. `on` names the blocker.
  */
 export interface BlockedStep { view: StepView; on: string }
+/** How long past its planned end a parked-on-schedule wait may sit before it counts as blocked (owner's brief 10-13 for frontend bro p100). */
+export const PLANNED_END_GRACE_MS = 30 * 60_000;
+const CLOCK_Z = /\b([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?Z\b/g;
+const UNTIL_CLOCK = /\buntil\s+(?:about\s+|around\s+|roughly\s+)?(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\b/gi;
+/** Each HH:MMZ in `text` as the instant nearest `at` (within 12 h either side). */
+const clocksNear = (text: string, at: number): number[] => [...text.matchAll(CLOCK_Z)].map(([, hours, minutes]) => {
+  const day = new Date(at);
+  const same = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), Number(hours), Number(minutes));
+  return [same - 86_400_000, same, same + 86_400_000].reduce((best, time) => Math.abs(time - at) < Math.abs(best - at) ? time : best);
+});
+/**
+ * When a step's wait is planned to end (frontend bro 10-13, p100: "Fable's land-33 hold until about 00:15Z, then reruns of r12 and r13"): the
+ * latest HH:MMZ its waitFor names, or an "until HH:MMZ" in its note, read near the step's last change; else its waitUntil. A note's other clock
+ * times are when something was seen ("At 23:00Z, 7 of 10 jobs ... were green"), not an end. Undefined when the step names no end.
+ */
+export function plannedEnd(item: PlanItem, changedAt: number): number | undefined {
+  const named = [...clocksNear(item.waitFor ?? "", changedAt), ...[...(item.note ?? "").matchAll(UNTIL_CLOCK)].flatMap(([until]) => clocksNear(until, changedAt))];
+  if (named.length) return Math.max(...named);
+  const until = Date.parse(item.waitUntil ?? "");
+  return Number.isFinite(until) ? until : undefined;
+}
 export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number): BlockedStep[] {
   return views.flatMap(view => {
     const { item, owner } = view;
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
-      now - view.changedAt <= BLOCKED_MS) return [];
+      now - view.changedAt <= BLOCKED_MS || now <= (plannedEnd(item, view.changedAt) ?? -Infinity) + PLANNED_END_GRACE_MS) return [];
     const thread = waitTarget(item.waitFor, rows, self) ?? (owner?.key.startsWith("thread:") ? { name: owner.name } : undefined);
     const word = othersWord(item.waitFor) ?? othersWord(item.note) ?? (heldRun(item) ? "a CI run another thread holds" : undefined);
     const on = thread ? `the ${clip(thread.name, 40)} thread` : word;

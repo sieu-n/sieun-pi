@@ -31,10 +31,13 @@ const LATE: [string, P4][] = [
   ["2026-10-12T22:41:17.438Z", { note: "verify-dev 38300993175 attempt 4 cancelled by the land-33 hold; Fable's land-34 order reruns the DM guard 38300985653 first and this run second, when land 33's base runs clear (estimate 23:15-23:30Z, fallback 00:30Z). The job's watchers are alive." }],
   ["2026-10-12T22:56:57.975Z", { note: "Checked 22:55Z: verify-dev 38300993175 attempt 4 still cancelled, not rerun. Fable's land-34 order reruns it second, after the DM guard 38300985653, once land-33 base r8 38309494101 has started every job (r8's lint queued since 21:15:54Z; 29 jobs wait on 4 busy runners). The VP of CI thread owns the queue. The job's 00:45Z watcher is alive." }],
 ];
-/** The chat's real check-in slots: three before 21:00Z, then every check-in from 21:00Z to 22:57Z, then one at 23:23Z with no new change. */
+/**
+ * The chat's real check-in slots: three before 21:00Z, then every check-in from 21:00Z to 22:57Z, then one at 23:23Z with no new change, and
+ * 01:23Z, past p4's 00:50Z waitUntil plus the grace.
+ */
 const SLOTS = ["2026-10-12T13:08:42Z", "2026-10-12T13:23:42Z", "2026-10-12T14:38:42Z", "2026-10-12T20:53:42Z", "2026-10-12T21:08:42Z", "2026-10-12T21:23:42Z",
   "2026-10-12T21:38:42Z", "2026-10-12T21:53:42Z", "2026-10-12T22:08:50Z", "2026-10-12T22:23:50Z", "2026-10-12T22:38:52Z", "2026-10-12T22:53:52Z", "2026-10-12T22:57:30Z",
-  "2026-10-12T23:23:52Z"];
+  "2026-10-12T23:23:52Z", "2026-10-13T01:23:52Z"];
 
 const withP4 = (items: PlanItem[], p4: P4): PlanItem[] => items.map(item => {
   const children = withP4(item.children, p4);
@@ -59,11 +62,12 @@ const replay = (late: [string, P4][]) => {
 
 test("api portal vp p4: a CI run another thread holds is blocked_on_others, not stalled_steps; a step that pushes its own waitUntil still stalls", () => {
   assert.deepEqual(replay(LATE), ["13:08", "13:23", "14:38", "20:53", "21:08", "21:23", "21:38", "21:53", "22:08", "22:23", "22:38", "22:53", "22:57",
-    "23:23 blocked_on_others"], "Fable's land-33 hold and land-34 order own the delay");
+    "23:23", "01:23 blocked_on_others"], "Fable's land-33 hold and land-34 order own the delay, and p4 waits on schedule until its 00:50Z read");
   const pushes: Record<string, string> = { "2026-10-12T22:29:44.052Z": "2026-10-13T01:20:00.000Z", "2026-10-12T22:41:17.438Z": "2026-10-13T01:50:00.000Z" };
   const own = LATE.map(([at, change]): [string, P4] => [at, change.note === undefined ? change :
     { ...change, note: "verify-dev 38300993175 is not green yet; the job reads it again at 00:45Z and moves the wait if it is still red.",
       ...(pushes[at] ? { waitUntil: pushes[at] } : {}) }]);
-  assert.deepEqual(replay(own).slice(8), ["22:08", "22:23", "22:38", "22:53 stalled_steps", "22:57 stalled_steps", "23:23 stalled_steps"],
+  assert.deepEqual(replay(own).slice(8), ["22:08", "22:23", "22:38", "22:53 stalled_steps", "22:57 stalled_steps", "23:23 stalled_steps",
+    "01:23 stalled_steps"],
     "with no outside hold named, pushing 00:50Z to 01:20Z to 01:50Z is the chat's own and still stalls");
 });
