@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -63,6 +63,24 @@ function messageTitle(first: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 100);
 }
 
+/**
+ * Session files that held no first user message when read, with their size then, or Infinity for one scanned past FIRST_MESSAGE_SCAN_BYTES. Measured 10-13 on the live list: 498 of 1,372 rows, mostly
+ * subagent sessions, were read again on every projection, about 560 MB and half of the service's main-thread time. One with none in its first
+ * FIRST_MESSAGE_SCAN_BYTES never gets one; one read to its end is read again only after it grows.
+ */
+const noFirst = new Map<string, number>();
+function storedFirst(sessionFile: string): string | undefined {
+  const readAt = noFirst.get(sessionFile);
+  if (readAt === Infinity) return "";
+  let size: number;
+  try { size = statSync(sessionFile).size; } catch { return undefined; }
+  if (readAt === size) return undefined;
+  const first = fileFirstMessage(sessionFile);
+  if (first) noFirst.delete(sessionFile);
+  else noFirst.set(sessionFile, first === "" ? Infinity : size);
+  return first;
+}
+
 /** Title text of each session file's first user message. A session file only grows at its end, so a found entry never changes. */
 const fileTitles = new Map<string, string>();
 
@@ -73,7 +91,7 @@ export function firstTask(row: Pick<SessionSummary, "firstMessage" | "sessionFil
   if (row.sessionFile) {
     const cached = fileFirsts.get(row.sessionFile);
     if (cached !== undefined) return cached;
-    const first = fileFirstMessage(row.sessionFile) || subagentPrompt(row.sessionFile);
+    const first = storedFirst(row.sessionFile) || subagentPrompt(row.sessionFile);
     if (first) { const cut = taskText(first).slice(0, 2000); fileFirsts.set(row.sessionFile, cut); return cut; }
   }
   return row.firstMessage === NO_MESSAGES ? "" : taskText(row.firstMessage ?? "");
@@ -94,7 +112,7 @@ function storedTitle(sessionFile: string | undefined): string | undefined {
   if (!sessionFile) return undefined;
   const cached = fileTitles.get(sessionFile);
   if (cached !== undefined) return cached;
-  const first = fileFirstMessage(sessionFile);
+  const first = storedFirst(sessionFile);
   if (first === undefined) return undefined;
   const title = messageTitle(first);
   fileTitles.set(sessionFile, title);

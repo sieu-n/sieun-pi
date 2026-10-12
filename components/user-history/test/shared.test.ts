@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyThreadEvent, isThreadBusy, threadStateFromSnapshot } from "../src/shared/thread-state.ts";
@@ -9,7 +9,7 @@ import { CACHE_COLD_GAP_MS, cacheHealth } from "../src/shared/cache-health.ts";
 import { matchCommands } from "../src/client/command-match.ts";
 import type { AssistantMessage, Command, CustomMessage, ThreadSnapshot, ThreadState, ToolResultMessage, UserMessage } from "../src/shared/types.ts";
 import { ImageStore, Projector, TEXT_LIMIT, THINKING_LIMIT } from "../src/chat-projection.ts";
-import { isListed, projectRow, sessionTitle } from "../src/chat-catalog.ts";
+import { firstTask, isListed, projectRow, sessionTitle } from "../src/chat-catalog.ts";
 import { duration } from "../src/client/format.ts";
 import type { SessionSummary } from "prime-agent";
 
@@ -148,6 +148,23 @@ test("a thread's title stays its first stored user message after a compaction or
   writeFileSync(file, [JSON.stringify({ type: "session", version: 3, id: "s" }), user("Real   first\nquestion"), JSON.stringify({ type: "compaction", id: "c1" }), user("continue there was wifi break"), ""].join("\n"));
   assert.equal(sessionTitle({ firstMessage: "continue there was wifi break", sessionFile: file }), "Real first question", "the daemon's in-memory first message never replaces the stored one");
   assert.equal(sessionTitle({ firstMessage: "draft", sessionFile: join(dir, "missing.jsonl") }), "draft", "no file yet: the daemon's first message");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a session file with no user message is read again only after it grows", () => {
+  const dir = mkdtempSync(join(tmpdir(), "first-"));
+  const file = join(dir, "s.jsonl");
+  const message = JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-10-01T00:00:00Z", message: { role: "user", content: [{ type: "text", text: "Late task" }], timestamp: 1 } });
+  const header = JSON.stringify({ type: "session", version: 3, id: "s", pad: "" });
+  writeFileSync(file, `${header.replace('"pad":""', `"pad":"${"x".repeat(message.length - header.length)}"`)}\n`);
+  assert.equal(firstTask({ firstMessage: "draft", sessionFile: file }), "draft");
+  assert.equal(sessionTitle({ firstMessage: "draft", sessionFile: file }), "draft");
+  writeFileSync(file, `${message}\n`);
+  assert.equal(firstTask({ firstMessage: "draft", sessionFile: file }), "draft", "same size: the file is not read again");
+  assert.equal(sessionTitle({ firstMessage: "draft", sessionFile: file }), "draft", "same size: the file is not read again");
+  appendFileSync(file, `${JSON.stringify({ type: "custom", id: "c1" })}\n`);
+  assert.equal(firstTask({ firstMessage: "draft", sessionFile: file }), "Late task", "the file grew: it is read again");
+  assert.equal(sessionTitle({ firstMessage: "draft", sessionFile: file }), "Late task");
   rmSync(dir, { recursive: true, force: true });
 });
 
