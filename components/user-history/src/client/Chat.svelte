@@ -297,6 +297,11 @@
   const closeMenu = () => { pressed = null; };
 
   const send = (text: string, images: ImageInput[]) => { pinned = true; return store.sendChat(id, text, images); };
+  let loadingOlder = $state(false);
+  async function showOlder(): Promise<void> {
+    loadingOlder = true;
+    try { await store.run(api.older(id)); } finally { loadingOlder = false; }
+  }
 </script>
 
 {#snippet actions(at: number, text: string)}
@@ -323,6 +328,7 @@
 {#snippet feedView()}
   <div class="scroller" bind:this={scroller} onscroll={onScroll}>
     <div class="column" bind:this={column}>
+      {#if thread?.older}<button type="button" class="older" disabled={loadingOlder} onclick={() => void showOlder()}>{loadingOlder ? "Loading earlier messages…" : "Show earlier messages"}</button>{/if}
       {#each feed as item, index (item.id)}
         {#if stampBefore(item, index)}<div class="stamp">{stamp(item.at)}</div>{/if}
         {#if item.kind === "user" && !item.images.length && isBoardAction(item.text)}
@@ -528,6 +534,7 @@
   .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .column { width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
   .empty { padding: 48px 0; text-align: center; }
+  .older { align-self: center; margin: 4px 0; padding: 4px 12px; border-radius: 999px; font-size: 12.5px; color: var(--text-muted); }
   .stamp { align-self: center; margin: 10px 0 4px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .line { display: flex; align-items: flex-end; gap: 4px; border-radius: 20px; }
   .line.user { justify-content: flex-end; }

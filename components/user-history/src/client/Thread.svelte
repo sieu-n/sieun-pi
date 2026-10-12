@@ -163,6 +163,11 @@
 
   const send = (text: string, images: Parameters<typeof store.send>[2], mode: Parameters<typeof store.send>[3]) => store.send(id, text, images, mode);
   const stop = () => { void store.run(api.abort(id)); };
+  let loadingOlder = $state(false);
+  async function showOlder(): Promise<void> {
+    loadingOlder = true;
+    try { await store.run(api.older(id)); } finally { loadingOlder = false; }
+  }
 </script>
 
 <svelte:window onkeydown={onReadKey} />
@@ -249,6 +254,7 @@
           {/each}
           {#if !questions.length}<div class="empty muted">No questions in this thread yet.</div>{/if}
         {:else}
+          {#if thread?.older}<button type="button" class="older" disabled={loadingOlder} onclick={() => void showOlder()}>{loadingOlder ? "Loading earlier messages…" : "Show earlier messages"}</button>{/if}
           {#each shown as turn, index (turn.key)}
             <Turn {turn} threadId={id} latest={index === shown.length - 1} />
           {/each}
@@ -321,6 +327,7 @@
   .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
   .column { width: 100%; max-width: var(--column); margin: 0 auto; padding: 12px 20px 24px; }
   .empty { padding: 48px 0; text-align: center; }
+  .older { display: block; margin: 8px auto; padding: 4px 12px; border-radius: 999px; font-size: 12.5px; color: var(--text-muted); }
   .jump { position: absolute; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; }
   .jump-go { display: inline-flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; border-radius: 999px 0 0 999px; }
   .jump-close { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-right: 3px; border-radius: 50%; color: var(--text-faint); }

@@ -169,6 +169,8 @@ export interface ThreadSnapshot {
   board?: ChatBoard | null;
   /** Chats only: while the server waits to restart a failed owner turn, what it waits for; the feed shows it under the owner's message. */
   wait?: ChatWait | null;
+  /** The session file holds messages before `messages[0]` that the server did not read; `POST api/threads/<id>/older` reads them. */
+  older?: true;
 }
 /** `retry`: the turn is restarted at `at`. `account`: no Claude account can serve the selected Anthropic model; `until` is when one frees up. Epoch ms. */
 export type ChatWait = { kind: "retry"; error: string; at: number } | { kind: "account"; until: number | null };

@@ -7,6 +7,7 @@ import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
+import { readBranchTail } from "./session-tail.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
@@ -48,14 +49,16 @@ export function historyMessages(entries: readonly SessionEntry[]): AgentMessage[
 
 /**
  * The live context after a compaction starts at its summary, so the turns it replaced are only in the session file. These are the branch entries
- * before the latest compaction's first kept entry.
+ * before the latest compaction's first kept entry. `whole` false: the entries are the branch's tail, and one that does not reach back to the
+ * first kept entry holds none of the replaced turns.
  */
-export function compactedEntries(branch: readonly SessionEntry[]): SessionEntry[] {
+export function compactedEntries(branch: readonly SessionEntry[], whole = true): SessionEntry[] {
   let compaction = -1;
   for (let index = branch.length - 1; index >= 0; index--) if (branch[index]!.type === "compaction") { compaction = index; break; }
   if (compaction < 0) return [];
   const entry = branch[compaction]!;
   const firstKept = entry.type === "compaction" ? branch.findIndex((candidate, index) => index < compaction && candidate.id === entry.firstKeptEntryId) : -1;
+  if (firstKept < 0 && !whole) return [];
   return branch.slice(0, firstKept >= 0 ? firstKept : compaction);
 }
 
@@ -100,6 +103,8 @@ class Thread {
   state: ThreadState;
   live: Live | null = null;
   sessionFile: string | undefined;
+  /** The owner asked for older messages (`ThreadHub.older`): every later read of the session file takes the whole branch. */
+  full = false;
   readonly listeners = new Set<Listener>();
   touched = Date.now();
   idleSince: number | null = Date.now();
@@ -222,6 +227,8 @@ export class ThreadHub {
     for (const observer of [...this.observers]) observer.idle(thread.id);
   }
 
+  isLive(id: string): boolean { return Boolean(this.threads.get(id)?.live); }
+
   /** Whether the thread itself is mid-turn (streaming, a tool or command running, compacting, retrying). Running jobs alone do not count. */
   busy(id: string): boolean {
     const state = this.threads.get(id)?.state;
@@ -320,53 +327,90 @@ export class ThreadHub {
     } catch (error) { client.close(); throw error; }
   }
 
-  private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined): Promise<ThreadSnapshot> {
+  private async liveSnapshot(connection: DaemonAgentConnection, summary: SessionSummary | undefined, full = false): Promise<ThreadSnapshot> {
     const [snapshot, queue] = await Promise.all([connection.getInitialSnapshot(), connection.getQueue()]);
-    const messages = this.projector.messages([...this.compactedHistory(snapshot.messages, summary), ...snapshot.messages]);
+    const history = await this.compactedHistory(snapshot.messages, summary, full);
+    const messages = this.projector.messages([...history.messages, ...snapshot.messages]);
     const streaming = snapshot.streamingMessage?.role === "assistant" ? this.projector.assistant(snapshot.streamingMessage) : null;
     return { kind: "live", info: projectInfo(snapshot.state, summary, this.catalogModel(snapshot.state.model ?? null)), messages, streaming, queue: { steering: [...queue.steering], followUp: [...queue.followUp] },
       children: (snapshot.children ?? []).map(projectChild), tools: [], retry: null,
-      runStartedAt: snapshot.state.isStreaming ? runStartedAtFromMessages(messages) : null };
+      runStartedAt: snapshot.state.isStreaming ? runStartedAtFromMessages(messages) : null, ...(history.older ? { older: true } : {}) };
   }
 
   private branch(summary: SessionSummary): SessionEntry[] {
+    const manager = SessionManager.inMemory(summary.cwd);
+    manager.setSessionFile(this.sessionFile(summary));
+    if (manager.getSessionId() !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
+    return manager.getBranch();
+  }
+
+  private sessionFile(summary: SessionSummary): string {
     if (!summary.sessionFile) throw new ThreadError(409, "This saved thread has no session file.");
     if (!existsSync(summary.sessionFile)) {
       void this.catalog.refresh().catch(() => {});
       throw new ThreadError(404, "The session file for this thread was moved or deleted after Prime Agent scanned it: " + summary.sessionFile);
     }
-    const manager = SessionManager.inMemory(summary.cwd);
-    manager.setSessionFile(summary.sessionFile);
-    if (manager.getSessionId() !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
-    return manager.getBranch();
+    return summary.sessionFile;
   }
 
-  /** Turns a compaction removed from a live context, read back from the session file so the thread keeps its full history. */
-  private compactedHistory(live: readonly AgentMessage[], summary: SessionSummary | undefined): AgentMessage[] {
-    if (live[0]?.role !== "compactionSummary" || !summary?.sessionFile) return [];
-    try { return historyMessages(compactedEntries(this.branch(summary))); }
-    catch (error) {
+  /**
+   * The branch a thread shows: its tail (`readBranchTail`), so an open costs the same for a 64 MB transcript as for a small one, or the whole
+   * branch once the owner asked for older messages (`older`). `older` in the result: the file holds entries before the ones returned.
+   */
+  private async history(summary: SessionSummary, full: boolean): Promise<{ entries: SessionEntry[]; older: boolean }> {
+    const file = this.sessionFile(summary);
+    const tail = full ? undefined : await readBranchTail(file);
+    if (!tail) return { entries: this.branch(summary), older: false };
+    if (tail.sessionId !== summary.sessionId) throw new ThreadError(409, "The saved thread file changed. Refresh the list.");
+    return { entries: tail.entries, older: !tail.whole };
+  }
+
+  /** Turns a compaction removed from a live context, read back from the session file: the ones in its tail, or all of them after `older`. */
+  private async compactedHistory(live: readonly AgentMessage[], summary: SessionSummary | undefined, full: boolean): Promise<{ messages: AgentMessage[]; older: boolean }> {
+    if (live[0]?.role !== "compactionSummary" || !summary?.sessionFile) return { messages: [], older: false };
+    try {
+      const { entries, older } = await this.history(summary, full);
+      return { messages: historyMessages(compactedEntries(entries, !older)), older };
+    } catch (error) {
       process.stderr.write(`history ${summary.sessionId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`);
-      return [];
+      return { messages: [], older: false };
     }
   }
 
-  private savedMessages(summary: SessionSummary): { messages: AgentMessage[]; info: ThreadInfo } {
-    const branch = this.branch(summary);
-    const messages = historyMessages(branch);
+  private async savedMessages(summary: SessionSummary, full: boolean): Promise<{ messages: AgentMessage[]; info: ThreadInfo; older: boolean }> {
+    const { entries, older } = await this.history(summary, full);
+    const messages = historyMessages(entries);
     let name: string | undefined;
     let thinkingLevel: ThinkingLevel = "off";
     let ran: { provider: string; id: string } | null = null;
-    for (const entry of branch) {
+    for (const entry of entries) {
       if (entry.type === "session_info" && entry.name?.trim()) name = entry.name;
       if (entry.type === "thinking_level_change") thinkingLevel = entry.thinkingLevel as ThinkingLevel;
       if (entry.type === "model_change") ran = { provider: entry.provider, id: entry.modelId };
       if (entry.type === "message" && entry.message.role === "assistant" && entry.message.provider && entry.message.model) ran = { provider: entry.message.provider, id: entry.message.model };
     }
+    name ??= summary.sessionName?.trim() || undefined;
     const info: ThreadInfo = { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: this.catalogModel(summary.model ?? ran),
       thinkingLevel: summary.thinkingLevel ?? thinkingLevel, availableThinkingLevels: [], isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0,
-      messageCount: messages.length, context: null, usage: sessionUsage(summary.usage), sessionAction: null, queuedActions: 0 };
-    return { messages, info };
+      messageCount: older ? Math.max(summary.messageCount ?? 0, messages.length) : messages.length, context: null, usage: sessionUsage(summary.usage), sessionAction: null, queuedActions: 0 };
+    return { messages, info, older };
+  }
+
+  private async savedSnapshot(summary: SessionSummary, full: boolean): Promise<ThreadSnapshot> {
+    const { messages, info, older } = await this.savedMessages(summary, full);
+    return { kind: "saved", info, messages: this.projector.messages(messages), streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null,
+      runStartedAt: null, ...(older ? { older: true } : {}) };
+  }
+
+  /** The owner's Show earlier: the thread reads its whole session file once, and keeps the whole branch on every later snapshot until it closes. */
+  async older(id: string): Promise<void> {
+    const thread = await this.open(id);
+    if (thread.full) return;
+    thread.full = true;
+    if (thread.live) { await this.resnapshot(thread); return; }
+    const snapshot = await this.savedSnapshot(await this.summary(id), true);
+    if (thread.live) return;
+    thread.broadcast({ type: "snapshot", snapshot });
   }
 
   /**
@@ -407,7 +451,7 @@ export class ThreadHub {
   private async resnapshot(thread: Thread): Promise<void> {
     const live = thread.live;
     if (!live) return;
-    const snapshot = await this.liveSnapshot(live.connection, await this.catalog.summary(thread.id));
+    const snapshot = await this.liveSnapshot(live.connection, await this.catalog.summary(thread.id), thread.full);
     if (thread.live !== live) return;
     thread.flush();
     thread.broadcast({ type: "snapshot", snapshot });
@@ -482,11 +526,8 @@ export class ThreadHub {
         this.bind(thread, live.connection, activeSessionId);
       } else {
         this.evict("saved");
-        const { messages, info } = this.savedMessages(summary);
-        at = mark("read", at);
-        thread = new Thread(id, { kind: "saved", info, messages: this.projector.messages(messages), streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null },
-          candidate => this.childrenChanged(candidate));
-        mark("project", at);
+        thread = new Thread(id, await this.savedSnapshot(summary, false), candidate => this.childrenChanged(candidate));
+        mark("read+project", at);
         thread.sessionFile = summary.sessionFile;
       }
       const board = await this.board(id).catch(error => { process.stderr.write(`board ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); return undefined; });
@@ -577,7 +618,7 @@ export class ThreadHub {
     if (activeSessionId === undefined) throw new ThreadError(502, "Prime Agent did not resume this thread.");
     const { connection, snapshot } = await this.attaches.run(id, !ask.foreground, async () => {
       const connection = await this.attach(activeSessionId);
-      try { return { connection, snapshot: await this.liveSnapshot(connection, resumed) }; }
+      try { return { connection, snapshot: await this.liveSnapshot(connection, resumed, thread.full) }; }
       catch (error) { await connection.dispose().catch(() => {}); throw error; }
     });
     this.evict("live");
@@ -844,7 +885,7 @@ export class ThreadHub {
   private async rawMessages(id: string): Promise<AgentMessage[]> {
     const thread = await this.open(id);
     if (thread.live) return thread.live.connection.getMessages();
-    return this.savedMessages(await this.summary(id)).messages;
+    return (await this.savedMessages(await this.summary(id), thread.full)).messages;
   }
 
   async toolOutput(id: string, toolCallId: string): Promise<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }> {

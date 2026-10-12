@@ -125,6 +125,8 @@ export const api = {
   prompt: (id: string, input: { message: string; images: ImageInput[]; mode: SendMode; requestId: string }) =>
     post<{ accepted: true }>("api/threads/" + encodeURIComponent(id) + "/prompt", input, 120000),
   abort: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/abort", {}),
+  /** Reads the thread's whole session file; the thread's stream then sends a snapshot with every message. */
+  older: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/older", {}, 60000),
   unarchive: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/unarchive", {}, 60000),
   archive: (id: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/archive", {}, 60000),
   rename: (id: string, name: string) => post<{ ok: true }>("api/threads/" + encodeURIComponent(id) + "/rename", { name }),

@@ -776,6 +776,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           await slack.chat(id, input).catch(error => { throw new RequestError(400, error instanceof Error ? error.message : String(error)); });
           json(res, 200, slack.view(origin === `http://${host}`)); return;
         }
+        case "older": await backend.threads.older(id); break;
         case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;
         case "board": {
           // The owner's side of the chat board: todo and scratchpad ops. The chat then gets a steer that says in plain words what the owner did.

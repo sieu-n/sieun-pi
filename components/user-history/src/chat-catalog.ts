@@ -10,7 +10,7 @@ import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
-import type { ChatAgent, ChatBriefState, CheckInState, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
+import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, TokenRate, ChildPulse, ChildUsage, Pulse, SessionPulse, SessionRow, SessionsEvent, ThreadLabels, ThreadSchedule, Workspace } from "./shared/types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -246,6 +246,26 @@ export function subagentSessions(children: readonly SessionSummary[], tree: Read
 }
 
 /**
+ * Each chat's direct subagents as the hub's attach lists them (`projectChild`), from the daemon's own rows, so Chats knows them while no attach
+ * succeeds: an RLM child id, its session name, running, failed (`error`) or done, whether it replied since its task, and its last activity.
+ */
+export function rosterChildren(children: readonly SessionSummary[]): Map<string, ChildAgent[]> {
+  const byChat = new Map<string, ChildAgent[]>();
+  for (const [parent, rows] of childrenByParent(children)) {
+    const listed = rows.flatMap((row): ChildAgent[] => {
+      if (!row.rlmChildId) return [];
+      const name = row.sessionName?.replace(/\s+/g, " ").trim();
+      const status = nativeStatus(row) === "running" ? "running" : row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row) ? "error" : "done";
+      const at = Date.parse(row.lastActivityAt ?? row.modified ?? "");
+      return [{ id: row.rlmChildId, label: name || row.rlmChildId, ...(name ? { sessionName: name } : {}), status,
+        ...(row.repliedSinceTask === undefined ? {} : { repliedSinceTask: row.repliedSinceTask }), ...(Number.isFinite(at) ? { lastActivityAt: at } : {}) }];
+    });
+    if (listed.length) byChat.set(parent, listed);
+  }
+  return byChat;
+}
+
+/**
  * The folder whose `sub-*` folders are a session's spawned subagents: a subagent's own folder beside its session file, a top-level session's
  * `session-artifacts/<id>`. Undefined without a session file.
  */
@@ -399,7 +419,7 @@ export class Catalog {
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds">>,
+  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">>,
     private readonly origins: ThreadOrigins) {
     this.client = new DaemonClient(socketPath);
     this.client.onMessage(message => {
@@ -516,6 +536,8 @@ export class Catalog {
       this.summaries = next;
       this.childSummaries = children;
       this.listed = true;
+      const roster = rosterChildren(children);
+      void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
       this.setDaemon("up");
       await this.emit();
     })().catch(error => {

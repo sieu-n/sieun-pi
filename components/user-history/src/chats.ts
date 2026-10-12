@@ -47,6 +47,18 @@ async function spawnRecord(childDir: string): Promise<{ prompt: string; createdA
   } catch { return null; }
 }
 
+/**
+ * The daemon's rows say only whether a subagent runs. The hub's attach keeps a finished job "done" while a follow-up task runs and shows the work
+ * in `activity`, which is what `endedWithoutReport` looks for, so a job seen ended that runs again keeps its status here too.
+ */
+export function followUps(before: readonly ChildAgent[] | undefined, roster: readonly ChildAgent[]): ChildAgent[] {
+  return roster.map(child => {
+    const was = before?.find(candidate => candidate.id === child.id);
+    if (child.status !== "running" || !was || was.status === "running" || was.status === "queued") return child;
+    return { ...child, status: was.status, activity: { kind: "executing" } };
+  });
+}
+
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
 export const CHECK_IN_TICK_MS = 30_000;
 /** A check-in whose job could not start runs again after this long, not a whole interval later (`CheckInStart`). */
@@ -147,19 +159,38 @@ export class Chats {
         // A reply sent just before a restart ended its turn on the old server; an idle chat gets its check when it attaches.
         if (!this.threads.busy(id)) this.queue(id, () => this.replyCheck(id));
       },
-      children: (id, children) => {
-        const before = this.children.get(id);
-        this.children.set(id, children);
-        for (const child of children) if (childWorking(child) && !before?.some(was => was.id === child.id && childWorking(was))) this.workingSince.set(child.id, this.now());
-        if (before) for (const child of endedWithoutReport(before, children)) this.laterNoReport(id, child.id);
-        for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
-      },
+      children: (id, children) => { this.childrenChanged(id, children); },
       idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); this.queue(id, () => this.replyCheck(id)); },
     });
     const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
     if (tickMs > 0) {
       this.timer = setInterval(() => { void this.tick(); }, tickMs);
       this.timer.unref();
+    }
+  }
+
+  private childrenChanged(id: string, children: readonly ChildAgent[]): void {
+    const before = this.children.get(id);
+    this.children.set(id, children);
+    for (const child of children) if (childWorking(child) && !before?.some(was => was.id === child.id && childWorking(was))) this.workingSince.set(child.id, this.now());
+    if (before) for (const child of endedWithoutReport(before, children)) this.laterNoReport(id, child.id);
+    for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
+  }
+
+  /**
+   * Each catalog refresh: the subagents the daemon lists under each chat (`rosterChildren`) become the chat's children while the hub holds no
+   * attach of it, so the no-report notice and the check-in read them even when every attach fails (frontend bro 10-13: its worker answered
+   * no root-session request, while the daemon's list answered in 540 ms). The brief check still needs the transcript the hub holds. An attached
+   * chat keeps the hub's children.
+   */
+  async roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> {
+    await this.load();
+    for (const id of this.chatIds) {
+      if (this.threads.isLive?.(id)) continue;
+      const before = this.children.get(id);
+      const children = followUps(before, byChat.get(id) ?? []);
+      if (before && JSON.stringify(before) === JSON.stringify(children)) continue;
+      this.childrenChanged(id, children);
     }
   }
 
