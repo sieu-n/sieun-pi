@@ -346,6 +346,20 @@ export function parseSummaries(value: unknown): SessionSummary[] {
   return value.sessions.filter((row: unknown): row is SessionSummary => isRecord(row) && typeof row.sessionId === "string" && typeof row.cwd === "string");
 }
 
+/**
+ * The last full list with the daemon's live roster rows laid over it, matched by session file the way the daemon merges its own `list all`;
+ * undefined when the set of live sessions changed (a live row the full list lacks, or a row it had as live that the roster no longer has),
+ * which needs a full list again.
+ */
+export function rosterOverlay(scanned: readonly SessionSummary[], live: readonly SessionSummary[]): SessionSummary[] | undefined {
+  const key = (row: SessionSummary): string => row.sessionFile ?? `id:${row.sessionId}`;
+  const liveByKey = new Map(live.map(row => [key(row), row]));
+  const known = new Set(scanned.map(key));
+  for (const row of live) if (!known.has(key(row))) return undefined;
+  for (const row of scanned) if (row.activeSessionId !== undefined && !liveByKey.has(key(row))) return undefined;
+  return scanned.map(row => liveByKey.get(key(row)) ?? row);
+}
+
 /** How often a working agent's output rate is read again and pushed with the rows; the usage feed's own cadence. */
 export const RATES_MS = 2000;
 
@@ -378,6 +392,9 @@ export class Catalog {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private connecting: Promise<void> | undefined;
   private refreshing: Promise<void> | undefined;
+  private refreshingScope: "full" | "roster" | undefined;
+  /** The rows of the last list, the base a roster refresh lays the live rows over. */
+  private scanned: SessionSummary[] | undefined;
   private schedulesRefreshing: Promise<void> | undefined;
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
@@ -439,7 +456,7 @@ export class Catalog {
 
   private scheduleRefresh(): void {
     if (this.refreshTimer || this.closed) return;
-    this.refreshTimer = setTimeout(() => { this.refreshTimer = undefined; void this.refresh().catch(() => {}); }, 150);
+    this.refreshTimer = setTimeout(() => { this.refreshTimer = undefined; void this.refresh("roster").catch(() => {}); }, 150);
   }
 
   /** Schedules are a separate native projection: a slow worker never gates session delivery. */
@@ -471,15 +488,27 @@ export class Catalog {
     return this.schedulesRefreshing;
   }
 
-  async refresh(): Promise<void> {
-    if (this.refreshing) return this.refreshing;
+  /**
+   * Reads the daemon's sessions. A `full` refresh lists them all (`list` with `all`: every live row plus the daemon's disk scan of every saved
+   * session and its spawn ledger). A roster_update only needs the live rows, so a `roster` refresh lists the roster alone and lays it over
+   * the last full list; it falls back to a full list when a session started or stopped since then (rosterOverlay). Measured 10-12 23:30 KST:
+   * the daemon sent 116 roster_updates in 60 s, and the full list was 7.7 MB and 1,135 rows in 16.6 s while the roster list was 1.3 MB and
+   * 377 rows in 0.4 s, so a full list on every roster_update kept one disk scan running in the daemon at all times.
+   */
+  async refresh(scope: "full" | "roster" = "full"): Promise<void> {
+    if (this.refreshing) {
+      // A full refresh asked for during a roster one runs after it: its caller waits for a session the roster list may not show yet.
+      if (scope === "full" && this.refreshingScope !== "full") return this.refreshing.catch(() => {}).then(() => this.refresh("full"));
+      return this.refreshing;
+    }
+    this.refreshingScope = scope;
     this.refreshing = (async () => {
       await this.connect();
-      const response = await this.client.request({ type: "list", all: true }, 30000, { recoverable: false });
-      if (!response.success) throw new Error(response.error);
+      const rows = scope === "roster" && this.scanned ? rosterOverlay(this.scanned, await this.list(false)) ?? await this.list(true) : await this.list(true);
+      this.scanned = rows;
       const next = new Map<string, SessionSummary>();
       const children: SessionSummary[] = [];
-      for (const row of parseSummaries(response.data)) {
+      for (const row of rows) {
         if (!isTopLevel(row)) { children.push(row); continue; }
         const existing = next.get(row.sessionId);
         if (!existing || row.activeSessionId !== undefined) next.set(row.sessionId, row);
@@ -495,8 +524,14 @@ export class Catalog {
         this.scheduleReconnect();
       }
       throw error;
-    }).finally(() => { this.refreshing = undefined; });
+    }).finally(() => { this.refreshing = undefined; this.refreshingScope = undefined; });
     return this.refreshing;
+  }
+
+  private async list(all: boolean): Promise<SessionSummary[]> {
+    const response = await this.client.request(all ? { type: "list", all: true } : { type: "list" }, 30000, { recoverable: false });
+    if (!response.success) throw new Error(response.error);
+    return parseSummaries(response.data);
   }
 
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
