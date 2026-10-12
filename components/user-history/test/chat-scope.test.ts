@@ -161,6 +161,21 @@ test("scope: only a step's own text names machine work; a note that names a mach
     "notes never flag (p2 swap, p5 Mac load average, p79 the M1 Air CI queue); a step whose own text is machine work still flags (p4, p8)");
 });
 
+test("scope: the M1 Air named only as where checks run is not machine work; a cleanup or restart on the Air still flags (slack green 10-13, p113 in 3 check-ins)", () => {
+  const live: HandoffRule = { correction: "c7", to: OPS, topics: ["M1 Air", "M2 Air", "Mac load", "load average", "swap", "memory pressure", "alert bot"] };
+  const plan = board([
+    step("p113", "Owner-approved PRs merge once the M1 Air checks pass, and nothing merges without his approval of that PR", "doing", { children: [
+      step("p123", "Build: make #234's CI jobs green on the M1 Air runner (loopback tests rewritten to run in-process, never skipped; jest cache dir fixed), pushed to #234's branch", "done")] }),
+    step("p2", "Land #240 after its checks pass on the M2 Air", "todo"),
+    step("p3", "Read the m1-air probe output for the login flow", "todo"),
+    step("p101", "Clean up: delete the 7 npm debug logs on the M1 Air that hold the Vercel token in plain text, and confirm no other file on the Air holds it", "todo"),
+    step("p4", "Restart the M1 Air runner after the macOS update", "todo"),
+    step("p5", "Find why the M2 Air is slow", "todo"),
+  ]);
+  assert.deepEqual(scopeMisses(plan, [live], ["01a11b0b-7c15-73da-9481-8de15903eab4", "slack green guy"]).map(miss => `${miss.item.id} ${miss.topic}`),
+    ["p101 M1 Air", "p4 M1 Air", "p5 M2 Air"], "p113, p2 and p3 name an Air as the check host; ops guy's p101 cleanup, a runner restart and a slow Air still flag");
+});
+
 test("scope: a handoff with `with` words flags only steps that also name one of them (VP of CI 10-10, c36: a CI health check is not a local uptime check)", () => {
   const rule: HandoffRule = { correction: "c36", to: OPS, topics: ["200 check", "health check", "uptime", "local environment"],
     with: ["wiki", "5174", "Convex", "crawler API", "local environment", "frontend app", "localhost"] };

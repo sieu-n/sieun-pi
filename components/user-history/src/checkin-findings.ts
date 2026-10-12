@@ -297,6 +297,20 @@ const HANDED_OFF = /\bhanded[\s-]*(?:it\s+|this\s+)?(?:off|over)\b|\bhanded\s+to
  * but the ledger entry never got them.
  */
 const CI_WORK = /\bCI\b/;
+/**
+ * A topic named only as the place where checks run: "the M1 Air checks pass", "the M1 Air runner", "CI on the M1 Air". slack green's p113
+ * ("Owner-approved PRs merge once the M1 Air checks pass, ...") gates merges on the PR checks that run on the Air, and c7 flagged it in 3
+ * check-ins in a row (10-13). A step that also names machine work (an install, a restart, a cleanup, memory, disk or a service) keeps it.
+ */
+const RUNS_ON = "\\b(?:CI|checks?|tests?|probes?|jobs?|runs?|builds?)(?:\\s+(?:pass(?:es)?|runs?|green|queued))?\\s+on\\s+(?:the\\s+)?";
+const RUN_BY = "(?:'s)?\\s+(?:CI|PR\\s+checks?|checks?|runners?|probes?|tests?)\\b";
+const MACHINE_WORK = /\b(?:install|uninstall|restart|reboot|clean|free|kill|upgrade|disk|memory|swap|service|launchd)/i;
+/** A topic that names a machine ("M1 Air", "this Mac"), not a kind of work ("uptime" in "uptime checks" is the work). */
+const MACHINE = /\b(?:air|mac)$/i;
+const withoutCheckHosts = (text: string, topics: readonly string[]): string => MACHINE_WORK.test(text) ? text : topics.reduce((rest, topic) => {
+  const pattern = MACHINE.test(topic) ? phrasePattern(topic)?.source : undefined;
+  return pattern ? rest.replace(new RegExp(`${RUNS_ON}${pattern}|${pattern}${RUN_BY}`, "giu"), " ") : rest;
+}, text);
 /** An open plan item whose work belongs to another thread by a ledger handoff: the rule, and the topic its text or note names. */
 export interface ScopeMiss { item: PlanItem; rule: HandoffRule; topic: string }
 /**
@@ -314,7 +328,7 @@ export function scopeMisses(board: ChatBoard | null, rules: readonly HandoffRule
       for (const rule of mine) {
         // Only the step's own text says what the work is; a note names machines as context (VP of CI 10-09: p56 "CI dashboard" flagged for
         // "swap" in its note; a crawler thread 10-10: five crawler builds flagged for "runner-a", the CI runner their land queued on).
-        const topic = matchTopic(item.text, rule.topics);
+        const topic = matchTopic(withoutCheckHosts(item.text, rule.topics), rule.topics);
         if (topic === undefined) continue;
         if (rule.with?.length && matchTopic(item.text, rule.with) === undefined) continue;
         if (ci && !rule.topics.some(topic => CI_WORK.test(topic.toUpperCase()))) continue;
