@@ -382,7 +382,7 @@ export class Catalog {
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
-  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs">>,
+  constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds">>,
     private readonly origins: ThreadOrigins) {
     this.client = new DaemonClient(socketPath);
     this.client.onMessage(message => {
@@ -500,8 +500,8 @@ export class Catalog {
   }
 
   private async project(): Promise<{ rows: SessionRow[]; tags: SessionsEvent["tags"] }> {
-    const [state, labels, chats, checkIns, briefs] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null), this.chats.ids().catch(() => null),
-      this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null]);
+    const [state, labels, chats, checkIns, briefs, archivedByOwner] = await Promise.all([this.readState.snapshot().catch(() => null), this.labels.snapshot().catch(() => null),
+      this.chats.ids().catch(() => null), this.chats.checkIns().catch(() => null), this.chats.briefs?.().catch(() => null) ?? null, this.chats.archivedIds?.().catch(() => null) ?? null]);
     const originOf = await this.origins.resolver(chats ?? new Set());
     const running = runningByParent(this.childSummaries);
     const children = childrenByParent(this.childSummaries);
@@ -513,10 +513,12 @@ export class Catalog {
         const subtree = subtreeOf(row, children);
         const checkIn = checkIns?.get(row.sessionId);
         const brief = briefs?.get(row.sessionId);
-        return this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
+        const projected = this.applyHeld(row, projectRow(row, state?.sessions[row.sessionId]?.timestamp, state?.baseline ?? 0, {
           ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin: originOf(row),
           ...(chats?.has(row.sessionId) ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
           ...(isWorking(row, subtree) ? { pulse: sessionPulse(row, running) } : {}) }));
+        // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
+        return archivedByOwner?.has(row.sessionId) ? { ...projected, archived: true } : projected;
       })
       .sort((left, right) => Date.parse(right.lastActivityAt ?? right.created ?? "") - Date.parse(left.lastActivityAt ?? left.created ?? ""));
     // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.

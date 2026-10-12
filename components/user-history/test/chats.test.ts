@@ -8,7 +8,10 @@ import type { Ledger } from "../src/chat-corrections.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, briefCheckRecord, CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
   jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, REPLY_CAP_NOTE, REPLY_CHECK_MAX_AGE_MS, replyCheckRecord, TELL_OWNER_LIMIT, tellOwner, type ThreadView, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
 import { SessionManager } from "prime-agent";
-import type { Catalog } from "../src/chat-catalog.ts";
+import { Catalog } from "../src/chat-catalog.ts";
+import { ChatLabels } from "../src/chat-labels.ts";
+import { ChatReadState } from "../src/chat-read-state.ts";
+import { inSidebar } from "../src/client/organize.ts";
 import { AttachQueue, ThreadHub } from "../src/chat-threads.ts";
 import { isThreadBusy, isTurnRunning } from "../src/shared/thread-state.ts";
 import { type CheckInRun, Duties } from "../src/chat-duty-run.ts";
@@ -1020,7 +1023,7 @@ test("chats: adopt and the scheduler's scan bring back a recent unarchived threa
   chats.close();
 });
 
-test("chats: a chat the owner archived stays archived when an agent message resumes it, across a service restart; one the daemon archived still comes back", async () => {
+test("chats: a chat the owner archived may wake and answer an agent message but stays out of the chats and the sidebar, across a service restart; one the daemon archived still comes back", async t => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const marked = [{ type: "session", id: "c" }, { type: "custom", customType: "chat_mode", data: { v: 1 } }, { type: "message", id: "m" }].map(entry => JSON.stringify(entry)).join("\n") + "\n";
   const files: Record<string, string> = {};
@@ -1033,25 +1036,44 @@ test("chats: a chat the owner archived stays archived when an agent message resu
   for (const id of ["vp", "stripe"]) await index.add(id);
   const archived = new IdIndex(join(dir, "archived-chats.json"), "Archived chat index");
   const calls: string[] = [];
-  const lines: string[] = [];
   const threads = fakeThreads(calls);
   threads.archive = async (id: string) => { calls.push(`archive ${id}`); lifecycle[id] = "archived"; };
-  const serve = () => new Chats(index, threads, summary, "b1", loadRecord(join(dir, "extension-loads.json")), { ...source(dir, {}, () => now, rows), archived }, line => lines.push(line));
+  threads.unarchive = async (id: string) => { calls.push(`unarchive ${id}`); lifecycle[id] = "live"; };
+  const serve = () => new Chats(index, threads, summary, "b1", loadRecord(join(dir, "extension-loads.json")), { ...source(dir, {}, () => now, rows), archived }, () => {});
+  const sidebar = async (chats: Chats) => {
+    const reads = new ChatReadState("unused");
+    const labels = new ChatLabels("unused");
+    t.mock.method(reads, "snapshot", async () => ({ baseline: 0, sessions: {} }));
+    t.mock.method(labels, "snapshot", async () => ({ tags: [], threads: {} }));
+    const catalog = new Catalog("unused", reads, labels, chats, new ThreadOrigins({ ids: async () => [] }));
+    Object.defineProperty(catalog.client, "isConnected", { get: () => true });
+    t.mock.method(catalog.client, "reconnect", async () => {});
+    t.mock.method(catalog.client, "waitForHello", async () => ({ appVersion: "0.9.8" }));
+    t.mock.method(catalog.client, "request", async (command: { type: string }) => command.type === "list"
+      ? { success: true, data: { sessions: Object.keys(lifecycle).map(id => ({ sessionId: id, cwd: "/repo", sessionName: id, messageCount: 3, lifecycle: lifecycle[id],
+        ...(lifecycle[id] === "live" ? { activeSessionId: `a-${id}` } : {}) })) } }
+      : { success: true, data: { jobs: [] } });
+    await catalog.refresh();
+    const event = await catalog.event();
+    await catalog.close();
+    return event.sessions.filter(shown => inSidebar(shown, { archived: false, agentCreated: false })).map(shown => shown.id).sort();
+  };
   const chats = serve();
   await chats.adopt();
   await chats.archive("stripe");
   assert.deepEqual(await index.ids(), ["vp"], "the owner's archive leaves the index");
 
-  // 20:38 KST: a relayed agent message resumes the archived session; the daemon lists it unarchived again.
+  // 20:38 KST: a relayed agent message resumes the archived session; it answers, and the daemon lists it unarchived again.
   lifecycle.stripe = "live";
   calls.length = 0;
   now += 4 * 60 * 60_000;
-  await chats.tick();
+  const due = await chats.tick();
   await chats.settled();
   assert.deepEqual(await index.ids(), ["vp"], "the scan does not take it back as a chat");
-  assert.ok(calls.includes("archive stripe"), "the next wake archives it again");
-  assert.equal(lifecycle.stripe, "archived");
-  assert.match(lines.join("\n"), /chat stripe: archived again: the owner archived it and the daemon brought it back/);
+  assert.equal(due.includes("stripe"), false, "no check-in");
+  assert.deepEqual(calls.filter(call => call.includes("stripe")), [], "nothing archives, pins, steers or reloads it");
+  assert.equal(lifecycle.stripe, "live", "its session stays awake to answer");
+  assert.deepEqual(await sidebar(chats), ["vp"], "the sidebar still hides it");
   chats.close();
 
   // A forced daemon shutdown archives every live session, then the service restarts: the daemon's archive of vp is undone, the owner's is kept.
@@ -1061,17 +1083,14 @@ test("chats: a chat the owner archived stays archived when an agent message resu
   const restarted = serve();
   const adopted = await restarted.adopt();
   assert.deepEqual(adopted, { pinned: ["vp"], forgotten: [], adopted: [] });
-  assert.ok(calls.includes("unarchive vp") && calls.includes("archive stripe") && !calls.includes("unarchive stripe"));
+  assert.ok(calls.includes("unarchive vp") && !calls.includes("archive stripe") && !calls.includes("unarchive stripe"));
   assert.deepEqual(await index.ids(), ["vp"]);
+  assert.deepEqual(await sidebar(restarted), ["vp"]);
 
-  // The owner's own unarchive takes it back as a chat and ends the record, so the next wake leaves it alone.
-  lifecycle.stripe = "live";
+  // The owner's own unarchive takes it back as a chat and ends the record, so it shows again.
   assert.equal(await restarted.restore("stripe"), true);
   assert.deepEqual([await index.ids(), await archived.ids()], [["stripe", "vp"], []]);
-  calls.length = 0;
-  await restarted.tick();
-  await restarted.settled();
-  assert.equal(calls.includes("archive stripe"), false);
+  assert.deepEqual(await sidebar(restarted), ["stripe", "vp"]);
   restarted.close();
 });
 

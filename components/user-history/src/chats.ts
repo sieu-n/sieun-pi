@@ -692,7 +692,8 @@ export interface CheckInSource {
   duties?: (id: string) => Promise<readonly DutyRef[]>;
   /**
    * `<data dir>/archived-chats.json`: the chats the owner archived (`Chats.archive`), until the owner unarchives one (`Chats.restore`). The
-   * scheduler archives such a session again when something else brings it back. Absent (tests): an owner archive is not remembered.
+   * scan never takes such a chat back and its sidebar row stays archived, while its session may still wake and answer an agent message. Absent
+   * (tests): an owner archive is not remembered.
    */
   archived?: IdIndex;
   /**
@@ -870,7 +871,7 @@ export class Chats {
     await this.load();
     const pinned: string[] = [];
     const forgotten: string[] = [];
-    const archived = new Set(await this.source.archived?.ids() ?? []);
+    const archived = await this.archivedIds();
     for (const id of await this.mine(await this.index.ids())) {
       const summary = await this.summary(id).then(summary => summary ?? "missing", () => "unknown" as const);
       if (summary === "missing" || archived.has(id)) {
@@ -888,13 +889,14 @@ export class Chats {
       if (this.threads.pin(id)) pinned.push(id);
       else this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     }
-    await this.keepArchived();
     return { pinned, forgotten, adopted: await this.rescan() };
   }
 
   /**
-   * The owner's archive of a chat: the session is archived, the chat leaves the index, and the archived-chats file keeps it, so `keepArchived`
-   * archives it again when something else brings the session back.
+   * The owner's archive of a chat: the session is archived, the chat leaves the index, and the archived-chats file keeps it out of the chats and
+   * the sidebar. An agent message may resume the session later (10-12 20:38 KST: a relayed broadcast resumed "stripe and payments"); it answers
+   * as a plain hidden session, with no brief reload, check-in or duty, and nothing archives it again (owner 10-12: "the thread should be able to
+   * respond, but not be in the Chats list").
    */
   async archive(id: string): Promise<void> {
     await this.threads.archive(id);
@@ -902,26 +904,8 @@ export class Chats {
     await this.forget(id);
   }
 
-  /**
-   * Archives again each chat the owner archived that the daemon lists unarchived. An agent message to an archived session resumes it, and the
-   * scan then took it back as a chat (10-12 20:38 KST: a relayed broadcast resumed "stripe and payments", archived by the owner at 16:31).
-   * Runs at start and on every scheduler wake.
-   */
-  async keepArchived(): Promise<void> {
-    if (!this.source.archived || this.source.owned) return;
-    const archived = new Set(await this.source.archived.ids());
-    if (!archived.size) return;
-    let rows: readonly SessionRow[];
-    try { rows = await this.source.rows(); }
-    catch (error) { this.log(`chats: archived: ${error instanceof Error ? error.message : String(error)}`); return; }
-    for (const row of rows) {
-      if (!archived.has(row.id) || row.archived) continue;
-      try {
-        await this.threads.archive(row.id);
-        this.log(`chat ${row.id.slice(0, 8)}: archived again: the owner archived it and the daemon brought it back`);
-      } catch (error) { this.log(`chat ${row.id.slice(0, 8)}: archive again: ${error instanceof Error ? error.message : String(error)}`); }
-    }
-  }
+  /** The chats the owner archived, for the sidebar rows: such a row stays archived while an agent message keeps its session live. */
+  async archivedIds(): Promise<Set<string>> { return new Set(await this.source.archived?.ids() ?? []); }
 
   /**
    * Brings back chats the index lost (an unarchive outside this server, a lost index write): every recent unarchived thread whose session file
@@ -935,7 +919,7 @@ export class Chats {
     try { rows = await this.source.rows(); }
     catch (error) { this.log(`chats: scan: ${error instanceof Error ? error.message : String(error)}`); return []; }
     const adopted: string[] = [];
-    const archived = new Set(await this.source.archived?.ids() ?? []);
+    const archived = await this.archivedIds();
     for (const row of rows) {
       if (this.chatIds.has(row.id) || this.plain.has(row.id) || row.archived || archived.has(row.id)) continue;
       if (now - (Date.parse(row.lastActivityAt ?? row.created ?? "") || 0) > ADOPT_RECENT_MS) continue;
@@ -1001,7 +985,6 @@ export class Chats {
     if (woke) this.log(`chats: woke after ${Math.round((now - this.lastTick!) / 1000)} s; transient failures restart now`);
     this.lastTick = now;
     if (now - this.lastScan >= ADOPT_SCAN_MS) { this.lastScan = now; this.queue("#scan", async () => { await this.rescan(); }); }
-    this.queue("#archived", () => this.keepArchived());
     const due: string[] = [];
     const active = new Set<string>();
     for (const id of this.chatIds) {
