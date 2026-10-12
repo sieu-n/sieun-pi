@@ -104,14 +104,16 @@ export type DutyRef = Pick<Duty, "id" | "name" | "goal" | "status" | "boardGoal"
  * The active duty that runs a goal's work: the duty whose `boardGoal` is the goal, else the first whose name and goal share at least
  * FOLD_AREA_WORDS area words (`areaWords`) with the goal's text, and at least half of the goal's. On VP of CI's board p72 shares 6 of 11 with the
  * duty "Git rules" and p75 7 of 9 with "Repo design"; p10 "Staging promotes to prod on its own" shares 2 with "Git rules" and p60 4 of 9 with
- * "Repo design", and neither is that duty's work.
+ * "Repo design", and neither is that duty's work. The word match is only for a duty with no `boardGoal`: on frontend bro p102 took the open
+ * steps of d2's goal p14 after p14 folded, and folding p102 into d2 by its words would fold each new holder again.
  */
 export const FOLD_AREA_WORDS = 3;
 export function dutyFor(goal: Pick<PlanItem, "id" | "text">, duties: readonly DutyRef[]): DutyRef | undefined {
   const active = duties.filter(duty => duty.status === "active");
   const words = areaWords(goal.text);
   const shared = (duty: DutyRef) => { const other = areaWords(`${duty.name} ${duty.goal}`); return [...words].filter(word => other.has(word)).length; };
-  return active.find(duty => duty.boardGoal === goal.id) ?? active.find(duty => shared(duty) >= FOLD_AREA_WORDS && shared(duty) * 2 >= words.size);
+  return active.find(duty => duty.boardGoal === goal.id) ??
+    active.find(duty => duty.boardGoal === undefined && shared(duty) >= FOLD_AREA_WORDS && shared(duty) * 2 >= words.size);
 }
 
 /**
