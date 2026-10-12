@@ -102,6 +102,8 @@ class Thread {
   readonly listeners = new Set<Listener>();
   touched = Date.now();
   idleSince: number | null = Date.now();
+  /** When the session last sent an event, or the attach; the server's hung-turn check reads it (`quietSince`). */
+  lastEventAt = Date.now();
   private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent } | undefined;
   constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread) => void) { this.state = threadStateFromSnapshot(snapshot); }
   broadcast(event: ThreadEvent): void {
@@ -232,6 +234,13 @@ export class ThreadHub {
   running(id: string): boolean {
     const state = this.threads.get(id)?.state;
     return state ? isTurnRunning(state.info) : false;
+  }
+
+  /** When an attached thread's streaming turn last sent an event; null when no turn streams or it compacts, runs a bash or waits on a provider retry. */
+  quietSince(id: string): number | null {
+    const thread = this.threads.get(id);
+    const info = thread?.live ? thread.state.info : undefined;
+    return info && info.isStreaming && !info.isCompacting && !info.isBashRunning && !(info.retryAttempt > 0) ? thread!.lastEventAt : null;
   }
 
   /** Re-runs the session's extensions and rebuilds its tools and prompt, so a long-lived chat picks up a newer extension build. */
@@ -407,6 +416,7 @@ export class ThreadHub {
     try {
       switch (event.type) {
         case "session_event": {
+          thread.lastEventAt = Date.now();
           const projected = this.projector.event(event.event);
           if (projected) thread.coalesce(projected, UPDATE_COALESCE_MS);
           const native = event.event.type;

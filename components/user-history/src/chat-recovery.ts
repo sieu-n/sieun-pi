@@ -9,6 +9,20 @@ import type { CheckInSetting } from "./chat-checkin.ts";
  * chat itself (`agent`) stops only its check-ins, and a failed turn still gets its restart.
  */
 export const ownerPause = (setting: Pick<CheckInSetting, "pausedBy">): boolean => setting.pausedBy !== "daemon" && setting.pausedBy !== "agent";
+/**
+ * A turn that streams with no session event for this long, counted from the last event or the last wake from sleep, has hung, and the
+ * server stops it and starts a new one. Measured over every chat transcript of 10-08 to 10-12 KST: 35,490 gaps between consecutive
+ * messages inside turns that ended normally (stop), with Mac sleep (pmset) taken out. p99 was 0.71 min, per-chat p99 0.49 to 2.43 min.
+ * The longest gaps were 43.1 min (1164b, 10-12 04:27 KST) and then 9.8 min. Hangs the owner ended with Resume ran 46.5 min, 252.7 min
+ * (1180e, 10-11 22:04Z) and 97.6 awake min (11bd7, 10-11 03:22Z to 18:57Z).
+ */
+export const HUNG_TURN_MS = 45 * 60_000;
+/** Whether a streaming turn whose last session event came at `lastEventAt` has hung at `now`; a wake from sleep at `wokeAt` restarts the count. */
+export const hungTurn = (lastEventAt: number, wokeAt: number, now: number): boolean => now - Math.max(lastEventAt, wokeAt) >= HUNG_TURN_MS;
+/** The new turn the server starts after it stops a hung one. */
+export function hungMessage(since: number, now: number): string {
+  return `${CHECK_IN_PREFIX}Your turn showed no progress for ${Math.round((now - since) / 60_000)} min (since ${clockTime(since)}), so the server stopped it. Re-check the board and continue.`;
+}
 /** The queue lane of a chat's check-in: apart from the chat's own lane, where its revive runs, so a check-in that waits never holds a revive. */
 export const checkInLane = (id: string): string => `checkin:${id}`;
 

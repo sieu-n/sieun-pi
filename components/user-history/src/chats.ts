@@ -12,7 +12,7 @@ import { MERGE_RULE, MERGE_RULE_SHORT } from "./shared/chat-board.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, checkInDue, checkInPrecheck, checkInPrecheckText, CheckInRefused, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName,
   childWorking, classCounts, convergenceMisses, DEFAULT_CHECK_IN, type DutyRef, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText, jobFacts, lastJobMessages, nextCheckIn,
   noReportNotice, retryDue } from "./chat-checkin.ts";
-import { checkInLane, type ClaudeState, claudeDown, failureCause, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
+import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, messageIdNote, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { findingsList, lintOwnerReply, replyCheck, replyNotes } from "./shared/reply-lint.ts";
 import { briefCheck, briefCheckNote, ownerMessages, turnOwnerAt } from "./shared/brief-check.ts";
@@ -651,6 +651,8 @@ export interface ChatThreads {
    * reads who started the running turn and whether the last one failed, and `links` takes the board, the name and the children for the agents list.
    */
   state?(id: string): ThreadView | undefined;
+  /** When the thread's streaming turn last sent a session event; null when no turn streams (idle, compacting, a bash, a provider retry). */
+  quietSince?(id: string): number | null;
 }
 /** The parts of a thread's state the chat side reads. */
 export interface ThreadView {
@@ -758,12 +760,16 @@ export class Chats {
   private readonly revivals = new Map<string, { attempts: number; at: number }>();
   /** Chats with a revive queued and not yet run, so a chat whose queue is held gets one waiting revive, not one per wake. */
   private readonly reviving = new Set<string>();
+  /** When the server last stopped a hung turn of each chat. */
+  private readonly hungRestarts = new Map<string, number>();
   /** When each chat's current stall was first seen, for a provider retry whose failed reply the hub does not hold. */
   private readonly stallSeen = new Map<string, number>();
   /** Wakes sent per stranded step-owner thread: how many, and when the last one went. */
   private readonly ownerWakes = new Map<string, { attempts: number; at: number }>();
   /** When the scheduler last woke; a longer gap than SLEEP_GAP_MS means the Mac slept. */
   private lastTick: number | null = null;
+  /** The last wake that followed a sleep, or the service start: a hung-turn count starts there at the latest. */
+  private wokeAt: number;
   /** The subagents and create_session roots of the chats, as the last wake found them, and the wakes sent to each for a transient failure. */
   private jobThreads = new Set<string>();
   /** The jobs of the chats seen since the first look after this service started (undefined before it), and the ones known on this build. */
@@ -793,6 +799,7 @@ export class Chats {
     this.now = source.now ?? Date.now;
     this.started = this.now();
     this.lastScan = this.started;
+    this.wokeAt = this.started;
     this.unobserve = threads.observe({
       live: (id, children) => {
         this.children.set(id, children);
@@ -993,6 +1000,7 @@ export class Chats {
     const woke = wokeFromSleep(this.lastTick, now);
     if (woke) this.log(`chats: woke after ${Math.round((now - this.lastTick!) / 1000)} s; transient failures restart now`);
     this.lastTick = now;
+    if (woke) this.wokeAt = now;
     if (now - this.lastScan >= ADOPT_SCAN_MS) { this.lastScan = now; this.queue("#scan", async () => { await this.rescan(); }); }
     const due: string[] = [];
     const active = new Set<string>();
@@ -1150,8 +1158,20 @@ export class Chats {
     const state = this.threads.state?.(id);
     if (!state) return;
     const view = turnViewOf(state, this.threads.running(id));
-    if (view.running && !view.retrying) return;
     const now = this.now();
+    const quiet = this.threads.quietSince?.(id) ?? null;
+    // A restart that brought no event yet counts as one, so a daemon that does not answer gets one restart per HUNG_TURN_MS, not one per wake.
+    const from = Math.max(this.wokeAt, this.hungRestarts.get(id) ?? -Infinity);
+    if (quiet !== null && hungTurn(quiet, from, now)) {
+      const since = Math.max(quiet, from);
+      this.hungRestarts.set(id, now);
+      try {
+        await this.threads.restart(id, hungMessage(since, now), true);
+        this.log(`chat ${id.slice(0, 8)}: turn hung ${Math.round((now - since) / 60_000)} min with no session event; stopped it and started a new turn`);
+      } catch (error) { this.log(`chat ${id.slice(0, 8)}: hung turn restart: ${error instanceof Error ? error.message : String(error)}`); }
+      return;
+    }
+    if (view.running && !view.retrying) return;
     const stall = turnStall(view, now);
     if (!stall) {
       this.revivals.delete(id);
