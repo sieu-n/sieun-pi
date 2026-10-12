@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
+import { START_TIMEOUT_MS } from "../src/chat-service.ts";
 import { reapServeOnExit } from "./serve-reaper.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -39,7 +40,9 @@ async function unusedChatPort(): Promise<number> {
   return address.port;
 }
 
-test("standalone CLI converges concurrent starts, preserves its URL, and stops only its own listener", { timeout: 120000 }, async () => {
+// No whole-test timeout: the test runs about 25 CLI commands, 27 to 55 s alone at load 17 to 29 and 39.7 s in the full suite (10-13), and a
+// 120 s cap for the sum failed at load about 100 (10-12). Each command is bounded by the CLI's own start timeout, the longest wait it allows itself.
+test("standalone CLI converges concurrent starts, preserves its URL, and stops only its own listener", async () => {
   const artifacts = process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(root, "components/user-history/.test-artifacts");
   await mkdir(artifacts, { recursive: true });
   const directory = await mkdtemp(join(artifacts, "service-"));
@@ -53,7 +56,7 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
   await mkdir(home);
   const env = { ...process.env, HOME: home, PRIME_AGENT_CODING_AGENT_DIR: join(directory, "profile") };
   const run = async (command: string, extra: string[] = []) => (await execute(process.execPath,
-    [join(root, "scripts/cli.mjs"), "chat", command, "--data-dir", data, ...extra], { env, timeout: 25000 })).stdout.trim();
+    [join(root, "scripts/cli.mjs"), "chat", command, "--data-dir", data, ...extra], { env, timeout: START_TIMEOUT_MS })).stdout.trim();
   const flags = ["--port", String(port), "--socket", socket, "--no-adopt"];
   try {
     const urls = await Promise.all([run("start", flags), run("start", flags)]);
@@ -190,7 +193,7 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-test("a failed or hung chat start leaves no serve behind, and chat stop ends a serve that never answered", { timeout: 400000 }, async () => {
+test("a failed or hung chat start leaves no serve behind, and chat stop ends a serve that never answered", async () => {
   const artifacts = process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(root, "components/user-history/.test-artifacts");
   await mkdir(artifacts, { recursive: true });
   const directory = await mkdtemp(join(artifacts, "service-silent-"));

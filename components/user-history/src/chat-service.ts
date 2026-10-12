@@ -227,9 +227,10 @@ async function terminate(pid: number): Promise<void> {
 }
 const exited = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null;
 /** The start timeout, 60 s. SIEUN_PI_CHAT_START_TIMEOUT_MS shortens it for one process (the failed-start test uses it). */
+export const START_TIMEOUT_MS = 60_000;
 function startTimeoutMs(): number {
   const value = Number(process.env.SIEUN_PI_CHAT_START_TIMEOUT_MS);
-  return Number.isSafeInteger(value) && value > 0 ? value : 60_000;
+  return Number.isSafeInteger(value) && value > 0 ? value : START_TIMEOUT_MS;
 }
 const adoptFlag = (options: Options): string[] => options.adopt === "own" ? ["--no-adopt"] : options.adopt === "live" ? ["--adopt-live"] : [];
 const withPhone = (service: Service, record: Instance): Instance & { phoneUrl: string | null } => ({ ...record, phoneUrl: phoneUrl(service) });
