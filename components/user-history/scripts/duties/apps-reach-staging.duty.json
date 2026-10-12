@@ -1,0 +1,48 @@
+{
+  "name": "Apps reach staging",
+  "ownerWords": "and by the way the ultimate goal is to get an accepted version of each app in the prospects view.\n\nwhat should i review? report status (in 0%-100%) of each tab\n\nonly move things to 5174 when i say 5180 is good enough.",
+  "goal": "Each of the 6 Prospect apps on 5180 (Home, Inbox, Watchlist, Email, Creators, Connections) has an owner pick in the Staging line. An app with no pick never waits over 48 h for a new set to review, and the virev-demo unit and typecheck steps pass on sieun/dev. Each run tells the owner the 0 to 100% status of each tab.",
+  "metrics": [
+    {
+      "key": "apps_picked",
+      "label": "Prospect apps whose Staging pointer is an owner pick, not shipped",
+      "op": ">=",
+      "target": 6,
+      "unit": " apps"
+    },
+    {
+      "key": "review_wait_max_h",
+      "label": "Longest wait of an app with no pick for a new review todo",
+      "op": "<=",
+      "target": 48,
+      "unit": " h"
+    },
+    {
+      "key": "demo_ci_ok",
+      "label": "Last sieun/dev verify-dev run passed virev-demo unit and typecheck",
+      "op": ">=",
+      "target": 1
+    },
+    {
+      "key": "source_errors",
+      "label": "Sources this check could not read",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "09:30"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/apps-reach-staging.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Read the flagged items. Post one short chat line with a 0 to 100% status per tab, each with what done means and what is missing (c58). demo_ci_ok 0: fix the virev-demo test or type error first. For each no_pick app whose open steps show no live job, start one variant set job built against the canonical flows (apps/llm-wiki/content/sessions/2026/10/10/1716-canonical-flows-storyboards), using the frontend design skill, about 70% building and 30% visual checks, no mobile or accessibility passes on mocks. When a set is built and checked in a desktop browser, put one For you todo for that app with links and screenshots inline. Never write picks into lines/staging.json; the owner picks with Put in line. Fixes are one commit on the local sieun/dev tip under the VP of CI git rules. Never deploy to staging or prod, never move anything to 5174 or the real app, and never ask the owner to (c40).",
+  "boardGoal": "p14"
+}
