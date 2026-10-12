@@ -5,7 +5,7 @@ import { REPEAT_HEAD, repeatLines } from "./checkin-repeats.ts";
 export { finishedOpen, looksDone };
 import { CHECK_IN_DUTY_ID, type Duty, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { areaWords, BOARD_LIMITS, buildGoal, isBuildStep, linksStep, mergeStep, needsGo, openGoals, planJob, prNumbers, stepGo, walkItems, requirementGaps, targetState, targetText, type TargetState } from "./shared/chat-board.ts";
+import { areaWords, BOARD_LIMITS, buildGoal, goWaitText, isBuildStep, linksStep, mergeStep, needsGo, openGoals, planJob, prNumbers, stepGo, stepGoWait, walkItems, requirementGaps, targetState, targetText, type TargetState } from "./shared/chat-board.ts";
 import { CHAT_CHECK_IN_LINE } from "./shared/chat-feed.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type BoardOp, type ChatBoard, type CheckInPause, type ChildAgent, type GoalTarget, type OwnerTodo, type PlanItem, type PlanStatus, type SessionRow, type StopReason,
   type ThreadMessage } from "./shared/types.ts";
@@ -695,6 +695,8 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     if (!isOpen || openBelow) return isOpen || openBelow;
     views.push(stepView(item, memo.at, self, facts, openTodos, context.rows ?? [], now, active));
     if (waitsOnOwner(item) && parkedBy(item, active) === undefined && !todoForStep(item, openTodos) && !todoForStep(item, answeredTodos)) notes.push(`${item.id} ${quote(item.text)} waits on the owner but For you has no question for it`);
+    const leave = stepGoWait(item);
+    if (leave) notes.push(`${item.id} ${quote(item.text)} ${goWaitText(leave)}, a wait nobody needs (c47): take the action now and clear the waitFor`);
     return true;
   };
   if (!context.boardError) for (const item of board?.plan ?? []) visit(item);

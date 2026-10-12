@@ -1,4 +1,4 @@
-import { BOARD_PREFIX } from "./chat-board.ts";
+import { BOARD_PREFIX, GO_WAIT_FIX, goWait, goWaitText, type GoWait } from "./chat-board.ts";
 import { BRIEF_CHECK_PREFIX, OWNER_RETRY_MARK, serverNote, turnAt } from "./chat-feed.ts";
 import { INVENTED_GATE_FIX, inventedGates, type InventedGate } from "./invented-gates.ts";
 import { ownerMessage } from "./reply-lint.ts";
@@ -10,7 +10,8 @@ import type { ThreadMessage } from "./types.ts";
  * owner messages that started the job, quoted exactly, or `Owner's words: none, started by <who>`, and it carries a `Split:` line. The job
  * brief audit (10-12) found 34 of 88 briefs reusing an old goal quote, 5 calling ledger text the owner's words, and only 25% of jobs whose
  * brief did not mention subagents spawning one. The chat server steers a `[brief check]` after a spawn whose brief fails. A brief that, from its
- * Split line on, sets a gate with no cause and no owner rule behind it fails too (`inventedGates`, c47).
+ * Split line on, sets a gate with no cause and no owner rule behind it fails too (`inventedGates`, c47), and so does one that has the job wait for
+ * another thread's go, word or slot, or for the owner's ok on a push or a staging land (`goWait`, c47).
  */
 
 /** A message the owner typed in the chat: its text and its time (ms). */
@@ -21,7 +22,8 @@ export type BriefFinding =
   | { kind: "old-message"; quoted: OwnerMessage }
   | { kind: "none-but-owner-turn"; owner: OwnerMessage }
   | { kind: "no-split" }
-  | { kind: "invented-gate"; gates: InventedGate[] };
+  | { kind: "invented-gate"; gates: InventedGate[] }
+  | { kind: "waits-for-leave"; wait: GoWait };
 /**
  * `turnOwner` is the owner message that started the turn the chat spawned the job on, null when a check-in, a job notice, another agent or a
  * board action started it. `previousSpawnAt` is when the chat last spawned a job before this one, null for its first.
@@ -88,6 +90,8 @@ export function briefCheck(input: BriefInput): BriefFinding[] {
   const task = split ? input.brief.slice(split.index) : input.brief;
   const gates = inventedGates(task);
   if (gates.length) findings.push({ kind: "invented-gate", gates });
+  const wait = goWait(task);
+  if (wait) findings.push({ kind: "waits-for-leave", wait });
   return findings;
 }
 
@@ -100,6 +104,7 @@ export function briefFindingLine(finding: BriefFinding): string {
     case "none-but-owner-turn": return `- It says no owner message started the job, but the owner's message "${opening(finding.owner.text)}" started this turn. Send the job that message word for word.`;
     case "no-split": return "- No `Split:` line. Send the job which subagents it spawns, one per unit of output, or why it stays inline (1 to 3 tool calls).";
     case "invented-gate": return `- It sets a gate nobody asked for: ${finding.gates.map(gate => `"${gate.phrase}"`).join(", ")}. ${INVENTED_GATE_FIX}`;
+    case "waits-for-leave": return `- It has the job wait: it ${goWaitText(finding.wait)}. ${GO_WAIT_FIX} Tell the job to take that action itself.`;
   }
 }
 
@@ -107,7 +112,7 @@ export function briefFindingLine(finding: BriefFinding): string {
 export function briefCheckNote(job: string, findings: readonly BriefFinding[]): string {
   return `${BRIEF_CHECK_PREFIX}Your brief for [${job}](job:${job}) breaks the Jobs rule:\n${findings.map(briefFindingLine).join("\n")}\n` +
     `Fix it in the job, not with a new job: \`await agent_message.send(text, receiver_role="child", receiver_name="${job}")\` with the owner's exact ` +
-    "words or the Split line. Write your next brief by the Jobs rule.";
+    "words, the Split line or the action it takes without waiting. Write your next brief by the Jobs rule.";
 }
 
 /** The messages the owner typed in a chat, oldest first: no server notes and no board actions. */

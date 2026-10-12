@@ -350,7 +350,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
   const done = (next: Partial<ChatBoard>, summary: string) => {
     // A board that already holds more open goals than the limit (from before it) may keep them, but no change adds one.
     if (next.plan && openGoals(next.plan).length > Math.max(BOARD_LIMITS.openGoals, openGoals(board.plan).length)) invalid(GOAL_LIMIT_ERROR);
-    if (actor === "agent" && next.plan) { checkGates(board, next.plan); next = { ...next, plan: markMerges(next.plan) }; }
+    if (actor === "agent" && next.plan) { checkGates(board, next.plan); checkGoWaits(board, next.plan); next = { ...next, plan: markMerges(next.plan) }; }
     return { board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: voice(summary) };
   };
   const unknown = (what: string, missing: string): never => { throw new BoardError("unknown", `No ${what} ${missing} on the board. Read it again with no ops.`); };
@@ -486,6 +486,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (actor === "agent" && op.step !== undefined && !find(board.plan, op.step)) unknown("plan item", op.step);
       const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), ...(op.step ? { step: op.step } : {}), from: actor, at: now };
       if (actor === "agent" && placeholderTodo(todo)) invalid(PLACEHOLDER_TODO_ERROR);
+      if (actor === "agent" && leaveAsk(todo)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
       return done({ todos: [...board.todos, todo] },
         `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}${todo.step ? ` for ${todo.step}` : ""}${todo.choices ? ` with choices ${todo.choices.map(quote).join(" / ")}` : ""}`);
     }
@@ -500,6 +501,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (op.text !== undefined && op.text !== todo.text) {
         next.text = op.text;
         if (actor === "agent" && placeholderTodo(next)) invalid(PLACEHOLDER_TODO_ERROR);
+        if (actor === "agent" && leaveAsk(next)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
         parts.push(`renamed ${quote(todo.text)} to ${quote(op.text)}`);
       }
       // The first part names the todo, later parts say "it".
@@ -668,6 +670,81 @@ const STAGING = /\bstaging\b|\bsieun\/dev\b|\bdev\s+branch\b/i;
 const LAND = /\bland(?:s|ed)?\b/i;
 /** Whether a step's only target is staging, so it never needs the owner's go. */
 export const stagingOnly = (text: string): boolean => !PRODUCTION.test(text) && (STAGING.test(text) || (LAND.test(text) && !prNumbers(text).length));
+/*
+ * Waiting for leave (c47, repeated by the owner 10-12: "NEVER wait for something, or ask for my permission to push to Github etc.", then
+ * "especially staging"). That day VP of CI held built ci/ pushes for Fable's "ON STAGING" word, and steps across 8 boards waited for "Fable's go
+ * for our slot", "Crawler VP's GO line" or "push fifth in line". A step or brief whose next action waits on another thread's go, word or slot,
+ * or on the owner's ok for a push, a staging land or a ci/ push, is a wait nobody needs. Production (prod, promote, main, master, a PR merge)
+ * keeps the owner's go (c49) and is left out, and so is a sentence that states the rule ("never ask", "without waiting").
+ */
+export type GoWait = { kind: "thread" | "owner"; phrase: string };
+const RULE_SENTENCE = /\b(?:never|nothing|without|don['\u2019]?t|do\s+not|does\s+not|no\s+need|needs?\s+no|stop\s+waiting|instead\s+of\s+waiting|flags?|refuses?)\b/i;
+const WAIT_CUE = /\b(?:wait(?:s|ed|ing)?|until|till|after|once|hold(?:s|ing)?|held|pending|blocked\s+on|at|asks?|asking|confirm)\b/i;
+const OWNER_GO = new RegExp([
+  String.raw`(?<!(?:release|thread|code|repo)\s)\b(?:the\s+owner|owner|sieun|your|his)(?:['\u2019]s)?\s+(?:explicit\s+|final\s+)?(?:go(?![-\w])|ok(?:ay)?\b|approval|confirmation|sign-?off|green\s+light|permission|say-?so)`,
+  String.raw`(?<!(?:release|thread|code|repo)\s)\b(?:owner|sieun)\s+(?:approves|oks|okays|confirms|says\s+go)\b`,
+  String.raw`\bask(?:s|ing)?\s+(?:the\s+owner|sieun|him)\s+(?:for|to|before|whether|if)\b`,
+].join("|"), "i");
+const THREAD_GO = new RegExp([
+  String.raw`\b(?!(?:owner|sieun|today|tomorrow|tonight)['\u2019]s)[\w-]+['\u2019]s\s+(?:[^\s.;,()]+\s+){0,5}?(?:go(?![-\w])|go\s+line|word|ok(?:ay)?\b|ack|nod|green\s+light|say-?so|sign-?off|approval|slots?\b)`,
+  String.raw`\bin\s+[\w-]+['\u2019]s\s+order\b|\b(?:our|its|their|the\s+next)\s+slot\b|\bslot\s+\d+\b`,
+  String.raw`\b(?:next|first|second|third|fourth|fifth|sixth|\d+(?:st|nd|rd|th))\s+in\s+line\b`,
+  String.raw`\bon\s+staging['"\u2019]?\s+(?:word|call|signal|line)\b`,
+].join("|"), "i");
+/** "metal GO about 14:00Z", "g-jev2 OKs": capitals only, so the verb "go" and a plain "ok" stay out. */
+const CAPS_GO = /\bGO\b|\bOKs?\b(?!['\u2019]d)/;
+const GIT_MOVE = /\bpush|\bland(?:s|ed|ing)?\b|\bmerg|\bstaging\b|\bci\/|\bgithub\b|\bsieun\/dev\b|\bdeploy/i;
+/** A step whose own action is a push, land, merge or deploy, so an owner's go in its waitFor is a go on that move. */
+const GIT_STEP = /\b(?:push|land|merg|deploy)\w*\b/i;
+/**
+ * A PR merge ("merge #233", "the PR is merged", a merge that names no staging branch), a public release (a web store, publish) or an outside
+ * send (an email, c37).
+ */
+const KEEPS_OWNER_OK = /\b(?:e-?mails?|web\s+store|publish(?:es|ed|ing)?)\b/i;
+const PR_MERGE = (text: string): boolean => /\bmerg/i.test(text) && (/\b(?:PRs?|pull\s+requests?)\b/i.test(text) || prNumbers(text).length > 0 || !STAGING.test(text));
+/** Whether a text names production, a PR merge, a public release or an outside send: what keeps the owner's go (c49, c37). */
+export const namesProduction = (text: string): boolean =>
+  PRODUCTION.test(text) || (mergeStep(text) && !stagingOnly(text)) || PR_MERGE(text) || KEEPS_OWNER_OK.test(text);
+/**
+ * The first wait for leave in a text, sentence by sentence. `cued`: the text is a wait already (a step's waitFor), so no wait word is needed.
+ * `scope`: the step the wait holds (its text and waitFor). An owner's ok counts when its sentence names a push, land, merge, staging or
+ * deploy, or the step's own text does.
+ */
+export function goWait(text: string, { cued = false, scope }: { cued?: boolean; scope?: string } = {}): GoWait | null {
+  for (const sentence of text.split(/(?<=[.!?;])\s+|\n+/)) {
+    if (RULE_SENTENCE.test(sentence) || namesProduction(scope ?? sentence) || (!cued && !WAIT_CUE.test(sentence))) continue;
+    const owner = OWNER_GO.exec(sentence);
+    if (owner && (GIT_MOVE.test(sentence) || (scope !== undefined && GIT_STEP.test(scope)))) return { kind: "owner", phrase: owner[0] };
+    const thread = THREAD_GO.exec(sentence) ?? CAPS_GO.exec(sentence);
+    if (thread) return { kind: "thread", phrase: thread[0] };
+  }
+  return null;
+}
+/** A plan step's wait for leave: in its waitFor, or in its text with a wait word. A production step is left out. */
+export function stepGoWait(item: Pick<PlanItem, "text" | "waitFor">): GoWait | null {
+  const scope = `${item.text}\n${item.waitFor ?? ""}`;
+  if (namesProduction(scope)) return null;
+  return (item.waitFor ? goWait(item.waitFor, { cued: true, scope }) : null) ?? goWait(item.text, { scope });
+}
+/** The fix for a wait for leave, said the same way by the board refusal, the check-in and the brief check. */
+export const GO_WAIT_FIX = "Staging, sieun/dev, ci/ and other GitHub pushes and staging lands need nobody's go or word (c47, c50; the owner 10-12: " +
+  "\"NEVER wait for something, or ask for my permission to push to Github etc.\"). Do the next action now: push or land it yourself, and if a land " +
+  "is busy, push to a ci/ ref and go on. Only production (prod, promote, main, master, a PR merge) keeps the owner's go (c49).";
+export const goWaitText = (wait: GoWait): string =>
+  `waits for ${wait.kind === "owner" ? "the owner's ok on a push or a staging land" : "another thread's go, word or slot"} (${quote(wait.phrase)})`;
+/** A todo sentence that asks for leave: "Go on staging ...?", "Approve the next staging release?", "Can we push ...?". */
+const LEAVE_ASK = /^\s*(?:go(?:\s+ahead)?|approve|ship|push|land|deploy|merge|ok(?:ay)?|(?:can|may|should)\s+(?:i|we))\b/i;
+const LEAVE_MOVE = /\bpush(?:es|ed|ing)?\b|\bci\/|\bstaging\b|\bsieun\/dev\b|\bland\s+(?:\d+\w*|it|them|this|that)\b/i;
+/**
+ * Whether an agent's todo asks the owner for leave he never needs to give (c47, c50): it offers a go choice, and a question that asks for a go
+ * names a push, a staging land, a ci/ push or another thread's go or slot and no production target. A todo about a PR merge, a public release
+ * or an outside send keeps its ask (c49, c37).
+ */
+export const leaveAsk = (todo: Pick<OwnerTodo, "text" | "choices">): boolean =>
+  !!todo.choices?.some(choice => APPROVE.test(choice)) && !PR_MERGE(todo.text) && !KEEPS_OWNER_OK.test(todo.text) &&
+  todo.text.split(/(?<=[.!?;])\s+|\n+/).some(sentence => sentence.trim().endsWith("?") && LEAVE_ASK.test(sentence) && !namesProduction(sentence) &&
+    (LEAVE_MOVE.test(sentence) || THREAD_GO.test(sentence)));
+export const LEAVE_ASK_ERROR = `This todo asks the owner for leave on a non-production move. ${GO_WAIT_FIX} Do it, and tell the owner what shipped in a chat message.`;
 /** Whether a step needs the owner's go: the chat marked it, or it is a merge step, and its target is not staging only. */
 export const needsGo = (item: Pick<PlanItem, "go" | "text">): boolean => (item.go === "needed" || mergeStep(item.text)) && !stagingOnly(item.text);
 /**
@@ -763,6 +840,18 @@ function checkWaitPushes(before: ChatBoard, plan: readonly PlanItem[]): void {
       "this run: check whether what it waits for already happened, do its next action yourself, or start a job that removes the blocker. If only the " +
       `owner can unblock it, add a For you todo with step "${item.id}" first. If nothing you can do moves it, clear waitUntil with null, mark it ` +
       "blocked and name the blocker in its note.");
+  });
+}
+/** The agent's plan change against waits for leave (c47): an open step whose text or waitFor is new or changed and waits on someone's go (`stepGoWait`). */
+function checkGoWaits(before: ChatBoard, plan: readonly PlanItem[]): void {
+  const was = new Map<string, PlanItem>();
+  walk(before.plan, item => was.set(item.id, item));
+  walk(plan, item => {
+    const prior = was.get(item.id);
+    if (!OPEN_STATUSES.has(item.status) || (prior && prior.text === item.text && prior.waitFor === item.waitFor)) return;
+    const wait = stepGoWait(item);
+    if (wait) throw new BoardError("forbidden", `${item.id} ${quote(item.text)} ${goWaitText(wait)}. ${GO_WAIT_FIX} Set the step to that action, and give it a waitFor ` +
+      "only for a real event the action needs, like a run's result.");
   });
 }
 /** The gate fields that are set, for a stored plan item. */
