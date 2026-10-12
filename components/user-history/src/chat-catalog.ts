@@ -384,6 +384,18 @@ export function rosterOverlay(scanned: readonly SessionSummary[], live: readonly
 /** How often a working agent's output rate is read again and pushed with the rows; the usage feed's own cadence. */
 export const RATES_MS = 2000;
 
+/** How long a refresh waits for a session list: the SDK's default request deadline, which every list used before p349. */
+const LIST_WAIT_MS = 30000;
+/** The SDK arms a timer on every request, and setTimeout runs a delay above 2^31 - 1 ms at once, so this is the longest wait it takes. */
+const NO_DEADLINE_MS = 2 ** 31 - 1;
+
+/** The promise's result, or a rejection after `ms`; the promise itself keeps running. */
+function waitFor<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms waiting for the Prime Agent daemon response to "list"; the list keeps running and the next refresh waits on it.`)), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
 export class Catalog {
   readonly client: DaemonClient;
   /** Output rates by session id, from the usage service once the backend wires it; the default answers with none. */
@@ -414,6 +426,7 @@ export class Catalog {
   private connecting: Promise<void> | undefined;
   private refreshing: Promise<void> | undefined;
   private refreshingScope: "full" | "roster" | undefined;
+  private fullList: Promise<void> | undefined;
   /** The rows of the last list, the base a roster refresh lays the live rows over. */
   private scanned: SessionSummary[] | undefined;
   private schedulesRefreshing: Promise<void> | undefined;
@@ -525,22 +538,9 @@ export class Catalog {
     this.refreshingScope = scope;
     this.refreshing = (async () => {
       await this.connect();
-      const rows = scope === "roster" && this.scanned ? rosterOverlay(this.scanned, await this.list(false)) ?? await this.list(true) : await this.list(true);
-      this.scanned = rows;
-      const next = new Map<string, SessionSummary>();
-      const children: SessionSummary[] = [];
-      for (const row of rows) {
-        if (!isTopLevel(row)) { children.push(row); continue; }
-        const existing = next.get(row.sessionId);
-        if (!existing || row.activeSessionId !== undefined) next.set(row.sessionId, row);
-      }
-      this.summaries = next;
-      this.childSummaries = children;
-      this.listed = true;
-      const roster = rosterChildren(children);
-      void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
-      this.setDaemon("up");
-      await this.emit();
+      const overlaid = scope === "roster" && this.scanned ? rosterOverlay(this.scanned, await this.list(false, LIST_WAIT_MS)) : undefined;
+      if (overlaid) await this.apply(overlaid);
+      else await waitFor(this.listAll(), LIST_WAIT_MS);
     })().catch(error => {
       if (!this.closed) {
         this.setDaemon("down", error instanceof Error ? error.message : String(error));
@@ -551,8 +551,47 @@ export class Catalog {
     return this.refreshing;
   }
 
-  private async list(all: boolean): Promise<SessionSummary[]> {
-    const response = await this.client.request(all ? { type: "list", all: true } : { type: "list" }, 30000, { recoverable: false });
+  /**
+   * The one full list in flight. A refresh waits on it for LIST_WAIT_MS and then gives up, but the list keeps running: the next refresh waits
+   * on the same list, and its rows land when it answers. Measured 10-13 02:33 KST at load 40: the full list was 8.9 MB with no answer after
+   * 120 s, and each refresh that gave up at 30 s sent a new one, so a new disk scan started in the daemon about every 32 s and every late
+   * answer was dropped.
+   */
+  private listAll(): Promise<void> {
+    if (this.fullList) return this.fullList;
+    const started = Date.now();
+    const seconds = () => ((Date.now() - started) / 1000).toFixed(1);
+    this.fullList = this.list(true, NO_DEADLINE_MS).then(rows => {
+      process.stderr.write(`catalog: full list answered in ${seconds()} s, ${rows.length} rows\n`);
+      return this.apply(rows);
+    }, error => {
+      if (!this.closed) process.stderr.write(`catalog: full list failed after ${seconds()} s: ${error instanceof Error ? error.message : String(error)}\n`);
+      throw error;
+    }).finally(() => { this.fullList = undefined; });
+    return this.fullList;
+  }
+
+  private async apply(rows: SessionSummary[]): Promise<void> {
+    if (this.closed) return;
+    this.scanned = rows;
+    const next = new Map<string, SessionSummary>();
+    const children: SessionSummary[] = [];
+    for (const row of rows) {
+      if (!isTopLevel(row)) { children.push(row); continue; }
+      const existing = next.get(row.sessionId);
+      if (!existing || row.activeSessionId !== undefined) next.set(row.sessionId, row);
+    }
+    this.summaries = next;
+    this.childSummaries = children;
+    this.listed = true;
+    const roster = rosterChildren(children);
+    void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
+    this.setDaemon("up");
+    await this.emit();
+  }
+
+  private async list(all: boolean, timeoutMs: number): Promise<SessionSummary[]> {
+    const response = await this.client.request(all ? { type: "list", all: true } : { type: "list" }, timeoutMs, { recoverable: false });
     if (!response.success) throw new Error(response.error);
     return parseSummaries(response.data);
   }
