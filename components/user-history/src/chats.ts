@@ -690,7 +690,7 @@ export interface CheckInSource {
    * one check-in job with the precheck as context. Absent (tests): the precheck runs and nothing starts.
    */
   duty?: { checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart | void> };
-  /** The chat's duties (`<data dir>/duties/<chat>.json`), for the goals they run (`goalsToFold`). Absent: no goal folds by a duty. */
+  /** The chat's duties (`<data dir>/duties/<chat>.json`), for the goals they run (`goalsToFold`) and a chat with goals and no duty (`goalsWithoutDuty`). Absent: neither is counted. */
   duties?: (id: string) => Promise<readonly DutyRef[]>;
   /**
    * `<data dir>/archived-chats.json`: the chats the owner archived (`Chats.archive`), until the owner unarchives one (`Chats.restore`). The
@@ -1296,11 +1296,11 @@ export class Chats {
       const at = this.now();
       const self = name ? [id, name] : [id];
       const everyMs = (await this.source.settings.get(id)).everyMs;
-      const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
+      const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
       const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
       const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
       const precheck = checkInPrecheck(await this.source.memory.get(id), facts, board, at,
-        { self, rows, ...await this.ledger(id), everyMs, duties, jobs, heartbeats, ...(boardError !== undefined ? { boardError } : {}) });
+        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, ...(boardError !== undefined ? { boardError } : {}) });
       await this.source.memory.set(id, precheck.memory);
       const output = convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at);
       const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps), findings: checkInPrecheckText(precheck, facts, output.flagged, at) });

@@ -289,5 +289,7 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
     { key: "goals_to_fold", label: "Open goals whose work runs as a duty or rides other goals' jobs", op: "<=", target: 0 },
     { key: "one_session_load", label: "Goals with more than 3 (or over half) of their open steps on one other session", op: "<=", target: 0 },
     { key: "redundant_heartbeats", label: "Active chat heartbeats whose work the check-in already does", op: "<=", target: 0 },
+    // Target 0: the duty proposals review of 10-12 found 5 chats with open goals and no duty, and nothing flagged them.
+    { key: "goals_without_duty", label: "Open goals while the chat has no active duty", op: "<=", target: 0 },
   ],
 };

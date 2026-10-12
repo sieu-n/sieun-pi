@@ -198,6 +198,12 @@
       "target": 0
     },
     {
+      "key": "goals_without_duty",
+      "label": "Chats with open goals and no active duty",
+      "op": "<=",
+      "target": 0
+    },
+    {
       "key": "no_progress",
       "label": "Chats with nothing done in the last hour and steps not blocked",
       "op": "<=",

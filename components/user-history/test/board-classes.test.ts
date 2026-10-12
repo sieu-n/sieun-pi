@@ -7,6 +7,8 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { classesReport, boardClasses, parseLooseJson, type DaemonSession } from "../scripts/duties/board-classes.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
+import { DutyStore } from "../src/chat-duty-store.ts";
+import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const run = promisify(execFile);
@@ -50,9 +52,9 @@ test("board classes: one class per open leaf step, and the convergence misses", 
   assert.deepEqual(chat!.steps.map(view => `${view.item.id} ${view.cls}`), ["p2 orphan", "p3 due", "p4 stale-chase", "p5 orphan", "p6 foryou", "p7 live"]);
   assert.deepEqual(chat!.misses, { orphan_steps: 2, due_late: 1, stale_chase_24h: 1, job_end_unrecorded: 1, job_end_silent: 0, scope_misses: 0, idle_goals: 0, stalled_steps: 2, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 1,
     finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
-    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0 });
+    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 1 });
   assert.deepEqual(chat!.flagged.map(slice => `${slice.kind} ${slice.item}`), ["orphan_steps p2", "due_late p3", "stale_chase_24h p4", "orphan_steps p5", "job_end_unrecorded p5",
-    "stalled_steps p3", "stalled_steps p4", "blocked_on_others p4"],
+    "stalled_steps p3", "stalled_steps p4", "blocked_on_others p4", "goals_without_duty p1"],
     "each flagged slice names its step, for the after-turn recheck");
   const report = classesReport([chat!], NOW);
   assert.match(report, /c1 dev VP.: live 1, foryou 1, waiting 0, due 1, stale-chase 1, orphan 2, parked 0 \(open 6\); duty: orphan_steps 2, due_late 1, stale_chase_24h 1, job_end_unrecorded 1, job_end_silent 0, scope_misses 0/);
@@ -77,7 +79,7 @@ test("board classes: a step whose job the server told as a bad end with no repor
   const [chat] = await boardClasses({ dataDir: dir, now: NOW, sessions: () => parsed.sessions });
   assert.deepEqual(chat!.misses, { orphan_steps: 2, due_late: 1, stale_chase_24h: 1, job_end_unrecorded: 0, job_end_silent: 1, scope_misses: 0, idle_goals: 0, stalled_steps: 2, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 1,
     finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
-    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0 });
+    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 1 });
   assert.deepEqual(chat!.flagged.filter(slice => slice.kind.startsWith("job_end")).map(slice => `${slice.kind}: ${slice.excerpt}`),
     ['job_end_silent: p5 "Fix the dates": job dates fix stopped on a provider error 60 min ago with no report and the step has not changed since']);
   await checkInRecord(join(dir, "check-ins.json")).told("c1", "sub-1", { at: NOW - 3 * HOUR, cause: "aborted" });
@@ -114,4 +116,31 @@ test("board classes: a job whose own turn ended while its subagent works is live
   assert.equal(chat!.misses.orphan_steps, 1);
   const [archived] = await boardClasses({ dataDir: dir, now: NOW, sessions: () => [...parsed.sessions, { ...grandchild, lifecycle: "archived" }] });
   assert.equal(archived!.steps.find(view => view.item.id === "p5")!.cls, "orphan", "an archived subagent holds nothing");
+});
+
+test("board classes: a chat with an open goal and no active duty counts once in goals_without_duty; the built-in check-in is no duty (duty proposals 10-12)", async () => {
+  const { dir, sessions } = await fixture();
+  const parsed = parseLooseJson(await readFile(sessions, "utf8")) as { sessions: DaemonSession[] };
+  const classes = async () => (await boardClasses({ dataDir: dir, now: NOW, sessions: () => parsed.sessions }))[0]!;
+  const store = new DutyStore(dir);
+  await store.updateFile("c1", state => { state.checkIn = { createdAt: NOW - HOUR, runCount: 4 }; });
+  const none = await classes();
+  assert.equal(none.misses.goals_without_duty, 1, "c1 has the open goal p1, and its check-in runs are no duty");
+  assert.deepEqual(none.flagged.filter(slice => slice.kind === "goals_without_duty").map(slice => [slice.chat, slice.item, slice.excerpt]),
+    [["c1", "p1", '1 open goal (p1 "Goal") and no active duty: draft a duty for the chat\'s standing work (the owner\'s words, a goal, metrics and a ' +
+      "precheck) and ask the owner on For you whether to add it, unless For you already asks"]]);
+  assert.match(classesReport([none], NOW), /\n  no duty: 1 open goal \(p1 "Goal"\)/);
+  const duty = parseDutyInput({ name: "Dev loop", ownerWords: "keep the dev loop green", goal: "The dev loop stays green.", onMiss: "Fix it.",
+    metrics: [{ key: "red_runs", label: "Red runs", op: "<=", target: 0 }], schedule: { kind: "daily", at: "09:00" }, precheck: { command: ["true"], cwd: "/" } }, "d1", NOW);
+  await store.update("c1", duties => { duties.push({ ...duty, status: "paused" }); });
+  assert.equal((await classes()).misses.goals_without_duty, 1, "a paused duty runs nothing");
+  await store.update("c1", duties => { duties[0]!.status = "active"; });
+  const covered = await classes();
+  assert.equal(covered.misses.goals_without_duty, 0, "an active duty clears it");
+  assert.equal(covered.flagged.filter(slice => slice.kind === "goals_without_duty").length, 0);
+  await store.update("c1", duties => { duties.length = 0; });
+  const file = join(dir, "boards", "c1.json");
+  const board = JSON.parse(await readFile(file, "utf8")) as ChatBoard;
+  await writeFile(file, JSON.stringify({ ...board, plan: board.plan.map(goal => ({ ...goal, status: "done" })) }));
+  assert.equal((await classes()).misses.goals_without_duty, 0, "no open goal, nothing to flag");
 });

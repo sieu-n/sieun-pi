@@ -1,6 +1,6 @@
 {
   "name": "Skills and tools",
-  "ownerWords": "Next to Harness health, add a duty that checks skills are configured correctly, in particular\n- computer use (Cua)\n- the search tool\nand anything else agents use.",
+  "ownerWords": "next to harness health can you put skills are configured correctly \ni think in particular\n- computer use (Cua)\n- search tool\nis there more? idk",
   "goal": "Every skill and tool agents use on this Mac is installed, signed in and answers a real call: computer use (Cua), web search, the Aside browser, the MCP servers, the Prime skills, the Claude and Codex account sign-ins, the peer CLIs, the service CLIs and the repo skill reader. Tell the owner only what needs him.",
   "metrics": [
     {

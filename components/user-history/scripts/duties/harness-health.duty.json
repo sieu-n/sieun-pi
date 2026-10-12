@@ -1,6 +1,6 @@
 {
   "name": "Skills and harness",
-  "ownerWords": "Add a Harness health duty that prunes bloated skills every day. Do not count skill word counts or SKILL.md line counts; those numbers mean nothing.",
+  "ownerWords": "one more duty for Harness health, i want you to prune bloated skills, .. every day.\n\nSkills over 5000 words / SKILL.md files over 500 lines / 이런거좀 보지좀 마 의미없는거",
   "goal": "Skills work and agents use them right: every skill passes its smoke check, the owner never gives the same correction twice, every tracked skill is read by an agent within 14 days, no two skills do one job, and the prompt cache read share stays high hour by hour and day by day. Tell the owner only what was fixed and anything that needs his call.",
   "metrics": [
     {

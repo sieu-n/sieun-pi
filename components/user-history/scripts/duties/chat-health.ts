@@ -221,11 +221,12 @@ async function readWatch(file: string | undefined): Promise<Watch> {
   catch { return {}; }
 }
 
-/** Yesterday's fixes to recheck, recurrences, merges without the owner's go, check-in findings left unfixed (the longest streaks, up to FEW) and corrections first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
+/** Yesterday's fixes to recheck, recurrences, merges without the owner's go, check-in findings left unfixed (the longest streaks, up to FEW), corrections, owner board asks and chats with goals and no duty first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
+  // goals_without_duty, target 0 in chat-health.duty.json: the duty proposals review of 10-12 found 5 chats with open goals and no duty.
   const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("corrections"),
-    ...newest("owner_board_asks")].slice(0, MAX_FLAGGED);
+    ...newest("owner_board_asks"), ...newest("goals_without_duty")].slice(0, MAX_FLAGGED);
   const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
     newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW), newest("idle_goals", FEW), newest("goal_gaps", FEW), newest("blocked_on_others", FEW),
     newest("finished_open", FEW), newest("loose_goals", FEW), newest("extra_goals", FEW), newest("open_under_closed", FEW), newest("held_elsewhere", FEW), newest("wait_met", FEW), newest("stale_steps", FEW), newest("goals_to_fold", FEW), newest("one_session_load", FEW), newest("redundant_heartbeats", FEW),

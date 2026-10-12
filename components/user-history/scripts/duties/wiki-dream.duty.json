@@ -1,6 +1,6 @@
 {
   "name": "Wiki dream",
-  "ownerWords": "Make the llm-wiki duty keep the wiki in sync and organized by its principles, like a dream pass: a daily job that cleans the wiki, finds the mistakes agents repeat, and fixes the related skills so they stop. The wiki's article list must always be up to date.",
+  "ownerWords": "llm wiki duty more like \"keep it in sync\", \"organized to principles\" you know claude's Dream feature? look it up. i expected a daily job that cleans wiki, find anti-patterns agent mistakes alot, then fixes related skills so that doesn't happen again.\nthe main wiki all articles and whcih articles exist itself should always be up to date",
   "goal": "The wiki matches the repo and itself. Every curated page is in its hub, every link opens, no curated page links to a session folder or a superseded page, and one topic has one page. Fewer pages break the writing rules each day. A mistake agents make twice in a week becomes a rule in its skill and does not come back. The owner hears only which skill rules changed and what needs his call.",
   "metrics": [
     {

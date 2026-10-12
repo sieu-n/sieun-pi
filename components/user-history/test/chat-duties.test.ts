@@ -371,7 +371,7 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   const duties = new Duties(store, { isChat: async () => true, jobs: jobs.host, tickMs: 0, now: () => now });
   const quiet = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0, idle_goals: 0, stalled_steps: 0, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 0,
     finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
-    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0 };
+    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 0 };
   const run = (minutes: number, metrics = quiet): CheckInRun => ({ at: now + minutes * 60_000, trigger: "schedule", everyMs: 15 * 60_000, output: { metrics, flagged: [] }, classes: { live: 2 },
     findings: "### Every open step, oldest change first\n- p2 (live) \"Build\" doing" });
   await duties.checkIn("chat1", run(0));
@@ -379,7 +379,7 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   assert.match(jobs.briefs[0]!, /^# check-in dev VP 18:00: the Check-in duty of the chat "dev VP"/);
   assert.match(jobs.briefs[0]!, /Goal: The check-in keeps two things true in every chat/);
   assert.match(jobs.briefs[0]!, /> YES\. it - checks and synchronizes the agent swarm with user intent/);
-  assert.match(jobs.briefs[0]!, /Measured against the targets: all 24 on target\./);
+  assert.match(jobs.briefs[0]!, /Measured against the targets: all 25 on target\./);
   assert.match(jobs.briefs[0]!, /### Every open step, oldest change first\n- p2 \(live\) "Build" doing/);
   assert.match(jobs.briefs[0]!, /When nothing needs work, end in one short turn and send nothing/);
   for (const line of CHECK_IN_FOCUS) assert.ok(jobs.briefs[0]!.includes(`- ${line}`), line);
@@ -397,7 +397,7 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   assert.deepEqual(runs[2]!.metrics.orphan_steps, { value: 1, target: 0, op: "<=", met: false }, "the measure is kept as information");
   assert.deepEqual([(await store.read("chat1")).checkIn?.runCount, (await store.read("chat1")).duties], [3, []]);
   assert.deepEqual(runs[0]!.classes, { live: 2 });
-  assert.equal(CHECK_IN_DUTY.metrics.length, 24);
+  assert.equal(CHECK_IN_DUTY.metrics.length, 25);
   duties.close();
 });
 

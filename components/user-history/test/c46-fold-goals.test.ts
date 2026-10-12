@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText, convergenceMisses, dutyFor, type DutyRef, foldOps, goalsToFold, type JobFact, openUnderClosed } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, convergenceMisses, dutyFor, type DutyRef, foldOps, goalsToFold, goalsWithoutDuty, type JobFact, openUnderClosed } from "../src/chat-checkin.ts";
 import { applyBoardOp, nextIds, openGoals } from "../src/shared/chat-board.ts";
 import type { BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
 
@@ -111,4 +111,20 @@ test("goals to fold: a step with no job of its own rides another goal by a waitF
   const other = item("p350", "Other", { children: [item("p351", "Other step", { job: "01a0e1da-0000-7000-8000-000000000000" })] });
   assert.deepEqual(goalsToFold({ ...board(), plan: [held("01a0e1da-0000-7000-8000-000000000000"), other] }, thread, SELF, []), []);
   assert.deepEqual(goalsToFold({ ...board(), plan: [held(VP), item("p360", "Mine", { children: [item("p361", "Mine step", { job: VP })] })] }, [], SELF, []), []);
+});
+
+test("goals without duty: a chat's open goals count while it has no active duty, in its own check-in too; the built-in check-in is no duty", () => {
+  const open = board().plan.filter(goal => goal.status !== "done" && goal.status !== "dropped").map(goal => goal.id);
+  assert.deepEqual(goalsWithoutDuty(board(), FIXTURE.duties), [], "the CI thread's active duties cover it");
+  assert.deepEqual(goalsWithoutDuty(board(), []).map(goal => goal.id), open);
+  assert.deepEqual(goalsWithoutDuty(board(), FIXTURE.duties.map(duty => ({ ...duty, status: "paused" as const }))).map(goal => goal.id), open, "a paused duty runs nothing");
+  assert.deepEqual(goalsWithoutDuty(board(), [{ id: "checkin", name: "Check-in", goal: "", status: "active" }]).map(goal => goal.id), open);
+  assert.deepEqual(goalsWithoutDuty(null, []), []);
+  const bare = checkInPrecheck(undefined, [], board(), NOW, { self: [...SELF], rows: [], everyMs: EVERY, duties: [] });
+  const output = convergenceMisses(VP, bare.steps, bare, {}, EVERY, NOW);
+  assert.equal(output.metrics.goals_without_duty, 1, "one per chat, however many goals");
+  assert.deepEqual(output.flagged.filter(slice => slice.kind === "goals_without_duty").map(slice => slice.item), [open[0]]);
+  assert.match(checkInPrecheckText(bare, [], output.flagged, NOW), /### Open goals and no duty\n- 6 open goals \(p1 /);
+  const unknown = checkInPrecheck(undefined, [], board(), NOW, { self: [...SELF], rows: [], everyMs: EVERY });
+  assert.equal(convergenceMisses(VP, unknown.steps, unknown, {}, EVERY, NOW).metrics.goals_without_duty, 0, "duties not given (a read error): no count");
 });
