@@ -32,7 +32,7 @@ export interface BriefInput { brief: string; owner: readonly OwnerMessage[]; tur
 
 const MESSAGE_ID = /\[message id: [^\]]*\]/g;
 /** Text as the check compares it: straight quotes, no message id notes, whitespace runs as one space. */
-const normal = (text: string): string =>
+export const normal = (text: string): string =>
   text.replace(/[\u201c\u201d\u201e\u201f\u2033]/g, '"').replace(/[\u2018\u2019\u201b\u2032]/g, "'").replace(MESSAGE_ID, " ").replace(/\s+/g, " ").trim();
 const HEADER = /^[\s#>*_]*Owner's words\b[^:\n]*:(.*)$/im;
 const BLOCK_END = /^[\s#>*_]*(?:My read|Split)\b/im;

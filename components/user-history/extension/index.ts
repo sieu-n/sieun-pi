@@ -12,7 +12,8 @@ import { boardRevLine, parseBoardOps, PLAN_STATUSES, renderOpenPlan } from "../s
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
-import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
+import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, ownerWordsRefusal, parseCorrectionCall } from "../src/chat-corrections.ts";
+import { ownerMessages } from "../src/shared/brief-check.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { boardLimitRefusal, lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
@@ -152,6 +153,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
       },
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         const call = parseCorrectionCall(params);
+        const transcript = ctx.sessionManager.getBranch().flatMap(entry => entry.type === "message" ? [entry.message as ThreadMessage] : []);
+        const refusal = ownerWordsRefusal(call, ownerMessages(transcript).map(message => message.text));
+        if (refusal) throw new Error(refusal);
         const chat = { id: ctx.sessionManager.getSessionId(), name: ctx.sessionManager.getSessionName()?.trim() ?? "" };
         return { content: [{ type: "text", text: correctionResult(await corrections().apply(call, chat)) }], details: undefined };
       },

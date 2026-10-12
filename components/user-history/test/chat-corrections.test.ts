@@ -139,10 +139,11 @@ test("ledger file: apply writes corrections.json under the lock and reads back; 
 type Tool = { name: string; execute: (...args: unknown[]) => Promise<{ content: { text: string }[] }> };
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown>;
 /** The extension against a fake pi: its tools, its handlers, and a session that is a chat (`marked`) or not. */
-function loadExtension(dataDir: string, session: { header?: object; id?: string; name?: string } = {}) {
+type Entry = { id: string; type: string; customType?: string; data?: unknown; message?: unknown; content?: string };
+function loadExtension(dataDir: string, session: { header?: object; id?: string; name?: string; branch?: Entry[] } = {}) {
   const tools = new Map<string, Tool>();
   const handlers = new Map<string, Handler[]>();
-  const branch: { id: string; type: string; customType?: string; data?: unknown; message?: unknown }[] = [];
+  const branch: Entry[] = [...session.branch ?? []];
   const pi = { registerFlag() {}, registerCommand() {}, registerTool(tool: Tool) { tools.set(tool.name, tool); }, getActiveTools: () => [], setActiveTools() {},
     appendEntry(customType: string, data: unknown) { branch.push({ id: `e${branch.length}`, type: "custom", customType, data }); },
     on(name: string, handler: Handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
@@ -165,7 +166,7 @@ test("extension: correction_add is registered only in a chat; it records a new c
     const job = loadExtension(dataDir);
     await job.run("session_start", {}, false);
     assert.ok(!job.tools.has(CORRECTION_TOOL), "a session that is no chat has no correction tool");
-    const chat = loadExtension(dataDir);
+    const chat = loadExtension(dataDir, { branch: [owner("wipe it from our plan"), owner("why is it still on the plan")] });
     await chat.run("session_start", {}, true);
     const tool = chat.tools.get(CORRECTION_TOOL)!;
     const schema = JSON.stringify({ name: tool.name, description: (tool as unknown as { description: string }).description, parameters: (tool as unknown as { parameters: unknown }).parameters });
@@ -178,6 +179,59 @@ test("extension: correction_add is registered only in a chat; it records a new c
     const ledger = await new CorrectionLedger(dataDir).read();
     assert.deepEqual(ledger.corrections.map(entry => [entry.id, entry.status, entry.chat, entry.repeats.length]), [["c1", "reopened", { id: "chat-1", name: "dev VP" }, 1]]);
     await assert.rejects(tool.execute("t3", { words: "x" }, undefined, undefined, chat.ctx(true)), /theme is required/);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
+let entries = 0;
+const owner = (text: string): Entry => ({ id: `o${entries++}`, type: "message", message: { role: "user", content: [{ type: "text", text }], timestamp: entries } });
+const LAND_33 = "Never re-push a land-33 branch name tonight.";
+/** The c53 entry as the live ledger held it on 10-12, before the Crawler VP recorded Fable's words as a repeat of it. */
+const C53 = { id: "c53", at: "2026-10-12T10:44:26.987Z", chat: { id: "01a1180e-6567-747f-bf44-452520ebdd1b", name: "VP of CI" },
+  words: "you know it's your duty? UNBLOCK CI, make it hourly, fix current issue\np90 wait time < 10 minute\nrun time < 10minute",
+  rule: "The VP of CI unblocks CI itself every hour.", enforcedBy: "brief", ref: "pending ci hourly duty", status: "active", theme: ["unblock", "ci", "hourly", "duty"], repeats: [] };
+/** The Crawler VP transcript around 21:55Z on 10-12: the owner's own messages, a check-in, Fable's agent message and the chat relaying it, all holding the land-33 line but the owner's. */
+const crawlerVp = (): Entry[] => [
+  owner("strip every single every evyer evyer fucking single arbitrary overly safe limit completely existense wipe streamline simplify code from the entire codebase."),
+  owner("it's totally ok to ramp up things!!! we are still at testing stage!!!"),
+  owner(`[check-in] What changed:\n- Fable: ${LAND_33}`),
+  { id: "f1", type: "custom_message", customType: "agent_message", content: `[agent-message from Untitled]\n\nFrom 01a0cc5e (Fable). LIMITS r8: the two new commits go to land 34 on a NEW branch name. ${LAND_33}` },
+  { id: "a1", type: "message", message: { role: "assistant", content: [{ type: "text", text: `Fable's ruling: ${LAND_33}` }], timestamp: 99 } },
+];
+
+test("extension: correction_add refuses words no owner message holds, so Fable's land-33 line in the Crawler VP is no repeat of c53", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "corrections-owner-"));
+  try {
+    const file = join(dataDir, "corrections.json");
+    await writeFile(file, JSON.stringify({ corrections: [C53] }, null, 2));
+    const before = await readFile(file, "utf8");
+    const chat = loadExtension(dataDir, { id: "01a115e2-9544-7204-b8db-8ce4d5319048", name: "Crawler VP", branch: crawlerVp() });
+    await chat.run("session_start", {}, true);
+    const tool = chat.tools.get(CORRECTION_TOOL)!;
+    // The call the Crawler VP made at 21:58Z.
+    await assert.rejects(tool.execute("t1", { rule: "Never re-push a branch whose run is in the current land set.", words: LAND_33,
+      ref: "Fable 10-12 21:5xZ ruling (not the owner)", theme: "ci", enforcedBy: "brief" }, undefined, undefined, chat.ctx(true)),
+      /not in any owner message of this chat\. Quote the owner exactly, or do not record it/);
+    assert.equal(await readFile(file, "utf8"), before, "the ledger is unchanged: no repeat on c53");
+    await assert.rejects(tool.execute("t2", { rule: "A new rule.", words: LAND_33, ref: "x", theme: "land branch name re-push", enforcedBy: "brief" },
+      undefined, undefined, chat.ctx(true)), /Quote the owner exactly/, "a new correction in another agent's words is refused too");
+    assert.equal(await readFile(file, "utf8"), before);
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test("extension: correction_add takes the owner's exact words with other whitespace, quotes or case, a part of one message, and a repeat in them", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "corrections-owner-"));
+  try {
+    await writeFile(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [C53] }));
+    const chat = loadExtension(dataDir, { name: "Crawler VP", branch: [...crawlerVp(), owner("never say \"done\" before the CI run is green, unblock CI hourly")] });
+    await chat.run("session_start", {}, true);
+    const tool = chat.tools.get(CORRECTION_TOOL)!;
+    const call = (words: string, theme: string) => tool.execute("t", { words, rule: "A rule.", theme, enforcedBy: "brief", ref: "x" }, undefined, undefined, chat.ctx(true));
+    const added = await call("It\u2019s totally ok to ramp up\n  things!!!", "ramp up testing stage");
+    assert.match(added.content[0]!.text, /^Recorded c54: /);
+    const repeat = await call("Never say \u201cdone\u201d before the CI run is green, UNBLOCK CI hourly", "unblock ci hourly");
+    assert.match(repeat.content[0]!.text, /^Repeat of c53 /);
+    const ledger = await new CorrectionLedger(dataDir).read();
+    assert.deepEqual(ledger.corrections.map(entry => [entry.id, entry.status, entry.repeats.length]), [["c53", "reopened", 1], ["c54", "active", 0]]);
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 
