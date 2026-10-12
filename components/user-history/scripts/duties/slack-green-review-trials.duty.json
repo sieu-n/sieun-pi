@@ -1,0 +1,35 @@
+{
+  "name": "Reviewers get trials",
+  "ownerWords": "can you do daily check for the review as well?\n\nreview free trial thing i mean",
+  "goal": "Every real review post on slack.green gets a trial decision within 24 h: 14 free days for a clear, real review, or the owner's call on a doubtful one. The owner's two test posts do not count.",
+  "metrics": [
+    {
+      "key": "reviews_waiting_24h",
+      "label": "Review posts over 24 h old with no trial decision",
+      "op": "<=",
+      "target": 0,
+      "unit": " posts"
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources that failed in this check",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "23:00"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/slack-green-review-trials.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "source_errors: fix the precheck or SUPABASE_SERVICE_KEY in slack-green scripts/seo-agent/.env first. Else open each waiting or new review's screenshot URL and read its text. For a clear, real review, grant 14 days with Grant on slack.green/admin/manage in the owner's Aside session (POST /api/admin/manage, action grant_trial with thread_id), then check that trial_extension_days and trial_ends_at changed. Put a doubtful or negative review on the owner's For you todo with its screenshot and text. Never email or message the reviewer. With nothing waiting, end with no message.",
+  "boardGoal": "p48"
+}
