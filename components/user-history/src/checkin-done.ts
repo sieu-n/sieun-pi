@@ -36,6 +36,17 @@ const SUBJECT_SKIP = new Set(["the", "and", "then", "with", "for", "from", "afte
   "already", "live", "shipped", "merged", "deployed", "landed", "released", "staging", "prod", "production", "main", "run", "until", "once", "when"]);
 const subjectWords = (text: string): Set<string> =>
   new Set((text.toLowerCase().match(/[\p{L}][\p{L}\p{N}]{2,}/gu) ?? []).filter(word => !SUBJECT_SKIP.has(word)));
+/** A note that reports a run or a check as green, passed or succeeded, and not "not green". */
+const GREEN = /(?<!\bnot\s+(?:yet\s+)?)\b(?:green|passed|succeeded)\b/i;
+/** The names a wait or a sentence gives its parts: items (C8, r6, land 33, promote 8) and runs (CI run ids, ci/ refs, commit shas). A name
+ * joined to a word by a hyphen, a slash or a dot is part of that word ("32b-on-staging", "ci/c4-cast-fix"), and clock times name nothing. */
+type PartNames = { items: Set<string>; runs: Set<string> };
+const ITEM = /(?<![\w/.:'-])[a-z]{1,3}\d{1,4}[a-z]?(?![\w/-])|\b(?:land|promote|board|part|cut|wave|phase|tier|round|attempt|release|pr)\s+#?\d{1,5}[a-z]?(?![\w:/-])/gi;
+const RUN = /\b\d{8,}\b|\bci\/[\w.-]*\w|(?<![\w/.-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w/-])/gi;
+const partNames = (text: string): PartNames => ({
+  items: new Set((text.match(ITEM) ?? []).map(name => name.toLowerCase().replace(/\s+#?/, " "))),
+  runs: new Set((text.match(RUN) ?? []).map(name => name.toLowerCase())),
+});
 /** The words of a note that can claim a ship: its paths, dated folder names and the item's own job name taken out. */
 function claimWords(note: string, job: string | undefined): string {
   const words = note.split(/\s+/).filter(token => !pathLike(token)).join(" ");
@@ -67,14 +78,24 @@ export function looksDone(item: Pick<PlanItem, "status" | "note" | "children" | 
   // p54 "Board 39 is live ... Left to do: ...", p68 waited for promote 8 "(dispatched 15:00:06Z)"; each was flagged twice and kept open).
   const note = item.note ?? "";
   if (LEFT_TO_DO.test(note) || IN_FLIGHT.test(wait) || IN_FLIGHT.test(note)) return null;
+  // A wait for something "green" is not over while the note reports nothing green (Crawler VP 10-13: p118 waited for two runs "green" that
+  // were queued).
+  if (/\bgreen\b/i.test(wait) && !GREEN.test(note)) return null;
+  const sentences = note.split(/(?<=[.;!?])\s+/).map(text => ({ text, said: SAYS_SHIPPED.exec(claimWords(text, item.job)), ...partNames(text) }));
+  const claims = sentences.flatMap(({ said, ...sentence }) => said ? [{ ...sentence, said }] : []);
   // With a ship wait, only a claim about the waited thing may mean the wait is over: "PROBE A deployed" for a wait on PROBE A counts, and
   // "Obs is deployed" for a wait on promote 8 is another service (launch main bro 10-12, p68).
   const waited = subjectWords(wait);
-  for (const sentence of claimWords(note, item.job).split(/(?<=[.;!?])\s+/)) {
-    const said = SAYS_SHIPPED.exec(sentence);
-    if (said && (!wait || [...subjectWords(sentence)].some(word => waited.has(word)))) return `its note says "${said[0]}"`;
-  }
-  return null;
+  const about = claims.find(sentence => !wait || [...subjectWords(claimWords(sentence.text, item.job))].some(word => waited.has(word)));
+  if (!about) return null;
+  // A wait that names its parts (C8, C3+C4, land 33, promote 8, run ids, ci refs) is over only when the ship claims name every part: all its
+  // items, or all its runs and refs, where a sentence that names a run as green also counts (Crawler VP 10-13: p118 "C3 is live on prod" under
+  // a wait on C8, C3+C4, land 33 and C2's recreate, flagged in 2 check-ins in a row).
+  const claimed = new Set(claims.flatMap(sentence => [...sentence.items, ...sentence.runs]));
+  const green = new Set(sentences.filter(sentence => GREEN.test(sentence.text)).flatMap(sentence => [...sentence.runs]));
+  const named = (part: PartNames) => part.items.size + part.runs.size === 0 || (part.items.size > 0 && [...part.items].every(name => claimed.has(name))) ||
+    (part.runs.size > 0 && [...part.runs].every(run => claimed.has(run) || green.has(run)));
+  return wait.split(/[,;]|\b(?:and|then|plus)\b/i).map(partNames).every(named) ? `its note says "${about.said[0]}"` : null;
 }
 /** Every open plan item that looks done (`looksDone`), steps before the goal above them. */
 export function finishedOpen(board: ChatBoard | null): { item: PlanItem; reason: string }[] {
