@@ -84,6 +84,8 @@ export class Chats {
   private readonly chatIds = new Set<string>();
   /** The children last seen per thread: the tick reads them, and each change is compared with them to find a job that ended with no report. */
   private readonly children = new Map<string, readonly ChildAgent[]>();
+  /** The daemon's subagents by parent session at the last catalog refresh (`roster`), for the subagents of a chat's duty jobs. */
+  private subagents: ReadonlyMap<string, readonly ChildAgent[]> = new Map();
   /**
    * When each job was last seen starting to work, and the end (its last activity) last told to the chat, with the time of the job message it
    * was told as waiting on (none for "ended with no report").
@@ -184,6 +186,7 @@ export class Chats {
    * chat keeps the hub's children.
    */
   async roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> {
+    this.subagents = byChat;
     await this.load();
     for (const id of this.chatIds) {
       if (this.threads.isLive?.(id)) continue;
@@ -727,8 +730,11 @@ export class Chats {
     catch (error) { boardError = error instanceof Error ? error.message : String(error); this.log(`chat ${id.slice(0, 8)}: check-in board: ${boardError}`); }
     const rows = await this.source.rows();
     const said = lastJobMessages(this.messages(id) ?? []);
-    // A chat not attached on this serve has no hub children; its row lists the daemon's sessions under it.
-    const facts = jobFacts(this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []), board, rows, id).map(fact => {
+    // A chat not attached on this serve has no hub children; its row lists the daemon's sessions under it. A step's owner may be a subagent of
+    // one of its duty jobs (10-13 02:39: busy chat inbox ran under the 01:54 check-in job, and p334 read "(busy chat inbox not found)").
+    const dutyJobs = await this.source.dutyJobs?.(id).catch(() => []) ?? [];
+    const nested = dutyJobs.flatMap(job => (this.subagents.get(job) ?? []).map(child => ({ ...child, parentId: job })));
+    const facts = jobFacts(this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []), board, rows, id, nested).map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
     });

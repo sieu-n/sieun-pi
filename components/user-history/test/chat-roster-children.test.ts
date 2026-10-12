@@ -52,8 +52,8 @@ test("each catalog refresh hands Chats the subagents the daemon lists under ever
   assert.equal(handed.length, 2, "one hand-off per refresh");
   const children = handed.at(-1)!.get(CHAT);
   assert.deepEqual(children, [
-    { id: "child-1", label: "inbox into staging", sessionName: "inbox into staging", status: "running", repliedSinceTask: false, lastActivityAt: Date.parse("2026-10-13T01:58:00.000Z") },
-    { id: "child-2", label: "readme lines", sessionName: "readme lines", status: "done", repliedSinceTask: true, lastActivityAt: Date.parse("2026-10-12T20:00:00.000Z") },
+    { id: "child-1", label: "inbox into staging", sessionName: "inbox into staging", sessionId: "s-1", status: "running", repliedSinceTask: false, lastActivityAt: Date.parse("2026-10-13T01:58:00.000Z") },
+    { id: "child-2", label: "readme lines", sessionName: "readme lines", sessionId: "s-2", status: "done", repliedSinceTask: true, lastActivityAt: Date.parse("2026-10-12T20:00:00.000Z") },
   ], "the chat's direct subagents, as the hub would list them");
 });
 

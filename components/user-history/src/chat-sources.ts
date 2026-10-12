@@ -186,6 +186,8 @@ export interface CheckInSource {
   duty?: { checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart | void> };
   /** The chat's duties (`<data dir>/duties/<chat>.json`), for the goals they run (`goalsToFold`) and a chat with goals and no duty (`goalsWithoutDuty`). Absent: neither is counted. */
   duties?: (id: string) => Promise<readonly DutyRef[]>;
+  /** The session ids of the chat's duty jobs (its duty run records, check-ins included), whose subagents may own its steps. Absent: none. */
+  dutyJobs?: (id: string) => Promise<readonly string[]>;
   /**
    * `<data dir>/archived-chats.json`: the chats the owner archived (`Chats.archive`), until the owner unarchives one (`Chats.restore`). The
    * scan never takes such a chat back and its sidebar row stays archived, while its session may still wake and answer an agent message. Absent

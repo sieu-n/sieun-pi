@@ -52,6 +52,8 @@ export interface ThreadInfo {
 export type ChildStatus = "queued" | "running" | "done" | "error" | "cancelled";
 export interface ChildAgent {
   id: string; parentId?: string; sessionName?: string; model?: string; label: string; status: ChildStatus;
+  /** Its daemon session id, when the daemon's list gave it (`rosterChildren`); the hub's snapshots have none. */
+  sessionId?: string;
   durationMs?: number; recap?: string; error?: string; answerPreview?: string;
   activity?: { kind: "waiting" | "writing" | "executing"; toolName?: string };
   /** The child messaged its parent since its current task arrived; absent when the daemon cannot tell (a child resumed after a restart). */

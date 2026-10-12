@@ -257,7 +257,7 @@ export function rosterChildren(children: readonly SessionSummary[]): Map<string,
       const name = row.sessionName?.replace(/\s+/g, " ").trim();
       const status = nativeStatus(row) === "running" ? "running" : row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row) ? "error" : "done";
       const at = Date.parse(row.lastActivityAt ?? row.modified ?? "");
-      return [{ id: row.rlmChildId, label: name || row.rlmChildId, ...(name ? { sessionName: name } : {}), status,
+      return [{ id: row.rlmChildId, label: name || row.rlmChildId, ...(name ? { sessionName: name } : {}), sessionId: row.sessionId, status,
         ...(row.repliedSinceTask === undefined ? {} : { repliedSinceTask: row.repliedSinceTask }), ...(Number.isFinite(at) ? { lastActivityAt: at } : {}) }];
     });
     if (listed.length) byChat.set(parent, listed);

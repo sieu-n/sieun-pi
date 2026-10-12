@@ -132,6 +132,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")),
       settings, claude: claudeReader(),
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
+      dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"),
       ...(options.ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}) },
     line => process.stderr.write(line + "\n"));

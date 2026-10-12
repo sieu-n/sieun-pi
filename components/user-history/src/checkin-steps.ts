@@ -31,6 +31,8 @@ export interface JobFact {
   item?: { id: string; text: string; status: PlanStatus };
   /** A subagent's last agent message to the chat (`lastJobMessages`). */
   lastMessage?: JobMessage;
+  /** A duty job's subagent's session id, which a step's stored `sessionId` names. */
+  sessionId?: string;
 }
 /** One agent message a job sent the chat: when, and its first line. */
 export interface JobMessage { at: number; text: string }
@@ -82,15 +84,18 @@ export const owns = (fact: JobFact, owner: string): boolean => fact.key === owne
 /** The fact that owns a step: the thread its stored session id names first, so a renamed thread keeps its steps, else the one its job names. */
 export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | undefined => {
   const owner = stepOwner(item);
-  return (item.sessionId ? facts.find(fact => fact.key === "thread:" + item.sessionId) : undefined) ?? (owner === undefined ? undefined : facts.find(fact => owns(fact, owner)));
+  return (item.sessionId ? facts.find(fact => fact.key === "thread:" + item.sessionId || fact.sessionId === item.sessionId) : undefined) ??
+    (owner === undefined ? undefined : facts.find(fact => owns(fact, owner)));
 };
 
 /**
  * The chat's jobs now: every subagent directly under it (one whose parent is not another listed subagent), plus every thread an open plan step
  * names as its owner (`stepOwner`) that is not one of them. An owner that names nothing known, or the chat itself (`self`, its session id), is
- * left out. A cancelled subagent ended; only an error is a failure.
+ * left out. A cancelled subagent ended; only an error is a failure. `nested` holds the subagents of the chat's duty jobs (a check-in job's
+ * helpers): one joins only when an open step names it, by session id or name, a working one first.
  */
-export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | null, rows: readonly SessionRow[], self?: string): JobFact[] {
+export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | null, rows: readonly SessionRow[], self?: string,
+  nested: readonly ChildAgent[] = []): JobFact[] {
   const ids = new Set(children.map(child => child.id));
   const facts = new Map<string, JobFact>();
   // A job that waits on its own subagent is at work (frontend bro 10-12: watchlist table rework waited on its working helper, and p78 was
@@ -117,6 +122,14 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
     const known = ownerOf(item, [...facts.values()]);
     if (known) { if (!known.item || (CLOSED.has(known.item.status) && OPEN.has(item.status))) known.item = link; return; }
     if (!OPEN.has(item.status)) return;
+    const named = (child: ChildAgent) => (item.sessionId !== undefined && child.sessionId === item.sessionId) || child.id === owner || childName(child) === owner;
+    const sub = nested.find(child => named(child) && childWorking(child)) ?? nested.find(named);
+    if (sub) {
+      facts.set(sub.id, { key: sub.id, name: childName(sub), state: childWorking(sub) ? "working" : sub.status === "error" ? "failed" : "ended",
+        ...(sub.sessionId ? { sessionId: sub.sessionId } : {}), ...(sub.lastActivityAt !== undefined ? { activityAt: sub.lastActivityAt } : {}),
+        ...(sub.error ? { error: sub.error } : {}), item: link });
+      return;
+    }
     const row = rows.find(candidate => candidate.id === item.sessionId) ?? rows.find(candidate => candidate.id === owner || candidate.name === owner);
     if (!row || row.id === self) return;
     const at = Date.parse(row.lastActivityAt ?? "");
