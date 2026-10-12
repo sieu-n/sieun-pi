@@ -301,7 +301,9 @@ test("board store: read is null before the first op, apply writes all ops or non
   const dataDir = await mkdtemp(join(tmpdir(), "boards-"));
   const store = new BoardStore(dataDir);
   const seen: { id: string; rev: number }[] = [];
-  const stop = store.watch((id, board) => seen.push({ id, rev: board.rev }));
+  let sawRev3!: () => void;
+  const rev3 = new Promise<void>(resolve => { sawRev3 = resolve; });
+  const stop = store.watch((id, board) => { seen.push({ id, rev: board.rev }); if (board.rev === 3) sawRev3(); });
   assert.equal(await store.read("chat-a"), null);
   assert.deepEqual(await store.apply("chat-a", [], "agent"), { board: null, summaries: [] });
   const first = await store.apply("chat-a", [{ op: "plan_add", text: "Goal" }, { op: "todo_add", text: "Approve" }], "agent");
@@ -309,12 +311,13 @@ test("board store: read is null before the first op, apply writes all ops or non
   assert.deepEqual(first.summaries, ['Added p1 "Goal"', 'Added a todo t1 "Approve"']);
   await assert.rejects(store.apply("chat-a", [{ op: "todo_update", id: "t1", done: true }, { op: "plan_remove", id: "p1" }], "owner"), BoardError);
   assert.equal((await store.read("chat-a"))?.todos[0]?.done, false, "a refused op leaves the file as it was");
+  await writeFile(join(dataDir, "boards", "notes.txt"), "ignored");
   const checked = await store.apply("chat-a", [{ op: "todo_update", id: "t1", done: true }], "owner");
   assert.equal(checked.board?.rev, 3);
   assert.deepEqual(JSON.parse(await readFile(join(dataDir, "boards", "chat-a.json"), "utf8")), checked.board);
   await assert.rejects(store.apply("../x", [{ op: "todo_add", text: "x" }], "agent"), /Not a session id/);
-  await writeFile(join(dataDir, "boards", "notes.txt"), "ignored");
-  await new Promise(resolve => setTimeout(resolve, 300));
+  // The watcher reports after its debounce and a read; a fixed 300 ms sleep missed it under load (full suite, 10-13).
+  await rev3;
   stop();
   assert.deepEqual(seen.at(-1), { id: "chat-a", rev: 3 });
   assert.ok(seen.every(entry => entry.id === "chat-a"), JSON.stringify(seen));
