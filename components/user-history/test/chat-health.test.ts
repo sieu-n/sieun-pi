@@ -299,16 +299,22 @@ test("chat health: owner directions and status questions are not corrections, a 
   }
 });
 
-test("chat health: a token hook failure the pool retried is a sieun-pi break only when its turn ends on it, once per turn", async () => {
+test("chat health: a token hook failure the pool retried is a sieun-pi break only when no later request gets past the hook before the owner speaks, once per turn", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
   try {
-    // 2026-10-09: hooks killed under load or in a dark wake, retried by the pool's extension. The first turn's retry got a token; the second
-    // turn failed every retry and ended, so the check-in restarted it. That second turn is the one break, however many attempts it took.
+    // 10-12 KST: every hook failure fell in a lid-closed dark wake (pmset 17:13:37 to 17:13:57, 18:45:26 to 18:45:35, 19:19:00 to 19:19:02).
+    // The revive's note landed between the failure and Prime's next try, and the turn ran again at the next full wake: no break. A hook
+    // that never gives a token (10-12 19:52, a daemon with no USER read every store as "unknown") keeps failing until the owner asks: one break.
     const hookRetried = `${API_KEY_ERROR} pi-pool: the token hook gave no token; the retry uses a new hook run.`;
+    const note = "[check-in] Your last turn failed at 17:11 (Connection error.). Re-check the board and continue.";
+    const failed = (at: number) => reply(at, "", "error", { errorMessage: hookRetried });
     const lines: Line[] = [
-      user(ago(3 * HOUR), "go on"), reply(ago(3 * HOUR) + 10_000, "", "error", { errorMessage: hookRetried }), reply(ago(3 * HOUR) + 25_000, "done"),
-      user(ago(2 * HOUR), "and the rest"), ...[10, 45, 75, 105].map(second => reply(ago(2 * HOUR) + second * 1_000, "", "error", { errorMessage: hookRetried })),
-      user(ago(2 * HOUR) + 2 * MIN, "[check-in] Your last turn failed. Re-check the board and continue."), reply(ago(2 * HOUR) + 3 * MIN, "done"),
+      user(ago(4 * HOUR), "go on"), failed(ago(4 * HOUR) + 10_000), reply(ago(4 * HOUR) + 25_000, "done"),
+      user(ago(3 * HOUR), "and the rest"), failed(ago(3 * HOUR) + 10_000), user(ago(3 * HOUR) + 15_000, note), failed(ago(3 * HOUR) + 30_000),
+      failed(ago(3 * HOUR) + 80_000), custom(ago(3 * HOUR) + 90_000, "agent_message", "[agent-message from job] done"),
+      reply(ago(3 * HOUR) + 100_000, "", "error", { errorMessage: "Connection error." }), reply(ago(3 * HOUR) + 3 * MIN, "done"),
+      user(ago(2 * HOUR), "next"), ...[10, 45, 75].map(second => failed(ago(2 * HOUR) + second * 1_000)), user(ago(2 * HOUR) + 2 * MIN, note),
+      failed(ago(2 * HOUR) + 3 * MIN), user(ago(2 * HOUR) + 20 * MIN, "hello?"), reply(ago(2 * HOUR) + 21 * MIN, "back"),
     ];
     await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-h"] }));
     await writeFile(join(dir, "chat-h.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
@@ -317,7 +323,7 @@ test("chat health: a token hook failure the pool retried is a sieun-pi break onl
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
     assert.equal(health.metrics.sieun_pi_breaks, 1);
-    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "sieun_pi_breaks").map(slice => slice.at), [ago(2 * HOUR) + 105_000]);
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "sieun_pi_breaks").map(slice => slice.at), [ago(2 * HOUR) + 3 * MIN]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

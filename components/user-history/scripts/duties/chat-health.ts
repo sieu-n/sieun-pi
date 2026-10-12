@@ -140,8 +140,12 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     const at = message.timestamp;
     if (message.role === "user") {
       settleFailure(at);
-      settleHookRetry();
       const text = messageText(message).trim();
+      // A server note (the revive's "[check-in] Your last turn failed ...") or an agent message lands while Prime still retries the hook, so
+      // only the owner's own message, or the transcript's end, ends a turn on a hook failure. 10-12: all 3 breaks were hooks killed in
+      // lid-closed dark wakes (pmset 17:13:37 to 17:13:57, 18:45:26 to 18:45:35, 19:19:00 to 19:19:02 KST) whose turns ran again at the
+      // next full wake, each counted because a note came between.
+      if (!serverNote(text)) settleHookRetry();
       if (serverNote(text)) {
         if (settled) openTurn("agent", at);
         settled = false;
@@ -180,7 +184,6 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       if (message.isError && turn) turn.told = turn.told.filter(said => said.id !== message.toolCallId);
     } else if (message.role === "custom" && isPromptCustom(message)) {
       settleFailure(at);
-      settleHookRetry();
       if (settled) openTurn("agent", at);
       settled = false;
     }
