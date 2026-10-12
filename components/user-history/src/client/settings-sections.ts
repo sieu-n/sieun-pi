@@ -8,6 +8,7 @@ export const SETTINGS_SECTIONS = [
   { id: "appearance", label: "Appearance", icon: "palette", description: "Theme, accent color, text size and spacing. Saved in this browser and applied at once." },
   { id: "remote", label: "Phone access", icon: "phone", description: "Open the chat from your phone, and keep it running on this Mac." },
   { id: "slack", label: "Slack", icon: "hash", description: "Mirror chats to Slack channels and reply from there." },
+  { id: "machine", label: "This Mac", icon: "cpu", description: "Live CPU and memory use of the Mac the chat runs on." },
   { id: "updates", label: "Updates", icon: "download", description: "The app version, and the rules version each chat runs." },
   { id: "how", label: "How it works", icon: "book", description: "How chats and the account pool work, with the values they use now." },
 ] as const satisfies readonly { id: string; label: string; icon: IconName; description: string }[];

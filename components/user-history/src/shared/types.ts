@@ -467,6 +467,15 @@ export type SlackChatInput =
   | { action: "rename"; name: string }
   | { action: "stop" };
 
+/** Settings > This Mac: CPU and memory of the machine the chat service runs on, read on each request. */
+export type MemoryPressure = "normal" | "warn" | "critical";
+export interface MachineView {
+  /** Busy share of all cores since the previous reading, 0 to 100. */
+  cpu: { percent: number; cores: number; load: [number, number, number] };
+  /** usedBytes counts app, wired and compressed memory, as Activity Monitor's "Memory Used" does on macOS. Swap and pressure are null off macOS. */
+  memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; pressure: MemoryPressure | null };
+}
+
 /** A chat-client SDK update. `failed` comes back after a restart until the daemon version changes or Retry succeeds. */
 export interface SdkUpdateState { state: "idle" | "running" | "failed" | "restarting"; target?: string; message: string; log: string[]; at?: string }
 /** Settings > Updates: the Prime Agent daemon, the prime-agent package this chat loaded, and the chat build. */

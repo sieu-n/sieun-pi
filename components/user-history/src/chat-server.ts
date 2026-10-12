@@ -22,6 +22,7 @@ import { interruptedRuns } from "./chat-resume.ts";
 import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
+import { machineView } from "./chat-machine.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
@@ -505,6 +506,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, { channels: await slack.channels().catch(() => null) }); return;
         }
         if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
+        if (route === "api/machine") { json(res, 200, await machineView()); return; }
         if (route.startsWith("api/usage/")) {
           const analytics = backend.usage;
           if (!analytics) throw new RequestError(503, "Usage analytics is off in this chat.");
