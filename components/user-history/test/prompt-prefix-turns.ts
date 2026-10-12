@@ -12,7 +12,8 @@ import { AuthStorage, createAgentSession, DefaultResourceLoader, type ExtensionA
 import { type Context, fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai";
 import { streamAnthropic } from "@earendil-works/pi-ai/anthropic";
 import historyExtension from "../extension/index.ts";
-import { CHAT_BOARD_TOOL, CHAT_FLAG } from "../src/chats.ts";
+import { briefNote, CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG } from "../src/chats.ts";
+import { CHAT_NOTICE } from "../src/shared/chat-feed.ts";
 
 const dataDir = process.argv[2]!;
 // Loaded by URL so this package's stricter tsconfig does not type-check global-rules, which the root tsconfig owns.
@@ -22,6 +23,7 @@ const fauxProvider = () => registerFauxProvider({ api: "anthropic-messages", pro
 let faux = fauxProvider();
 const model = faux.getModel();
 
+const NEW_RULE = "Brief edit: a rule another agent added while this chat ran.";
 export type Request = { turn: string; payload: { system?: unknown; tools?: unknown; messages: unknown[] } };
 const requests: Request[] = [];
 let turn = "";
@@ -44,10 +46,15 @@ const chatExtension = (pi: ExtensionAPI) => {
   const flags = (name: string) => name === "agent-chat-data-dir" ? dataDir : name === CHAT_FLAG ? true : pi.getFlag(name);
   historyExtension(new Proxy(pi, { get: (target, key) => key === "getFlag" ? flags : Reflect.get(target, key) }));
 };
-const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } });
-const resourceLoader = new DefaultResourceLoader({ cwd: dataDir, agentDir, settingsManager, extensionFactories: [globalRules, chatExtension],
-  noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, bundledSkillsDir: null });
-await resourceLoader.reload();
+const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false, keepRecentTokens: 1 }, retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } });
+// Each session gets its own loader, as each daemon session does (agent-session-services.ts), so extension state is per session.
+const loader = async () => {
+  const resourceLoader = new DefaultResourceLoader({ cwd: dataDir, agentDir, settingsManager, extensionFactories: [globalRules, chatExtension],
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, bundledSkillsDir: null });
+  await resourceLoader.reload();
+  return resourceLoader;
+};
+const resourceLoader = await loader();
 const authStorage = AuthStorage.inMemory();
 authStorage.setRuntimeApiKey("anthropic", "sk-ant-oat-offline-prefix-test");
 const sessionManager = SessionManager.inMemory(dataDir);
@@ -104,11 +111,33 @@ turn = "agent-message wake after a reload"; faux.setResponses([said("Reloaded.")
 await wake("Third report.");
 // A session started fresh on the same build: its system prompt and tools are what the reloaded session sends.
 const freshRequests = requests.length;
-const fresh = await createAgentSession({ cwd: dataDir, agentDir, authStorage, modelRegistry: ModelRegistry.inMemory(authStorage), model, resourceLoader,
+const fresh = await createAgentSession({ cwd: dataDir, agentDir, authStorage, modelRegistry: ModelRegistry.inMemory(authStorage), model, resourceLoader: await loader(),
   sessionManager: SessionManager.inMemory(dataDir), settingsManager, includeGoals: false, includeCompactSkill: false, prewarmIpythonKernel: false, telemetryDisabled: true } as never);
 await fresh.session.bindExtensions(bindings);
 turn = "fresh session"; faux.setResponses([said("Fresh.")]);
 await fresh.session.prompt("Look at the board.");
 const freshRequest = requests.splice(freshRequests)[0];
-await writeFile(join(dataDir, "requests.json"), JSON.stringify({ requests, fresh: freshRequest, pending: faux.getPendingResponseCount() }));
+// Another agent edits the chat brief while the chat runs. The chat service reloads the chat onto the new build and leaves its `[brief]`
+// notice in the transcript between turns (Chats.refreshExtension).
+const before = [...CHAT_BRIEF];
+(CHAT_BRIEF as string[]).push(NEW_RULE);
+await session.reload();
+faux = fauxProvider();
+const note = briefNote(before, CHAT_BRIEF);
+if (note) await session.sendCustomMessage({ customType: CHAT_NOTICE, content: note, display: true });
+turn = "agent-message wake after a brief change"; faux.setResponses([said("New rule noted.")]);
+await wake("Fourth report.");
+// A chat started after the edit, and the running chat once it compacts, carry the new brief in the system prompt.
+const briefRequests = requests.length;
+const freshBrief = await createAgentSession({ cwd: dataDir, agentDir, authStorage, modelRegistry: ModelRegistry.inMemory(authStorage), model, resourceLoader: await loader(),
+  sessionManager: SessionManager.inMemory(dataDir), settingsManager, includeGoals: false, includeCompactSkill: false, prewarmIpythonKernel: false, telemetryDisabled: true } as never);
+await freshBrief.session.bindExtensions(bindings);
+turn = "fresh session after a brief change"; faux.setResponses([said("Fresh.")]);
+await freshBrief.session.prompt("Look at the board.");
+faux.setResponses([fauxAssistantMessage(fauxText("Summary: the chat read the board and noted four reports."))]);
+await session.compact();
+turn = "owner after a compaction"; faux.setResponses([said("Compacted.")]);
+await session.prompt("Carry on after the compaction.");
+const [freshAfterBrief, compacted] = requests.splice(briefRequests);
+await writeFile(join(dataDir, "requests.json"), JSON.stringify({ requests, fresh: freshRequest, freshAfterBrief, compacted, note, rule: NEW_RULE, pending: faux.getPendingResponseCount() }));
 process.exit(0);

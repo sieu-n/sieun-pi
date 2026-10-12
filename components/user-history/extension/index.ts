@@ -4,8 +4,8 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-age
 import { agentLines } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
-import { BRIEF_CORRECTIONS, CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, hasChatMarker, JOB_REPLY_TOOL, jobOf,
-  jobPersonaGuideline, jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
+import { BRIEF_CORRECTIONS, CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_BRIEF_ENTRY, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, hasChatMarker, JOB_REPLY_TOOL, jobOf,
+  jobPersonaGuideline, jobRegistry, jobReplyGuideline, pinnedBrief, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
 import { boardRevLine, parseBoardOps, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
@@ -24,14 +24,16 @@ export default function historyExtension(pi: ExtensionAPI): void {
   });
   pi.registerFlag(CHAT_FLAG, { description: "Create this session as a browser chat (the chat server sets it; the session entry chat_mode is the durable mark)", type: "boolean" });
   // The chat brief lives in the board tool's promptGuidelines: when the tool is active the base system prompt carries the bullets, so agent-message
-  // wakes and heartbeat turns (which skip before_agent_start) read it too. The board file is the one the chat server shows and the owner edits.
+  // wakes and heartbeat turns (which skip before_agent_start) read it too. A chat registers it again at session_start with the brief it pinned
+  // (pinnedBrief), so a reload onto an edited brief keeps its cached prompt. The board file is the one the chat server shows and the owner edits.
   // tell_owner below is active with it (CHAT_TOOLS).
-  pi.registerTool({
+  let boardBrief: readonly string[] = CHAT_BRIEF;
+  const boardTool = (brief: readonly string[]) => { boardBrief = brief; pi.registerTool({
     name: CHAT_BOARD_TOOL,
     label: "Chat board",
     description: "Read or change this chat's board: plan, owner todos, scratchpad. No ops returns the open checklist with ids; ops return their " +
       "summaries. The board skill's SKILL.md explains each op and field.",
-    promptGuidelines: [...CHAT_BRIEF],
+    promptGuidelines: [...brief],
     parameters: {
       type: "object",
       properties: {
@@ -63,7 +65,11 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const agents = agentLines(await chatAgentsOf(sessionId), now);
       return { content: [{ type: "text", text: [...changed, renderOpenPlan(board, sessionId, checkIn), ...agents].join("\n") }], details: undefined };
     },
-  });
+  }); };
+  boardTool(CHAT_BRIEF);
+  // A chat pins the brief its system prompt carries at its first start and after each compaction, when the prompt is rewritten anyway; a
+  // reload in between keeps the pinned one, and the chat server's [brief] notice tells it what changed.
+  const pinBrief = () => pi.appendEntry(CHAT_BRIEF_ENTRY, { lines: [...CHAT_BRIEF] });
   // The feed shows this call's text as a bubble on any turn. On a wake-up it is the only text the owner sees; on an owner turn that calls it,
   // the chat's own text folds into notes.
   pi.registerTool({
@@ -185,8 +191,20 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const tools = withChatTool(pi.getActiveTools(), mode.active);
       if (tools) pi.setActiveTools(tools);
     } catch { marked = false; }
-    if (marked) registerCorrectionTool();
+    if (marked) {
+      registerCorrectionTool();
+      try {
+        const pinned = pinnedBrief(ctx.sessionManager.getBranch());
+        if (!pinned) pinBrief();
+        const brief = pinned ?? CHAT_BRIEF;
+        if (brief.join("\n") !== boardBrief.join("\n")) boardTool(brief);
+      } catch { /* the loaded brief */ }
+    }
     await findJob(ctx).catch(() => {});
+  });
+  pi.on("session_compact", () => {
+    if (!marked) return;
+    try { pinBrief(); boardTool(CHAT_BRIEF); } catch { /* the pinned brief until the next start */ }
   });
   pi.on("before_agent_start", async (event, ctx) => {
     if (job || rootLooked || marked || depthOf(ctx.sessionManager.getHeader()) !== 0) return undefined;

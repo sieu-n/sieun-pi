@@ -427,52 +427,47 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
   };
 }
 
-/** The brief a chat runs: the bullets its board tool puts in the base prompt, and their version (8 hex of a sha256 over the bullets). */
+/**
+ * The brief a chat runs: the bullets its board tool puts in the base prompt, and their version (8 hex of a sha256 over the bullets). A chat
+ * pins the brief it loaded (`pinnedBrief`) and keeps it in its system prompt until it compacts, so an edit to CHAT_BRIEF never rewrites a
+ * running chat's cached prompt; it reaches the chat as the `briefNote` notice at the end of its history.
+ */
 export interface Brief { version: string; lines: readonly string[] }
 export function chatBrief(lines: readonly string[] = CHAT_BRIEF): Brief {
   return { version: createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 8), lines };
 }
 
-/** How many changed or added rules a brief note quotes, and how long each quote may be. */
-export const BRIEF_NOTE_LINES = 6;
-export const BRIEF_NOTE_CHARS = 160;
-export const BRIEF_PREFIX = "[brief] ";
-const sentences = (lines: readonly string[]): string[] =>
-  lines.flatMap(line => line.split(/(?<=[.!?])\s+(?=[A-Z`"])/)).map(sentence => sentence.trim()).filter(Boolean);
-const words = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
-/** Shared words over all words; a new sentence this close to a gone one is that rule changed, not a new one. */
-const similar = (a: Set<string>, b: Set<string>): number => {
-  let shared = 0;
-  for (const word of a) if (b.has(word)) shared++;
-  return shared / Math.max(1, a.size + b.size - shared);
-};
-const CHANGED_SIMILARITY = 0.5;
-
-/**
- * What changed between two briefs, sentence by sentence (a bullet holds several rules): `changed` are the new sentences, in brief order, that
- * are not in the old one, whether they edit an old rule or add one; `removed` counts old sentences with no close new one.
- */
-export function briefChanges(before: readonly string[], after: readonly string[]): { changed: string[]; removed: number } {
-  const old = sentences(before);
-  const next = sentences(after);
-  const oldSet = new Set(old);
-  const nextSet = new Set(next);
-  const changed = next.filter(sentence => !oldSet.has(sentence));
-  const gone = old.filter(sentence => !nextSet.has(sentence));
-  const changedWords = changed.map(words);
-  const removed = gone.filter(sentence => { const own = words(sentence); return !changedWords.some(other => similar(own, other) >= CHANGED_SIMILARITY); }).length;
-  return { changed, removed };
+/** The session entry that pins the brief a chat's system prompt carries: `{ lines }`, written at its first start and after each compaction. */
+export const CHAT_BRIEF_ENTRY = "chat_brief";
+/** The brief the chat's system prompt carries since its last compaction, or null when none is pinned since then. */
+export function pinnedBrief(branch: readonly { type: string; customType?: string; data?: unknown }[]): string[] | null {
+  const compact = branch.findLastIndex(entry => entry.type === "compaction");
+  const pin = branch.slice(compact + 1).findLast(entry => entry.type === "custom" && entry.customType === CHAT_BRIEF_ENTRY);
+  const lines = (pin?.data as { lines?: unknown } | undefined)?.lines;
+  return Array.isArray(lines) && lines.every(line => typeof line === "string") ? lines : null;
 }
 
-const clipRule = (text: string): string => text.length > BRIEF_NOTE_CHARS ? text.slice(0, BRIEF_NOTE_CHARS - 1).trimEnd() + "\u2026" : text;
-/** The one line a chat gets in its transcript after it reloads onto a changed brief; null when no rule changed. */
+const sentences = (lines: readonly string[]): string[] =>
+  lines.flatMap(line => line.split(/(?<=[.!?])\s+(?=[A-Z`"])/)).map(sentence => sentence.trim()).filter(Boolean);
+
+/** What changed between two briefs, sentence by sentence (a bullet holds several rules): the new sentences and the gone ones, in brief order. */
+export function briefChanges(before: readonly string[], after: readonly string[]): { added: string[]; dropped: string[] } {
+  const old = sentences(before);
+  const next = sentences(after);
+  return { added: next.filter(sentence => !old.includes(sentence)), dropped: old.filter(sentence => !next.includes(sentence)) };
+}
+
+/**
+ * The notice a chat gets in its transcript after it reloads onto a changed brief; null when no rule changed. Its system prompt keeps the brief
+ * it pinned, so the notice quotes every added and dropped sentence in full.
+ */
 export function briefNote(before: readonly string[], after: readonly string[]): string | null {
-  const { changed, removed } = briefChanges(before, after);
-  if (!changed.length && !removed) return null;
-  const shown = changed.slice(0, BRIEF_NOTE_LINES).map(clipRule);
-  const more = changed.length - shown.length;
-  const parts = [...shown, ...(more > 0 ? [`and ${more} more`] : []), `${removed} removed`];
-  return `${BRIEF_PREFIX}Your chat rules changed: ${parts.join("; ")}. Jobs you started keep their old instructions: re-brief a long-running job if this matters.`;
+  const { added, dropped } = briefChanges(before, after);
+  if (!added.length && !dropped.length) return null;
+  return ["[brief] Your chat rules changed. This update overrides the chat rules in your system prompt.",
+    ...(added.length ? ["New rules:", ...added.map(sentence => `- ${sentence}`)] : []),
+    ...(dropped.length ? ["Rules that no longer hold:", ...dropped.map(sentence => `- ${sentence}`)] : []),
+    "Jobs you started keep their old instructions: re-brief a long-running job if this matters."].join("\n");
 }
 
 /**
@@ -1398,8 +1393,9 @@ export class Chats {
 
   /**
    * Reloads the chat when the build it last loaded is not the one on disk, or the owner asked to update every chat: now if it is idle, else once
-   * its turn ends. A reload onto a changed brief leaves one notice line in the transcript saying what changed; the model reads it on its next
-   * turn, whatever starts that turn, and it starts no turn itself.
+   * its turn ends. The reload keeps the brief the chat pinned in its system prompt, so its cached prompt stays valid; a reload onto a changed
+   * brief leaves one notice in the transcript with what changed. The model reads it on its next turn, whatever starts that turn, and it starts
+   * no turn itself.
    */
   private async refreshExtension(id: string): Promise<void> {
     await this.load();

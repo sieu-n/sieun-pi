@@ -6,7 +6,7 @@ import { test } from "node:test";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
 import { startChatServer } from "../src/chat-server.ts";
-import { BRIEF_NOTE_CHARS, briefChanges, briefNote, CHAT_BRIEF, chatBrief, Chats, type ChatThreads, type CheckInSource, loadRecord, reloadAction, replyCheckRecord } from "../src/chats.ts";
+import { briefChanges, briefNote, CHAT_BRIEF, CHAT_BRIEF_ENTRY, chatBrief, Chats, type ChatThreads, type CheckInSource, loadRecord, pinnedBrief, reloadAction, replyCheckRecord } from "../src/chats.ts";
 import { briefRows, briefStatus, currentBrief } from "../src/client/brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { SessionRow } from "../src/shared/types.ts";
@@ -47,22 +47,30 @@ test("brief version: 8 hex, the same for the same bullets, another when one bull
   assert.equal(reloadAction("b1", "b1", true, true), "wait");
 });
 
-test("brief diff: changed and added sentences in brief order, removed counted apart from edits; the note clips, caps at 6 and is null with no change", () => {
+test("brief diff: added and dropped sentences in brief order; the note quotes each in full and is null with no change", () => {
   const before = ["Rule one is here. Reply in 60 words at most.", "Old rule nobody needs any more."];
   const after = ["Rule one is here. Reply in 3 short sentences or 60 words at most.", "A brand new rule about wikis."];
-  assert.deepEqual(briefChanges(before, after), { changed: ["Reply in 3 short sentences or 60 words at most.", "A brand new rule about wikis."], removed: 1 });
-  assert.equal(briefNote(before, after),
-    "[brief] Your chat rules changed: Reply in 3 short sentences or 60 words at most.; A brand new rule about wikis.; 1 removed. " +
-    "Jobs you started keep their old instructions: re-brief a long-running job if this matters.");
+  assert.deepEqual(briefChanges(before, after), { added: ["Reply in 3 short sentences or 60 words at most.", "A brand new rule about wikis."],
+    dropped: ["Reply in 60 words at most.", "Old rule nobody needs any more."] });
+  assert.equal(briefNote(before, after), [
+    "[brief] Your chat rules changed. This update overrides the chat rules in your system prompt.",
+    "New rules:", "- Reply in 3 short sentences or 60 words at most.", "- A brand new rule about wikis.",
+    "Rules that no longer hold:", "- Reply in 60 words at most.", "- Old rule nobody needs any more.",
+    "Jobs you started keep their old instructions: re-brief a long-running job if this matters."].join("\n"));
   assert.equal(briefNote(CHAT_BRIEF, [...CHAT_BRIEF]), null);
   assert.equal(briefNote(["Keep it."], ["Keep it."]), null);
-  const many = Array.from({ length: 8 }, (_, i) => `New rule number ${i} ${"x".repeat(200)}.`);
-  const note = briefNote([], many)!;
-  const quoted = note.slice(note.indexOf(": ") + 2, note.indexOf("; and"));
-  assert.equal(quoted.split("; ").length, 6);
-  for (const part of quoted.split("; ")) assert.ok(part.length <= BRIEF_NOTE_CHARS, part);
-  assert.match(note, /; and 2 more; 0 removed\. /);
-  assert.equal(briefNote(["Gone one. Kept."], ["Kept."]), "[brief] Your chat rules changed: 1 removed. Jobs you started keep their old instructions: re-brief a long-running job if this matters.");
+  const long = `A long new rule ${"x".repeat(400)}.`;
+  assert.ok(briefNote([], [long])!.includes(long), "a long rule is quoted whole");
+  assert.equal(briefNote(["Gone one. Kept."], ["Kept."]), "[brief] Your chat rules changed. This update overrides the chat rules in your system prompt.\n" +
+    "Rules that no longer hold:\n- Gone one.\nJobs you started keep their old instructions: re-brief a long-running job if this matters.");
+});
+
+test("pinned brief: the last pin since the last compaction, none before a pin or right after a compaction", () => {
+  const pin = (lines: string[]) => ({ type: "custom", customType: CHAT_BRIEF_ENTRY, data: { lines } });
+  assert.equal(pinnedBrief([]), null);
+  assert.deepEqual(pinnedBrief([pin(["One."]), { type: "message" }, pin(["Two."])]), ["Two."]);
+  assert.equal(pinnedBrief([pin(["One."]), { type: "compaction" }]), null);
+  assert.deepEqual(pinnedBrief([pin(["One."]), { type: "compaction" }, pin(["Three."])]), ["Three."]);
 });
 
 test("load record: the brief text is kept per version, the old text comes back once on a change, unused texts go", async () => {
@@ -102,7 +110,7 @@ test("reload onto a changed brief: one notice line with the diff, no turn starte
   await chats.settled();
   const notices = calls.filter(call => call.startsWith("notice"));
   assert.equal(notices.length, 1, calls.join("\n"));
-  assert.match(notices[0]!, /^notice c1 \[brief\] Your chat rules changed: Every open step names its owner/);
+  assert.match(notices[0]!, /^notice c1 \[brief\] Your chat rules changed\. [^]*\nNew rules:\n- Every open step names its owner/);
   assert.match(notices[0]!, /re-brief a long-running job if this matters\.$/);
   assert.deepEqual(calls.filter(call => /^(prompt|restart)/.test(call)), [], "the note starts no turn");
   assert.ok(calls.indexOf("reload c1") < calls.indexOf(notices[0]!), "the notice follows the reload");

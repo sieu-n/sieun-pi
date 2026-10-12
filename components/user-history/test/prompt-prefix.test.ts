@@ -16,7 +16,8 @@ const blocks = (message: unknown) => {
 const agentsMd = join(import.meta.dirname, "../../../config/AGENTS.md");
 
 /** Runs test/prompt-prefix-turns.ts in a child process with a clean env and the installed global AGENTS.md, and returns every Anthropic request it serialized. */
-async function realRequests(): Promise<{ requests: Request[]; fresh: Request; pending: number }> {
+type Run = { requests: Request[]; fresh: Request; freshAfterBrief: Request; compacted: Request; note: string | null; rule: string; pending: number };
+async function realRequests(): Promise<Run> {
   const dir = await mkdtemp(join(tmpdir(), "prompt-prefix-"));
   try {
     await mkdir(join(dir, "agent"), { recursive: true });
@@ -24,16 +25,16 @@ async function realRequests(): Promise<{ requests: Request[]; fresh: Request; pe
     const result = spawnSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "prompt-prefix-turns.ts"), dir], { cwd: join(import.meta.dirname, ".."),
       encoding: "utf8", timeout: 90_000, env: { PATH: process.env.PATH ?? "", HOME: dir, PRIME_AGENT_CODING_AGENT_DIR: join(dir, "agent"), GLOBAL_RULES_LOG: join(dir, "rules.log") } });
     assert.equal(result.status, 0, result.stderr);
-    return JSON.parse(await readFile(join(dir, "requests.json"), "utf8")) as { requests: Request[]; fresh: Request; pending: number };
+    return JSON.parse(await readFile(join(dir, "requests.json"), "utf8")) as Run;
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-test("a real chat sends the same cached prefix on owner turns, tool continuations, agent-message wakes, child notices, check-ins, heartbeats, after a correction, after a rate-limited retry and after a reload, and a reloaded chat sends a fresh chat's system prompt and tools", { timeout: 120_000 }, async () => {
-  const { requests, fresh, pending } = await realRequests();
+test("a real chat sends the same cached prefix on owner turns, tool continuations, agent-message wakes, child notices, check-ins, heartbeats, after a correction, after a rate-limited retry, after a reload and after a brief change, and a reloaded chat sends a fresh chat's system prompt and tools", { timeout: 120_000 }, async () => {
+  const { requests, fresh, freshAfterBrief, compacted, note, rule, pending } = await realRequests();
   assert.equal(pending, 0);
   const turns = [...new Set(requests.map(request => request.turn))];
   assert.deepEqual(turns, ["owner", "agent-message wake", "owner again", "child exit notice", "check-in", "heartbeat", "agent message mid-turn",
-    "agent-message wake after a correction", "owner after a correction", "owner after a rate-limited call", "tool calls after a correction", "agent-message wake after a reload"]);
+    "agent-message wake after a correction", "owner after a correction", "owner after a rate-limited call", "tool calls after a correction", "agent-message wake after a reload", "agent-message wake after a brief change"]);
   requests.slice(1).forEach(({ turn, payload }, index) => {
     const previous = requests[index]!.payload;
     const label = `request ${index + 1} (${turn}) after request ${index} (${requests[index]!.turn})`;
@@ -43,9 +44,17 @@ test("a real chat sends the same cached prefix on owner turns, tool continuation
     payload.messages.slice(0, previous.messages.length).forEach((message, at) =>
       assert.deepEqual(blocks(message), blocks(previous.messages[at]), `${label}: message ${at} of the cached prefix changed`));
   });
-  const reloaded = requests.at(-1)!.payload;
+  const reloaded = requests.find(request => request.turn === "agent-message wake after a reload")!.payload;
   assert.deepEqual(withoutCacheControl(reloaded.tools), withoutCacheControl(fresh.payload.tools), "a reloaded chat has a fresh chat's tools");
   assert.deepEqual(withoutCacheControl(reloaded.system), withoutCacheControl(fresh.payload.system), "a reloaded chat has a fresh chat's system prompt");
+  const briefChanged = requests.at(-1)!.payload;
+  assert.ok(note?.includes(rule), "the brief notice names the new rule");
+  assert.ok(JSON.stringify(briefChanged.messages.slice(-3)).includes(JSON.stringify(note).slice(1, -1)), "the chat reads the brief notice at the end of its history");
+  for (const [label, { payload }] of [["a chat started after the brief change", freshAfterBrief], ["a compacted chat", compacted]] as const) {
+    assert.ok(JSON.stringify(payload.system).includes(rule), `${label} has the new brief in its system prompt`);
+    assert.deepEqual(withoutCacheControl(payload.tools), withoutCacheControl(freshAfterBrief.payload.tools), `${label}: a fresh chat's tools`);
+  }
+  assert.deepEqual(withoutCacheControl(compacted.payload.system), withoutCacheControl(freshAfterBrief.payload.system), "a compacted chat sends a fresh chat's system prompt");
   const rules = (await readFile(agentsMd, "utf8")).trim();
   for (const { turn, payload } of requests) assert.ok(JSON.stringify(payload.system).includes(JSON.stringify(rules).slice(1, -1)), `${turn}: ~/.prime/agent/AGENTS.md is missing from the system prompt`);
 });
