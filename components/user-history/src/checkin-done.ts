@@ -14,10 +14,11 @@ export const pathLike = (token: string): boolean => token.includes("/") || /^\d{
  * word up to three words before it, in the same clause, makes it a condition, a wait or a denial ("not merged", "after it is deployed",
  * "until landed", "to be released", "nothing deployed"), or the word right before it makes it a name or an adjective ("the shipped app",
  * "built from Shipped": frontend bro 10-12, p84, p92 and p96). A word joined to it by a hyphen, a slash or a dot is part of a path or a
- * name ("2030-email-from-shipped/assets").
+ * name ("2030-email-from-shipped/assets"). Parts merged into one version are one build, not a merged PR (frontend bro 10-13, p92).
  */
 const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on|nothing|no|never|without|yet|pending)\s+(?:\w+\s+){0,3})` +
-  String.raw`(?<![-/.])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)|` +
+  String.raw`(?<![-/.])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)` +
+  String.raw`(?!(?<=merged)\s+into\s+(?:one|a|a\s+single)\b)|` +
   String.raw`(?:is|are|now|went|already)\s+live|live\s+on\s+(?:prod|production|staging|main))\b`, "i");
 /** A waitFor on the owner: a For you todo id (t41) or the owner's go, answer or pick. */
 const OWNER_WAIT = /\bt\d+\b|\bowner'?s?\b/i;
@@ -25,8 +26,9 @@ const OWNER_WAIT = /\bt\d+\b|\bowner'?s?\b/i;
 const SHIP_WAIT = /\b(?:land(?:s|ed|ing)?|deploy\w*|releas\w*|merg\w*|promot\w*|push\w*|ship\w*|staging|prod|production|live)\b/i;
 /** A run or a push still on its way: dispatched, queued, running, in flight or in progress (launch main bro 10-12: p68 waited for "promote 8 run 38267006888 (dispatched 15:00:06Z)"). */
 const IN_FLIGHT = /\b(?:(?:re-?)?dispatched|queued|running|in\s+flight|in\s+progress)\b/i;
-/** A line in the note that lists the work still to do (launch main bro 10-12: p54 "Board 39 is live ... Left to do: ..."). */
-const LEFT_TO_DO = /\bleft(?:\s+to\s+do\b|\s*:)/i;
+/** A line in the note that lists the work still to do or says the item is not done (launch main bro 10-12: p54 "Board 39 is live ... Left to do: ...";
+ * frontend bro 10-13: p92 "Not done yet. ... Next the job fixes ..."). */
+const LEFT_TO_DO = /\bleft(?:\s+to\s+do\b|\s*:)|\bnot\s+(?:yet\s+)?(?:done|finished)\b|(?:^|[.;!?]\s+)next\s+the\s+job\b/i;
 /** The words that name what a ship claim or a wait is about: 3 letters or more, without the ship words and small words. */
 const SUBJECT_SKIP = new Set(["the", "and", "then", "with", "for", "from", "after", "about", "its", "his", "her", "our", "this", "that", "their", "is", "are", "now", "went",
   "already", "live", "shipped", "merged", "deployed", "landed", "released", "staging", "prod", "production", "main", "run", "until", "once", "when"]);
