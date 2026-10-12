@@ -744,6 +744,26 @@ function checkGates(before: ChatBoard, plan: readonly PlanItem[]): void {
     }
   };
   visit(plan, []);
+  checkWaitPushes(before, plan);
+}
+/**
+ * c47 reopened 10-12 (owner: "stop making up these bullshit rules on waiting", then "NEVER wait for something"): the agent may not move a step's
+ * waitUntil later. That day Crawler VP moved p42, p46 and p47 later 2 to 3 times with fresh waitFor words, and they sat through 12 to 17 check-ins.
+ * An earlier time, a cleared wait and a first wait pass, and so does a step the owner holds on an open For you todo.
+ */
+function checkWaitPushes(before: ChatBoard, plan: readonly PlanItem[]): void {
+  const was = new Map<string, PlanItem>();
+  walk(before.plan, item => was.set(item.id, item));
+  walk(plan, item => {
+    const prior = was.get(item.id);
+    if (!prior?.waitUntil || !item.waitUntil || Date.parse(item.waitUntil) <= Date.parse(prior.waitUntil)) return;
+    if (before.todos.some(todo => !todo.done && linksStep(todo, item.id))) return;
+    throw new BoardError("forbidden", `${item.id} ${quote(item.text)} already waits until ${prior.waitUntil}` +
+      `${prior.waitFor ? ` for ${quote(prior.waitFor)}` : ""}, and a later waitUntil is a new wait the owner did not ask for (c47). Act on the step in ` +
+      "this run: check whether what it waits for already happened, do its next action yourself, or start a job that removes the blocker. If only the " +
+      `owner can unblock it, add a For you todo with step "${item.id}" first. If nothing you can do moves it, clear waitUntil with null, mark it ` +
+      "blocked and name the blocker in its note.");
+  });
 }
 /** The gate fields that are set, for a stored plan item. */
 const gateFields = ({ go, kind, requirements: lines }: { [K in keyof Gates]?: Gates[K] | undefined }): Gates => ({ ...(go ? { go } : {}), ...(kind ? { kind } : {}), ...(lines?.length ? { requirements: lines } : {}) });

@@ -172,7 +172,7 @@ test("check-in precheck: a step on the same wait past 2 h is stalled, one set 30
     [], new Date(NOW - 3 * HOUR).toISOString()), NOW);
   assert.equal(passed.stalled.length + passed.steps.filter(view => view.cls === "due").length >= 1, true, "a passed date is not exempt");
   const text = checkInPrecheckText(first, [], output.flagged, NOW);
-  assert.match(text, /### Stalled waits \(take one action on each in this run: pull the slot forward, start or steer a job, or add a For you todo; "still waiting" is not an answer\)/);
+  assert.match(text, /### Stalled waits \(take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; "still waiting" and a later waitUntil are not answers\)/);
   assert.match(text, /- p3 "Merge after CI" waits for "the CI slot" and it has waited on the same thing for 3 h: act on it in this run/);
   assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "stalled_steps" && metric.target === 0));
 

@@ -48,7 +48,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 ## Upkeep
 
 1. Make the board match reality, with real statuses and notes with links, in the same turn a job starts, ends or replies.
-2. When a step's waitUntil passes or its job ends, give it a new waitUntil, the job's result, done or dropped in that turn; never leave an old wait showing (c44).
+2. When a step's waitUntil passes or its job ends, act on it in that turn: record the job's result, do the next action, or close it done or dropped. Never leave an old wait showing (c44), and never re-wait, because the board refuses a later waitUntil (c47).
 3. When plan_add says an open goal covers the same area, put the work under that goal, unless it is a separate area (c44).
 4. When this chat's duty runs a goal's work, or every open step of a goal rides another goal's job, fold the goal in the same turn (c46). Move each open step under the goal or job that ships it with plan_update `parent`, then close the goal with a note naming the duty or goal that holds its work.
 5. When a step moves to another thread for good, remove it with plan_remove and add one scratch note naming its new owner; that thread tracks it on its own board (c8).

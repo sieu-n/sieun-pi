@@ -129,7 +129,7 @@ test("check-in precheck: due, stale-chase and orphan steps keep their class line
   assert.deepEqual(classes(first), ["p7 (waiting)", "p9 (live)", "p12 (orphan)"]);
   const at = start + 2 * STEP_STALE_MS;
   const due = checkInPrecheck(first.memory, [], plan, at, self);
-  assert.deepEqual(actLines(due, at), [`p7 "Check the load" is due since ${clockTime(Date.parse(until))}: act on it or set a new waitUntil`,
+  assert.deepEqual(actLines(due, at), [`p7 "Check the load" is due since ${clockTime(Date.parse(until))}: act on it now (check whether what it waited for happened, then do the next action); the board refuses a later waitUntil (c47)`,
     'p9 "Revoke the old app" waits for "Promote 5 green" for 4 h: chase it now; after 24 h make it a For you todo or replan',
     'p12 "Move the notices" has no live owner: start a job, take it yourself, or ask the owner in For you']);
   assert.equal(actLines(checkInPrecheck(due.memory, [], plan, at + 15 * MIN, self), at + 15 * MIN).length, 3, "again at the next run");
@@ -599,7 +599,7 @@ test("parked: a blocked step whose note says an owner correction in force parks 
   assert.deepEqual(flagged.filter(slice => ["stalled_steps", "stale_chase_24h", "orphan_steps"].includes(slice.kind)).map(slice => slice.item), ["p53"]);
   assert.equal(metrics.go_missing, 0);
   const text = checkInPrecheckText(later, [], flagged, at);
-  assert.ok(!/p52|p31/.test(section(text, "Stalled waits (take one action on each in this run: pull the slot forward, start or steer a job, or add a For you todo; \"still waiting\" is not an answer)").join("\n")));
+  assert.ok(!/p52|p31/.test(section(text, "Stalled waits (take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; \"still waiting\" and a later waitUntil are not answers)").join("\n")));
   assert.ok(!/p52|p31/.test(section(text, "Steps whose class needs action").join("\n")));
   assert.ok(!/p52|p31/.test(section(text, "Other facts").join("\n")), "no 'add a For you todo for p31'");
 });

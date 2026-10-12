@@ -317,7 +317,7 @@ export function classLine(view: StepView, now: number): string | null {
   const head = `${item.id} ${quote(item.text)}`;
   if (cls === "due") {
     const until = Date.parse(item.waitUntil!);
-    return `${head} is due since ${now - until < 24 * 60 * 60_000 ? clockTime(until) : localTime(until)}: act on it or set a new waitUntil`;
+    return `${head} is due since ${now - until < 24 * 60 * 60_000 ? clockTime(until) : localTime(until)}: act on it now (check whether what it waited for happened, then do the next action); the board refuses a later waitUntil (c47)`;
   }
   if (cls === "stale-chase") {
     const on = item.waitFor !== undefined ? `waits for ${quote(item.waitFor)}` : `waits on ${owner ? ownerLabel(owner) : "its owner"}`;
@@ -976,9 +976,9 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Heartbeats the check-in covers (have the chat delete each)", flagged.filter(slice => slice.kind === "redundant_heartbeats").map(slice => slice.excerpt)),
     ...section("Open goals and no duty", flagged.filter(slice => slice.kind === "goals_without_duty").map(slice => slice.excerpt)),
     ...section("Goals nobody works on (start parallel jobs for their independent work)", idle),
-    ...section("Stalled waits (take one action on each in this run: pull the slot forward, start or steer a job, or add a For you todo; \"still waiting\" is not an answer)",
+    ...section("Stalled waits (take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; \"still waiting\" and a later waitUntil are not answers)",
       precheck.stalled.map(stalledLine)),
-    ...section("Stale steps (update or close each in this run: a new waitUntil, the job's result, done or dropped)", stale.map(slice => slice.excerpt)),
+    ...section("Stale steps (update or close each in this run: the job's result, the next action, done or dropped; the board refuses a later waitUntil)", stale.map(slice => slice.excerpt)),
     ...section("Steps whose class needs action", act),
     ...section("Look done (check the real state: close, keep or reopen)", precheck.done.filter(found => !folded.has(found.item.id)).map(lookDoneLine)),
     ...section("Owned by another thread by an owner ruling", precheck.scope.map(scopeLine)),

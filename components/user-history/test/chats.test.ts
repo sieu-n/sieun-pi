@@ -204,7 +204,7 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["SKILL.md", "Link a job on the step it does, not on the goal.", "jobs on steps"],
     ["SKILL.md", "Plan (doing, job messenger-bridge-research), Decide (blocked), Build (blocked), Verify (todo)", "the board shape example"],
     ["SKILL.md", "A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal.", "app features nest"],
-    ["SKILL.md", "give it a new waitUntil, the job's result, done or dropped in that turn", "plan upkeep (c44)"],
+    ["SKILL.md", "act on it in that turn: record the job's result, do the next action, or close it done or dropped", "plan upkeep (c44)"],
     ["SKILL.md", "fold the goal in the same turn (c46)", "fold a goal (c46)"],
     ["SKILL.md", "remove it with plan_remove and add one scratch note naming its new owner", "hand-off (c8)"],
     ["SKILL.md", "does not stay open (c45)", "a goal that only waits closes (c45)"],
