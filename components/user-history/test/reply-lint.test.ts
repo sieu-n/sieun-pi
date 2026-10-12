@@ -78,7 +78,7 @@ test("reply lint: words count the way the page folds: link labels, a code span a
   assert.deepEqual(whats(`${sixty} a b c`), ["61 words"]);
 });
 
-test("reply lint: a limit with a rate or size needs the measured resource and how full it was, or a plain 'not measured' (c43, owner 10-12)", () => {
+test("reply lint: a limit with a rate or size needs the measured resource and how full it was in the same sentence (c43, owner 10-12)", () => {
   const unmeasured = (text: string): string[] => lintOwnerReply(text).filter(finding => finding.kind === "unmeasured").map(finding => finding.what);
   const refused = [
     "Each new Instagram profile writes about 1.7 MB to the server disk, which caps new profiles near 2,200 a minute.",
@@ -90,13 +90,12 @@ test("reply lint: a limit with a rate or size needs the measured resource and ho
   ];
   for (const reply of refused) assert.equal(unmeasured(reply).length, 1, reply);
   assert.deepEqual(unmeasured(refused[0]!), ['limit with no measurement "caps new profiles near 2,200 a minute."']);
-  assert.match(tellOwner(refused[0]).text, /- limit with no measurement .*: name the resource you measured and how full it was \(disk 95% busy, CPU 400%/);
+  assert.match(tellOwner(refused[0]).text, /- limit with no measurement .*: in the same sentence, name the resource you measured and how full it was \(disk 95% busy, CPU 400%/);
   const passed = [
     "Census new reads hit 2,100/min, and iostat showed the NVMe 98% busy, so disk is the cap.",
     "CPU sat at 400% on 4 cores, so the box tops out near 900 profiles a minute.",
     "We hit Instagram's rate limit at 200 requests an hour, with 429s on 40% of calls after that.",
     "The API ceiling is above 1,500 req/s; p99 latency was 40 ms there.",
-    "Census reads cap near 2,100/min only because of a 75 MB/s caution line an earlier agent set; it is not measured, so I'm load testing the disk now.",
     "The NVMe is rated 7,000 MB/s and we write 75 MB/s, so disk is not the bottleneck.",
     "The brief allows at most 6 open goals and max 3 bullets.",
     "Claude Max costs $200 a month.",

@@ -1,13 +1,13 @@
 import { chatLines, FENCE, REPLY_CHECK_PREFIX, REPLY_FOLD_WORDS, replyWordCount, serverNote } from "./chat-feed.ts";
 import { messageText } from "./turns.ts";
-import type { ThreadMessage } from "./types.ts";
+import type { BoardOp, ThreadMessage } from "./types.ts";
 
 /**
  * The reply lint: what in a reply to the owner breaks the reply rules (correction c1/c18, owner 10-08 and 10-09: "unslop, you are talking so
  * much slop", "두번째 단계가 뭐고 pi server가 뭘계산한다는거야"). tell_owner refuses text with findings; the chat server sends a `[reply check]`
  * after an owner turn whose last reply had findings; the model's view carries the findings of the reply before each owner message; Chat
- * health counts replies with findings other than length (slop_replies). A limit with a rate or size and no measured saturation is a finding too
- * (c43, owner 10-12: "what is the bottleneck actual IOPS? CPU? RAM??????").
+ * health counts replies with findings other than length (slop_replies). A limit with a rate or size and no measured saturation in its own sentence
+ * is a finding too, in a reply or a For you todo (c43, owner 10-12: "what is the bottleneck actual IOPS? CPU? RAM??????", "r u fucking kidding?").
  */
 export type FindingKind = "long" | "bullets" | "heading" | "label" | "dash" | "bold" | "abstract" | "jargon" | "unmeasured";
 export interface Finding { kind: FindingKind; what: string; hint: string }
@@ -75,8 +75,8 @@ const HINTS: Record<FindingKind, string> = {
   bold: `bold only a short label, at most ${BOLD_MAX} per reply, or none`,
   abstract: "name the real thing instead: what runs, what it reads or counts, the number",
   jargon: "these are our internal names the owner did not use; say what it does for the owner in plain words",
-  unmeasured: "name the resource you measured and how full it was (disk 95% busy, CPU 400%, p99 latency 40 ms, 429s on 40% of calls), " +
-    "or say plainly it is a caution line nobody measured (c43)",
+  unmeasured: "in the same sentence, name the resource you measured and how full it was (disk 95% busy, CPU 400%, p99 latency 40 ms, 429s on " +
+    "40% of calls); a caution line nobody measured is no limit, so drop it and say you dropped it (c43)",
 };
 
 /**
@@ -89,7 +89,7 @@ const CAP_WORD = new RegExp([
   "\\b(?:can|could) only\\b", "\\bup to\\s+(?:about\\s+|~)?\\d", "\\bban risk\\b", "\\bbefore\\b(?:\\s+\\S+){0,4}\\s+bans?\\b",
   "\\bbanned (?:after|past|above|over|beyond)\\b", "최대", "한계", "상한", "병목",
 ].join("|"), "iu");
-const NOT_CAP = /(?:\bnot|n't|\bno)\s+(?:the\s+|a\s+|our\s+)?$/i;
+const NOT_CAP = /(?:\bnot|n't|\bno)\s+(?:the\s+|a\s+|an\s+|our\s+)?(?:[\p{L}-]+\s+)?$/iu;
 const PER = "second|sec|minute|min|hour|hr|day|account|profile|proxy|ip|worker|core|request|call|session";
 const RATE = new RegExp([
   `\\d[\\d,.]*\\s*[kKmM]?\\s*(?:[\\p{L}]+\\s+){0,2}(?:a|an|per|each|every)\\s+(?:${PER})s?\\b`,
@@ -106,17 +106,36 @@ const MEASURED = new RegExp([
   "\\b(?:429|5\\d\\d)s?\\b[^.\\n]{0,30}?\\d+(?:\\.\\d+)?\\s*%", "\\d+(?:\\.\\d+)?\\s*%[^.\\n]{0,30}?\\b(?:429s?|5\\d\\ds?|errors?|timeouts?|failed|failures?)\\b",
   "\\d[\\d,]*\\s+(?:429s|timeouts|errors)\\b",
 ].join("|"), "iu");
-/** The reply says the limit is a caution line or was never measured. */
-const UNMEASURED_SAID = /\b(?:not measured|unmeasured|never measured|nobody measured|no one measured|(?:haven't|have not|didn't|did not) measure[ds]?|caution line|safety line)\b|측정\s*(?:안|하지\s*않|전)|미측정|안전선|주의선/iu;
+/**
+ * The sentence calls the limit a caution or safety line, or says nobody measured it. Saying so does not excuse the claim. The Crawler VP told
+ * the owner "The 2,100 cap is metal's 75 MB/s disk-write line, a caution limit" and he answered "r u fucking kidding?" (c43, 10-12 22:37 KST).
+ */
+const CAUTION = new RegExp([
+  "\\b(?:not measured|unmeasured|never measured|nobody measured|no one measured|(?:haven't|have not|didn't|did not) measure[ds]?)\\b",
+  "\\b(?:caution(?:ary)?|safety|safe)\\s+(?:line|limit|cap|margin|threshold)s?\\b", "\\bto be safe\\b", "\\bover-?caution", "측정\\s*(?:안|하지\\s*않|전)", "미측정", "안전선", "주의선",
+].join("|"), "iu");
+const SENTENCE = /(?<=[.!?\u3002])\s+/;
 
-/** The capacity claims in the reply's prose with no measured saturation and no plain "not measured" anywhere in the reply. */
+/** Each sentence that states a limit with a rate or size and does not carry the measured saturation itself, or calls the limit a caution line. */
 function unmeasuredLimits(lines: readonly { words: string }[]): string[] {
-  const prose = lines.map(line => line.words).join("\n");
-  if (MEASURED.test(prose) || UNMEASURED_SAID.test(prose)) return [];
-  return lines.flatMap(line => line.words.split(/(?<=[.!?\u3002])\s+/)).flatMap(sentence => {
+  return lines.flatMap(line => line.words.split(SENTENCE)).flatMap(sentence => {
     const cap = CAP_WORD.exec(sentence);
-    return cap && !NOT_CAP.test(sentence.slice(0, cap.index)) && RATE.test(sentence) ? [clipQuote(sentence.slice(cap.index).replace(/\s*\u00a7\s*/g, " ").trim(), 60)] : [];
+    if (!cap || NOT_CAP.test(sentence.slice(0, cap.index)) || !RATE.test(sentence)) return [];
+    if (MEASURED.test(sentence) && !CAUTION.test(sentence)) return [];
+    return [clipQuote(sentence.slice(cap.index).replace(/\s*\u00a7\s*/g, " ").trim(), 60)];
   });
+}
+
+/** The limit claims in the text of For you todos (todo_add, todo_update): the owner reads and answers these, so they follow the tell_owner rule (c43). */
+export function todoLimitClaims(ops: readonly BoardOp[]): string[] {
+  return ops.flatMap(op => (op.op === "todo_add" || op.op === "todo_update") && typeof op.text === "string" ? unmeasuredLimits(proseLines(op.text)) : [])
+    .map(claim => `"${claim}"`);
+}
+
+/** The chat_board refusal for todos with limit claims, or null: the claims and the unmeasured hint. */
+export function todoLimitRefusal(ops: readonly BoardOp[]): string | null {
+  const claims = todoLimitClaims(ops);
+  return claims.length ? `Refused, nothing changed: a For you todo states a limit with no measurement ${claims.join(", ")}. Fix: ${HINTS.unmeasured}.` : null;
 }
 
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
