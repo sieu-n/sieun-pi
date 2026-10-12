@@ -60,8 +60,10 @@ const replay = (late: [string, P4][]) => {
 test("api portal vp p4: a CI run another thread holds is blocked_on_others, not stalled_steps; a step that pushes its own waitUntil still stalls", () => {
   assert.deepEqual(replay(LATE), ["13:08", "13:23", "14:38", "20:53", "21:08", "21:23", "21:38", "21:53", "22:08", "22:23", "22:38", "22:53", "22:57",
     "23:23 blocked_on_others"], "Fable's land-33 hold and land-34 order own the delay");
+  const pushes: Record<string, string> = { "2026-10-12T22:29:44.052Z": "2026-10-13T01:20:00.000Z", "2026-10-12T22:41:17.438Z": "2026-10-13T01:50:00.000Z" };
   const own = LATE.map(([at, change]): [string, P4] => [at, change.note === undefined ? change :
-    { ...change, note: "verify-dev 38300993175 is not green yet; the job reads it again at 00:45Z and moves the wait if it is still red." }]);
-  assert.deepEqual(replay(own).slice(8), ["22:08 stalled_steps", "22:23 stalled_steps", "22:38 stalled_steps", "22:53 stalled_steps", "22:57 stalled_steps",
-    "23:23 stalled_steps blocked_on_others"], "with no outside hold named, the second push is the chat's own and still stalls");
+    { ...change, note: "verify-dev 38300993175 is not green yet; the job reads it again at 00:45Z and moves the wait if it is still red.",
+      ...(pushes[at] ? { waitUntil: pushes[at] } : {}) }]);
+  assert.deepEqual(replay(own).slice(8), ["22:08", "22:23", "22:38", "22:53 stalled_steps", "22:57 stalled_steps", "23:23 stalled_steps"],
+    "with no outside hold named, pushing 00:50Z to 01:20Z to 01:50Z is the chat's own and still stalls");
 });

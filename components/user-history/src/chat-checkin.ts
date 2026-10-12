@@ -117,11 +117,16 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     heartbeats: redundantHeartbeats(context.heartbeats ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes };
 }
 
-/** A step's memo at this run: `at` moves when its sig changes, `waitAt` when its wait changes, and a new waitUntil joins `untils`. */
+/**
+ * A step's memo at this run: `at` moves when its sig changes, `waitAt` when its wait changes, and a new waitUntil joins `untils`. A cleared
+ * waitUntil or a new waitFor starts `untils` over, so only the current wait's pushes count (api portal vp p4: its 14:00Z to 14:30Z push was for a
+ * wait cleared at 14:25Z).
+ */
 export function stepMemo(item: PlanItem, before: StepMemo | undefined, now: number, firstSeen: number): StepMemo {
   const sig = stepSig(item);
   const wait = waitSig(item);
-  const seen = before?.untils ?? [];
+  const newWait = item.waitUntil === undefined || (before?.wait !== undefined && (JSON.parse(before.wait) as string[])[0] !== (item.waitFor ?? ""));
+  const seen = newWait ? [] : before?.untils ?? [];
   const untils = item.waitUntil && seen.at(-1) !== item.waitUntil ? [...seen, item.waitUntil].slice(-STALL_UNTILS) : seen;
   const turnedDone = item.status === "done" && before !== undefined && !before.sig.startsWith('["done"');
   const doneAt = turnedDone ? now : item.status === "done" ? before?.doneAt : undefined;
