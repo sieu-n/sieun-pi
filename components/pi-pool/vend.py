@@ -18,7 +18,7 @@ Private rotation journals live under the pool state directory.
 
 stdout = the token, and nothing else. All diagnostics go to the log file.
 """
-import base64, collections, concurrent.futures, dataclasses, datetime, fcntl, hashlib, json, math, os, queue, re, shlex, shutil, signal, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error, uuid
+import base64, collections, concurrent.futures, dataclasses, datetime, fcntl, hashlib, json, math, os, pwd, queue, re, shlex, shutil, signal, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error, uuid
 
 HOME = os.path.expanduser("~")
 TM = os.environ.get("TOKENMAXXING_HOME") or os.path.join(HOME, ".config", "tokenmaxxing")
@@ -31,7 +31,8 @@ TM_CODEX_LIVE = os.path.join(TM, "codex-live")
 TM_LOCK = os.path.join(TM, "lock")
 TM_CODEX_LOCK = os.path.join(TM, "codex-lock")
 TM_INDEX_VERSION = 2
-KC_ACCOUNT = os.environ.get("TOKENMAXXING_KEYCHAIN_ACCOUNT") or os.environ.get("USER") or "unknown"
+# Claude Code and tokenmaxxing file each store under the login name; a process started without USER must still read them.
+KC_ACCOUNT = os.environ.get("TOKENMAXXING_KEYCHAIN_ACCOUNT") or os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
 
 CODE_ROOT = os.path.dirname(os.path.realpath(__file__))
 POOL = os.environ.get("PI_POOL_DIR") or os.path.join(HOME, ".config", "pi-pool")
