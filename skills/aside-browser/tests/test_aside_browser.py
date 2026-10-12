@@ -232,6 +232,12 @@ INCIDENT = (
     "const recips = await page.evaluate(() => [...document.querySelectorAll('span[email]')].slice(-4).map(e=>e.getAttribute('email')));\n"
     "await page.getByRole('button', {name: /^Send/}).last().click(); await sleep(2500);"
 )
+# The second send, "Hi Thomas" at 2026-10-10 07:19:18Z, nine minutes after c37 was recorded: the cell the "iwf ticket chase" child ran, verbatim
+# (session 01a1245e, child sub-5bbdac13, line 29). INCIDENT above is the first send, "Hello Ryan" at 05:25:31Z (session 01a12443, line 62).
+INCIDENT_2 = (
+    "await page.getByRole('button',{name:/^Send/}).last().click(); await sleep(3000);\n"
+    "return JSON.stringify(await page.evaluate(()=>({sent:document.body.innerText.includes('Message sent'), t:new Date().toISOString()})))"
+)
 GMAIL = '{"u": "https://mail.google.com/mail/u/0/#inbox/FMfcgzQXKWdRxl"}'
 CHAT = "01a00000-0000-7000-8000-000000000001"
 
@@ -261,6 +267,14 @@ class OutsideSendTests(BoardBase):
             self.call(ab.run(INCIDENT))
         self.assertIn("presses Send on a webmail page", str(caught.exception))
         self.assertIn("For you todo", str(caught.exception))
+        self.assertEqual(len(mcp.calls), 1)
+        self.assertNotIn("getByRole", mcp.calls[0]["code"])
+
+    def test_the_second_iwebfusion_send_click_is_refused_without_reaching_the_browser(self):
+        mcp = self.fake(GMAIL)
+        with self.assertRaises(ab.AsideError) as caught:
+            self.call(ab.run(INCIDENT_2))
+        self.assertIn("presses Send on a webmail page", str(caught.exception))
         self.assertEqual(len(mcp.calls), 1)
         self.assertNotIn("getByRole", mcp.calls[0]["code"])
 

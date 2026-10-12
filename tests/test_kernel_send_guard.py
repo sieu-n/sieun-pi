@@ -309,6 +309,19 @@ class McpBuiltAtRunTime(KernelGuardBase):
         self.assert_refused(out)
         self.assertEqual(out["calls"], [])
 
+    def test_the_10_10_iwebfusion_send_cells_are_refused_through_the_aside_repl(self):
+        # The two cells that emailed iWebFusion on 10-10 (05:25:31Z "Hello Ryan", 07:19:18Z "Hi Thomas"), verbatim, sent straight to the Aside
+        # repl tool instead of through aside_browser.
+        for code in (
+            "const recips = await page.evaluate(() => [...document.querySelectorAll('span[email]')].slice(-4).map(e=>e.getAttribute('email')));\n"
+            "await page.getByRole('button', {name: /^Send/}).last().click(); await sleep(2500);",
+            "await page.getByRole('button',{name:/^Send/}).last().click(); await sleep(3000);\n"
+            "return JSON.stringify(await page.evaluate(()=>({sent:document.body.innerText.includes('Message sent'), t:new Date().toISOString()})))",
+        ):
+            out = self.run_cells(f"await mcp.call_tool('aside', 'repl', {{'code': {code!r}}})\n")
+            self.assert_refused(out)
+            self.assertEqual(out["calls"], [])
+
     def test_mcp3_aside_repl_args_built_earlier(self):
         out = self.run_cells(f"args = {{'code': {self.SEND_CLICK!r}}}\n", "await mcp.call_tool('aside', 'repl', args)\n")
         self.assert_refused(out)

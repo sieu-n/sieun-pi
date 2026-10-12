@@ -46,6 +46,7 @@ try {
     python("-m", "unittest", "discover", "-s", "components/pi-pool/tests", "-p", suite);
   }
   python("-m", "unittest", "discover", "-s", "skills/linear-ticket/tests");
+  python("-m", "unittest", "discover", "-s", "skills/aside-browser/tests");
   const rulesTests = readdirSync(join(root, "tests")).filter((name) => /^global-rules-.*\.test\.mjs$/.test(name)).sort();
   if (rulesTests.length === 0) throw new Error("No global-rules Node suites found.");
   run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs"]);
