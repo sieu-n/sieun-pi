@@ -488,6 +488,21 @@ test("looks done: a ship word in a note whose wait names a run still in flight, 
   assert.equal(looksDone({ ...p54Free, note: "Board 39 is live on obs. Left: the operator-cause fix." }), null, "a Left: line");
 });
 
+test("looks done: a note whose run is rerunning, or whose \"released\" is about a queue or a hold, is not done (AI harness 10-13: p319)", () => {
+  // p319's note when the 02:39 KST check-in flagged it for "released": Fable released the CI queue, and the step's own run was rerunning.
+  const p319 = step("p319", "The shared checkout's working tree stops lagging HEAD after object-path landings: sync the stale files now, and fix the landing path and " +
+    "commit.mjs so a stale copy can never revert landed work", "doing", { job: "stale tree sync",
+    note: "The tree sync is done: 170 stale files were synced to HEAD, and live and unknown files were left alone. Promote 8's metal prod deploy is green, and " +
+      "Fable released the queue at about 17:19Z, so ci/stale-tree-guard-3 (run 38268518309) is rerunning with its same id. stale tree sync reads it once at its " +
+      "expected end, puts the guard on the tip if green, and reports." });
+  assert.equal(looksDone(p319), null, "its run is rerunning");
+  assert.equal(looksDone({ ...p319, note: "The tree sync is done. Fable released the CI queue at about 17:19Z." }), null, "the CI queue is not the step's work");
+  assert.equal(looksDone({ ...p319, note: "Fable released the hold on land 33 at 17:19Z." }), null, "a released hold is not a ship");
+  assert.equal(looksDone({ ...p319, note: "The tree sync is done: 170 stale files were synced to HEAD. ci/stale-tree-guard-3 run 38268518309 has been queued on " +
+    "attempt 3 since 17:33Z, per ci-run-status at 17:45Z, behind the land-33 runs Fable put first." }), null, "its run is queued");
+  assert.equal(looksDone({ ...p319, note: "The guard fix released in 1.4.2 at 18:10Z." }), 'its note says "released"', "a released fix still counts");
+});
+
 test("c44: a step filed as a goal, a finished goal left open and too many open goals are counted misses with plan-shape lines", () => {
   const now = Date.parse("2026-10-12T03:00:00Z");
   const areas = Array.from({ length: 5 }, (_, i) => step(`p${i + 1}`, `Area ${i + 1}`, "doing", { children: [step(`p${i + 11}`, "Build", "doing", { job: "live-job" })] }));
