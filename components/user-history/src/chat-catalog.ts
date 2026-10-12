@@ -438,7 +438,7 @@ export class Catalog {
         const hello = await this.client.waitForHello(1500);
         this.observedDaemonVersion = { version: hello.appVersion };
         this.daemonVersionListener(hello.appVersion);
-        const response = await this.client.request({ type: "roster_subscribe" }, 10000, { recoverable: false });
+        const response = await this.client.request({ type: "roster_subscribe" }, undefined, { recoverable: false });
         if (!response.success) throw new Error(response.error);
         this.subscribed = true;
         this.setDaemon("up");
@@ -473,7 +473,7 @@ export class Catalog {
     if (this.schedulesRefreshing) return this.schedulesRefreshing;
     this.schedulesRefreshing = (async () => {
       try {
-        const jobs = await this.client.request({ type: "cron_list" }, 10000, { recoverable: false });
+        const jobs = await this.client.request({ type: "cron_list" }, undefined, { recoverable: false });
         if (!jobs.success) throw new Error(jobs.error);
         if (this.closed || !this.subscribed) return;
         this.schedules = parseSchedules(jobs.data);

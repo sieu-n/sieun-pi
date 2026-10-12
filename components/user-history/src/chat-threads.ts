@@ -258,7 +258,7 @@ export class ThreadHub {
     const activeSessionId = this.threads.get(id)?.live?.activeSessionId ?? (await this.summary(id)).activeSessionId;
     if (activeSessionId === undefined) return "saved";
     await this.catalog.connect();
-    const state = await this.catalog.client.request({ type: "get_state", activeSessionId }, 10000, { recoverable: false });
+    const state = await this.catalog.client.request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
     if (!state.success) throw new ThreadError(502, state.error);
     const now = state.data as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
     if (now.isSessionActive !== false || now.isStreaming || now.isCompacting || now.isBashRunning) return "busy";
@@ -664,7 +664,7 @@ export class ThreadHub {
   async resumeQueue(id: string): Promise<void> {
     const { live } = await this.requireLive(id);
     await this.catalog.connect();
-    const response = await this.catalog.client.request({ type: "resume_queue", activeSessionId: live.activeSessionId }, 10000, { recoverable: false });
+    const response = await this.catalog.client.request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
     if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
   }
 
