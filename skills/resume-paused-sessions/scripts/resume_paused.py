@@ -16,6 +16,11 @@ it is live and idle, and either:
     stream, retry wait or tool call. A message cannot reach it; it has to be aborted first, which the chat
     Resume button does before it runs this script with --unstuck.
 
+A run whose Prime worker died (workerState "failed") cannot take an abort, a stop
+or a message; every command answers "Session worker is failed". It is listed as
+"worker_failed", its head is not messaged, and the chat Resume button reopens the
+head from its saved file first, which starts it on a new worker.
+
 Runs that were aborted ("Request was aborted") or archived, for example a
 helper its parent deleted, do not count. Rate limits (429), overloaded (529),
 5xx errors and a model refusal (often a false positive that passes on retry;
@@ -77,10 +82,14 @@ def prime_agent_bin():
     return str(fallback) if fallback.exists() else "prime-agent"
 
 
+class CommandError(Exception):
+    pass
+
+
 def run(cmd):
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
-        raise SystemExit(f"{' '.join(cmd)} failed ({p.returncode}): {p.stderr.strip() or p.stdout.strip()}")
+        raise CommandError(f"{' '.join(cmd)} failed ({p.returncode}): {p.stderr.strip() or p.stdout.strip()}")
     return p.stdout
 
 
@@ -296,6 +305,14 @@ def find_paused(sessions, since_minutes, state, now):
         sid = short_id(s)
         if s.get("lifecycle") != "live":
             continue
+        if s.get("workerState") == "failed":
+            head = head_of(sid, by_id)
+            paused.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)",
+                           "kind": s.get("runtimeKind"), "reason": "worker_failed",
+                           "error": "Its Prime worker died; reopening its head starts it on a new worker.",
+                           "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": None, "head": head,
+                           "head_session_id": by_id.get(head, s).get("sessionId") or by_id.get(head, s)["id"]})
+            continue
         if is_busy(s):
             hung = hung_since(s, now)
             if hung is None or (since_minutes and hung > since_minutes):
@@ -391,17 +408,23 @@ def resume(sessions, args, now):
             "paused_in_tree": [p["id"] for p in runs],
         }
         own_hang = any(p["id"] == h and p["reason"] == "hung" and not p.get("aborted") for p in runs)
-        if own_hang and not args.dry_run:
+        if hs.get("workerState") == "failed" and not args.dry_run:
+            row["result"] = "skipped: its worker failed, reopen it first (the chat's Resume button does)"
+        elif own_hang and not args.dry_run:
             row["result"] = "skipped: hung, abort it first (the chat's Resume button does)"
         elif working and not own_hang and all(p["id"] == h for p in runs):
             row["result"] = "skipped: already working"
         elif args.dry_run:
             row["result"] = "dry-run"
         else:
-            row["result"] = send(h, compose(args.message, h, runs, working))
-            for p in runs:
-                state[p["session_id"]] = p["errored_at"]
-            sent_any = True
+            try:
+                row["result"] = send(h, compose(args.message, h, runs, working))
+            except CommandError as error:
+                row["result"] = {"error": str(error)[:300]}
+            else:
+                for p in runs:
+                    state[p["session_id"]] = p["errored_at"]
+                sent_any = True
         actions.append(row)
 
     child_actions = []
@@ -411,10 +434,16 @@ def resume(sessions, args, now):
                 continue
             if args.dry_run:
                 res = "dry-run"
+            elif p["reason"] == "worker_failed":
+                res = "skipped: its worker failed, its head is reopened instead"
             else:
-                res = send(p["id"], args.message)
-                state[p["session_id"]] = p["errored_at"]
-                sent_any = True
+                try:
+                    res = send(p["id"], args.message)
+                except CommandError as error:
+                    res = {"error": str(error)[:300]}
+                else:
+                    state[p["session_id"]] = p["errored_at"]
+                    sent_any = True
             child_actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
 
     if sent_any:
@@ -435,7 +464,10 @@ def main():
     args = ap.parse_args()
     UNSTUCK.update(filter(None, args.unstuck.split(",")))
 
-    report = resume(list_sessions(), args, dt.datetime.now(dt.timezone.utc))
+    try:
+        report = resume(list_sessions(), args, dt.datetime.now(dt.timezone.utc))
+    except CommandError as error:
+        raise SystemExit(str(error))
     if args.json:
         print(json.dumps(report, indent=1))
         return

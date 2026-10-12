@@ -131,6 +131,15 @@ const MAX_LIVE = 8;
 const MAX_SAVED = 16;
 const IDLE_MS = 3 * 60 * 1000;
 const UPDATE_COALESCE_MS = 40;
+/**
+ * The id to attach, or undefined when the session must be opened from its saved file. A worker that died leaves its sessions listed with the dead
+ * worker's active id and workerState "failed"; attaching that id fails with "Session worker is failed" forever, while opening the saved file
+ * makes the daemon drop the dead registration and start the session on a new worker.
+ */
+function liveSessionId(summary: SessionSummary): string | undefined {
+  return summary.workerState === "failed" ? undefined : summary.activeSessionId;
+}
+
 /** A pinned thread whose resume failed (a daemon timeout, a refused attach) is tried again after 15 s, doubling per failure up to 5 min. */
 const PIN_RETRY_MS = 15000;
 const PIN_RETRY_MAX_MS = 5 * 60_000;
@@ -442,7 +451,7 @@ export class ThreadHub {
       const marks: string[] = [];
       const mark = (label: string, from: number) => { marks.push(`${label} ${Math.round(performance.now() - from)}ms`); return performance.now(); };
       let at = mark("catalog", started);
-      const activeSessionId = summary.activeSessionId;
+      const activeSessionId = liveSessionId(summary);
       const live = activeSessionId === undefined ? null : await this.attaches.run(id, background, async () => {
         at = mark("queue", at);
         const connection = await this.attach(activeSessionId).catch(error => {
@@ -542,7 +551,7 @@ export class ThreadHub {
     const thread = await this.open(id, !ask.foreground);
     if (thread.live) return thread;
     const summary = await this.summary(id);
-    if (summary.activeSessionId === undefined) {
+    if (liveSessionId(summary) === undefined) {
       if (!summary.sessionFile) throw new ThreadError(409, "This thread has no session file to resume.");
       await this.catalog.connect();
       // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
@@ -553,8 +562,8 @@ export class ThreadHub {
     }
     await this.catalog.refresh();
     const resumed = await this.summary(id);
-    if (resumed.activeSessionId === undefined) throw new ThreadError(502, "Prime Agent did not resume this thread.");
-    const activeSessionId = resumed.activeSessionId;
+    const activeSessionId = liveSessionId(resumed);
+    if (activeSessionId === undefined) throw new ThreadError(502, "Prime Agent did not resume this thread.");
     const { connection, snapshot } = await this.attaches.run(id, !ask.foreground, async () => {
       const connection = await this.attach(activeSessionId);
       try { return { connection, snapshot: await this.liveSnapshot(connection, resumed) }; }

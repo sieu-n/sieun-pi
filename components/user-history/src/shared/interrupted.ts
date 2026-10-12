@@ -7,9 +7,11 @@ export interface InterruptedRun {
    * "error": the last turn failed on a network or sign-in error. "cut_off": the turn ended with no reply after a tool call.
    * "empty_reply": the model returned an empty reply that asked for a tool, so the turn ended.
    * "hung": it showed working with no activity for 30 min; Resume aborts it before it messages the head.
+   * "worker_failed": its Prime worker died, so it takes no command; Resume reopens its head from the saved file.
    */
-  reason: "error" | "cut_off" | "empty_reply" | "hung";
+  reason: "error" | "cut_off" | "empty_reply" | "hung" | "worker_failed";
   session_id?: string;
+  head_session_id?: string;
   error: string;
   errored_at: string;
   head: string;
@@ -20,7 +22,7 @@ export interface InterruptedHead {
   name: string;
   working: boolean;
   paused_in_tree: string[];
-  result: string | { deliveryStatus?: string; deliveryMode?: string };
+  result: string | { deliveryStatus?: string; deliveryMode?: string } | { error: string };
 }
 
 export interface InterruptedReport {

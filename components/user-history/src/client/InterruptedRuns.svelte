@@ -18,6 +18,7 @@
     if (run.reason === "cut_off") return "cut off mid-turn";
     if (run.reason === "empty_reply") return "empty model reply";
     if (run.reason === "hung") return "hung";
+    if (run.reason === "worker_failed") return "worker died";
     if (/api key/i.test(run.error)) return "sign-in failed";
     if (/refused to respond/i.test(run.error)) return "model refused";
     return /rate.?limit|429|usage limit/i.test(run.error) ? "rate limited" : /overloaded|529|50[234]|server error/i.test(run.error) ? "provider error" : "network error";
@@ -33,7 +34,7 @@
     busy = true;
     try {
       const result = await post<InterruptedReport>("api/interrupted", {}, 120_000);
-      const sent = result.heads.filter(head => typeof head.result === "object");
+      const sent = result.heads.filter(head => typeof head.result === "object" && !("error" in head.result));
       const resumed = sent.filter(head => !head.working).length;
       const noted = sent.length - resumed;
       const parts = [resumed ? `sent continue to ${resumed} thread${resumed === 1 ? "" : "s"}` : "", noted ? `told ${noted} working thread${noted === 1 ? "" : "s"} what stopped` : ""].filter(Boolean);

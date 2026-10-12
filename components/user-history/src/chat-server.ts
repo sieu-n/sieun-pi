@@ -699,7 +699,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           await backend.threads.abort(sessionId);
           // A native abort holds the session's input until the next human prompt; reopen it so its head's message gets through.
           await backend.threads.resumeQueue(sessionId).catch(() => {});
-        }));
+        }, async sessionId => { await backend.threads.resume(sessionId); }));
         return;
       }
       if (route === "api/slack" || route === "api/slack/check") {

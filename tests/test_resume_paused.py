@@ -166,6 +166,40 @@ class ResumePausedTests(unittest.TestCase):
         self.session("refusedrefus", [assistant(30, "error", "Model refused to respond (refusal) [request_id: req_1]")])
         self.assertEqual([p["id"] for p in self.run_resume(dry_run=True)["paused"]], ["refusedrefus"])
 
+    def test_runs_in_a_failed_worker_are_listed_and_their_head_is_never_messaged(self):
+        # 10-12: a Prime worker died under swap; its head and 22 children kept reading "working", and every abort and send
+        # answered "Session worker is failed", so Resume could never bring them back.
+        self.session("headheadhead", [assistant(80, "toolUse")], activity="working", isStreaming=True, hasRunningRlmChildren=True,
+                     lastActivityAt=at(80), workerState="failed")
+        self.session("childchild01", [assistant(175, "toolUse")], parent="headheadhead", activity="working", isStreaming=True,
+                     isRunningTools=True, lastActivityAt=at(175), workerState="failed")
+        for row in self.sessions:
+            os.utime(row["sessionFile"], (NOW.timestamp() - 175 * 60,) * 2)
+        report = self.run_resume()
+        self.assertEqual([(p["id"], p["reason"], p["head_session_id"]) for p in report["paused"]],
+                         [("headheadhead", "worker_failed", "0" * 24 + "headheadhead"), ("childchild01", "worker_failed", "0" * 24 + "headheadhead")])
+        self.assertEqual(self.sent, [])
+        self.assertIn("worker failed", report["heads"][0]["result"])
+
+    def test_one_failed_send_does_not_stop_the_other_heads(self):
+        self.session("deaddeaddead", [assistant(30, "error", "Connection error.")])
+        self.session("liveliveliv1", [assistant(30, "error", "Connection error.")])
+        sent = []
+
+        def send(target, text):
+            if target == "deaddeaddead":
+                raise resume_paused.CommandError("prime-agent send failed (1): Session worker is stopping")
+            sent.append(target)
+            return {"deliveryStatus": "delivered"}
+
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "send", side_effect=send), patch.object(resume_paused, "pool_bin", return_value=None):
+            report = resume_paused.resume(self.sessions, args, NOW)
+        self.assertEqual(sent, ["liveliveliv1"])
+        self.assertIn("Session worker is stopping", report["heads"][0]["result"]["error"])
+        again = self.run_resume(dry_run=True)
+        self.assertEqual([p["id"] for p in again["paused"]], ["deaddeaddead"], "the run whose send failed still shows")
+
     def test_old_interruptions_are_ignored(self):
         self.session("aaaaaaaaaaaa", [assistant(3000, "error", "Connection error.")], lastActivityAt=at(3000))
         self.assertEqual(self.run_resume(dry_run=True)["paused"], [])

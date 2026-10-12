@@ -24,9 +24,11 @@ export class InterruptedRuns {
   private last: { at: number; report: Promise<InterruptedReport> } | null = null;
   private queue: Promise<unknown> = Promise.resolve();
 
+  constructor(private readonly run: (args: readonly string[]) => Promise<InterruptedReport> = runScript) {}
+
   check(): Promise<InterruptedReport> {
     if (this.last && Date.now() - this.last.at < CHECK_TTL_MS) return this.last.report;
-    const report = this.serial(() => runScript(["--dry-run"]));
+    const report = this.serial(() => this.run(["--dry-run"]));
     this.last = { at: Date.now(), report };
     report.catch(() => { if (this.last?.report === report) this.last = null; });
     return report;
@@ -34,20 +36,26 @@ export class InterruptedRuns {
 
   /**
    * A hung run (working, no activity for 30 min) cannot take a message, so `unstick` aborts it first; the script then counts the
-   * aborted run as resumable through --unstuck and messages its head.
+   * aborted run as resumable through --unstuck and messages its head. A run whose worker died takes no command at all, so `reopen` opens
+   * its head from the saved file, which starts the head on a new worker; the script then sees the reopened head and messages it.
    */
-  resume(unstick: (sessionId: string) => Promise<void>): Promise<InterruptedReport> {
+  resume(unstick: (sessionId: string) => Promise<void>, reopen: (sessionId: string) => Promise<void>): Promise<InterruptedReport> {
     const report = this.serial(async () => {
-      const planned = await runScript(["--dry-run"]);
+      const planned = await this.run(["--dry-run"]);
       const unstuck: string[] = [];
       for (const run of planned.paused) {
         if (run.reason !== "hung" || !run.session_id) continue;
         try { await unstick(run.session_id); unstuck.push(run.session_id); }
         catch (error) { process.stderr.write(`resume: could not abort ${run.id}: ${error instanceof Error ? error.message : String(error)}\n`); }
       }
+      const dead = new Set(planned.paused.flatMap(run => run.reason === "worker_failed" && run.head_session_id ? [run.head_session_id] : []));
+      for (const head of dead) {
+        try { await reopen(head); }
+        catch (error) { process.stderr.write(`resume: could not reopen ${head}: ${error instanceof Error ? error.message : String(error)}\n`); }
+      }
       // The abort lands in the session file a moment after the call returns.
       if (unstuck.length) await new Promise(resolve => setTimeout(resolve, 2000));
-      return runScript(unstuck.length ? ["--unstuck", unstuck.join(",")] : []);
+      return this.run(unstuck.length ? ["--unstuck", unstuck.join(",")] : []);
     });
     this.last = null;
     return report;

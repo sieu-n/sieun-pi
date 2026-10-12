@@ -29,6 +29,8 @@ Each run maps to its head through `parentActiveSessionId`. An idle head gets the
 
 A message cannot reach a hung run. Abort it first, then pass its full session id with `--unstuck <id,id>`. The sieun-pi chat Resume button does both steps (`components/user-history/src/chat-resume.ts`).
 
+A run whose Prime worker died (`workerState` is `failed` in `prime-agent list --json`) takes no abort, stop or message; each answers "Session worker is failed". The script lists it as `worker_failed` and never messages its head. Reopen the head from its saved file (a daemon `create` with its `sessionPath`, which the chat Resume button and a pinned chat both do); the daemon then drops the dead worker and starts the head on a new one.
+
 The other flags are `--message`, `--since-minutes 0` for no age limit, `--include-children` (use it only when the user asks), `--state` and `--json`.
 
 ## Verify
