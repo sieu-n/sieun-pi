@@ -516,7 +516,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     }
     case "todo_remove": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
-      if (actor === "agent" && todo.answeredBy === "owner" && goSteps(board.plan).some(step => linksStep(todo, step.id))) {
+      if (actor === "agent" && todo.answeredBy === "owner" && goSteps(board.plan).some(step => coversStep(todo, step))) {
         throw new BoardError("forbidden", "This todo holds the owner's answer on a step that needs the owner's go; it stays on the board.");
       }
       return done({ todos: board.todos.filter(entry => entry.id !== op.id) }, `removed the todo ${quote(todo.text)}`);
@@ -594,12 +594,23 @@ export const tapsFirstChoice = (reply: string, choices: readonly string[] = []):
 /** Whether a todo asks about a plan step: its `step` field, or the step id as a whole word in its text. */
 export const linksStep = (todo: Pick<OwnerTodo, "text" | "step">, stepId: string): boolean =>
   todo.step === stepId || new RegExp(`(?<![\\w-])${stepId}(?![\\w-])`).test(todo.text);
+/** The PR numbers a step names in its text or its waitFor (p57 "merge validated onboarding replay", waitFor "a green re-run of #218"). */
+export const stepPrs = (step: Pick<PlanItem, "text"> & Partial<Pick<PlanItem, "waitFor">>): string[] => prNumbers(`${step.text}\n${step.waitFor ?? ""}`);
+/**
+ * Whether a todo is about a plan step: it links the step (`linksStep`), or its text names a PR the step names (`stepPrs`). slack green guy 10-13:
+ * t18 asked fifteen PRs by number but could link only p109, so the check-in read eleven merge steps as having no question in For you.
+ */
+export const coversStep = (todo: Pick<OwnerTodo, "text" | "step">, step: Pick<PlanItem, "id" | "text"> & Partial<Pick<PlanItem, "waitFor">>): boolean =>
+  linksStep(todo, step.id) || stepPrs(step).some(pr => namesPr(todo.text, pr));
 /** Whether an answer is a go or a hold; a reply to a side question on the step ("Leave it in the old history") is neither. */
 const goOrHold = (reply: string, choices: readonly string[]): boolean => {
   const text = choiceLead(reply, choices);
   return HOLD.test(text) || APPROVE.test(text);
 };
-/** The owner's go on a step: the last go-or-hold answer the owner gave on a todo linked to it, when it approves. A later "not yet" takes a go back. */
+/**
+ * The owner's go on a step: the last go-or-hold answer the owner gave on a todo linked to it, when it approves. A later "not yet" takes a go back.
+ * A todo that only names one of the step's PRs is no go here, since only `stepGo` on a merge step checks that the go names each PR (c49).
+ */
 export function ownerGo(board: Pick<ChatBoard, "todos">, stepId: string): OwnerTodo | null {
   const last = board.todos.filter(todo => todo.answeredBy === "owner" && linksStep(todo, stepId) && goOrHold(todo.reply ?? "", todo.choices ?? [])).at(-1);
   return last && approves(last.reply!, last.choices ?? []) ? last : null;
@@ -748,13 +759,13 @@ export const LEAVE_ASK_ERROR = `This todo asks the owner for leave on a non-prod
 /** Whether a step needs the owner's go: the chat marked it, or it is a merge step, and its target is not staging only. */
 export const needsGo = (item: Pick<PlanItem, "go" | "text">): boolean => (item.go === "needed" || mergeStep(item.text)) && !stagingOnly(item.text);
 /**
- * The owner's go that counts for this step. On a merge step it is the last go-or-hold answer on a todo linked to the step, when that todo is
- * approved (`approvedTodo`), its text names each PR the step names, and on a push to main, master or staging it says push or names the branch:
+ * The owner's go that counts for this step. On a merge step it is the last go-or-hold answer on a todo about the step (`coversStep`, so t17 is
+ * the go of p85 by #231), when that todo is approved (`approvedTodo`), its text names each PR the step's text names, and on a push to main, master or staging it says push or names the branch:
  * the rule the merge guard applies to an OWNER_OK todo. The guard also wants the repo's name, which the command knows and a step may not. Elsewhere `ownerGo`.
  */
-export function stepGo(board: Pick<ChatBoard, "todos">, item: Pick<PlanItem, "id" | "text">): OwnerTodo | null {
+export function stepGo(board: Pick<ChatBoard, "todos">, item: Pick<PlanItem, "id" | "text"> & Partial<Pick<PlanItem, "waitFor">>): OwnerTodo | null {
   if (!mergeStep(item.text)) return ownerGo(board, item.id);
-  const last = board.todos.filter(todo => todo.answeredBy === "owner" && linksStep(todo, item.id) &&
+  const last = board.todos.filter(todo => todo.answeredBy === "owner" && coversStep(todo, item) &&
     (goOrHold(todo.reply ?? "", todo.choices ?? []) || tapsFirstChoice(todo.reply ?? "", todo.choices ?? []))).at(-1);
   const branch = pushBranch(item.text);
   const pushNamed = branch === null || new RegExp(String.raw`\bpush|(?<![\w/-])${branch}(?![\w-])`, "i").test(last?.text ?? "");
@@ -834,7 +845,7 @@ function checkWaitPushes(before: ChatBoard, plan: readonly PlanItem[]): void {
   walk(plan, item => {
     const prior = was.get(item.id);
     if (!prior?.waitUntil || !item.waitUntil || Date.parse(item.waitUntil) <= Date.parse(prior.waitUntil)) return;
-    if (before.todos.some(todo => !todo.done && linksStep(todo, item.id))) return;
+    if (before.todos.some(todo => !todo.done && coversStep(todo, item))) return;
     throw new BoardError("forbidden", `${item.id} ${quote(item.text)} already waits until ${prior.waitUntil}` +
       `${prior.waitFor ? ` for ${quote(prior.waitFor)}` : ""}, and a later waitUntil is a new wait the owner did not ask for (c47). Act on the step in ` +
       "this run: check whether what it waits for already happened, do its next action yourself, or start a job that removes the blocker. If only the " +

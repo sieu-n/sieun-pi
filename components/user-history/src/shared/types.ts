@@ -133,7 +133,7 @@ export interface ScratchItem { id: string; text: string; links: ArtifactLink[]; 
  */
 export interface OwnerTodo {
   id: string; text: string; done: boolean; reply?: string; choices?: string[]; from: "agent" | "owner"; at: string;
-  /** The plan step this todo asks the owner's go for; a step id in the text links it too (`linksStep`). */
+  /** The plan step this todo asks the owner's go for; a step id in the text links it too (`linksStep`), and a PR the step names makes it about that step (`coversStep`). */
   step?: string;
   /** Who wrote `reply`. Only the owner answers; a reply without it predates the field and is no go. */
   answeredBy?: "owner";

@@ -1,4 +1,4 @@
-import { BOARD_LIMITS, planJob } from "./shared/chat-board.ts";
+import { BOARD_LIMITS, coversStep, planJob } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, SessionRow } from "./shared/types.ts";
 import { clockTime, localTime } from "./checkin-settings.ts";
 
@@ -47,7 +47,7 @@ export interface StepMemo { sig: string; at: number; wait?: string; waitAt?: num
 /** The words of a text that can tell one step from another: five letters or more, not a common word. */
 const distinctiveWords = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{4,}/g)?.filter(word => !STOP_WORDS.has(word)) ?? []);
 /**
- * Whether an open agent todo is about the step: it names the step's id or links it (`step`), the step's wait names the todo's id, or the step is
+ * Whether an open agent todo is about the step: it names the step's id or links it (`step`), it names a PR the step names (`coversStep`), the step's wait names the todo's id, or the step is
  * blocked and shares a distinctive word with it (a blocked step that "waits for the gateway todo" is covered by the gateway todo). A step at
  * work is never covered by a shared word alone (a crawler thread 10-12: a vendor support todo t22 shared "failed" or the vendor's name with 14
  * open steps, so p92 counted as For you and the no-progress check missed it).
@@ -57,7 +57,7 @@ export function todoForStep(step: Pick<PlanItem, "id" | "text" | "waitFor"> & Pa
   const id = new RegExp(`\\b${step.id}\\b`);
   const named = new Set(step.waitFor?.match(/\bt\d+\b/g) ?? []);
   const words = step.status === undefined || step.status === "blocked" ? distinctiveWords(`${step.text} ${step.waitFor ?? ""}`) : new Set<string>();
-  return todos.some(todo => id.test(todo.text) || todo.step === step.id || (todo.id !== undefined && named.has(todo.id)) ||
+  return todos.some(todo => id.test(todo.text) || coversStep(todo, step) || (todo.id !== undefined && named.has(todo.id)) ||
     [...distinctiveWords(todo.text)].some(word => words.has(word)));
 }
 /** Whether an open step waits on the owner: its note says so (WAITS_ON_OWNER). */

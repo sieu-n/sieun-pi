@@ -1,7 +1,7 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { looksDone, pathLike } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty } from "./shared/chat-duties.ts";
-import { areaWords, BOARD_LIMITS, buildGoal, isBuildStep, linksStep, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
+import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
   type TargetState, targetText, walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, owns, parkedBy, plural, quote, STATE_WORD, type StepMemo, stepOwner, type StepView, waitTarget,
@@ -442,7 +442,7 @@ export function gateFindings(board: ChatBoard | null, facts: readonly JobFact[],
       if (needsGo(item) && OPEN.has(item.status) && !stepGo(board, item)) {
         if (item.status === "doing" || ownerOf(item, facts)?.state === "working") found.push({ kind: "go_missing", item });
         else if (parkedBy(item, active) === undefined) {
-          const todo = board.todos.find(entry => !entry.done && linksStep(entry, item.id));
+          const todo = board.todos.find(entry => !entry.done && coversStep(entry, item));
           found.push({ kind: "go_waiting", item, ...(todo ? { todo } : {}) });
         }
       }
