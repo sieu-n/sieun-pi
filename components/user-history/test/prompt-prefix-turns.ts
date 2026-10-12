@@ -18,7 +18,8 @@ const dataDir = process.argv[2]!;
 // Loaded by URL so this package's stricter tsconfig does not type-check global-rules, which the root tsconfig owns.
 const globalRules = (await import(pathToFileURL(join(import.meta.dirname, "../../global-rules/index.ts")).href) as { default: (pi: ExtensionAPI) => Promise<void> }).default;
 const agentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR!;
-const faux = registerFauxProvider({ api: "anthropic-messages", provider: "anthropic", models: [{ id: "claude-opus-5-5", reasoning: true }] });
+const fauxProvider = () => registerFauxProvider({ api: "anthropic-messages", provider: "anthropic", models: [{ id: "claude-opus-5-5", reasoning: true }] });
+let faux = fauxProvider();
 const model = faux.getModel();
 
 export type Request = { turn: string; payload: { system?: unknown; tools?: unknown; messages: unknown[] } };
@@ -52,7 +53,9 @@ authStorage.setRuntimeApiKey("anthropic", "sk-ant-oat-offline-prefix-test");
 const sessionManager = SessionManager.inMemory(dataDir);
 const { session } = await createAgentSession({ cwd: dataDir, agentDir, authStorage, modelRegistry: ModelRegistry.inMemory(authStorage), model,
   resourceLoader, sessionManager, settingsManager, includeGoals: false, includeCompactSkill: false, prewarmIpythonKernel: false, telemetryDisabled: true } as never);
-await session.bindExtensions({});
+// The daemon binds every session it runs (daemon-extension-binding.ts), so a reload emits session_start again; an empty binding would not.
+const bindings = { shutdownHandler: () => {} };
+await session.bindExtensions(bindings);
 const idle = async () => { await session.waitForIdle(); await new Promise(resolve => setTimeout(resolve, 50)); await session.waitForIdle(); };
 // The daemon delivers a peer's message as a custom agent_message (see prime-agent createAgentSessionMessage), not as an owner message.
 let messageCount = 0;
@@ -93,5 +96,19 @@ await session.prompt("Look again."); await idle();
 await writeFile(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [correction("c1", "Written between turns."), correction("c2", "Written after the retry.")] }));
 turn = "tool calls after a correction"; faux.setResponses([board(), board(), board(), said("Three reads done.")]);
 await session.prompt("Read the board three times.");
-await writeFile(join(dataDir, "requests.json"), JSON.stringify({ requests, pending: faux.getPendingResponseCount() }));
+// The chat server (and its job reload) sends the daemon's reload between turns: it re-runs the extensions on the build on disk.
+await session.reload();
+// The reload resets pi-ai's API providers to the built-in ones; the faux one goes back in place of the real Anthropic transport.
+faux = fauxProvider();
+turn = "agent-message wake after a reload"; faux.setResponses([said("Reloaded.")]);
+await wake("Third report.");
+// A session started fresh on the same build: its system prompt and tools are what the reloaded session sends.
+const freshRequests = requests.length;
+const fresh = await createAgentSession({ cwd: dataDir, agentDir, authStorage, modelRegistry: ModelRegistry.inMemory(authStorage), model, resourceLoader,
+  sessionManager: SessionManager.inMemory(dataDir), settingsManager, includeGoals: false, includeCompactSkill: false, prewarmIpythonKernel: false, telemetryDisabled: true } as never);
+await fresh.session.bindExtensions(bindings);
+turn = "fresh session"; faux.setResponses([said("Fresh.")]);
+await fresh.session.prompt("Look at the board.");
+const freshRequest = requests.splice(freshRequests)[0];
+await writeFile(join(dataDir, "requests.json"), JSON.stringify({ requests, fresh: freshRequest, pending: faux.getPendingResponseCount() }));
 process.exit(0);

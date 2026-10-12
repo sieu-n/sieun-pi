@@ -487,11 +487,12 @@ export function briefNote(before: readonly string[], after: readonly string[]): 
 }
 
 /**
- * The source files that shape a chat session's requests: this extension and global-rules, which also runs in every chat. A change in any of
- * them is a new build; a chat that loaded an older one is reloaded. A file missing from a release hashes as missing.
+ * The source files that shape a session's requests: this extension (its tools and their schemas, the brief, the context hook with the reply
+ * cap, reply-lint notes, corrections, notices and images) and global-rules, which runs in every session. A change in any of them is a new
+ * build; a chat or a job of a chat that loaded an older one is reloaded. A file missing from a release hashes as missing.
  */
 const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts", "chat-corrections.ts",
-  "correction-delivery.ts", "context-images.ts", "prime-notices.ts", "../../global-rules/index.ts", "../../global-rules/standing-rules.ts", "../../global-rules/standing-rules.md"];
+  "correction-delivery.ts", "context-images.ts", "prime-notices.ts", "shared/reply-lint.ts", "shared/turns.ts", "shared/types.ts", "../../global-rules/index.ts"];
 /** A short hash of the extension sources on disk now. */
 export function extensionBuild(dir: string = import.meta.dirname): string {
   const hash = createHash("sha256");
@@ -648,6 +649,12 @@ export interface ChatThreads {
   running(id: string): boolean;
   /** Re-runs the session's extensions, so it gets the current tools and brief. */
   reload(id: string): Promise<void>;
+  /**
+   * `reload` for a thread that may not be attached (a job): only when the daemon shows it doing nothing, no turn, queued input or background
+   * work in its kernel, which a reload would drop. "busy" leaves it for a later look; "saved" is a thread with no live session, which loads
+   * the build on disk when it resumes.
+   */
+  reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved">;
   /** `live` fires after each attach with the children known then; `children` on every change while attached; `idle` at each turn's end. */
   observe(observer: { live(id: string, children: readonly ChildAgent[]): void; children(id: string, children: readonly ChildAgent[]): void; idle(id: string): void }): () => void;
   /**
@@ -762,6 +769,9 @@ export class Chats {
   private lastTick: number | null = null;
   /** The subagents and create_session roots of the chats, as the last wake found them, and the wakes sent to each for a transient failure. */
   private jobThreads = new Set<string>();
+  /** The jobs of the chats seen since the first look after this service started (undefined before it), and the ones known on this build. */
+  private jobsSeen: Set<string> | undefined;
+  private readonly jobsCurrent = new Set<string>();
   private readonly jobWakes = new Map<string, JobWake>();
   /** The activity stamp at which a job thread was last found with no transient failure; it is looked at again once the stamp changes. */
   private readonly jobQuiet = new Map<string, string>();
@@ -1014,6 +1024,7 @@ export class Chats {
     try { rows = await this.source.rows(); }
     catch (error) { this.log(`chats: jobs: ${error instanceof Error ? error.message : String(error)}`); return; }
     const chatRows = rows.filter(row => this.chatIds.has(row.id));
+    this.refreshJobs(chatRows);
     this.source.awake?.(chatRows.some(row => row.working || (row.agents ?? []).some(agent => agent.state === "working")));
     const now = this.now();
     const threads = new Set<string>();
@@ -1031,6 +1042,41 @@ export class Chats {
     }
     for (const threadId of this.jobThreads) if (!threads.has(threadId)) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); this.jobGone.delete(threadId); }
     this.jobThreads = threads;
+  }
+
+  /**
+   * The extension build of each job of a chat (a subagent or a create_session root), kept the way `refreshExtension` keeps a chat's: a job
+   * that last loaded an older build than the one on disk, or that already ran when this service first looked, is reloaded once it runs
+   * nothing, one job at a time; a job that shows up later started on this build. A working job is looked at again on a later tick.
+   */
+  private refreshJobs(chatRows: readonly SessionRow[]): void {
+    const first = this.jobsSeen === undefined;
+    const seen = this.jobsSeen ??= new Set();
+    for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
+      const id = agent.sessionId;
+      if (!id || (agent.link !== "subagent" && agent.link !== "root") || this.chatIds.has(id) || this.jobsCurrent.has(id)) continue;
+      const fresh = !first && !seen.has(id);
+      seen.add(id);
+      if (agent.state === "working" && !fresh) continue;
+      this.queue("#reload", () => this.refreshJob(id, fresh));
+    }
+  }
+
+  private async refreshJob(id: string, fresh: boolean): Promise<void> {
+    if (this.jobsCurrent.has(id)) return;
+    try {
+      const loaded = await this.loads.get(id);
+      if (!(loaded === undefined && fresh) && reloadAction(loaded, this.build, false) === "reload") {
+        const result = await this.threads.reloadIdle(id);
+        if (result === "busy") return;
+        if (result === "reloaded") this.log(`job ${id.slice(0, 8)}: extension reloaded, build ${this.build}`);
+      }
+      if (loaded !== this.build) await this.loads.set(id, this.build);
+      this.jobsCurrent.add(id);
+    } catch (error) {
+      this.log(`job ${id.slice(0, 8)}: reload: ${error instanceof Error ? error.message : String(error)}`);
+      if (threadGone(error)) { this.jobsCurrent.add(id); await this.loads.forget(id).catch(() => {}); }
+    }
   }
 
   /**

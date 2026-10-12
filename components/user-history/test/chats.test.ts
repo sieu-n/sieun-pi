@@ -332,6 +332,10 @@ function fakeThreads(calls: string[], pinLimit = 8) {
     busy(id: string) { return busyIds.has(id) || queuedIds.has(id); },
     running(id: string) { return busyIds.has(id); },
     async reload(id: string) { calls.push(`reload ${id}`); },
+    /** Job threads whose daemon state shows work (a turn, a background bash, queued input), and the jobs `reloadIdle` reloaded. */
+    sessionBusy: new Set<string>(),
+    reloaded: [] as string[],
+    async reloadIdle(id: string) { if (this.sessionBusy.has(id)) return "busy" as const; this.reloaded.push(id); return "reloaded" as const; },
     async create(input: { cwd: string; name: string; kind: "chat"; thinkingLevel?: string }) { calls.push(`create ${input.kind} ${input.name} ${input.cwd}`); return { id: `s${next++}` }; },
     pin(id: string) { if (!pinned.has(id) && pinned.size >= pinLimit) return false; calls.push(`pin ${id}`); pinned.add(id); return true; },
     unpin(id: string) { calls.push(`unpin ${id}`); pinned.delete(id); },
@@ -748,10 +752,13 @@ test("stale extension: the decision, and the reload once a chat attaches (now wh
   await cp(join(import.meta.dirname, "..", "extension"), join(tree, "components", "user-history", "extension"), { recursive: true });
   await cp(join(import.meta.dirname, "..", "..", "global-rules"), join(tree, "components", "global-rules"), { recursive: true });
   let before = extensionBuild(src);
-  for (const file of ["correction-delivery.ts", "../../global-rules/standing-rules.ts"]) {
+  // The context hook (correction-delivery, prime-notices, context-images, the reply cap's reply-lint notes and turns text), the board tool's schema
+  // (chat-board, types) and global-rules, which runs in every session.
+  for (const file of ["correction-delivery.ts", "prime-notices.ts", "context-images.ts", "shared/reply-lint.ts", "shared/turns.ts", "shared/types.ts", "shared/chat-board.ts",
+    "../../global-rules/index.ts"]) {
     await appendFile(join(src, file), "\n");
     const after = extensionBuild(src);
-    assert.notEqual(after, before, `${file} shapes a chat's requests, so a change to it reloads the chat`);
+    assert.notEqual(after, before, `${file} shapes a session's requests, so a change to it reloads the chat and its jobs`);
     before = after;
   }
   await rm(tree, { recursive: true, force: true });
@@ -790,6 +797,48 @@ test("stale extension: the decision, and the reload once a chat attaches (now wh
   assert.deepEqual(calls.filter(call => call.startsWith("reload")), [], "a plain restart with the same build reloads nothing");
   await chats.forget("old");
   assert.equal(await loads.get("old"), undefined, "a forgotten chat drops its record");
+  chats.close();
+});
+
+test("stale extension in a job: a job of a chat that runs an older build than the one on disk is reloaded once it runs nothing, one job at a time, never twice for one build", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  const loads = loadRecord(join(dir, "extension-loads.json"));
+  await loads.set("old", "b1");
+  await loads.set("current", "b2");
+  await loads.set("kernel", "b1");
+  await loads.set("working", "b1");
+  const threads = fakeThreads([]);
+  threads.sessionBusy.add("kernel");
+  const agent = (sessionId: string, link: ChatAgent["link"], state: ChatAgent["state"] = "done"): ChatAgent =>
+    ({ key: `thread:${sessionId}`, sessionId, name: sessionId, job: sessionId, sender: sessionId, link, state, lastActivityAt: new Date(0).toISOString(), steps: [] });
+  let agents: ChatAgent[] = [agent("old", "subagent"), agent("unknown", "root"), agent("current", "subagent"), agent("kernel", "subagent"),
+    agent("working", "subagent", "working"), agent("t3", "step")];
+  const rows = (): SessionRow[] => [row("c1", new Date(0).toISOString(), { chat: true, agents })];
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b2", loads, { ...source(dir, {}, () => 0, rows), tickMs: 0 });
+  await chats.adopt();
+  await chats.tick();
+  await chats.settled();
+  assert.deepEqual(threads.reloaded, ["old", "unknown"],
+    "a job on an older build, or one already running at the first look, keeps stale prompt-shaping code unless it is reloaded; a step owner is no job");
+  assert.equal(await loads.get("old"), "b2");
+  assert.equal(await loads.get("unknown"), "b2");
+  assert.equal(await loads.get("kernel"), "b1", "background work in its kernel: the reload waits, a reload would drop it");
+  assert.equal(await loads.get("working"), "b1", "a working job is not reloaded mid-turn");
+
+  threads.reloaded.length = 0;
+  threads.sessionBusy.delete("kernel");
+  agents = [...agents.filter(item => item.sessionId !== "working"), agent("working", "subagent"), agent("fresh", "subagent")];
+  await chats.tick();
+  await chats.settled();
+  assert.deepEqual(threads.reloaded, ["kernel", "working"], "each reloads once it runs nothing; the ones done before are not reloaded again");
+  assert.equal(await loads.get("fresh"), "b2", "a job that shows up after the first look started on this build: recorded, not reloaded");
+
+  threads.reloaded.length = 0;
+  await chats.tick();
+  await chats.settled();
+  assert.deepEqual(threads.reloaded, [], "the same build reloads nothing");
   chats.close();
 });
 
@@ -1424,6 +1473,7 @@ test("chats: a job whose session is gone (not in the catalog, or listed active w
     if (id === "deleted") throw Object.assign(new Error("This thread is not in the Prime Agent catalog."), { status: 404 });
     throw new Error("Unknown active session: fa0261485da9");
   };
+  threads.reloadIdle = async () => "saved" as const;
   const step = async () => { now += 30_000; await chats.tick(); await chats.settled(); };
   for (let index = 0; index < 10; index++) await step();
   assert.deepEqual(views.sort(), ["deleted", "stale"], "each gone job is looked at once in ten ticks");

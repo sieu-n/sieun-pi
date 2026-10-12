@@ -232,6 +232,23 @@ export class ThreadHub {
   }
 
   /**
+   * `reload` for a job, attached or not, through the daemon: only when the daemon shows its session doing nothing (`isSessionActive` is false:
+   * no turn, retry, compaction, queued action or background work in its Python kernel, which the reload's kernel rebuild would drop).
+   */
+  async reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved"> {
+    const activeSessionId = this.threads.get(id)?.live?.activeSessionId ?? (await this.summary(id)).activeSessionId;
+    if (activeSessionId === undefined) return "saved";
+    await this.catalog.connect();
+    const state = await this.catalog.client.request({ type: "get_state", activeSessionId }, 10000, { recoverable: false });
+    if (!state.success) throw new ThreadError(502, state.error);
+    const now = state.data as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
+    if (now.isSessionActive !== false || now.isStreaming || now.isCompacting || now.isBashRunning) return "busy";
+    const response = await this.catalog.client.request({ type: "reload", activeSessionId }, 60000, { recoverable: false });
+    if (!response.success) throw new ThreadError(502, response.error);
+    return "reloaded";
+  }
+
+  /**
    * On every catalog update with the daemon up, a pinned thread that lost its attachment (daemon restart, worker exit) is resumed again, as a
    * background attach (`AttachQueue`), so after a restart the pins come back two at a time and an open tab or an owner send goes first. A
    * failed resume waits PIN_RETRY_MS, doubling per failure. One archived outside this server (the terminal agents view) is unpinned instead,
