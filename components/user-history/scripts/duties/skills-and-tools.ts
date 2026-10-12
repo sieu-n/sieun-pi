@@ -128,6 +128,15 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   return PASS(counts);
 }
 
+async function liveSessions(deps: Deps): Promise<number> {
+  const result = await deps.exec(paths(deps).prime, ["list", "--json"], { timeoutMs: 15_000 });
+  if (result.code !== 0) return 0;
+  try {
+    const sessions = (parseJson(result.stdout) as { sessions?: { activeSessionId?: string; isSessionActive?: boolean }[] }).sessions ?? [];
+    return sessions.filter(session => session.activeSessionId && session.isSessionActive).length;
+  } catch { return 0; }
+}
+
 async function cliLogin(deps: Deps, file: string, args: string[], ok: (result: ExecResult) => boolean, fix: string, cwd?: string): Promise<Outcome> {
   const result = await deps.exec(file, args, { ...(cwd ? { cwd } : {}), timeoutMs: 20_000 });
   return result.code === 0 && ok(result) ? PASS(brief(both(result), 120)) : FAIL("agent", `${file} ${args.join(" ")}: ${failText(result)}`, fix);
@@ -238,6 +247,10 @@ export const CHECKS: readonly Check[] = [
     let daemons: { isDefault?: boolean; status?: string; version?: string; pid?: number }[] = [];
     try { daemons = parseJson(result.stdout) as typeof daemons; } catch { /* reported below */ }
     const daemon = Array.isArray(daemons) ? daemons.find(entry => entry.isDefault) ?? (daemons.length === 1 ? daemons[0] : undefined) : undefined;
+    if (daemon?.status === "stale" && daemon.pid) {
+      const live = await liveSessions(deps);
+      if (live > 0) return PASS(`daemon pid ${daemon.pid} serves ${live} live sessions; status said stale because a busy daemon misses the hello (prime-agent#1222)`);
+    }
     if (daemon?.status !== "current") return FAIL("agent", `no current default daemon (${daemon ? `status ${daemon.status}` : failText(result)})`,
       "run `prime-agent doctor --json` (read-only) and report; never doctor --fix or shutdown");
     const release = basename(dirname(await deps.realpath(paths(deps).prime))).split("-")[0];

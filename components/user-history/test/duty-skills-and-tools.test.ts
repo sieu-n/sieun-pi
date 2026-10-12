@@ -210,6 +210,14 @@ test("skills and tools: a daemon list with one current entry and no default flag
   assert.equal(outcome("prime_daemon").status, "pass");
 });
 
+test("skills and tools: a stale daemon passes only when prime-agent list shows it serving live sessions (prime-agent#1222)", async () => {
+  const stale = [/^prime-agent status --json/, ok(JSON.stringify([{ isDefault: true, status: "stale", pid: 7 }]))] as [RegExp, ExecResult];
+  const serving = await run({ exec: [stale, [/^prime-agent list --json/, ok(JSON.stringify({ sessions: [{ activeSessionId: "a1", isSessionActive: true }, { isSessionActive: false }] }))]] });
+  assert.equal(serving.outcome("prime_daemon").status, "pass");
+  const idle = await run({ exec: [stale, [/^prime-agent list --json/, ok(JSON.stringify({ sessions: [{ isSessionActive: false }] }))]] });
+  assert.equal(idle.outcome("prime_daemon").status, "fail");
+});
+
 test("skills and tools: a check whose exec throws or times out fails for the agent and the other checks still run", async () => {
   const { output, outcome } = await run({ exec: [[/^gh auth status/, new Error("boom from exec")], [/^vercel whoami/, { code: 124, stdout: "", stderr: "", ms: 20_000 }]] });
   assert.deepEqual(outcome("gh_auth"), { status: "fail", fixer: "agent", detail: "boom from exec", fix: "find why the check itself broke" });
