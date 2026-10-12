@@ -1,7 +1,7 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { looksDone, pathLike } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty } from "./shared/chat-duties.ts";
-import { areaWords, BOARD_LIMITS, buildGoal, isBuildStep, linksStep, mergeStep, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
+import { areaWords, BOARD_LIMITS, buildGoal, isBuildStep, linksStep, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
   type TargetState, targetText, walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, owns, parkedBy, plural, quote, STATE_WORD, type StepMemo, stepOwner, type StepView, waitTarget,
@@ -73,25 +73,34 @@ export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quo
   "only when more work of this chat comes after the wait, and add that step now";
 
 /**
- * An open step whose wait is over (c45): its waitFor names plan steps or For you todos of this board (`p67`, `t8`), and every one is closed or
- * answered. A waitFor that names another thread is left out, since its ids may be that thread's. The step is due now, whatever its waitUntil.
+ * An open step whose wait is over (c45): its waitFor names plan steps or For you todos of this board (`p67`, `t8`), and everything it names is
+ * met. A named step is closed, a named todo answered, and a named PR (`prNumbers`) merged by a done merge step whose text names it. A step id in
+ * a "see" reference is a pointer, not the wait (slack green guy 10-13: "#226 and #234 merged (see p74)" read as met when p74 merged only #226
+ * and #234's merge, p124, was open). A PR the waiting step's own text names is its own merge, not its wait. The board cannot show a run or a
+ * check ("then a green re-run of #229 on the Air"), so the step ids, todos and PRs are what is checked. A waitFor that names another thread is
+ * left out, since its ids may be that thread's. The step is due now, whatever its waitUntil.
  */
 export interface WaitMet { view: StepView; over: string[] }
+const SEE_IDS = /\bsee\s+(?:also\s+)?[pt]\d+(?:\s*(?:,|and)\s*[pt]\d+)*\b/gi;
 export function waitsMet(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>): WaitMet[] {
   const items = new Map<string, PlanItem>();
   walkItems(board?.plan ?? [], item => { items.set(item.id, item); });
+  const merges = [...items.values()].filter(item => item.status === "done" && mergeStep(item.text));
   const todos = new Map((board?.todos ?? []).map(todo => [todo.id, todo]));
+  const ids = (text: string): string[] => [...new Set(text.match(/\b[pt]\d+\b/g) ?? [])];
   return views.flatMap(view => {
     const { waitFor } = view.item;
-    const named = [...new Set(waitFor?.match(/\b[pt]\d+\b/g) ?? [])].filter(id => id !== view.item.id);
-    if (!named.length || /\bthreads?\b/i.test(waitFor!) || waitTarget(waitFor, rows, self)) return [];
+    if (!ids(waitFor ?? "").some(id => id !== view.item.id) || /\bthreads?\b/i.test(waitFor!) || waitTarget(waitFor, rows, self)) return [];
+    const named = ids(waitFor!.replace(SEE_IDS, "")).filter(id => id !== view.item.id);
+    const prs = prNumbers(waitFor!).filter(pr => !namesPr(view.item.text, pr));
     const over = named.flatMap(id => {
       const item = items.get(id);
       if (item) return CLOSED.has(item.status) ? [`${id} is ${item.status}`] : [];
       const todo = todos.get(id);
       return todo && (todo.done || (todo.reply ?? "").trim() !== "") ? [`${id} is answered (read the answer: a hold is not a go)`] : [];
     });
-    return over.length === named.length ? [{ view, over }] : [];
+    const merged = prs.flatMap(pr => { const by = merges.find(item => namesPr(item.text, pr)); return by ? [`#${pr} is merged (${by.id} is done)`] : []; });
+    return over.length + merged.length > 0 && over.length === named.length && merged.length === prs.length ? [{ view, over: [...over, ...merged] }] : [];
   });
 }
 export const waitMetLine = ({ view, over }: WaitMet): string =>
