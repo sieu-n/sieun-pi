@@ -466,6 +466,26 @@ test("looks done: a note that says shipped does not make an item done while a st
     children: [step("p46", "Check", "done"), step("p98", "Prepare the setup kit", "done")] })), null, "every step done but the build waits on the owner (VP of CI 10-12, p41)");
 });
 
+test("looks done: a ship word in a note whose wait names a run still in flight, or whose note lists work left, is not done (launch main bro 10-12: p68, p54)", () => {
+  const p68 = step("p68", "Ship: promote land 32b to prod (rate-test caps, engage fixes, Watchlist batch fix), after it is proven on staging", "todo", {
+    waitFor: "promote 8 run 38267006888 (dispatched 15:00:06Z), Vercel prod aliases about 15:35-15:50Z, then the read-back: virev.ai 200 and an account add check with Fable",
+    note: "Promote 8 was dispatched at 15:00:06Z on the owner's go ('hey i approve the promote...'). Pre-checks were clean: IO 0.9%, backends 116. " +
+      "Prod crawler roles stop for about 6 min in the metal step. Obs is deployed at 64a696e59b (14:59Z)." });
+  assert.equal(looksDone(p68), null, "the promote run is still in flight");
+  assert.equal(looksDone({ ...p68, waitFor: "promote 8 run 38267006888, then the read-back", note: "Obs is deployed at 64a696e59b (14:59Z)." }), null,
+    "Obs is another service than the promote it waits for");
+  assert.equal(looksDone({ ...p68, waitFor: "promote 8 run 38267006888, then the read-back", note: "Promote 8 deployed to prod at 15:40Z." }), 'its note says "deployed"',
+    "a claim about the waited promote may mean the wait is over");
+  const p54 = step("p54", "Build: engage dashboard and alerts (pages per hour and day, account health, buy-more, killing, near-capacity), Slack DM to the owner to buy accounts", "doing", {
+    job: "engage monitoring alerts", waitFor: "the operator-cause fix probe (deliberate operator freezes get their own cause), Fable's ruling and land 33",
+    note: "Board 39 is live on obs (https://obs.virev.ai/d/engage-capacity). The job applied the 10 alert rules at about 15:05Z, all health ok. I checked the staging " +
+      "screenshot board39-staging-top.png. Left to do: give deliberate operator freezes their own cause, so the staging freeze alert stops going red." });
+  assert.equal(looksDone(p54), null, "a Left to do line");
+  const { waitFor: _wait, ...p54Free } = p54;
+  assert.equal(looksDone(p54Free), null, "a Left to do line with no wait");
+  assert.equal(looksDone({ ...p54Free, note: "Board 39 is live on obs. Left: the operator-cause fix." }), null, "a Left: line");
+});
+
 test("c44: a step filed as a goal, a finished goal left open and too many open goals are counted misses with plan-shape lines", () => {
   const now = Date.parse("2026-10-12T03:00:00Z");
   const areas = Array.from({ length: 5 }, (_, i) => step(`p${i + 1}`, `Area ${i + 1}`, "doing", { children: [step(`p${i + 11}`, "Build", "doing", { job: "live-job" })] }));

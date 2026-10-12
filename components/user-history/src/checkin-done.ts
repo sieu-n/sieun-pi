@@ -23,6 +23,15 @@ const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|
 const OWNER_WAIT = /\bt\d+\b|\bowner'?s?\b/i;
 /** A waitFor on the work reaching users: a land, deploy, release, merge, promote, push or ship, staging or production. */
 const SHIP_WAIT = /\b(?:land(?:s|ed|ing)?|deploy\w*|releas\w*|merg\w*|promot\w*|push\w*|ship\w*|staging|prod|production|live)\b/i;
+/** A run or a push still on its way: dispatched, queued, running, in flight or in progress (launch main bro 10-12: p68 waited for "promote 8 run 38267006888 (dispatched 15:00:06Z)"). */
+const IN_FLIGHT = /\b(?:(?:re-?)?dispatched|queued|running|in\s+flight|in\s+progress)\b/i;
+/** A line in the note that lists the work still to do (launch main bro 10-12: p54 "Board 39 is live ... Left to do: ..."). */
+const LEFT_TO_DO = /\bleft(?:\s+to\s+do\b|\s*:)/i;
+/** The words that name what a ship claim or a wait is about: 3 letters or more, without the ship words and small words. */
+const SUBJECT_SKIP = new Set(["the", "and", "then", "with", "for", "from", "after", "about", "its", "his", "her", "our", "this", "that", "their", "is", "are", "now", "went",
+  "already", "live", "shipped", "merged", "deployed", "landed", "released", "staging", "prod", "production", "main", "run", "until", "once", "when"]);
+const subjectWords = (text: string): Set<string> =>
+  new Set((text.toLowerCase().match(/[\p{L}][\p{L}\p{N}]{2,}/gu) ?? []).filter(word => !SUBJECT_SKIP.has(word)));
 /** The words of a note that can claim a ship: its paths, dated folder names and the item's own job name taken out. */
 function claimWords(note: string, job: string | undefined): string {
   const words = note.split(/\s+/).filter(token => !pathLike(token)).join(" ");
@@ -50,8 +59,18 @@ export function looksDone(item: Pick<PlanItem, "status" | "note" | "children" | 
   // (Crawler VP 10-12: p115 "Watch v8 is live" waited for its own ci ref).
   if (item.children.some(child => OPEN.has(child.status))) return null;
   if (wait && !SHIP_WAIT.test(wait)) return null;
-  const said = SAYS_SHIPPED.exec(claimWords(item.note ?? "", item.job));
-  return said ? `its note says "${said[0]}"` : null;
+  // A note that lists work left, or a run still on its way in the wait or the note, says the item is not done yet (launch main bro 10-12:
+  // p54 "Board 39 is live ... Left to do: ...", p68 waited for promote 8 "(dispatched 15:00:06Z)"; each was flagged twice and kept open).
+  const note = item.note ?? "";
+  if (LEFT_TO_DO.test(note) || IN_FLIGHT.test(wait) || IN_FLIGHT.test(note)) return null;
+  // With a ship wait, only a claim about the waited thing may mean the wait is over: "PROBE A deployed" for a wait on PROBE A counts, and
+  // "Obs is deployed" for a wait on promote 8 is another service (launch main bro 10-12, p68).
+  const waited = subjectWords(wait);
+  for (const sentence of claimWords(note, item.job).split(/(?<=[.;!?])\s+/)) {
+    const said = SAYS_SHIPPED.exec(sentence);
+    if (said && (!wait || [...subjectWords(sentence)].some(word => waited.has(word)))) return `its note says "${said[0]}"`;
+  }
+  return null;
 }
 /** Every open plan item that looks done (`looksDone`), steps before the goal above them. */
 export function finishedOpen(board: ChatBoard | null): { item: PlanItem; reason: string }[] {
