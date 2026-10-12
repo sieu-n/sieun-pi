@@ -753,12 +753,11 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           break;
         }
         case "archive":
-          await backend.threads.archive(id);
           if ((await backend.chats.ids()).has(id)) {
-            await backend.chats.forget(id);
+            await backend.chats.archive(id);
             // The Slack bridge watches the catalog: this update archives a synced chat's channel without waiting for its minute sync.
             await backend.catalog.notify();
-          }
+          } else await backend.threads.archive(id);
           break;
         case "unarchive":
           // Undo keeps a chat a chat: its session file still carries the chat_mode entry, so it goes back into the index, pinned, with its check-in.

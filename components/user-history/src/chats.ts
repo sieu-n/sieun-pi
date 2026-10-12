@@ -621,6 +621,8 @@ export interface ChatThreads {
   deleteSubagent(id: string, childId: string): Promise<void>;
   /** Undoes an archive: the session comes back as a saved thread that resumes on the next pin or reply. */
   unarchive(id: string): Promise<void>;
+  /** Archives the session: its turn stops, its worker ends and its session file records the archived state. */
+  archive(id: string): Promise<void>;
   /** A transcript line that starts no turn; the feed shows it as a notice. */
   notice(id: string, text: string): Promise<void>;
   /** What the feed shows under the owner's unanswered message while a restart waits; null clears it. */
@@ -688,6 +690,11 @@ export interface CheckInSource {
   duty?: { checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart | void> };
   /** The chat's duties (`<data dir>/duties/<chat>.json`), for the goals they run (`goalsToFold`). Absent: no goal folds by a duty. */
   duties?: (id: string) => Promise<readonly DutyRef[]>;
+  /**
+   * `<data dir>/archived-chats.json`: the chats the owner archived (`Chats.archive`), until the owner unarchives one (`Chats.restore`). The
+   * scheduler archives such a session again when something else brings it back. Absent (tests): an owner archive is not remembered.
+   */
+  archived?: IdIndex;
   /**
    * Set on a serve that does not own the live chats (a test or scratch data dir, `chat serve --no-adopt`): `<data dir>/own-chats.json`, the chats
    * this serve created. It pins, steers, reloads and checks in only those, even when its chats.json is a copy of the live one, and never scans
@@ -856,18 +863,20 @@ export class Chats {
    * so the chat stays pinned and the pin resumes or drops it on the first catalog update. A pinned saved chat resumes the same way.
    * A chat the daemon lists as archived is unarchived: the archive route forgets a chat the moment it archives it, so an archived chat still in
    * the index was archived by the daemon itself. `prime-agent shutdown --force` and an update restart write the archived state into every live
-   * session (10-12 11:38: a forced shutdown archived 25 sessions, and this serve then dropped all 9 chats from the index).
+   * session (10-12 11:38: a forced shutdown archived 25 sessions, and this serve then dropped all 9 chats from the index). A chat the owner
+   * archived is forgotten here too, in case the archive route stopped before it left the index.
    */
   async adopt(): Promise<{ pinned: string[]; forgotten: string[]; adopted: string[] }> {
     await this.load();
     const pinned: string[] = [];
     const forgotten: string[] = [];
+    const archived = new Set(await this.source.archived?.ids() ?? []);
     for (const id of await this.mine(await this.index.ids())) {
       const summary = await this.summary(id).then(summary => summary ?? "missing", () => "unknown" as const);
-      if (summary === "missing") {
+      if (summary === "missing" || archived.has(id)) {
         await this.forget(id);
         forgotten.push(id);
-        this.log(`chat ${id.slice(0, 8)}: forgotten, the daemon does not list it`);
+        this.log(`chat ${id.slice(0, 8)}: forgotten, ${summary === "missing" ? "the daemon does not list it" : "the owner archived it"}`);
         continue;
       }
       if (summary !== "unknown" && summary.lifecycle === "archived") {
@@ -879,7 +888,39 @@ export class Chats {
       if (this.threads.pin(id)) pinned.push(id);
       else this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
     }
+    await this.keepArchived();
     return { pinned, forgotten, adopted: await this.rescan() };
+  }
+
+  /**
+   * The owner's archive of a chat: the session is archived, the chat leaves the index, and the archived-chats file keeps it, so `keepArchived`
+   * archives it again when something else brings the session back.
+   */
+  async archive(id: string): Promise<void> {
+    await this.threads.archive(id);
+    await this.source.archived?.add(id);
+    await this.forget(id);
+  }
+
+  /**
+   * Archives again each chat the owner archived that the daemon lists unarchived. An agent message to an archived session resumes it, and the
+   * scan then took it back as a chat (10-12 20:38 KST: a relayed broadcast resumed "stripe and payments", archived by the owner at 16:31).
+   * Runs at start and on every scheduler wake.
+   */
+  async keepArchived(): Promise<void> {
+    if (!this.source.archived || this.source.owned) return;
+    const archived = new Set(await this.source.archived.ids());
+    if (!archived.size) return;
+    let rows: readonly SessionRow[];
+    try { rows = await this.source.rows(); }
+    catch (error) { this.log(`chats: archived: ${error instanceof Error ? error.message : String(error)}`); return; }
+    for (const row of rows) {
+      if (!archived.has(row.id) || row.archived) continue;
+      try {
+        await this.threads.archive(row.id);
+        this.log(`chat ${row.id.slice(0, 8)}: archived again: the owner archived it and the daemon brought it back`);
+      } catch (error) { this.log(`chat ${row.id.slice(0, 8)}: archive again: ${error instanceof Error ? error.message : String(error)}`); }
+    }
   }
 
   /**
@@ -894,8 +935,9 @@ export class Chats {
     try { rows = await this.source.rows(); }
     catch (error) { this.log(`chats: scan: ${error instanceof Error ? error.message : String(error)}`); return []; }
     const adopted: string[] = [];
+    const archived = new Set(await this.source.archived?.ids() ?? []);
     for (const row of rows) {
-      if (this.chatIds.has(row.id) || this.plain.has(row.id) || row.archived) continue;
+      if (this.chatIds.has(row.id) || this.plain.has(row.id) || row.archived || archived.has(row.id)) continue;
       if (now - (Date.parse(row.lastActivityAt ?? row.created ?? "") || 0) > ADOPT_RECENT_MS) continue;
       const restored = await this.restore(row.id).catch((error: unknown) => {
         this.log(`chat ${row.id.slice(0, 8)}: scan: ${error instanceof Error ? error.message : String(error)}`);
@@ -912,10 +954,12 @@ export class Chats {
   /**
    * After an unarchive: a session whose file carries the chat_mode entry is a chat again, back in the index, pinned, with steering `all`. False for a
    * plain thread. Steering resumes the session; a failure there is logged, since the pin resumes it again and the attach re-applies steering.
+   * The owner's unarchive (the route) and the scan call it; the scan skips the chats the owner archived, so only the owner takes one back.
    */
   async restore(id: string): Promise<boolean> {
     await this.load();
     if (!(await this.mine([id])).length) return false;
+    await this.source.archived?.forget(id);
     const sessionFile = (await this.summary(id))?.sessionFile;
     if (!sessionFile || !(await fileHasChatMarker(sessionFile))) return false;
     await this.index.add(id);
@@ -957,6 +1001,7 @@ export class Chats {
     if (woke) this.log(`chats: woke after ${Math.round((now - this.lastTick!) / 1000)} s; transient failures restart now`);
     this.lastTick = now;
     if (now - this.lastScan >= ADOPT_SCAN_MS) { this.lastScan = now; this.queue("#scan", async () => { await this.rescan(); }); }
+    this.queue("#archived", () => this.keepArchived());
     const due: string[] = [];
     const active = new Set<string>();
     for (const id of this.chatIds) {
