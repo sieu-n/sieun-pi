@@ -6,9 +6,12 @@ import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";
 import { chatAgents } from "../src/chat-agents.ts";
 import { subagentSessions } from "../src/chat-catalog.ts";
-import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
+import { checkInRecord } from "../src/chat-checkin.ts";
+import { checkInSettings } from "../src/checkin-settings.ts";
+import { loadRecord } from "../src/chat-brief.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
-import { Chats, type ChatThreads, type CheckInSource, loadRecord, replyCheckRecord } from "../src/chats.ts";
+import { Chats } from "../src/chats.ts";
+import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, PlanItem, SessionRow } from "../src/shared/types.ts";
 
