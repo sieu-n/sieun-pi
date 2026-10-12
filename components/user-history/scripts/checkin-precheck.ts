@@ -5,7 +5,7 @@
  *   cd components/user-history && node --import tsx scripts/checkin-precheck.ts <chat id> [--roster]
  *
  * `--roster` reads only the daemon's live sessions (about 1 MB, under a second); the default full list is what the service reads, and can take
- * a minute under load. Prints the step classes, the flagged items and the findings markdown.
+ * a minute under load. The chat's messages are the tail of its session file. Prints the step classes, the flagged items and the findings markdown.
  */
 import { copyFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,12 +15,14 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { childrenByParent, isListed, isTopLevel, parseSummaries, projectRow, rosterChildren, subtreeOf } from "../src/chat-catalog.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
+import { historyMessages } from "../src/chat-threads.ts";
 import { CorrectionLedger } from "../src/chat-corrections.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { type ChatThreads, type CheckInSource, jobRegistry, replyCheckRecord } from "../src/chat-sources.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
+import { readBranchTail } from "../src/session-tail.ts";
 
 const chat = process.argv[2];
 if (!chat || chat.startsWith("-")) { process.stderr.write("usage: node --import tsx scripts/checkin-precheck.ts <chat id> [--roster]\n"); process.exit(2); }
@@ -44,9 +46,12 @@ const rows = [...top.values()].map(row => projectRow(row, undefined, 0, { subtre
 
 const index = new IdIndex(join(scratch, "chats.json"), "Chat index");
 await index.add(chat);
-// Every thread call is a no-op: the precheck reads, and nothing is prompted, reloaded or deleted.
+// The chat's own messages come from the tail of its session file, as an attached thread holds them, so job reports count (`lastJobMessages`).
+const tail = await readBranchTail(join(getAgentDir(), "sessions", `${chat}.jsonl`)).catch(() => undefined);
+const messages = tail ? historyMessages(tail.entries) : [];
+// Every other thread call is a no-op: the precheck reads, and nothing is prompted, reloaded or deleted.
 const threads = {
-  state: () => undefined, async view() { return null; }, busy: () => false, running: () => false, setWait() {}, isLive: () => false,
+  state: (id: string) => id === chat ? { messages } : undefined, async view() { return null; }, busy: () => false, running: () => false, setWait() {}, isLive: () => false,
   async restart() {}, async prompt() {}, async notice() {}, async deleteSubagent() {}, pin: () => false, unpin() {}, async setSteeringMode() {},
   async heartbeat() { return undefined; }, async clearHeartbeat() {}, async reload() {}, observe() { return () => {}; },
 } as unknown as ChatThreads;
