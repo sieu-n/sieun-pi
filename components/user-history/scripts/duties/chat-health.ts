@@ -8,7 +8,7 @@ import { type ConvergenceMisses, localTime, NO_MISSES } from "../../src/chat-che
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import { placeholderTodo } from "../../src/shared/chat-board.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { foldReply, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
+import { foldReply, serverNote, TELL_OWNER_TOOL, type TurnStarter } from "../../src/shared/chat-feed.ts";
 import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
@@ -42,7 +42,13 @@ type Kind = keyof Metrics | "recheck";
 interface Seen { signature: string; slice: FlaggedSlice }
 /** The duty's state between runs: each watched signature, when a run first flagged it, and the window end of the last run that did. */
 type Watch = Record<string, { firstAt: number; lastRun: number }>;
-interface Turn { starter: TurnStarter; at: number; lastText: string; lastTextAt: number }
+/** A reply the owner reads as a bubble, with the tell_owner call id when it is one. */
+interface Said { text: string; at: number; id?: string }
+/**
+ * `told` holds the turn's tell_owner calls the tool did not refuse and `texts` the chat's own text messages. The page shows the told text as
+ * the reply and folds the turn's own text into updates when the turn has a told call (`chatLines`), so the metrics read the same.
+ */
+interface Turn { starter: TurnStarter; at: number; lastText: string; lastTextAt: number; told: Said[]; texts: Said[] }
 interface Failure { at: number; reason: string }
 interface Tally { metrics: Metrics; deadMs: number; ownerTurns: number; longTurns: number; flagged: Map<Kind, FlaggedSlice[]>; seen: Seen[] }
 
@@ -87,19 +93,29 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
   let hookRetry: Failure | undefined;
 
   const closeTurn = () => {
-    if (!turn || !inWindow(turn.at)) return;
-    if (turn.starter === "owner" && turn.lastText) {
-      tally.ownerTurns++;
-      // Long is what the page folds under "More": words outside code fences, a markdown link one word. A diagram or a link list the owner sees whole is not long.
-      if (foldReply(turn.lastText).folded) { tally.longTurns++; flag("long_replies", turn.lastTextAt, `${words(turn.lastText)} words: ${turn.lastText}`); }
-      // slop_replies: the reply lint's findings other than length (src/shared/reply-lint.ts), with the owner's words of that turn spared.
-      const slop = lintOwnerReply(turn.lastText, ownerSaid).filter(finding => finding.kind !== "long");
-      if (slop.length) { tally.metrics.slop_replies++; flag("slop_replies", turn.lastTextAt, `${findingsLine(slop)}: ${turn.lastText}`); }
+    if (!turn) return;
+    // What the owner reads: the told text when the turn has a told call, else the chat's text on a turn the owner started. Text on a wake-up is notes.
+    const read = turn.told.length ? turn.told : turn.starter === "owner" ? turn.texts : [];
+    for (const said of read.filter(said => inWindow(said.at))) {
+      const sentence = unlinkedJobSentence(said.text);
+      if (sentence) { tally.metrics.unlinked_job_mentions++; flag("unlinked_job_mentions", said.at, sentence); }
+    }
+    if (turn.starter !== "owner" || !inWindow(turn.at)) return;
+    const replies = turn.told.length ? turn.told : turn.lastText ? [{ text: turn.lastText, at: turn.lastTextAt }] : [];
+    if (!replies.length) return;
+    tally.ownerTurns++;
+    // Long is what the page folds under "More": words outside code fences, a markdown link one word. A diagram or a link list the owner sees whole is not long.
+    const long = replies.find(said => foldReply(said.text).folded);
+    if (long) { tally.longTurns++; flag("long_replies", long.at, `${words(long.text)} words: ${long.text}`); }
+    // slop_replies: the reply lint's findings other than length (src/shared/reply-lint.ts), with the owner's words of that turn spared.
+    for (const said of replies) {
+      const slop = lintOwnerReply(said.text, ownerSaid).filter(finding => finding.kind !== "long");
+      if (slop.length) { tally.metrics.slop_replies++; flag("slop_replies", said.at, `${findingsLine(slop)}: ${said.text}`); break; }
     }
   };
   /** The owner's words in the message that started the latest owner turn: a word the owner used is not jargon in the reply. */
   let ownerSaid = "";
-  const openTurn = (starter: TurnStarter, at: number) => { closeTurn(); turn = { starter, at, lastText: "", lastTextAt: at }; };
+  const openTurn = (starter: TurnStarter, at: number) => { closeTurn(); turn = { starter, at, lastText: "", lastTextAt: at, told: [], texts: [] }; };
   const settleFailure = (nextAt: number | undefined) => {
     if (!failure) return;
     const end = nextAt ?? now;
@@ -146,13 +162,11 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       hookRetry = undefined;
       settled = message.stopReason !== "toolUse";
       const text = messageText(message).trim();
-      if (turn && text) { turn.lastText = text; turn.lastTextAt = at; }
-      const told = Array.isArray(message.content) ? message.content.flatMap(part => part.type === "toolCall" && part.name === "tell_owner" &&
-        typeof part.arguments?.text === "string" ? [part.arguments.text] : []) : [];
-      // What the owner reads: text on a turn the owner started, and tell_owner on any turn. Text on a wake-up is notes, shown folded.
-      for (const said of inWindow(at) ? [...(turn?.starter === "owner" ? [text] : []), ...told] : []) {
-        const sentence = unlinkedJobSentence(said);
-        if (sentence) { tally.metrics.unlinked_job_mentions++; flag("unlinked_job_mentions", at, sentence); }
+      if (turn && text) { turn.lastText = text; turn.lastTextAt = at; turn.texts.push({ text, at }); }
+      if (turn && Array.isArray(message.content)) for (const part of message.content) {
+        if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof part.arguments?.text === "string" && part.arguments.text.trim()) {
+          turn.told.push({ text: part.arguments.text.trim(), at, id: part.id });
+        }
       }
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         failure = { at, reason: message.errorMessage?.trim() || `stopReason ${message.stopReason}` };
@@ -161,6 +175,9 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
           else if (inWindow(at)) breakSieunPi(failure);
         }
       }
+    } else if (message.role === "toolResult") {
+      // A refused tell_owner never reached the owner (the feed shows nothing for it).
+      if (message.isError && turn) turn.told = turn.told.filter(said => said.id !== message.toolCallId);
     } else if (message.role === "custom" && isPromptCustom(message)) {
       settleFailure(at);
       settleHookRetry();

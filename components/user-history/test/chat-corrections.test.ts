@@ -340,7 +340,7 @@ test("unlinked job mentions: a job named as a noun with no job: link anywhere in
 
 const NOW = Date.parse("2026-10-09T14:00:00Z");
 const line = (message: Record<string, unknown>) => JSON.stringify({ type: "message", timestamp: new Date(message.timestamp as number).toISOString(), message });
-test("chat health: repeat_corrections counts ledger repeats in the last 24 h and names entry and chat; unlinked_job_mentions reads owner-turn replies and tell_owner, not wake-up notes", async () => {
+test("chat health: repeat_corrections counts ledger repeats in the last 24 h and names entry and chat; unlinked_job_mentions reads tell_owner, and owner-turn text only on a turn with no tell_owner (the page folds it into updates), not wake-up notes", async () => {
   const dir = await mkdtemp(join(tmpdir(), "corrections-health-"));
   try {
     await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["vp"] }));
@@ -350,6 +350,8 @@ test("chat health: repeat_corrections counts ledger repeats in the last 24 h and
       line({ role: "assistant", content: [{ type: "toolCall", id: "t", name: "tell_owner", arguments: { text: "The job is blocked on a login." } }], provider: "p", model: "m",
         stopReason: "toolUse", timestamp: NOW - 3_400_000 }),
       line({ role: "assistant", content: [{ type: "text", text: "The [audit](job:audit run) job finished." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 3_300_000 }),
+      line({ role: "user", content: [{ type: "text", text: "and the rest?" }], timestamp: NOW - 3_250_000 }),
+      line({ role: "assistant", content: [{ type: "text", text: "Two jobs are left." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 3_240_000 }),
       JSON.stringify({ type: "custom_message", customType: "agent_message", content: "[agent-message from w]\n\nDone.", display: true, timestamp: new Date(NOW - 3_200_000).toISOString() }),
       line({ role: "assistant", content: [{ type: "text", text: "Wake-up note: the job is done." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 3_100_000 }),
       line({ role: "assistant", content: [{ type: "text", text: "Old job note." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 30 * 3_600_000 }),
@@ -371,7 +373,7 @@ test("chat health: repeat_corrections counts ledger repeats in the last 24 h and
       excerpt: "c1 \"Mac load goes to ops guy.\" repeated in dev VP (first 2026-10-07 in dev VP): didn't i tell you" }]);
     assert.equal(flagged[0]!.kind, "repeat_corrections", "a repeat leads the flagged list");
     assert.deepEqual(flagged.filter(slice => slice.kind === "unlinked_job_mentions").map(slice => [slice.chat, slice.excerpt]).sort(),
-      [["vp", "Started a job on it."], ["vp", "The job is blocked on a login."]]);
+      [["vp", "The job is blocked on a login."], ["vp", "Two jobs are left."]]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

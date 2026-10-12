@@ -26,6 +26,10 @@ const toolCall = (at: number, name: string, text = ""): Line =>
 const toolResult = (at: number): Line => entry({ role: "toolResult", toolCallId: "c" + (at - 1), toolName: "t", content: [], isError: false, timestamp: at });
 const custom = (at: number, customType: string, content: string): Line => ({ type: "custom_message", customType, content, display: true, timestamp: new Date(at).toISOString() });
 
+/** VP of SEO (01a11a24), 10-12 13:56Z: the tell_owner reply the owner read, and the turn's own text the page folded into updates. */
+const TOLD_QUIET_PLAN = "Okay, no emails or listings. [quiet authority plan](job:quiet authority plan) looks at getting quoted in ChatGPT answers, which already brings 11 of our 29 signups. It also looks at embeddable charts and helpful Reddit answers through your Google login. I'll show you every Reddit reply before it goes out.";
+const NOTES_QUIET_PLAN = "I dropped the emails and listings and started [quiet authority plan](job:quiet authority plan) to find quieter ways to grow. Nothing goes out without you.\n\nIt is looking into five channels at once:\n- **AI answers:** getting our studies quoted by ChatGPT, Perplexity and Google's AI answers. ChatGPT already sent 11 of our 29 signups in the last 28 days, more than any other source.\n- **Embeds:** charts and calculators that other sites can embed, with a credit link back to us.\n- **Open data:** free downloads of our study numbers, credited back to us.\n- **Our own sites:** cross-links between the blog, the tools and the API docs.\n- **Reddit:** it can sign in with your Google account in Aside and draft a few helpful answers that use our numbers.\n\nFor Reddit, it may only read and draft. No posts, comments, messages, votes or follows. Every draft comes to me with the thread link and the exact text, and I show it to you before anything is sent.\n\nIt will come back with the top three moves, the evidence for each, and which ones can ship on the blog now. Moves that need main-app changes wait until you say the 5180 demo is good enough.";
+
 const API_KEY_ERROR = "Failed to resolve API key for provider \"anthropic\" from shell command: /Users/x/.config/pi-pool/bin/pi-pool-token";
 
 const openSteps = (rows: readonly string[]) => `\n\nOpen steps, oldest change first:\n${rows.map(row => `- ${row}`).join("\n")}`;
@@ -168,6 +172,37 @@ test("chat health: slop_replies counts owner replies the reply lint flags for mo
       ["dev-vp", 'label opener "**코드 체크.**", "**프롬프트.**"; abstract words "단계", "계산"'],
     ], "newest first; duty is spared since the owner said it");
     assert.deepEqual(fixTargets("fix(user-history): a reply lint runs before the owner sees slop"), ["slop_replies"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("chat health: an owner turn answered with tell_owner counts the told text, since the page folds the turn's own text into updates (VP of SEO, 10-12 22:56 KST)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  const call = (at: number, id: string, text: string): Line =>
+    entry({ role: "assistant", content: [{ type: "toolCall", id, name: "tell_owner", arguments: { text } }], provider: "p", model: "m", stopReason: "toolUse", timestamp: at });
+  const result = (at: number, id: string, isError: boolean): Line =>
+    entry({ role: "toolResult", toolCallId: id, toolName: "tell_owner", content: [{ type: "text", text: isError ? "Refused" : "told the owner" }], isError, timestamp: at });
+  const chat: Line[] = [
+    user(ago(3 * HOUR), "you can use my google account via reddit but tell me ANYTIME before jessage"),
+    call(ago(3 * HOUR) + MIN, "t1", TOLD_QUIET_PLAN), result(ago(3 * HOUR) + MIN + 1, "t1", false),
+    reply(ago(3 * HOUR) + 2 * MIN, NOTES_QUIET_PLAN),
+    user(ago(2 * HOUR), "[job] land 33 test finished"),
+    call(ago(2 * HOUR) + MIN, "t2", "Five more jobs are building in parallel."), result(ago(2 * HOUR) + MIN + 1, "t2", true),
+    call(ago(2 * HOUR) + 2 * MIN, "t3", "A new job is fixing the test for land 33."), result(ago(2 * HOUR) + 2 * MIN + 1, "t3", false),
+    reply(ago(2 * HOUR) + 3 * MIN, "Notes on the wake-up: the job is done."),
+  ];
+  try {
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["seo-vp"] }));
+    await writeFile(join(dir, "seo-vp.jsonl"), chat.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const output = join(dir, "health.json");
+    const run1 = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+    assert.equal(run1.status, 0, run1.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.equal(health.metrics.long_replies, 0, "the owner read the 47-word told text; the 202-word text shows folded in updates");
+    assert.equal(health.metrics.slop_replies, 0, "the **AI answers:** labels sit in the folded notes, not in the reply");
+    assert.equal(health.metrics.unlinked_job_mentions, 1, "the accepted tell_owner counts, the refused one and the wake-up notes do not");
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "unlinked_job_mentions").map(slice => slice.excerpt), ["A new job is fixing the test for land 33."]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
