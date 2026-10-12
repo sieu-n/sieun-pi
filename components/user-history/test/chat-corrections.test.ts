@@ -7,7 +7,9 @@ import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { applyCorrection, briefCorrections, type ChatRef, CORRECTION_TOOL, CorrectionLedger, correctionResult, JOB_RULES, jobLedgerPrompt, type Ledger, LEDGER_PROMPT_LINES, ledgerPrompt,
   matchCorrection, OUTSIDE_ACTION_RULE, parseCorrectionCall, parseLedger, READ_RULE, repeatsBetween, themeOverlap, themeTokens } from "../src/chat-corrections.ts";
-import { CHAT_BRIEF, CHAT_MODE_ENTRY, jobRegistry, REPLY_CAP_NOTE } from "../src/chats.ts";
+import { CHAT_BRIEF } from "../src/chat-brief.ts";
+import { CHAT_MODE_ENTRY, REPLY_CAP_NOTE } from "../src/chat-guard.ts";
+import { jobRegistry } from "../src/chat-sources.ts";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
 import { unlinkedJobSentence } from "../src/shared/job-mentions.ts";
 

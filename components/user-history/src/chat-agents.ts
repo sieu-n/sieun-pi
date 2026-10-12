@@ -1,4 +1,4 @@
-import { childName, childWorking, stepOwner } from "./chat-checkin.ts";
+import { childName, childWorking, stepOwner } from "./checkin-steps.ts";
 import { createdSessions } from "./shared/created-sessions.ts";
 import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, ThreadMessage, TokenRate } from "./shared/types.ts";
 

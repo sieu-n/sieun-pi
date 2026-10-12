@@ -47,8 +47,8 @@ test("every How it works value matches the code it names", async () => {
 });
 
 test("the literals that mirror server code and vend.py match their source", async () => {
-  assert.equal(CHECK_IN_MS, await tsValue("components/user-history/src/chat-checkin.ts", "CHECK_IN_MS"));
-  assert.equal(STEP_STALE_MS, await tsValue("components/user-history/src/chat-checkin.ts", "STEP_STALE_MS"));
+  assert.equal(CHECK_IN_MS, await tsValue("components/user-history/src/checkin-settings.ts", "CHECK_IN_MS"));
+  assert.equal(STEP_STALE_MS, await tsValue("components/user-history/src/checkin-steps.ts", "STEP_STALE_MS"));
   assert.equal(JOB_CLEANUP_IDLE_MS, await tsValue("components/user-history/src/chat-checkin.ts", "JOB_CLEANUP_IDLE_MS"));
   assert.equal(NO_REPORT_GRACE_MS, await tsValue("components/user-history/src/chats.ts", "NO_REPORT_GRACE_MS"));
   for (const [key, value] of Object.entries(POOL_DEFAULTS)) assert.equal(value, vendValue("DEFAULTS." + key), key);

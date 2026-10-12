@@ -15,7 +15,7 @@ import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshe
 import { NOTE_MAX } from "./chat-notes.ts";
 import { BOOKMARK_TEXT_MAX, type BookmarkAction } from "./shared/bookmarks.ts";
 import { ThreadError } from "./chat-threads.ts";
-import { type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, UNKNOWN_AGENT, validCheckInEvery } from "./chat-checkin.ts";
+import { type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
 import { interruptedRuns } from "./chat-resume.ts";

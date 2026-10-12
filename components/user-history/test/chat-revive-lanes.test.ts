@@ -3,9 +3,12 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInRecord, checkInSettings, OWNER_UI } from "../src/chat-checkin.ts";
+import { checkInRecord } from "../src/chat-checkin.ts";
+import { checkInSettings, OWNER_UI } from "../src/checkin-settings.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
-import { Chats, type ChatThreads, type CheckInSource, loadRecord, replyCheckRecord } from "../src/chats.ts";
+import { Chats } from "../src/chats.ts";
+import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { loadRecord } from "../src/chat-brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, ThreadMessage } from "../src/shared/types.ts";
 

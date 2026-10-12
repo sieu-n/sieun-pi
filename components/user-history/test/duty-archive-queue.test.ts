@@ -7,7 +7,7 @@ import { ARCHIVE_GIVE_UP_MS, ArchiveQueue } from "../src/chat-archive-queue.ts";
 import { dutyJobHost } from "../src/chat-duty-job.ts";
 import { type CheckInRun, Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
-import { jobRegistry } from "../src/chats.ts";
+import { jobRegistry } from "../src/chat-sources.ts";
 import type { SessionRow } from "../src/shared/types.ts";
 
 const row = (id: string, name: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name, cwd: "/repo", kind: "live", status: "idle", archived: false,

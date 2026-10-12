@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText, convergenceMisses, countedGap, goalGaps, type JobFact } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
+import { countedGap, goalGaps } from "../src/checkin-findings.ts";
+import type { JobFact } from "../src/checkin-steps.ts";
 import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderOpenPlan, targetState } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard, GoalTarget, PlanItem } from "../src/shared/types.ts";
 

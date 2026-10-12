@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 import { DaemonClient, defaultDaemonSocketPath, SessionManager } from "prime-agent";
 import { isTopLevel, parseSummaries } from "../../src/chat-catalog.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
-import { jobRegistry, UNKNOWN_ACTIVE } from "../../src/chats.ts";
+import { jobRegistry } from "../../src/chat-sources.ts";
+import { UNKNOWN_ACTIVE } from "../../src/chats.ts";
 import { CHECK_IN_DUTY } from "../../src/shared/chat-duties.ts";
 
 /**

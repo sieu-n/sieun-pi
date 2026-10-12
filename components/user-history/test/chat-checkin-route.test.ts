@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ChatBackend } from "../src/chat-backend.ts";
-import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
+import { checkInRecord } from "../src/chat-checkin.ts";
+import { checkInSettings } from "../src/checkin-settings.ts";
 import { startChatServer } from "../src/chat-server.ts";
-import { Chats, type ChatThreads, loadRecord, replyCheckRecord } from "../src/chats.ts";
+import { Chats } from "../src/chats.ts";
+import { type ChatThreads, replyCheckRecord } from "../src/chat-sources.ts";
+import { loadRecord } from "../src/chat-brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { CheckInView } from "../src/shared/types.ts";
 

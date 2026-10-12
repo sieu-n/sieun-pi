@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { jobLedgerPrompt, ledgerPrompt, parseLedger } from "../src/chat-corrections.ts";
-import { BRIEF_CORRECTIONS, CHAT_BRIEF } from "../src/chats.ts";
+import { BRIEF_CORRECTIONS, CHAT_BRIEF } from "../src/chat-brief.ts";
 
 /** Every chat carries the brief in its system prompt and the corrections block after each compaction, so both have a size cap (p299: a VP
  * chat's first request is at least 20k tokens under the pre-trim 40.6k). The brief counts as the prompt renders it, one `- ` bullet per line. */

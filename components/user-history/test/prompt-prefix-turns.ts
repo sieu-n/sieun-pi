@@ -12,7 +12,8 @@ import { AuthStorage, createAgentSession, DefaultResourceLoader, type ExtensionA
 import { type Context, fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai";
 import { streamAnthropic } from "@earendil-works/pi-ai/anthropic";
 import historyExtension from "../extension/index.ts";
-import { briefNote, CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG } from "../src/chats.ts";
+import { briefNote, CHAT_BRIEF } from "../src/chat-brief.ts";
+import { CHAT_BOARD_TOOL, CHAT_FLAG } from "../src/chat-guard.ts";
 import { CHAT_NOTICE } from "../src/shared/chat-feed.ts";
 
 const dataDir = process.argv[2]!;

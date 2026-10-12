@@ -6,7 +6,7 @@ import { messageText } from "./turns.ts";
 import type { ThreadMessage } from "./types.ts";
 
 /**
- * The brief check: whether a job brief a chat wrote follows the Jobs rule of the chat brief (CHAT_BRIEF in src/chats.ts). It opens with the
+ * The brief check: whether a job brief a chat wrote follows the Jobs rule of the chat brief (CHAT_BRIEF in src/chat-brief.ts). It opens with the
  * owner messages that started the job, quoted exactly, or `Owner's words: none, started by <who>`, and it carries a `Split:` line. The job
  * brief audit (10-12) found 34 of 88 briefs reusing an old goal quote, 5 calling ledger text the owner's words, and only 25% of jobs whose
  * brief did not mention subagents spawning one. The chat server steers a `[brief check]` after a spawn whose brief fails. A brief that, from its

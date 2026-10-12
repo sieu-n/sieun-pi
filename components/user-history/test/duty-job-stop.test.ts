@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { type DutyChat, type DutyJobHost, dutyJobHost } from "../src/chat-duty-job.ts";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
-import { jobRegistry } from "../src/chats.ts";
+import { jobRegistry } from "../src/chat-sources.ts";
 import { type DutyJobRef, parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { SessionRow } from "../src/shared/types.ts";
 

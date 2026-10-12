@@ -4,12 +4,14 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-age
 import { agentLines } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
-import { BRIEF_CORRECTIONS, CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_BRIEF_ENTRY, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, hasChatMarker, JOB_REPLY_TOOL, jobOf,
-  jobPersonaGuideline, jobRegistry, jobReplyGuideline, pinnedBrief, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
+import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, JOB_REPLY_TOOL, jobOf, jobPersonaGuideline, jobReplyGuideline, pinnedBrief } from "../src/chat-brief.ts";
+import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
+import { jobRegistry } from "../src/chat-sources.ts";
+import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "../src/chats.ts";
 import { boardRevLine, parseBoardOps, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
-import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/chat-checkin.ts";
+import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
 import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { boardLimitRefusal, lastOwnerText } from "../src/shared/reply-lint.ts";

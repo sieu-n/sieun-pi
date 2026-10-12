@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { StepView } from "./chat-checkin.ts";
+import type { StepView } from "./checkin-steps.ts";
 import type { PlanItem } from "./shared/types.ts";
 
 /*

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText, convergenceMisses, dutyFor, type DutyRef, foldOps, goalsToFold, goalsWithoutDuty, type JobFact, openUnderClosed } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
+import { dutyFor, type DutyRef, foldOps, goalsToFold, goalsWithoutDuty, openUnderClosed } from "../src/checkin-findings.ts";
+import type { JobFact } from "../src/checkin-steps.ts";
 import { applyBoardOp, nextIds, openGoals } from "../src/shared/chat-board.ts";
 import type { BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
 

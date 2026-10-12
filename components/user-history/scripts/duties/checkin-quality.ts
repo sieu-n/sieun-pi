@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { localTime } from "../../src/chat-checkin.ts";
+import { localTime } from "../../src/checkin-settings.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
 
 /** A check-in finding still flagged after this many check-in runs in a row was seen and not fixed (owner, 10-12: remove the odd leftover steps). */

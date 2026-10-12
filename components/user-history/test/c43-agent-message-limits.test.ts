@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
-import { CHAT_MODE_ENTRY } from "../src/chats.ts";
+import { CHAT_MODE_ENTRY } from "../src/chat-guard.ts";
 import { jobNames } from "../src/limit-names.ts";
 import { checkMessage, messageCheckPrelude, withMessageCheck } from "../src/message-limit-check.ts";
 import { boardLimitClaims, lintOwnerReply, messageLimitRefusal } from "../src/shared/reply-lint.ts";

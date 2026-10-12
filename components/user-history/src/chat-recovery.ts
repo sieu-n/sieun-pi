@@ -1,8 +1,9 @@
-import { clockTime, RETRY_BACKOFF_MS } from "./chat-checkin.ts";
+import { clockTime } from "./checkin-settings.ts";
+import { RETRY_BACKOFF_MS } from "./chat-checkin.ts";
 import { CHECK_IN_PREFIX, OWNER_RETRY_MARK, serverNote, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import type { ChatWait, ThreadMessage } from "./shared/types.ts";
-import type { CheckInSetting } from "./chat-checkin.ts";
+import type { CheckInSetting } from "./checkin-settings.ts";
 
 /**
  * Whether a check-in pause is the owner's. The owner's pause also stops failed-turn restarts; a pause by the daemon gate (`daemon`) or by the

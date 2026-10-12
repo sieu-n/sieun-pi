@@ -1,4 +1,4 @@
-import { TELL_OWNER_REFUSED, tellOwner } from "./chats.ts";
+import { TELL_OWNER_REFUSED, tellOwner } from "./chat-guard.ts";
 import { jobLinkFinding, unlinkedJobSentence } from "./shared/job-mentions.ts";
 import type { ChatAgent } from "./shared/types.ts";
 

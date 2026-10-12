@@ -4,7 +4,8 @@ import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry,
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
 import "./daemon-snapshot-count.ts";
-import { CHAT_FLAG, UNKNOWN_ACTIVE } from "./chats.ts";
+import { CHAT_FLAG } from "./chat-guard.ts";
+import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";

@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, type ExtensionAPI, ModelRegistry, SessionManager, SettingsManager } from "prime-agent";
 import { type Context, fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai";
 import historyExtension from "../extension/index.ts";
-import { CHAT_FLAG, jobRegistry } from "../src/chats.ts";
+import { CHAT_FLAG } from "../src/chat-guard.ts";
+import { jobRegistry } from "../src/chat-sources.ts";
 
 const dataDir = process.argv[2]!;
 const chat = process.argv[3] !== "duty";

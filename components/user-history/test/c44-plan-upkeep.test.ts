@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText, convergenceMisses, STALE_STEP_MS, type JobFact } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
+import { STALE_STEP_MS } from "../src/checkin-findings.ts";
+import type { JobFact } from "../src/checkin-steps.ts";
 import { applyBoardOp, areaWords, BoardError, nextIds, sameAreaGoal } from "../src/shared/chat-board.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 

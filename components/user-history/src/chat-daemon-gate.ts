@@ -1,4 +1,4 @@
-import { type CheckInSettings, daemonPause, daemonResume } from "./chat-checkin.ts";
+import { type CheckInSettings, daemonPause, daemonResume } from "./checkin-settings.ts";
 
 /**
  * The daemon health gate. At 17:58Z on 10-09 the daemon stopped answering (load 293) while 9 chats kept starting check-in jobs. The duty

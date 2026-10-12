@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { checkInSettings } from "../../src/chat-checkin.ts";
+import { checkInSettings } from "../../src/checkin-settings.ts";
 
 /**
  * `node --import tsx scripts/duties/adopt-daemon-pause.ts --from <daemon-pause.json> [--data-dir <dir>]`: marks the check-in pause of each chat

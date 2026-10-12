@@ -1,5 +1,5 @@
-import { clockTime, localTime } from "./chat-checkin.ts";
-import type { JobRegistry } from "./chats.ts";
+import { clockTime, localTime } from "./checkin-settings.ts";
+import type { JobRegistry } from "./chat-sources.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import type { DutyCard, DutyJobRef } from "./shared/chat-duties.ts";
 import type { SessionRow } from "./shared/types.ts";

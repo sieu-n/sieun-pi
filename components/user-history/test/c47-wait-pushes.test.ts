@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText, classLine } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText } from "../src/chat-checkin.ts";
+import { classLine } from "../src/checkin-steps.ts";
 import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "../src/shared/types.ts";
 

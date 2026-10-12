@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
-import { checkInSettings } from "../src/chat-checkin.ts";
+import { checkInSettings } from "../src/checkin-settings.ts";
 import { applyThreadEvent } from "../src/shared/thread-state.ts";
 import type { ThreadState } from "../src/shared/types.ts";
 import { applyBoardOp, BOARD_LIMITS, BoardError, emptyBoard, migrateBoard, nextIds, parseBoardOps, PLACEHOLDER_TODO_ERROR, placeholderTodo, renderOpenPlan } from "../src/shared/chat-board.ts";

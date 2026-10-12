@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BLOCKED_MS, checkInPrecheck, checkInPrecheckText, convergenceMisses, type JobFact } from "../src/chat-checkin.ts";
+import { BLOCKED_MS } from "../src/checkin-findings.ts";
+import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
+import type { JobFact } from "../src/checkin-steps.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const NOW = Date.parse("2026-10-10T12:00:00Z");

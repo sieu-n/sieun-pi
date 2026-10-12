@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { chatAgents, stepSessions } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
-import { jobFacts } from "../src/chat-checkin.ts";
+import { jobFacts } from "../src/checkin-steps.ts";
 import { applyBoardOp, migrateBoard, nextIds, parseBoardOps } from "../src/shared/chat-board.ts";
 import type { BoardOp, ChatBoard, ChildAgent, PlanItem, SessionRow } from "../src/shared/types.ts";
 

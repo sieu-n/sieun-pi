@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { TELL_OWNER_REFUSED } from "../src/chats.ts";
+import { TELL_OWNER_REFUSED } from "../src/chat-guard.ts";
 import { jobLinkFinding, linkJobNames, unlinkedJobSentence } from "../src/shared/job-mentions.ts";
 import type { ChatAgent } from "../src/shared/types.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";

@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { changeCheckIn, checkInSettings, nextCheckIn } from "../src/chat-checkin.ts";
+import { changeCheckIn, checkInSettings, nextCheckIn } from "../src/checkin-settings.ts";
 import { DaemonGate, type DaemonGateInput, type DaemonRequest, rosterList } from "../src/chat-daemon-gate.ts";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";

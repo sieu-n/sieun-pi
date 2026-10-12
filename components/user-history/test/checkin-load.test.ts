@@ -3,10 +3,11 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText, convergenceMisses, type JobFact } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
+import type { JobFact } from "../src/checkin-steps.ts";
 import { heartbeatsFile, oneSessionLoad, readHeartbeats, redundantHeartbeats } from "../src/checkin-load.ts";
 import { dutyJobBrief } from "../src/chat-duty-job.ts";
-import { CHAT_BRIEF } from "../src/chats.ts";
+import { CHAT_BRIEF } from "../src/chat-brief.ts";
 import { CHECK_IN_DUTY, parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 

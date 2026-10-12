@@ -28,7 +28,7 @@ const q = (amount: number, unit: Unit): Quantity => ({ amount, unit });
 const pool = (key: PoolKey): Setting => ({ kind: "pool-config", key });
 const CODE: Setting = { kind: "code" };
 
-/** Server-only values (src/chat-checkin.ts, src/chats.ts), checked against their source by the test. */
+/** Server-only values (src/checkin-settings.ts, src/checkin-steps.ts, src/chat-checkin.ts, src/chats.ts), checked against their source by the test. */
 export const CHECK_IN_MS = 15 * 60_000;
 export const STEP_STALE_MS = 2 * 60 * 60_000;
 export const NO_REPORT_GRACE_MS = 90_000;
@@ -61,7 +61,7 @@ export function settingText({ setting, default: fallback }: Rule): string {
 
 const CHAT_RULES: Rule[] = [
   { id: "check-in-every", title: "Check-in interval", value: q(CHECK_IN_MS, "ms"), setting: { kind: "chat", where: `the chat's Check-in control (${CHECK_IN_MIN_MINUTES} to ${CHECK_IN_MAX_MINUTES} min)` },
-    text: "How often the app runs a chat's check-in. A check-in with nothing open starts no job.", source: { file: USER_HISTORY + "chat-checkin.ts", symbol: "CHECK_IN_MS" } },
+    text: "How often the app runs a chat's check-in. A check-in with nothing open starts no job.", source: { file: USER_HISTORY + "checkin-settings.ts", symbol: "CHECK_IN_MS" } },
   { id: "reply-words", title: "Reply length", value: q(REPLY_FOLD_WORDS, "words"), setting: CODE,
     text: "A chat's reply to you aims at this length. A longer reply folds behind More, and a long explanation goes to a linked page.", source: { file: USER_HISTORY + "shared/chat-feed.ts", symbol: "REPLY_FOLD_WORDS" } },
   { id: "tell-owner", title: "Message between your turns", value: q(TELL_OWNER_LIMIT, "characters"), setting: CODE,
@@ -75,7 +75,7 @@ const CHAT_RULES: Rule[] = [
   { id: "notes", title: "Notes", value: q(BOARD_LIMITS.scratch, "count"), setting: CODE,
     text: "The most notes on one board.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.scratch" } },
   { id: "step-stale", title: "Stale wait", value: q(STEP_STALE_MS, "ms"), setting: CODE,
-    text: "A step that waits on another thread or an event with no progress for this long is flagged for the check-in to chase.", source: { file: USER_HISTORY + "chat-checkin.ts", symbol: "STEP_STALE_MS" } },
+    text: "A step that waits on another thread or an event with no progress for this long is flagged for the check-in to chase.", source: { file: USER_HISTORY + "checkin-steps.ts", symbol: "STEP_STALE_MS" } },
   { id: "no-report", title: "Job ended with no report", value: q(NO_REPORT_GRACE_MS, "ms"), setting: CODE,
     text: "When a job goes quiet without reporting, the chat is told after this long.", source: { file: USER_HISTORY + "chats.ts", symbol: "NO_REPORT_GRACE_MS" } },
   { id: "job-cleanup", title: "Finished job cleanup", value: q(JOB_CLEANUP_IDLE_MS, "ms"), setting: CODE,

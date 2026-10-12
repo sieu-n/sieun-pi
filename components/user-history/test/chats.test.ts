@@ -3,10 +3,14 @@ import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInRecord, checkInSettings, clockTime, localTime, OWNER_UI } from "../src/chat-checkin.ts";
+import { checkInRecord } from "../src/chat-checkin.ts";
+import { checkInSettings, clockTime, localTime, OWNER_UI } from "../src/checkin-settings.ts";
 import type { Ledger } from "../src/chat-corrections.ts";
-import { BRIEF_CHECK_MAX_AGE_MS, briefCheckRecord, CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
-  jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, REPLY_CAP_NOTE, REPLY_CHECK_MAX_AGE_MS, replyCheckRecord, TELL_OWNER_LIMIT, tellOwner, type ThreadView, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
+import { BRIEF_CHECK_MAX_AGE_MS, briefCheckRecord, type ChatThreads, type CheckInSource, jobRegistry, REPLY_CHECK_MAX_AGE_MS, replyCheckRecord, type ThreadView } from "../src/chat-sources.ts";
+import { CHAT_BRIEF, extensionBuild, jobOf, jobPersonaGuideline, jobReplyGuideline, loadRecord, reloadAction } from "../src/chat-brief.ts";
+import { Chats, OLD_CHECK_IN, TELL_OWNER_LIMIT } from "../src/chats.ts";
+import { chatGuard, chatModeAt, createSessionNames, fileHasChatMarker, hasChatMarker, jobNameLiterals, judgeChatCode, REPLY_CAP_NOTE, tellOwner, topSession,
+  withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { SessionManager } from "prime-agent";
 import { Catalog } from "../src/chat-catalog.ts";
 import { ChatLabels } from "../src/chat-labels.ts";

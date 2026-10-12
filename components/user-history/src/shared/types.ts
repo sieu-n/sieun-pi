@@ -90,7 +90,7 @@ export interface RetryState { attempt: number; maxAttempts: number; delayMs: num
 export type PlanStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
 /**
  * `waitUntil` (an ISO date-time) and `waitFor` (a short text naming an event or a thread) mark a step that waits on purpose: the check-in
- * counts it `waiting` until that time, or for STEP_STALE_MS of no progress, then `due` or `stale-chase` (`stepClass` in src/chat-checkin.ts).
+ * counts it `waiting` until that time, or for STEP_STALE_MS of no progress, then `due` or `stale-chase` (`stepClass` in src/checkin-steps.ts).
  */
 export interface PlanItem {
   id: string; text: string; status: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string;
@@ -102,7 +102,7 @@ export interface PlanItem {
   kind?: "build";
   /** A goal's requirements check: one line per owner requirement, quoting the owner's words. */
   requirements?: Requirement[];
-  /** A goal's measurable target and its last measurement (`goalGaps` in src/chat-checkin.ts); only a top-level plan item carries one. */
+  /** A goal's measurable target and its last measurement (`goalGaps` in src/checkin-findings.ts); only a top-level plan item carries one. */
   target?: GoalTarget;
   children: PlanItem[];
 }

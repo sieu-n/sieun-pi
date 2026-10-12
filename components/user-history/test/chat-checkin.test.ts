@@ -3,10 +3,12 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { activePause, changeCheckIn, chatCheckIn, parseChatCheckIn, checkInPrecheck, checkInPrecheckText, classLine, convergenceMisses, idleGoals, lastJobMessages, checkInDue, checkInLine,
-  checkInRecord, checkInSettings, endedWithoutReport, nextCheckIn, pauseEnd, validCheckInEvery, jobFacts, readySteps, CHASE_ESCALATE_MS, clockTime, jobEnd, jobEndText, jobEndWords,
-  localTime, retryDue, STEP_STALE_MS, stepClass, stepOwner, TOLD_END_KEEP_MS, waitTarget, todoForStep, waitsOnOwner, type CheckInMemory, type CheckInPrecheck, type JobFact,
-  looksDone, OWNER_UI } from "../src/chat-checkin.ts";
+import { activePause, changeCheckIn, chatCheckIn, checkInLine, checkInSettings, clockTime, localTime, nextCheckIn, OWNER_UI, parseChatCheckIn, pauseEnd,
+  validCheckInEvery } from "../src/checkin-settings.ts";
+import { type CheckInMemory, checkInPrecheck, type CheckInPrecheck, checkInPrecheckText, checkInRecord, convergenceMisses, endedWithoutReport, jobEnd, jobEndText,
+  jobEndWords, lastJobMessages, looksDone, retryDue, TOLD_END_KEEP_MS } from "../src/chat-checkin.ts";
+import { CHASE_ESCALATE_MS, checkInDue, classLine, type JobFact, jobFacts, readySteps, STEP_STALE_MS, stepClass, stepOwner, todoForStep, waitsOnOwner, waitTarget } from "../src/checkin-steps.ts";
+import { idleGoals } from "../src/checkin-findings.ts";
 import { applyBoardOp, emptyBoard, nextIds, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { chatLines, turnStarter } from "../src/shared/chat-feed.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, SessionRow, ThreadMessage } from "../src/shared/types.ts";

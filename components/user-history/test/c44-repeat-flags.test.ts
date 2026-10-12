@@ -4,11 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { chatChildren, type DaemonSession, sessionRows } from "../scripts/duties/board-classes.ts";
-import { checkInRecord, checkInSettings, looksDone } from "../src/chat-checkin.ts";
+import { checkInRecord, looksDone } from "../src/chat-checkin.ts";
+import { checkInSettings } from "../src/checkin-settings.ts";
 import { CorrectionLedger } from "../src/chat-corrections.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
 import { CHAT_SYSTEM_THREAD, flagStreaks, repeatLines } from "../src/checkin-repeats.ts";
-import { Chats, type ChatThreads, type CheckInSource, loadRecord, replyCheckRecord } from "../src/chats.ts";
+import { Chats } from "../src/chats.ts";
+import { type ChatThreads, type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
+import { loadRecord } from "../src/chat-brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, ChildAgent, PlanItem } from "../src/shared/types.ts";
 

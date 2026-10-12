@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
-import { tellOwner } from "../src/chats.ts";
+import { tellOwner } from "../src/chat-guard.ts";
 import { lintOwnerReply, boardLimitClaims } from "../src/shared/reply-lint.ts";
 
 // The exact owner-facing lines the Crawler VP chat (01a115e2) sent on 10-12 before the owner repeated c43. Each one carried a limit no

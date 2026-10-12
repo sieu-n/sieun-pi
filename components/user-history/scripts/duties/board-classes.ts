@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
-import { ACT_CLASSES, checkInRecord, checkInSettings, classCounts, classifyBoard, classLine, type ConvergenceMisses, convergenceMisses, extraGoals, finishedOpen, gateFindings, blockedOnOthers, goalGaps, goalsToFold, goalsWithoutDuty,
-  heldElsewhere, jobFacts, noProgress, looseGoals, openUnderClosed, scopeMisses, stalledSteps, staleSteps, waitsMet,
-  STEP_CLASSES,
-  type StepClass, type StepView } from "../../src/chat-checkin.ts";
+import { ACT_CLASSES, classifyBoard, classLine, jobFacts, STEP_CLASSES, type StepClass, type StepView } from "../../src/checkin-steps.ts";
+import { checkInRecord, classCounts, convergenceMisses, type ConvergenceMisses, finishedOpen } from "../../src/chat-checkin.ts";
+import { checkInSettings } from "../../src/checkin-settings.ts";
+import { blockedOnOthers, extraGoals, gateFindings, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, noProgress, openUnderClosed, scopeMisses,
+  staleSteps, stalledSteps, waitsMet } from "../../src/checkin-findings.ts";
 import { activeCorrections, CorrectionLedger, handoffRules } from "../../src/chat-corrections.ts";
 import { heartbeatsFile, oneSessionLoad, readHeartbeats, redundantHeartbeats } from "../../src/checkin-load.ts";
 import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";

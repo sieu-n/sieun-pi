@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
-import type { CheckInActor } from "./chat-checkin.ts";
+import type { CheckInActor } from "./checkin-settings.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, repeatMisses, type Duty, type DutyJobRef,
   type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";

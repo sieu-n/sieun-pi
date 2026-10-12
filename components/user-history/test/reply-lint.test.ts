@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { tellOwner } from "../src/chats.ts";
+import { tellOwner } from "../src/chat-guard.ts";
 import { foldReply, REPLY_CHECK_PREFIX, replyWordCount, serverNote } from "../src/shared/chat-feed.ts";
 import { lastOwnerText, lintOwnerReply, replyCheck, replyNotes } from "../src/shared/reply-lint.ts";
 import type { ThreadMessage } from "../src/shared/types.ts";

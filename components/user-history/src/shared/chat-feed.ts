@@ -58,7 +58,7 @@ export type ChatLine =
 export interface ReplyQuote { id: string; text: string }
 
 /**
- * The id the model reads after each owner message (`[message id: <id>]`, src/chats.ts withReplyCap) and passes back as `reply_to`: the
+ * The id the model reads after each owner message (`[message id: <id>]`, src/chat-guard.ts withReplyCap) and passes back as `reply_to`: the
  * message's timestamp in base 36, so it survives compaction and needs no index. The feed finds the owner line by its `at`.
  */
 export const ownerMessageId = (at: number): string => at.toString(36);
