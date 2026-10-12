@@ -36,7 +36,7 @@ async function setup(connected = true) {
   await bridge.set({ enabled: true, ownerUserId: "U0OWNER01" });
   if (connected) { socket!.hello(); await bridge.settled(); }
   const backend = {
-    chats: { ids: async () => ids, forget: async (id: string) => { ids.delete(id); }, create: async () => { ids.add(NEW); return { id: NEW, name: "New one" }; } },
+    chats: { ids: async () => ids, archive: async (id: string) => { ids.delete(id); }, forget: async (id: string) => { ids.delete(id); }, create: async () => { ids.add(NEW); return { id: NEW, name: "New one" }; } },
     threads: { archive: async () => {}, prompt: async () => {} },
     catalog: { notify: async () => { notified++; } },
     created: { add: async () => {} },
