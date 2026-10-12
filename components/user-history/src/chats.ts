@@ -7,6 +7,7 @@ import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { activeCorrections, briefCorrections, handoffRules, type Ledger } from "./chat-corrections.ts";
 import { heartbeatsFile, readHeartbeats } from "./checkin-load.ts";
+import { flagStreaks } from "./checkin-repeats.ts";
 import { MERGE_RULE, MERGE_RULE_SHORT } from "./shared/chat-board.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, checkInDue, checkInPrecheck, checkInPrecheckText, CheckInRefused, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName,
   childWorking, classCounts, convergenceMisses, DEFAULT_CHECK_IN, type DutyRef, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText, jobFacts, lastJobMessages, nextCheckIn,
@@ -1299,11 +1300,14 @@ export class Chats {
       const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
       const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
       const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
-      const precheck = checkInPrecheck(await this.source.memory.get(id), facts, board, at,
+      const previous = await this.source.memory.get(id);
+      const precheck = checkInPrecheck(previous, facts, board, at,
         { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, ...(boardError !== undefined ? { boardError } : {}) });
-      await this.source.memory.set(id, precheck.memory);
       const output = convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at);
-      const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps), findings: checkInPrecheckText(precheck, facts, output.flagged, at) });
+      const flags = flagStreaks(previous?.flags, output.flagged);
+      await this.source.memory.set(id, { ...precheck.memory, flags });
+      const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps),
+        findings: checkInPrecheckText(precheck, facts, output.flagged, at, flags) });
       if (start === "failed" && everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, at - everyMs + CHECK_IN_RETRY_MS);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);

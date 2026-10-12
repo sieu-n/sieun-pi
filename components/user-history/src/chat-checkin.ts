@@ -1,5 +1,8 @@
 import type { HandoffRule } from "./chat-corrections.ts";
+import { finishedOpen, looksDone, pathLike } from "./checkin-done.ts";
 import { heartbeatLine, oneSessionLoad, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad } from "./checkin-load.ts";
+import { REPEAT_HEAD, repeatLines } from "./checkin-repeats.ts";
+export { finishedOpen, looksDone };
 import { CHECK_IN_DUTY_ID, type Duty, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { areaWords, BOARD_LIMITS, buildGoal, isBuildStep, linksStep, mergeStep, needsGo, openGoals, planJob, prNumbers, stepGo, walkItems, requirementGaps, targetState, targetText, type TargetState } from "./shared/chat-board.ts";
@@ -82,7 +85,9 @@ export const waitsOnOwner = (item: PlanItem): boolean => item.status === "blocke
 /** What the last check-in saw for one chat: when it ran, and each plan item's last change. */
 export interface CheckInMemory { at: number; steps: Record<string, StepMemo>;
   /** When this chat's memory began (its first check-in, kept across runs): the no-progress check needs a full hour of it. */
-  since?: number }
+  since?: number;
+  /** How many runs in a row flagged each finding, by `flagKey` (src/checkin-repeats.ts). */
+  flags?: Record<string, number> }
 /**
  * What the precheck needs besides the jobs and the board: the chat's own id and name (a step it owns is `mine`), a board read error, the
  * catalog rows (the threads a step's `waitFor` can name), and the ledger's handoffs (`handoffRules`: an open step on another thread's topics).
@@ -317,7 +322,7 @@ export function classLine(view: StepView, now: number): string | null {
   const head = `${item.id} ${quote(item.text)}`;
   if (cls === "due") {
     const until = Date.parse(item.waitUntil!);
-    return `${head} is due since ${now - until < 24 * 60 * 60_000 ? clockTime(until) : localTime(until)}: act on it now (check whether what it waited for happened, then do the next action); the board refuses a later waitUntil (c47)`;
+    return `${head} is due since ${now - until < 24 * 60 * 60_000 ? clockTime(until) : localTime(until)}: act on it or set a new waitUntil`;
   }
   if (cls === "stale-chase") {
     const on = item.waitFor !== undefined ? `waits for ${quote(item.waitFor)}` : `waits on ${owner ? ownerLabel(owner) : "its owner"}`;
@@ -331,43 +336,6 @@ export function classLine(view: StepView, now: number): string | null {
     return `${head} has no live owner${who}: start a job, take it yourself, or ask the owner in For you`;
   }
   return null;
-}
-
-/**
- * A note that says the work shipped: shipped, merged, deployed, landed, released, or live (is live, now live, live on production), unless a
- * word up to three words before it, in the same clause, makes it a condition or a wait ("not merged", "after it is deployed", "until landed",
- * "to be released").
- */
-const SAYS_SHIPPED = /(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on)\s+(?:\w+\s+){0,3})\b(?:shipped|merged|deployed|landed|released|(?:is|are|now|went|already)\s+live|live\s+on\s+(?:prod|production|staging|main))\b/i;
-/** A waitFor on the owner: a For you todo id (t41) or the owner's go, answer or pick. */
-const OWNER_WAIT = /\bt\d+\b|\bowner'?s?\b/i;
-/**
- * Why an open plan item looks done, or null: every item under it is closed, or its note says it shipped (SAYS_SHIPPED). The check-in then
- * lists it for a check against the real state (dev env VP 10-09: a goal stayed open after it was live on production).
- */
-export function looksDone(item: Pick<PlanItem, "status" | "note" | "children" | "waitFor">): string | null {
-  if (!OPEN.has(item.status)) return null;
-  // An item that waits on the owner's answer is not done, whatever its steps or note say (VP of CI 10-12: p41's steps were all done and its
-  // build waited on the owner's ok on t26; it was flagged in every run).
-  if (OWNER_WAIT.test(item.waitFor ?? "")) return null;
-  if (item.children.length > 0 && item.children.every(child => CLOSED.has(child.status))) return "every step under it is closed";
-  // A note names shipped parts of work that is still open: an open step under the item, or a wait on the owner's answer (AI harness 10-12:
-  // p254 "...are live" with p268 open, p288 waiting on t41; 7 of 9 flags were false and jobs reworded notes to dodge the match). A wait on a
-  // deploy or a land stays listed: a note that says it shipped may mean the wait is over.
-  if (item.children.some(child => OPEN.has(child.status))) return null;
-  const said = SAYS_SHIPPED.exec(item.note ?? "");
-  return said ? `its note says "${said[0]}"` : null;
-}
-/** Every open plan item that looks done (`looksDone`), steps before the goal above them. */
-export function finishedOpen(board: ChatBoard | null): { item: PlanItem; reason: string }[] {
-  const found: { item: PlanItem; reason: string }[] = [];
-  const visit = (item: PlanItem) => {
-    item.children.forEach(visit);
-    const reason = looksDone(item);
-    if (reason) found.push({ item, reason });
-  };
-  (board?.plan ?? []).forEach(visit);
-  return found;
 }
 
 /*
@@ -807,8 +775,6 @@ export const stalledLine = ({ view, why }: StalledStep): string => {
 export const BLOCKED_MS = 60 * 60_000;
 /** Words in a step's waitFor or note that name a blocker outside the chat: CI, a land, promote or release, a pin, or another thread. */
 const OTHERS = /\b(?:ci|github actions|land(?:\.yml)?|promote(?:\.yml)?|release(?: queue| train| owner)?|pin(?:ned)?|threads?)\b/i;
-/** A path or a dated folder name ("sessions/2026/10/09/1952-thread-job-split-audit"): its words are not a blocker (p168 matched "thread" in one). */
-const pathLike = (token: string): boolean => token.includes("/") || /^\d{4}-[a-z0-9-]+$/i.test(token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""));
 /** The OTHERS word in a waitFor or note, read with its paths and dated folder names left out; undefined when there is none. */
 const othersWord = (text: string | undefined): string | undefined =>
   text ? OTHERS.exec(text.split(/\s+/).filter(token => !pathLike(token)).join(" "))?.[0] : undefined;
@@ -931,9 +897,11 @@ function jobLine(fact: JobFact, now: number): string {
 /**
  * The check-in precheck as the duty job's brief gives it, plain markdown: the goals nobody works on (`idleGoals`), the steps whose class needs action (`classLine`), the open items that
  * look done, the steps on another thread's work, the other facts, the flagged items the class lines do not cover (a job end with no update),
- * the chat's jobs, and every open step with its class, owner and age, oldest change first.
+ * the chat's jobs, and every open step with its class, owner and age, oldest change first. Findings flagged in REPEAT_RUNS or more runs in a
+ * row (`streaks`, `flagStreaks`) come first, under Flagged again.
  */
-export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly JobFact[], flagged: readonly FlaggedSlice[], now: number): string {
+export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly JobFact[], flagged: readonly FlaggedSlice[], now: number,
+  streaks: Readonly<Record<string, number>> = {}): string {
   const stale = flagged.filter(slice => slice.kind === "stale_steps");
   /** A stale step is listed once, under Stale steps. */
   const staleIds = new Set(stale.map(slice => slice.item));
@@ -959,6 +927,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
   /** A goal to fold is listed once, under Goals to fold. */
   const folded = new Set(precheck.fold.map(fold => fold.goal.id));
   return [
+    ...section(REPEAT_HEAD, repeatLines(streaks, flagged)),
     ...section("Merged without the owner's go (a repo rule breach: report each to the owner in this run; never merge without his go on that PR)", merged),
     ...section("Hard gates broken (the owner's go, the requirements check): fix each now", gated),
     ...section("Goals to fold (apply these board ops in this run, in this order; no goal stays open only to wait)", precheck.fold.map(foldLine)),
@@ -976,9 +945,9 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Heartbeats the check-in covers (have the chat delete each)", flagged.filter(slice => slice.kind === "redundant_heartbeats").map(slice => slice.excerpt)),
     ...section("Open goals and no duty", flagged.filter(slice => slice.kind === "goals_without_duty").map(slice => slice.excerpt)),
     ...section("Goals nobody works on (start parallel jobs for their independent work)", idle),
-    ...section("Stalled waits (take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; \"still waiting\" and a later waitUntil are not answers)",
+    ...section("Stalled waits (take one action on each in this run: pull the slot forward, start or steer a job, or add a For you todo; \"still waiting\" is not an answer)",
       precheck.stalled.map(stalledLine)),
-    ...section("Stale steps (update or close each in this run: the job's result, the next action, done or dropped; the board refuses a later waitUntil)", stale.map(slice => slice.excerpt)),
+    ...section("Stale steps (update or close each in this run: a new waitUntil, the job's result, done or dropped)", stale.map(slice => slice.excerpt)),
     ...section("Steps whose class needs action", act),
     ...section("Look done (check the real state: close, keep or reopen)", precheck.done.filter(found => !folded.has(found.item.id)).map(lookDoneLine)),
     ...section("Owned by another thread by an owner ruling", precheck.scope.map(scopeLine)),
@@ -1254,7 +1223,9 @@ const stepMemoOf = (memo: StepMemo): StepMemo => ({ sig: memo.sig, at: memo.at, 
 function parseMemory(value: unknown): CheckInMemory | undefined {
   if (!isRecord(value) || typeof value.at !== "number") return undefined;
   const steps = isRecord(value.steps) ? Object.entries(value.steps).flatMap(([id, memo]) => isStepMemo(memo) ? [[id, stepMemoOf(memo)] as const] : []) : [];
-  return { at: value.at, steps: Object.fromEntries(steps), ...(typeof value.since === "number" ? { since: value.since } : {}) };
+  const flags = isRecord(value.flags) ? Object.entries(value.flags).filter((entry): entry is [string, number] => typeof entry[1] === "number") : [];
+  return { at: value.at, steps: Object.fromEntries(steps), ...(typeof value.since === "number" ? { since: value.since } : {}),
+    ...(flags.length ? { flags: Object.fromEntries(flags) } : {}) };
 }
 const JOB_END_CAUSES: Record<JobEndCause, true> = { error: true, aborted: true, "mid-tool": true, length: true };
 const isToldEnd = (value: unknown): value is ToldEnd => isRecord(value) && typeof value.at === "number" && typeof value.cause === "string" && value.cause in JOB_END_CAUSES;
