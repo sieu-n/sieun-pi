@@ -102,6 +102,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
       "Never send anything outside on your own: an email, a vendor or support ticket reply, a customer message or a public post is drafted and " +
         "put in For you with the draft and choices; it goes out only after the owner approves it there.",
       "Act directly and ship: do not invent waiting rules, extra review rounds or safety gates of your own; keep only the gates the owner asked for.",
+      "No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.",
       "When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.",
       `Otherwise send the chat one report when your work is done, with only what it and the owner need: the board ops, then at most 3 short ` +
         `plain lines the owner should hear, or "nothing for the owner". Send it with \`${send}\`.`,
