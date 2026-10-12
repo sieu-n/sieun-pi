@@ -1,6 +1,8 @@
 import { register } from "tsx/esm/api";
 
 register();
+const startProfile = await (await import("./start-profile.ts")).profileStart(process.argv.slice(2));
+startProfile?.done.then(path => process.stdout.write(`start profile: ${path}\n`), error => process.stderr.write(`start profile: ${error}\n`));
 
 try {
   const { runChatCommand } = await import("./chat-service.ts");
