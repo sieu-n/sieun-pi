@@ -34,7 +34,7 @@ export interface DutyHost {
   tickMs?: number;
   /** The node binary a precheck whose first word is `node` runs with; default this process's. */
   node?: string;
-  /** The daemon health gate (src/chat-daemon-gate.ts): each wake lets it probe the daemon, at most once a minute. */
+  /** The daemon health gate (src/chat-daemon-gate.ts): each wake lets it probe the daemon, one probe at a time. */
   daemon?: { tick(): Promise<void> };
 }
 

@@ -29,15 +29,13 @@ async function setup(initial: Record<string, unknown>) {
   return { settings, clock, daemon, told, log, gate, probe, dir };
 }
 
-test("daemon gate: two lists the daemon did not answer pause the check-in of every chat but the kept one and the ones already paused; three answered lists resume only those, staggered; nothing is posted into a chat", async () => {
+test("daemon gate: the first list the daemon did not answer pauses the check-in of every chat but the kept one and the ones already paused; the first answered list resumes only those, staggered; nothing is posted into a chat (c43: no sample counts of ours)", async () => {
   const { settings, clock, told, log, gate, probe } = await setup({ vp: { everyMs: 15 * MIN }, c1: { everyMs: 15 * MIN }, c2: { everyMs: 15 * MIN, pausedUntil: "forever", pausedBy: "owner" },
     c3: { everyMs: 60 * MIN }, c4: { everyMs: 15 * MIN, pausedUntil: new Date(2026, 9, 9, 18, 30).getTime(), pausedBy: "chat" } });
   await probe(200);
   assert.equal(gate.state, "healthy");
   await probe(30_000, true);
-  assert.equal(gate.state, "healthy", "one unanswered list is not enough");
-  await probe(30_000, true);
-  assert.equal(gate.state, "unhealthy");
+  assert.equal(gate.state, "unhealthy", "one list past prime-agent's 30 s request timeout is the outage");
   const paused = await settings.all();
   assert.deepEqual(paused.c1, { everyMs: 15 * MIN, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" });
   assert.deepEqual(paused.c3, { everyMs: 60 * MIN, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" });
@@ -45,16 +43,14 @@ test("daemon gate: two lists the daemon did not answer pause the check-in of eve
   assert.equal(paused.c2?.pausedBy, "owner", "the owner's pause stays the owner's");
   assert.equal(paused.c4?.pausedBy, "agent", "the chat's own pause, an older file's \"chat\", stays an agent's");
   assert.deepEqual(told, [], "no pause line goes into any chat");
-  assert.match(log.join("\n"), /daemon gate: unhealthy \(list failed after 30\.0 s: Timed out after 30000ms .*, 2 bad samples in a row\); paused the check-in of 2 chats: c1, c3/);
+  assert.match(log.join("\n"), /daemon gate: unhealthy \(list failed after 30\.0 s: Timed out after 30000ms [^)]*"list"\); paused the check-in of 2 chats: c1, c3/);
   assert.deepEqual(changeCheckIn(paused.c1!, { pause: null }, clock.at, { by: "agent", setter: "c1" }), { refused: "the server paused check-ins while the daemon is slow; they resume on their own" },
     "the gate holds its pause while the daemon is slow, so the chat cannot clear it");
   assert.deepEqual(changeCheckIn(paused.c1!, { pause: "1h" }, clock.at, { by: "agent", setter: "01a00000" }), { refused: "the server paused check-ins while the daemon is slow; they resume on their own" });
   await probe(30_000, true);
+  assert.equal(gate.state, "unhealthy");
   await probe(1_000);
-  await probe(1_000);
-  assert.equal(gate.state, "unhealthy", "two answered lists are not enough");
-  await probe(1_000);
-  assert.equal(gate.state, "healthy");
+  assert.equal(gate.state, "healthy", "the first answered list ends the outage");
   const now = clock.at;
   const resumed = await settings.all();
   assert.deepEqual(resumed.c1, { everyMs: 15 * MIN, startAt: now }, "chat 0 of 2 runs at once");
@@ -63,7 +59,7 @@ test("daemon gate: two lists the daemon did not answer pause the check-in of eve
   assert.equal(resumed.c4?.pausedBy, "agent");
   assert.equal(nextCheckIn(resumed.c3!, now - 3 * 60 * MIN, now), now + 30 * MIN, "the first check-in after the resume waits for its turn");
   assert.equal(nextCheckIn(resumed.c3!, now + 30 * MIN, now + 30 * MIN), now + 90 * MIN, "then it runs at its interval");
-  assert.match(log.at(-1)!, /daemon gate: healthy \(3 answered lists in a row\); resumed the check-in of 2 chats, staggered over their interval: c1, c3/);
+  assert.match(log.at(-1)!, /daemon gate: healthy \(a list answered\); resumed the check-in of 2 chats, staggered over their interval: c1, c3/);
   assert.deepEqual(told, [], "daemon health is server state: the gate posts no pause or resume line into any chat (off_brief, 10-12: 33 such lines)");
 });
 
@@ -86,35 +82,36 @@ test("daemon gate: the probe lists the daemon's roster only, with prime-agent's 
   await assert.rejects(rosterList(async () => ({ success: false, error: "daemon closed" })), /daemon closed/);
 });
 
-test("daemon gate: a restart during an outage starts unhealthy and resumes the chats the daemon paused; failed lists and failed archives are bad samples; the duty runner probes at most once a minute", async () => {
+test("daemon gate: a restart during an outage starts unhealthy and the first answered list resumes the chats the daemon paused; a failed archive pauses; every duty wake probes, one probe at a time", async () => {
   const { settings, clock, daemon, told, gate, probe, dir } = await setup({ c1: { everyMs: 15 * MIN, pausedUntil: "forever", pausedBy: "daemon" }, c2: { everyMs: 15 * MIN } });
+  await gate.kill(100, true);
+  assert.equal(gate.state, undefined, "an archive that worked is no sample");
   await probe(100);
-  assert.equal(gate.state, "unhealthy", "adopted from the settings file");
-  await probe(100);
-  await probe(100);
-  assert.equal(gate.state, "healthy");
+  assert.equal(gate.state, "healthy", "adopted as unhealthy from the settings file, then the first answered list resumes");
   assert.deepEqual((await settings.all()).c1, { everyMs: 15 * MIN, startAt: clock.at });
-  await gate.kill(2_000, true);
   await gate.kill(30_800, false);
-  assert.equal(gate.state, "healthy");
-  await probe(30_000, true);
-  assert.equal(gate.state, "unhealthy", "a failed archive then a failed list");
+  assert.equal(gate.state, "unhealthy", "a failed archive is the daemon not answering");
   assert.equal((await settings.all()).c2?.pausedBy, "daemon");
-  await probe(10);
-  await gate.kill(30_000, false);
-  await probe(10);
-  await probe(10);
-  assert.equal(gate.state, "unhealthy", "a failed archive starts the count again");
+  await gate.kill(2_000, true);
+  assert.equal(gate.state, "unhealthy", "an archive that worked does not end the outage; a list does");
   await probe(10);
   assert.equal(gate.state, "healthy");
   assert.deepEqual(told, []);
   const lists = daemon.lists;
   const duties = new Duties(new DutyStore(dir), { isChat: async () => false, jobs: { chat: async () => null, working: async () => false,
     start: async () => { throw new Error("no"); }, retire: async () => {} }, daemon: gate, tickMs: 0, now: () => clock.at });
-  clock.at += MIN;
-  await duties.tick();
   await duties.tick();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(daemon.lists, lists + 1, "two wakes in the same minute probe once");
+  await duties.tick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(daemon.lists, lists + 2, "each wake probes: no interval of ours on top of the duty runner's");
+  let finish!: () => void;
+  let calls = 0;
+  const slow = new DaemonGate({ settings, chats: async () => [], keep: new Set(), list: () => { calls++; return new Promise<void>(resolve => { finish = resolve; }); } });
+  const first = slow.tick();
+  await slow.tick();
+  assert.equal(calls, 1, "a wake while a probe still waits on the daemon sends no second list");
+  finish();
+  await first;
   duties.close();
 });

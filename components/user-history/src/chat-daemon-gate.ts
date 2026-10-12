@@ -2,12 +2,12 @@ import { type CheckInSettings, daemonPause, daemonResume } from "./chat-checkin.
 
 /**
  * The daemon health gate. At 17:58Z on 10-09 the daemon stopped answering (load 293) while 9 chats kept starting check-in jobs. The duty
- * runner's wake lets the gate send one daemon roster `list` a minute; the duty archive queue reports each archive try (its `kill`). A sample is
- * bad when the daemon did not answer: a list that failed or ran past prime-agent's own request timeout, or a failed archive. The daemon is
- * unhealthy after UNHEALTHY_SAMPLES bad samples in a row and healthy again after HEALTHY_PROBES answered lists in a row. Going unhealthy
- * pauses the check-in of every chat outside `keep` that is not paused already, as `pausedBy: "daemon"`; going healthy resumes only those,
- * chat i of n at now + i * interval / n. Each change writes one log line. The gate posts nothing into a chat: daemon health is server state,
- * no chat can act on it, and each chat's check-in card already shows "paused while the daemon is slow" (10-12 KST: 33 such lines in the AI
+ * runner's wake (DUTY_TICK_MS) lets the gate send one daemon roster `list`, one at a time; the duty archive queue reports each archive try (its
+ * `kill`). A sample is bad when the daemon did not answer: a list that failed or ran past prime-agent's own request timeout, or a failed
+ * archive. The first bad sample makes the daemon unhealthy and the first answered list makes it healthy again; no count or interval of ours
+ * sits on top of the 30 s timeout (c43). Going unhealthy pauses the check-in of every chat outside `keep` that is not paused already, as
+ * `pausedBy: "daemon"`; going healthy resumes only those, chat i of n at now + i * interval / n. Each change writes one log line. The gate
+ * posts nothing into a chat: daemon health is server state, no chat can act on it, and each chat's check-in card already shows "paused while the daemon is slow" (10-12 KST: 33 such lines in the AI
  * harness VP chat, each a steer that woke it for a turn). After a restart, a chat still paused by the daemon starts the gate as unhealthy, so
  * it resumes on its own.
  *
@@ -16,9 +16,6 @@ import { type CheckInSettings, daemonPause, daemonResume } from "./chat-checkin.
  * the roster only (the `list` command without `all`), because `all` adds the daemon's disk scan of every saved session (measured 10-12
  * 23:30 KST: 7.7 MB and 1,135 rows in 16.6 s against 1.3 MB and 377 rows in 0.4 s for the roster list right after it).
  */
-export const DAEMON_PROBE_EVERY_MS = 60_000;
-export const HEALTHY_PROBES = 3;
-export const UNHEALTHY_SAMPLES = 2;
 
 type Health = "healthy" | "unhealthy";
 
@@ -53,9 +50,6 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 
 export class DaemonGate {
   private health: Health | undefined;
-  private good = 0;
-  private bad = 0;
-  private lastProbe = -Infinity;
   private probing: Promise<void> | undefined;
   /** Samples and the changes they cause run one after another. */
   private chain: Promise<void> = Promise.resolve();
@@ -63,16 +57,15 @@ export class DaemonGate {
 
   constructor(private readonly input: DaemonGateInput) { this.now = input.now ?? Date.now; }
 
-  /** The duty runner's wake: a probe when the last one is a minute old. */
+  /** The duty runner's wake: a probe unless one still runs. */
   tick(): Promise<void> {
-    if (this.probing || this.now() - this.lastProbe < DAEMON_PROBE_EVERY_MS) return Promise.resolve();
+    if (this.probing) return Promise.resolve();
     return this.probe();
   }
 
   /** Times one daemon list and records it as a sample. */
   probe(): Promise<void> {
     return this.probing ??= (async () => {
-      this.lastProbe = this.now();
       const started = this.now();
       let failure: string | undefined;
       try { await this.input.list(); }
@@ -94,10 +87,8 @@ export class DaemonGate {
   private sample(ok: boolean, what: string, list: boolean): Promise<void> {
     const next = this.chain.then(async () => {
       this.health ??= await this.adopt();
-      if (ok && list) { this.good++; this.bad = 0; }
-      else if (!ok) { this.bad++; this.good = 0; }
-      if (this.health === "healthy" && this.bad >= UNHEALTHY_SAMPLES) { this.health = "unhealthy"; await this.pause(what); }
-      else if (this.health === "unhealthy" && this.good >= HEALTHY_PROBES) { this.health = "healthy"; await this.resume(); }
+      if (this.health === "healthy" && !ok) { this.health = "unhealthy"; await this.pause(what); }
+      else if (this.health === "unhealthy" && ok && list) { this.health = "healthy"; await this.resume(); }
     });
     this.chain = next.catch(error => this.input.log?.(`daemon gate: ${message(error)}`));
     return this.chain;
@@ -119,7 +110,7 @@ export class DaemonGate {
       if (changed) paused.push(id);
     }
     await this.input.changed?.().catch(() => {});
-    this.input.log?.(`daemon gate: unhealthy (${what}, ${UNHEALTHY_SAMPLES} bad samples in a row); paused the check-in of ${paused.length} chats: ${paused.join(", ") || "none"}`);
+    this.input.log?.(`daemon gate: unhealthy (${what}); paused the check-in of ${paused.length} chats: ${paused.join(", ") || "none"}`);
   }
 
   private async resume(): Promise<void> {
@@ -137,7 +128,7 @@ export class DaemonGate {
       if (changed) resumed.push(id);
     }
     await this.input.changed?.().catch(() => {});
-    this.input.log?.(`daemon gate: healthy (${HEALTHY_PROBES} answered lists in a row); resumed the check-in of ${resumed.length} chats, ` +
+    this.input.log?.(`daemon gate: healthy (a list answered); resumed the check-in of ${resumed.length} chats, ` +
       `staggered over their interval: ${resumed.join(", ") || "none"}`);
   }
 }
