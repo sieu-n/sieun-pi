@@ -64,7 +64,10 @@ export const CHECK_IN_FOCUS: readonly string[] = [
  * CHECK_IN_RETRY_MS instead of a whole interval (slack green guy 10-12: "daemon client closed" at 04:54Z, and its next try was 05:54Z).
  */
 export type CheckInStart = "done" | "failed";
-/** The summary of a run that started no job because the duty's last job still works. */
+/**
+ * Why a run started no job because the duty's last job still works. A standing duty's run still measures and records its verdict, with this
+ * after its summary (ops guy 10-10 to 10-12: 220 of 293 Local dev servers runs skipped the precheck too); a check-in run is recorded as skipped.
+ */
 export const STILL_WORKING = "skipped: previous run still working";
 /** A duty job may work this long before a later run counts it as stuck, however short its duty's interval. */
 export const STUCK_MIN_MS = 90 * 60_000;
@@ -111,7 +114,7 @@ function checkInMinutes(value: unknown): number {
  * Runs each chat's due duties on the server: a skip policy on overlap (a duty with a run going starts no other), one catch-up for a daily slot
  * missed by at most CATCH_UP_MS, the precheck with the file contract and its timeout, the measure against the targets, and then one duty job
  * per run with the precheck as context (src/chat-duty-job.ts), met or missed. One job per duty per slot: a run whose slot already has a job
- * starts none, and while the duty's last job still works a run starts none and is recorded as skipped, unless that job is stuck past
+ * starts none, and while the duty's last job still works a run measures but starts no job and says so in its summary, unless that job is stuck past
  * `stuckAfterMs` of its duty's schedule, which the run replaces. The run that starts a job retires the
  * last one: it leaves the registry at once and its archive is queued, so a slow daemon never holds up the start. A precheck that errors ERROR_PAUSE_RUNS times in a row pauses the duty; that run's job is told to fix it. The check-in duty's
  * schedule and precheck live on the chat server, which hands each run here (`checkIn`); its card reads and edits the chat's check-in setting.
@@ -318,14 +321,7 @@ export class Duties {
       if (slot !== null && found.schedule.kind === "daily") found.lastSlotAt = slot;
       if (pause) { found.status = "paused"; found.updatedAt = this.now(); }
     });
-    const previousJob = await this.previous(chatId, dutyId, duty.schedule, at);
-    if (previousJob === null) return;
-    if ("skipped" in previousJob) {
-      await markRun(false);
-      await this.store.appendRun(chatId, { duty: dutyId, at: started, slot: at, trigger, ms: 0, verdict: "skipped", metrics: {}, summary: previousJob.skipped });
-      this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${previousJob.skipped}`);
-      return;
-    }
+    if ((await this.previous(chatId, dutyId, duty.schedule, at)) === null) return;
     const previous = (await this.store.runs(chatId)).filter(run => run.duty === dutyId && run.verdict !== "skipped");
     const dir = this.store.chatDir(chatId);
     const detail = join(dir, `${dutyId}-${runStamp(started)}.json`);

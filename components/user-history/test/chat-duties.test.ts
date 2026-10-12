@@ -254,7 +254,7 @@ test("Duties: a miss starts the job with the flagged items and the repeat; the p
   assert.deepEqual(jobs.calls, ["start chat1 chat system dev VP 23:07 s1", "retire s1", "start chat1 chat system dev VP 23:07 s2"], "the last job is archived when the next starts");
 });
 
-test("Duties: while the last duty job still works a run starts none and is recorded as skipped; the run after it ends starts one", async () => {
+test("Duties: while the last duty job still works a run still measures but starts no job; the run after it ends starts one", async () => {
   const now = { at: at(8, 23, 7) };
   const { store, jobs, duties } = await setup(script(writeOutput({ orphans: 0, long_replies: 5 })), now);
   await store.update("chat1", list => { list[0]!.schedule = { kind: "every", minutes: 15 }; list[0]!.createdAt = now.at - 15 * 60_000; });
@@ -264,9 +264,10 @@ test("Duties: while the last duty job still works a run starts none and is recor
   now.at += 15 * 60_000;
   await duties.tick();
   await duties.settled();
-  const [skipped] = await store.runs("chat1");
-  assert.deepEqual([skipped!.verdict, skipped!.summary, skipped!.job], ["skipped", `${STILL_WORKING} (job chat system dev VP 23:07)`, undefined]);
-  assert.equal((await store.list("chat1"))[0]!.lastRunAt, now.at, "the skip covers the slot: the next tick does not retry it");
+  const [waited] = await store.runs("chat1");
+  assert.deepEqual([waited!.verdict, waited!.summary, waited!.job, waited!.metrics.orphans?.value],
+    ["met", `all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`, undefined, 0], "the precheck ran while the job worked (ops guy 10-12: 220 of 293 runs had none)");
+  assert.equal((await store.list("chat1"))[0]!.lastRunAt, now.at, "the run covers the slot: the next tick does not retry it");
   await duties.tick();
   await duties.settled();
   assert.equal((await store.runs("chat1")).length, 2);
@@ -442,7 +443,7 @@ test("Duties: a daily duty whose last job still works a day later retires it and
   duties.close();
 });
 
-test("Duties: a 10-minute duty skips while its job works up to 90 min, then the next run replaces the job (ops guy 10-11: 17 h of skips)", async () => {
+test("Duties: a 10-minute duty measures but starts no job while its job works up to 90 min, then the next run replaces the job (ops guy 10-11: 17 h of skips)", async () => {
   const now = { at: at(8, 23, 7) };
   const { store, jobs, duties } = await setup(script(writeOutput({ orphans: 0, long_replies: 5 })), now);
   await store.update("chat1", list => { list[0]!.schedule = { kind: "every", minutes: 10 }; list[0]!.createdAt = now.at - 10 * 60_000; });
@@ -456,8 +457,9 @@ test("Duties: a 10-minute duty skips while its job works up to 90 min, then the 
   await tickAt(100);
   assert.deepEqual(jobs.calls, ["start chat1 chat system dev VP 23:07 s1", "retire s1", "start chat1 chat system dev VP 00:47 s2"]);
   const runs = (await store.runs("chat1")).reverse();
-  assert.deepEqual(runs.map(entry => [(entry.at - start) / 60_000, entry.job?.id ?? entry.summary]), [
-    [0, "s1"], [80, `${STILL_WORKING} (job chat system dev VP 23:07)`], [90, `${STILL_WORKING} (job chat system dev VP 23:07)`], [100, "s2"]]);
+  assert.deepEqual(runs.map(entry => [(entry.at - start) / 60_000, entry.verdict, entry.job?.id ?? entry.summary]), [
+    [0, "met", "s1"], [80, "met", `all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`],
+    [90, "met", `all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`], [100, "met", "s2"]]);
   assert.match(runs[3]!.summary, / \(replaced stuck job chat system dev VP 23:07, working 100 min\)$/);
   duties.close();
 });
