@@ -1,5 +1,6 @@
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { userInfo } from "node:os";
 import { runCommand, type Runner } from "./chat-remote.ts";
 
@@ -9,6 +10,16 @@ export type LaunchJob = { node: string; cli: string; dataDir: string; port: numb
 export type KeepRunningSnapshot = { available: boolean; enabled: boolean; state: "on" | "off" | "problem"; message: string };
 
 const escapeXml = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+
+/**
+ * The cli path the login item names. `resolved` comes from import.meta.url, where Node has resolved every symlink, so a release started
+ * through ~/.local/share/sieun-pi-chat/current would write the release folder into the plist and pin the next start to it. `started` is
+ * process.argv[1], which Node keeps as given: it wins when it is a chat-service-cli.mjs that resolves to the same file.
+ */
+export function loginItemCli(started: string | undefined, resolved: string, real: (path: string) => string = realpathSync): string {
+  if (!started || basename(started) !== basename(resolved)) return resolved;
+  try { return real(started) === real(resolved) ? started : resolved; } catch { return resolved; }
+}
 
 /**
  * RunAtLoad starts chat at login; KeepAlive restarts it after a crash but not after `chat stop`, which exits 0.

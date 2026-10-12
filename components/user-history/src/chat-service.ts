@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { parsePublicOrigin, parseRemoteFlag, type RemoteSetting } from "./chat-origin.ts";
-import { KeepRunning } from "./chat-autostart.ts";
+import { KeepRunning, loginItemCli } from "./chat-autostart.ts";
 import { LoginWindow } from "./chat-login-window.ts";
 import { openChat } from "./chat-open.ts";
 import { RemoteAccess, type RemoteControl } from "./chat-remote.ts";
@@ -171,7 +171,7 @@ async function findNode(): Promise<string | null> {
 }
 function keepRunningFor(service: Service, node: string, supervised = false): KeepRunning {
   return new KeepRunning({
-    job: { node, cli: cliPath, dataDir: service.directory, port: service.config.port, socketPath: service.config.socketPath, logPath: join(service.directory, "service.log") },
+    job: { node, cli: loginItemCli(process.argv[1], cliPath), dataDir: service.directory, port: service.config.port, socketPath: service.config.socketPath, logPath: join(service.directory, "service.log") },
     enabled: service.config.keepRunning, supervised, save: enabled => saveConfiguration(service, { keepRunning: enabled }),
   });
 }
