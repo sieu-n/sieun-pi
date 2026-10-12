@@ -1,0 +1,56 @@
+{
+  "name": "Search visits grow",
+  "ownerWords": "not bad, but our DR is probably shit, we aint getting any visitors. can you have a meta-level goal and subgoals?\n\nour goal is 10,000 blog/tool visits/day, and 300 sign ups from that. \n\nso you manage Search keyword research, competitor SEO analysis, like posting things on reddit, marketing forums ... to boost our DR, managing analytics and conversion realted to the initial land somewhere -> landing page/product page -> sign up or book a call flow",
+  "goal": "Blog and tool visits on virev.ai, Google clicks and sign-ups whose first page was blog or tools climb toward the owner's 10,000 visits a day and 300 sign-ups a day (his t9 answer), and the numbers are read fresh every day. The visits targets will miss for months, so the job reads the distance and the trend. Raise google_clicks_d7 to 500 on 11-01, as program/brief.md says.",
+  "metrics": [
+    {
+      "key": "goal_visits_d28",
+      "label": "Blog and tool visits a day, 28-day average, no bots or staff (PostHog)",
+      "op": ">=",
+      "target": 10000,
+      "unit": " visits/day"
+    },
+    {
+      "key": "goal_visits_d7",
+      "label": "Blog and tool visits a day, 7-day average, no bots or staff (PostHog)",
+      "op": ">=",
+      "target": 10000,
+      "unit": " visits/day"
+    },
+    {
+      "key": "google_clicks_d7",
+      "label": "Google clicks a day, 7-day average, all pages (Search Console)",
+      "op": ">=",
+      "target": 20,
+      "unit": " clicks/day"
+    },
+    {
+      "key": "signups_goal_d28",
+      "label": "Sign-ups a day whose first page was blog or tools, 28 days (Clerk, PostHog)",
+      "op": ">=",
+      "target": 300,
+      "unit": " signups/day"
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources that failed or were stale (PostHog, Search Console, Clerk)",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "09:00"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/seo-search-visits.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Run today's SEO iteration from program/brief.md in auto-sns-agent (apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program), the work the 09:00 heartbeat did. Fix a source_error first. Run `uv run --project scripts/seo seo-goal` and `seo gsc pull` to save the day's metrics, read which pages and queries moved, score due ledger checks, then spawn one subagent per article, translation or rewrite aimed at the biggest gap, English first and each language its own job after. Real-app fixes stay parked until the owner says 5180 is good enough (c40). No Reddit or forum post, email or ticket reply without his ok on a For you todo (c37), no merge without his go (c49), and ask before a prod promote (staging lands are fine, c50). Send the owner one short status with clicks, visits, sign-ups and what shipped. Do this on every run, met or missed.",
+  "boardGoal": "p1"
+}
