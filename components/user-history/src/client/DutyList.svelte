@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { DutyView } from "../shared/chat-duties.ts";
   import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel } from "./duty-cadence.ts";
-  import { dutyState, history, lastLabel, metricValue, nextLabel, scheduleLabel, type ChatDuties } from "./duties.svelte.ts";
+  import { dutyState, history, lastLabel, metricValue, nextLabel, scheduleLabel, VERDICT_WORDS, type ChatDuties } from "./duties.svelte.ts";
   import Icon from "./Icon.svelte";
   import IdChip from "./IdChip.svelte";
   import { store } from "./store.svelte.ts";
@@ -11,19 +11,19 @@
    * The Duties card body: one row per duty with its state dot, name, schedule, next run, the last verdict and the pass and fail history as dots
    * (oldest first; green met, amber missed, red failed, grey skipped). A click on the row opens its goal, the owner's words, each metric against
    * its target over the last runs, the last run's output file, and the cadence editor (every N minutes or a daily time). Run now and Pause or
-   * Resume act through the server. The check-in is a built-in duty: it carries a Built-in tag, its last run's open steps per class and what it
-   * flagged, handled or left after the chat's turn, and its cadence and pause are the chat's check-in setting (the header's control).
+   * Resume act through the server. Each run starts one duty job, named under the row. The check-in is a built-in duty: it carries a Built-in
+   * tag and its last run's open steps per class and what it flagged, and its cadence and pause are the chat's check-in setting (the header's control).
    */
   let { chat, duties, now }: { chat: string; duties: ChatDuties; now: number } = $props();
 
   let open = $state<Record<string, boolean>>({});
   const toggle = (id: string) => { open = { ...open, [id]: !open[id] }; };
-  const VERDICT_WORD = { met: "met", missed: "missed", error: "precheck failed", skipped: "skipped" } as const;
+
   const runTitle = (view: DutyView, index: number): string => {
     const run = history(view)[index]!;
-    return `${new Date(run.at).toLocaleString()}: ${VERDICT_WORD[run.verdict]}. ${run.error ?? run.summary}`;
+    return `${new Date(run.at).toLocaleString()}: ${VERDICT_WORDS[run.verdict]}. ${run.error ?? run.summary}`;
   };
-  const lastRun = (view: DutyView) => view.runs.find(run => run.verdict !== "skipped" && run.trigger !== "after-turn");
+  const lastRun = (view: DutyView) => view.runs.find(run => run.verdict !== "skipped");
 
   let drafts = $state<Record<string, CadenceDraft>>({});
   let cadenceError = $state<Record<string, string>>({});
@@ -44,6 +44,7 @@
     {@const duty = view.duty}
     {@const state = dutyState(view)}
     {@const last = lastRun(view)}
+    {@const found = flaggedLabel(view)}
     <li class="duty">
       <div class="duty-line">
         <button type="button" class="duty-main" aria-expanded={open[duty.id] === true} onclick={() => toggle(duty.id)}>
@@ -67,12 +68,10 @@
       </p>
       {#if view.builtin}
         {@const classes = classesLabel(last)}
-        {@const found = flaggedLabel(view)}
         {#if classes}<p class="duty-found">{classes}</p>{/if}
         {#if found.flagged}<p class="duty-found">Flagged: {found.flagged}</p>{/if}
-        {#if found.handled}<p class="duty-found handled">Handled after the turn: {found.handled}</p>{/if}
-        {#if found.left}<p class="duty-found left">Still flagged after the turn: {found.left}</p>{/if}
       {/if}
+      {#if found.job}<p class="duty-found">Last duty job: {found.job}</p>{/if}
       {#if open[duty.id]}
         <div class="duty-detail">
           <p class="goal">{duty.goal}</p>
@@ -166,8 +165,6 @@
   .duty-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
   .duty-tag { flex: none; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
   .duty-found { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); overflow-wrap: anywhere; }
-  .duty-found.handled { color: var(--success); }
-  .duty-found.left { color: var(--warning); }
   .cadence { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text-muted); }
   .cadence-label { color: var(--text-faint); }
   .cadence input[type="number"] { width: 6ch; }

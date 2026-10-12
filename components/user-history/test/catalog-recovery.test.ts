@@ -64,3 +64,14 @@ test("a failed list is reported and retried without needing another roster notif
   assert.equal((await c.event()).error, undefined);
   assert(states.includes("down") && states.includes("up"));
 });
+
+test("SDK sync attached after backend startup receives the observed daemon version", async t => {
+  const c = catalog(t);
+  t.mock.method(c.client, "request", async () => ({ success: true, data: { sessions: [], jobs: [] } }));
+  await c.refresh();
+  const versions: (string | undefined)[] = [];
+  c.onDaemonVersion = version => { versions.push(version); };
+  assert.deepEqual(versions, ["0.9.8"]);
+  await c.refresh();
+  assert.deepEqual(versions, ["0.9.8"], "a roster refresh does not invent another hello");
+});

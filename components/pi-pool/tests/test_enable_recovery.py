@@ -50,12 +50,12 @@ class EnableRecovery(unittest.TestCase):
         logging.start()
         self.addCleanup(logging.stop)
 
-    def enable(self):
+    def enable(self, provider="openai-codex"):
         output = io.StringIO()
         with contextlib.redirect_stdout(output), \
              patch.object(self.vend, "load_json", wraps=self.vend.load_json) as reads, \
              patch.object(self.vend, "save_json", wraps=self.vend.save_json) as writes:
-            result = self.vend.cmd_enable(["openai-codex"])
+            result = self.vend.cmd_enable([provider])
         self.assertEqual(result, 0)
         return output.getvalue(), [call.args[0] for call in reads.call_args_list], [
             call.args[0] for call in writes.call_args_list
@@ -123,6 +123,21 @@ class EnableRecovery(unittest.TestCase):
                 self.assertEqual(self.fallback.read_bytes(), fallback)
                 self.assertFalse(self.auth.exists())
                 self.assertEqual(reads, [str(self.models)])
+
+    def test_enable_anthropic_keeps_custom_models_and_sets_the_hook(self):
+        models = {"providers": {"anthropic": {"apiKey": "fixture-key", "models": [{"id": "fixture-model"}]}}}
+        self.models.write_text(json.dumps(models))
+
+        output, _, writes = self.enable("anthropic")
+
+        self.assertEqual(writes, [str(self.models)])
+        self.assertEqual(json.loads(self.models.read_text())["providers"]["anthropic"], {
+            "baseUrl": "https://api.anthropic.com",
+            "api": "anthropic-messages",
+            "apiKey": f"!{shlex.quote(str(SOURCE.parent / 'bin/pi-pool-token'))}",
+            "models": [{"id": "fixture-model"}],
+        })
+        self.assertIn("anthropic enabled", output)
 
     def test_enable_without_login_does_not_create_auth(self):
         output, reads, writes = self.enable()

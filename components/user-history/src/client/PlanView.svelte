@@ -1,23 +1,26 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import type { ChatBoard, PlanItem, ScratchItem } from "../shared/types.ts";
+  import { needsGo, stepGo } from "../shared/chat-board.ts";
+  import type { ChatAgent, ChatBoard, PlanItem, ScratchItem } from "../shared/types.ts";
   import { focusPlan, isFinished, linkChip, parentIds, planProgress, planTotals, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import IdChip from "./IdChip.svelte";
+  import AgentChip from "./AgentChip.svelte";
   import PlanMark from "./PlanMark.svelte";
   import Checkbox from "./ui/Checkbox.svelte";
   import { tooltip } from "./ui/tooltip.ts";
 
   /**
-   * The whole board of a chat in one large modal: the plan as a tree with every level open, each step with its status mark, id chip, owner
-   * (a chip that closes the view and has `onjob` open the job drawer or the owner's thread) and note; then the notes tree with its link chips. Done and dropped
+   * The whole board of a chat in one large modal: the plan as a tree with every level open, each step with its status mark, id chip, agent
+   * (AgentChip: it closes the view and opens the job drawer or the agent's thread) and note; then the notes tree with its link chips. Done and dropped
    * steps stay hidden until "Show done" is on; one control folds or unfolds every parent. `focus` is the item the view opened on: its
    * parents unfold, done items show when it is one, and the row scrolls into view and lights up for 2 s. The board prop is live.
    */
-  let { chat, board, focus, narrow, onjob, ownerName, previewJob, onclose }: {
-    chat: string; board: ChatBoard | null; focus: string | null; narrow: boolean; onjob: (owner: string) => void; ownerName: (owner: string) => string; previewJob: (owner: string) => string | undefined; onclose: () => void;
+  let { chat, board, agents, focus, narrow, onjob, onagent, previewJob, onclose }: {
+    chat: string; board: ChatBoard | null; agents: readonly ChatAgent[]; focus: string | null; narrow: boolean; onjob: (owner: string) => void; onagent: (agent: ChatAgent) => void;
+    previewJob: (owner: string) => string | undefined; onclose: () => void;
   } = $props();
 
   const EMPTY_PLAN: PlanItem[] = [];
@@ -90,13 +93,15 @@
                 <IdChip {chat} id={item.id} />
                 <span class="text">{item.text}</span>
                 {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
-                {#if item.job}
-                  {@const owner = item.job}
-                  {@const preview = previewJob(owner)}
-                  <button type="button" class="owner" title={preview ? undefined : "Open " + ownerName(owner)} data-preview-chat={chat} data-preview-job={preview} onclick={() => { onclose(); onjob(owner); }}><Icon name="briefcase" size={11} /><span class="owner-name">{ownerName(owner)}</span></button>
-                {/if}
+                <AgentChip {chat} {item} {agents} {onagent} {onjob} {previewJob} onopen={onclose} />
+                {#if needsGo(item) && !stepGo(board ?? { todos: [] }, item)}<span class="go-mark" use:tooltip={"This step waits for your go in For you"}>needs your go</span>{/if}
               </p>
               {#if item.note}<p class="note">{item.note}</p>{/if}
+              {#if item.requirements?.length}
+                <ul class="reqs" aria-label="Requirements of {item.text}">
+                  {#each item.requirements as line, index (index)}<li class="req {line.status}"><span class="req-status">{line.status}</span> {line.text}</li>{/each}
+                </ul>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -162,15 +167,18 @@
   .row.plan.done > .line > .text { color: var(--text-muted); }
   .row.plan.dropped > .line > .text { color: var(--text-faint); text-decoration: line-through; }
   .progress { margin-left: 6px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .owner { display: inline-flex; vertical-align: top; align-items: center; gap: 3px; height: 20px; max-width: 220px; margin-left: 8px; padding: 0 7px 0 5px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-sunken); font-size: 11.5px; color: var(--text-muted); }
-  .owner:hover { border-color: var(--accent); color: var(--accent-bold); background: var(--accent-soft); }
-  .owner-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .line :global(.agent-chip) { height: 20px; line-height: 20px; margin-left: 8px; }
   .note { margin: -2px 0 4px; padding: 0 0 0 calc(18px + 14px + 4px); font-size: 12.5px; line-height: 1.5; color: var(--text-faint); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .go-mark { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 18px; white-space: nowrap; color: var(--accent-bold); background: var(--accent-soft); }
+  .reqs { list-style: none; margin: -2px 0 4px; padding: 0 0 0 calc(18px + 14px + 4px); font-size: 12.5px; line-height: 1.5; color: var(--text-faint); overflow-wrap: anywhere; }
+  .req-status { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .req.met .req-status { color: var(--text-muted); }
+  .req.unmet .req-status, .req.open .req-status { color: var(--accent-bold); }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: -2px 0 6px; padding-left: calc(18px + 4px); }
   @container app (max-width: 899px) {
     .view { padding: 6px 12px 40px; }
     .count { display: none; }
     .row { padding-left: calc(var(--depth) * 12px); }
-    .owner { max-width: 140px; }
+    .line :global(.agent-chip) { max-width: 140px; }
   }
 </style>

@@ -1,21 +1,23 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdir, readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { IdIndex } from "./id-index.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { handoffRules, type Ledger } from "./chat-corrections.ts";
-import { activePause, changeCheckIn, CHECK_IN_MERGE_MS, type CheckInChange, checkInDigest, checkInJobBrief, checkInJobMessage, checkInDue, checkInMessage, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName, childWorking, DEFAULT_CHECK_IN,
-  endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndNotice, jobFacts, type JobState, lastJobMessages, nextCheckIn, noReportNotice, ownedStep, retryDue, writeCheckInBrief,
-  classCounts, classifyBoard, convergenceMisses, scopeMisses, stepSig } from "./chat-checkin.ts";
-import { type ClaudeState, claudeDown, failureCause, type FallbackRecord, fallbackModel, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, switchBack,
-  switchedBackNotice, switchedNotice, turnStall, turnViewOf, wokeFromSleep } from "./chat-fallback.ts";
-import { CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, turnStarter } from "./shared/chat-feed.ts";
+import { activeCorrections, briefCorrections, handoffRules, type Ledger } from "./chat-corrections.ts";
+import { heartbeatsFile, readHeartbeats } from "./checkin-load.ts";
+import { MERGE_RULE, MERGE_RULE_SHORT } from "./shared/chat-board.ts";
+import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, checkInDue, checkInPrecheck, checkInPrecheckText, CheckInRefused, type CheckInRecord, type CheckInSetting, type CheckInSettings, childName,
+  childWorking, classCounts, convergenceMisses, DEFAULT_CHECK_IN, type DutyRef, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText, jobFacts, lastJobMessages, nextCheckIn,
+  noReportNotice, retryDue } from "./chat-checkin.ts";
+import { type ClaudeState, claudeDown, failureCause, jobWake, type JobWake, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
+import { JOB_NOTICE_PREFIX, messageIdNote, REPLY_FOLD_WORDS, serverNote, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { findingsList, lintOwnerReply, replyCheck, replyNotes } from "./shared/reply-lint.ts";
-import type { CheckInRun, Duties } from "./chat-duty-run.ts";
-import type { PrecheckOutput } from "./shared/chat-duties.ts";
+import { briefCheck, briefCheckNote, ownerMessages, turnOwnerAt } from "./shared/brief-check.ts";
+import type { CheckInRun, CheckInStart, Duties } from "./chat-duty-run.ts";
 import { messageText } from "./shared/turns.ts";
-import type { BoardOp, ChatAgent, ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelCatalog, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel,
+import type { ChatAgent, ChatBoard, ChatBriefState, ChatWait, CheckInState, CheckInView, ChildAgent, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel,
   ThreadMessage } from "./shared/types.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
@@ -47,108 +49,67 @@ export const NO_REPORT_SAME_END_MS = 60_000;
 const ALLOWED_SHELL = ["prime-agent", "git log", "git status", "git diff", "git show", "rg", "ls", "cat", "head", "tail", "wc"];
 const SHELL_LIST = "prime-agent, git log/status/diff/show, rg, ls, cat, head, tail, wc";
 
-/** The brief, as promptGuidelines bullets. It reaches every turn kind, including agent-message wakes and check-ins, through the base system prompt. */
+/** Where the brief's on-demand rules live: the board skill and its references, read before the action they cover. */
+export const BOARD_SKILL = "~/.prime/agent/skills/board";
+/** The brief, as promptGuidelines bullets. It reaches every turn kind, including agent-message wakes and check-ins, through the base system prompt.
+ * A rule the brief holds names its correction id, like (c47); the [corrections] block then shows that id with its theme only (BRIEF_CORRECTIONS). */
 export const CHAT_BRIEF: readonly string[] = [
-  "This session is a chat. The owner is the CTO; you are the VP for this thread's topic. Your one goal is to drive every board item to done. " +
-    "Every open step names its owner (a job, or another thread as `thread:<id>` or its session name) and its next action; otherwise mark it " +
-    "blocked with the exact thing that unblocks it. A step that waits on someone else is still yours to chase. Before you mark a step done, check " +
-    "the real state (the commit, the live service, the report), never an old note. Plan it, staff it with jobs, and bring the owner only what needs them.",
+  "This session is a chat. The owner is the CTO and you are the VP for this thread's topic. Your one goal is to drive every board item to done. " +
+    "Every open step names its owner (a job, or a thread as `thread:<id>`) and its next action, or is blocked with the exact thing that unblocks it. " +
+    "A step that waits on someone else is still yours to chase. Check the real state (the commit, the live service, the report) before you mark a step done.",
   "Call a feature live only for what you saw on the real screen, and say what you checked.",
-  "Owner reply: 60 words at most, bullets and links included: one answer line, then at most 3 short lines. Starting or steering a job is one line " +
-    "with its job link; its plan goes on the board. Anything longer is a wiki page: one line and the link.",
-  "Voice: the owner's language, short. " +
-    "If the owner asks you to explain, or the answer needs more, write a wiki article page (a job, or a scratch note with a link if one exists) and reply " +
-    "with one or two lines and the link. An explanation the owner asked for is a plan step until it is done; when the article is ready, " +
-    "send its link in a chat message (tell_owner on a wake-up), never only in a board note. For you holds only what the owner must decide or do now, " +
-    "never a placeholder for something not ready. tell_owner on a wake-up is two or three plain lines, " +
-    "not a status essay. Job reports stay folded in the feed. The owner sees only what you send. When a job reports, send a short message with " +
-    "the outcome and a link to the report (job:<name>), plus the decision or next step if one is needed. Do not paste the report. Lead with the answer. Markdown renders in the chat: use a short list, " +
-    "inline code or a link when it makes the reply easier to scan; no headings, no tables unless asked, no em dashes. " +
-    "Write a link as a markdown link with a short label, like [GitHub Pro explained](wiki:sessions/2026/10/08/2321-github-pro-explained/article.html); " +
-    "it takes the same targets as a board link (wiki:, file:, job:, thread: or a URL). " +
-    "Write like a text message from a coworker: spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence. Commit hashes are fine. Write so the message reads straight through as plain text: no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides, plain words over internal names; at most one board id per message, at the end, only when it helps (the page turns it into a link). Job and thread names are not internal names and are exempt: they always appear, as links. Whenever a reply starts, steers, mentions or reports on a job, name it by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough), so the owner can find it in the Agents panel; same for threads: [census thread](thread:<id>). Never write \"a job\" or \"the job\" without that link. When you mean jobs in general (a kind of job, or a rule for jobs), write the plural with no link, like \"check-ins now hand bigger work to check-in jobs\". When the owner seems to miss a fact or asks for something unusual, on any topic and not only security, say so with your reason before you act; a short disagreement beats silently doing it, and back-and-forth with the owner is welcome (owner 10-09), within the same reply length. Long detail (findings, options, file paths) goes to scratchpad bullets with links. You can show images (`![alt](path or URL)`, local paths work) and ```mermaid " +
-    "diagrams; put one on its own block when it is the point of the reply (it shows as a separate card under your message), keep it inline " +
-    "when it is a small aside. Board notes, todos and replies are plain sentences a person reads once. No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works. Say what it is and what happens next.",
-  "Quiet: you talk to the owner when the owner writes. On a wake-up the owner did not start, your text is only your notes (the owner sees it folded); " +
-    "reach the owner only through tell_owner. If a goal finished, something is blocked or you need a decision, call tell_owner once. Never write 'nothing needs you', " +
-    "'already handled', or a relay line. Several updates in a row get one tell_owner at the end, not one each. Message another thread only when " +
-    "it must act, and tell it no reply is needed unless it needs something.",
-  "Do yourself only quick read-only look-ups that answer the owner in about a minute: read a file, `rg`, `git log/status/diff/show`, open a screenshot " +
-    "with `attach_image`, read a job's report or wiki page, `await agent_observe.recent_messages(name)`. Any real task, read-only or not " +
-    "(research, an audit, implementation, checks, browser work), goes to a job.",
+  "Reach the owner only through tell_owner, on every kind of turn, within the [reply cap]. Once you called it, your other text in that turn is notes " +
+    "the owner sees folded. Starting or steering a job is one line with its job link, and its plan goes on the board.",
+  "Voice: write in the owner's language like a coworker's text message, answer first, in plain spoken sentences that read straight through, with no " +
+    "label openers or report formatting (c18). Keep board ids, hashes, model ids and internal names out of sentences, and name every job or thread " +
+    "you mention as a link by its exact name (c12). Push back with your reason when the owner seems to miss a fact or asks for something unusual (c16). " +
+    "When the owner asks how something works, answer at once with a diagram of the current state from known facts (c52).",
+  "An explanation the owner asked for is a wiki page made by a job and a plan step until it is done; send its link with tell_owner, never only in " +
+    "a board note (c14). When a job reports, tell the owner the outcome in one short message with its job link, and never paste the report (c9).",
+  "Quiet: on a wake-up the owner did not start, your text is only folded notes. Call tell_owner once when a goal finished, something is blocked or " +
+    "you need a decision. Never write 'nothing needs you', 'already handled' or a relay line. Several updates get one tell_owner. Message another " +
+    "thread only when it must act.",
+  "Each owner message carries `[message id: <id>]`; when you answer an older message, pass `reply_to: \"<id>\"` to tell_owner.",
+  "Do yourself only read-only look-ups of about a minute: a file, `rg`, `git log`, a job's report, `attach_image`, `agent_observe.recent_messages`. " +
+    "Any real task goes to a job.",
   "Name every job and thread you start like the owner names threads: a few plain lowercase words with spaces naming the topic (stripe and payments, " +
-    "realtime layer, crawler ops, readme check). No kebab-case, no ids, no numbered suffixes like -2.",
-  "Jobs: `handle = await rlm.spawn(brief, name=...)` runs in this repository with its rules; `await rlm.create_session(brief, name=..., cwd=...)` for another " +
-    "repository. Every brief starts with `Owner's words (verbatim):` quoting each owner message that led to the job exactly, then `My read:` with your " +
-    "interpretation marked as yours, then the task, then the reply instruction: `await agent_message.send(report, receiver_role=\"parent\")` for a child, " +
-    "`receiver_role=\"sibling\", receiver_name=<your session name>` for a create_session root (`current.sessionName` from `await agent_observe.list_agents()`). " +
-    "When the owner adds or changes something, forward their exact words to the job with `await agent_message.send(words, receiver_role=\"child\", receiver_name=<job>)`. " +
-    "Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, " +
-    "and translate any Korean.",
-  "Splitting work (owner 10-09: distribute work into jobs with one goal each, and jobs split work to subagents): this chat may hold many goals. " +
-    "One job = one goal: hand each goal (or step) to its own job, never one job for several goals. A job splits its work into subagents, one per unit " +
-    "of output: a job \"do today's SEO iteration\" spawns research subagents, then one subagent per article to draft it, never one context writing " +
-    "10 articles (quality drops per item when one context produces many outputs). The job plans, coordinates and checks its subagents' results; " +
-    "each item is made in a fresh context. Work of 1 to 3 tool calls stays inline; do not start a job for it. To change or finish a live " +
-    "job, steer it with a follow-up message; never start a \"-2\" or \"finish\" copy of it. A job with 2 or more independent parts fans out to sub-jobs.",
-  "sieun-pi has one contributor (the owner), so its local checkout is ground truth: rewriting unpushed local sieun-pi commits (rebase, amend) " +
-    "before a push needs no owner ask; never force-push and never rewrite pushed history.",
-  "An llm-wiki page is always written by its own subagent, one page per subagent. The writer follows " +
-    "`.agents/skills/apps/llm-wiki/references/writing.md` and makes `node apps/llm-wiki/scripts/prose-lint.mjs <page>` pass. The parent then reads " +
-    "the page against that file before it links the page to anyone.",
-  "Handing off: when a step moves to another thread for good, remove it from this plan (plan_remove) and add one scratch note saying who owns it now; " +
-    "that thread tracks it on its own board. A step that only waits on another thread for something this chat still needs stays, with waitFor.",
-  "Board: keep it current with the `chat_board` tool; the owner sees it next to the chat. The plan is a nested checklist: top items are goals, children " +
-    "are steps, each job linked by name. Update the board in the same turn you start or finish a job. A user message that starts with `[board] ` is " +
-    "the owner acting on the board (choosing or answering a todo, adding a note); act on it.",
-  "Board shape: every goal gets its phases as child steps from the start: Plan (research or design), Decide (only when the owner must choose), Build, " +
-    "Verify. Each step carries its real status, including blocked steps nobody works on yet, so the owner sees the whole path. Link a job on the step " +
-    "it does, not on the goal. Example: goal `Reach chats from a messenger (Slack first)` has Plan (doing, job messenger-bridge-research), Decide " +
-    "(blocked), Build (blocked), Verify (todo). A step's `job` is its owner: a job name, or another thread as `thread:<id>` or its session name. " +
-    "A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal.",
-  "The scratchpad is a short bullet list: one finding or decision per bullet, with links to what it is about (`job:<name>` for a job's report, " +
-    "`thread:<id>`, `wiki:<path>`, `file:<path>`, or a URL). No long prose.",
-  "You are the VP: decide everything you can yourself. Ask the owner only for what a VP cannot decide: product direction, money, irreversible or " +
-    "external actions (deploys, sends, deletes), credentials and logins. Doc wording, small fixes, detail level and code choices are yours: decide, act, " +
-    "and note the decision in the scratchpad. Keep at most 3 open owner todos; each is one short question with 2 to 4 `choices`, your recommendation " +
-    "first. Before adding one, ask yourself whether the CTO would be annoyed to be asked; if so, decide. An ask is an owner todo plus one short line in chat.",
-  "Start every job at once, reply in one short message, and end the turn. Never wait inside a turn: job reports and check-ins wake you later.",
-  "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open " +
-    "For you todo. The check-in is your built-in duty for this end state: it measures it at every check-in and job event, and after your turn " +
-    "it checks again and names each flagged step you left unchanged. A `[check-in]` lists what changed, then every open step with its class, owner and time since its last change. In that same " +
-    "turn act on every step whose class needs you: due (its waitUntil passed): act on it or set a new waitUntil; stale-chase (it waits on " +
-    "another thread or an event with no progress for 2 h): chase it now, and after 24 h make it a For you todo or replan it; orphan (no live " +
-    "owner, no todo, no wait): start a job, take it yourself, or ask the owner in For you. live, foryou and waiting need nothing. A step that " +
-    "truly waits on the owner has exactly one For you todo. When a job ends or replies, update its step in that same turn; at the next check-in " +
-    "the server writes the job's report into a step you left unchanged. Watching and reporting alone is not progress. A stuck owner gets at most one message. If it has not moved by the next check-in, or its last turn ended in an error, " +
-    "replace it with a job in that check-in. A takeover you promised for the next check-in is due at that check-in: do it, do not restate it. " +
-    "Never ask the owner to relay a message to another thread. Make the board match reality (statuses, notes with links), send a job only its own plan item, not the whole board, and " +
-    "stay quiet unless a goal finished, something is blocked, or you need a decision (one tell_owner). `[job] <name> ended at <time> with no report` means " +
-    "that job stopped without reporting: read its last messages (`await agent_observe.recent_messages(name)`) and act on what it did. " +
-    "`[job] <name> is waiting for you since <time>` or a check-in line `<step> (job <name>) waits: \"...\"` means the job waits on you or on something " +
-    "you can get it (a slot, a go, an answer): answer it or get it, do not replace it. Never start a second job on a step whose job " +
-    "may still run: `rlm.list_subagents()` can say completed for a job a reply woke again, so check its activity first.",
-  "A check-in turn is triage. Read its lines and decide what to do; do not verify open steps one by one yourself. When a `[check-in]` says to " +
-    "start a check-in job, run the exact call it gives and end the turn. The job checks the steps in its own subagents and sends you board ops " +
-    "and owner lines. Apply them, tell the owner only what matters, and delete the job like any finished job.",
-  "After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it " +
-    "waiting on purpose; finished jobs hold memory.",
-  "If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it.",
-  "When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
-    "instead of leaving the step blocked with a note. When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot " +
-    "per variant inline in the chat message itself (![variant A](path) and its URL), never only in a todo or a board note. " +
-    "A CLI or service login (vercel login, gh auth, a device code or browser flow) is yours or the job's to finish: open it in the owner's Aside browser " +
-    "through the aside-browser skill and complete the Google or GitHub sign-in there. Ask the owner only when no OAuth path works (a password, a 2FA " +
-    "code, a hardware key).",
-  "Corrections stick: when the owner corrects how you work (board shape, tone, what to report), apply it now and make it hold for every future chat. " +
-    "A correction changes the brief or a skill, never only a local note: send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., " +
-    "receiver_role=\"sibling\", receiver_name=\"realtime layer\")` for a brief or code change, or call `await refine.run()` aimed at a global skill or prompt entry. " +
-    "A local memory alone does not count. The owner should never have to give the same correction twice.",
-  "Corrections ledger: in the same turn the owner corrects you, call `correction_add` with the owner's exact words, a one-line rule, theme key words " +
-    "and what enforces it (brief, code or test, with its ref). The active corrections reach every chat as a `[corrections]` message before each call. " +
-    "When the tool says repeat, treat it as a sev: start a job that fixes it in code or a test, not only prompt text, and record the fix with its id.",
+    "crawler ops). No kebab-case, no ids, no numbered suffixes like -2.",
+  "Jobs: start one with `rlm.spawn(brief, name=..., model=\"anthropic/claude-opus-5-5\", thinking=\"high\")`; this chat and every job run on that " +
+    "model unless the owner says otherwise (c31). A brief opens with `Owner's words (verbatim):` and the 1 or 2 owner messages that started the job, " +
+    "each numbered with its time and exact text in straight double quotes, or `Owner's words: none, started by <who>`. Then come `My read:`, a " +
+    "`Split:` line naming its subagents or why it stays inline, the task and the reply line. Write to agents in English and say what the owner's " +
+    "words mean. Fix a `[brief check]` by messaging the job.",
+  "One job takes one goal (c10). Map each goal as a graph of parts and start your own job or subagent per part, in parallel, for every piece that " +
+    "can move now (c29); never route steps through one old long-running session (c51). Delete heartbeats and watcher loops the check-in already " +
+    "covers. Steer a live job with a message; never start a -2 copy.",
+  "Act directly and ship; invent no waiting rules, review rounds or safety gates unless the owner asks for caution (c47). When CI, the release " +
+    "queue or another thread blocks a step, start a job that fixes the blocker instead of waiting (c34). Read or write Convex data yourself or in a " +
+    "job, never by asking the owner (c35). A new check or job runs the way existing specs and CI run, with no separate runner or exception (c19).",
+  "Staging lands and deploys never need the owner's ok (c50). A production merge, auto-merge, push to main or master, or promote needs his go on " +
+    "a For you todo that names that PR or push; no standing \"merge once checks pass\" go exists (c49).",
+  "Nothing goes outside (an email, a ticket or support reply, a customer message, a post) until the owner approves the draft on a For you todo (c37).",
+  "Flag a goal that is days or weeks away or blocked on capacity in For you at once, with options and your pick (c42). Set limits such as pages " +
+    "per account or ban risk only from measured evidence (c43). Before you say a target does not fit or ask for hardware, show the measured " +
+    "bottleneck and what you tried (c17).",
+  "Decide everything a VP can: wording, small fixes, detail and code choices are yours, noted in the scratchpad. Ask the owner only about product " +
+    "direction, money, irreversible or outside actions, and credentials. Keep at most 3 open owner todos, each one short plain question with 2 to 4 " +
+    "choices, your pick first (c32). A step that waits on the owner gets one For you todo at once.",
+  "Start every job at once, reply in one short message, and end the turn. Never wait inside a turn: job reports wake you later. Agents decide " +
+    "the control flow, not code loops: a duty runs its schedule, a code precheck and then one job that decides its own fan-out (c22).",
+  "End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open For " +
+    "you todo. Update a job's step in the turn it ends or replies. Watching and reporting alone is not progress. Chase a stuck owner once, then " +
+    "replace it with a job. Never ask the owner to relay a message to another thread.",
+  "Keep the board current with `chat_board` in the turn you start or finish a job; the owner sees it next to the chat. A message that starts with " +
+    "`[board] ` is the owner acting on the board: act on it.",
+  "When the owner corrects how you work, apply it now and record it with `correction_add` in the same turn, so he never gives it twice.",
+  `Read on demand, from \`${BOARD_SKILL}/\`: SKILL.md before a board write; references/jobs.md before you start, steer or delete a job; ` +
+    "references/check-ins.md before you act on a check-in or add a duty; references/git.md before a sieun-pi commit, a merge or a push; " +
+    "references/owner.md before an owner todo, a review ask, a login, or a link, image or diagram in a reply; references/corrections.md when the " +
+    "owner corrects you.",
   `Shell: only \`bash()\` commands that start with ${SHELL_LIST}, with no pipes, redirects or chaining. No edit(), no write-mode open(), no git writes.`,
 ];
+/** The corrections the brief holds in full. */
+export const BRIEF_CORRECTIONS = briefCorrections(CHAT_BRIEF);
 
 /** A chat with no name from the owner gets one, so a create_session root can reply to it by name. */
 export function chatName(): string { return `chat-${randomBytes(2).toString("hex")}`; }
@@ -193,11 +154,11 @@ export function withChatTool(active: readonly string[], on: boolean): string[] |
  * Chat health long_replies, 10-09: after the cap entered the brief (4be3ceb) the median owner reply was 68 words and 65% ran past 60.
  */
 export const REPLY_CAP_NOTE = `[reply cap] Answer this in at most ${REPLY_FOLD_WORDS} words, bullets included: the answer first, then at most 3 short lines. ` +
-  `Anything longer goes in a wiki page; reply with its link. The page folds every word past ${REPLY_FOLD_WORDS} under More.`;
+  `Anything longer goes in a wiki page; reply with its link. Send the reply with tell_owner. The page folds every word past ${REPLY_FOLD_WORDS} under More.`;
 
-type ContextMessage = { role: string; content?: unknown };
+type ContextMessage = { role: string; content?: unknown; timestamp?: unknown };
 /**
- * The model's view of a chat with REPLY_CAP_NOTE after each message the owner typed, and after it the reply lint's findings on the reply the
+ * The model's view of a chat with its id (`messageIdNote`) and REPLY_CAP_NOTE after each message the owner typed, and after it the reply lint's findings on the reply the
  * owner read before that message (`replyNotes`); undefined when there is no owner message. Every owner message gets its notes from the
  * messages before it, so the cached prefix holds.
  */
@@ -211,7 +172,8 @@ export function withReplyCap<M extends ContextMessage>(messages: readonly M[]): 
     if (!text || serverNote(text)) return message;
     capped = true;
     const check = checks.get(index);
-    const notes = [{ type: "text", text: REPLY_CAP_NOTE }, ...(check ? [{ type: "text", text: check }] : [])];
+    const id = typeof message.timestamp === "number" ? [{ type: "text", text: messageIdNote(message.timestamp) }] : [];
+    const notes = [...id, { type: "text", text: REPLY_CAP_NOTE }, ...(check ? [{ type: "text", text: check }] : [])];
     return { ...message, content: typeof content === "string" ? [{ type: "text", text: content }, ...notes] : [...content, ...notes] };
   });
   return capped ? view : undefined;
@@ -353,13 +315,8 @@ export interface ChatJobOf { chat: string; root: boolean }
 
 export function jobReplyGuideline(job: ChatJobOf): string {
   const send = job.root ? `await agent_message.send(report, receiver_role="sibling", receiver_name="${job.chat}")` : `await agent_message.send(report, receiver_role="parent")`;
-  return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you finish, fail or get blocked, send your report to ${job.root ? "the chat" : "the parent"} first; ` +
-    `that is how the board updates: \`${send}\`. ` +
-    "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
-    "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report. " +
-    "Fan out to sub-jobs (`rlm.spawn`) when your work has 2 or more independent parts, or once it passes 150 tool calls or 60 active minutes; " +
-    "keep work of 1 to 3 tool calls inline. Give each unit of output (an article, a page, a report section) its own subagent, never one context " +
-    "for many; you plan, coordinate and check their results.";
+  return `You are a job of the chat${job.chat ? ` ${job.chat}` : ""}. When you finish, fail or get blocked, send your report first with \`${send}\`, ` +
+    `and lead it with the answer. ${MERGE_RULE_SHORT}`;
 }
 
 /**
@@ -367,9 +324,7 @@ export function jobReplyGuideline(job: ChatJobOf): string {
  * pointing at the installed poteto-mode skill. Null when that skill is not installed, so a profile without it gets nothing.
  */
 export function jobPersonaGuideline(potetoModeSkill: string, exists: (path: string) => boolean = existsSync): string | null {
-  if (!exists(potetoModeSkill)) return null;
-  return `Work in poteto-mode: read ${potetoModeSkill} in full before your first step, including its Principles index, follow its playbooks, ` +
-    "and open a leaf principle-* skill whenever you apply that principle.";
+  return exists(potetoModeSkill) ? `Work in poteto-mode: read ${potetoModeSkill} before your first step.` : null;
 }
 
 /**
@@ -383,19 +338,39 @@ export function jobOf(input: { depth: number; marked: boolean; parentChat?: stri
 }
 
 /**
- * The chat's name when a session file carries the chat_mode entry, else null. The name is the last session_info before the entry: a chat is named at
- * create, before its first session_start writes the entry. The scan stops at the entry.
+ * The top of a session's parentSession chain, from `sessionFile` up: its id, its name and whether it is a chat. One header line per level, then
+ * one scan of the top file. The name is the last session_info, or for a chat the last before the chat_mode entry (a chat is named at create,
+ * before its first session_start writes the entry), where the scan stops. Null when a file is missing or has no header.
  */
-export async function fileChatName(sessionFile: string): Promise<string | null> {
+export async function topSession(sessionFile: string): Promise<{ id: string; name: string; chat: boolean } | null> {
+  let file = sessionFile;
+  for (let level = 0; level < 16; level++) {
+    const header = await fileHeader(file);
+    if (!header) return null;
+    if (typeof header.parentSession === "string") { file = header.parentSession; continue; }
+    const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
+    let name = "";
+    try {
+      for await (const line of lines) {
+        if (line.startsWith('{"type":"session_info"')) {
+          try { const entry = JSON.parse(line) as { name?: unknown }; if (typeof entry.name === "string" && entry.name.trim()) name = entry.name.trim(); } catch { continue; }
+        } else if (line.includes(`"customType":"${CHAT_MODE_ENTRY}"`)) {
+          try { if (hasChatMarker([JSON.parse(line)])) return { id: header.id, name, chat: true }; } catch { continue; }
+        }
+      }
+      return { id: header.id, name, chat: false };
+    } catch { return null; }
+    finally { lines.close(); }
+  }
+  return null;
+}
+
+async function fileHeader(sessionFile: string): Promise<{ id: string; parentSession?: unknown } | null> {
   const lines = createInterface({ input: createReadStream(sessionFile, { encoding: "utf8" }), crlfDelay: Infinity });
-  let name = "";
   try {
     for await (const line of lines) {
-      if (line.startsWith('{"type":"session_info"')) {
-        try { const entry = JSON.parse(line) as { name?: unknown }; if (typeof entry.name === "string" && entry.name.trim()) name = entry.name.trim(); } catch { continue; }
-      } else if (line.includes(`"customType":"${CHAT_MODE_ENTRY}"`)) {
-        try { if (hasChatMarker([JSON.parse(line)])) return name; } catch { continue; }
-      }
+      const header = JSON.parse(line) as { type?: unknown; id?: unknown; parentSession?: unknown };
+      return header.type === "session" && typeof header.id === "string" ? { id: header.id, parentSession: header.parentSession } : null;
     }
     return null;
   } catch { return null; }
@@ -426,15 +401,20 @@ export function jobNameLiterals(code: string): { call: "rlm" | "rlm.spawn" | "rl
 /** The session names an ipython cell gives `rlm.create_session(..., name="...")` as plain string literals. */
 export const createSessionNames = (code: string): string[] => jobNameLiterals(code).filter(entry => entry.call === "rlm.create_session").map(entry => entry.name);
 
-/** Which chat started a root by name. The chat's extension writes it when a cell calls rlm.create_session; the root's extension reads it at start. */
+/**
+ * Which chat started a root, by its session name or id. The chat's extension writes a name when a cell calls rlm.create_session; the duty
+ * runner writes a duty job's session id (src/chat-duty-job.ts). The root's extension reads it at start and again at its first prompt.
+ */
 export interface JobRegistry {
   add(names: readonly string[], chat: string): Promise<void>;
   chatOf(name: string): Promise<string | undefined>;
-  /** The session names a chat (by any of its names: its session name, its id) started. */
+  /** The session names (or ids, for a duty job) a chat (by any of its names: its session name, its id) started. */
   rootsOf(chat: readonly string[]): Promise<string[]>;
+  /** Drops entries: a retired duty job. */
+  remove(names: readonly string[]): Promise<void>;
 }
 const REGISTRY_KEEP_MS = 30 * 24 * 60 * 60_000;
-/** `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName]: { chat, at } } }` through locked-json; entries older than 30 days go on the next add. */
+/** `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName or id]: { chat, at } } }` through locked-json; entries older than 30 days go on the next add. */
 export function jobRegistry(path: string, now: () => number = Date.now): JobRegistry {
   type Entry = { chat: string; at: number };
   const file: JsonFile<{ jobs: Record<string, Entry> }> = { path, label: "Chat job registry", initial: () => ({ jobs: {} }), parse(value: unknown) {
@@ -454,6 +434,7 @@ export function jobRegistry(path: string, now: () => number = Date.now): JobRegi
     },
     async chatOf(name) { return (await snapshotJsonFile(file)).jobs[name]?.chat; },
     async rootsOf(chat) { return Object.entries((await snapshotJsonFile(file)).jobs).filter(([, entry]) => chat.includes(entry.chat)).map(([name]) => name); },
+    async remove(names) { await transactJsonFile(file, state => { for (const name of names) delete state.jobs[name]; }); },
   };
 }
 
@@ -505,12 +486,16 @@ export function briefNote(before: readonly string[], after: readonly string[]): 
   return `${BRIEF_PREFIX}Your chat rules changed: ${parts.join("; ")}. Jobs you started keep their old instructions: re-brief a long-running job if this matters.`;
 }
 
-/** The source files a chat session runs as its extension. A change in any of them is a new build; a chat that loaded an older one is reloaded. */
-const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts", "chat-corrections.ts"];
+/**
+ * The source files that shape a chat session's requests: this extension and global-rules, which also runs in every chat. A change in any of
+ * them is a new build; a chat that loaded an older one is reloaded. A file missing from a release hashes as missing.
+ */
+const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "shared/chat-board.ts", "shared/chat-feed.ts", "chat-corrections.ts",
+  "correction-delivery.ts", "context-images.ts", "prime-notices.ts", "../../global-rules/index.ts", "../../global-rules/standing-rules.ts", "../../global-rules/standing-rules.md"];
 /** A short hash of the extension sources on disk now. */
 export function extensionBuild(dir: string = import.meta.dirname): string {
   const hash = createHash("sha256");
-  for (const file of BUILD_FILES) hash.update(readFileSync(join(dir, file)));
+  for (const file of BUILD_FILES) hash.update(existsSync(join(dir, file)) ? readFileSync(join(dir, file)) : `missing ${file}`);
   return hash.digest("hex").slice(0, 16);
 }
 
@@ -571,6 +556,61 @@ export function loadRecord(path: string): LoadRecord {
   };
 }
 
+/** The time of each chat's last owner reply the reply lint checked, on disk so a server restart neither loses nor repeats a `[reply check]`. */
+export interface ReplyCheckRecord {
+  /** Records `at` as the chat's last checked reply; true when it is newer than the one on record, so this caller sends the check. */
+  claim(id: string, at: number): Promise<boolean>;
+}
+/** `<data dir>/reply-checks.json` through locked-json: `{ [sessionId]: at }`. */
+export function replyCheckRecord(path: string): ReplyCheckRecord {
+  const file: JsonFile<Record<string, number>> = { path, label: "Reply check record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
+    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => Number.isFinite(entry[1]))) : {} };
+  return {
+    async claim(id, at) {
+      return (await transactJsonFile(file, state => { if ((state[id] ?? -Infinity) >= at) return false; state[id] = at; return true; })).result;
+    },
+  };
+}
+/** A reply older than this when the server first looks at it gets no `[reply check]`: the owner has moved on. */
+export const REPLY_CHECK_MAX_AGE_MS = 60 * 60_000;
+
+/** The jobs a `[brief check]` was sent for, on disk so a server restart does not send it again. */
+export interface BriefCheckRecord {
+  /** Records the job; true when it was not on record, so this caller sends the check. */
+  claim(childId: string, spawnedAt: number): Promise<boolean>;
+}
+/** `<data dir>/brief-checks.json` through locked-json: `{ [childId]: spawn time }`. Entries a day old go on the next claim. */
+export function briefCheckRecord(path: string, now: () => number = Date.now): BriefCheckRecord {
+  const file: JsonFile<Record<string, number>> = { path, label: "Brief check record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
+    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => Number.isFinite(entry[1]))) : {} };
+  return {
+    async claim(childId, spawnedAt) {
+      return (await transactJsonFile(file, state => {
+        if (state[childId] !== undefined) return false;
+        for (const [id, at] of Object.entries(state)) if (now() - at > 24 * 60 * 60_000) delete state[id];
+        state[childId] = spawnedAt;
+        return true;
+      })).result;
+    },
+  };
+}
+/** A job spawned longer ago than this when the server first sees it gets no `[brief check]`, so a restart does not check every old job. */
+export const BRIEF_CHECK_MAX_AGE_MS = 30 * 60_000;
+/**
+ * A root session's artifacts folder, where the daemon keeps each direct subagent's folder by child id: `session-artifacts/<session id>`
+ * beside the folder of its session file (prime-agent `getSessionArtifactPathForFile`).
+ */
+export const artifactsDir = (sessionFile: string): string => join(dirname(dirname(sessionFile)), "session-artifacts", basename(sessionFile, ".jsonl"));
+/** What the daemon stored at a subagent's spawn (`<child folder>/rlm-subagent.json`): the brief as the parent wrote it, and when. Null when unreadable. */
+async function spawnRecord(childDir: string): Promise<{ prompt: string; createdAt: number } | null> {
+  try {
+    const record: unknown = JSON.parse(await readFile(join(childDir, "rlm-subagent.json"), "utf8"));
+    if (typeof record !== "object" || record === null) return null;
+    const { prompt, createdAt } = record as { prompt?: unknown; createdAt?: unknown };
+    return typeof prompt === "string" && typeof createdAt === "number" && Number.isFinite(createdAt) ? { prompt, createdAt } : null;
+  } catch { return null; }
+}
+
 /** What chats need from the thread hub. ThreadHub satisfies it; tests pass a fake. */
 export interface ChatThreads {
   create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name: string; kind: "chat" }): Promise<{ id: string }>;
@@ -594,10 +634,8 @@ export interface ChatThreads {
   resumeQueue(id: string): Promise<void>;
   /** Deletes a finished subagent of the chat (the daemon's delete_rlm_subagent, the path `rlm.delete_subagent` takes). */
   deleteSubagent(id: string, childId: string): Promise<void>;
-  /** The model catalog as the thread sees it (configured providers included). */
-  models(id: string): Promise<ModelCatalog>;
-  setModel(id: string, provider: string, modelId: string): Promise<void>;
-  setThinking(id: string, level: string): Promise<void>;
+  /** Undoes an archive: the session comes back as a saved thread that resumes on the next pin or reply. */
+  unarchive(id: string): Promise<void>;
   /** A transcript line that starts no turn; the feed shows it as a notice. */
   notice(id: string, text: string): Promise<void>;
   /** What the feed shows under the owner's unanswered message while a restart waits; null clears it. */
@@ -633,6 +671,8 @@ export interface CheckInSource {
   rows(): Promise<readonly SessionRow[]>;
   /** The roots chats started with rlm.create_session (`<data dir>/chat-jobs.json`); absent in tests that need none. */
   registry?: JobRegistry;
+  /** The home folder whose `.prime/agent/session-artifacts/<chat id>/scheduled-jobs.json` holds a chat's heartbeats; the user's home when absent. */
+  home?: string;
   memory: CheckInRecord;
   settings: CheckInSettings;
   /** How often the scheduler wakes to run the chats whose interval has passed; 0 starts no timer (tests call `tick`). Default CHECK_IN_TICK_MS. */
@@ -640,30 +680,35 @@ export interface CheckInSource {
   now?: () => number;
   /** How long a job must stay quiet before the no-report notice; default NO_REPORT_GRACE_MS. Tests pass 0. */
   noReportGraceMs?: number;
-  /** The pool's answer about Claude (cached by the reader), null when the pool cannot be read; absent: no chat is ever switched to the fallback. */
+  /** The pool's account availability, null when the pool cannot be read. */
   claude?: () => Promise<ClaudeState | null>;
-  /** `<data dir>/chat-fallbacks.json`: the model each chat ran before the server switched it to the fallback. */
-  fallbacks?: FallbackRecord;
   /** Told at each wake whether any chat or any of its jobs works now; the service holds the Mac awake while it does (src/chat-awake.ts). */
   awake?: (working: boolean) => void;
-  /** Applies ops to a chat's board as the agent: the check-in's note on a step whose job ended unrecorded. Absent: no note is written. */
-  writeBoard?: (id: string, ops: BoardOp[]) => Promise<unknown>;
-  /**
-   * Where check-in job briefs go (`<data dir>/check-in-jobs`) and each chat's board file, which the brief names. Absent: a tick never hands its
-   * items to a check-in job.
-   */
-  checkInJobs?: { dir: string; board: (id: string) => string };
+  /** The last owner reply each chat's `[reply check]` looked at (`<data dir>/reply-checks.json`). */
+  replyChecks: ReplyCheckRecord;
+  /** The jobs that got a `[brief check]` (`<data dir>/brief-checks.json`). Absent: no brief check runs. */
+  briefChecks?: BriefCheckRecord;
   /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
   corrections?: () => Promise<Ledger>;
   /**
-   * The duty store's side of the check-in duty (src/chat-duty-run.ts): every check-in run (a tick that ran its classes, a job event) is
-   * recorded as a run of the built-in duty, and the end of a chat's turn runs the after-turn recheck. Absent (tests): nothing is recorded.
+   * The duty runner's side of the check-in duty (src/chat-duty-run.ts): each check-in run is recorded as a run of the built-in duty and starts
+   * one check-in job with the precheck as context. Absent (tests): the precheck runs and nothing starts.
    */
-  duty?: Pick<Duties, "recordCheckIn" | "afterTurn">;
+  duty?: { checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart | void> };
+  /** The chat's duties (`<data dir>/duties/<chat>.json`), for the goals they run (`goalsToFold`). Absent: no goal folds by a duty. */
+  duties?: (id: string) => Promise<readonly DutyRef[]>;
+  /**
+   * Set on a serve that does not own the live chats (a test or scratch data dir, `chat serve --no-adopt`): `<data dir>/own-chats.json`, the chats
+   * this serve created. It pins, steers, reloads and checks in only those, even when its chats.json is a copy of the live one, and never scans
+   * the session files for lost chats (10-10: a scratch serve on the real daemon attached 4 live chats and reloaded 3).
+   */
+  owned?: IdIndex;
 }
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
 export const CHECK_IN_TICK_MS = 30_000;
+/** A check-in whose job could not start runs again after this long, not a whole interval later (`CheckInStart`). */
+export const CHECK_IN_RETRY_MS = 5 * 60_000;
 /** How often the scheduler looks for chats the index lost, and how recent a thread must be to be looked at. */
 export const ADOPT_SCAN_MS = 10 * 60_000;
 export const ADOPT_RECENT_MS = 7 * 24 * 60 * 60_000;
@@ -671,12 +716,12 @@ export const ADOPT_RECENT_MS = 7 * 24 * 60 * 60_000;
 export const JOB_WAKE_WINDOW_MS = 24 * 60 * 60_000;
 /** A bad job end found later than this after it happened (the first wake after a deploy reads a day of jobs) is left to the check-in. */
 export const JOB_END_NOTE_MAX_AGE_MS = 2 * 60 * 60_000;
-/** A job as the scheduler found it in its chat's row: the chat, its Agents entry, and its own row (last activity, message count). */
-interface ChatJob { chat: string; agent: ChatAgent; row?: SessionRow | undefined }
+/** A job as the scheduler found it in its chat's row: the chat and its Agents entry. */
+interface ChatJob { chat: string; agent: ChatAgent }
 
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
- * state), the check-in scheduler (each chat at its own interval, none while the owner paused it, held while an owner turn runs), the restart of
+ * state), the check-in scheduler (each chat at its own interval, none while the owner paused it), the restart of
  * a chat whose last turn failed, the no-report notice, and the extension build: a chat that last loaded an older build than the one on disk is
  * reloaded when it attaches, at once if idle, else at the end of its turn. Everything converges from the index plus the daemon list, so a restart
  * re-adopts what it finds, and a scan of the session files brings back a chat the index lost.
@@ -691,13 +736,6 @@ export class Chats {
    */
   private readonly workingSince = new Map<string, number>();
   private readonly noticedEnd = new Map<string, { end: number; waited?: number }>();
-  /** Why each chat's due check-in was last held (logged once per reason), until its next digest runs. */
-  private readonly held = new Map<string, string>();
-  /** When the server last steered each chat with a `[check-in]` (a digest or a restart), and the chats whose check-in waits to join the next. */
-  private readonly steeredAt = new Map<string, number>();
-  private readonly mergeWaiting = new Set<string>();
-  /** The time of each chat's last owner reply the reply lint looked at at a turn's end: one `[reply check]` per reply. */
-  private readonly replyChecked = new Map<string, number>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
   /** Chats the owner's Update all chats reloads even on the current build; each leaves the set once its reload ran. */
@@ -735,6 +773,9 @@ export class Chats {
   /** When the scheduler last looked for lost chats, and the threads with messages found plain (their head never changes). */
   private lastScan: number;
   private readonly plain = new Set<string>();
+  /** Jobs whose brief was read for the brief check, and the spawn time of each subagent folder read so far (they never change). */
+  private readonly briefSeen = new Set<string>();
+  private readonly spawnTimes = new Map<string, number>();
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
@@ -746,14 +787,22 @@ export class Chats {
     this.started = this.now();
     this.lastScan = this.started;
     this.unobserve = threads.observe({
-      live: (id, children) => { this.children.set(id, children); this.queue(id, () => this.attached(id)); this.queue(id, () => this.refreshExtension(id)); },
+      live: (id, children) => {
+        this.children.set(id, children);
+        for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
+        this.queue(id, () => this.attached(id));
+        this.queue(id, () => this.refreshExtension(id));
+        // A reply sent just before a restart ended its turn on the old server; an idle chat gets its check when it attaches.
+        if (!this.threads.busy(id)) this.queue(id, () => this.replyCheck(id));
+      },
       children: (id, children) => {
         const before = this.children.get(id);
         this.children.set(id, children);
         for (const child of children) if (childWorking(child) && !before?.some(was => was.id === child.id && childWorking(was))) this.workingSince.set(child.id, this.now());
         if (before) for (const child of endedWithoutReport(before, children)) this.laterNoReport(id, child.id);
+        for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
       },
-      idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); this.queue(id, () => this.replyCheck(id)); this.afterTurn(id); },
+      idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); this.queue(id, () => this.replyCheck(id)); },
     });
     const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
     if (tickMs > 0) {
@@ -776,13 +825,20 @@ export class Chats {
    * over (10-09: three restarts in 16 min kept a 15-min chat from any check-in).
    */
   private load(): Promise<void> {
-    return this.loaded ??= this.index.ids().then(async ids => {
+    return this.loaded ??= this.index.ids().then(ids => this.mine(ids)).then(async ids => {
       for (const id of ids) {
         this.chatIds.add(id);
         const at = (await this.source.memory.get(id).catch(() => undefined))?.at;
         if (at !== undefined && !this.lastCheckIn.has(id)) this.lastCheckIn.set(id, Math.min(at, this.now()));
       }
     });
+  }
+
+  /** The ids of `ids` this service acts on: all of them, or only the ones it created when it does not own the live chats. */
+  private async mine(ids: readonly string[]): Promise<string[]> {
+    if (!this.source.owned) return [...ids];
+    const owned = new Set(await this.source.owned.ids());
+    return ids.filter(id => owned.has(id));
   }
 
   async ids(): Promise<ReadonlySet<string>> { await this.load(); return this.chatIds; }
@@ -792,6 +848,7 @@ export class Chats {
     const name = input.name?.trim() || chatName();
     const { id } = await this.threads.create({ cwd: input.cwd, ...(input.provider ? { provider: input.provider } : {}), ...(input.modelId ? { modelId: input.modelId } : {}),
       ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}), name, kind: "chat" });
+    await this.source.owned?.add(id);
     await this.index.add(id);
     this.chatIds.add(id);
     if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
@@ -801,20 +858,29 @@ export class Chats {
   }
 
   /**
-   * At service start: pin every chat in the index, forget the ones the daemon lists as archived or not at all. With the daemon down the catalog
-   * cannot answer, so the chat stays pinned and the pin resumes or drops it on the first catalog update. A pinned saved chat resumes the same way.
+   * At service start: pin every chat in the index and forget the ones the daemon does not list. With the daemon down the catalog cannot answer,
+   * so the chat stays pinned and the pin resumes or drops it on the first catalog update. A pinned saved chat resumes the same way.
+   * A chat the daemon lists as archived is unarchived: the archive route forgets a chat the moment it archives it, so an archived chat still in
+   * the index was archived by the daemon itself. `prime-agent shutdown --force` and an update restart write the archived state into every live
+   * session (10-12 11:38: a forced shutdown archived 25 sessions, and this serve then dropped all 9 chats from the index).
    */
   async adopt(): Promise<{ pinned: string[]; forgotten: string[]; adopted: string[] }> {
     await this.load();
     const pinned: string[] = [];
     const forgotten: string[] = [];
-    for (const id of await this.index.ids()) {
+    for (const id of await this.mine(await this.index.ids())) {
       const summary = await this.summary(id).then(summary => summary ?? "missing", () => "unknown" as const);
-      if (summary === "missing" || (summary !== "unknown" && summary.lifecycle === "archived")) {
+      if (summary === "missing") {
         await this.forget(id);
         forgotten.push(id);
-        this.log(`chat ${id.slice(0, 8)}: forgotten, ${summary === "missing" ? "the daemon does not list it" : "archived"}`);
+        this.log(`chat ${id.slice(0, 8)}: forgotten, the daemon does not list it`);
         continue;
+      }
+      if (summary !== "unknown" && summary.lifecycle === "archived") {
+        try {
+          await this.threads.unarchive(id);
+          this.log(`chat ${id.slice(0, 8)}: unarchived: the daemon archived it, the chat list did not`);
+        } catch (error) { this.log(`chat ${id.slice(0, 8)}: unarchive: ${error instanceof Error ? error.message : String(error)}`); }
       }
       if (this.threads.pin(id)) pinned.push(id);
       else this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
@@ -827,6 +893,7 @@ export class Chats {
    * carries the chat_mode entry is restored and logged. A thread with messages found plain is not read again: the entry precedes the first message.
    */
   async rescan(): Promise<string[]> {
+    if (this.source.owned) return [];
     await this.load();
     const now = this.now();
     let rows: readonly SessionRow[];
@@ -854,6 +921,7 @@ export class Chats {
    */
   async restore(id: string): Promise<boolean> {
     await this.load();
+    if (!(await this.mine([id])).length) return false;
     const sessionFile = (await this.summary(id))?.sessionFile;
     if (!sessionFile || !(await fileHasChatMarker(sessionFile))) return false;
     await this.index.add(id);
@@ -873,7 +941,6 @@ export class Chats {
     await this.index.forget(id);
     await this.loads.forget(id);
     await this.source.memory.forget(id);
-    await this.source.fallbacks?.forget(id);
   }
 
   /** The owner's settings, or none when the file cannot be read (logged): every chat then runs at the default interval. */
@@ -883,8 +950,8 @@ export class Chats {
   }
 
   /**
-   * One scheduler wake: queues the check-in of every chat whose interval has passed since its last one, that is not paused and runs no owner
-   * turn (a held check-in stays due, so it runs at the first wake after that turn). Every chat that is not paused is also checked for a failed
+   * One scheduler wake: queues the check-in of every chat whose interval has passed since its last one and that is not paused; the time is
+   * taken before the run is queued, so a second wake in the same slot does not queue it again. Every chat that is not paused is also checked for a failed
    * last turn (`revive`), and so are its jobs (`jobs`); a wake that follows a sleep restarts every transient failure at once. Every
    * ADOPT_SCAN_MS the session files are scanned for chats the index lost. Returns the ids checked in.
    */
@@ -904,10 +971,10 @@ export class Chats {
       if (activePause(setting, now) !== null) continue;
       active.add(id);
       this.queue(id, () => this.revive(id, woke));
-      const next = nextCheckIn(setting, this.lastCheckIn.get(id) ?? this.started, now);
-      const merged = this.mergeWaiting.has(id) && now - (this.steeredAt.get(id) ?? 0) >= CHECK_IN_MERGE_MS;
-      if (!merged && (next === null || next > now)) continue;
-      if (this.ownerTurn(id)) { this.hold(id, "an owner turn runs"); continue; }
+      // A chat with no check-in on record is due now, not one interval after this service started: every release restart pushed ops guy's
+      // 2 h check-in back again (10-12: none from 10-10 11:33Z on, with its owner pause lifted at 05:28Z).
+      const next = nextCheckIn(setting, this.lastCheckIn.get(id) ?? now - setting.everyMs, now);
+      if (next === null || next > now) continue;
       due.push(id);
       this.lastCheckIn.set(id, now);
       this.queue(id, async () => { await this.checkIn(id); });
@@ -959,7 +1026,7 @@ export class Chats {
         const stamp = agent.lastActivityAt ?? "";
         if (agent.state === "working" || now - (Date.parse(stamp) || 0) > JOB_WAKE_WINDOW_MS) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); continue; }
         if (this.jobGone.get(threadId) === stamp || (!this.jobWakes.has(threadId) && this.jobQuiet.get(threadId) === stamp)) continue;
-        this.queue(threadId, () => this.wakeJob(threadId, stamp, woke, { chat: row.id, agent, row: rows.find(candidate => candidate.id === threadId) }));
+        this.queue(threadId, () => this.wakeJob(threadId, stamp, woke, { chat: row.id, agent }));
       }
     }
     for (const threadId of this.jobThreads) if (!threads.has(threadId)) { this.jobQuiet.delete(threadId); this.jobWakes.delete(threadId); this.jobGone.delete(threadId); }
@@ -999,12 +1066,6 @@ export class Chats {
 
   private messages(id: string): readonly ThreadMessage[] | undefined { return this.threads.state?.(id)?.messages; }
 
-  /** Whether the chat is on a turn the owner started (a message or a board action); a check-in waits for it to end. */
-  private ownerTurn(id: string): boolean {
-    const messages = this.messages(id);
-    return messages !== undefined && this.threads.running(id) && turnStarter(messages) === "owner";
-  }
-
   /** The stall of a chat's last turn as the hub holds it: a failure with nothing running, or a provider retry holding the turn after one. */
   private stall(id: string): Stall | null {
     const state = this.threads.state?.(id);
@@ -1015,13 +1076,6 @@ export class Chats {
     return this.source.claude ? this.source.claude().catch(() => null) : null;
   }
 
-  /**
-   * A chat whose last turn failed (a 429, a connection error), or whose provider retry holds input queued behind it, gets a new turn: 5 min
-   * after the failure, then 10, then every 20 while each new turn fails again; a transient failure (the token command, the connection) after
-   * 30 s, 1 min, 2 min first, and at once after a sleep (`woke`); an owner turn first after 30 s, quoting the owner's message,
-   * with the wait shown under it. When Claude cannot serve the chat, it moves to the fallback model and restarts at once. A turn that ends
-   * well resets the count, clears the wait and, once Claude serves again, moves a switched chat back.
-   */
   private async revive(id: string, woke = false): Promise<void> {
     if (!this.chatIds.has(id)) return;
     const state = this.threads.state?.(id);
@@ -1034,15 +1088,11 @@ export class Chats {
       this.revivals.delete(id);
       this.stallSeen.delete(id);
       this.threads.setWait(id, null);
-      await this.switchBack(id);
       return;
     }
     const provider = state.info?.model?.provider ?? null;
-    // A turn that failed on the fallback goes back to Claude once Claude serves (10-09 drill: Codex refused gpt-6-sol and the chat retried it there).
-    if (provider !== "anthropic" && await this.switchBack(id, stall)) return;
     const claude = provider === "anthropic" ? await this.claude() : null;
     const down = claudeDown(stall.error, provider, claude);
-    if (down && await this.switchToFallback(id, stall)) return;
     const seen = this.stallSeen.get(id) ?? now;
     this.stallSeen.set(id, seen);
     // After a sleep a transient failure starts its schedule over.
@@ -1054,86 +1104,9 @@ export class Chats {
     this.threads.setWait(id, null);
     try {
       await this.threads.restart(id, action.message, action.abort);
-      this.steeredAt.set(id, now);
       this.log(`chat ${id.slice(0, 8)}: last turn failed (${stall.error}); started a new turn, try ${attempts}${woke ? " after a sleep" : ""}`);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: restart: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  /** The thinking level a model switch should keep, set again when the new model supports it and the switch changed it. */
-  private async keepThinking(id: string, level: ThinkingLevel | null): Promise<void> {
-    const info = this.threads.state?.(id)?.info;
-    if (!level || info?.thinkingLevel === level || !info?.availableThinkingLevels?.includes(level)) return;
-    await this.threads.setThinking(id, level);
-  }
-
-  /**
-   * Claude cannot serve the chat: record its model, move it to the fallback (keeping its thinking level), post one notice line, and restart
-   * the turn now. False when there is no fallback (no record, no Codex model) or the switch failed; the usual restart schedule then runs.
-   */
-  private async switchToFallback(id: string, stall: Stall): Promise<boolean> {
-    const fallbacks = this.source.fallbacks;
-    const info = this.threads.state?.(id)?.info;
-    const model = info?.model;
-    if (!fallbacks || !model) return false;
-    const level = info.thinkingLevel ?? null;
-    try {
-      const to = fallbackModel(await this.threads.models(id));
-      if (!to) {
-        if (!this.stallSeen.has(id)) this.log(`chat ${id.slice(0, 8)}: Claude cannot serve (${stall.error}) and no Codex model is configured`);
-        return false;
-      }
-      await fallbacks.set(id, { original: { provider: model.provider, id: model.id, thinkingLevel: level }, fallback: { provider: to.provider, id: to.id }, at: this.now() });
-      if (stall.retrying) await this.threads.abort(id);
-      await this.threads.setModel(id, to.provider, to.id);
-      await this.keepThinking(id, level);
-      await this.threads.notice(id, switchedNotice(to.name));
-      this.threads.setWait(id, null);
-      this.revivals.set(id, { attempts: 1, at: this.now() });
-      await this.threads.restart(id, revivalMessage(stall));
-      this.steeredAt.set(id, this.now());
-      this.log(`chat ${id.slice(0, 8)}: Claude cannot serve (${stall.error}); switched ${model.provider}/${model.id} to ${to.provider}/${to.id} and started a new turn`);
-      return true;
-    } catch (error) {
-      this.log(`chat ${id.slice(0, 8)}: switch to the fallback: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
-    }
-  }
-
-  /**
-   * A chat on the fallback goes back to its model once Claude serves again: between turns, or after a turn that failed on the fallback (`stall`),
-   * which then restarts on Claude now. A chat the owner moved off the fallback keeps its model. True when a failed turn went back and restarted.
-   */
-  private async switchBack(id: string, stall: Stall | null = null): Promise<boolean> {
-    const fallbacks = this.source.fallbacks;
-    const info = this.threads.state?.(id)?.info;
-    if (!fallbacks || !info?.model) return false;
-    try {
-      const entry = await fallbacks.get(id);
-      if (!entry) return false;
-      const busy = stall === null && this.threads.busy(id);
-      const decision = switchBack(entry, info.model, busy, busy ? null : await this.claude());
-      if (decision === "keep") return false;
-      if (decision === "back") {
-        const { provider, id: modelId, thinkingLevel } = entry.original;
-        const name = (await this.threads.models(id)).models.find(model => model.provider === provider && model.id === modelId)?.name ?? modelId;
-        if (stall?.retrying) await this.threads.abort(id);
-        await this.threads.setModel(id, provider, modelId);
-        await this.keepThinking(id, thinkingLevel);
-        await this.threads.notice(id, switchedBackNotice(name));
-        this.log(`chat ${id.slice(0, 8)}: Claude serves again; switched back to ${provider}/${modelId}`);
-      }
-      await fallbacks.forget(id);
-      if (decision !== "back" || stall === null) return false;
-      this.threads.setWait(id, null);
-      this.revivals.set(id, { attempts: 1, at: this.now() });
-      await this.threads.restart(id, revivalMessage(stall));
-      this.steeredAt.set(id, this.now());
-      return true;
-    } catch (error) {
-      this.log(`chat ${id.slice(0, 8)}: switch back: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
     }
   }
 
@@ -1194,7 +1167,7 @@ export class Chats {
   private state(id: string, setting: CheckInSetting, now: number): CheckInView {
     const pausedUntil = activePause(setting, now);
     const lastAt = this.lastCheckIn.get(id) ?? null;
-    return { everyMs: setting.everyMs, paused: pausedUntil !== null, nextAt: nextCheckIn(setting, lastAt ?? this.started, now), pausedUntil, lastAt };
+    return { everyMs: setting.everyMs, paused: pausedUntil !== null, nextAt: nextCheckIn(setting, lastAt ?? now - setting.everyMs, now), pausedUntil, lastAt };
   }
 
   /**
@@ -1229,87 +1202,51 @@ export class Chats {
     return this.state(id, await this.source.settings.get(id), this.now());
   }
 
-  /** The owner's change to a chat's check-in; null for a thread that is not a chat. The scheduler reads the new setting at its next wake. */
-  async setCheckIn(id: string, change: CheckInChange): Promise<CheckInView | null> {
+  /**
+   * A change to a chat's check-in by the owner's page or an agent; null for a thread that is not a chat, CheckInRefused when an agent changes a
+   * pause it may not. The scheduler reads the new setting at its next wake.
+   */
+  async setCheckIn(id: string, change: CheckInChange, actor: CheckInActor): Promise<CheckInView | null> {
     await this.load();
     if (!this.chatIds.has(id)) return null;
     const now = this.now();
+    let refused: string | undefined;
     const setting = await this.source.settings.update(id, current => {
-      const result = changeCheckIn(current, change, now, "owner");
-      return "setting" in result ? result.setting : current;
+      const result = changeCheckIn(current, change, now, actor);
+      if ("refused" in result) { refused = result.refused; return current; }
+      return result.setting;
     });
+    if (refused) throw new CheckInRefused(`check-in refused: ${refused}`);
     return this.state(id, setting, now);
   }
 
   /**
-   * One check-in tick for a chat: nothing while an owner turn runs or its last turn failed (the restart covers that; the memory stays, so the
-   * changes are told after it), and nothing while it has no job at work, no open plan step, no board read error and no ask overflow; else the
-   * digest against the last tick, kept as the new memory, and a `[check-in]` steer only when a line needs the chat, with every open leaf step
-   * listed under the lines. Returns the lines sent.
+   * One check-in run for a chat (Chats.tick at its interval, or the owner's Run now): the precheck in code (`checkInPrecheck`: each step's
+   * class, the misses against the duty's targets), kept as the new memory, then handed to the duty runner, which starts one check-in job with
+   * it as context (src/chat-duty-run.ts). Every run with something to check starts a job, met targets included; the job decides what needs
+   * work. A chat with no job at work, no open plan step, no board read error and no ask overflow has nothing to check.
    */
-  async checkIn(id: string, trigger: CheckInRun["trigger"] = "schedule"): Promise<string[]> {
+  async checkIn(id: string, trigger: CheckInRun["trigger"] = "schedule"): Promise<void> {
     await this.load();
-    if (!this.chatIds.has(id)) return [];
-    if (this.ownerTurn(id)) { this.hold(id, "an owner turn runs"); return []; }
-    const stall = this.stall(id);
-    if (stall) { this.hold(id, `its last turn is stalled (${stall.error})`); return []; }
-    if (this.now() - (this.steeredAt.get(id) ?? -Infinity) < CHECK_IN_MERGE_MS) { this.mergeWaiting.add(id); return []; }
-    this.mergeWaiting.delete(id);
+    if (!this.chatIds.has(id)) return;
     try {
       const { board, boardError, rows, facts, name } = await this.gather(id);
       for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
-      if (!checkInDue(facts, board, boardError)) return [];
-      const previous = await this.source.memory.get(id);
-      const jobs = this.source.checkInJobs;
-      const handoffs = await this.handoffs(id);
+      if (!checkInDue(facts, board, boardError)) return;
       const at = this.now();
-      const { memory, lines, open, nudges, notes, job, steps, scope } = checkInDigest(previous, facts, board, at,
-        { self: name ? [id, name] : [id], ...(name ? { name } : {}), rows, ...(boardError !== undefined ? { boardError } : {}), ...(jobs ? { fanOut: true } : {}),
-          handoffs });
-      /** The duty's record of this run: its misses from the same classes, its counts per class, and what it told the chat. */
-      const record = async (run: Pick<CheckInRun, "summary" | "told" | "recheck">) => {
-        if (!this.source.duty || boardError !== undefined) return;
-        const output = convergenceMisses(id, steps, scope, await this.source.memory.ends(id), (await this.source.settings.get(id)).everyMs, at);
-        await this.record(id, { at, trigger, output, classes: classCounts(steps), ...run });
-      };
-      let brief: string | undefined;
-      if (job && jobs) {
-        try { brief = await writeCheckInBrief(jobs.dir, id, job.at, checkInJobBrief(job, { id, name, board: jobs.board(id) })); }
-        catch (error) {
-          this.log(`chat ${id.slice(0, 8)}: check-in job brief: ${error instanceof Error ? error.message : String(error)}`);
-          if (previous?.jobAt !== undefined) memory.jobAt = previous.jobAt;
-          else delete memory.jobAt;
-        }
-      }
-      await this.source.memory.set(id, memory);
-      this.held.delete(id);
-      if (notes.length && this.source.writeBoard) {
-        try { await this.source.writeBoard(id, notes.map(entry => ({ op: "plan_update", id: entry.step, note: entry.note }))); }
-        catch (error) { this.log(`chat ${id.slice(0, 8)}: check-in note on ${notes.map(entry => entry.step).join(", ")}: ${error instanceof Error ? error.message : String(error)}`); }
-      }
-      for (const nudge of nudges) {
-        try {
-          await this.threads.prompt(nudge.id, { message: nudge.message, images: [], mode: "steer" });
-          this.log(`chat ${id.slice(0, 8)}: nudged thread ${nudge.id.slice(0, 8)} about ${nudge.step}`);
-        } catch (error) { this.log(`chat ${id.slice(0, 8)}: nudge ${nudge.id.slice(0, 8)} about ${nudge.step}: ${error instanceof Error ? error.message : String(error)}`); }
-      }
-      if (job && brief) {
-        await this.threads.prompt(id, { message: checkInJobMessage(CHECK_IN_PREFIX, job, brief), images: [], mode: "steer" });
-        this.steeredAt.set(id, this.now());
-        this.log(`chat ${id.slice(0, 8)}: check-in job ${job.name} with ${job.items.length} items, brief ${brief}`);
-        const started = [`start ${job.name}: ${job.items.map(item => `${item.id} ${item.kind}`).join(", ")}`, ...job.lines];
-        await record({ summary: started.join(" / ").slice(0, 600), told: true, recheck: false });
-        return started;
-      }
-      if (lines.length) {
-        await this.threads.prompt(id, { message: checkInMessage(CHECK_IN_PREFIX, lines, open), images: [], mode: "steer" });
-        this.steeredAt.set(id, this.now());
-      }
-      await record({ summary: lines.length ? lines.join(" / ").slice(0, 600) : "no line: nothing that needs the chat", told: lines.length > 0 });
-      return lines;
+      const self = name ? [id, name] : [id];
+      const everyMs = (await this.source.settings.get(id)).everyMs;
+      const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
+      const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
+      const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
+      const precheck = checkInPrecheck(await this.source.memory.get(id), facts, board, at,
+        { self, rows, ...await this.ledger(id), everyMs, duties, jobs, heartbeats, ...(boardError !== undefined ? { boardError } : {}) });
+      await this.source.memory.set(id, precheck.memory);
+      const output = convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at);
+      const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps), findings: checkInPrecheckText(precheck, facts, output.flagged, at) });
+      if (start === "failed" && everyMs > CHECK_IN_RETRY_MS) this.lastCheckIn.set(id, at - everyMs + CHECK_IN_RETRY_MS);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: check-in: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
     }
   }
 
@@ -1323,38 +1260,22 @@ export class Chats {
     const said = lastJobMessages(this.messages(id) ?? []);
     const facts = jobFacts(this.children.get(id) ?? [], board, rows, id).map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
-      const wokeAt = this.workingSince.get(fact.key);
-      return { ...fact, ...(lastMessage ? { lastMessage } : {}), ...(wokeAt !== undefined ? { wokeAt } : {}) };
+      return lastMessage ? { ...fact, lastMessage } : fact;
     });
     const name = rows.find(row => row.id === id)?.name;
     return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, ...(name ? { name } : {}) };
   }
 
-  /** The ledger's handoffs for the scope check; none when the ledger cannot be read (logged). */
-  private async handoffs(id: string): Promise<ReturnType<typeof handoffRules>> {
-    return this.source.corrections ? await this.source.corrections().then(handoffRules, error => {
-      this.log(`chat ${id.slice(0, 8)}: check-in corrections: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
-    }) : [];
-  }
-
   /**
-   * The check-in duty's precheck alone, with no steer and no memory write: the same classes and misses a tick would find now. A step changed
-   * since the last tick counts as changed now. Null for a thread that is not a chat or a board that cannot be read. The after-turn recheck reads it.
+   * The ledger's handoffs for the scope check and the ids of the corrections in force, for parked steps; no handoffs and no ids (every cited id
+   * counts) when the ledger cannot be read (logged).
    */
-  async measure(id: string): Promise<PrecheckOutput | null> {
-    await this.load();
-    if (!this.chatIds.has(id)) return null;
-    const { board, boardError, rows, facts, name } = await this.gather(id);
-    if (boardError !== undefined) return null;
-    const memory = await this.source.memory.get(id);
-    const now = this.now();
-    const firstSeen = Math.min(now, Date.parse(board?.updatedAt ?? "") || now);
-    const self = name ? [id, name] : [id];
-    const steps = classifyBoard(board, facts, item => { const memo = memory?.steps[item.id]; return memo === undefined ? firstSeen : memo.sig === stepSig(item) ? memo.at : now; },
-      new Set(self), rows, now);
-    const output = convergenceMisses(id, steps, scopeMisses(board, await this.handoffs(id), self), await this.source.memory.ends(id), (await this.source.settings.get(id)).everyMs, now);
-    return { ...output, metrics: { ...output.metrics } };
+  private async ledger(id: string): Promise<{ handoffs: ReturnType<typeof handoffRules>; corrections?: string[] }> {
+    if (!this.source.corrections) return { handoffs: [] };
+    return this.source.corrections().then(ledger => ({ handoffs: handoffRules(ledger), corrections: activeCorrections(ledger) }), error => {
+      this.log(`chat ${id.slice(0, 8)}: check-in corrections: ${error instanceof Error ? error.message : String(error)}`);
+      return { handoffs: [] };
+    });
   }
 
   /** The owner's Run now on the check-in duty: a check-in at once, in the chat's queue, and its schedule starts over. */
@@ -1362,25 +1283,6 @@ export class Chats {
     return new Promise(resolve => this.queue(id, async () => {
       try { if (this.chatIds.has(id)) { this.lastCheckIn.set(id, this.now()); await this.checkIn(id, "owner"); } } finally { resolve(); }
     }));
-  }
-
-  /** Records a check-in duty run; a failure is logged and never stops the check-in. */
-  private async record(id: string, run: CheckInRun): Promise<void> {
-    try { await this.source.duty?.recordCheckIn(id, run); }
-    catch (error) { this.log(`chat ${id.slice(0, 8)}: check-in duty record: ${error instanceof Error ? error.message : String(error)}`); }
-  }
-
-  /** The end of a chat's turn: the duty runner checks again what it told the chat. */
-  private afterTurn(id: string): void {
-    if (!this.source.duty || !this.chatIds.has(id)) return;
-    void this.source.duty.afterTurn(id).catch(error => this.log(`chat ${id.slice(0, 8)}: after-turn recheck: ${error instanceof Error ? error.message : String(error)}`));
-  }
-
-  /** Logs once per reason that a due check-in of the chat is held; the next digest clears it, so a check-in that never runs leaves a line. */
-  private hold(id: string, reason: string): void {
-    if (this.held.get(id) === reason) return;
-    this.held.set(id, reason);
-    this.log(`chat ${id.slice(0, 8)}: check-in held: ${reason}`);
   }
 
   /**
@@ -1404,31 +1306,17 @@ export class Chats {
     const told = this.noticedEnd.get(child.id);
     if (told !== undefined && Math.abs(end - told.end) < NO_REPORT_SAME_END_MS && told.waited === waited) return;
     this.noticedEnd.set(child.id, { end, ...(waited !== undefined ? { waited } : {}) });
-    if (this.stall(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the check-in after its restart tells it`); return; }
+    if (this.stall(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the next check-in job sees it`); return; }
     try {
-      const notice = noReportNotice(childName(child), lastMessage, wokeAt, end);
-      await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${notice}`, images: [], mode: "steer" });
-      await this.toldEnd(id, child.id, end, waited);
-      await this.record(id, { at: this.now(), trigger: waited !== undefined ? "job-waiting" : "job-ended", summary: notice, told: true });
+      await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${noReportNotice(childName(child), lastMessage, wokeAt, end)}`, images: [], mode: "steer" });
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /**
-   * A job end told by a notice is the check-in's too: its memory sees the job ended (and its message told), so the next digest does not repeat it.
-   * `state` and `messages` are what the digest's fact will say (a thread's message count, so its idle messages are not told again).
-   */
-  private async toldEnd(id: string, key: string, end: number, waited: number | undefined, state: JobState = "ended", messages?: number): Promise<void> {
-    const memory = await this.source.memory.get(id);
-    if (!memory) return;
-    memory.jobs[key] = { ...memory.jobs[key], state, activityAt: end, ...(waited !== undefined ? { waited } : {}), ...(messages !== undefined ? { messages } : {}) };
-    await this.source.memory.set(id, memory);
-  }
-
-  /**
    * A job (a subagent, or a root the chat started with rlm.create_session) whose last turn ended on a provider error, an abort, a stop mid-tool
-   * or the length limit, and that sent the chat no report since its last start, is told to the chat at once as one `[check-in]` line with the
-   * cause and the action, and the same text goes at the top of its open step's note (`writeBoard`). Once per end: the end is kept in the
-   * check-in record, so a restart does not tell it again; the check-in memory and the no-report notice see it as told. A cancelled job, a job
+   * or the length limit, and that sent the chat no report since its last start, is told to the chat at once as one plain `[job]` line with the
+   * cause (`jobEndText`); the chat decides what to do. Once per end: the end is kept in the check-in record, so a restart does not tell it
+   * again, the check-in counts it in `job_end_silent`, and the no-report notice skips it. A cancelled job, a job
    * at work again, a subagent with no child snapshot, an end older than JOB_END_NOTE_MAX_AGE_MS, and a chat whose transcript the server does not
    * hold are left out.
    */
@@ -1448,23 +1336,11 @@ export class Chats {
     const key = agent.link === "subagent" && agent.childId !== undefined ? agent.childId : "thread:" + threadId;
     try {
       if ((await this.source.memory.ends(chat))[key]?.at === end.at) return;
-      const board = await this.source.board(chat).catch(() => null);
-      const step = ownedStep(board, [key, threadId, agent.childId, agent.sender, agent.job, agent.name].filter((name): name is string => Boolean(name)));
       const name = agent.sender || agent.name;
-      const { line, note } = jobEndNotice(name, end, step);
-      await this.threads.prompt(chat, { message: checkInMessage(CHECK_IN_PREFIX, [line], []), images: [], mode: "steer" });
-      this.steeredAt.set(chat, this.now());
+      await this.threads.prompt(chat, { message: JOB_NOTICE_PREFIX + jobEndText(name, end), images: [], mode: "steer" });
       await this.source.memory.told(chat, key, { at: end.at, cause: end.cause });
-      this.log(`chat ${chat.slice(0, 8)}: job ${name} ended (${end.cause}) with no report; told the chat${note ? ` and noted ${note.step}` : ""}`);
-      await this.record(chat, { at: now, trigger: "job-stopped", summary: line, told: true });
-      if (note && this.source.writeBoard) {
-        try { await this.source.writeBoard(chat, [{ op: "plan_update", id: note.step, note: note.note }]); }
-        catch (error) { this.log(`chat ${chat.slice(0, 8)}: job end note on ${note.step}: ${error instanceof Error ? error.message : String(error)}`); }
-      }
-      const activityAt = child?.lastActivityAt ?? (Date.parse(agent.lastActivityAt ?? "") || end.at);
-      if (child) this.noticedEnd.set(child.id, { end: activityAt });
-      const failed = child ? child.status === "error" : Boolean(job.row?.failure);
-      await this.toldEnd(chat, key, activityAt, undefined, failed ? "failed" : "ended", key.startsWith("thread:") ? job.row?.messageCount : undefined);
+      this.log(`chat ${chat.slice(0, 8)}: job ${name} ended (${end.cause}) with no report; told the chat`);
+      if (child) this.noticedEnd.set(child.id, { end: child.lastActivityAt ?? end.at });
     } catch (error) {
       this.log(`chat ${chat.slice(0, 8)}: job end note for ${agent.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -1514,17 +1390,67 @@ export class Chats {
   }
 
   /**
-   * At a turn's end: when the chat's last reply on an owner turn, sent since this server started, has reply-lint findings (`replyCheck`), one
-   * `[reply check]` steer naming them, once per reply. The chat's final text cannot be stopped before the owner reads it; this asks for a
-   * corrected short reply when it misled, and the model's view carries the findings into the next owner message either way.
+   * At a turn's end, and when an idle chat attaches: when the chat's last reply on an owner turn has reply-lint findings (`replyCheck`) and is
+   * at most REPLY_CHECK_MAX_AGE_MS old, one `[reply check]` steer naming them, once per reply across restarts (`replyChecks`). Plain text is
+   * not stopped before the owner reads it; this asks for a corrected short reply when it misled, and the model's view carries the findings into
+   * the next owner message either way.
    */
   private async replyCheck(id: string): Promise<void> {
+    await this.load();
     const messages = this.chatIds.has(id) ? this.messages(id) : undefined;
     const check = messages && replyCheck(messages);
-    if (!check || check.at < this.started || this.replyChecked.get(id) === check.at) return;
-    this.replyChecked.set(id, check.at);
-    try { await this.threads.prompt(id, { message: check.message, images: [], mode: "steer" }); }
-    catch (error) { this.log(`chat ${id.slice(0, 8)}: reply check: ${error instanceof Error ? error.message : String(error)}`); }
+    if (!check || this.now() - check.at > REPLY_CHECK_MAX_AGE_MS) return;
+    try {
+      if (!await this.source.replyChecks.claim(id, check.at)) return;
+      await this.threads.prompt(id, { message: check.message, images: [], mode: "steer" });
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: reply check: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /**
+   * When a chat's direct subagent first shows up: its brief, the `prompt` the daemon stored at the spawn, is checked against the Jobs rule
+   * (`briefCheck`) with the chat's owner messages, the owner message that started the spawning turn and the chat's previous spawn. On findings
+   * the chat gets one `[brief check]` steer naming the job; the spawn is never held. Once per job across restarts (`briefChecks`); a job
+   * spawned more than BRIEF_CHECK_MAX_AGE_MS before the server first reads it is left alone. A spawn record not written yet is read again
+   * at the next children change.
+   */
+  private async briefCheck(chat: string, child: ChildAgent): Promise<void> {
+    const record = this.source.briefChecks;
+    if (!record || this.briefSeen.has(child.id)) return;
+    await this.load();
+    const messages = this.chatIds.has(chat) ? this.messages(chat) : undefined;
+    if (!messages) return;
+    try {
+      const sessionFile = (await this.summary(chat))?.sessionFile;
+      if (!sessionFile) return;
+      const dir = artifactsDir(sessionFile);
+      const spawn = await spawnRecord(join(dir, child.id));
+      if (!spawn) return;
+      this.briefSeen.add(child.id);
+      this.spawnTimes.set(join(dir, child.id), spawn.createdAt);
+      if (this.now() - spawn.createdAt > BRIEF_CHECK_MAX_AGE_MS) return;
+      const findings = briefCheck({ brief: spawn.prompt, owner: ownerMessages(messages), turnOwner: turnOwnerAt(messages, spawn.createdAt),
+        previousSpawnAt: await this.previousSpawn(dir, spawn.createdAt) });
+      if (!findings.length || !await record.claim(child.id, spawn.createdAt)) return;
+      await this.threads.prompt(chat, { message: briefCheckNote(childName(child), findings), images: [], mode: "steer" });
+      this.log(`chat ${chat.slice(0, 8)}: brief check for job ${childName(child)}: ${findings.map(finding => finding.kind).join(", ")}`);
+    } catch (error) { this.log(`chat ${chat.slice(0, 8)}: brief check: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /** The latest spawn of the chat before `at`, from the subagent folders in its artifacts folder; null when there is none. */
+  private async previousSpawn(dir: string, at: number): Promise<number | null> {
+    let previous: number | null = null;
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory()) continue;
+      const childDir = join(dir, entry.name);
+      let created = this.spawnTimes.get(childDir);
+      if (created === undefined) {
+        created = (await spawnRecord(childDir))?.createdAt;
+        if (created === undefined) continue;
+        this.spawnTimes.set(childDir, created);
+      }
+      if (created < at && (previous === null || created > previous)) previous = created;
+    }
+    return previous;
   }
 
   /** The owner's Update all chats: every chat reloads onto the current extension and brief, an idle one now, a busy one at the end of its turn. */

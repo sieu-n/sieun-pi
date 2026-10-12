@@ -1,47 +1,32 @@
 ---
 name: interrogate
-description: "Use for \"interrogate\", \"adversarial review\", \"multi-model review\", \"challenge this\", \"stress test this code\", \"find blind spots\", or \"tear this apart\". Multiple LLM reviewers challenge changes from independent angles."
+description: "Use for \"interrogate\", \"adversarial review\", \"multi-model review\", \"challenge this\", \"stress test this code\", \"find blind spots\", or \"tear this apart\". Spawns one reviewer per configured model on the same prompt, then the lead filters their findings into a verdict."
 disable-model-invocation: true
 ---
 
 # Interrogate
 
-> **Prime Agent subagent contract.** This skill was ported from a Cursor plugin.
-> Subagents are `handle = await rlm(brief, model=..., thinking=..., name=...)`, which
-> returns on admission and never returns the child's answer: every brief must end with
-> `await agent_message.send(<report>, receiver_role="parent")`. Read
-> `~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md` before fanning out,
-> and check `RLM_MAX_DEPTH` — at the ceiling `await rlm(...)` raises and you must run inline.
+Spawn one reviewer per configured model. Every reviewer gets the same prompt and rubric; the different blind spots of different models produce the adversarial signal. A finding that two or more models raise on their own is strong. A finding from one model is weaker but still worth reading.
 
+The deliverable is a verdict. Do not apply any change yourself.
 
-Spawn one reviewer per configured model to adversarially review code changes. Each model gets the same prompt and rubric. The adversarial signal comes from model diversity, not assigned personas. Models differ in blind spots, priors, and reasoning patterns. Agreement across models is high-confidence signal; lone-model findings are worth reading but lower confidence.
+Spawning, briefs, and draining follow [`../setup-pstack/references/prime-agent-runtime.md`](../setup-pstack/references/prime-agent-runtime.md). At the `RLM_MAX_DEPTH` ceiling, run the review prompt yourself and say in the verdict that one model reviewed.
 
-The deliverable is a synthesized verdict. Do NOT auto-apply changes.
+## Step 1: Pick the scope
 
-## Step 1, Determine Scope
+- If the user names files or a diff, review those.
+- On a feature branch, review `git diff main...HEAD`, or the diff against the right base branch.
+- If the user points at recent work, gather the files it touched.
 
-Identify what to review from context:
+Package the diff or files with the context files a reviewer needs to read the code.
 
-- If the user points at specific files or a diff, use that
-- If on a feature branch, run `git diff main...HEAD` (or the appropriate base branch) for the full changeset
-- If the user's message references recent work, gather the relevant files
+## Step 2: State the intent
 
-Package the diff (or file contents) plus any surrounding context files the reviewers need to understand the code.
+Write one paragraph that says what the change is trying to do. Take it from the user's message, the commit messages, the PR description, and the code. Reviewers challenge how well the code meets the intent, not the intent itself. If you cannot tell the intent, ask the user before you spawn.
 
-## Step 2, State the Intent
+## Step 3: Spawn reviewers
 
-Before spawning reviewers, state the intent explicitly. What is this code trying to accomplish? Derive this from:
-
-- The user's message
-- Commit messages
-- PR description if one exists
-- The code itself
-
-Write one clear paragraph. Reviewers challenge whether the work achieves the intent well, not whether the intent itself is correct. If you're unsure about the intent, ask the user before proceeding.
-
-## Step 3, Spawn Reviewers
-
-Launch all reviewers from one IPython cell with repeated `await rlm(...)` calls; each returns on admission, so they run concurrently. Read the reviewers from the `interrogate reviewers` role in `~/.prime/agent/pstack-models.json`: one reviewer per entry, labelled Reviewer A, B, C and so on. Without that role, spawn two reviewers on inherit-parent.
+Read the reviewer list from the `interrogate reviewers` role in `~/.prime/agent/pstack-models.json` (repo default `config/pstack-models.json`). Spawn one reviewer per entry, labelled Reviewer A, B, C, and so on. Without that role, spawn two reviewers on `inherit-parent`.
 
 ```python
 import json, pathlib
@@ -50,72 +35,51 @@ roles = json.loads(CFG.read_text())["roles"] if CFG.exists() else {}
 reviewers = roles.get("interrogate reviewers") or [{"model": "inherit-parent"}] * 2
 ```
 
-For each reviewer:
-- Spawn: `await rlm(brief, model=..., thinking=..., name=...)`. There is no `subagent_type` — every RLM child is a general-purpose Prime Agent, so the brief carries the role.
-- `model`: the reviewer's `interrogate reviewers` entry; for `inherit-parent`, omit `model=` (and `thinking=` unless the entry sets it)
-- Read-only posture: Prime Agent has no read-only child mode. Put "read and report only; do not edit any file" in the brief.
+- Spawn every reviewer from one cell with `await rlm.spawn(brief, name=..., model=..., thinking=...)`.
+- For `inherit-parent` or `auto`, omit `model=`, and omit `thinking=` unless the entry sets it.
 
-If `await rlm(...)` rejects a model selector, run `await rlm.find_models('<family>')` to list the selectors backed by live credentials, pick the closest equivalent (prefer the highest-reasoning tier of the same family), spawn with the valid slug, and open a separate PR to update the configured value. Do not block the review on the slug issue. If the configured value is `inherit-parent` or `auto`, omit `model` instead; never treat those aliases as broken slugs or enter this fallback for them.
+If `rlm.spawn` rejects a model selector, run `await rlm.find_models('<family>')` and spawn on the closest live selector that the `policy` block in `pstack-models.json` allows. Finish the review, then tell the user to fix the role with the `setup-pstack` skill.
 
-Read `references/reviewer-prompt.md` and fill in the template with:
-1. The stated intent
-2. The diff or file contents
-3. The review rubric from `references/rubric.md`
-4. The code-quality lens from `references/code-quality-review.md`
+Fill [`references/reviewer-prompt.md`](references/reviewer-prompt.md) with the intent, the diff or files, [`references/rubric.md`](references/rubric.md), and [`references/code-quality-review.md`](references/code-quality-review.md). Send the same filled prompt to every reviewer.
 
-The same filled template goes to all reviewers, so every model applies the code-quality lens.
+## Step 4: Merge the findings
 
-Each reviewer produces structured findings as described in the prompt template.
+1. Merge findings that describe the same issue in different words, and record which models raised each one.
+2. Mark findings that two or more models raised on their own as consensus.
+3. Record where one model flags something and another says the opposite.
 
-## Step 4, Synthesize
+## Step 5: Judge
 
-As results come back, build a unified picture:
+You are the lead reviewer. Reviewers saw a slice of the code and one paragraph of intent; you know the goal, the constraints, and the tradeoffs already made. Filter with [`references/lead-judgment.md`](references/lead-judgment.md).
 
-1. **Parse all findings** from the reviewers
-2. **Identify consensus**. Findings raised by 2+ models independently are highest signal.
-3. **Identify lone-model findings**. Still worth reading, but weight accordingly.
-4. **Deduplicate**. Different models may describe the same issue differently. Merge these and note which models raised it.
-5. **Note disagreements**. If one model flags something and another explicitly says the opposite, that's useful context for the verdict.
+Put every finding in one bucket:
 
-## Step 5, Lead Judgment
+- Act on holds real correctness, security, or maintainability issues that would block a real PR.
+- Consider holds valid points where you cannot tell if the fix is worth its cost now.
+- Noted holds points that are right but not worth acting on at this stage.
+- Dismissed holds findings that are wrong, nitpicks, or missing context.
 
-You are the lead reviewer, a pragmatic senior engineer, not a neutral aggregator.
+Each finding names the models that raised it and gives a one-line reason for its bucket.
 
-Read `references/lead-judgment.md` for the full framework. Reviewers only see a slice of the codebase. You have the full context (the goal, the constraints, the timeline, which tradeoffs were already considered). Use that context aggressively.
-
-Categorize every finding using these buckets:
-
-- **Act on**. Real issues affecting correctness, security, or maintainability given the actual goals. These would block a real PR.
-- **Consider**. Legitimate points, but you're not sure they outweigh the cost of addressing them right now. Worth the user's attention.
-- **Noted**. Technically valid but not actionable. Context-dependent, premature optimization, or low-impact given the current stage.
-- **Dismissed**. Wrong, nitpicky, or missing context. Brief explanation why.
-
-For each finding, include:
-- Which model(s) raised it
-- The category (act on / consider / noted / dismissed)
-- A one-line rationale for the categorization
-
-## Output Format
-
-Present the verdict in this structure:
+## Output format
 
 ### Intent
-> [The stated intent paragraph from Step 2]
+> [The paragraph from Step 2]
 
 ### Reviewers
-- Reviewer [label]: [model name], [N findings] (one bullet per reviewer)
+- Reviewer [label] ran on [model] and filed [N] findings.
 
-### Act On
-[Findings that should be addressed. For each: description, which models raised it, why it matters.]
+### Act on
+[For each finding, give the issue, the models that raised it, and why it matters.]
 
 ### Consider
-[Findings worth thinking about. For each: description, which models raised it, tradeoff involved.]
+[For each finding, give the issue, the models that raised it, and the tradeoff.]
 
 ### Noted
-[Valid but low-priority. Brief list.]
+[A short list.]
 
 ### Dismissed
-[Rejected findings with brief rationale. This shows the user what was filtered out and why, so they can override your judgment if they disagree.]
+[Each rejected finding with its reason, so the user can override you.]
 
-### Agreement Map
-[Where did models agree, where did they diverge, and what does the pattern of agreement/disagreement tell us?]
+### Agreement map
+[Where the models agreed, where they split, and what that pattern says.]

@@ -1,22 +1,17 @@
 ---
 name: principle-subtract-before-you-add
-description: "Apply when sequencing an addition, refactor, or rewrite. Remove dead weight, redundant validators, and stub references first, then build on the simpler base."
+description: "Apply when sequencing an addition, refactor, or rewrite. Remove dead code, redundant validators, and stub references first, then build on the smaller base."
 disable-model-invocation: true
 ---
 
-# Subtract Before You Add
+# Subtract before you add
 
-When evolving a system, remove complexity first, then build. Deletion gives you a simpler base, which makes the next addition smaller and less brittle.
+When you change a system, delete first and build second. Each time, leave the design smaller or more capable than you found it, with the same or fewer entry points.
 
-**Why:** Adding to a complex system compounds complexity. Removing first cuts the surface area, reveals the essential structure, and usually makes the next design obvious. Default to subtraction.
-
-Make simplification a continual investment. Leave the design slightly simpler and more capable behind the same or smaller surface than you found it.
-
-**The pattern:**
-- Sequence removal before construction
-- Cut before you polish (get to the minimum before investing in quality)
-- Design for observed usage, not speculative edge cases
-- No speculative validators, parsers, or guards beyond what the spec demands
-- Out-of-spec features drag validators behind them. Persistence, retry-on-startup, and schema migration each need guards to defend their inputs.
-- Simplify prompts (remove redundant instructions, excessive templates)
-- When a reference has no novel content, delete it rather than leaving a stub
+- Do the removals before the new construction.
+- Cut the work down to the minimum before you spend effort on its quality.
+- Design for the usage you have observed, and skip speculative edge cases.
+- Add no validator, parser, or guard that the spec does not demand.
+- Leave out features the spec does not ask for, because persistence, retry-on-startup, and schema migration each bring guards for their inputs.
+- Remove redundant instructions and oversized templates from prompts.
+- Delete a reference that has no new content instead of leaving a stub.

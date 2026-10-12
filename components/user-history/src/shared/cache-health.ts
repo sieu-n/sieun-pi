@@ -20,6 +20,12 @@ export interface CacheHealth {
   reasons: string[];
 }
 
+/** The prompt cache hit rate: the share of prompt tokens read from cache, cache read / (input + cache read + cache write); null with no prompt. */
+export function cacheHitShare(tokens: { input: number; cacheRead: number; cacheWrite: number }): number | null {
+  const prompt = tokens.input + tokens.cacheRead + tokens.cacheWrite;
+  return prompt > 0 ? tokens.cacheRead / prompt : null;
+}
+
 const percent = (value: number) => (value * 100).toFixed(value > 0.99 && value < 1 ? 1 : 0) + "%";
 
 /**

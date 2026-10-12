@@ -334,7 +334,7 @@
   .thread.read { position: fixed; inset: 0; z-index: 35; background: var(--bg); --column: 720px; }
   .thread.read .head { height: 48px; padding: 0 14px; border-bottom-color: transparent; }
   .thread.read :global(.title) { font-weight: 500; color: var(--text-muted); }
-  .thread.read .scroller { font-size: 16.5px; line-height: 1.75; }
+  .thread.read .scroller { font-size: calc(var(--chat-text) * 1.1); line-height: 1.75; }
   .thread.read .column { padding-top: 28px; padding-bottom: 64px; }
   .thread.read .foot .column { padding-top: 4px; padding-bottom: 12px; }
   @container app (max-width: 899px) {

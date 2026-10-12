@@ -3,7 +3,7 @@ index parsing, JWT claim decoding, ls row building, and use idempotence.
 
 Run: python3 -m unittest discover -s tests   (from the pool directory)
 """
-import base64, contextlib, dataclasses, importlib.util, io, json, os, random, shutil, subprocess, sys, tempfile, time, types, unittest, unittest.mock
+import base64, contextlib, dataclasses, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, types, unittest, unittest.mock
 
 from fixture_isolation import isolate_test_module
 
@@ -60,42 +60,41 @@ def state_v2(pins=None, pool_pin=None, current=None, cooldowns=None):
                                    "last_seen": NOW}}}
 
 
-def resolved(state, accounts=ALL, in_use=None, seed=7):
-    intent = vend.intent_for(state, KEY, "anthropic")
-    return vend.resolve(intent, accounts, in_use or {},
-                        state["providers"]["anthropic"]["cooldowns"], CFG, NOW, random.Random(seed))
+def resolved(state, accounts=ALL, cooldowns=None, provider="anthropic"):
+    """vend.decide for KEY's tree, as the hook runs it."""
+    tree = vend.tree_for(state, KEY, provider)
+    book = vend.book_for(state, provider, KEY, CFG, NOW)
+    return vend.decide(tree, accounts, book, state["providers"][provider]["cooldowns"] if cooldowns is None else cooldowns,
+                       CFG, NOW)
 
 
 class Precedence(unittest.TestCase):
-    """The six cases in the rubric's R4, plus the force flag."""
+    """A pending pin, the pool pin, the tree's own account, then an admission."""
 
     def test_a_session_stays_on_its_usable_account(self):
         r = resolved(state_v2(current="b"))
         self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", None))
 
-    def test_a_new_session_draws_a_usable_account(self):
+    def test_a_new_session_is_admitted_to_the_best_account(self):
         r = resolved(state_v2())
-        self.assertEqual(r.reason, "new")
-        self.assertIn(r.account.id, {"a", "b", "c"})
-        self.assertEqual({e for e, _ in r.weights}, {"a@x", "b@x", "c@x"})
+        self.assertEqual((type(r), r.reason, r.account.id), (vend.Admit, "new", "a"))
+        self.assertEqual({e for e, _ in r.scores}, {"a@x", "b@x", "c@x"})
 
-    def test_switched_beats_the_current_account(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "c", "at": NOW}}, current="b"))
+    def test_a_pending_pin_beats_the_current_account(self):
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "c", "at": NOW + 1}}, current="b"))
         self.assertEqual((r.account.id, r.reason), ("c", "session_pin"))
 
-    def test_switched_then_account_unusable_yields_and_reports_why(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW}}, current="b"))
+    def test_a_pin_on_an_account_that_cannot_take_the_tree_yields_and_reports_why(self):
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW + 1}}, current="b"))
         self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", ("d", "depleted")))
 
     def test_a_yielded_pin_is_not_written_away(self):
-        state = state_v2(pins={"anthropic": {"account_id": "d", "at": NOW}}, current="b")
+        state = state_v2(pins={"anthropic": {"account_id": "d", "at": NOW + 1}}, current="b")
         resolved(state)
         self.assertEqual(state["sessions"][KEY.key]["pins"]["anthropic"]["account_id"], "d")
-        healed = [a for a in ALL if a.id != "d"] + [account("d", "d@x", session_pct=0)]
-        self.assertEqual(resolved(state, healed).reason, "session_pin")
 
-    def test_switched_then_session_ended_keeps_the_pin_for_the_resumed_session(self):
-        state = state_v2(pins={"anthropic": {"account_id": "c", "at": NOW}}, current="b")
+    def test_a_pin_survives_a_resumed_session(self):
+        state = state_v2(pins={"anthropic": {"account_id": "c", "at": NOW + 1}}, current="b")
         state["sessions"][KEY.key]["last_seen"] = NOW - 3600
         vend.HookWriter(state).prune(CFG, NOW)
         self.assertIn(KEY.key, state["sessions"])
@@ -114,16 +113,7 @@ class Precedence(unittest.TestCase):
     def test_a_subagent_inherits_by_construction(self):
         state = state_v2(pins={"anthropic": {"account_id": "c", "at": NOW}}, current="b")
         child = vend.SessionKey(KEY.key, KEY.uuid, "ffffffffffff")
-        intent = vend.intent_for(state, child, "anthropic")
-        self.assertEqual(intent.session_pin, "c")
-
-    def test_force_holds_a_depleted_account(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW, "force": True}}, current="b"))
-        self.assertEqual((r.account.id, r.reason), ("d", "session_pin"))
-
-    def test_force_still_yields_on_needs_reauth(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "e", "at": NOW, "force": True}}, current="b"))
-        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", ("e", "needs-reauth")))
+        self.assertEqual(vend.tree_for(state, child, "anthropic").pin, "c")
 
 
 class CodexPlanTier(unittest.TestCase):
@@ -146,20 +136,15 @@ class CodexPlanTier(unittest.TestCase):
                      "pins": {"openai-codex": {"account_id": pin, "at": NOW}} if pin else {},
                      "vends": {"openai-codex": vend_record(current)} if current else {},
                      "last_seen": NOW}}}
-        intent = vend.intent_for(state, KEY, "openai-codex")
-        return vend.resolve(intent, accounts, {}, {}, CFG, NOW)
+        return resolved(state, accounts, provider="openai-codex")
 
     def test_a_free_account_moves_to_a_usable_plus_account(self):
         r = self.resolve([self.FREE, self.PLUS], current="f")
         self.assertEqual((r.account.id, r.reason), ("p", "upgrade"))
 
-    def test_a_new_session_draws_only_from_the_highest_usable_plan(self):
-        for seed in range(20):
-            state = {"version": 2, "providers": {"anthropic": vend.empty_provider_state(), "openai-codex": vend.empty_provider_state()},
-                     "sessions": {KEY.key: {"uuid": KEY.uuid, "active_id": KEY.active_id, "pins": {}, "vends": {}, "last_seen": NOW}}}
-            intent = vend.intent_for(state, KEY, "openai-codex")
-            r = vend.resolve(intent, [self.FREE, self.PLUS], {}, {}, CFG, NOW, rng=random.Random(seed))
-            self.assertEqual((r.account.id, r.reason), ("p", "new"), seed)
+    def test_a_new_session_takes_the_highest_usable_plan(self):
+        r = self.resolve([self.FREE, self.PLUS])
+        self.assertEqual((r.account.id, r.reason), ("p", "new"))
 
     def test_a_new_session_takes_the_free_account_when_no_paid_one_serves(self):
         r = self.resolve([self.FREE, self.PLUS_DEPLETED])
@@ -173,10 +158,6 @@ class CodexPlanTier(unittest.TestCase):
         r = self.resolve([self.FREE, self.PLUS_DEPLETED], current="f")
         self.assertEqual((r.account.id, r.reason), ("f", "stay"))
 
-    def test_a_pin_on_the_free_account_outranks_the_upgrade(self):
-        r = self.resolve([self.FREE, self.PLUS], current="f", pin="f")
-        self.assertEqual((r.account.id, r.reason), ("f", "session_pin"))
-
     def test_an_unknown_plan_ranks_as_free(self):
         r = self.resolve([self.NO_PLAN, self.PLUS], current="n")
         self.assertEqual((r.account.id, r.reason), ("p", "upgrade"))
@@ -185,8 +166,8 @@ class CodexPlanTier(unittest.TestCase):
         self.assertEqual(resolved(state_v2(current="b")).reason, "stay")
 
     def test_the_plan_is_on_a_codex_row_and_absent_from_an_anthropic_one(self):
-        codex = vend.build_rows([self.PLUS], vend.Intent(), {}, {}, CFG, NOW, None)
-        anthropic = vend.build_rows([A], vend.Intent(), {}, {}, CFG, NOW, None)
+        codex = vend.build_rows([self.PLUS], vend.Tree(), vend.Book(), {}, CFG, NOW)
+        anthropic = vend.build_rows([A], vend.Tree(), vend.Book(), {}, CFG, NOW)
         self.assertEqual(codex[0]["plan"], "plus")
         self.assertNotIn("plan", anthropic[0])
 
@@ -217,7 +198,7 @@ class PoolPin(unittest.TestCase):
         self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", ("c", "limited")))
 
     def test_a_depleted_session_pin_falls_through_to_a_usable_pool_pin(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW}}, pool_pin="c", current="b"))
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW + 1}}, pool_pin="c", current="b"))
         self.assertEqual((r.account.id, r.reason, r.shadowed), ("c", "pool_pin", ("d", "depleted")))
 
 
@@ -228,67 +209,32 @@ def limited(limits, accounts=ALL):
 
 
 class LimitedByThe429(unittest.TestCase):
-    """A 429 recorded by `pi-pool limited` makes every pin yield until it expires.
-    Fall-through order: session pin, pool pin, current account, weighted pick, last resort."""
+    """A 429 recorded by `pi-pool limited` makes every pin and the tree's own
+    account yield until it expires."""
 
     def test_a_limited_account_reports_limited_with_its_countdown(self):
         a = limited({"a": NOW + 7200})[0]
-        self.assertEqual(vend.unusable_reason(a, {}, CFG, NOW), "limited")
+        self.assertEqual(vend.admit_reason(a, {}, CFG, NOW), "limited")
         self.assertEqual(vend.format_reason(a, {}, CFG, NOW), "limited 2h0m")
 
     def test_an_expired_limit_does_not_block(self):
         a = limited({"a": NOW - 1})[0]
-        self.assertIsNone(vend.unusable_reason(a, {}, CFG, NOW))
+        self.assertIsNone(vend.admit_reason(a, {}, CFG, NOW))
 
     def test_a_limited_session_pin_yields_to_the_pool_pin(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "a", "at": NOW}}, pool_pin="c", current="b"),
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "a", "at": NOW + 1}}, pool_pin="c", current="b"),
                      limited({"a": NOW + 60}))
         self.assertEqual((r.account.id, r.reason, r.shadowed), ("c", "pool_pin", ("a", "limited")))
 
-    def test_a_forced_session_pin_yields_to_limited(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "a", "at": NOW, "force": True}}, current="b"),
-                     limited({"a": NOW + 60}))
-        self.assertEqual((r.account.id, r.reason, r.shadowed), ("b", "stay", ("a", "limited")))
-
-    def test_a_forced_session_pin_still_holds_a_depleted_account(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "d", "at": NOW, "force": True}}, current="b"),
-                     limited({"a": NOW + 60}))
-        self.assertEqual((r.account.id, r.reason), ("d", "session_pin"))
-
-    def test_a_limited_current_account_switches(self):
+    def test_a_limited_current_account_moves(self):
         r = resolved(state_v2(current="a"), limited({"a": NOW + 60}))
         self.assertEqual((r.reason, r.left), ("switch", ("a", "limited")))
         self.assertIn(r.account.id, {"b", "c"})
 
-    def test_session_pin_then_pool_pin_then_current_then_weighted_pick(self):
-        state = state_v2(pins={"anthropic": {"account_id": "a", "at": NOW}}, pool_pin="b", current="c")
-        steps = [({}, "a", "session_pin"), ({"a": NOW + 60}, "b", "pool_pin"),
-                 ({"a": NOW + 60, "b": NOW + 60}, "c", "stay")]
-        for limits, want, reason in steps:
-            r = resolved(state, limited(limits))
-            self.assertEqual((r.account.id, r.reason), (want, reason), limits)
-        accounts = limited({"a": NOW + 60, "b": NOW + 60, "c": NOW + 60}) + [account("f", "f@x", session_pct=50)]
-        r = resolved(state, accounts)
-        self.assertEqual((r.account.id, r.reason, r.shadowed, r.left), ("f", "switch", ("a", "limited"), ("c", "limited")))
-
-    def test_with_everything_limited_the_last_resort_is_the_soonest_reset(self):
+    def test_with_everything_limited_the_tree_waits_for_the_first_reset(self):
         accounts = limited({"a": NOW + 7200, "b": NOW + 600, "c": NOW + 3600}, [A, B, C])
-        self.assertIsNone(resolved(state_v2(current="a"), accounts))
-        self.assertEqual(vend.last_resort(accounts, {}, CFG, NOW).id, "b")
-
-    def test_the_last_resort_prefers_a_depleted_account_the_provider_still_serves(self):
-        # 2026-10-08: sieun@virev.ai 429'd until 19:30, sieunpark77 at 85% of its 5h
-        # window (cutoff 85) resetting 20:10. The 429'd account must not win.
-        cfg = dict(CFG, five_hour_max_pct=85)
-        win = {"usedPercentage": 85, "windowSeconds": 18000, "resetsAt": (NOW + 9000) * 1000,
-               "sampledAt": NOW * 1000}
-        near = dataclasses.replace(account("n", "n@x", session_pct=85, weekly_pct=86), windows=(win,))
-        full = dataclasses.replace(account("w", "w@x", weekly_pct=100),
-                                   windows=(dict(win, usedPercentage=100, windowSeconds=604800,
-                                                 resetsAt=(NOW + 90000) * 1000),))
-        [hit] = limited({"a": NOW + 600}, [account("a", "a@x", session_pct=100)])
-        self.assertEqual(vend.last_resort([hit, near, full], {}, cfg, NOW).id, "n")
-        self.assertEqual(vend.last_resort([hit, full], {}, cfg, NOW).id, "a")
+        r = resolved(state_v2(current="a"), accounts)
+        self.assertEqual((type(r), r.slot_account.id, r.slot_at, r.vend.id), (vend.Wait, "b", NOW + 600, "a"))
 
     def test_set_limit_keeps_the_latest_reset_and_prune_drops_it_when_it_passes(self):
         state = state_v2()
@@ -301,7 +247,7 @@ class LimitedByThe429(unittest.TestCase):
         self.assertEqual(state["providers"]["anthropic"]["limits"], {})
 
     def test_an_ls_row_carries_the_limit(self):
-        row = vend.build_rows(limited({"a": NOW + 600}, [A]), vend.Intent(), {}, {}, CFG, NOW, None)[0]
+        row = vend.build_rows(limited({"a": NOW + 600}, [A]), vend.Tree(), vend.Book(), {}, CFG, NOW)[0]
         self.assertEqual((row["usable"], row["reason"], row["limited_until"]), (False, "limited 10m", NOW + 600))
 
     def test_a_v2_state_without_limits_gains_an_empty_map(self):
@@ -312,41 +258,21 @@ class LimitedByThe429(unittest.TestCase):
 
 
 class Fallbacks(unittest.TestCase):
-    def test_a_cooling_current_account_switches(self):
+    def test_a_cooling_current_account_moves(self):
         r = resolved(state_v2(current="b", cooldowns={"b": NOW + 60}))
         self.assertEqual((r.reason, r.left), ("switch", ("b", "cooldown")))
         self.assertIn(r.account.id, {"a", "c"})
 
     def test_a_missing_pin_account_yields(self):
-        r = resolved(state_v2(pins={"anthropic": {"account_id": "gone", "at": NOW}}, current="b"))
+        r = resolved(state_v2(pins={"anthropic": {"account_id": "gone", "at": NOW + 1}}, current="b"))
         self.assertEqual((r.account.id, r.shadowed), ("b", ("gone", "missing")))
 
-    def test_no_usable_account_resolves_to_nothing(self):
-        self.assertIsNone(resolved(state_v2(), [DEPLETED, BROKEN]))
+    def test_no_account_that_can_ever_serve_resolves_to_nothing(self):
+        self.assertIsNone(resolved(state_v2(), [BROKEN]))
 
-    def test_last_resort_is_the_depleted_account_that_resets_first(self):
-        def win(pct, secs, resets_at):
-            return {"usedPercentage": pct, "windowSeconds": secs, "resetsAt": resets_at * 1000,
-                    "sampledAt": NOW * 1000}
-        late = dataclasses.replace(DEPLETED, id="late", email="late@x",
-                                   windows=(win(99, 18000, NOW + 7000),))
-        soon = dataclasses.replace(DEPLETED, id="soon", email="soon@x",
-                                   windows=(win(99, 18000, NOW + 600),))
-        weekly = dataclasses.replace(DEPLETED, id="wk", email="wk@x", session_pct=0, weekly_pct=100,
-                                     windows=(win(0, 18000, NOW + 100), win(100, 604800, NOW + 90000)))
-        refused = dataclasses.replace(DEPLETED, id="ref", email="ref@x",
-                                      windows=(win(99, 18000, NOW + 10),))
-        pool = [late, soon, weekly, refused, BROKEN]
-        pick = vend.last_resort(pool, {"ref": NOW + 3600}, CFG, NOW)
-        self.assertEqual(pick.id, "soon")
-        self.assertEqual(vend.account_free_at(weekly, CFG, NOW), NOW + 90000)
-        self.assertIsNone(vend.last_resort([BROKEN], {}, CFG, NOW))
-        self.assertIsNone(vend.last_resort([refused], {"ref": NOW + 3600}, CFG, NOW))
-
-    def test_sessions_already_on_an_account_shrink_its_weight(self):
-        weights = dict(resolved(state_v2(), in_use={"a": 8}).weights)
-        self.assertLess(weights["a@x"], weights["b@x"])
-        self.assertEqual(weights["b@x"], CFG["runway_horizon_hours"])
+    def test_a_dead_login_is_never_waited_on(self):
+        r = resolved(state_v2(current="e"), [DEPLETED, BROKEN])
+        self.assertIsNone(r)
 
 
 class Migration(unittest.TestCase):
@@ -395,16 +321,16 @@ class Writers(unittest.TestCase):
     def test_the_cli_writes_a_pin_without_touching_a_vend(self):
         state = state_v2(current="b")
         vend.HookWriter(state).record_vend(KEY, "anthropic", B, "parked", "stay", None, NOW, (123, "parent-start"))
-        vend.IntentWriter(state).set_pin(KEY, "anthropic", "c", False, "cli", NOW)
+        vend.IntentWriter(state).set_pin(KEY, "anthropic", "c", "cli", NOW)
         rec = state["sessions"][KEY.key]
         self.assertEqual(rec["pins"]["anthropic"]["account_id"], "c")
         self.assertEqual(rec["vends"]["anthropic"]["account_id"], "b")
 
     def test_setting_the_same_pin_twice_is_the_same_state(self):
         state = state_v2()
-        vend.IntentWriter(state).set_pin(KEY, "anthropic", "c", False, "cli", NOW)
+        vend.IntentWriter(state).set_pin(KEY, "anthropic", "c", "cli", NOW)
         first = repr(state)
-        vend.IntentWriter(state).set_pin(KEY, "anthropic", "c", False, "cli", NOW)
+        vend.IntentWriter(state).set_pin(KEY, "anthropic", "c", "cli", NOW)
         self.assertEqual(repr(state), first)
 
     def test_following_the_pool_removes_only_the_pin(self):
@@ -580,7 +506,7 @@ class ModelGatedCap(unittest.TestCase):
 
     def reason(self, models):
         [acct] = vend.with_models([self.FABLE_SPENT], models, CFG)
-        return vend.unusable_reason(acct, {}, CFG, NOW)
+        return vend.admit_reason(acct, {}, CFG, NOW)
 
     def test_opus_session_can_use_an_account_whose_fable_cap_is_spent(self):
         self.assertIsNone(self.reason(["claude-opus-5-5"]))
@@ -594,7 +520,7 @@ class ModelGatedCap(unittest.TestCase):
 
     def test_the_weekly_limit_still_depletes_an_opus_session(self):
         [acct] = vend.with_models([account("w", "w@x", weekly_pct=100)], ["claude-opus-5-5"], CFG)
-        self.assertEqual(vend.unusable_reason(acct, {}, CFG, NOW), "depleted")
+        self.assertEqual(vend.admit_reason(acct, {}, CFG, NOW), "depleted")
 
     def test_session_models_reads_the_tree_record(self):
         state = state_v2()
@@ -614,7 +540,7 @@ class ModelGatedCap(unittest.TestCase):
                                              "models": {"anthropic": {"x": {"model": "claude-fable-5-1", "at": NOW}}}}
         self.assertEqual(vend.session_models(state, KEY, "anthropic", CFG, NOW), ["claude-opus-5-5"])
         [acct] = vend.with_models([account("k", "k@x", gated_pct=100)], vend.session_models(state, KEY, "anthropic", CFG, NOW), CFG)
-        self.assertIsNone(vend.unusable_reason(acct, {}, CFG, NOW))
+        self.assertIsNone(vend.admit_reason(acct, {}, CFG, NOW))
 
 
 class StoreLayout(unittest.TestCase):
@@ -765,42 +691,36 @@ class LsRowBuilding(unittest.TestCase):
     state in, exact rows out."""
 
     def test_rows_carry_usage_reason_and_flags(self):
-        intent = vend.Intent(session_pin="c", pool_pin=None, current="b")
-        cooldowns = {}
-        rows = vend.build_rows(ALL, intent, in_use={"a": 2}, cooldowns=cooldowns,
-                               cfg=CFG, now=NOW, current_id="b")
+        tree = vend.Tree(key=KEY.key, pin="c", current="b")
+        rows = vend.build_rows(ALL, tree, vend.Book(load={"a": 2}), {}, CFG, NOW)
         by_id = {r["id"]: r for r in rows}
         self.assertEqual(by_id["a"]["usage"], "10%/0%")
-        self.assertEqual(by_id["a"]["usable"], True)
+        self.assertEqual((by_id["a"]["usable"], by_id["a"]["serves"]), (True, True))
         self.assertIsNone(by_id["a"]["reason"])
-        self.assertEqual(by_id["a"]["weight"], round(vend.runway_hours(A, 3, CFG, NOW), 1))
-        self.assertIsNone(by_id["b"]["weight"], "the session's own account is not a switch target")
+        self.assertEqual(by_id["a"]["score"], round(vend.score(A, CFG, NOW, "normal", {"a": 2}), 2))
+        self.assertEqual(by_id["a"]["sessions"], 2)
         self.assertEqual(by_id["b"]["seat"], False)
         self.assertEqual(by_id["b"]["current"], True)
         self.assertEqual(by_id["c"]["pinned"], True)
-        self.assertEqual(by_id["c"]["force"], False)
-        self.assertEqual(by_id["d"]["usable"], False)
+        self.assertNotIn("force", by_id["c"])
+        self.assertEqual((by_id["d"]["usable"], by_id["d"]["serves"]), (False, True))
         self.assertEqual(by_id["d"]["reason"], "depleted")
-        self.assertIsNone(by_id["d"]["weight"])
+        self.assertIsNone(by_id["d"]["score"])
         self.assertEqual(by_id["e"]["reason"], "needs-reauth")
 
-    def test_a_force_pin_is_flagged_separately_from_a_plain_pin(self):
-        intent = vend.Intent(session_pin="d", session_pin_force=True)
-        rows = vend.build_rows(ALL, intent, in_use={}, cooldowns={}, cfg=CFG, now=NOW,
-                               current_id=None)
-        by_id = {r["id"]: r for r in rows}
-        self.assertEqual((by_id["d"]["pinned"], by_id["d"]["force"]), (True, True))
-        self.assertEqual((by_id["a"]["pinned"], by_id["a"]["force"]), (False, False))
+    def test_a_low_tree_sees_a_lower_admit_cap(self):
+        mid = account("m", "m@x", session_pct=55)
+        normal = vend.build_rows([mid], vend.Tree(), vend.Book(), {}, CFG, NOW)[0]
+        low = vend.build_rows([mid], vend.Tree(priority="low"), vend.Book(), {}, CFG, NOW)[0]
+        self.assertEqual((normal["usable"], low["usable"], low["reason"]), (True, False, "depleted"))
 
     def test_a_cooldown_reason_carries_a_countdown(self):
         cooling = account("f", "f@x", session_pct=5)
-        rows = vend.build_rows([cooling], vend.Intent(), in_use={}, cooldowns={"f": NOW + 125},
-                               cfg=CFG, now=NOW, current_id=None)
+        rows = vend.build_rows([cooling], vend.Tree(), vend.Book(), {"f": NOW + 125}, CFG, NOW)
         self.assertEqual(rows[0]["reason"], "cooldown 2m")
 
     def test_a_pool_pin_is_reported_as_pinned_too(self):
-        rows = vend.build_rows(ALL, vend.Intent(pool_pin="b"), in_use={}, cooldowns={},
-                               cfg=CFG, now=NOW, current_id=None)
+        rows = vend.build_rows(ALL, vend.Tree(pool_pin="b"), vend.Book(), {}, CFG, NOW)
         by_id = {r["id"]: r for r in rows}
         self.assertEqual(by_id["b"]["pinned"], True)
 
@@ -816,29 +736,29 @@ class LsUsageWindows(unittest.TestCase):
     def test_windows_come_in_display_order_with_live_reset_times(self):
         win = IndexV2Windows.win
         a = self.windowed([win(100, 604800, 3600, name="Fable"), win(61, 604800, 7200), win(7, 18000, 600)])
-        row = vend.build_rows([a], vend.Intent(), {}, {}, CFG, NOW, None)[0]
+        row = vend.build_rows([a], vend.Tree(), vend.Book(), {}, CFG, NOW)[0]
         self.assertEqual([(w["kind"], w["label"], w["pct"], w["resets_at"]) for w in row["windows"]],
                          [("session", "5h", 7, NOW + 600), ("weekly", "week", 61, NOW + 7200), ("model", "Fable", 100, NOW + 3600)])
         self.assertEqual((row["tier"], row["usage_at"], row["usage_age_sec"]), ("max 20x", NOW - 90, 90))
 
     def test_a_passed_reset_reads_zero_with_no_reset_time(self):
         a = self.windowed([IndexV2Windows.win(87, 18000, -60)])
-        self.assertEqual(vend.build_rows([a], vend.Intent(), {}, {}, CFG, NOW, None)[0]["windows"][0]["resets_at"], None)
+        self.assertEqual(vend.build_rows([a], vend.Tree(), vend.Book(), {}, CFG, NOW)[0]["windows"][0]["resets_at"], None)
 
     def test_a_thirty_day_codex_window_is_labelled_by_days(self):
         a = dataclasses.replace(codex_account("c", "c@x", "free"), windows=(IndexV2Windows.win(100, 2592000, 86400),))
-        row = vend.build_rows([a], vend.Intent(), {}, {}, CFG, NOW, None)[0]
+        row = vend.build_rows([a], vend.Tree(), vend.Book(), {}, CFG, NOW)[0]
         self.assertEqual([w["label"] for w in row["windows"]], ["30d"])
         self.assertEqual(row["plan"], "free")
 
     def test_a_cooldown_carries_its_end_and_the_refusal(self):
         a = self.windowed([])
-        rows = vend.build_rows([a], vend.Intent(), {}, {"w": NOW + 300, "gone": NOW - 1}, CFG, NOW, None,
+        rows = vend.build_rows([a], vend.Tree(), vend.Book(), {"w": NOW + 300, "gone": NOW - 1}, CFG, NOW,
                                {"w": "oauth not allowed for organization"})
         self.assertEqual((rows[0]["cooldown_until"], rows[0]["cooldown_reason"]), (NOW + 300, "oauth not allowed for organization"))
 
     def test_an_account_never_sampled_has_no_age(self):
-        row = vend.build_rows([self.windowed([], usage_at=0)], vend.Intent(), {}, {}, CFG, NOW, None)[0]
+        row = vend.build_rows([self.windowed([], usage_at=0)], vend.Tree(), vend.Book(), {}, CFG, NOW)[0]
         self.assertEqual((row["windows"], row["usage_at"], row["usage_age_sec"], row["cooldown_until"]), ([], None, None, None))
 
 
@@ -853,7 +773,7 @@ class LsNamesThePoolPin(unittest.TestCase):
                  unittest.mock.patch.object(vend, "load_index", lambda provider: ALL), contextlib.redirect_stdout(out):
                 self.assertEqual(vend.cmd_ls(["--json"]), 0)
             listing = json.loads(out.getvalue())
-            self.assertEqual(listing["pin"], {"id": "b", "email": "b@x"})
+            self.assertEqual(listing["pin"], {"id": "b", "email": "b@x", "label": "b@x"})
             self.assertNotIn("seat", listing)
 
 
@@ -905,7 +825,7 @@ class RefreshUsage(unittest.TestCase):
         report = json.loads(out)["providers"]
         self.assertEqual(code, 0)
         self.assertEqual([r["ok"] for r in report["anthropic"]], [True, False])
-        self.assertEqual(report["openai-codex"], [{"id": "c", "email": "c@x", "ok": True, "reason": None, "retry_at": None, "usage_at": 1790000001}])
+        self.assertEqual(report["openai-codex"], [{"id": "c", "email": "c@x", "label": "c@x", "ok": True, "reason": None, "retry_at": None, "usage_at": 1790000001}])
 
     def test_named_accounts_need_a_provider(self):
         code, out = self.run_refresh("--json", "a@x")
@@ -914,7 +834,7 @@ class RefreshUsage(unittest.TestCase):
 
     def test_named_account_is_resolved_to_its_id(self):
         seen = os.path.join(self.tmp, "args")
-        account = types.SimpleNamespace(id="abc-123", email="a@x")
+        account = types.SimpleNamespace(id="abc-123", email="a@x", label="a@x")
         with self.fake(f'echo "$@" > {seen}\necho \'{{"event":"accounts","accounts":[]}}\'\n'), \
              unittest.mock.patch.object(vend, "load_index", lambda provider: [account]):
             code, _ = self.run_refresh("--json", "--provider", "anthropic", "a@x")
@@ -927,7 +847,7 @@ class RefreshUsage(unittest.TestCase):
         with self.fake('echo \'{"event":"accounts","accounts":[{"id":"a","email":"a@x"}]}\'\necho \'{"event":"reading","id":"a"}\'\nexec sleep 30\n'):
             errors = vend.read_usage({"anthropic": None}, events.append, timeout=3)
         self.assertEqual(errors, {})
-        self.assertEqual(events[-1], {"event": "read", "provider": "anthropic", "id": "a", "email": "a@x", "ok": False,
+        self.assertEqual(events[-1], {"event": "read", "provider": "anthropic", "id": "a", "email": "a@x", "label": "a@x", "ok": False,
                                       "reason": "the read did not finish in 3s", "retry_at": None})
 
     def test_a_helper_crash_is_an_error(self):
@@ -955,6 +875,34 @@ class RefreshUsage(unittest.TestCase):
                               timeout=60, env=dict(os.environ, TOKENMAXXING_HOME=self.tmp))
         lines = [json.loads(line) for line in done.stdout.splitlines()]
         self.assertEqual((done.returncode, lines[-1]), (0, {"event": "read", "id": "not-an-account", "ok": False, "reason": "not in the pool", "retry_at": None}))
+
+
+class SeatWithoutAWeeklyWindow(unittest.TestCase):
+    """A team seat's usage has a 5h window and no weekly one. tokenmaxxing's
+    read rejects that body, so usage-read.ts lands it through app/usage-seat.ts."""
+
+    def windows(self, body):
+        try:
+            bun, _ = vend.tokenmaxxing_runtime()
+        except RuntimeError as e:
+            self.skipTest(str(e))
+        script = ("import { seatWindows } from %s; console.log(JSON.stringify(seatWindows(%s, 1000)));"
+                  % (json.dumps(os.path.join(SOURCE, "app", "usage-seat.ts")), json.dumps(body)))
+        done = subprocess.run([bun, "--no-env-file", "-e", script], capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_five_hour_only_body_becomes_a_session_window_and_its_model_rows(self):
+        body = {"five_hour": {"utilization": 10.0, "resets_at": "2026-10-10T14:59:59.9+00:00"}, "seven_day": None,
+                "limits": [{"kind": "weekly_scoped", "percent": 4, "resets_at": "2026-10-10T13:59:59+00:00",
+                            "scope": {"model": {"display_name": "Fable"}}}, {"kind": "session", "percent": 10}]}
+        self.assertEqual(self.windows(body), [
+            {"name": None, "usedPercentage": 10.0, "resetsAt": 1791644399900, "windowSeconds": 18000, "sampledAt": 1000},
+            {"name": "Fable", "usedPercentage": 4, "resetsAt": 1791640799000, "windowSeconds": 604800, "sampledAt": 1000}])
+
+    def test_a_body_without_a_five_hour_window_is_not_a_seat(self):
+        self.assertIsNone(self.windows({"five_hour": None, "seven_day": None}))
+        self.assertIsNone(self.windows({"five_hour": {"utilization": 1}, "seven_day": {"utilization": 2}}))
 
 
 GRANT = {"id": "opus55-launch", "label": "Launch reset", "resets_total": 1, "resets_left": 1, "starts_at": "2026-09-22T16:00:00+00:00",
@@ -1006,7 +954,7 @@ class ResetClaims(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.account = types.SimpleNamespace(id="acc-1", email="a@x", needs_reauth=False)
+        self.account = types.SimpleNamespace(id="acc-1", email="a@x", label="a@x", needs_reauth=False)
         self.left, self.posts, self.answers = 1, [], []
         patches = [unittest.mock.patch.object(vend, name, os.path.join(self.tmp, file)) for name, file in
                    (("RESETS", "resets.json"), ("RESET_CLAIMS", "claims.json"), ("RESET_LOCK", "reset.lock"), ("LOCK", "lock"))]
@@ -1140,12 +1088,10 @@ class UseIdempotence(unittest.TestCase):
         self.assertEqual((rc, out), (0, "already on a@x"))
         self.assertEqual(self.saves, [])
 
-    def test_changing_the_force_flag_is_not_a_no_op(self):
-        self._use("a@x")
-        self.saves.clear()
+    def test_force_is_refused_and_writes_nothing(self):
         rc, out = self._use("a@x", "--force")
-        self.assertEqual(rc, 0)
-        self.assertEqual(len(self.saves), 1)
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.saves, [])
 
     def test_follow_with_nothing_pinned_does_not_write(self):
         rc, out = self._use("--follow")
@@ -1227,27 +1173,27 @@ class AdoptLogins(unittest.TestCase):
             self.assertIn("anthropic", vend.load_json(os.path.join(agent, "auth.json")))
 
 
-class RefusedAccountsBreakForcePins(unittest.TestCase):
-    def test_a_force_pin_yields_to_a_refusal_cooldown(self):
-        intent = vend.Intent(session_pin="a", session_pin_force=True, current="b")
-        res = vend.resolve(intent, [A, B], {}, {"a": NOW + 100}, CFG, NOW)
-        self.assertEqual((res.account.id, res.reason), ("b", "stay"))
+class RefusedAccountsBreakPins(unittest.TestCase):
+    def test_a_pin_yields_to_a_refusal_cooldown(self):
+        tree = vend.Tree(key=KEY.key, pin="a", pin_at=NOW, current="b", current_at=NOW - 60)
+        res = vend.decide(tree, [A, B], vend.Book(), {"a": NOW + 100}, CFG, NOW)
+        self.assertEqual((res.account.id, res.reason, res.shadowed), ("b", "stay", ("a", "cooldown")))
 
 
 class DisabledAccountsNeverServe(unittest.TestCase):
     OFF = dataclasses.replace(A, disabled=True)
 
     def test_every_pin_yields_to_an_off_account(self):
-        for intent in (vend.Intent(session_pin="a", session_pin_force=True, current="b"),
-                       vend.Intent(pool_pin="a", current="b"), vend.Intent(current="a")):
-            res = vend.resolve(intent, [self.OFF, B], {}, {}, CFG, NOW)
-            self.assertEqual(res.account.id, "b", intent)
+        for tree in (vend.Tree(pin="a", pin_at=NOW, current="b", current_at=NOW - 60),
+                     vend.Tree(pool_pin="a", current="b"), vend.Tree(current="a")):
+            res = vend.decide(tree, [self.OFF, B], vend.Book(), {}, CFG, NOW)
+            self.assertEqual(res.account.id, "b", tree)
 
     def test_with_pool_state_marks_only_the_named_accounts(self):
         state = {"providers": {"anthropic": {"disabled": {"a": NOW}}}}
         marked = vend.with_pool_state([A, B], state, "anthropic")
         self.assertEqual([a.disabled for a in marked], [True, False])
-        self.assertEqual(vend.unusable_reason(marked[0], {}, CFG, NOW), "disabled")
+        self.assertEqual(vend.admit_reason(marked[0], {}, CFG, NOW), "disabled")
 
 
 class InUseCountsOnlyRecentVends(unittest.TestCase):

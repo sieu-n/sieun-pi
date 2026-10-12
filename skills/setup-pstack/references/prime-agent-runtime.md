@@ -1,45 +1,34 @@
 # pstack on Prime Agent: the runtime contract
 
-Every pstack skill that fans out subagents assumes a Cursor `Task` tool. Prime
-Agent has no `Task` tool. This file is the single description of what replaced
-it, so each skill can stay short.
+pstack skills that fan out subagents follow this file.
 
 ## Spawning
 
 ```python
-handle = await rlm(brief, model="anthropic/claude-opus-5", thinking="xhigh", name="critic-1")
+handle = await rlm.spawn(brief, name="critic-1")
 # handle.rlm_child_id, handle.name, handle.session_dir, handle.model
 ```
 
-- `await rlm(...)` returns **as soon as the child is admitted**, not when it
-  finishes. It never returns the child's answer.
-- There is no `subagent_type`. Every child is a general-purpose Prime Agent, so
-  the role lives in the brief. A persona (`comment-sicko`, `poteto-agent`) is a
-  skill body you paste into the brief.
-- There is no `environment: "cloud" | "local"`, no `run_in_background`, and no
-  `cloud_base_branch`. Every child runs locally as its own background process,
-  with the same filesystem access as the parent. For a different branch, make a
-  git worktree first and name that path in the brief.
-- There is no `readonly` / Ask mode. A read-only posture is a sentence in the
-  brief: "read and report only; do not edit any file."
-- `thinking` is separate from the model and must be one of
-  `off, minimal, low, medium, high, xhigh, max`. An invalid level fails the spawn.
+- `rlm.spawn` returns when the child is admitted. It never returns the child's answer.
+- Take `model=` and `thinking=` from the role in `~/.prime/agent/pstack-models.json` (see `../SKILL.md`), and omit both for `inherit-parent`.
+- `thinking` must be one of `off, minimal, low, medium, high, xhigh, max`, or the spawn fails.
+- Every child is a general-purpose Prime Agent, so the brief carries the role. A persona such as `poteto-agent` is a skill body you paste into the brief.
+- Every child runs locally in the background with the parent's filesystem. For another branch, make a git worktree first and name its path in the brief.
+- For a read-only child, write "read and report only; do not edit any file." in the brief.
 
-Fan out by calling `await rlm(...)` once per worker in a single IPython cell.
-Each call returns immediately, so all workers are running before any finishes.
+To fan out, call `rlm.spawn` once per worker in one IPython cell. All workers start before any finishes.
 
 ## Draining results
 
-A child's brief **must** end with an explicit instruction to report:
+End every brief with this line, or the parent gets nothing:
 
 ```
 When you are done, send your report with
 await agent_message.send(<report>, receiver_role="parent").
 ```
 
-Without that line the parent gets nothing. Messages arrive in the parent session
-as they land. End the turn after fan-out rather than polling with `sleep`, and
-read the reports on a later turn.
+Reports arrive in the parent session as they land.
+After fan-out, end the turn and read the reports on a later turn. Do not poll with `sleep`.
 
 Inspect a worker that goes quiet:
 
@@ -49,7 +38,7 @@ await agent_observe.recent_messages("<child-name>", limit=8)
 await rlm.list_subagents()
 ```
 
-Follow up with a finished child (its context is still alive):
+Send a follow-up to a finished child, whose context is still alive:
 
 ```python
 await agent_message.send("one more thing", receiver_role="child", receiver_name="<child-name>")
@@ -57,41 +46,28 @@ await agent_message.send("one more thing", receiver_role="child", receiver_name=
 
 ## Depth limit
 
-Children can only be spawned when `RLM_MAX_DEPTH` allows it. Check first:
+Check the depth before you spawn:
 
 ```python
 import os; print(os.environ.get("RLM_DEPTH"), os.environ.get("RLM_MAX_DEPTH"))
 ```
 
-`await rlm(...)` raises `RuntimeError: RLM recursion depth limit reached` at the
-ceiling. A session at the ceiling cannot fan out at all: run the workflow inline,
-or ask the parent session to do the fan-out.
-
-## Models
-
-Role models come from `~/.prime/agent/pstack-models.json`; see the
-`setup-pstack` skill. Nothing loads that file automatically, so read it:
-
-```python
-import json, pathlib
-CFG = pathlib.Path.home() / ".prime/agent/pstack-models.json"
-roles = json.loads(CFG.read_text())["roles"] if CFG.exists() else {}
-```
+At the ceiling, `rlm.spawn` raises `RuntimeError: RLM recursion depth limit reached`.
+Run the workflow inline, or ask the parent session to fan out.
 
 ## Invocation
 
-Cursor slash commands (`/swarm`) are skill names here. Prime Agent loads a skill
-when the task matches its description, and `/skill:<name>` forces it.
+A skill loads when the task matches its description. `/skill:<name>` forces it, so `/swarm` becomes `/skill:swarm`.
 
-## Things with no Prime Agent equivalent
+## Tools that do not exist here
 
-| Cursor | Status here |
+Some playbooks name tools that Prime Agent does not have. Use these instead:
+
+| Named in a playbook | Use |
 |---|---|
-| `/loop` | replaced by the bundled `rlm-heartbeat` skill (recurring self-prompt) |
-| todo tool | no tool; keep a written checklist in the reply or a `/tmp/` file |
-| `AskQuestion` | no tool; ask in chat with a short numbered list |
-| Cursor cloud agents | none; all children are local |
-| `cursor-team-kit` (`deslop`, `control-ui`, `control-cli`) | not installed; use `unslop`, the `aside-browser` skill (the only browser tool), and `%%bash` |
-| Bugbot | not available; use whatever review bot the repo has |
-| Graphite `gt` | CLI not installed on this machine |
-| MCP servers | supported by Prime Agent, but none configured here |
+| `/loop` | the bundled `rlm-heartbeat` skill |
+| todo tool | a written checklist in the reply or in your session scratch folder |
+| `AskQuestion` | a short numbered list in chat |
+| `control-ui`, `control-cli` | the `aside-browser` skill for the browser, and `bash()` for the shell |
+| Bugbot | the review bot the repo has, if any |
+| Graphite `gt` | check `which gt` first; it may not be installed |

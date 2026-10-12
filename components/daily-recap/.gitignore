@@ -1,7 +1,0 @@
-node_modules/
-__pycache__/
-*.pyc
-config.env
-state/
-reports/
-logs/

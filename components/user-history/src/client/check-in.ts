@@ -1,4 +1,4 @@
-import { get, post } from "./api.ts";
+import { get, OWNER_UI_HEADERS, post } from "./api.ts";
 import { clockTime } from "./format.ts";
 import type { CheckInPause, CheckInState, CheckInView } from "../shared/types.ts";
 
@@ -7,7 +7,7 @@ const route = (id: string) => "api/threads/" + encodeURIComponent(id) + "/check-
 
 export const checkInApi = {
   view: (id: string) => get<CheckInView>(route(id)),
-  set: (id: string, change: { everyMs?: number; pause?: CheckInPause | null }) => post<CheckInView>(route(id), change),
+  set: (id: string, change: { everyMs?: number; pause?: CheckInPause | null }) => post<CheckInView>(route(id), change, undefined, OWNER_UI_HEADERS),
 };
 
 /** "5m", "1h", "90m". */
@@ -35,9 +35,9 @@ export function checkInButton(state: CheckInState, now: number): { word: string;
 
 /** The board panel line, the same facts in a sentence; `on` is false while paused. Without a state (an older server) it is the default. */
 export function checkInStatus(state: CheckInState | undefined, now: number): { text: string; on: boolean } {
-  if (!state) return { text: "Check-in every 15 min, on changes only", on: true };
+  if (!state) return { text: "Check-in every 15 min, one check-in job each", on: true };
   const pause = pauseNow(state, now);
-  if (pause === null) return { text: `Check-in every ${Math.round(state.everyMs / MINUTE)} min, on changes only`, on: true };
+  if (pause === null) return { text: `Check-in every ${Math.round(state.everyMs / MINUTE)} min, one check-in job each`, on: true };
   return { text: pause === "forever" ? "Check-in paused until you resume it" : `Check-in paused until ${clockTime(pause)}`, on: false };
 }
 

@@ -7,6 +7,7 @@
   import { PRIORITY_LABEL, PROGRESS_LABEL } from "./organize.ts";
   import type { ImageInput, ModelCatalog, ModelInfo, NewChatAccount, Priority, Progress, SendMode, SlackChannelSetup, ThinkingLevel, Workspace } from "../shared/types.ts";
   import { relativeTime, shortPath } from "./format.ts";
+  import { startMessage } from "../shared/start-skill.ts";
   import ModelPicker from "./ModelPicker.svelte";
   import Composer from "./Composer.svelte";
   import Popover from "./Popover.svelte";
@@ -37,8 +38,10 @@
   let threadName = $state("");
   /** Thread: a normal Prime Agent session. Chat: a DM-style partner for one topic that runs jobs for you and checks in on them. */
   let kind = $state<"thread" | "chat">("thread");
-  /** Starts a new thread's or chat's first message with /skill:poteto-mode. On for every new one; a message that already starts with "/" is sent as typed. */
-  let poteto = $state(true);
+  /** The start skill set in Settings > New chats, null when none is set (a fresh install). */
+  let startSkill = $state<string | null>(null);
+  /** Starts a new thread's or chat's first message with the start skill. On for every new one; a message that already starts with "/" is sent as typed. */
+  let useStartSkill = $state(true);
   /** The new chat's Slack channel (name, private or public), chosen in the Slack dialog. Null by default; offered only for a chat while Slack is connected. */
   let slack = $state<SlackChannelSetup | null>(null);
   let slackOpen = $state(false);
@@ -84,6 +87,12 @@
   $effect(() => {
     void store.defaultsRevision;
     let cancelled = false;
+    api.newChat().then(settings => { if (!cancelled) startSkill = settings.startSkill; }, () => {});
+    return () => { cancelled = true; };
+  });
+  $effect(() => {
+    void store.defaultsRevision;
+    let cancelled = false;
     api.models(null).then(result => { if (!cancelled) { catalog = result; catalogError = null; } }, error => { if (!cancelled) catalogError = error instanceof Error ? error.message : String(error); });
     return () => { cancelled = true; };
   });
@@ -118,12 +127,12 @@
     const progress = draftProgress;
     const chosen = activeModel;
     const name = threadName.trim();
-    const message = poteto && !text.trimStart().startsWith("/") ? `/skill:poteto-mode ${text}` : text;
+    const message = startMessage(text, useStartSkill ? startSkill : null);
     const id = await store.createChat({ cwd, ...(name ? { name } : {}), ...(kind === "chat" ? { kind } : {}), ...(slack && slackOffered ? { slack } : {}), message, images, ...(chosen ? { provider: chosen.provider, modelId: chosen.id } : {}), ...(shownEffort ? { thinkingLevel: shownEffort } : {}),
       ...(account ? { account } : {}) });
     if (!id) return false;
     threadName = "";
-    poteto = true;
+    useStartSkill = true;
     slack = null;
     draftTags = filterTags();
     draftPriority = 0;
@@ -198,7 +207,9 @@
               choice={account} onchoose={next => { account = next; }} />
             <ModelPicker label={modelLabel} {catalog} error={catalogError} current={model} effort={effort} levels={effortLevels} defaultEffort
               defaultLabel={catalog?.current?.name ?? ""} ondefault={() => { model = null; }} onchoose={entry => { model = entry; }} oneffort={level => { effort = level; }} />
-            <label class="bar-button check" use:tooltip={"Start with /skill:poteto-mode"}><input type="checkbox" bind:checked={poteto} /><span>poteto-mode</span></label>
+            {#if startSkill}
+              <label class="bar-button check" use:tooltip={`Start with /skill:${startSkill}`}><input type="checkbox" bind:checked={useStartSkill} /><span>{startSkill}</span></label>
+            {/if}
             {#if slackOffered}
               <button type="button" class="bar-button" class:slack-on={slack !== null} aria-haspopup="dialog" aria-expanded={slackOpen}
                 use:tooltip={slack ? `Slack channel #${slack.name}. Change it or drop it` : "Give this chat a Slack channel: write there to steer it, its replies come back"} onclick={() => { slackOpen = true; }}>

@@ -10,6 +10,10 @@ const NAME_WORDS = 4;
 /** A daemon session that is a direct subagent of the chat, as the catalog sees it; `first` is its first task text, for the display name. */
 export interface SubagentSession {
   sessionId: string; childId?: string; name?: string; first?: string; running: boolean; failed: boolean; activity?: string; lastActivityAt?: string;
+  /** Running subagents below it at any depth; absent at 0. */
+  subagentsRunning?: number;
+  /** Subagents below it at any depth that the daemon still lists, finished ones included; absent at 0. */
+  subagentsTotal?: number;
 }
 /** A top-level session as the catalog projects it, plus its first task text. */
 export interface AgentRow { row: SessionRow; first?: string }
@@ -173,7 +177,7 @@ export function displayName(name: string, first: string | undefined): string {
 
 type Draft = {
   key: string; sessionId?: string; childId?: string; name: string; job: string; sender: string; link: AgentLink; working: boolean; failed: boolean; ended: boolean;
-  activity: string; at: number; steps: string[]; contacts: Contact[]; names: Set<string>;
+  activity: string; at: number; steps: string[]; contacts: Contact[]; names: Set<string>; subagents: number; total: number;
 };
 const LINK_RANK: Record<AgentLink, number> = { subagent: 0, root: 1, step: 2, message: 3 };
 const OPEN = new Set(["todo", "doing", "blocked"]);
@@ -186,7 +190,8 @@ function walk(items: readonly PlanItem[], visit: (item: PlanItem) => void): void
 /**
  * Every thread linked to a chat, running first, then by latest activity: its subagents (the hub's snapshots joined with the daemon's sessions
  * under it), the roots it started with rlm.create_session (the registry and the handles in its transcript), the owners of its open plan steps,
- * and the threads it exchanged agent messages with in the last CONTACT_WINDOW_MS. One row per thread, linked the strongest way it is.
+ * and the threads it exchanged agent messages with in the last CONTACT_WINDOW_MS. One row per thread, linked the strongest way it is. A row is
+ * working while its own turn or any subagent below it runs, as `SessionRow.working` is.
  */
 export function chatAgents(input: AgentSources): ChatAgent[] {
   const drafts: Draft[] = [];
@@ -214,14 +219,16 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
     index({ key: "child:" + child.id, ...(session ? { sessionId: session.sessionId } : {}), childId: child.id, name: displayName(name, session?.first ?? child.label), job: name, sender: name,
       link: "subagent", working, failed: !working && (child.status === "error" || session?.failed === true), ended: !working,
       activity: working ? session?.activity ?? "" : child.error ?? session?.activity ?? child.answerPreview ?? "", at: Math.max(child.lastActivityAt ?? 0, atOf(session?.lastActivityAt)),
-      steps: [], contacts: [], names: new Set([name, child.id, child.sessionName ?? ""]) });
+      steps: [], contacts: [], names: new Set([name, child.id, child.sessionName ?? ""]), subagents: session?.subagentsRunning ?? 0,
+      total: session?.subagentsTotal ?? 0 });
   }
   for (const session of input.childSessions) {
     if ((session.childId && bySession.has(session.sessionId)) || drafts.some(draft => draft.sessionId === session.sessionId)) continue;
     const name = session.name ?? "";
     index({ key: "child:" + (session.childId ?? session.sessionId), sessionId: session.sessionId, ...(session.childId ? { childId: session.childId } : {}),
       name: displayName(name, session.first), job: name || session.sessionId, sender: name || session.sessionId, link: "subagent", working: session.running, failed: session.failed, ended: !session.running,
-      activity: session.activity ?? "", at: atOf(session.lastActivityAt), steps: [], contacts: [], names: new Set([name, session.childId ?? ""]) });
+      activity: session.activity ?? "", at: atOf(session.lastActivityAt), steps: [], contacts: [], names: new Set([name, session.childId ?? ""]), subagents: session.subagentsRunning ?? 0,
+      total: session.subagentsTotal ?? 0 });
   }
 
   const thread = (entry: AgentRow, how: AgentLink): Draft | undefined => {
@@ -231,23 +238,37 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
     const row = entry.row;
     const draft: Draft = { key: "thread:" + row.id, sessionId: row.id, name: displayName(row.name, entry.first), job: "session:" + row.id, sender: row.name, link: how, working: row.working,
       failed: !row.working && Boolean(row.failure), ended: false, activity: row.working ? row.statusLabel ?? "" : row.failure ?? "", at: atOf(row.lastActivityAt ?? row.created),
-      steps: [], contacts: [], names: new Set([row.name]) };
+      steps: [], contacts: [], names: new Set([row.name]), subagents: row.subagentsRunning, total: row.subagentsRunning };
     index(draft);
     return draft;
   };
   const roots = new Set([...input.roots, ...createdSessions(input.messages).map(created => created.sessionId)]);
   for (const root of roots) { const entry = rowOf(root); if (entry) thread(entry, "root"); }
 
-  // Owners of open steps join the list; then every step of a listed thread, done ones included, is counted on it.
-  const owned: { item: PlanItem; owner: string }[] = [];
+  // Owners of open steps join the list; then every step of a listed thread, done ones included, is counted on it. A step's stored session id
+  // finds its thread first, so the step keeps its owner when its job is renamed or deleted; a deleted one gets an ended row of its own.
+  const owned: PlanItem[] = [];
+  const ownerOf = (item: PlanItem): Draft | undefined => {
+    const name = stepOwner(item);
+    return (item.sessionId ? bySession.get(item.sessionId) : undefined) ?? (name !== undefined ? find(name) : undefined);
+  };
+  const gone = (item: PlanItem, id: string): Draft | undefined => {
+    const entry = rowOf(id);
+    if (entry) return thread(entry, "step");
+    const name = item.job && item.job !== id ? item.job : id;
+    const draft: Draft = { key: "thread:" + id, sessionId: id, name: name === id ? `thread ${id.slice(0, 8)}` : displayName(name, undefined), job: "session:" + id, sender: name, link: "step", working: false, failed: false,
+      ended: true, activity: "", at: 0, steps: [], contacts: [], names: new Set([name]), subagents: 0, total: 0 };
+    index(draft);
+    return draft;
+  };
   walk(input.board?.plan ?? [], item => {
-    const owner = stepOwner(item);
-    if (owner === undefined || owner === input.self.id || owner === input.self.name) return;
-    owned.push({ item, owner });
-    if (OPEN.has(item.status) && !find(owner)) { const entry = rowOf(owner); if (entry) thread(entry, "step"); }
+    const owners = [item.sessionId, stepOwner(item)].filter((who): who is string => who !== undefined);
+    if (!owners.length || owners.some(who => who === input.self.id || who === input.self.name)) return;
+    owned.push(item);
+    if (OPEN.has(item.status) && !ownerOf(item)) { const entry = owners.map(rowOf).find(Boolean); if (entry) thread(entry, "step"); }
   });
-  for (const { item, owner } of owned) {
-    const draft = find(owner);
+  for (const item of owned) {
+    const draft = ownerOf(item) ?? (item.sessionId ? gone(item, item.sessionId) : undefined);
     if (!draft) continue;
     link(draft, "step");
     draft.steps.push(item.id);
@@ -271,15 +292,31 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
   const agents = drafts.map((draft): ChatAgent => {
     const last = draft.contacts.sort((left, right) => left.at - right.at).at(-1);
     const received = draft.contacts.filter(contact => contact.direction === "received").at(-1);
-    const waiting = !draft.working && !draft.failed && last?.direction === "received" && /\?/.test(last.text);
-    const state: AgentState = draft.working ? "working" : draft.failed ? "failed" : waiting ? "waiting" : draft.ended ? "done" : "idle";
-    const activity = (draft.working || draft.failed ? draft.activity : received?.text || draft.activity).replace(/\s+/g, " ").trim().slice(0, 200);
+    const working = draft.working || draft.subagents > 0;
+    const waiting = !working && !draft.failed && last?.direction === "received" && /\?/.test(last.text);
+    const state: AgentState = working ? "working" : draft.failed ? "failed" : waiting ? "waiting" : draft.ended ? "done" : "idle";
+    const activity = (working || draft.failed ? draft.activity : received?.text || draft.activity).replace(/\s+/g, " ").trim().slice(0, 200);
     const at = Math.max(draft.at, last?.at ?? 0);
     return { key: draft.key, ...(draft.sessionId ? { sessionId: draft.sessionId } : {}), ...(draft.childId ? { childId: draft.childId } : {}), name: draft.name, job: draft.job, sender: draft.sender,
-      link: draft.link, state, ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: new Date(at).toISOString() } : {}), steps: draft.steps };
+      link: draft.link, state, ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: new Date(at).toISOString() } : {}), steps: draft.steps,
+      ...(draft.subagents ? { subagentsRunning: draft.subagents } : {}), ...(draft.total ? { subagentsTotal: draft.total } : {}) };
   });
   const at = (agent: ChatAgent) => atOf(agent.lastActivityAt);
   return agents.sort((left, right) => Number(right.state === "working") - Number(left.state === "working") || at(right) - at(left));
+}
+
+/**
+ * The session ids the board should keep (`BoardStore.linkSessions`): each step with a job and no session id yet whose owner agent has a session,
+ * by step id, with the job it names.
+ */
+export function stepSessions(board: ChatBoard | null, agents: readonly ChatAgent[]): Map<string, { job: string; sessionId: string }> {
+  const owners = new Map(agents.flatMap(agent => agent.sessionId ? agent.steps.map(step => [step, agent.sessionId!] as const) : []));
+  const links = new Map<string, { job: string; sessionId: string }>();
+  walk(board?.plan ?? [], item => {
+    const sessionId = owners.get(item.id);
+    if (item.job && !item.sessionId && sessionId) links.set(item.id, { job: item.job, sessionId });
+  });
+  return links;
 }
 
 const STATE_WORD: Record<AgentState, string> = { working: "working", waiting: "waiting for you", idle: "idle", done: "done", failed: "failed" };

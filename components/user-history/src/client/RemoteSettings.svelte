@@ -7,6 +7,7 @@
   import Checkbox from "./ui/Checkbox.svelte";
   import QrCode from "./ui/QrCode.svelte";
   import { tooltip } from "./ui/tooltip.ts";
+  import SettingsActions from "./SettingsActions.svelte";
 
   let view = $state<RemoteAccessView | null>(null);
   let error = $state<string | null>(null);
@@ -52,14 +53,12 @@
   onDestroy(() => clearInterval(timer));
 </script>
 
-<section class="remote" aria-label="Phone access">
-  <header class="bar">
-    <h3>Phone access</h3>
-    <span class="spacer"></span>
+<section class="pane" aria-label="Phone access">
+  <SettingsActions>
     <button class="icon-button small" disabled={checking || !view} aria-label="Check now" use:tooltip={"Check now"} onclick={() => void check()}>
       {#if checking}<span class="spinner tiny"></span>{:else}<Icon name="refresh" size={14} />{/if}
     </button>
-  </header>
+  </SettingsActions>
   {#if error && !view}
     <div class="empty">
       <div class="error"><Icon name="alert" size={16} /> Phone access status unavailable. {error}</div>
@@ -122,10 +121,7 @@
 </section>
 
 <style>
-  .remote { display: flex; flex-direction: column; gap: 14px; padding: 12px 18px 18px; font-size: 13px; }
-  .bar { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border); margin: 0 -18px; padding: 0 18px 8px; }
-  h3 { margin: 0; font-size: 13px; font-weight: 600; }
-  .spacer { flex: 1; }
+  .pane { display: flex; flex-direction: column; gap: 14px; padding: 12px 18px 18px; font-size: 13px; }
   .current { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 500; line-height: 1.4; }
   .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
   .current.on .dot { background: var(--success, #2e9e5b); }

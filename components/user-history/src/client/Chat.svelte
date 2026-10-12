@@ -10,10 +10,10 @@
   import { briefFor, briefFromCode, findJob, isActiveJob, jobName, jobNames, jobViews, reportsFor, spawnCalls, updatesJob } from "./jobs.ts";
   import { boardActionText, isBoardAction, mentionIndex, openAgentTodos } from "./board.ts";
   import { isThreadBusy } from "../shared/thread-state.ts";
-  import { chatFeed, chatLines, foldReply, settledPending, turnStarter, updatesLabel, type ChatItem } from "../shared/chat-feed.ts";
+  import { chatFeed, chatLines, foldReply, settledPending, turnStarter, updatesLabel, type ChatItem, type ReplyQuote } from "../shared/chat-feed.ts";
   import { parseArtifactTarget } from "../shared/artifact-link.ts";
   import { bubbleBlocks, renderMarkdown } from "./markdown.ts";
-  import { renderSaid, replyExcerpt } from "./reply.ts";
+  import { ownerExcerpt, renderSaid, replyExcerpt } from "./reply.ts";
   import { diagrams } from "./diagrams.ts";
   import { brokenImage, proseClick } from "./prose.ts";
   import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, ChildPulse, ChildUsage, ImageInput, ModelCatalog, ModelInfo, PlanItem, ThinkingLevel } from "../shared/types.ts";
@@ -34,7 +34,8 @@
   import { tooltip } from "./ui/tooltip.ts";
   import { longpress } from "./ui/longpress.ts";
   import { labels } from "./labels.ts";
-  import { copyPermalink, revealMessage } from "./permalink.ts";
+  import { copyPermalink, revealLine, revealMessage } from "./permalink.ts";
+  import { bookmarks } from "./bookmarks.svelte.ts";
 
   /**
    * The chat view of one thread whose row has `chat`: a DM-style feed and a box that always sends at once, with the board in a side
@@ -152,8 +153,6 @@
     if (session) store.select(session.id);
     else openJob(owner);
   }
-  /** The owner's name for the plan view: the job's name, the session's name, or the first 8 characters of a bare id. */
-  const ownerName = (owner: string): string => findJob(jobs, owner)?.name ?? store.session(owner)?.name ?? (/^[0-9a-f]{8}-/.test(owner) ? owner.slice(0, 8) : jobName(owner));
   /** The job a step's owner previews, by the name its reports carry; a step owned by a thread (this chat, another chat) has no report card. */
   const previewJob = (owner: string): string | undefined => findJob(jobs, owner)?.name;
 
@@ -275,7 +274,24 @@
   }
   /** Reply on a bubble: the composer gets a quote of that message (owner, 10-09: a `> ...` paste above his answer, as a button). */
   function reply(text: string): void { store.replyQuote = { chat: id, text: replyExcerpt(text) }; }
-  /** The bubble menu a long press opens on touch, where the hover buttons never show: Reply and Copy link. */
+  /**
+   * A chat reply that answers an older owner message (`reply_to`) quotes it; the quote scrolls to that message. The owner's message gets
+   * "See reply", which scrolls to the first answer and on each further click to the next one.
+   */
+  const shownReply = new Map<string, number>();
+  function goToLine(line: string): void {
+    if (!scroller) return;
+    pinned = false;
+    if (!revealLine(scroller, line)) store.toast("That message is not in this chat any more.", "info");
+  }
+  function seeReply(item: Extract<ChatItem, { kind: "user" }>): void {
+    const replies = item.replies ?? [];
+    if (!replies.length) return;
+    const next = (shownReply.get(item.id) ?? -1) + 1;
+    shownReply.set(item.id, next % replies.length);
+    goToLine(replies[next % replies.length]!);
+  }
+  /** The bubble menu a long press opens on touch, where the hover buttons never show: Reply, Copy link and Bookmark. */
   let pressed = $state<{ anchor: HTMLElement; at: number; text: string } | null>(null);
   const press = (at: number, text: string) => (anchor: HTMLElement) => { pressed = { anchor, at, text }; };
   const closeMenu = () => { pressed = null; };
@@ -284,10 +300,16 @@
 </script>
 
 {#snippet actions(at: number, text: string)}
+  {@const saved = bookmarks.has(id, at)}
   <span class="actions">
+    <button type="button" class="icon-button small bookmark" class:saved aria-pressed={saved} aria-label={saved ? "Remove bookmark" : "Bookmark this message"} use:tooltip={saved ? "Remove bookmark" : "Bookmark"} onclick={() => void bookmarks.toggle(id, at, text)}><Icon name="bookmark" size={13} filled={saved} /></button>
     <button type="button" class="icon-button small" aria-label="Reply to this message" use:tooltip={"Reply"} onclick={() => reply(text)}><Icon name="reply" size={13} /></button>
     <button type="button" class="icon-button small" aria-label="Copy link to this message" use:tooltip={"Copy link"} onclick={() => void copyLink(at)}><Icon name="link" size={13} /></button>
   </span>
+{/snippet}
+
+{#snippet replyQuote(quote: ReplyQuote)}
+  <button type="button" class="quote reply-quote" aria-label="Show the message this answers" use:tooltip={"Show your message"} onclick={() => goToLine(quote.id)}>{ownerExcerpt(quote.text)}</button>
 {/snippet}
 
 {#snippet setup()}
@@ -306,7 +328,7 @@
         {#if item.kind === "user" && !item.images.length && isBoardAction(item.text)}
           <div class="owner-action" class:pending={item.pending}><Icon name="check" size={12} /><span>{boardActionText(item.text)}</span></div>
         {:else if item.kind === "user"}
-          <div class="line user" data-at={item.at}>
+          <div class="line user" data-at={item.at} data-line={item.id}>
             {#if !item.pending}{@render actions(item.at, item.text)}{/if}
             <div class="bubble mine" class:pending={item.pending} use:longpress={press(item.at, item.text)}>
               {#if item.images.length}
@@ -320,16 +342,23 @@
               {#if item.text}<div class="text said" onclick={onProseClick}>{@html renderSaid(item.text, mentions)}</div>{/if}
             </div>
           </div>
+          {#if item.replies?.length}
+            <div class="see-reply"><button type="button" class="more" onclick={() => seeReply(item)}>{item.replies.length === 1 ? "See reply" : `See replies (${item.replies.length})`}</button></div>
+          {/if}
         {:else if item.kind === "agent"}
           {@const fold = item.streaming || item.told || unfolded.has(`${id}:${item.id}`) ? null : foldReply(item.text)}
           {@const blocks = bubbleBlocks(fold?.folded ? fold.shown : item.text)}
-          <div class="line agent" data-at={item.at}>
+          <div class="line agent" data-at={item.at} data-line={item.id}>
             <div class="blocks">
+              {#if item.replyTo && blocks[0]?.kind !== "prose"}
+                <div class="bubble theirs quote-only">{@render replyQuote(item.replyTo)}</div>
+              {/if}
               {#each blocks as block, position (position)}
                 {@const html = renderMarkdown(block.text, cwd, mentions)}
                 {@const streaming = item.streaming ?? false}
                 {#if block.kind === "prose"}
                   <div class="bubble theirs" use:longpress={press(item.at, item.text)}>
+                    {#if item.replyTo && position === 0}{@render replyQuote(item.replyTo)}{/if}
                     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
                     <div class="prose bubble-prose" onclick={onProseClick} onerrorcapture={brokenImage} use:diagrams={{ html, live: streaming }}>{@html html}{#if streaming && position === blocks.length - 1}<span class="caret"></span>{/if}</div>
                     {#if fold?.folded && position === blocks.length - 1}<button type="button" class="more" aria-label="Show the whole reply" onclick={() => unfolded.add(`${id}:${item.id}`)}>More</button>{/if}
@@ -444,7 +473,7 @@
         <JobDrawer chatId={id} name={drawerTitle} job={drawerJob} reports={drawerReports} brief={drawerBrief} {pulses} now={tick5} onclose={closeJob} />
       {/if}
       {#if planView}
-        <PlanView chat={id} {board} focus={planView.focus} {narrow} onjob={openStep} {ownerName} {previewJob} onclose={closePlan} />
+        <PlanView chat={id} {board} agents={row?.agents ?? EMPTY_AGENTS} focus={planView.focus} {narrow} onjob={openStep} onagent={openAgent} {previewJob} onclose={closePlan} />
       {/if}
     </div>
   {/if}
@@ -459,6 +488,7 @@
     <Floating {anchor} width={180} role="menu" label="Message" onclose={closeMenu}>
       <button type="button" class="menu-item" role="menuitem" data-autofocus onclick={() => { closeMenu(); reply(text); }}><Icon name="reply" size={14} />Reply</button>
       <button type="button" class="menu-item" role="menuitem" onclick={() => { closeMenu(); void copyLink(at); }}><Icon name="link" size={14} />Copy link</button>
+      <button type="button" class="menu-item" role="menuitem" onclick={() => { closeMenu(); void bookmarks.toggle(id, at, text); }}><Icon name="bookmark" size={14} />{bookmarks.has(id, at) ? "Remove bookmark" : "Bookmark"}</button>
     </Floating>
   {/if}
 </div>
@@ -502,21 +532,31 @@
   .line { display: flex; align-items: flex-end; gap: 4px; border-radius: 20px; }
   .line.user { justify-content: flex-end; }
   .line.agent { justify-content: flex-start; }
-  /* Reply and Copy link beside the bubble, shown on hover (a long press opens the same two as a menu on touch); the owner's side mirrors the order. */
-  .actions { display: inline-flex; flex: none; align-items: center; gap: 2px; margin-bottom: 4px; color: var(--text-faint); opacity: 0; transition: opacity 0.15s; }
+  /* Bookmark, Reply and Copy link beside the bubble, shown on hover (a long press opens the same three as a menu on touch); the owner's side
+     mirrors the order. A saved message keeps its filled bookmark in view next to the bubble. */
+  .actions { display: inline-flex; flex: none; align-items: center; gap: 2px; margin-bottom: 4px; color: var(--text-faint); }
+  .actions > button { opacity: 0; transition: opacity 0.15s; }
   .line.user .actions { flex-direction: row-reverse; }
-  .line:hover .actions, .actions:focus-within { opacity: 1; }
+  .line:hover .actions > button, .actions:focus-within > button, .actions > .bookmark.saved { opacity: 1; }
+  .bookmark.saved { color: var(--accent-bold); }
   .line:global(.linked) { animation: linked 2s ease-out; }
   @keyframes linked { from { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } to { background: transparent; box-shadow: none; } }
-  .bubble { max-width: min(82%, 560px); min-width: 0; padding: 8px 14px; border-radius: 18px; font-size: 15.5px; line-height: 1.45; }
+  .bubble { max-width: min(82%, 560px); min-width: 0; padding: 8px 14px; border-radius: 18px; font-size: calc(var(--chat-text) + 0.5px); line-height: 1.45; }
+  :global(:root[data-density="compact"]) .bubble { padding: 5px 12px; }
+  :global(:root[data-density="compact"]) .column { gap: 3px; }
   /* The owner's bubble is a light blue tint with normal text, calm next to the gray replies (owner, 10-08: "this blue is too blue"). */
-  .bubble.mine { background: light-dark(#dcebf7, #1f3a52); color: var(--text); border-bottom-right-radius: 5px; transition: opacity 0.2s; }
+  .bubble.mine { background: var(--mine-bubble); color: var(--text); border-bottom-right-radius: 5px; transition: opacity 0.2s; }
   .bubble.mine.pending { opacity: 0.55; }
   .bubble.theirs { background: var(--user-bubble); border-bottom-left-radius: 5px; }
   .text { white-space: pre-wrap; overflow-wrap: anywhere; }
   /* The quote a Reply put on top: small and muted, a bar on the left, the owner's text under it. */
   .said :global(blockquote.quote) { margin: 0 0 6px; padding: 2px 0 2px 9px; border-left: 2.5px solid color-mix(in srgb, currentColor 40%, transparent); font-size: 13px; line-height: 1.4; color: color-mix(in srgb, currentColor 72%, transparent); }
   .said :global(blockquote.quote:last-child) { margin-bottom: 0; }
+  /* The quote over a chat reply that answers an older owner message: the owner's quote style, as a button to that message. */
+  .reply-quote { display: block; margin: 0 0 6px; padding: 2px 0 2px 9px; border: 0; border-left: 2.5px solid color-mix(in srgb, currentColor 40%, transparent); background: none; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.4; color: color-mix(in srgb, var(--text) 72%, transparent); cursor: pointer; }
+  .quote-only .reply-quote { margin-bottom: 0; }
+  .reply-quote:hover { color: var(--text); }
+  .see-reply { display: flex; justify-content: flex-end; margin: -2px 6px 2px; }
   .said :global(a) { color: inherit; text-decoration: underline; text-underline-offset: 0.15em; }
   .said :global(code) { font-family: var(--mono); font-size: 0.88em; padding: 0.05em 0.3em; border-radius: 4px; background: color-mix(in srgb, currentColor 16%, transparent); }
   .said :global(.artifact-link) { color: inherit; text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); }

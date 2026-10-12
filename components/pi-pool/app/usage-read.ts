@@ -14,6 +14,7 @@
  * Never prints a credential.
  */
 import { join } from "node:path";
+import { seatWindows } from "./usage-seat.ts";
 
 type Window = { name: string | null; sampledAt: number };
 type Account = { id: string; email: string | null; label: string; tier?: string | null; windows: Window[]; lastUsageAt?: number; lastProbeAt?: number;
@@ -22,6 +23,7 @@ type Pool = { lockFile: string };
 type Index = { accounts: Account[] };
 type Ready = { ok: true; token: string; expiresAt: number } | { ok: false; reason: string };
 type Outcome = { ok: true; usage: unknown } | { ok: false; reason: string; retryAt?: number };
+type Landed = { ok: true; windows: unknown[] } | { ok: false; reason: string; retryAt?: number };
 type Report = { ok: true } | { ok: false; reason: string };
 
 const CONCURRENCY = 4;
@@ -67,6 +69,17 @@ async function main(): Promise<number> {
     return stored;
   });
 
+  /** tokenmaxxing rejects a usage body with no weekly window; a team seat sends one. Read it again and keep its 5h and model windows. */
+  async function readSeat(a: Account): Promise<unknown[] | null> {
+    const ready: Ready = await readyToSample(a, Date.now());
+    if (!ready.ok || ready.expiresAt <= Date.now()) return null;
+    const url = new URL(process.env.TOKENMAXXING_OAUTH_USAGE_URL ?? "https://api.anthropic.com/api/oauth/usage");
+    url.searchParams.set("at_wall", "1");
+    url.searchParams.set("skip_spend", "1");
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${ready.token}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(10_000) });
+    return res.ok ? seatWindows(await res.json(), Date.now()) : null;
+  }
+
   async function readClaude(a: Account): Promise<Record<string, unknown>> {
     const ready: Ready = await readyToSample(a, Date.now());
     if (!ready.ok) {
@@ -75,14 +88,16 @@ async function main(): Promise<number> {
       return { ok: false, reason: ready.reason, retry_at: seconds(retry) };
     }
     const startedAt = Date.now();
-    const outcome: Outcome = await runSample(a, ready);
+    const sampled: Outcome = await runSample(a, ready);
+    const seat = !sampled.ok && sampled.retryAt == null ? await readSeat(a).catch(() => null) : null;
+    const outcome: Landed = sampled.ok ? { ok: true, windows: windowsOf(sampled.usage, startedAt) } : seat ? { ok: true, windows: seat } : sampled;
     const stored = await save(a.id, (s) => {
       s.lastProbeAt = startedAt;
       if (a.tier != null) s.tier = a.tier;
       if (a.needsReauth) s.needsReauth = true;
       if (outcome.ok) {
         s.probeFails = 0;
-        if (s.lastUsageAt == null || startedAt > s.lastUsageAt) landWindows(s, mergeWindows(windowsOf(outcome.usage, startedAt), s.windows), startedAt, bars);
+        if (s.lastUsageAt == null || startedAt > s.lastUsageAt) landWindows(s, mergeWindows(outcome.windows, s.windows), startedAt, bars);
       } else {
         s.probeFails = (s.probeFails ?? 0) + 1;
         if (outcome.retryAt != null) s.usageRetryAt = outcome.retryAt;

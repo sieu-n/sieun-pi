@@ -13,8 +13,9 @@ import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
 import { NOTE_MAX } from "./chat-notes.ts";
+import { BOOKMARK_TEXT_MAX, type BookmarkAction } from "./shared/bookmarks.ts";
 import { ThreadError } from "./chat-threads.ts";
-import { type CheckInChange, validCheckInEvery } from "./chat-checkin.ts";
+import { type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, UNKNOWN_AGENT, validCheckInEvery } from "./chat-checkin.ts";
 import { chooseFolder, resolveWorkspace, WorkspaceError } from "./chat-workspace.ts";
 import { parseBucket, parseGroup, parseMetric, parseWindow, UsageError } from "./usage/service.ts";
 import { interruptedRuns } from "./chat-resume.ts";
@@ -23,6 +24,7 @@ import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
+import { parseStartSkill } from "./shared/start-skill.ts";
 
 const maxBodyBytes = 12 * 1024 * 1024;
 const maxMessageLength = 32000;
@@ -106,6 +108,17 @@ function parseMode(value: unknown): SendMode {
   if (mode !== "steer" && mode !== "followUp") throw new RequestError(400, "Choose steer or followUp.");
   return mode;
 }
+/**
+ * Who changes a check-in through this API. The page token proves the caller can reach the page, and an agent driving the owner's browser has
+ * it too (10-10 12:54Z: one agent session paused 9 chats from the owner's tab), so it says nothing about who asks. The owner's page marks its
+ * check-in requests with `X-Chat-Owner-Ui: 1`; an agent names itself with `X-Chat-Agent-Session: <session id>`, which wins; any other caller
+ * is an agent nobody named.
+ */
+function checkInActor(req: IncomingMessage): CheckInActor {
+  const session = req.headers["x-chat-agent-session"];
+  if (typeof session === "string") return { by: "agent", setter: idPattern.test(session) ? session : UNKNOWN_AGENT };
+  return req.headers["x-chat-owner-ui"] === "1" ? OWNER_UI : { by: "agent", setter: UNKNOWN_AGENT };
+}
 /** The kind of thread `POST api/threads` creates: a plain thread, or a chat. */
 function parseCheckInChange(body: Record<string, unknown>): CheckInChange {
   const change: CheckInChange = {};
@@ -128,19 +141,19 @@ function parseKind(value: unknown): "thread" | "chat" {
   throw new RequestError(400, "Choose kind thread or chat.");
 }
 /** The pool account a new chat starts on; absent means follow the pool. */
-function parseNewChatAccount(value: unknown): { provider: string; id: string; force: boolean } | undefined {
+function parseNewChatAccount(value: unknown): { provider: string; id: string } | undefined {
   if (value === undefined || value === null) return undefined;
   const account = record(value);
   const id = text(account.id, "account.id", 256);
   if (id.startsWith("-")) throw new RequestError(400, "Choose an account.");
-  return { provider: text(account.provider, "account.provider", 64), id, force: account.force === true };
+  return { provider: text(account.provider, "account.provider", 64), id };
 }
 function parseAccountAction(body: Record<string, unknown>): AccountAction {
   const provider = text(body.provider, "provider", 64);
   const account = typeof body.account === "string" ? text(body.account, "account", 256) : undefined;
   const id = typeof body.id === "string" ? threadId(body.id) : undefined;
   switch (body.action) {
-    case "use": if (!account || !id) throw new RequestError(400, "Choose an account and a thread."); return { action: "use", provider, account, id, force: body.force === true };
+    case "use": if (!account || !id) throw new RequestError(400, "Choose an account and a thread."); return { action: "use", provider, account, id };
     case "follow": if (!id) throw new RequestError(400, "Choose a thread."); return { action: "follow", provider, id };
     case "pin": if (!account) throw new RequestError(400, "Choose an account."); return { action: "pin", provider, account };
     case "unpin": return { action: "unpin", provider };
@@ -171,6 +184,14 @@ function parseDefaults(body: Record<string, unknown>, catalog: ModelCatalog): Ch
 function threadIds(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > 1000 || !value.every(id => typeof id === "string")) throw new RequestError(400, "Expected up to 1000 thread IDs.");
   return [...new Set(value.map(id => threadId(id)))];
+}
+function parseBookmarkAction(body: Record<string, unknown>): BookmarkAction {
+  if (body.op === "clear") return { op: "clear" };
+  const chat = threadId(text(body.chat, "chat", 256));
+  if (typeof body.at !== "number" || !Number.isSafeInteger(body.at) || body.at < 0) throw new RequestError(400, "Choose a message time.");
+  if (body.op === "remove") return { op: "remove", chat, at: body.at };
+  if (body.op === "add") return { op: "add", chat, at: body.at, text: text(body.text, "text", BOOKMARK_TEXT_MAX) };
+  throw new RequestError(400, "Choose add, remove or clear.");
 }
 function parseLabelAction(body: Record<string, unknown>): LabelAction {
   const tagId = () => text(body.tagId, "tagId", 64);
@@ -311,7 +332,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   remote?: RemoteControl;
   /** Settings > Slack; null for instances that run no Slack bridge (tests, extra data dirs). */
   slack?: SlackControl | null;
-  /** Settings > Versions and the SDK auto-update; null for instances that do not manage their packages. */
+  /** Settings > Updates and the SDK auto-update; null for instances that do not manage their packages. */
   sdk?: SdkSync | null;
   onStop(): Promise<void>; identityReady?: Promise<void>; logins?: AccountLogins; refreshes?: UsageRefreshes;
   /** How `api/wiki-page` reads a page; a probe points it at its own wiki and content folder. */
@@ -474,6 +495,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         }
         if (route === "api/commands") { json(res, 200, { commands: await backend.threads.commands(null) }); return; }
         if (route === "api/defaults") { json(res, 200, backend.defaults.read()); return; }
+        if (route === "api/new-chat") { json(res, 200, await backend.newChat.read()); return; }
+        if (route === "api/bookmarks") { json(res, 200, { bookmarks: await backend.bookmarks.list() }); return; }
         if (route === "api/remote") { json(res, 200, remote.view(origin === `http://${host}`)); return; }
         if (route === "api/slack") { json(res, 200, slack ? slack.view(origin === `http://${host}`) : null); return; }
         if (route === "api/slack/channels") {
@@ -607,13 +630,15 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             await backend.created.add(thread.id).catch(() => {});
             if (account) {
               // The account is set on the new session before the prompt, so its first model request already uses it. A failed use sends nothing.
-              try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, force: account.force, newSession: true }); }
+              try { await runAccountAction({ action: "use", provider: account.provider, account: account.id, id: thread.id, newSession: true }); }
               catch (error) {
                 await backend.threads.archive(thread.id).catch(() => {});
                 if (kind === "chat") await backend.chats.forget(thread.id).catch(() => {});
                 throw new RequestError(502, error instanceof Error ? error.message : String(error));
               }
             }
+            // A thread the owner starts is high in the pool from its first request; a priority label set below re-syncs it.
+            await backend.poolPriorities?.set(thread.id, "high");
             // The name is set before the prompt, so the thread never shows the first message as its title. A failed rename still sends the message.
             if (name && kind !== "chat") await backend.threads.rename(thread.id, name).catch(() => {});
             // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
@@ -635,14 +660,22 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         const start = typeof body.start === "string" ? await resolveWorkspace(body.start).catch(() => null) : null;
         json(res, 200, { cwd: await chooseFolder(start) }); return;
       }
+      if (route === "api/bookmarks") { json(res, 200, { bookmarks: await backend.bookmarks.apply(parseBookmarkAction(body)) }); return; }
       if (route === "api/labels") {
-        const result = await backend.labels.apply(parseLabelAction(body));
+        const action = parseLabelAction(body);
+        const result = await backend.labels.apply(action);
         await backend.catalog.notify();
+        if (action.op === "priority") void backend.poolPriorities?.sync();
         json(res, 200, { ok: true, ...result }); return;
       }
       if (route === "api/defaults") {
         await backend.defaults.write(parseDefaults(body, await backend.threads.models(null)));
         json(res, 200, backend.defaults.read()); return;
+      }
+      if (route === "api/new-chat") {
+        let startSkill: string | null;
+        try { startSkill = parseStartSkill(body.startSkill); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
+        json(res, 200, await backend.newChat.write({ startSkill })); return;
       }
       if (route === "api/remote") {
         // A leaked link must not be able to widen or cut network access, so the switches change only on the Mac itself.
@@ -658,7 +691,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         json(res, 200, await sdk.view()); return;
       }
       if (route === "api/chats/update") {
-        // Settings > Chats: every chat reloads onto the current brief, an idle one now, a busy one when its turn ends; the rows show the progress.
+        // Settings > Updates, Update all chats: every chat reloads onto the current brief, an idle one now, a busy one when its turn ends; the rows show the progress.
         json(res, 200, { chats: await backend.chats.updateAll() }); return;
       }
       if (route === "api/interrupted") {
@@ -772,16 +805,16 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (action !== "run" && action !== "pause" && action !== "resume" && action !== "schedule") throw new RequestError(400, "Choose run, pause, resume or schedule.");
           let found: boolean;
           if (action === "schedule") {
-            try { found = await backend.duties.setSchedule(id, duty, body.schedule); }
+            try { found = await backend.duties.setSchedule(id, duty, body.schedule, checkInActor(req)); }
             catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
           } else found = action === "run" ? await backend.duties.runNow(id, duty) || (await backend.duties.view(id)).some(view => view.duty.id === duty)
-            : await backend.duties.setStatus(id, duty, action === "pause" ? "paused" : "active");
+            : await backend.duties.setStatus(id, duty, action === "pause" ? "paused" : "active", checkInActor(req));
           if (!found) throw new RequestError(404, "This chat has no such duty.");
           json(res, 200, { duties: await backend.duties.view(id) }); return;
         }
         case "check-in": {
-          // The owner's interval and pause for the chat's check-in; the chat reads it on the board tool and has no op to change it.
-          const view = await backend.chats.setCheckIn(id, parseCheckInChange(body));
+          // The interval and pause for the chat's check-in, from the owner's page or an agent (checkInActor); the chat changes its own through chat_board.
+          const view = await backend.chats.setCheckIn(id, parseCheckInChange(body), checkInActor(req));
           if (!view) throw new RequestError(404, "This thread is not a chat.");
           await backend.catalog.notify();
           json(res, 200, view); return;
@@ -819,7 +852,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
       }
       json(res, 200, { ok: true });
     } catch (error) {
-      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError || error instanceof PoolError || error instanceof UsageError ? error.status : error instanceof WorkspaceError ? 400 : 502;
+      const status = error instanceof RequestError || error instanceof ThreadError || error instanceof LabelError || error instanceof PoolError || error instanceof UsageError || error instanceof CheckInRefused ? error.status : error instanceof WorkspaceError ? 400 : 502;
       if (!res.headersSent && !res.destroyed) json(res, status, { error: error instanceof Error ? error.message : "Prime Agent is unavailable." });
     }
   }

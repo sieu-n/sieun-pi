@@ -1,5 +1,6 @@
 import { api } from "./api.ts";
-import type { AccountsView, PoolAccount, PoolProvider, PoolWindow } from "../shared/types.ts";
+import type { AccountsView, PoolAccount, PoolConfig, PoolPriority, PoolProvider, PoolWindow } from "../shared/types.ts";
+import { poolValue } from "./pool-config.ts";
 
 const MAX_AGE_MS = 60_000;
 const STALE_USAGE_MS = 20 * 60_000;
@@ -82,17 +83,33 @@ export function reasonText(reason: string | null): string | null {
   return REASON_TEXT[reason] ?? reason.replaceAll("_", " ");
 }
 
-/** "This thread uses X (reason)" for the Accounts header. */
-export function resolutionSentence(provider: PoolProvider): string {
+/** "15:42", or "Oct 14 15:42" when the time is not today. */
+export function clockText(ms: number, now = Date.now()): string {
+  const at = new Date(ms);
+  const time = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  return at.toDateString() === new Date(now).toDateString() ? time : `${at.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
+}
+
+/** The Accounts header: the account the pool holds this thread for and when it comes back, else the account it uses and why. */
+export function resolutionSentence(provider: PoolProvider, now = Date.now()): string {
   const label = PROVIDER_LABEL[provider.provider];
+  if (provider.wait) {
+    const account = provider.rows.find(row => row.id === provider.wait!.account)?.label ?? provider.wait.account;
+    return provider.wait.slotAt > now ? `Waiting for ${account}, back at ${clockText(provider.wait.slotAt, now)}.` : `Waiting for ${account}, due back now.`;
+  }
   const resolution = provider.resolution;
   if (!resolution) return provider.error ?? `The ${label} pool did not say which account this thread uses.`;
   if (resolution.email) {
     const why = reasonText(resolution.reason);
-    return `This thread uses ${resolution.email}` + (why ? ` (${why}).` : ".");
+    return `This thread uses ${resolvedAccount(provider)?.label ?? resolution.email}` + (why ? ` (${why}).` : ".");
   }
-  return resolution.pinned ? `The pinned ${label} account cannot serve, and no other ${label} account can.` : `No ${label} account can serve this thread right now.`;
+  return `No ${label} account can serve this thread right now.`;
 }
+
+export const POOL_PRIORITY_LABEL: Record<PoolPriority, string> = { high: "High priority", normal: "Normal priority", low: "Low priority" };
+/** Why a thread has its pool class, for the tooltip on it. */
+export const POOL_PRIORITY_HINT = "The pool admits high threads first and holds low ones for the emptiest accounts. A chat is high, a job takes its chat's priority, " +
+  "and a duty or check-in run is low. The thread's priority label overrides it: High is high, Medium is normal, Low is low.";
 
 /** "3h 46m", "2d 5h", "12m", "<1m". */
 export function span(ms: number): string {
@@ -126,3 +143,12 @@ export function staleText(row: PoolAccount, now = Date.now()): string | null {
 }
 
 export const meterTone = (pct: number): "low" | "mid" | "high" => pct >= 90 ? "high" : pct >= 70 ? "mid" : "low";
+
+/** "28 threads" for a row the pool counts in use, with the window it counts over; null when no thread used it. */
+export function threadsText(row: PoolAccount, config: PoolConfig | null | undefined): { label: string; hint: string } | null {
+  if (!row.sessions) return null;
+  const one = row.sessions === 1;
+  const minutes = Math.round(poolValue(config, "active_session_sec") / 60);
+  return { label: `${row.sessions} thread${one ? "" : "s"}`,
+    hint: `${row.sessions} thread${one ? " (with its jobs)" : "s (with their jobs)"} sent a request through this account in the last ${minutes} min.` };
+}

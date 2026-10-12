@@ -26,12 +26,9 @@ export function classesLabel(run: DutyRunRecord | undefined): string {
   return Object.entries(run?.classes ?? {}).filter(([, count]) => count > 0).map(([cls, count]) => `${cls} ${count}`).join(" · ");
 }
 
-/** What the last run flagged, by step, and what the recheck after the chat's turn found handled or still flagged. Empty parts are left out. */
-export function flaggedLabel(view: DutyView): { flagged: string; handled: string; left: string } {
-  const run = view.runs.find(entry => entry.trigger !== "after-turn" && entry.verdict !== "skipped");
-  const after = view.runs.find(entry => entry.trigger === "after-turn");
-  const items = (slices: DutyRunRecord["flagged"]) => [...new Set((slices ?? []).map(slice => slice.item ? `${slice.item} ${slice.kind.replace(/_/g, " ")}` : slice.kind))].join(", ");
-  const recent = after !== undefined && run !== undefined && after.at >= run.at;
-  return { flagged: items(run?.flagged), handled: recent ? (after.handled ?? []).join(", ") : "", left: recent ? items(after.unresolved) : "" };
+/** What the last run that measured flagged, by step, and the duty job the last run started. Empty parts are left out. */
+export function flaggedLabel(view: DutyView): { flagged: string; job: string } {
+  const run = view.runs.find(entry => entry.verdict !== "skipped");
+  const job = view.runs.find(entry => entry.job)?.job?.name ?? "";
+  return { flagged: [...new Set((run?.flagged ?? []).map(slice => slice.item ? `${slice.item} ${slice.kind.replace(/_/g, " ")}` : slice.kind))].join(", "), job };
 }
-

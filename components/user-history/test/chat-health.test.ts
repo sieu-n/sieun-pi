@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { NO_MISSES } from "../src/chat-checkin.ts";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
 import { fixTargets, recheckSlices } from "../scripts/duties/chat-health-recheck.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
@@ -104,17 +105,13 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 2, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, slop_replies: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, unresolved_after_turn: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 });
+    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, slop_replies: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, ...NO_MISSES });
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 3).map(slice => [slice.chat, slice.excerpt]), [["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]]);
     const kinds = (kind: string) => flagged.filter(slice => slice.kind === kind);
     assert.deepEqual(kinds("unretried_errors").map(slice => slice.excerpt), [`1.5 h with no new message after: ${API_KEY_ERROR}`, "2.0 h with no new message after: stopReason aborted"]);
     assert.deepEqual(kinds("long_replies").map(slice => slice.excerpt.split(":")[0]), ["61 words", "70 words"]);
     assert.deepEqual(kinds("slop_replies").map(slice => [slice.chat, slice.excerpt.split(":")[0]]), [["chat-a", "6 bullets"], ["chat-a", "7 bullets"]], "length alone is long_replies");
-    assert.deepEqual(kinds("stalls_2h").map(slice => [slice.chat, slice.at, slice.excerpt.slice(0, slice.excerpt.indexOf(" (", slice.excerpt.indexOf(": - ")))]), [
-      ["chat-b", ago(1 * HOUR), "due for 25 h since the check-in told the chat: - p5"],
-      ["chat-b", ago(1 * HOUR), "stale-chase for 25 h since the check-in told the chat: - p8"],
-    ], "a step counts once, at its latest act row; an orphan that turned due is one run; chat-a's hour of listings and p7's run after waiting are no stall");
     assert.deepEqual(kinds("sieun_pi_breaks").map(slice => slice.excerpt), [API_KEY_ERROR]);
     assert.deepEqual(kinds("off_brief").map(slice => slice.excerpt), ["repeated line: [job] build-x finished; don't wait", `repeated line: ${CHECK_IN}`.slice(0, 300)],
       "text on a wake is the chat's notes (the brief allows it since W27); only repeated server lines are off brief");
@@ -183,7 +180,7 @@ test("chat health: no owner turns gives long_replies 0; no OUTPUT_FILE exits non
     const output = join(dir, "health.json");
     const empty = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(empty.status, 0, empty.stderr);
-    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unresolved_after_turn: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 }, flagged: [] });
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, ...NO_MISSES }, flagged: [] });
     const missing = run({ CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /OUTPUT_FILE/);
@@ -221,7 +218,7 @@ test("chat health: a problem a run flagged is watched; the next run counts it on
   }
 });
 
-test("chat health: owner directions and status questions are not corrections, a quoted question is not the owner's, a provider error the pool retried is not a sieun-pi break, and a stalled step is one the check-ins kept listing in an act class for 2 h", async () => {
+test("chat health: owner directions and status questions are not corrections, a quoted question is not the owner's, a provider error the pool retried is not a sieun-pi break", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
   try {
     const corrections = [
@@ -261,10 +258,7 @@ test("chat health: owner directions and status questions are not corrections, a 
     assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "corrections").map(slice => slice.excerpt).sort(), [...corrections].sort());
     assert.equal(health.metrics.sieun_pi_breaks, 0);
     assert.equal(health.metrics.unretried_errors, 0);
-    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "stalls_2h").map(slice => slice.excerpt.split(":")[0]).sort(),
-      ["stale-chase for 3 h since the check-in told the chat", "stale-chase for 3 h since the check-in told the chat"]);
-    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "stalls_2h").map(slice => /p\d+/.exec(slice.excerpt.split(": ")[1]!)![0]).sort(), ["p12", "p9"],
-      "p9 went orphan to stale-chase, one run; a folded list keeps p12's run; p11 turned live and p10 left a full list, so each run restarted");
+    assert.ok(!("stalls_2h" in health.metrics), "the check-in sends no open-steps list any more, so stalls_2h has no source (W44)");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -294,10 +288,64 @@ test("chat health: a token hook failure the pool retried is a sieun-pi break onl
   }
 });
 
+test("check-in quality: a flag left for 4 check-ins in a row counts once in unfixed_flags", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    const slice = (kind: string, item: string, excerpt: string) => ({ chat: "chat-u", at: 0, kind, excerpt, item });
+    const p17 = slice("due_late", "p17", "p17 \"Verify: live rehearsal\" is due since 02:00: act on it or set a new waitUntil");
+    const p20 = slice("orphan_steps", "p20", "p20 \"b\" orphan");
+    const p30 = slice("due_late", "p30", "p30 \"c\" due");
+    const checkIn = (hours: number, flagged: object[], verdict = "missed") => ({ duty: "checkin", at: ago(hours * HOUR), trigger: "schedule", ms: 50, verdict, metrics: {}, summary: "s", flagged });
+    // p17 is flagged in 7 measured runs in a row; the skipped and failed runs in between neither extend nor break the streak, and two of them start before the window.
+    // p20 is flagged 3 times, cleared, then 3 times again: never 4 in a row. p30 made 5 in a row that ended before the window: fixed, not counted.
+    // "nothing" has no item, so it is not a plan step and never counts. A different chat's runs file is not read for this chat.
+    const runs = [
+      checkIn(40, [p30]), checkIn(38, [p30]), checkIn(36, [p30]), checkIn(34, [p30]), checkIn(32, [p30]), checkIn(30, []),
+      checkIn(26, [p17, p20]), checkIn(25, [p17, p20]), checkIn(20, [p17, p20]), checkIn(19, [p17], "skipped"), checkIn(18, [], "error"),
+      checkIn(10, [p17]), checkIn(8, [p17, p20]), checkIn(6, [p17, p20, { kind: "x", excerpt: "nothing" }]), checkIn(4, [p17, p20], "met"),
+      checkIn(-1, [p20]),
+    ];
+    await mkdir(join(dir, "duties"), { recursive: true });
+    await writeFile(join(dir, "duties", "chat-u.runs.jsonl"), runs.map(line => JSON.stringify(line)).join("\n") + "\nnot json\n");
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-u", "chat-none"] }));
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir, TZ: "UTC" });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.equal(health.metrics.unfixed_flags, 1, "only p17: p20 never made 4 in a row, p30 ended before the window, a missing runs file is zero");
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "unfixed_flags").map(slice => [slice.chat, slice.item, slice.at, slice.excerpt]), [
+      ["chat-u", "p17", ago(4 * HOUR), `due_late p17 flagged in 7 check-ins in a row since 2026-10-07 10:00: ${p17.excerpt}`],
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("check-in quality: owner asks to tidy the plan count in owner_board_asks, product asks do not", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    const asks = ["p40 같은 거 지우고, plan hierarchy 정리해", "organize the plan", "clean up the board", "close p12, it shipped", "board 정리 좀"];
+    const notAsks = ["plan the Slack bridge", "the board panel looks cramped", "clean the cache", "fix the board panel layout", "I said \u201cclean up the board\u201d earlier, now ship the bridge"];
+    const lines: Line[] = [...asks, ...notAsks].flatMap((text, index) => [user(ago(10 * HOUR) + index * MIN, text), reply(ago(10 * HOUR) + index * MIN + 1_000, "ok")]);
+    lines.unshift(user(ago(30 * HOUR), "organize the plan"), reply(ago(30 * HOUR) + 1_000, "ok"));
+    lines.push(user(ago(1 * HOUR), "[check-in] What changed:\n- organize the plan"), reply(ago(1 * HOUR) + MIN, ""));
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-o"] }));
+    await writeFile(join(dir, "chat-o.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.equal(health.metrics.owner_board_asks, 5, "the five asks in the window; not the product asks, a quoted ask, one before the window, or a check-in line");
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "owner_board_asks").map(slice => slice.excerpt).sort(), [...asks].sort());
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("chat health recheck: each fix names the metrics its subject targets, with today's value; one that names none is for a person to judge", () => {
-  assert.deepEqual(fixTargets("fix(user-history): long owner replies get a reply rule; text on wake-ups is notes; a stalled step sets waitUntil"), ["long_replies", "off_brief", "stalls_2h"]);
+  assert.deepEqual(fixTargets("fix(user-history): long owner replies get a reply rule; text on wake-ups is notes; a stalled step sets waitUntil"), ["long_replies", "off_brief"]);
   assert.deepEqual(fixTargets("fix(user-history): plain derived thread names"), []);
-  const metrics = { corrections: 4, stalls_2h: 3, dead_hours: 0, unretried_errors: 0, long_replies: 82.8, off_brief: 21, sieun_pi_breaks: 0, recurred: 0, unresolved_after_turn: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0 };
+  const metrics = { corrections: 4, dead_hours: 0, unretried_errors: 0, long_replies: 82.8, off_brief: 21, sieun_pi_breaks: 0, recurred: 0, orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0, idle_goals: 0, stalled_steps: 0, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 0 };
   assert.deepEqual(recheckSlices([
     { sha: "abc1234", at: 5, subject: "fix(user-history): owner replies stay under 60 words" },
     { sha: "def5678", at: 6, subject: "fix(user-history): plain derived thread names" },
@@ -342,5 +390,30 @@ test("chat health duty: the definition parses as a duty, so scripts/duties/add.t
   assert.ok(duty.metrics.some(metric => metric.key === "placeholder_todos" && metric.target === 0));
   assert.ok(!duty.metrics.some(metric => metric.key === "article_link_not_in_todo"), "c5's row is gone (superseded by c14)");
   assert.ok(duty.metrics.some(metric => metric.key === "scope_misses" && metric.target === 0));
-  assert.ok(duty.metrics.some(metric => metric.key === "unresolved_after_turn" && metric.target === 0), "a flagged item left untouched after the chat's turn");
+  assert.ok(duty.metrics.some(metric => metric.key === "idle_goals" && metric.target === 0), "an open goal nobody works on (c11)");
+  assert.ok(duty.metrics.some(metric => metric.key === "unfixed_flags" && metric.target === 0), "check-in findings left unfixed");
+  assert.ok(duty.metrics.some(metric => metric.key === "owner_board_asks" && metric.target === 0), "the owner had to ask a chat to tidy its plan");
+  assert.ok(duty.metrics.some(metric => metric.key === "goals_to_fold" && metric.target === 0), "a goal whose work runs as a duty or rides other goals' jobs (c46)");
+  assert.ok(!duty.metrics.some(metric => metric.key === "unresolved_after_turn" || metric.key === "stalls_2h"), "rows whose source W44 deleted are gone");
+});
+
+test("check-in quality: the hours with a no-progress check-in count once each in no_progress_hours", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    const checkIn = (hours: number, value: number, duty = "checkin") => ({ duty, at: ago(hours * HOUR), trigger: "schedule", ms: 50, verdict: value ? "missed" : "met",
+      metrics: { no_progress: { value, target: 0, op: "<=", met: value === 0 } }, summary: "s", flagged: [] });
+    // Two no-progress runs in one hour count once; a met run, another duty's run and a run before the window do not count.
+    const runs = [checkIn(30, 1), checkIn(5.1, 1), checkIn(5.05, 1), checkIn(3, 0), checkIn(2, 1), checkIn(1, 1, "d1")];
+    await mkdir(join(dir, "duties"), { recursive: true });
+    await writeFile(join(dir, "duties", "chat-n.runs.jsonl"), runs.map(line => JSON.stringify(line)).join("\n") + "\n");
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-n"] }));
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir, TZ: "UTC" });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    assert.equal(health.metrics.no_progress_hours, 2);
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "no_progress_hours").map(slice => slice.chat), ["chat-n"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -167,7 +167,7 @@ export const findingsLine = (findings: readonly Finding[]): string => findings.m
 export const findingsList = (findings: readonly Finding[]): string => findings.map(finding => `- ${finding.what}: ${finding.hint}`).join("\n");
 
 /** The part of an owner message the owner wrote: no injected skill text. Undefined for a server note or a message with no text. */
-function ownerMessage(message: ThreadMessage): string | undefined {
+export function ownerMessage(message: ThreadMessage): string | undefined {
   if (message.role !== "user") return undefined;
   const text = messageText(message).trim();
   return text && !serverNote(text) ? text.replace(SKILL_BLOCK, " ").trim() : undefined;

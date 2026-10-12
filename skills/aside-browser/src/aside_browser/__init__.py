@@ -309,6 +309,120 @@ def _bulk_close(code: str) -> bool:
     return bool(_LOOPS_TABS.search(code) and _CLOSES.search(code))
 
 
+# ---------------------------------------------------------------- outside sends
+
+# An email or a vendor ticket reply goes out only with the owner's ok on a For you todo (owner correction c37, 2026-10-10).
+_MAIL_HOSTS = re.compile(
+    r"^(?:mail\.google\.com|inbox\.google\.com|outlook\.(?:live|office|office365)\.com|mail\.yahoo\.com|(?:app|www)\.fastmail\.com"
+    r"|mail\.proton\.me|mail\.naver\.com|mail\.daum\.net|app\.hey\.com|mail\.zoho\.[a-z.]+|(?:www\.)?icloud\.com)$",
+    re.I,
+)
+_TICKET_HOST = re.compile(r"(?:^|[.-])(?:support|helpdesk|help|desk|tickets?|clients?)\.|zendesk\.com$|freshdesk\.com$|intercom\.|helpscout\.|kayako\.com$|zohodesk\.|gorgias\.|atlassian\.net$", re.I)
+_TICKET_PATH = re.compile(r"(?:submitticket|viewticket|supporttickets|clientarea)\.php|/tickets?(?:/|$|\?)|/requests?/\d|/support(?:/|$)|/servicedesk/", re.I)
+_URL = re.compile(r"https?://[^\s'\"`)<>]+", re.I)
+_LOCAL_HOST = re.compile(r"^(?:localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)$", re.I)
+_MAIL_GLOBAL = re.compile(r"\b(?:gmail|outlook)\s*\.\s*(?:openComposer|openReplyComposer|openThreadDetailsPage|send\w*|reply\w*)\b")
+_ACTION = re.compile(r"\.\s*(?:click|tap|dblclick|press|dispatchEvent|requestSubmit|submit)\s*\(|\bkeyboard\s*\.\s*(?:press|down|type)\s*\(")
+_SEND_NAME = re.compile(r"""\bSend\b|['"`/^]\s*\^?send\b|aria-label[*^$|~]?=\\?['"]?send|data-tooltip[*^$|~]?=\\?['"]?send|\.T-I\.aoO|보내기|送信""", re.I)
+_SEND_KEYS = re.compile(r"(?:Meta|Control|ControlOrMeta|Mod|Cmd|Command)\s*\+\s*Enter", re.I)
+_SUBMIT = re.compile(r"""\brequestSubmit\s*\(|\.submit\s*\(|\b(?:Submit|Reply|Post|Add Reply|Update Ticket|Comment)\b|type=\\?['"]?submit|답변|답장|제출""", re.I)
+_SEND_INTENT = re.compile(r"\b(?:send|sends|sent|reply|replies|respond|answer|submit|forward|post)\b|보내|답장|회신|제출", re.I)
+_MAIL_WORDS = re.compile(r"\b(?:e-?mails?|mail|gmail|outlook|inbox|tickets?|support|vendor|helpdesk)\b|메일|티켓", re.I)
+_DRAFTING = re.compile(r"\bdraft\s+(?:a|an|the|my|our|your|reply|email|message|response)\b|\bas\s+a\s+draft\b|\bunsent\b", re.I)
+_NEGATED = re.compile(r"\b(?:do not|don't|dont|never|without|no)\b|하지\s*마|말고", re.I)
+_OWNER_OK_HELP = (
+    "An outside send needs the owner's ok first. Draft the message, then add a For you todo on your chat's board "
+    "that quotes the draft and the recipient, with choices such as \"Send it\" / \"Not yet\". After the owner approves it, "
+    "call again with owner_ok=\"<chat id>/<todo id>\". Reading and drafting stay allowed."
+)
+_REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".."))
+
+
+def _host_kind(url: str) -> str | None:
+    """'mail' for a webmail page, 'ticket' for a support portal, else None."""
+    m = re.match(r"https?://([^/:?#]+)(?::\d+)?([^?#]*)", url or "", re.I)
+    if not m or _LOCAL_HOST.match(m.group(1)):
+        return None
+    host, path = m.group(1), m.group(2)
+    if _MAIL_HOSTS.match(host):
+        return "mail"
+    if _TICKET_HOST.search(host) or _TICKET_PATH.search(path):
+        return "ticket"
+    return None
+
+
+def _sends(code: str) -> bool:
+    """Code that could press a send control: a click or key press near a Send name or a send shortcut, or a form submit."""
+    if _SEND_KEYS.search(code):
+        return True
+    return bool(_ACTION.search(code) and (_SEND_NAME.search(code) or _SUBMIT.search(code)))
+
+
+def outside_send(code: str, page_url: str = "") -> str | None:
+    """Why this REPL code sends an email or a ticket reply from page_url (the current tab), or None."""
+    if not _sends(code):
+        return None
+    kinds = {_host_kind(u) for u in [page_url, *_URL.findall(code)]}
+    if _MAIL_GLOBAL.search(code):
+        kinds.add("mail")
+    send_click = bool(_SEND_KEYS.search(code) or _SEND_NAME.search(code))
+    if "mail" in kinds and send_click:
+        return f"it presses Send on a webmail page ({page_url or 'mail tab'})"
+    if "ticket" in kinds:
+        return f"it submits or sends on a support ticket page ({page_url or 'ticket page'})"
+    return None
+
+
+def outside_send_prompt(prompt: str) -> str | None:
+    """Why this Aside agent task asks to send an email or a ticket reply, or None. A negated sentence ("do not send") is skipped."""
+    for sentence in re.split(r"(?<=[.!?。])\s+|\n+", prompt or ""):
+        if _DRAFTING.search(sentence) and not re.search(r"\bsend\b", sentence, re.I):
+            continue
+        if _SEND_INTENT.search(sentence) and _MAIL_WORDS.search(sentence) and not _NEGATED.search(sentence):
+            return f"the task asks the Aside agent to send: \"{sentence.strip()[:160]}\""
+    return None
+
+
+def check_owner_ok(token: str) -> str | None:
+    """None when `<chat id>/<todo id>` is an approved For you todo, else the reason it is not (components/user-history/src/owner-ok.ts)."""
+    script = os.path.join(_REPO, "components", "user-history", "src", "owner-ok.ts")
+    if not os.path.exists(script):
+        return f"the owner-ok check is missing at {script}"
+    try:
+        proc = subprocess.run(
+            ["node", "--import", "tsx", script, token],
+            cwd=os.path.dirname(os.path.dirname(script)),
+            capture_output=True, text=True, timeout=30,
+        )
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        return f"the owner-ok check failed: {exc}"
+    return None if result.get("ok") is True else str(result.get("reason") or "not approved")
+
+
+def _refuse_send(reason: str, owner_ok: str | None) -> None:
+    if owner_ok:
+        why = check_owner_ok(owner_ok)
+        if why is None:
+            return
+        raise AsideError(f"Refused: {reason}, and owner_ok={owner_ok!r} is not an approved For you todo: {why}", _OWNER_OK_HELP)
+    raise AsideError(f"Refused: {reason}.", _OWNER_OK_HELP)
+
+
+async def _page_url() -> str:
+    try:
+        text = await _repl(_scoped("console.log(JSON.stringify({u: (typeof page !== 'undefined' && page) ? page.url() : ''}))"), "send check")
+    except AsideError:
+        return ""
+    for line in reversed(text.splitlines()):
+        if line.startswith("{"):
+            try:
+                return str(json.loads(line).get("u") or "")
+            except ValueError:
+                return ""
+    return ""
+
+
 # ---------------------------------------------------------------- transport
 
 
@@ -362,7 +476,7 @@ async def _repl(code: str, title: str) -> str:
     return text
 
 
-async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bool = False) -> str:
+async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bool = False, owner_ok: str | None = None) -> str:
     """Run Playwright-style JavaScript in the Aside browser REPL and return its console output.
 
     Globals: page, tabs, openTab(url), closeTab(tab), listBrowserTabs(),
@@ -375,7 +489,9 @@ async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bo
     Keep a value for later calls with `globalThis.name = value`. wrap=False sends the code
     unchanged into the REPL's persistent top-level scope.
     Code that loops over `tabs` and closes them is refused unless force=True; use
-    close_own_tabs(). Errors raise AsideError, with a hint for known REPL mistakes. 120 s per call.
+    close_own_tabs(). Code that presses Send on a webmail page or submits on a support ticket page is
+    refused unless owner_ok names the owner's approved For you todo as "<chat id>/<todo id>".
+    Errors raise AsideError, with a hint for known REPL mistakes. 120 s per call.
     """
     if not force and _bulk_close(code):
         raise AsideError(
@@ -384,6 +500,10 @@ async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bo
             "Close your own tabs with `await aside_browser.close_own_tabs()`, or one tab with "
             "`await aside_browser.close_tab(target_id)`. Pass force=True only if the user asked for it.",
         )
+    if _sends(code):
+        reason = outside_send(code, await _page_url())
+        if reason:
+            _refuse_send(reason, owner_ok)
     return await _repl(wrap_code(code) if wrap else code, title)
 
 
@@ -512,11 +632,15 @@ async def close_own_tabs() -> list[str]:
     return closed
 
 
-async def agent(prompt: str, session_id: str | None = None) -> str:
+async def agent(prompt: str, session_id: str | None = None, owner_ok: str | None = None) -> str:
     """Delegate a whole browsing task to the Aside agent (its own model, skills, memory, logins).
 
     Returns the agent's answer with a session_id; pass session_id back to continue that session.
+    A task that asks to send an email or a ticket reply is refused unless owner_ok names an approved For you todo.
     """
+    reason = outside_send_prompt(prompt)
+    if reason:
+        _refuse_send(reason, owner_ok)
     args: dict[str, Any] = {"prompt": prompt}
     if session_id:
         args["session_id"] = session_id

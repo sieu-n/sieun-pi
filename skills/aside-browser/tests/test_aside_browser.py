@@ -226,3 +226,86 @@ class TabOwnershipTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+INCIDENT = (
+    "const recips = await page.evaluate(() => [...document.querySelectorAll('span[email]')].slice(-4).map(e=>e.getAttribute('email')));\n"
+    "await page.getByRole('button', {name: /^Send/}).last().click(); await sleep(2500);"
+)
+GMAIL = '{"u": "https://mail.google.com/mail/u/0/#inbox/FMfcgzQXKWdRxl"}'
+CHAT = "01a00000-0000-7000-8000-000000000001"
+
+
+class OutsideSendTests(Base):
+    def setUp(self):
+        super().setUp()
+        board = {"v": 2, "rev": 1, "plan": [], "scratch": [], "updatedAt": "2026-10-10T00:00:00Z", "todos": [
+            {"id": "t1", "text": "Send this reply to support@vendor.example?", "done": True, "choices": ["Send it", "Not yet"],
+             "from": "agent", "at": "2026-10-10T00:00:00Z", "reply": "Send it", "answeredBy": "owner"},
+            {"id": "t2", "text": "Send this reply?", "done": True, "choices": ["Send it", "Not yet"],
+             "from": "agent", "at": "2026-10-10T00:00:00Z", "reply": "Not yet", "answeredBy": "owner"},
+            {"id": "t3", "text": "Send this reply?", "done": False, "choices": ["Send it", "Not yet"], "from": "agent", "at": "2026-10-10T00:00:00Z"},
+        ]}
+        os.makedirs(os.path.join(self.tmp.name, "chat", "boards"))
+        with open(os.path.join(self.tmp.name, "chat", "boards", CHAT + ".json"), "w") as fh:
+            json.dump(board, fh)
+        data = patch.dict(os.environ, {"AGENT_CHAT_DATA_DIR": os.path.join(self.tmp.name, "chat")})
+        data.start()
+        self.addCleanup(data.stop)
+
+    def test_the_iwebfusion_send_click_is_refused_without_reaching_the_browser(self):
+        mcp = self.fake(GMAIL)
+        with self.assertRaises(ab.AsideError) as caught:
+            self.call(ab.run(INCIDENT))
+        self.assertIn("presses Send on a webmail page", str(caught.exception))
+        self.assertIn("For you todo", str(caught.exception))
+        self.assertEqual(len(mcp.calls), 1)
+        self.assertNotIn("getByRole", mcp.calls[0]["code"])
+
+    def test_keyboard_send_shortcut_on_gmail_is_refused(self):
+        self.fake(GMAIL)
+        with self.assertRaises(ab.AsideError):
+            self.call(ab.run("await page.keyboard.press('Meta+Enter')"))
+
+    def test_send_on_a_composer_from_the_gmail_global_is_refused(self):
+        self.fake('{"u": ""}')
+        with self.assertRaises(ab.AsideError):
+            self.call(ab.run("const r = await gmail.openReplyComposer(0, {threadId: 't'}); await r.locator('div[aria-label^=\"Send\"]').click()"))
+
+    def test_submit_on_a_vendor_ticket_page_is_refused(self):
+        self.fake('{"u": "https://clients.iwebfusion.net/viewticket.php?tid=457924"}')
+        with self.assertRaises(ab.AsideError) as caught:
+            self.call(ab.run("await page.getByRole('button', {name: 'Submit'}).click()"))
+        self.assertIn("support ticket page", str(caught.exception))
+
+    def test_aside_agent_task_that_sends_is_refused(self):
+        mcp = self.fake()
+        with self.assertRaises(ab.AsideError):
+            self.call(ab.agent("In Gmail, reply to the vendor ticket email with this text and send it."))
+        self.assertEqual(mcp.calls, [])
+
+    def test_reading_and_drafting_gmail_pass(self):
+        mcp = self.fake(GMAIL, "opened", "filled")
+        self.call(ab.run("await page.getByRole('button', {name: 'Reply'}).last().click()"))
+        self.call(ab.run("await page.locator('div[aria-label=\"Message Body\"]').last().click(); await page.keyboard.type('draft')"))
+        self.assertEqual(len(mcp.calls), 3)
+        mcp.replies.extend(["title", "thread text"])
+        self.call(ab.run("return await page.evaluate(() => document.title)"))
+        self.assertEqual(self.call(ab.agent("Read the vendor ticket thread. Do not send, reply or change anything.")), "thread text")
+
+    def test_send_button_on_our_own_app_passes(self):
+        mcp = self.fake('{"u": "http://localhost:5173/app/chat"}', "sent")
+        self.assertEqual(self.call(ab.run("await page.getByRole('button', {name: 'Send'}).click()")), "sent")
+        self.assertEqual(len(mcp.calls), 2)
+
+    def test_approved_todo_lets_the_send_through(self):
+        mcp = self.fake(GMAIL, "sent")
+        self.assertEqual(self.call(ab.run(INCIDENT, owner_ok=f"{CHAT}/t1")), "sent")
+        self.assertIn("getByRole", mcp.calls[1]["code"])
+
+    def test_unapproved_or_unanswered_todo_is_refused(self):
+        for token, why in ((f"{CHAT}/t2", "not a go"), (f"{CHAT}/t3", "not answered"), (f"{CHAT}/t9", "no todo"), ("junk", "is not")):
+            self.fake(GMAIL)
+            with self.assertRaises(ab.AsideError) as caught:
+                self.call(ab.run(INCIDENT, owner_ok=token))
+            self.assertIn(why, str(caught.exception), token)

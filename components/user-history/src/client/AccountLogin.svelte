@@ -7,13 +7,14 @@
   import { tooltip } from "./ui/tooltip.ts";
 
   /** One running or just-ended `pi-pool login`: the sign-in link, the Codex device code, the Claude paste box and the result. */
-  let { login, onclose, onretry }: { login: AccountLogin; onclose: () => void; onretry: () => void } = $props();
+  /** `account` names the signed-in-again account for people; `login.account` is its id. */
+  let { login, account, onclose, onretry }: { login: AccountLogin; account?: string | undefined; onclose: () => void; onretry: () => void } = $props();
 
   let code = $state("");
   let sending = $state(false);
   let copied = $state(false);
   const label = $derived(PROVIDER_LABEL[login.provider]);
-  const title = $derived(login.account ? `Sign in again as ${login.account}` : `Add a ${label} account`);
+  const title = $derived(login.account ? `Sign in again as ${account ?? login.account}` : `Add a ${label} account`);
   const running = $derived(login.status === "starting" || login.status === "waiting" || login.status === "finishing");
 
   async function submit(event: SubmitEvent): Promise<void> {

@@ -7,6 +7,7 @@ import type { BoardOp, ChatBoard, ImageInput, NewChatAccount, SendMode, SessionR
 import { hashFor, parseHash } from "./permalink.ts";
 import { readerAction, type ReaderView } from "./reader.ts";
 import type { ArtifactTarget } from "../shared/artifact-link.ts";
+import type { SettingsSection } from "./settings-sections.ts";
 
 export interface Toast { id: number; text: string; kind: "error" | "info"; action?: { label: string; run: () => void } }
 /** `kind` "chat" creates a chat thread (the server marks the session and lists it under Chats); absent means a normal thread. */
@@ -27,7 +28,8 @@ class Store {
   pending = $state<PendingChat | null>(null);
   toasts = $state<Toast[]>([]);
   sidebarOpen = $state(window.innerWidth >= 900);
-  drawer = $state<"accounts" | "usage" | "defaults" | "remote" | "slack" | "chats" | "versions" | null>(null);
+  /** The open Settings tab, or null when the dialog is closed. */
+  drawer = $state<SettingsSection | null>(null);
   /** Bumped when Settings saves new defaults, so the new-chat screen reads them again. */
   defaultsRevision = $state(0);
   /** Chat sends each thread has not echoed back yet, by thread id, oldest first. */

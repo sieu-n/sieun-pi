@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { EXCERPT_CHARS, plainLines, renderSaid, replyExcerpt, replyText, splitQuote } from "../src/client/reply.ts";
+import { EXCERPT_CHARS, ownerExcerpt, plainLines, renderSaid, replyExcerpt, replyText, splitQuote } from "../src/client/reply.ts";
 
 test("replyExcerpt strips markdown to the words a reader sees", () => {
   assert.equal(replyExcerpt("Hi **there**, see `a<b` & [the doc](https://x.y) ![shot](i.png) now"), "Hi there, see a<b & the doc shot now");
@@ -45,4 +45,10 @@ test("renderSaid draws a leading quote as a blockquote over the owner's text, an
   assert.equal(renderSaid("> only the quote"), '<blockquote class="quote">only the quote</blockquote>');
   assert.equal(renderSaid("plain **words**\nnext"), "plain <strong>words</strong><br>next");
   assert.equal(renderSaid("a <b> tag"), "a &lt;b&gt; tag");
+});
+
+test("ownerExcerpt quotes the owner's own words over a chat reply, not the quote his message opened with", () => {
+  assert.equal(ownerExcerpt(replyText("the chat said this", "why is **CI** slow?")), "why is CI slow?");
+  assert.equal(ownerExcerpt("> only a quote"), "only a quote");
+  assert.equal(ownerExcerpt("plain\n\nsecond\n\nthird"), "plain\nsecond\u2026");
 });

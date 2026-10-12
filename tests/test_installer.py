@@ -19,13 +19,12 @@ class InstallerTests(unittest.TestCase):
         self.base = Path(self.temporary.name).resolve()
         self.checkout = self.base / "checkout"
         self.home = self.base / "home"
-        self.project = self.base / "project"
         self.home.mkdir()
-        self.project.mkdir()
         (self.checkout / "scripts").mkdir(parents=True)
         shutil.copyfile(REPO / "scripts/manage.py", self.checkout / "scripts/manage.py")
         shutil.copyfile(REPO / "install-manifest.json", self.checkout / "install-manifest.json")
         manifest = json.loads((self.checkout / "install-manifest.json").read_text())
+        self.entry_count = len(manifest["entries"])
         for entry in manifest["entries"]:
             if "source" not in entry:
                 continue
@@ -40,8 +39,8 @@ class InstallerTests(unittest.TestCase):
         self.installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.installer)
 
-    def plan(self, project=True):
-        return self.installer.make_plan(self.home, self.project if project else None)
+    def plan(self):
+        return self.installer.make_plan(self.home)
 
     def operation(self, plan, name):
         return next(operation for operation in plan["operations"] if operation["id"] == name)
@@ -58,21 +57,20 @@ class InstallerTests(unittest.TestCase):
         return subprocess.run([sys.executable, "-B", str(self.checkout / "scripts/manage.py"), *args],
                               env=env, text=True, capture_output=True)
 
-    def test_fresh_home_and_project(self):
+    def test_fresh_home(self):
         plan = self.plan()
         receipt = self.installer.apply_plan(plan)
         self.assertTrue(receipt.is_relative_to(self.home / ".local/state/sieun-pi"))
         self.assertFalse(receipt.is_relative_to(self.checkout))
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
+        self.assertEqual(self.installer.verify(self.home)["verified"], self.entry_count)
         settings = self.home / ".prime/agent/settings.json"
         self.assertFalse(settings.is_symlink())
         self.assertEqual(json.loads(settings.read_text()), {})
         self.assertFalse((self.home / ".prime/agent").is_symlink())
         self.assertFalse((self.home / ".config/pi-pool").is_symlink())
-        projects = self.home / ".prime/agent/virev-projects.json"
-        self.assertEqual(json.loads(projects.read_text()), {"projects": [{"root": str(self.project), "policy": "auto-sns-agent"}]})
-        self.assertFalse((self.project / ".prime").exists())
-        self.assertTrue((self.home / ".prime/agent/extensions/virev.ts").is_symlink())
+        self.assertFalse((self.home / ".prime/agent/virev-projects.json").exists())
+        self.assertFalse((self.home / ".prime/agent/extensions/virev.ts").exists())
+        self.assertTrue((self.home / ".prime/agent/extensions/global-rules.ts").is_symlink())
         self.assertTrue((self.home / ".prime/agent/extensions/user-history").is_symlink())
 
     def test_apply_twice_and_new_plan_converge(self):
@@ -117,12 +115,12 @@ class InstallerTests(unittest.TestCase):
 
     def test_destination_drift_rejected_before_any_link(self):
         plan = self.plan()
-        target = self.project / ".prime/agent/virev-project.json"
-        target.parent.mkdir(parents=True)
-        target.write_text("changed destination\n")
+        target = self.write_home(".prime/agent/extensions/global-rules.ts", b"changed destination\n")
         with self.assertRaisesRegex(self.installer.InstallError, "Destination changed"):
             self.installer.apply_plan(plan)
-        self.assertFalse((self.home / ".prime").exists())
+        target.unlink()
+        self.assertEqual([path.name for path in (self.home / ".prime/agent/extensions").iterdir()], [])
+        self.assertEqual([path.name for path in (self.home / ".prime/agent").iterdir()], ["extensions"])
 
     def test_unsafe_parent_rejected_during_plan_and_apply(self):
         plan = self.plan()
@@ -173,7 +171,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(saved["changes"][0]["state"], "prepared")
         self.assertTrue((receipt.parent / "backups/0/old.txt").exists())
         self.installer.apply_plan(plan)
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
+        self.assertEqual(self.installer.verify(self.home)["verified"], self.entry_count)
         self.installer.rollback_receipt(receipt)
         self.assertEqual((self.home / ".prime/agent/skills/architect/old.txt").read_bytes(), b"old source")
 
@@ -207,7 +205,7 @@ class InstallerTests(unittest.TestCase):
             with self.assertRaises(InterruptedError):
                 self.installer.apply_plan(plan)
         self.installer.apply_plan(plan)
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
+        self.assertEqual(self.installer.verify(self.home)["verified"], self.entry_count)
         self.assertFalse(list(self.home.rglob("*.sieun-pi-*")))
 
     def test_interrupted_json_publication_cleans_temporary(self):
@@ -234,12 +232,13 @@ class InstallerTests(unittest.TestCase):
         receipt = self.installer.receipt_location(self.home, plan["id"])
         (receipt.parent / "backups").mkdir(parents=True)
         self.installer.apply_plan(plan)
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
+        self.assertEqual(self.installer.verify(self.home)["verified"], self.entry_count)
 
     def test_rollback_refuses_target_drift_before_any_restore(self):
         plan = self.plan()
         receipt = self.installer.apply_plan(plan)
-        target = Path(self.operation(plan, "virev-projects")["target"])
+        target = Path(self.operation(plan, "global-rules")["target"])
+        target.unlink()
         target.write_text("changed after apply\n")
         with self.assertRaisesRegex(self.installer.InstallError, "drift"):
             self.installer.rollback_receipt(receipt)
@@ -298,17 +297,36 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(self.installer.InstallError, "outside manifest ownership"):
             self.installer.rollback_receipt(receipt)
 
-    def test_global_virev_is_backed_up_and_restored(self):
-        target = self.write_home(".prime/agent/extensions/virev.ts", b"global extension")
+    def test_global_rules_link_is_backed_up_and_restored(self):
+        target = self.write_home(".prime/agent/extensions/global-rules.ts", b"older extension")
         receipt = self.installer.apply_plan(self.plan())
         self.assertTrue(target.is_symlink())
         self.installer.rollback_receipt(receipt)
-        self.assertEqual(target.read_bytes(), b"global extension")
+        self.assertEqual(target.read_bytes(), b"older extension")
+
+    def test_legacy_virev_link_and_project_config_are_removed_and_restored(self):
+        link = self.home / ".prime/agent/extensions/virev.ts"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(self.base / "old-source/virev.ts")
+        projects = self.write_home(".prime/agent/virev-projects.json", b'{"projects": []}\n')
+        receipt = self.installer.apply_plan(self.plan())
+        self.assertFalse(link.is_symlink() or link.exists())
+        self.assertFalse(projects.exists())
+        self.assertTrue((self.home / ".prime/agent/extensions/global-rules.ts").is_symlink())
+        self.installer.rollback_receipt(receipt)
+        self.assertEqual(os.readlink(link), str(self.base / "old-source/virev.ts"))
+        self.assertEqual(projects.read_bytes(), b'{"projects": []}\n')
+
+    def test_extra_rules_registration_requires_review(self):
+        self.write_home(".prime/agent/extensions/global-rules-copy.ts", b"copy")
+        with self.assertRaisesRegex(self.installer.InstallError, "extra global-rules registration"):
+            self.plan()
 
     def test_global_virev_settings_registration_requires_review(self):
-        self.write_home(".prime/agent/settings.json", b'{"extensions":["/old/source/virev.ts"]}')
-        with self.assertRaisesRegex(self.installer.InstallError, "duplicate extensions registration"):
-            self.plan()
+        for registered in ("/old/source/virev.ts", "/old/source/global-rules/index.ts"):
+            self.write_home(".prime/agent/settings.json", json.dumps({"extensions": [registered]}).encode())
+            with self.assertRaisesRegex(self.installer.InstallError, "duplicate extensions registration"):
+                self.plan()
 
     def test_legacy_history_whole_package_link_is_backed_up(self):
         legacy_source = self.home / "code/prime-agent-user-history"
@@ -341,84 +359,17 @@ class InstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(self.installer.InstallError, "unknown legacy extension"):
             self.plan()
 
-    def test_project_migration_preserves_old_files_in_backups(self):
-        files = {"extensions/virev.ts": b"old source", "ext-impl/virev/index.mjs": b"old impl",
-                 "virev-project.json": b'{"project":"auto-sns-agent"}'}
-        for name, content in files.items():
-            target = self.project / ".prime/agent" / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
-        unrelated = self.project / ".prime/agent/notes.txt"
-        unrelated.write_text("user data")
-        receipt = self.installer.apply_plan(self.plan())
-        for name in files:
-            self.assertFalse((self.project / ".prime/agent" / name).exists())
-        self.assertEqual(unrelated.read_text(), "user data")
-        self.installer.rollback_receipt(receipt)
-        for name, content in files.items():
-            self.assertEqual((self.project / ".prime/agent" / name).read_bytes(), content)
-
-    def test_projects_config_preserves_unrelated_entries_and_fields(self):
-        other = self.base / "other"
-        value = {"projects": [{"root": str(other), "policy": "other-policy", "custom": 1}], "custom": "keep"}
-        config = self.write_home(".prime/agent/virev-projects.json", json.dumps(value).encode())
-        original = config.read_bytes()
-        receipt = self.installer.apply_plan(self.plan())
-        updated = json.loads(config.read_text())
-        self.assertEqual(updated["custom"], "keep")
-        self.assertEqual(updated["projects"][0], value["projects"][0])
-        self.assertEqual(updated["projects"][1], {"root": str(self.project), "policy": "auto-sns-agent"})
-        self.installer.apply_plan(json.loads(receipt.read_text())["plan"])
-        next_plan = self.plan()
-        self.assertTrue(all(op["before"] == op["after"] for op in next_plan["operations"]))
-        self.installer.rollback_receipt(receipt)
-        self.assertEqual(config.read_bytes(), original)
-
-    def test_without_project_preserves_config_bytes_and_does_not_enable_policy(self):
-        raw = b'{ "projects": [], "user": true }\n'
-        config = self.write_home(".prime/agent/virev-projects.json", raw)
-        receipt = self.installer.apply_plan(self.plan(project=False))
-        self.assertEqual(config.read_bytes(), raw)
-        self.installer.rollback_receipt(receipt)
-        self.assertEqual(config.read_bytes(), raw)
-
-    def test_project_policy_conflict_rejected(self):
-        self.write_home(".prime/agent/virev-projects.json", json.dumps({"projects": [
-            {"root": str(self.project), "policy": "different"}]}).encode())
-        with self.assertRaisesRegex(self.installer.InstallError, "different Virev policy"):
-            self.plan()
-
-    def test_project_is_explicit(self):
-        plan = self.plan(project=False)
-        self.assertEqual(len(plan["operations"]), 59)
-        self.installer.apply_plan(plan)
-        self.assertEqual(list(self.project.iterdir()), [])
-        self.assertEqual(self.installer.verify(self.home, None)["project"], "not selected")
-
-    def test_multiple_projects_update_and_rollback_in_reverse_order(self):
-        first = self.installer.apply_plan(self.plan())
-        other = self.base / "second-project"
-        other.mkdir()
-        second_plan = self.installer.make_plan(self.home, other)
-        second = self.installer.apply_plan(second_plan)
-        config = self.home / ".prime/agent/virev-projects.json"
-        self.assertEqual([item["root"] for item in json.loads(config.read_text())["projects"]], [str(self.project), str(other)])
-        self.installer.rollback_receipt(second)
-        self.assertEqual([item["root"] for item in json.loads(config.read_text())["projects"]], [str(self.project)])
-        self.installer.rollback_receipt(first)
-        self.assertFalse(config.exists())
-
     def test_generated_test_artifacts_do_not_change_source_fingerprint(self):
         plan = self.plan()
         artifact = self.checkout / "components/user-history/.test-artifacts/session/auth.json"
         artifact.parent.mkdir(parents=True)
         artifact.write_text("synthetic test data")
         self.installer.apply_plan(plan)
-        self.assertEqual(self.installer.verify(self.home, self.project)["verified"], 62)
+        self.assertEqual(self.installer.verify(self.home)["verified"], self.entry_count)
 
     def test_state_inside_checkout_is_rejected(self):
         with self.assertRaisesRegex(self.installer.InstallError, "outside the checkout"):
-            self.installer.make_plan(self.checkout / "profile", None)
+            self.installer.make_plan(self.checkout / "profile")
 
     def test_plan_output_cannot_mutate_runtime(self):
         output = self.home / ".prime/agent/new-plan.json"
@@ -436,15 +387,15 @@ class InstallerTests(unittest.TestCase):
 
     def test_cli_plan_apply_verify_rollback(self):
         output = self.base / "plan.json"
-        result = self.cli("plan", "--home", str(self.home), "--project", str(self.project), "--out", str(output))
+        result = self.cli("plan", "--home", str(self.home), "--out", str(output))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.home / ".prime").exists())
         result = self.cli("apply", "--plan", str(output))
         self.assertEqual(result.returncode, 0, result.stderr)
         receipt = json.loads(result.stdout)["receipt"]
-        result = self.cli("verify", "--home", str(self.home), "--project", str(self.project))
+        result = self.cli("verify", "--home", str(self.home))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["verified"], 62)
+        self.assertEqual(json.loads(result.stdout)["verified"], self.entry_count)
         result = self.cli("rollback", "--receipt", receipt)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.home / ".prime/agent/settings.json").exists())

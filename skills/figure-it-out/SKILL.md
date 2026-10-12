@@ -6,58 +6,53 @@ disable-model-invocation: true
 
 # Figure it out
 
-> **Prime Agent subagent contract.** This skill was ported from a Cursor plugin.
-> Subagents are `handle = await rlm(brief, model=..., thinking=..., name=...)`, which
-> returns on admission and never returns the child's answer: every brief must end with
-> `await agent_message.send(<report>, receiver_role="parent")`. Read
-> `~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md` before fanning out,
-> and check `RLM_MAX_DEPTH` — at the ceiling `await rlm(...)` raises and you must run inline.
+Before you spawn workers, read `../setup-pstack/references/prime-agent-runtime.md` for the spawn, report, and depth-limit contract. Take models from `~/.prime/agent/pstack-models.json`.
 
+Design the workflow before you write code. The workflow is a list of phases that scales rigor to the task and leaves a decision trail a human can audit later. When unsure how much rigor to use, use more.
 
-When the task matches no playbook, design one. The deliverable before any code is the workflow itself: a sequence of phases that scales rigor to the task, runs the scientific method, and leaves a decision trail a human can audit after stepping away. Bias toward more rigor. The cost of building the wrong thing dwarfs the cost of being careful.
-
-Don't reinvent a playbook you already have. A focused single-unit task that matches Bug fix, Perf, Feature, Visual parity, Eval, or Multi-phase plan routes there. But a large or cross-cutting version of one (a migration across many call sites, an ambitious multi-part change), or work the user reviews after stepping away, belongs here even though a single-unit version would be a Feature. The rigor and the audit trail are the point.
+A focused task that matches a poteto-mode playbook (Bug fix, Perf issue, Feature, Visual parity, Eval, Multi-phase plan) goes to that playbook. A large or cross-cutting version of one, or work the user reviews after stepping away, stays here.
 
 ## Start
 
-Prime Agent has no todo tool. Write a checklist whose first item is to read the Principles section of the **poteto-mode** skill. Then add the phases below as items.
+Write a checklist. Its first item is to read the Principles section of the **poteto-mode** skill. Add phases A to E as the next items.
 
 ## Phase A: Frame
 
-Ground first, then commit. Don't start the run until you can state:
+Do not start the run until you can state these three things.
 
-- The definition of done as a falsifiable predicate (the **prove-it-works** principle skill). "Done well" has to be checkable.
-- Scope, quantified: rough units and effort, plus the blockers grounding surfaced. Raise them before spending hours, not after fifty doomed commits.
-- The rigor level, biased high. One-way doors and high blast radius get more; reversible low-stakes steps get less. Rigor is gates and artifacts, not "try harder".
+- The definition of done is a falsifiable predicate, per principle-prove-it-works.
+- The scope is counted in units and effort, and it lists the blockers you found while reading the code.
+- The rigor level is set high for one-way doors and wide impact, and lower for reversible low-stakes steps.
 
-Present the framing and tradeoffs before committing to a long run. Reversible work proceeds (the **never-block-on-the-human** principle skill), but a multi-hour run earns one checkpoint.
+Rigor means gates and artifacts. Present the framing and tradeoffs before a run of more than an hour. Reversible work proceeds without waiting, per principle-never-block-on-the-human.
 
 ## Phase B: Design the workflow
 
-Decompose into atomic, independently-landable units. Sequence riskiest-unknown-first so option value stays high. Scaffold and verification come before features (the **foundational-thinking** principle skill).
+Split the work into units that can each land alone. Put the riskiest unknown first. Build scaffold and verification before features, per principle-foundational-thinking.
 
-- Build the verification harness before the work, with the baseline captured from the pre-change state, so the check reads as "old value vs new value".
-- For one-way-door design decisions, run the **architect** skill (it runs **arena**) with diverse, isolated, opinionated candidates and a read-only judge on a different model family. Skip it for mechanical work whose shape is already concrete. A second arena over a settled design is over-engineering (the **laziness-protocol** principle skill).
-- Decide what fans out. Parallelize only across genuine seams, and give each worker its own worktree or branch (the **separate-before-serializing-shared-state** principle skill). Don't over-fan.
-- Write the designed phase list down. That list is what the human reviews.
+- Build the verification harness before the work, and capture the baseline from the pre-change state.
+- Run the **architect** skill for one-way-door design decisions, and skip it for mechanical work whose shape is already clear.
+- Fan out only across real seams, and give each worker its own worktree or branch, per principle-separate-before-serializing-shared-state.
+- Write the phase list down, because it is what the human reviews.
 
-Then put the design into motion. Add its steps to that checklist as concrete items, after the Phase C entry and before Phase D. Run each under the Phase C loop discipline, and weave the Phase D log through them, a row as each step lands, rather than saving the whole trail for the end.
+Add the designed steps to the checklist after Phase C and before Phase D. Run each step under the Phase C loop. Add a Phase D log row as each step lands.
 
 ## Phase C: Run the loop
 
-Each unit is an experiment: state the hypothesis, make the smallest change, measure against the predicate on the real artifact, keep it if it advanced, revert it if it didn't.
-Apply the **sequence-verifiable-units** principle skill, verifying each unit before starting the next instead of batching checks at the end.
+Treat each unit as an experiment. State the hypothesis, make the smallest change, and measure it against the predicate on the real artifact. Keep the change if it moved the predicate, and revert it if not. Verify each unit before the next, per principle-sequence-verifiable-units.
 
-- Verify by inspecting the artifact, never a self-report. When something passes too easily, suspect the observation method before the system. A blank screenshot passes a lazy gate.
-- Pair delegated work with a judge and audit the delegates' artifacts yourself before trusting them. If a worker games the gate, reset and harden the contract. If the gate itself is wrong, fix the gate in its own change rather than routing around it.
-- A verdict is VERIFIED, NOT VERIFIED, or INCONCLUSIVE. Inconclusive is not a pass. Don't hide a negative.
+- Suspect the check first when something passes too easily, since a blank screenshot passes a lazy gate.
+- Audit each worker's artifacts yourself before you trust its report.
+- Reset and tighten the brief when a worker games the gate.
+- Fix a wrong gate in its own change, and never route around it.
+- Mark each verdict VERIFIED, NOT VERIFIED, or INCONCLUSIVE, and count INCONCLUSIVE as a fail.
 
 ## Phase D: Keep the audit trail
 
-Log the run via the **show-me-your-work** skill, one canonical TSV with a row per decision and per unit, evidence as links. figure-it-out's work is usually ambitious enough to commit the trail so the reviewer can read it in the PR; commit it when confidence has to be shown. Prefer evidence produced by committed scripts so a reviewer can re-run it. The trail plus the diff is what lets the human come back and trust the work.
+Log the run with the **show-me-your-work** skill. Commit the trail when the reviewer needs to see the evidence in the PR. Produce evidence with committed scripts so a reviewer can rerun them.
 
 ## Phase E: Verify and hand back
 
-Check the whole against the Phase A predicate on the real product, not just the harness. Encode any recurring correction as a gate, a lint rule, a check, or a script, so the win can't silently regress (the **encode-lessons-in-structure** principle skill).
+Check the whole result against the Phase A predicate on the real product. Turn each repeated correction into a gate, lint rule, check, or script, per principle-encode-lessons-in-structure.
 
-**Reply:** the playbook you designed, the rigor level and why, the decision-trail path, what's verified against the predicate, and what's still open.
+The reply names the playbook you designed, the rigor level and the reason for it, the decision-trail path, what passed against the predicate, and what is still open.

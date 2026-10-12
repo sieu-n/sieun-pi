@@ -1,28 +1,26 @@
 ---
 name: typescript-best-practices
-description: TypeScript best practices. Use when reading or editing any .ts or .tsx file.
+description: "Use when reading or editing .ts or .tsx files. Type and boundary rules: discriminated unions, branded types, exhaustive switches, satisfies over as, boundary parsing."
 ---
 
 # TypeScript best practices
 
-Apply the **type-system-discipline** principle skill first; this skill grounds it in TypeScript syntax.
+This skill gives the TypeScript syntax for `principle-type-system-discipline` and `principle-boundary-discipline`. Examples are in `references/patterns.md`.
 
-| Rule | Summary |
-|------|---------|
-| Discriminated unions | Model variants with a `kind` literal discriminant so impossible states can't be represented. No optional-field bags. |
-| Branded types | Brand primitives with `& { readonly __brand: "X" }` so they can't be mixed up. Validate once at creation. |
-| Constructive modeling | Build the shape so the illegal value can't be constructed. `[T, ...T[]]` for non-empty, `[T, T][]` for even length, `start` plus `duration` for a range. Not a runtime guard, not a wish for refinement types. |
-| Simplest total type | Keep `T[]` while every operation on it stays total. Strengthen to `NonEmpty<T>` only where the loose type forces `!`, a cast, or a "should never happen" throw. |
-| `unknown` over `any` | External data is `unknown`. `any` disables type checking everywhere it touches. |
-| No `as` casts | Every `as` is a runtime crash waiting. Cast only after validation. |
-| Narrowing hierarchy | Discriminant switch > `in` operator > `typeof`/`instanceof` > user-defined type guard > `as`. |
-| Type guards | Must verify the claim. A lying guard is worse than `as` because the bug hides behind a name that says it's safe. Name them `isX` or `hasX`. |
-| Exhaustiveness | Inline `const _exhaustive: never = x;` in default arms so the compiler errors when a new variant is added. |
-| `satisfies` over `as` | Validates the value without widening literal types. |
-| Boundary validation | Parse where data crosses in, into a named domain type. `Record<string, unknown>` (however spelled) stops at that parse. Trust types inside. See the **boundary-discipline** principle skill. |
-| Schema-derived types | Reach for `Pick`/`Omit`/`Parameters`/`ReturnType`/`Awaited`/`typeof` before declaring a new interface. |
-| Object args | Pass objects, not positional, so argument order is self-documenting. Skip on hot paths (per-frame render, tokenizers, parsers). |
-| Real tests | Don't mock what you can run. Prefer the framework's real test primitives with leak/disposable checks, and verify UI in a running build. Mock only what you can't run locally. |
-| Structured telemetry | Prefer structured logger diagnostics with enough context to debug from an id. No `console.log` in shipped code. |
-
-Examples: `references/patterns.md`.
+| Rule | What to do |
+|------|------------|
+| Discriminated unions | Model variants with a `kind` literal field. Do not use a bag of optional fields. |
+| Branded types | Brand primitives as `string & { readonly __brand: "X" }`. Validate once in the parse function that creates them. |
+| Constructive modeling | Pick a shape that cannot hold the illegal value: `[T, ...T[]]` for non-empty, `[T, T][]` for even length, `start` plus `durationMs` for a range. |
+| Simplest total type | Keep `T[]` while every operation on it is total. Use `NonEmpty<T>` only where `T[]` forces a `!`, a cast, or a "should never happen" throw. |
+| `unknown` over `any` | Type external data as `unknown` and narrow it before use. |
+| No `as` casts | Use `as` only after validation proves the claim. |
+| Narrowing order | Prefer a discriminant switch, then `in`, then `typeof` or `instanceof`, then a type guard, then `as`. |
+| Type guards | A guard must check the whole claim its return type makes. Name it `isX` or `hasX`. |
+| Exhaustiveness | Put `const _exhaustive: never = x;` in the `default` arm of every switch on a union. |
+| `satisfies` over `as` | Use `satisfies` to check a literal against a type and keep its literal types. |
+| Boundary validation | Parse data into a named domain type where it enters. No loose map type such as `Record<string, unknown>` gets past that parse. Do not validate again inside. |
+| Schema-derived types | Derive with `Pick`, `Omit`, `Parameters`, `ReturnType`, `Awaited`, or `typeof` before you write a new interface. |
+| Object args | Pass one object instead of positional args. Keep positional args on hot paths such as per-frame render, tokenizers, and parsers. |
+| Real tests | Run the real code in tests and mock only what cannot run locally. Use the framework's test primitives with leak and disposable checks, and check UI in a running build. |
+| Logging | Log through the project's structured logger with an id that leads to the context. Ship no `console.log`. |

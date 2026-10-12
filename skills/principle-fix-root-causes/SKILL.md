@@ -1,23 +1,20 @@
 ---
 name: principle-fix-root-causes
-description: "Apply when debugging. Trace each symptom to its root cause and fix it there; reproduce first, ask why until you reach it, resist nil-check guards that silence crashes."
+description: "Use when debugging a crash, a wrong result, or a failure after restart. Trace each symptom to its root cause and fix it there instead of adding a guard that hides it."
 disable-model-invocation: true
 ---
 
-# Fix Root Causes
+# Fix root causes
 
-When debugging, do not paper over symptoms. Trace every problem to its root cause and fix it there.
+When you debug, trace the problem to its root cause and fix it there. Do not add a workaround that hides the symptom.
 
-**Why:** Symptom fixes accumulate. Each workaround makes the system harder to reason about, and the real bug remains. Root-cause fixes are slower upfront but reduce total debugging time.
+1. Reproduce the failure first, so you can check the fix.
+2. Read the real error, and add logging instead of guessing.
+3. Ask why until you reach the cause.
+4. Do not add a guard, such as a nil check, only to stop a crash.
+5. If a workaround needs a long comment to justify it, fix the code instead.
+6. Search for the same pattern elsewhere and fix every instance.
 
-**Pattern:**
-- Reproduce first (if you can't reproduce it, you can't verify your fix)
-- Ask "why" until you hit the root cause
-- Resist the urge to add guards (adding a nil check to silence a crash is a symptom fix)
-- If a workaround needs a paragraph-long comment to justify it, the code is wrong (fix the code, not the comment)
-- Check for the pattern, not just the instance (grep for the same pattern, fix all instances)
-- When stuck, instrument. Don't guess (add logging, read the actual error)
+## Failures after a restart
 
-**Restart bugs: suspect state before code**
-
-Code doesn't change between runs. State does. When something "fails after restart," suspect stale persistent state first: config files, caches, lock files, serialized state. If clearing a state file restores behavior, prioritize state validation as the fix.
+If something fails after a restart, check stale persistent state before the code: config files, caches, lock files, and serialized state. If clearing a state file fixes the failure, add validation for that state.

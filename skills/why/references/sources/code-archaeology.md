@@ -1,88 +1,35 @@
-# Code Archaeology (git + in-repo)
+# Source control notes
 
-## What this source contains
+Git and `gh` hold commit messages, diffs, PR bodies, review threads, inline comments, tests, ADRs, and changelogs.
+They are tied to the code that shipped, so they are the most trustworthy source.
 
-- Commit history (messages, dates, authors, diffs)
-- PR descriptions, review comments, and discussion threads (via `gh`)
-- Inline code comments, TODOs, FIXMEs, deprecation notes
-- ADRs (architectural decision records) if the repo keeps them
-- Tests. Names and assertions often encode the edge cases that motivated a change
-- Related files modified in the same commits (co-change signal)
-- CHANGELOG entries, release notes in the repo
-- Issue/ticket IDs mentioned in commit messages and PR bodies
-
-The most trustworthy source, tied directly to the code, and the most complete. Everything that went through the repo should be here.
-
-## How to search it
-
-Expand the seed commit list:
+## Commands
 
 ```bash
-# Full history of the file through renames
-git log --follow --oneline -- <file>
-
-# Pickaxe: commits that added or removed this exact text
-git log -S '<exact_string_from_code>' -- <file>
-
-# Or for patterns:
-git log -G '<regex>' -- <file>
-
-# Who wrote each line and when
-git blame -L <start>,<end> <file>
-
-# The full diff of a specific commit
-git show <hash>
-
-# Commits between two points affecting this file
-git log <old>..<new> -p -- <file>
-```
-
-For each substantive commit, pull the PR context:
-
-```bash
-# Find the PR number from the merge commit or branch
-git log -1 --format=%B <hash>
-
-# Full PR context: body, review comments, linked issues
+git log --follow --oneline -- <file>        # history through renames
+git log -S '<exact string>' -- <file>       # commits that added or removed this text
+git log -G '<regex>' -- <file>              # same, by pattern
+git show <hash>                             # one commit's diff
+git log <old>..<new> -p -- <file>           # changes between two points
 gh pr view <number> --json title,body,author,createdAt,mergedAt,labels,closingIssuesReferences,comments,reviews,files
-
-# The --json reviews and comments fields are where the real signal is
+rg -l -i 'architecture.decision' --glob '*.md'        # ADRs
+rg -n -C2 '(TODO|FIXME|HACK|XXX|NOTE)' <file>         # notes near the target
+rg -l '<symbol>' --glob '*test*'                      # tests that name the edge case
 ```
 
-Look for out-of-band docs:
+The `reviews` and `comments` fields of `gh pr view` usually hold the debate about alternatives.
 
-```bash
-# ADRs often live in docs/adr/ or similar
-rg -l -i 'architecture.decision' --glob '*.md'
+## Good evidence here
 
-# TODOs and FIXMEs near the target
-rg -n -C2 '(TODO|FIXME|HACK|XXX|NOTE)' <target_file>
+- A PR body that states the problem the change solves.
+- A review thread that compares alternatives.
+- An inline comment that explains a constraint next to the target line.
+- A test name such as `test_handles_empty_page_when_cursor_expires` that names the edge case.
+- A commit message that names a ticket, an incident, or a revert followed by a re-apply.
 
-# Related tests. Names often encode the "why"
-rg -l '<symbol>' --glob '*test*'
-```
+## Traps
 
-## What good evidence looks like here
-
-- A PR description that explains the problem being solved, not just the change ("This fixes the pagination bug that caused X")
-- A long review thread where alternatives were debated
-- An inline comment near the target line that explains a non-obvious constraint
-- A test named `test_handles_edge_case_when_X` that reveals an edge case motivating the code
-- A commit message that references a ticket or incident ID
-- A CHANGELOG entry that summarizes the user-visible rationale
-
-## Common pitfalls
-
-- **Squash-merge flatlands.** If the repo squashes PRs, individual commits in the branch history are lost. Fall back to PR body and comments.
-- **Misleading commit messages.** "Small refactor" sometimes hides an intentional behavior change. Look at the diff, not the message.
-- **Cargo-culted patterns.** The author may have copied a pattern without understanding why. Check if the pattern originated earlier in the codebase and investigate *that* commit.
-- **Bot commits and auto-merges.** Dependabot, Renovate, and automated backports usually don't carry motivation. Skip them when trying to find intent.
-- **Treating code as evidence of intent.** The code itself isn't evidence for why it exists. Evidence comes from commit messages, PRs, comments, tests, docs. Don't cite "the function is named X" as evidence of intent.
-
-## What to return
-
-Every commit/PR/comment that bears on the question, with:
-- The exact text (quoted)
-- The hash / PR number / file:line
-- Author and date
-- Whether it's direct (explicitly addresses the question) or circumstantial
+- Squash merges drop the branch commits, so read the PR body and comments instead.
+- A message like "small refactor" can hide a behavior change, so read the diff.
+- A copied pattern carries its reason from where it started, so find the commit that first introduced it.
+- Dependabot, Renovate, and automated backport commits carry no motivation, so skip them.

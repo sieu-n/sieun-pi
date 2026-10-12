@@ -2,8 +2,9 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ClaudeState } from "./chat-fallback.ts";
-import type { AccountAction, AccountLogin, AccountResets, AccountsView, PoolAccount, PoolProvider, PoolResolution, PoolWindow, UsageRefresh, UsageRefreshAccount } from "./shared/types.ts";
+import type { ClaudeState } from "./chat-recovery.ts";
+import { POOL_PRIORITIES, type AccountAction, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider,
+  type PoolResolution, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
  * The installed pi-pool CLI (`~/.local/bin/pi-pool`, a link into ~/.local/share/pi-pool/current), never the copy in this checkout: the chat
@@ -54,15 +55,33 @@ export function parsePoolRows(value: unknown, provider: string): PoolAccount[] {
   return value.rows.map((row: unknown): PoolAccount => {
     if (!isRecord(row) || typeof row.id !== "string" || !row.id || typeof row.email !== "string" || typeof row.usage !== "string" ||
       !(row.reason === null || typeof row.reason === "string") || typeof row.usable !== "boolean" || typeof row.current !== "boolean" ||
-      typeof row.pinned !== "boolean" || typeof row.force !== "boolean" || typeof row.live !== "boolean" || typeof row.seat !== "boolean") {
+      typeof row.pinned !== "boolean" || typeof row.live !== "boolean" || typeof row.seat !== "boolean") {
       throw new Error("pi-pool returned an invalid account");
     }
-    return { id: row.id, email: row.email, usage: row.usage, reason: row.reason, usable: row.usable, current: row.current, pinned: row.pinned, force: row.force,
+    return { id: row.id, email: row.email, label: text(row.label) ?? row.email, usage: row.usage, reason: row.reason, usable: row.usable, current: row.current, pinned: row.pinned,
       live: row.live, seat: row.seat, session_pct: percent(row.session_pct), weekly_pct: percent(row.weekly_pct), score: percent(row.score),
       ...(typeof row.plan === "string" ? { plan: row.plan } : {}),
       tier: text(row.tier), windows: parseWindows(row.windows), usageAt: epochMs(row.usage_at), cooldownUntil: epochMs(row.cooldown_until),
-      cooldownReason: text(row.cooldown_reason), limitedUntil: epochMs(row.limited_until), disabled: row.disabled === true, ...("resets" in row ? { resets: parseResets(row.resets) } : {}) };
+      cooldownReason: text(row.cooldown_reason), limitedUntil: epochMs(row.limited_until), disabled: row.disabled === true,
+      sessions: typeof row.sessions === "number" && Number.isInteger(row.sessions) && row.sessions > 0 ? row.sessions : 0, ...("resets" in row ? { resets: parseResets(row.resets) } : {}) };
   });
+}
+
+/** The numeric entries of `pi-pool config` (a JSON object); other entries (lists, switches) are dropped. Null for anything else. */
+export function parsePoolConfig(value: unknown): PoolConfig | null {
+  if (!isRecord(value)) return null;
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
+}
+
+/** A tree's pool class from `pi-pool who --json` or `ls --json`; null when absent or unknown. */
+export const parsePoolPriority = (value: unknown): PoolPriority | null => (POOL_PRIORITIES as readonly unknown[]).includes(value) ? value as PoolPriority : null;
+
+/** A tree's wait from `pi-pool who --json` or `ls --json` (`{account, slot_at}` in epoch seconds); null when it does not wait or the entry does not parse. */
+export function parsePoolWait(value: unknown): PoolWait | null {
+  if (!isRecord(value)) return null;
+  const account = text(value.account);
+  const slotAt = epochMs(value.slot_at);
+  return account && slotAt ? { account, slotAt } : null;
 }
 
 export function parsePoolResolution(value: unknown, provider: string): PoolResolution | null {
@@ -107,8 +126,8 @@ export function resetsNotice(value: Record<string, unknown>): string {
   const rows = Array.isArray(value.accounts) ? value.accounts.filter(isRecord) : [];
   if (typeof value.error === "string") return value.error;
   const failed = rows.filter(row => typeof row.error === "string");
-  const head = rows.length === 1 ? (failed.length ? "" : `Resets read for ${text(rows[0]!.email) ?? "the account"}.`) : `Resets read for ${rows.length - failed.length} of ${rows.length} accounts.`;
-  return [head, ...failed.map(row => `${text(row.email) ?? "An account"}: ${text(row.error)}.`)].filter(Boolean).join(" ");
+  const head = rows.length === 1 ? (failed.length ? "" : `Resets read for ${text(rows[0]!.label) ?? text(rows[0]!.email) ?? "the account"}.`) : `Resets read for ${rows.length - failed.length} of ${rows.length} accounts.`;
+  return [head, ...failed.map(row => `${text(row.label) ?? text(row.email) ?? "An account"}: ${text(row.error)}.`)].filter(Boolean).join(" ");
 }
 
 const session = (sessionId: string | null) => sessionId ? ["--session", sessionId] : [];
@@ -116,16 +135,20 @@ const session = (sessionId: string | null) => sessionId ? ["--session", sessionI
 /** `model` names the model the chat runs, so a spent per-model cap (Fable) only marks an account depleted for that model. */
 export async function listAccounts(sessionId: string | null, model: string | null = null): Promise<AccountsView> {
   const forModel = model ? ["--model", model] : [];
-  const resolution = await run(["who", "--json", ...session(sessionId), ...forModel]).then(JSON.parse).catch(() => null);
+  const [resolution, poolConfig] = await Promise.all([run(["who", "--json", ...session(sessionId), ...forModel]).then(JSON.parse).catch(() => null),
+    run(["config"]).then(stdout => parsePoolConfig(JSON.parse(stdout))).catch(() => null)]);
   const providers = await Promise.all(pooledProviders.map(async (provider): Promise<PoolProvider> => {
     try {
       const listing: unknown = JSON.parse(await run(["ls", "--json", "--provider", provider, ...session(sessionId), ...forModel]));
       if (isRecord(listing) && typeof listing.error === "string") return { provider, rows: [], resolution: null, error: listing.error };
       const poolPin = isRecord(listing) && isRecord(listing.pin) ? text(listing.pin.id) : null;
-      return { provider, rows: parsePoolRows(listing, provider), resolution: resolution ? parsePoolResolution(resolution, provider) : null, poolPin };
+      const said = isRecord(resolution) && isRecord(resolution.providers) && isRecord(resolution.providers[provider]) ? resolution.providers[provider] : null;
+      const wait = parsePoolWait(isRecord(listing) && "wait" in listing ? listing.wait : said?.wait);
+      return { provider, rows: parsePoolRows(listing, provider), resolution: resolution ? parsePoolResolution(resolution, provider) : null, wait, poolPin };
     } catch (error) { return { provider, rows: [], resolution: null, error: error instanceof Error ? error.message : String(error) }; }
   }));
-  return { sessionId, checkedAt: new Date().toISOString(), providers };
+  const priority = sessionId && isRecord(resolution) ? parsePoolPriority(resolution.priority) : null;
+  return { sessionId, checkedAt: new Date().toISOString(), providers, poolConfig, priority };
 }
 
 /**
@@ -162,7 +185,14 @@ export const poolCommand = {
   remove: (provider: string, account: string) => ["rm", account, "--provider", provider],
   refresh: (provider: string, account: string | null) => ["refresh", ...(account ? [account] : []), "--provider", provider, "--stream"],
   login: (provider: string, account: string | null, seconds: number) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds)],
+  priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
 };
+
+/** Sets a root session's pool class; the pool keeps it on the tree record, so every subagent of the root shares it. */
+export async function setPoolPriority(sessionId: string, priority: PoolPriority): Promise<void> {
+  if (!sessionId || sessionId.startsWith("-")) throw new Error("Choose a thread.");
+  await run(poolCommand.priority(sessionId, priority));
+}
 
 const accountArgument = (account: string | undefined): string => {
   if (!account || account.startsWith("-")) throw new Error("Choose an account.");
@@ -176,7 +206,7 @@ export async function runAccountAction(action: AccountAction): Promise<string | 
   switch (action.action) {
     case "use": {
       if (!action.account || action.account.startsWith("-") || !action.id) throw new Error("Choose an account and a thread.");
-      await run(["use", action.account, ...(action.force ? ["--force"] : []), ...provider, "--session", action.id, ...(action.newSession ? ["--new-session"] : [])]); return null;
+      await run(["use", action.account, ...provider, "--session", action.id, ...(action.newSession ? ["--new-session"] : [])]); return null;
     }
     case "follow": {
       if (!action.id) throw new Error("Choose a thread.");
@@ -359,7 +389,7 @@ export class AccountLogins {
 }
 
 /** One stdout line of `pi-pool refresh --stream`, parsed at the boundary. Times arrive in epoch seconds and leave in epoch ms. */
-export type RefreshEvent = { event: "accounts"; accounts: { id: string; email: string | null }[] } | { event: "reading"; id: string }
+export type RefreshEvent = { event: "accounts"; accounts: { id: string; email: string | null; label: string | null }[] } | { event: "reading"; id: string }
   | { event: "read"; id: string; ok: boolean; reason: string | null; usageAt: number | null; retryAt: number | null }
   | { event: "error"; message: string } | { event: "end" };
 
@@ -370,7 +400,7 @@ export function parseRefreshEvent(line: string): RefreshEvent | null {
   const id = text(value.id);
   switch (value.event) {
     case "accounts": return Array.isArray(value.accounts)
-      ? { event: "accounts", accounts: value.accounts.flatMap(entry => isRecord(entry) && text(entry.id) ? [{ id: entry.id as string, email: text(entry.email) }] : []) } : null;
+      ? { event: "accounts", accounts: value.accounts.flatMap(entry => isRecord(entry) && text(entry.id) ? [{ id: entry.id as string, email: text(entry.email), label: text(entry.label) ?? text(entry.email) }] : []) } : null;
     case "reading": return id ? { event: "reading", id } : null;
     case "read": return id ? { event: "read", id, ok: value.ok === true, reason: text(value.reason), usageAt: epochMs(value.usage_at), retryAt: epochMs(value.retry_at) } : null;
     case "error": return { event: "error", message: text(value.message) ?? "pi-pool refresh failed." };

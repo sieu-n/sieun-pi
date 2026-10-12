@@ -23,6 +23,11 @@ class Install(unittest.TestCase):
         self.addCleanup(self.cleanup)
         self.repo, self.home = self.base / "checkout", self.base / "home"
         self.home.mkdir()
+        # One pooled account per provider, so install runs both hooks.
+        self.tokenmaxxing = self.home / ".config/tokenmaxxing"
+        self.tokenmaxxing.mkdir(parents=True)
+        for index in ("accounts.json", "codex-accounts.json"):
+            (self.tokenmaxxing / index).write_text(json.dumps({"version": 2, "accounts": [{"id": "fixture-account"}]}))
         component = self.repo / "components/pi-pool"
         for path, text in {"vend.py": "VERSION = 1\n", "bin/pi-pool": "#!/bin/sh\n", "bin/pi-pool-token": HOOK,
                            "app/extension/index.ts": "export default () => {};\n",
@@ -73,6 +78,15 @@ class Install(unittest.TestCase):
         self.assertEqual(json.loads((release / "RELEASE.json").read_text())["commit"], self.git("rev-parse", "HEAD"))
         code, again = self.run_installer()
         self.assertEqual((code, again["tests"], again["relinked"], again["previous"]), (0, "already installed", [], first))
+
+    def test_a_machine_with_no_pooled_account_yet_installs_and_skips_both_hooks(self):
+        shutil.rmtree(self.tokenmaxxing)
+        (self.home / ".config/pi-pool").mkdir(parents=True)
+        (self.home / ".config/pi-pool/hook-fails").write_text("VERSION")
+        code, out = self.run_installer()
+        self.assertEqual(code, 0, out)
+        self.assertEqual({p: (h["ok"], h["skipped"]) for p, h in out["hooks"].items()},
+                         {"anthropic": (True, "no pooled account yet"), "openai-codex": (True, "no pooled account yet")})
 
     def test_only_committed_source_ships(self):
         (self.repo / "components/pi-pool/vend.py").write_text("HALF EDITED\n")

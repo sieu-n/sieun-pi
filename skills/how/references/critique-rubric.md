@@ -1,58 +1,47 @@
-# Architectural Critique Rubric
+# Architectural critique rubric
 
-Review through whichever of these lenses are relevant. Not every lens applies to every subsystem.
+Apply the lenses that fit the subsystem. Not every lens applies.
 
-## Abstraction Fit
+## Abstraction fit
 
-Are the abstractions pulling their weight?
+- Does each abstraction stand for a real concept, or is it a layer added "in case we need it"?
+- Do the boundaries separate things that change independently?
+- Do components share implementation details they should not need to know?
+- Is business logic mixed into framework wiring?
 
-- Does each abstraction represent a real concept, or is it an indirection layer "in case we need it"?
-- Are the boundaries in the right place? Do they separate things that change independently?
-- Is there accidental coupling where components share implementation details they shouldn't need to know about?
-- Is business logic entangled with framework wiring, or cleanly separated?
+Too much abstraction is as bad as too little. A flat design is fine when the domain is small.
 
-Over-abstraction is as much a problem as under-abstraction. A flat, simple design is fine when the domain is simple.
+## Data model
 
-## Data Model
+- Do the data structures match how the data is accessed, or only how someone first modeled it?
+- Does code keep reshaping data because the model does not fit the access pattern?
+- Do the types match what the data looks like at runtime, or do they claim more structure than exists?
 
-Do the data structures fit the actual usage patterns?
+## Boundary discipline
 
-- Are the data models designed for how data is actually accessed, or for how it was conceptually modeled?
-- Are there impedance mismatches, places where code constantly reshapes data because the model doesn't match the access pattern?
-- Are types honest? Do they represent what data actually looks like at runtime, or claim more structure than exists?
-
-## Boundary Discipline
-
-Are system boundaries clean and well-placed?
-
-- Is validation concentrated at entry points, or scattered through internal code?
-- Are errors handled at boundaries and propagated cleanly, or caught and re-thrown at every layer?
+- Is validation at entry points, or scattered through internal code?
+- Are errors handled at boundaries and passed on cleanly, or caught and re-thrown at every layer?
 - Does data cross boundaries in well-typed shapes, or as bags of optional fields?
-- Could this subsystem be tested in isolation, or does it require the entire system to be running?
+- Can this subsystem be tested alone, or does it need the whole system running?
 
-## Evolution Readiness
+## Evolution readiness
 
-How well will this architecture handle likely changes?
+- If the most likely next requirement landed tomorrow, would one file change or everything?
+- Which hardcoded assumptions would need to loosen?
+- Does the design look bolted on, or as if it was always part of the plan?
+- Do legacy paths survive for a compatibility need that nothing has?
 
-- If the most probable next requirement landed tomorrow, how much would change? "One file" or "everything"?
-- Are there hardcoded assumptions that would need to be relaxed?
-- Is the design bolted-on (integrated as an afterthought) or integrated (looks like it was always part of the plan)?
-- Are legacy paths preserved for compatibility that no one depends on?
+Judge only changes that the codebase's direction makes likely.
 
-Don't penalize for not handling hypothetical changes. Focus on changes plausible given the codebase's trajectory.
+## Complexity against value
 
-## Complexity vs. Value
-
-Is the complexity budget spent wisely?
-
-- Is complexity concentrated in the parts that need it (core logic, tricky invariants) or in accidental places (boilerplate, unnecessary indirection, configuration)?
-- Are there simpler ways to achieve the same behavior?
-- Does every component earn its existence, or are there vestigial pieces from an earlier design?
+- Does complexity sit where it is needed, such as core logic and tricky invariants, or in boilerplate, extra indirection, and configuration?
+- Is there a simpler way to get the same behavior?
+- Does every component still have a job, or are some left over from an earlier design?
 
 ## Consistency
 
-Does this subsystem follow the patterns established elsewhere in the codebase?
+- Does this area solve problems the same way the rest of the codebase does, or does it invent its own patterns?
+- If the patterns differ, is there a reason?
 
-- Are similar problems solved the same way here as elsewhere, or does this area invent its own patterns?
-- If the patterns differ, is there a good reason, or did it just evolve independently?
-- Inconsistency isn't automatically bad. But unexplained inconsistency is a maintenance burden.
+Inconsistency nobody can explain costs maintenance time.

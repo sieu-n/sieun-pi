@@ -1,24 +1,16 @@
 ---
 name: arena
-description: "Spawn N parallel candidates at the same task, pick a base, graft the strongest parts of the losers into it. Use for `arena`, 'arena this', 'throw it in the arena', or when one attempt at a non-trivial artifact would lock in the wrong shape."
+description: "Spawn N parallel candidates at the same task, pick a base, and graft the strongest parts of the others into it. Use for `arena`, 'arena this', 'throw it in the arena', or when one attempt at a non-trivial artifact would lock in the wrong shape."
 disable-model-invocation: true
 ---
 
 # Arena
 
-> **Prime Agent subagent contract.** This skill was ported from a Cursor plugin.
-> Subagents are `handle = await rlm(brief, model=..., thinking=..., name=...)`, which
-> returns on admission and never returns the child's answer: every brief must end with
-> `await agent_message.send(<report>, receiver_role="parent")`. Read
-> `~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md` before fanning out,
-> and check `RLM_MAX_DEPTH` — at the ceiling `await rlm(...)` raises and you must run inline.
+Fan out N attempts at the same task. Read every candidate in full, pick the strongest as the base, graft the best ideas from the others into it, and verify the result.
 
+Spawn and drain children per `../setup-pstack/references/prime-agent-runtime.md`. If `RLM_MAX_DEPTH` blocks spawning, run the candidates inline one after another, or ask the parent to fan out.
 
-Fan out N parallel attempts at the same task. Read every candidate end to end. Pick the strongest as the base. Graft the best ideas from the others into it. Verify the synthesized result.
-
-## Start
-
-Prime Agent has no todo tool. Write the phase checklist into your reply, or into a scratch file under `/tmp/`, before launching anything, and update it as phases close. The arena runs autonomously and the list keeps phases from silently disappearing.
+Write this checklist into your reply before spawning, and update it as phases close:
 
 1. Frame
 2. Fan out
@@ -29,51 +21,41 @@ Prime Agent has no todo tool. Write the phase checklist into your reply, or into
 
 ## Phase A: Frame
 
-The N candidates will receive the same prompt, so the prompt is the contract. Get it right before spawning anything.
+Every candidate gets the same prompt, so settle it before spawning.
 
-1. State the artifact each candidate is producing.
-2. Derive the rubric. State what success looks like for *this* task, then turn it into 3-6 concrete gradeable criteria. Concrete: `Adds a --dry-run flag that skips writes`. Vague: `code is correct`. The rubric is the picker's tool in Phase D; candidates only see the task.
-3. Pick the runners. Use `arena runners` from `~/.prime/agent/pstack-models.json` when present. Otherwise default to two runners, both inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model) (the `policy` block in `~/.prime/agent/pstack-models.json` lists the allowed and banned models). Spawn more when the arena covers multiple design directions. Same model N times when the work is generation-bound rather than judgment-sensitive.
-4. Assign output paths. Each candidate writes to its own location (a git worktree where possible, otherwise `/tmp/arena-<slug>/candidate-<n>/`). N candidates writing to the same path is shared mutable state and fails the the **separate-before-serializing-shared-state** principle skill test.
+1. State the artifact each candidate produces.
+2. Write a rubric of 3 to 6 gradeable criteria for this task. `Adds a --dry-run flag that skips writes` is gradeable, and `code is correct` is not. Only the picker sees the rubric.
+3. Read the `arena runners` role in `~/.prime/agent/pstack-models.json` (repo default `config/pstack-models.json`) for the runner count and models. With no entry, spawn two runners on the parent's model. Add runners when the arena covers several design directions.
+4. Give each candidate its own output path, a git worktree when the task touches a repo, otherwise its own scratch directory. Two candidates never share a path.
 
 ## Phase B: Fan out
 
-Spawn all N subagents from one IPython cell with `await rlm(...)`, each with the task, the path to the shared grounding, its own output path, and instructions to produce both the artifact and a short rationale.
+Spawn all N runners from one cell. Each brief names the task, the shared grounding files, the candidate's output path, and asks for the artifact plus a short rationale. The rationale names the alternatives the candidate considered and why it rejected them. Phase E needs it to tell a deliberate structure from an accident.
 
-The rationale is mandatory. Without it, the parent cannot tell whether a candidate's structure is principled or accidental, which makes Phase E grafting unreliable. Each rationale names the alternatives the candidate considered and what it rejected.
-
-If a candidate fails to produce output, proceed with N-1 and note the dropout in the synthesis record.
+If a candidate produces nothing, continue with the rest and record the dropout.
 
 ## Phase C: Cross-judge
 
-After all Phase B candidates complete, choose one model from the `arena cross-judge pool` in `~/.prime/agent/pstack-models.json` when present. Otherwise use inherit-parent (omit `model=`). Prefer a different model family from the parent's only when the user asked for a cross-family panel. Spawn one judge child on that model with `await rlm(...)`, and tell it in the brief to read and score only, never to edit a file. It sees the rubric and the candidates by path label, scores each criterion, and recommends a base with rationale. It runs in parallel with the parent's reading in Phase D, not with the candidates themselves. Spawning while candidates are still writing means the judge sees partial or empty outputs and reports them as dropouts.
+Spawn the judge only after every Phase B candidate has finished, or it scores partial output. Take its model from the `arena cross-judge pool` role, and use the parent's model when that role is missing. Use a different model family only when the user or the calling skill asks for one.
+
+The brief tells the judge to read and score only and never edit a file. It gets the rubric and the candidates by path label, scores each criterion, and recommends a base with reasons. Read the candidates yourself while it runs.
 
 ## Phase D: Pick a base
 
-Read every candidate end to end before picking. Skimming N candidates surfaces only the candidate whose surface looks most familiar.
+Read every candidate end to end, then score each one against the rubric criterion by criterion. Compare your scores with the judge's. If you disagree on the base, read both rationales before deciding, because one of you is biased or the rubric is ambiguous.
 
-Score each candidate against the rubric criterion by criterion, not on holistic feel. Compare against the cross-judge. Agreement on the base confirms the pick. Disagreement means one of you is biased or the rubric was ambiguous. Read both rationales before deciding.
-
-Pick the base on which candidate a future maintainer can extend most easily without breaking invariants. Prefer the cleaner boundary or smaller surface area when two feel tied, per the Laziness Protocol.
-
-Record the pick and the reason in a short synthesis note alongside the base artifact, including the cross-judge's verdict.
+Pick the candidate a future maintainer can extend without breaking its invariants. On a tie, take the smaller surface per **principle-laziness-protocol**.
 
 ## Phase E: Graft
 
-Walk each losing candidate once more and identify what is worth porting into the base. The signal is usually one or two things per candidate, not most of it.
+Walk each other candidate once more and find the one or two ideas worth porting. Fold each one into the base by hand per **principle-redesign-from-first-principles**, so the result keeps one mental model.
 
-Fold each graft in by hand, per the **redesign-from-first-principles** principle skill. Don't paste mechanically. The result has to remain coherent under one mental model.
-
-Record what was grafted, from which candidate, and what was rejected and why. The rejection notes are the highest-signal part of the record. Future readers learn from what you considered and dropped, not just what you kept.
-
-When N candidates converge on the same shape, that is a strong agreement signal. Note the convergence in the record and ship the consensus shape. No graft is needed. When N candidates wildly diverge, Phase A was under-specified. Reframe and re-run rather than averaging the divergence.
+If the candidates converge on one shape, ship it and record the convergence. If they diverge widely, Phase A was under-specified, so reframe and re-run instead of averaging.
 
 ## Phase F: Verify
 
-The synthesized artifact has to hold up under the same scrutiny as any other output, per the **prove-it-works** principle skill. The arena does not earn you a pass.
+Verify the result per **principle-prove-it-works**. If verification finds a problem, either the frame was wrong (go back to Phase A) or a candidate caught it and you missed the graft (go back to Phase E).
 
-If verification surfaces a problem the arena did not catch, either Phase A was wrong (re-frame and re-run) or one candidate caught it and you missed the graft (go back to Phase E). Don't paper over.
+## Output
 
-## Outputs
-
-One synthesized artifact. One short synthesis note alongside, naming the base, the grafts (with source candidate), the rejections, the dropouts if any, and the verification result.
+Ship the synthesized artifact with a short synthesis note next to it. The note names the base and why, the judge's verdict, each graft with its source candidate, each rejected idea with the reason, any dropouts, and the verification result.

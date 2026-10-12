@@ -7,7 +7,7 @@ import { parsePoolRows, parseRefreshEvent, parseResets, poolExecutable, resetsNo
 import type { UsageRefresh } from "../src/shared/types.ts";
 
 const base = { id: "a", email: "a@x", usage: "7%/61%", session_pct: 7, weekly_pct: 61, gated_pct: 100, usable: false, reason: "depleted",
-  current: false, pinned: false, force: false, live: false, seat: true, score: null };
+  current: false, pinned: false, live: false, seat: true, score: null };
 
 test("pool rows carry every window with its reset in epoch ms", () => {
   const [row] = parsePoolRows({ provider: "anthropic", rows: [{ ...base, tier: "max 20x", usage_at: 1790120343, cooldown_until: null, cooldown_reason: null, windows: [
@@ -25,6 +25,17 @@ test("pool rows carry every window with its reset in epoch ms", () => {
   assert.equal(row!.usageAt, 1790120343000);
 });
 
+test("a row shows its label, and the email when the pool sends none", () => {
+  const rows = parsePoolRows({ provider: "anthropic", rows: [{ ...base, id: "t", label: "a@x (Team)", windows: [] }, { ...base, windows: [] }] }, "anthropic");
+  assert.deepEqual(rows.map(row => [row.id, row.email, row.label]), [["t", "a@x", "a@x (Team)"], ["a", "a@x", "a@x"]]);
+});
+
+test("a row carries the pool's count of threads on it, and 0 when the pool sends none or a bad value", () => {
+  const rows = parsePoolRows({ provider: "anthropic", rows: [{ ...base, id: "busy", sessions: 28, windows: [] }, { ...base, id: "old", windows: [] },
+    { ...base, id: "bad", sessions: -1, windows: [] }] }, "anthropic");
+  assert.deepEqual(rows.map(row => [row.id, row.sessions]), [["busy", 28], ["old", 0], ["bad", 0]]);
+});
+
 test("a refused row keeps its cooldown end and reason", () => {
   const [row] = parsePoolRows({ provider: "anthropic", rows: [{ ...base, reason: "cooldown 18h20m", cooldown_until: 1790186635, cooldown_reason: "oauth not allowed for organization", windows: [] }] }, "anthropic");
   assert.equal(row!.cooldownUntil, 1790186635000);
@@ -40,7 +51,7 @@ test("a 429-limited row keeps its limit end", () => {
 
 test("refresh stream lines become events with epoch ms", () => {
   assert.deepEqual(parseRefreshEvent('{"event":"accounts","accounts":[{"id":"a","email":"a@x"},{"bad":1}],"provider":"anthropic"}'),
-    { event: "accounts", accounts: [{ id: "a", email: "a@x" }] });
+    { event: "accounts", accounts: [{ id: "a", email: "a@x", label: "a@x" }] });
   assert.deepEqual(parseRefreshEvent('{"event":"read","id":"a","ok":false,"reason":"rate limited","retry_at":1790000600,"usage_at":null}'),
     { event: "read", id: "a", ok: false, reason: "rate limited", usageAt: null, retryAt: 1790000600000 });
   assert.equal(parseRefreshEvent("not json"), null);
@@ -73,8 +84,8 @@ test("a refresh reports every account's read as it lands, and the failures with 
     const run = await settle(refreshes, "anthropic");
     assert.equal(run.status, "done");
     assert.deepEqual(run.accounts, [
-      { id: "a", email: "a@x", state: "read", reason: null, usageAt: 1790000000000, retryAt: null },
-      { id: "b", email: "b@x", state: "failed", reason: "rate limited", usageAt: null, retryAt: 1790000600000 }]);
+      { id: "a", email: "a@x", label: "a@x", state: "read", reason: null, usageAt: 1790000000000, retryAt: null },
+      { id: "b", email: "b@x", label: "b@x", state: "failed", reason: "rate limited", usageAt: null, retryAt: 1790000600000 }]);
     assert.ok(seen.includes("reading,queued") && seen.includes("read,reading"), seen.join(" | "));
     assert.equal(readFileSync(join(root, "args"), "utf8").trim(), "refresh --provider anthropic --stream");
   } finally { rmSync(root, { recursive: true, force: true }); }

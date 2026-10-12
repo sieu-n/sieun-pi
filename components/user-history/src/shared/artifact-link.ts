@@ -22,6 +22,7 @@ const THREAD = /^([a-zA-Z0-9_-]{1,128})(?:@(\d{1,16}))?$/;
 const JOB = /^(?=.{1,128}$)[^\s/](?:[^/\n\r\t]*[^\s/])?$/;
 /** Session ids are UUIDs; a URL whose hash is one (or the chat's port) is a pasted chat link. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const isSessionId = (text: string): boolean => UUID.test(text);
 const CHAT_PORT = "5182";
 const MAX_TARGET = 2048;
 

@@ -25,7 +25,6 @@ Private runtime data
 | Pool patcher and updater | Change the installed Prime bundle. The updater uses a generated runtime copy outside the source checkout. Review it separately from source-link installation. |
 | `aside-browser` | Controls the real logged-in browser. Page contents, screenshots, downloads, and actions can expose or change account data. |
 | Saved history and agent chat | Exposes selected private sessions to Aside over random loopback URLs. Chat can send native prompts. Do not share the URL. Local processes and browser-managed copies are outside that protection. |
-| Daily recap | Can read local commits, focus data, token-use summaries, and a configured Sunsama cookie store. It can send selected content to a model and post to Slack. Review inputs and destination before enabling it. |
 | `linear-ticket` | Uploads supplied assets and changes the selected Linear issue when publishing is called. Local checks do not publish. |
 | Session recovery and fleet health | Read private session data. Operational repair can resume, message, or abort sessions. These are not harmless health probes. |
 | Poteto's `watch-pr` and `orch` | Use the operator's GitHub or Graphite credentials for repository work. Local tests use fixtures instead. |
@@ -36,7 +35,6 @@ Keep these outside Git and release archives:
 - Account indexes, credential files, refresh journals, locks, and usage state.
 - Private Prime settings, session transcripts, learned memories, and session-derived indexes.
 - Browser profiles, snapshots, screenshots, downloads, and private ticket attachments.
-- Daily recap configuration, copied cookie stores, generated reports, and previous-run state.
 - `.test-artifacts/`, including generated credentials, loopback access URLs, and synthetic sessions.
 - Installer plans and receipts with local paths, backup copies, and updater logs.
 - Installed dependencies, virtual environments, build output, bytecode, and retired implementations.
@@ -63,8 +61,8 @@ The release preparation made these source changes:
 | `skills/aside-browser/references/repl-api.md` | Removed. The skill directs users to the installed `aside guide repl` command. No license is claimed for the vendor manual. |
 | `skills/linear-ticket/references/pipeline.md` and `spec-page.md` | Removed private deployment details and internal example links. Public mock guidance requires synthetic records and project-supplied configuration. |
 | `skills/linear-ticket/references/example-vir-371.md` and `example-after-openapi.json` | Removed the internal design example, social-profile data, and media references. |
-| `skills/spec-report/references/approved-email-editor-spec.md` | Removed the private spec reference. The skill now uses owner-authored `evidence-driven-review.md`. |
-| `components/virev/repo-hooks/agent-guards.mjs` | Removed the copied app deployment helper. Project policy stays separate from global behavior. |
+| `skills/spec-report/references/approved-email-editor-spec.md` | Removed the private spec reference. |
+| `components/virev/` | Removed on 2026-10-10. The `~/.prime/agent` grep guard and the sieun-pi Git rules moved to `components/global-rules/`. The writing rules are the `unslop` skill, which `config/AGENTS.md` points at. App Git and local-check rules live in the app's own repository. |
 
 ### Account examples
 
@@ -78,7 +76,7 @@ This does not prove every playbook operation or its external service access.
 
 Paths in `config/source-inventory.json` are historical source labels, not runtime dependencies.
 Generic `~/.prime/agent` and `/tmp/<slug>` examples are not credentials.
-App-specific rules must remain opt-in for the selected project rather than silently becoming global policy.
+App-specific rules live in the app's own repository as a project-local extension, never in global policy.
 A public repository does not make its linked private services available to other users.
 
 Deleting a file in the newest commit does not remove its old Git blobs.
@@ -102,7 +100,6 @@ A source license does not grant rights to a third party's data.
 | Tokenmaxxing stores and macOS Keychain | Account-pool operation. The source installer does not seed account stores or install credentials. |
 | Virev API key | Web search. Requests use `api.virev.ai` unless configured otherwise. Search can incur charges. |
 | Linear, GitHub, Graphite, and local wiki services | Only the workflows that call them. A source check does not prove service access. |
-| Daily recap integrations | Explicit Slack, repository, Sunsama, and focus-data configuration. Empty service inputs remain disabled. |
 
 Lockfiles use public package sources and repository-relative Python package paths.
 The Prime Agent and TUI development packages use pinned official release tarballs with lockfile integrity hashes.

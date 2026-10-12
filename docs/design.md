@@ -23,7 +23,7 @@ The pool no longer patches Prime's bundle. Prime Agent 0.9.5 ships as one compil
 binary, so the old patcher and its launchd updater were removed on 2026-09-23. The
 account line, `/account` and login adoption now live in the pool extension, which uses
 only the public extension API and needs nothing re-applied after a Prime update.
-Do not move the standalone Claude skill-observability hook. It is not a Virev dependency.
+Do not move the standalone Claude skill-observability hook. It is not a global-rules dependency.
 The source-link investigator corrected that initial recommendation after checking its caller.
 
 The judge identified one verification risk.

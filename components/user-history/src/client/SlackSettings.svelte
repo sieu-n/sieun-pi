@@ -6,6 +6,7 @@
   import Icon from "./Icon.svelte";
   import Checkbox from "./ui/Checkbox.svelte";
   import { tooltip } from "./ui/tooltip.ts";
+  import SettingsActions from "./SettingsActions.svelte";
 
   /** null after a load: this chat instance runs no Slack bridge. undefined while loading. */
   let view = $state<SlackView | null | undefined>(undefined);
@@ -39,14 +40,12 @@
   onDestroy(() => clearInterval(timer));
 </script>
 
-<section class="slack" aria-label="Slack">
-  <header class="bar">
-    <h3>Slack</h3>
-    <span class="spacer"></span>
+<section class="pane" aria-label="Slack">
+  <SettingsActions>
     <button class="icon-button small" disabled={busy || !view} aria-label="Read the tokens again" use:tooltip={"Read the tokens again"} onclick={() => void apply(api.checkSlack())}>
       {#if busy}<span class="spinner tiny"></span>{:else}<Icon name="refresh" size={14} />{/if}
     </button>
-  </header>
+  </SettingsActions>
   {#if error && view === undefined}
     <div class="empty">
       <div class="error"><Icon name="alert" size={16} /> Slack status unavailable. {error}</div>
@@ -94,10 +93,7 @@
 </section>
 
 <style>
-  .slack { display: flex; flex-direction: column; gap: 14px; padding: 12px 18px 18px; font-size: 13px; }
-  .bar { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border); margin: 0 -18px; padding: 0 18px 8px; }
-  h3 { margin: 0; font-size: 13px; font-weight: 600; }
-  .spacer { flex: 1; }
+  .pane { display: flex; flex-direction: column; gap: 14px; padding: 12px 18px 18px; font-size: 13px; }
   .current { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 500; line-height: 1.4; }
   .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
   .current.on .dot { background: var(--success, #2e9e5b); }

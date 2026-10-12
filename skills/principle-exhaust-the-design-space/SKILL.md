@@ -1,21 +1,25 @@
 ---
 name: principle-exhaust-the-design-space
-description: "Apply when facing a novel UI interaction or architectural decision with no precedent in the codebase. Build 2-3 competing prototypes and compare side by side before committing."
+description: "Apply when facing a novel UI interaction or architectural decision with no precedent in the codebase. Build 2 or 3 structurally different prototypes and compare them side by side before committing to one."
 disable-model-invocation: true
 ---
 
-# Exhaust the Design Space
+# Exhaust the design space
 
-When a novel interaction or architectural decision has no established precedent, explore several concrete alternatives before implementation. Building the wrong thing costs more than exploring three options.
+When the right answer is not obvious, build 2 or 3 competing prototypes or sketches. Compare them side by side, then commit to one.
 
-**The rule.** When the right answer is not obvious, build 2-3 competing prototypes or sketches. Compare them side by side. Only then commit. Design it twice is this rule by another name. A second flavor of the first shape does not count.
+Each candidate must take a different shape. Two variants of one shape count as one candidate.
 
-**When it applies:**
-- Novel UI interactions (no prior art in the codebase)
-- Architectural choices with multiple viable approaches
-- Product design decisions where user experience depends on feel, not logic
+For UI variants, put them behind one switcher as `../poteto-mode/playbooks/prototype.md` describes.
 
-**When it doesn't:**
-- Mechanical implementation where the pattern is established
-- Bug fixes or refactors with a clear target state
-- Changes where constraints dictate a single viable approach
+Apply this rule in these cases:
+
+- The UI interaction has no prior art in the codebase.
+- An architectural choice has more than one viable approach.
+- The user experience depends on how the design feels, so logic alone cannot pick the winner.
+
+Skip it in these cases:
+
+- The work follows a pattern the codebase already uses.
+- A bug fix or refactor has a clear target state.
+- The constraints leave only one viable approach.

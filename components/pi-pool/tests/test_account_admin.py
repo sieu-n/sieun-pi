@@ -3,7 +3,7 @@ CLI against an isolated PI_POOL_DIR, HOME and TOKENMAXXING_HOME. A fake
 `tokenmaxxing` stands in for the real one: it records its arguments and, for
 login, draws the screens claude and codex show. No network, no keychain.
 """
-import json, os, select, shutil, signal, subprocess, sys, tempfile, textwrap, time, unittest
+import hashlib, json, math, os, select, shutil, signal, subprocess, sys, tempfile, textwrap, time, unicodedata, unittest
 
 from fixture_isolation import isolate_test_module
 
@@ -13,6 +13,7 @@ def setUpModule():
 
 
 PI_POOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "pi-pool")
+FILE_KEYCHAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "file_keychain.py")
 CLAUDE_INDEX = {"version": 2, "accounts": [
     {"id": "aaaa1111-0000-0000-0000-000000000000", "email": "a@x", "label": "a@x", "windows": []},
     {"id": "bbbb2222-0000-0000-0000-000000000000", "email": "b@x", "label": "b@x", "windows": []}]}
@@ -24,7 +25,7 @@ A, B = CLAUDE_INDEX["accounts"][0]["id"], CLAUDE_INDEX["accounts"][1]["id"]
 # its argv and pid next to itself so a test can check what ran and that it ended.
 FAKE_TOKENMAXXING = textwrap.dedent("""\
     #!/usr/bin/python3 -B
-    import os, subprocess, sys, time
+    import hashlib, json, os, subprocess, sys, time, unicodedata
     here = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(here, "argv.txt"), "a") as f:
         f.write(" ".join(sys.argv[1:]) + "\\n")
@@ -70,7 +71,23 @@ FAKE_TOKENMAXXING = textwrap.dedent("""\
             sys.stdin.readline()
         say("Login successful. Press Enter to continue")
         sys.stdin.readline()
-        say(("reauthed " if sys.argv[1] == "auth" else "added ") + "a2@x")
+        # `add` in the home it was given: one record, its credential parked in
+        # that home's store, as tokenmaxxing does.
+        record = json.loads(os.environ["FAKE_HARVEST"])
+        home = os.environ["TOKENMAXXING_HOME"]
+        with open(os.path.join(home, "accounts.json"), "w") as f:
+            json.dump({"version": 2, "accounts": [record]}, f)
+        store = os.path.join(home, "stores", record["id"][:8])
+        service = "Claude Code-credentials-" + hashlib.sha256(unicodedata.normalize("NFC", store).encode()).hexdigest()[:8]
+        try:
+            with open(os.environ["FAKE_KEYCHAIN"]) as f:
+                items = json.load(f)
+        except FileNotFoundError:
+            items = {}
+        items[service] = os.environ.get("FAKE_SECRET", "secret-" + record["oauthAccount"]["organizationUuid"])
+        with open(os.environ["FAKE_KEYCHAIN"], "w") as f:
+            json.dump(items, f)
+        say(("reauthed " if sys.argv[1] == "auth" else "added ") + record["email"])
         sys.exit(0)
     sys.exit(3)
 """)
@@ -91,6 +108,7 @@ class PoolFixture(unittest.TestCase):
             f.write(FAKE_TOKENMAXXING)
         os.chmod(self.exe, 0o755)
         self.env = dict(os.environ, HOME=self.root, PI_POOL_DIR=self.pool, TOKENMAXXING_HOME=self.tm)
+        self.keychain = os.path.join(self.root, "keychain.json")
         for name in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL"):
             self.env.pop(name, None)
 
@@ -142,7 +160,7 @@ class LimitedSurvivesARestart(PoolFixture):
         until = time.time() + 3600
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
         self.assertEqual(code, 0, out)
-        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x"})
+        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x", "retry_at": None})
         self.assertEqual(self.state()["providers"]["openai-codex"]["limits"][self.C]["session"], self.SESSION)
         code, out = self.cli("who", "--json", "--session", self.SESSION)
         self.assertEqual(code, 0, out)
@@ -171,7 +189,7 @@ class LimitedSurvivesARestart(PoolFixture):
         until = time.time() + 3600
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
                              "--since", str(time.time()))
-        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x"}, out)
+        self.assertEqual(json.loads(out), {"account": "c@x", "until": round(until), "next": "d@x", "retry_at": None}, out)
         moved = time.time()
         state = self.state()
         state["sessions"][self.SESSION]["vends"]["openai-codex"] = {"account_id": self.D, "email": "d@x", "at": moved, "from": moved, "n": 1}
@@ -179,7 +197,7 @@ class LimitedSurvivesARestart(PoolFixture):
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
                              "--since", str(moved - 5))
         self.assertEqual(code, 0, out)
-        self.assertEqual(json.loads(out), {"account": None, "until": round(until), "next": "d@x", "stale": True})
+        self.assertEqual(json.loads(out), {"account": None, "until": round(until), "next": "d@x", "retry_at": None, "stale": True})
         self.assertEqual(set(self.state()["providers"]["openai-codex"]["limits"]), {self.C}, "d@x is not marked with c@x's reset")
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until),
                              "--since", str(moved + 1))
@@ -194,7 +212,7 @@ class LimitedSurvivesARestart(PoolFixture):
         self.assertEqual(code, 0, out)
         self.assertIsNone(json.loads(out)["next"])
 
-    def test_with_only_a_depleted_account_left_next_is_that_account_while_it_serves(self):
+    def test_with_only_a_depleted_account_left_the_session_waits_for_the_first_account_back(self):
         reset_ms = (time.time() + 7200) * 1000
         index = {"version": 2, "accounts": CODEX_INDEX["accounts"] + [
             {"id": self.D, "email": "d@x", "label": "d@x", "tier": "plus",
@@ -204,13 +222,10 @@ class LimitedSurvivesARestart(PoolFixture):
         until = time.time() + 3600
         code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
         self.assertEqual(code, 0, out)
-        self.assertEqual(json.loads(out)["next"], "d@x")
-        index["accounts"][1]["windows"][0]["usedPercentage"] = 100
-        with open(os.path.join(self.tm, "codex-accounts.json"), "w") as f:
-            json.dump(index, f)
-        code, out = self.cli("limited", "--provider", "openai-codex", "--session", self.SESSION, "--until", str(until))
-        self.assertEqual(code, 0, out)
-        self.assertIsNone(json.loads(out)["next"])
+        reply = json.loads(out)
+        self.assertEqual((reply["next"], reply["retry_at"]), (None, math.ceil(until)))
+        wait = self.state()["sessions"][self.SESSION]["wait"]["openai-codex"]
+        self.assertEqual((wait["account"], round(wait["slot_at"])), (self.C, round(until)))
 
     def test_a_session_with_no_vend_is_refused(self):
         code, out = self.cli("limited", "--provider", "anthropic", "--session", self.SESSION, "--until", str(time.time() + 60))
@@ -237,7 +252,7 @@ class TermsRefusalTakesTheAccountOut(PoolFixture):
     def test_the_account_leaves_the_pool_and_the_session_moves(self):
         code, out = self.cli("refused", "--provider", "anthropic", "--session", self.SESSION, self.TERMS)
         self.assertEqual(code, 0, out)
-        self.assertEqual(json.loads(out), {"account": "a@x", "reason": "needs terms", "next": "b@x"})
+        self.assertEqual(json.loads(out), {"account": "a@x", "reason": "needs terms", "next": "b@x", "retry_at": None})
         code, out = self.cli("who", "--json", "--session", self.SESSION)
         self.assertEqual(code, 0, out)
         self.assertEqual(json.loads(out)["providers"]["anthropic"]["email"], "b@x")
@@ -307,7 +322,8 @@ class Remove(PoolFixture):
         state = self.state()
         prov = state["providers"]["anthropic"]
         prov.update(pin=A, cooldowns={A: 9e12, B: 9e12})
-        state["sessions"]["s1"] = {"uuid": "s1", "active_id": "s1", "pins": {"anthropic": {"account_id": A}, "openai-codex": {"account_id": "cccc"}}, "vends": {}, "last_seen": 1}
+        at = time.time()
+        state["sessions"]["s1"] = {"uuid": "s1", "active_id": "s1", "pins": {"anthropic": {"account_id": A, "at": at}, "openai-codex": {"account_id": "cccc", "at": at}}, "vends": {}, "last_seen": at}
         self.write_state(state)
 
         self.assertEqual(self.cli("rm", "a@x"), (0, "removed a@x from the anthropic pool"))
@@ -315,7 +331,7 @@ class Remove(PoolFixture):
         self.assertEqual(self.ran(), ["rm " + A])
         prov = self.state()["providers"]["anthropic"]
         self.assertEqual((prov["pin"], prov["disabled"], prov["cooldowns"]), (None, {}, {B: 9e12}))
-        self.assertEqual(self.state()["sessions"]["s1"]["pins"], {"openai-codex": {"account_id": "cccc"}})
+        self.assertEqual(self.state()["sessions"]["s1"]["pins"], {"openai-codex": {"account_id": "cccc", "at": at}})
 
     def test_rm_passes_the_codex_flag(self):
         self.assertEqual(self.cli("rm", "c@x", "--provider", "openai-codex")[0], 0)
@@ -330,12 +346,29 @@ class Remove(PoolFixture):
         self.assertEqual(self.state(), before)
 
 
+def harvest(login, org, email, org_name=None, tier="max 20x"):
+    """The record `tokenmaxxing add` writes for one sign-in."""
+    return {"id": login, "label": email, "email": email, "tier": tier, "addedAt": "2026-01-01T00:00:00Z",
+            "windows": [{"name": "five_hour", "usedPercentage": 7, "resetsAt": None, "windowSeconds": 18000, "sampledAt": 1}],
+            "lastUsageAt": 1, "needsReauth": False,
+            "oauthAccount": {"accountUuid": login, "emailAddress": email, "organizationUuid": org,
+                             "organizationName": org_name or f"{email}'s Organization"}}
+
+
+def store_service(tm, account_id):
+    store = os.path.join(tm, "stores", account_id[:8])
+    return "Claude Code-credentials-" + hashlib.sha256(unicodedata.normalize("NFC", store).encode()).hexdigest()[:8]
+
+
 class LoginRun:
     """One `pi-pool login` with a pipe on stdin and every stdout line parsed.
-    Every read has a deadline and the process is killed on the way out."""
+    Every read has a deadline and the process is killed on the way out. The
+    CLI runs with a file for a Keychain (tests/file_keychain.py)."""
 
-    def __init__(self, test, args, fake):
-        self.proc = subprocess.Popen([PI_POOL, "login", *args], env=dict(test.env, FAKE_LOGIN=fake),
+    def __init__(self, test, args, fake, harvested=None):
+        env = dict(test.env, FAKE_LOGIN=fake, FAKE_KEYCHAIN=test.keychain,
+                   FAKE_HARVEST=json.dumps(harvested or harvest("dddd4444-0000-0000-0000-000000000000", "org-d", "d@x")))
+        self.proc = subprocess.Popen(["/usr/bin/python3", "-B", FILE_KEYCHAIN, "login", *args], env=env,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         test.addCleanup(self.kill)
         self.buffer = b""
@@ -404,15 +437,18 @@ class Login(PoolFixture):
         second = run.event()
         self.assertEqual((second["event"], "state=s2" in second["manual_url"]), ("url", True))
         run.send("good\n")
-        self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "added a2@x"})
+        self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "added d@x (max 20x) \u2192 pool now has 3 accounts"})
         self.assertEqual(run.exit_code(), 0)
 
-    def test_sign_in_again_runs_tokenmaxxing_auth_for_that_account(self):
-        run = LoginRun(self, ["b@x"], "claude")
+    def test_sign_in_again_files_the_new_login_into_that_accounts_store(self):
+        run = LoginRun(self, ["b@x"], "claude", harvest(B, "org-b", "b@x"))
         self.assertEqual(run.event()["event"], "url")
         run.send("good\n")
-        self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "reauthed a2@x"})
-        self.assertEqual(self.ran(), ["auth " + B])
+        self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "reauthed b@x (max 20x)"})
+        self.assertEqual(self.ran(), ["add"])
+        with open(self.keychain) as f:
+            self.assertEqual(json.load(f), {store_service(self.tm, B): "secret-org-b"})
+        self.assertEqual(os.listdir(os.path.join(self.pool, "logins")), [])
 
     def test_a_new_sign_in_drops_that_accounts_429_limit_only(self):
         until = time.time() + 3600
@@ -421,7 +457,7 @@ class Login(PoolFixture):
         self.write_state({"version": 2, "providers": {
             "anthropic": {"pin": None, "cooldowns": {}, "disabled": {}, "limits": limits},
             "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
-        run = LoginRun(self, ["b@x"], "claude")
+        run = LoginRun(self, ["b@x"], "claude", harvest(B, "org-b", "b@x"))
         self.assertEqual(run.event()["event"], "url")
         run.send("good\n")
         self.assertTrue(run.event()["ok"])
@@ -434,7 +470,7 @@ class Login(PoolFixture):
             "anthropic": {"pin": None, "disabled": {}, "limits": {},
                           "cooldowns": {A: until, B: until}, "cooldown_reasons": {A: "needs terms", B: "needs terms"}},
             "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
-        run = LoginRun(self, ["b@x"], "claude")
+        run = LoginRun(self, ["b@x"], "claude", harvest(B, "org-b", "b@x"))
         self.assertEqual(run.event()["event"], "url")
         run.send("good\n")
         self.assertTrue(run.event()["ok"])
@@ -468,6 +504,76 @@ class Login(PoolFixture):
         run = LoginRun(self, ["--provider", "anthropic", "--timeout", "2"], "hang")
         self.assertEqual(run.event(), {"event": "done", "ok": False, "message": "the sign-in did not finish in 1 min"})
         self.assertTrue(self.fake_ended())
+
+
+class SecondOrganization(PoolFixture):
+    """One login in two organizations is two accounts, each with its own
+    store, usage and limits (tokenmaxxing alone keys by the login)."""
+    TEAM = "eeee5555-0000-0000-0000-000000000000"
+
+    def setUp(self):
+        super().setUp()
+        index = json.loads(json.dumps(CLAUDE_INDEX))
+        index["accounts"][0]["oauthAccount"] = harvest(A, "org-a", "a@x")["oauthAccount"]
+        with open(os.path.join(self.tm, "accounts.json"), "w") as f:
+            json.dump(index, f)
+        with open(self.keychain, "w") as f:
+            json.dump({store_service(self.tm, A): "secret-org-a"}, f)
+
+    def sign_in(self, args, harvested):
+        run = LoginRun(self, args, "claude", harvested)
+        self.assertEqual(run.event()["event"], "url")
+        run.send("good\n")
+        done = run.event()
+        run.exit_code()
+        return done
+
+    def index(self):
+        with open(os.path.join(self.tm, "accounts.json")) as f:
+            return json.load(f)["accounts"]
+
+    def team_id(self):
+        return next(r["id"] for r in self.index() if r.get("oauthAccount", {}).get("organizationUuid") == self.TEAM)
+
+    def test_the_second_organization_becomes_its_own_account(self):
+        done = self.sign_in([], harvest(A, self.TEAM, "a@x", "Team", tier="team 5x"))
+        self.assertEqual(done, {"event": "done", "ok": True, "message": "added a@x (Team) (team 5x) \u2192 pool now has 3 accounts"})
+        team = self.team_id()
+        self.assertNotIn(team, (A, B))
+        rows = {row["id"]: row for row in json.loads(self.cli("ls", "--json")[1])["rows"]}
+        self.assertEqual((rows[A]["label"], rows[A]["email"]), ("a@x (personal)", "a@x"))
+        self.assertEqual((rows[team]["label"], rows[team]["email"], rows[team]["tier"]), ("a@x (Team)", "a@x", "team 5x"))
+        with open(self.keychain) as f:
+            self.assertEqual(json.load(f), {store_service(self.tm, A): "secret-org-a", store_service(self.tm, team): "secret-" + self.TEAM})
+        self.assertEqual(os.listdir(os.path.join(self.pool, "logins")), [])
+
+    def test_the_same_organization_again_signs_in_in_place(self):
+        self.sign_in([], harvest(A, self.TEAM, "a@x", "Team"))
+        team = self.team_id()
+        done = self.sign_in([], harvest(A, self.TEAM, "a@x", "Team"))
+        self.assertEqual(done["message"], "reauthed a@x (Team) (max 20x)")
+        self.assertEqual(len(self.index()), 3)
+        done = self.sign_in([team], harvest(A, self.TEAM, "a@x", "Team"))
+        self.assertTrue(done["ok"], done)
+        self.assertEqual(len(self.index()), 3)
+
+    def test_sign_in_again_with_the_other_organization_changes_nothing(self):
+        before = self.index()
+        done = self.sign_in([A], harvest(A, self.TEAM, "a@x", "Team"))
+        self.assertFalse(done["ok"])
+        self.assertIn("nothing changed", done["message"])
+        self.assertEqual(self.index(), before)
+        with open(self.keychain) as f:
+            self.assertEqual(json.load(f), {store_service(self.tm, A): "secret-org-a"})
+
+    def test_a_shared_email_names_no_account_but_a_label_or_id_does(self):
+        self.sign_in([], harvest(A, self.TEAM, "a@x", "Team"))
+        code, out = self.cli("off", "a@x")
+        self.assertNotEqual(code, 0)
+        self.assertIn("a@x names 2 accounts", out)
+        self.assertEqual(self.cli("off", "a@x (Team)"), (0, "a@x (Team) is off; the pool never picks it until pi-pool on"))
+        self.assertEqual(list(self.state()["providers"]["anthropic"]["disabled"]), [self.team_id()])
+        self.assertEqual(self.cli("on", A)[0], 0)
 
 
 if __name__ == "__main__":

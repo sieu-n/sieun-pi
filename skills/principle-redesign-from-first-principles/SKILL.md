@@ -1,16 +1,14 @@
 ---
 name: principle-redesign-from-first-principles
-description: "Apply when integrating a new requirement into an existing design. Redesign as if the requirement had been a foundational assumption from day one, instead of bolting it on."
+description: "Apply when a new requirement lands on an existing design. Redesign as if the requirement had been there from day one instead of bolting it on."
 disable-model-invocation: true
 ---
 
-# Redesign From First Principles
+# Redesign from first principles
 
-When integrating a change, don't bolt it onto the existing design. Redesign as if the requirement had been there from the start. The result should look like what we would have built if we'd known on day one.
+Do not bolt a new requirement onto the current design. Build what you would have built if you had known about it on day one.
 
-- Read all affected files and understand the current design holistically
-- Ask: "if we were writing this from scratch with this new requirement, what would we build?"
-- Propagate the change through every reference: types, docs, examples, rationale sections
-- Think about the redesign holistically, then deliver it incrementally
-
-This is the method for preserving option value when integrating changes into an existing design.
+1. Read every affected file and learn how the current design fits together.
+2. Ask what you would build from scratch with the new requirement in place.
+3. Carry the change through every reference, including types, docs, and examples.
+4. Plan the whole redesign first, then ship it in small checked steps with principle-sequence-verifiable-units.

@@ -6,19 +6,11 @@ disable-model-invocation: true
 
 # Architect
 
-> **Prime Agent subagent contract.** This skill was ported from a Cursor plugin.
-> Subagents are `handle = await rlm(brief, model=..., thinking=..., name=...)`, which
-> returns on admission and never returns the child's answer: every brief must end with
-> `await agent_message.send(<report>, receiver_role="parent")`. Read
-> `~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md` before fanning out,
-> and check `RLM_MAX_DEPTH` — at the ceiling `await rlm(...)` raises and you must run inline.
-
-
-Design before implementing. Sketch types, function signatures, class shapes, and module boundaries with `not implemented` bodies and pseudocode. Synthesize across multiple model perspectives, then fill in code against the chosen sketch. If implementation proves the sketch wrong, throw it out and redesign.
+Sketch types, function signatures, class shapes, and module boundaries with `not implemented` bodies and pseudocode. Pick a sketch from several candidates, then write code against it. If the code proves the sketch wrong, throw it out and redesign.
 
 ## Start
 
-Prime Agent has no todo tool. Write a phase checklist into your reply, or into a scratch file under `/tmp/`, before starting. Autonomous mode without checkpoints needs the list to show phase position and keep phases from silently disappearing.
+Write this phase checklist in your reply before you start.
 
 1. Ground
 2. Sketch
@@ -28,64 +20,62 @@ Prime Agent has no todo tool. Write a phase checklist into your reply, or into a
 
 ## Phase A: Ground the problem
 
-Build a real mental model of every system the new code touches. Run the **how** skill over the relevant subsystems. Critique mode if existing structure is the constraint or the design must push back on it.
+Run the `how` skill over every subsystem the new code touches. Use its critique mode when the existing structure is the constraint or the design must push back on it. Naming a file is not grounding; produce the traced model that `how` asks for.
 
-Naming a file isn't grounding. Produce the traced model `how` prescribes. If the design redefines ownership or layering, also run the **why** skill on the existing shape so the rationale becomes a constraint, not a guess.
+If the design changes ownership or layering, also run the `why` skill on the existing shape and treat its answer as a constraint.
 
-Skip Phase A only when the work is genuinely greenfield with no surrounding system to integrate.
+Skip Phase A only for greenfield work with no surrounding system.
 
 ## Phase B: Sketch
 
-Run the **arena** skill with the design-sketch task and the Phase A grounding artifacts. Pass `references/runner-prompt.md` as each runner's prompt. Each candidate produces a design package shaped per `references/rationale-template.md`: the caller's usage written first, then the type sketch, function signatures, module map, and prose rationale derived from it.
+Run the `arena` skill with the design-sketch task and the Phase A artifacts. Give each runner [`references/runner-prompt.md`](references/runner-prompt.md) as its prompt. Each candidate writes a design package shaped per [`references/rationale-template.md`](references/rationale-template.md).
 
-Use your configured architect runners (default: two runners, both inherit-parent (omit `model=` and `thinking=`; the child runs on the parent's model)).
+Take the runner list from the `architect runners` role in `~/.prime/agent/pstack-models.json` (repo default `config/pstack-models.json`). At the `RLM_MAX_DEPTH` ceiling, write the candidates yourself.
 
-Design it twice. Require at least two structurally distinct candidates before synthesis, even when the first looks sufficient. This is the **exhaust-the-design-space** principle skill made concrete. Whole-shape alternatives, not point fixes inside one shape.
+Require at least two structurally different candidates, even when the first looks good enough, per `principle-exhaust-the-design-space`. Two variants of one shape count as one candidate.
 
-Screen every candidate against [`references/design-red-flags.md`](references/design-red-flags.md) before synthesis. Reject or revise shallow modules, information leakage, temporal decomposition, and pass-through methods.
+Screen every candidate against [`references/design-red-flags.md`](references/design-red-flags.md) before synthesis, and revise or reject the ones that fail. Among the rest, prefer the one that hides the most complexity behind the smallest public interface.
 
-Compare viable candidates on interface depth. Prefer the design that hides more complexity behind a smaller, simpler public surface. A rich interface can keep call chains short by concentrating capability instead of scattering it across layers.
-
-Arena returns one synthesized design package. The synthesis decision populates the rationale's "Synthesis decision" section.
+Arena returns one synthesized design package. Its pick fills the rationale's "Synthesis decision" section.
 
 ## Phase C: Agree (opt-in)
 
-Default: proceed directly to implementation with the synthesized design. No human checkpoint.
+Go straight to Phase D with the synthesized design by default.
 
-Opt in to a checkpoint when the invoker explicitly asks: "`architect` with checkpoint," "stop and show me before implementing," or similar. Then surface the synthesized design and pause for sign-off.
+Stop for sign-off only when the invoker asks for it, for example "`architect` with checkpoint" or "show me before implementing". Then show the synthesized design and wait.
 
-The synthesis can ship as its own commit either way. That's the "scaffold first" mode of the **foundational-thinking** principle skill; subsequent commits read as filling in bodies against a stable contract. Planned and scoped breakage during fill-in is fine, per the **outcome-oriented-execution** principle skill. For adversarial pressure on the design before implementing, run the **interrogate** skill on the synthesized sketch.
+You may commit the sketch on its own, per `principle-foundational-thinking`. Later commits then fill in bodies against a stable contract, and planned breakage during fill-in is fine, per `principle-outcome-oriented-execution`. To test the design adversarially before implementing, run the `interrogate` skill on the sketch.
 
-If the human pushes back on the shape (in a checkpoint or after the fact), treat that as Phase A evidence. Re-ground and re-run Phase B before writing more code.
+If the human pushes back on the shape, at a checkpoint or later, treat it as Phase A evidence. Re-ground and re-run Phase B before you write more code.
 
 ## Phase D: Implement against the sketch
 
-Replace `not implemented` bodies with code, pseudocode with logic. The synthesized sketch is the contract.
+Replace `not implemented` bodies with code and pseudocode with logic. The synthesized sketch is the contract.
 
-Deviations from the sketch are signal worth surfacing, not friction to absorb silently. If a function needs a parameter the sketch didn't anticipate, ask whether the sketch was wrong, the requirement was missed, or the implementation is overreaching. Surface it; don't bolt it on.
+Surface every deviation from the sketch. If a function needs a parameter the sketch did not plan for, decide whether the sketch was wrong, a requirement was missed, or the code is overreaching. Do not bolt it on.
 
 ## Phase E: Scrap when the architecture is wrong
 
-If implementation keeps producing friction the sketch can't absorb, throw the sketch out. Don't bolt fixes onto a wrong design, per the **redesign-from-first-principles** and **fix-root-causes** principle skills.
+If the code keeps producing friction the sketch cannot absorb, throw the sketch out, per `principle-redesign-from-first-principles` and `principle-fix-root-causes`.
 
-The signal is a *pattern*, not single instances. Tells:
+The trigger is repeated friction of the same shape. These are the tells:
 
-- The same shape of workaround appearing repeatedly across unrelated code.
-- Multiple unrelated edge cases that all need special-case branches.
-- Types that need escape hatches (`any`, casts, optional fields always set in practice) to compile.
-- The "we need a lock" reflex when the sketch said the state wasn't shared.
-- Callers having to know the abstraction's internal rules to use it.
-- Two or more independent Phase D deviations of the same shape across the implementation. Surfacing deviations is Phase D's job; a repeated pattern of them is Phase E's trigger.
+- The same workaround appears in unrelated code.
+- Several unrelated edge cases each need a special-case branch.
+- The types need escape hatches such as `any`, casts, or optional fields that are always set.
+- You want a lock where the sketch said the state was not shared.
+- Callers must know the abstraction's internal rules to use it.
+- Two or more Phase D deviations have the same shape.
 
-Use judgment. A few edge cases don't condemn an architecture. Some problems are legitimately complex; complexity in the data is not complexity in the design. The rewrite signal is repeated friction of the same shape, not single hard cases.
+A few hard edge cases do not condemn a design. Complex data does not mean the design is complex.
 
 When you scrap:
 
-1. Re-run the **how** skill over what's been built. The implementation lessons enter the new design as inputs, not vibes.
-2. Redesign as if the new constraints had been day-one assumptions, per redesign-from-first-principles.
-3. Subtract before adding, per the **subtract-before-you-add** principle skill. The new sketch should be smaller than the old one before it grows.
+1. Re-run the `how` skill over what you built, so the lessons enter the new design as inputs.
+2. Redesign as if the new constraints had been there from day one.
+3. Make the new sketch smaller than the old one before it grows, per `principle-subtract-before-you-add`.
 4. Return to Phase B and re-run arena.
 
 ## Outputs
 
-The caller's usage is written first and the type sketch derived from it. One file with new types and signatures for small changes; module map plus type definitions for larger work. The rationale ships alongside, shaped per `references/rationale-template.md`, including the usage sketch and the synthesis decision.
+A small change gets one file of new types and signatures. Larger work gets a module map plus type definitions. Write the caller's usage first and derive the types from it. The rationale ships alongside, shaped per [`references/rationale-template.md`](references/rationale-template.md).

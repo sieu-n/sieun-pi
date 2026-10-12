@@ -7,12 +7,12 @@ import { parseArgs } from "node:util";
 import { lockedPrimeVersion } from "../utils/prime-version.mjs";
 
 const { values } = parseArgs({ options: {
-  home: { type: "string" }, project: { type: "string" },
+  home: { type: "string" }, cwd: { type: "string" },
   "prime-root": { type: "string" },
 } });
-assert(values.home && values.project, "Pass --home and --project for an installed isolated profile");
+assert(values.home && values.cwd, "Pass --home and --cwd for an installed isolated profile");
 const home = realpathSync(values.home);
-const project = realpathSync(values.project);
+const cwd = realpathSync(values.cwd);
 const source = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 process.env.HOME = home;
 process.env.PRIME_AGENT_CODING_AGENT_DIR = join(home, ".prime", "agent");
@@ -20,18 +20,17 @@ process.env.PI_CODING_AGENT_DIR = process.env.PRIME_AGENT_CODING_AGENT_DIR;
 process.env.PI_POOL_DIR = join(home, ".config", "pi-pool");
 process.env.PI_OFFLINE = "1";
 process.env.PI_SKIP_VERSION_CHECK = "1";
-process.env.VIREV_PROJECTS_FILE = join(home, ".prime", "agent", "virev-projects.json");
-process.env.VIREV_EXT_LOG = join(home, "virev-runtime-proof.log");
-process.chdir(project);
+process.env.GLOBAL_RULES_LOG = join(home, "global-rules-runtime-proof.log");
+process.chdir(cwd);
 const primeRoot = values["prime-root"] ? realpathSync(values["prime-root"])
   : dirname(dirname(fileURLToPath(import.meta.resolve("prime-agent"))));
 const primePackage = JSON.parse(readFileSync(join(primeRoot, "package.json"), "utf8"));
 assert.equal(primePackage.version, lockedPrimeVersion(fileURLToPath(new URL("..", import.meta.url))));
 const { DefaultResourceLoader, SettingsManager } = await import(pathToFileURL(join(primeRoot, "dist", "index.js")).href);
 const loader = new DefaultResourceLoader({
-  cwd: project,
+  cwd,
   agentDir: process.env.PRIME_AGENT_CODING_AGENT_DIR,
-  settingsManager: SettingsManager.create(project, process.env.PRIME_AGENT_CODING_AGENT_DIR),
+  settingsManager: SettingsManager.create(cwd, process.env.PRIME_AGENT_CODING_AGENT_DIR),
   bundledSkillsDir: null,
   noPromptTemplates: true,
   noThemes: true,
@@ -45,7 +44,7 @@ const aiEntry = execFileSync(process.execPath, ["--input-type=module", "-e",
   'process.stdout.write(import.meta.resolve("@earendil-works/pi-ai"))'],
   { cwd: primeRoot, encoding: "utf8" });
 const { getModel, streamSimple } = await import(aiEntry);
-const model = getModel("anthropic", "claude-opus-5");
+const model = getModel("anthropic", "claude-fable-5");
 assert(model, "The native catalog must include the chosen serialization model");
 const noNetwork = new Error("offline provider payload capture");
 let fetchCalls = 0;
@@ -84,56 +83,47 @@ for (let pass = 1; pass <= 2; pass++) {
   const actualSkills = skills.skills.map(skill => realpathSync(skill.filePath)).sort();
   assert.deepEqual(actualSkills, expectedSkills, "Native loader must discover every custom skill exactly once");
   const commands = result.extensions.flatMap(extension => [...extension.commands.keys()]);
-  assert.equal(commands.includes("virev-status"), false, "Removed status command must not load");
-  for (const command of ["account", "virev-reload", "what-did-i-say", "agent-chat"]) {
+  for (const command of ["virev-status", "virev-reload"]) assert.equal(commands.includes(command), false, `Removed /${command} must not load`);
+  for (const command of ["account", "what-did-i-say", "agent-chat"]) {
     assert.equal(commands.filter(name => name === command).length, 1, `Expected one /${command} after pass ${pass}`);
   }
   const extensionPaths = result.extensions.map(extension => realpathSync(extension.resolvedPath));
   assert(extensionPaths.includes(realpathSync(join(home, ".local/share/pi-pool/current/app/extension/index.ts"))));
-  assert(extensionPaths.includes(realpathSync(join(source, "components/virev/extensions/virev.ts"))));
   assert(extensionPaths.includes(realpathSync(join(source, "components/user-history/extension/index.ts"))));
   const history = result.extensions.find(extension => realpathSync(extension.resolvedPath) === realpathSync(join(source, "components/user-history/extension/index.ts")));
   assert(history.flags.has("agent-chat-socket"), "Native history package must register --agent-chat-socket");
-  assert.equal(existsSync(join(project, ".prime/agent/extensions/virev.ts")), false);
-  assert.equal(existsSync(join(project, ".prime/agent/ext-impl/virev")), false);
-  assert.equal(existsSync(join(project, ".prime/agent/virev-project.json")), false);
-  const virevPath = realpathSync(join(source, "components/virev/extensions/virev.ts"));
-  const virev = result.extensions.find(extension => realpathSync(extension.resolvedPath) === virevPath);
-  assert(virev, "Native loader must discover Virev");
-  const notifications = [];
-  const ctx = { cwd: project, hasUI: true,
-    ui: { notify: message => notifications.push(message), setStatus() {} } };
+  for (const name of ["virev.ts", "global-rules.ts"]) {
+    assert.equal(existsSync(join(cwd, ".prime/agent/extensions", name)), false, `No project-local ${name}`);
+  }
+  const rulesPath = realpathSync(join(source, "components/global-rules/index.ts"));
+  assert(extensionPaths.includes(rulesPath));
+  assert(!extensionPaths.some(path => path.includes("/components/virev/")), "The retired extension must not load");
+  const rules = result.extensions.find(extension => realpathSync(extension.resolvedPath) === rulesPath);
+  assert.deepEqual([...rules.handlers.keys()].sort(), ["tool_call"], "A clean load registers no failure notice");
+  assert.deepEqual([...rules.tools.keys()], [], "global-rules adds no tool and no prompt text");
+  const ctx = { cwd, hasUI: false };
   try {
-    const handlers = Object.fromEntries(["session_start", "tool_call", "before_agent_start"].map(name => {
-      const registered = virev.handlers.get(name) ?? [];
-      assert.equal(registered.length, 1, `Expected one Virev ${name} handler`);
+    const handlers = Object.fromEntries(["tool_call"].map(name => {
+      const registered = rules.handlers.get(name);
+      assert.equal(registered.length, 1, `Expected one global-rules ${name} handler`);
       return [name, registered[0]];
     }));
-    await handlers.session_start({ type: "session_start", reason: pass === 1 ? "startup" : "reload" }, ctx);
-    assert.deepEqual(notifications, [], "Virev startup must not report errors");
-    const blocked = await handlers.tool_call({ type: "tool_call", toolName: "ipython", toolCallId: "guard-proof",
-      input: { code: 'bash("git reset --hard")' } }, ctx);
-    assert.equal(blocked?.block, true, "Loaded guard must reject a destructive command without executing it");
+    for (const where of [cwd, home]) {
+      const blocked = await handlers.tool_call({ type: "tool_call", toolName: "ipython", toolCallId: "guard-proof",
+        input: { code: 'bash("grep -r needle ~/.prime/agent")' } }, { ...ctx, cwd: where });
+      assert.equal(blocked?.block, true, "The grep guard must refuse a recursive grep of the agent folder from every cwd");
+    }
     const allowed = await handlers.tool_call({ type: "tool_call", toolName: "ipython", toolCallId: "read-proof",
       input: { code: 'bash("git status")' } }, ctx);
     assert.equal(allowed, undefined, "Loaded guard must allow a read-only command");
-    const outside = await handlers.tool_call({ type: "tool_call", toolName: "ipython", toolCallId: "unconfigured-proof",
-      input: { code: 'bash("git reset --hard")' } }, { ...ctx, cwd: home });
-    assert.equal(outside, undefined, "Auto-sns-agent policy must not apply to an unconfigured directory");
-    assert.equal(virev.handlers.has("context"), false, "Virev must not rewrite outgoing history");
-    const event = { type: "before_agent_start", systemPrompt: "HOST PROMPT" };
-    const updated = await handlers.before_agent_start(event, ctx);
-    const document = readFileSync(join(source, "skills/unslop/SKILL.md"), "utf8").trim();
-    assert(updated?.systemPrompt.includes(document), "Loaded system instructions must include the bundled document");
-    assert.deepEqual(await handlers.before_agent_start(event, ctx), updated, "System instructions must stay stable across turns");
-    assert.equal(await handlers.before_agent_start({ ...event, systemPrompt: updated.systemPrompt }, ctx), undefined);
+    const systemPrompt = "HOST PROMPT";
     const first = { role: "user", content: "Runtime proof.", timestamp: 1 };
     const assistant = { role: "assistant", content: [{ type: "toolCall", id: "call-proof", name: "read_file", arguments: { path: "sample.txt" } }],
       api: model.api, provider: model.provider, model: model.id, stopReason: "toolUse", timestamp: 2 };
     const tool = { role: "toolResult", toolCallId: "call-proof", toolName: "read_file", content: [{ type: "text", text: "Sample text." }], isError: false, timestamp: 3 };
-    const payload1 = await capture(updated.systemPrompt, [first]);
-    const payload2 = await capture(updated.systemPrompt, [first, assistant, tool]);
-    const payload3 = await capture(updated.systemPrompt, [first, assistant, tool,
+    const payload1 = await capture(systemPrompt, [first]);
+    const payload2 = await capture(systemPrompt, [first, assistant, tool]);
+    const payload3 = await capture(systemPrompt, [first, assistant, tool,
       { ...assistant, content: [{ type: "text", text: "Read complete." }], stopReason: "stop", timestamp: 4 },
       { role: "user", content: "Continue.", timestamp: 5 }]);
     assert.deepEqual(payload2.system, payload1.system);
@@ -142,10 +132,10 @@ for (let pass = 1; pass <= 2; pass++) {
     assert.deepEqual(historicalMessages(payload3.messages.slice(0, payload2.messages.length)), historicalMessages(payload2.messages));
     report = { host: primePackage.name, version: primePackage.version, passes: pass,
       skills: actualSkills.length, extensionPaths, commands,
-      checks: { statusCommandAbsent: true, guardBlocked: true, readAllowed: true,
-        fullRulesInSystem: true, contextHandlerAbsent: true, providerHistoryStable: true,
-        providerNetworkCalls: fetchCalls, unrelatedProjectAllowed: true, historyCommandsAndFlag: true },
-      proof: "Native source discovery, guard and stable system handlers, Anthropic payload prefix equality, and repeated resource reload. No shell execution, model, account, or MCP calls." };
+      checks: { retiredCommandsAbsent: true, guardBlocked: true, readAllowed: true,
+        providerHistoryStable: true,
+        providerNetworkCalls: fetchCalls, historyCommandsAndFlag: true },
+      proof: "Native source discovery, guard handlers, Anthropic payload prefix equality, and repeated resource reload. No shell execution, model, account, or MCP calls." };
   } finally {
     for (const extension of result.extensions) {
       for (const shutdown of extension.handlers.get("session_shutdown") ?? []) {

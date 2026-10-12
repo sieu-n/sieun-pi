@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { DaemonClient, SessionManager } from "prime-agent";
 import { stopChatNativeDaemon } from "./chat-native-fixture.ts";
+import { reapServeOnExit } from "./serve-reaper.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const primeRoot = resolve(dirname(fileURLToPath(import.meta.resolve("prime-agent"))), "..");
@@ -76,9 +77,11 @@ test("a chat that finds no daemon starts one through the installed launcher, onc
   const chatCli = async (command: string, port: number, dataDir: string) => (await run(node,
     [join(packageRoot, "../../scripts/cli.mjs"), "chat", command, "--port", String(port), "--socket", socket, "--data-dir", dataDir], { env, timeout: 60000 })).stdout.trim();
   const dataA = join(root, "chat-a"), dataB = join(root, "chat-b");
+  const reaper = reapServeOnExit(root);
   context.after(async () => {
     await chatCli("stop", portA, dataA).catch(() => {});
     await chatCli("stop", portB, dataB).catch(() => {});
+    await reaper.stop();
     const daemon = new DaemonClient(socket);
     await stopChatNativeDaemon(daemon, socket).catch(() => {});
     daemon.close();

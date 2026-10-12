@@ -1,3 +1,4 @@
+import { cacheHitShare } from "../shared/cache-health.ts";
 import { USAGE_METRICS, type UsageBucket, type UsageIngest, type UsageMetric, type UsageSeries, type UsageSummary, type UsageTokens, type UsageWindow } from "../shared/usage.ts";
 
 /** Pure helpers for Settings > Usage: number formats, the token kind (metric) choices, the window and bucket choices, the chart layout and the ingest line. */
@@ -73,6 +74,20 @@ export function cost(usd: number | null): string {
 export function tps(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "–";
   return value < 100 ? value.toFixed(1) : String(Math.round(value));
+}
+
+/** A cache hit rate for a card, a cell or the hover: "96.8%", "100%", or a dash when nothing was prompted. */
+export function hitRate(tokens: { input: number; cacheRead: number; cacheWrite: number }): string {
+  const hit = cacheHitShare(tokens);
+  if (hit === null) return "–";
+  return hit >= 0.9995 ? "100%" : (hit * 100).toFixed(1) + "%";
+}
+
+/** The cache hit rate per spark bucket; a bucket with no prompt keeps the rate before it (the first known one at the start), so idle time is no drop. */
+export function hitSpark(spark: Record<UsageMetric, number[]>): number[] {
+  const hits = spark.cacheRead.map((cacheRead, i) => cacheHitShare({ input: spark.input[i] ?? 0, cacheRead, cacheWrite: spark.cacheWrite[i] ?? 0 }));
+  let last = hits.find(hit => hit !== null) ?? 0;
+  return hits.map(hit => (last = hit ?? last));
 }
 
 /** An SVG path through `values` scaled into width by height, oldest left. One flat line when every value is zero. */

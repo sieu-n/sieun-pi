@@ -149,7 +149,7 @@
   .chat-composer:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong)); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-small); }
   .chat-composer.dragging { border-color: var(--accent); background: var(--accent-soft); }
   .row { display: flex; align-items: flex-end; gap: 6px; padding: 5px 5px 5px 16px; }
-  textarea { flex: 1; min-width: 0; display: block; resize: none; border: 0; background: none; outline: none; padding: 6px 0; line-height: 1.5; max-height: 40vh; font-size: 16px; }
+  textarea { flex: 1; min-width: 0; display: block; resize: none; border: 0; background: none; outline: none; padding: 6px 0; line-height: 1.5; max-height: 40vh; font-size: calc(var(--chat-text) + 1px); }
   textarea::placeholder { color: var(--text-faint); }
   .send { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--bg-active); color: var(--text-faint); transition: background-color 0.12s, color 0.12s; }
   .send.ready { background: var(--primary); color: var(--primary-text); }

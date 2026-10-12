@@ -52,6 +52,7 @@ class Ui {
   sidebarSort = $state<SidebarSort>(stored("chat.sidebarSort") === "recent" ? "recent" : "grouped");
   sidebarView = $state<SidebarView>(stored("chat.sidebarView") === "tags" ? "tags" : "current");
   agentsOpen = $state(false);
+  bookmarksOpen = $state(false);
   /** The notepad panel beside the open thread; the choice holds across threads and reloads. */
   notesOpen = $state(stored("chat.notesOpen") === "1");
   /** The Heartbeats section at the top of the sidebar; open unless folded, and the choice holds across reloads. */

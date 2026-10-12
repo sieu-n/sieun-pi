@@ -1,82 +1,68 @@
 ---
 name: show-me-your-work
-description: "Keep a reviewable decision trail for long-running or unattended work: a TSV log with one row per decision (what, why, evidence, result). Local by default; commit it when a reviewer needs the trail to trust the result. Use for `show-me-your-work`, autonomous or multi-phase runs, or work a human reviews after stepping away."
+description: "Keep a decision trail a reviewer can check after long, unattended, or multi-phase work. The trail is a TSV log with one row per decision: what, why, evidence, and result. Use for `show-me-your-work`, autonomous or multi-phase runs, or work a human reviews after stepping away."
 disable-model-invocation: true
 ---
 
 # Show me your work
 
-For work a human reviews after the fact, a decision trail lets them reconstruct what was decided, why, and on what evidence, without rerunning the work or reading the whole transcript. Keep one canonical log so the trail is consistent and a future agent can find it.
+Keep one TSV decision log per run, so a reviewer can see what you decided, why, and on what evidence without reading the transcript.
 
-## The format
+## Format
 
-A single TSV file, one row per decision. TSV because GitHub renders it as a sortable table, `column -s$'\t' -t` and spreadsheets read it, and a row appends with one command. Cells stay single-line. Evidence is a pointer, not prose.
+Start the log from `references/decision-log-template.tsv`, which holds the header row. Each cell stays on one line.
 
-Copy `references/decision-log-template.tsv` (the header row) to start a clean log. Columns:
+- `ts` is the UTC ISO 8601 timestamp.
+- `phase` names the phase or workstream.
+- `decision` says what you chose or did, in one line.
+- `why` gives the reason in plain words, such as `explored options first, this was a one-way door`.
+- `evidence` points at proof: a commit SHA, PR number, `file:line`, or an artifact, trace, or screenshot path, never a paragraph.
+- `result` gives the outcome, such as `tests green`, `reverted`, `pixel-diff 0`, `INCONCLUSIVE`, or `open`.
 
-- **ts.** ISO8601 timestamp. The timeline axis.
-- **phase.** The phase or workstream.
-- **decision.** What was chosen or done, one line.
-- **why.** The reason in plain words. If a principle drove it, say it plainly (`explored options first, this was a one-way door`), not as a jargon tag.
-- **evidence.** A link or path that proves it: commit SHA, PR number, `file:line`, or an artifact, trace, or screenshot path. Never a paragraph.
-- **result.** The outcome or predicate state: `tests green`, `reverted`, `pixel-diff 0`, `INCONCLUSIVE`, `open`.
-
-An example, plain-spoken so a reviewer reads it at a glance. This is illustration only; don't copy these rows into a real log.
+Rows read like this:
 
 ```
 ts	phase	decision	why	evidence	result
-2026-05-24T09:02:00Z	frame	counted the work first, about 100 components and roughly 75 hours	wanted to know the size before starting a long run	commit 3a9f1c2	found 5 things to sort out before starting
-2026-05-24T09:40:00Z	harness	took screenshots of the old version before changing anything	so we can compare old against new and catch any visual change	scripts/snapshot.sh, baseline/	saved 120 reference screenshots
-2026-05-24T11:15:00Z	widget	moved the widget styles over without changing how it looks	keep the change small and the result identical	commit 7c21e0a, pixel-diff 0	looks identical, tests pass
-2026-05-24T12:30:00Z	widget	threw out a helper's work because its screenshots were blank	checked the real files instead of trusting its summary	worktree reset	reverted, tightened the instructions for next time
+2026-05-24T09:40:00Z	harness	took screenshots of the old version before changing anything	so we can compare old against new	scripts/snapshot.sh, baseline/	saved 120 reference screenshots
+2026-05-24T12:30:00Z	widget	threw out a helper's work because its screenshots were blank	checked the real files instead of trusting its summary	worktree reset	reverted, tightened the helper brief
 ```
 
 ## Logging a row
 
-Write each entry the way you'd tell a teammate what you did. Plain words, concrete actions, no AI speak or abstract jargon (the **unslop** skill applies to log text too). A reviewer should understand each row without decoding it.
+Append rows with `scripts/log.sh <logfile> <phase> <decision> <why> <evidence> <result>`. The script stamps `ts`, writes the header on first use, replaces tabs and newlines with spaces, and puts a single quote before any cell that starts with `=`, `+`, `-`, or `@` so a spreadsheet does not run it as a formula. If you append with `printf` instead, clean the same bytes yourself.
 
-Use the helper so rows stay well-formed: `scripts/log.sh <logfile> <phase> <decision> <why> <evidence> <result>`. It stamps `ts`, writes the header on first use, strips stray tabs/newlines, and prefixes any cell starting with `=`, `+`, `-`, or `@` with a single quote so a reviewer opening the log in a spreadsheet doesn't trigger formula execution. A bare `printf` appending a row works too, but mind those same bytes if cells come from generated or user-supplied text.
-
-Log decision points and checkpoints, not every action: a fork chosen, a unit completed with its verification result, a pivot or revert with its trigger, a blocker surfaced, a gate fixed. For loop runs, one row per iteration. Skip the trivial and self-evident.
-
-## Where it lives
-
-By default the log is a working artifact, not committed. Keep it at `decisions.tsv` in the work dir, or `.audit/<task-slug>.tsv` when several efforts run at once, and leave it out of git. Most work doesn't need a committed trail; the local log still keeps the run honest and can be discarded after.
-
-Commit it only when the work is ambitious enough that a reviewer needs the trail to trust the result: a large cross-language port, a multi-week migration, anything where confidence has to be shown rather than assumed. A committed log renders as a table in the PR.
+Write each row the way you would tell a teammate what you did, and follow the `unslop` skill. Log decision points and checkpoints: a fork chosen, a unit finished with its verification result, a pivot or revert with its trigger, a blocker, a gate fixed. In a loop, log one row per iteration. Skip trivial steps.
 
 ## Rules
 
-- One row is one decision or checkpoint. If it doesn't fit on one line, the decision isn't crisp yet.
-- Append-only. A wrong call gets a new row that supersedes it. Never edit or delete history.
-- Prefer evidence produced by committed scripts over hand-made one-offs, so a reviewer can re-run it (the **encode-lessons-in-structure** principle skill).
+- One row holds one decision, and a decision that does not fit on one line is not clear yet.
+- The log is append-only, so a wrong call gets a new row that replaces it.
+- Evidence from committed scripts beats one-off checks, because a reviewer can run it again (see `../principle-encode-lessons-in-structure/SKILL.md`).
+
+## Where it lives
+
+Keep the log at `decisions.tsv` in the work directory, or at `.audit/<task-slug>.tsv` when several efforts run at once, and leave it out of git. Commit it only when a reviewer needs the trail to trust the result, such as a large cross-language port or a multi-week migration. GitHub renders a committed TSV as a table, and `column -s$'\t' -t decisions.tsv` renders it in a terminal.
 
 ## Audit the log against the transcript
 
-At the end of the run, before handing back, check the log told the truth. Read this run's transcript at the `Conversation log:` path named in your system prompt. Don't sweep `~/.prime/agent/sessions/`; those logs belong to other sessions. Walk the log against what actually happened:
+Before you hand back, read this run's transcript at the `Conversation log:` path in your system prompt. Do not read other sessions under `~/.prime/agent/sessions/`.
 
-- Every row maps to a real action. Cut invented or aspirational entries.
-- Each row's evidence resolves and shows what the row claims.
-- A fork, pivot, or abandoned approach that shaped the work but isn't logged is a gap. Add it.
-- Drop padding. If nobody would audit a row, it doesn't earn its place.
+- Cut any row that does not match a real action.
+- Check that each row's evidence resolves and shows what the row claims.
+- Add a row for any fork, pivot, or abandoned approach that shaped the work but is missing.
+- Cut rows nobody would audit.
 
-Fix the log, not the story. If the work diverged from what a row claims, the row is wrong.
+If the work differs from a row, fix the row.
 
-## Cross-model review of the trail
+## Cross-model review
 
-Before handing back, you must spawn a subagent on a different model family from the one that did the work. Self-review is not a substitute; the point is fresh eyes you cannot bring yourself. The subagent reads the audit trail and the run's transcript, then flags what the user should pay attention to. Not a redo of the work, a scan for what's suboptimal or risky.
+Before you hand back, spawn a reviewer on a different model family than the one that did the work. Pick its model from the `allowed` list in `~/.prime/agent/pstack-models.json` (repo default `config/pstack-models.json`). The reviewer reads the log and the transcript and flags what the user should check:
 
-- Decisions logged with weak or absent evidence.
-- Verification steps skipped or claimed without proof in the transcript.
-- Choices that look risky in hindsight (premature, scope-creeping, papering over a symptom).
-- Gaps the user would otherwise miss on a casual skim.
+- It flags decisions with weak or missing evidence.
+- It flags verification steps that the transcript does not show.
+- It flags choices that look risky now, such as premature work, scope creep, or a fix that hides a symptom.
+- It flags gaps the user would miss on a quick read.
 
-Every reply for a run that produced a trail ends with an "Attention" section. Lead with the reviewer's model on its own line (`reviewed by <model>`), then list each flag pointing to specific rows or moments. "No flags" is a valid value; the model name is not. The self-audit asks if the log told the truth; this asks what the user should still scrutinize even when it did.
+End every reply for a run with a trail in an "Attention" section. Its first line is `reviewed by <model>`, and the flags follow, each pointing at specific rows or moments. "No flags" is a valid list. The model name is required.
 
-## Reviewing the trail
-
-Read top to bottom, follow the evidence pointers, spot-check. GitHub renders a committed TSV as a table; `column -s$'\t' -t decisions.tsv` renders it in a terminal. A row whose evidence doesn't resolve, or whose result is unverified, is the audit catching a gap.
-
-## Composing this skill
-
-Other skills route their audit trail here instead of inventing one. Reference it by name and let it own the format; don't restate the columns.
+Other skills that need an audit trail point here and do not restate the columns.

@@ -1,26 +1,23 @@
 ---
 name: principle-model-the-domain
-description: "Apply when writing stateful logic, or when code branches a lot or repeats a shape assumption across files. Encode the domain in a structure instead of scattered conditionals."
+description: "Use when writing stateful logic, or when code branches a lot or repeats a shape assumption across files. Encode the domain in a data structure instead of scattered conditionals."
 disable-model-invocation: true
 ---
 
-# Model the Domain
+# Model the domain
 
-Encode the real domain in a data structure instead of scattering it across conditionals.
+Encode the real domain in a data structure instead of spreading it across conditionals. Pick the structure when you write the code, because a later refactor tends to get deferred.
 
-**Why:** Scattered booleans, repeated shape assumptions, and branching spread across files are accidental complexity. A structure that matches the domain makes invalid states unrepresentable and deletes branches. Choosing it at write time is cheap; recovering it later reads as a refactor and gets deferred.
+Reach for the structure that matches the domain:
 
-**Reach for structures like these:**
+- Use a state machine instead of scattered booleans, phases, or lifecycle checks.
+- Use a typed model instead of loose parameters or repeated shape assumptions.
+- Use a map, registry, lookup table, or discriminated union instead of branches spread across files.
+- Use a reducer or a command and event model instead of ad hoc state mutations.
+- Group a module around one body of domain knowledge, not around steps such as load, validate, transform, and save.
+- Use a queue, cache, index, tree, or normalized collection when the data access pattern calls for it.
+- If none of these fits, list what the code must never allow and how the data gets read, then pick the structure that encodes that.
 
-- A state machine instead of scattered booleans, phases, or lifecycle checks.
-- A typed object/model instead of loose parameters or repeated shape assumptions.
-- A map, registry, lookup table, or discriminated union instead of branching spread across files.
-- A reducer or command/event model instead of ad hoc state mutations.
-- A module organized around one body of domain knowledge instead of a sequence such as load, validate, transform, and save. Execution order is not ownership.
-- A small module boundary that gathers repeated behavior, ownership, or invariants.
-- A queue, cache, index, graph/tree, or normalized collection where the data access pattern calls for it.
-- Any other structure that fits. The list above covers the common cases only. When none fits, work out what the code must never allow and how the data gets read, then find the structure that encodes exactly that.
+Keep plain code when its shape is already clear, local, and unlikely to grow. Reject an abstraction that adds indirection without removing branches, duplicated rules, invalid states, or lifecycle risk.
 
-Do not force an abstraction. Prefer boring code if the current shape is already clear, local, and unlikely to grow. Be skeptical of an abstraction that adds indirection without removing branches, duplicated rules, invalid states, or lifecycle risk.
-
-The tell that you skipped this is a new feature that grows an existing if/else chain by one more branch, or a second boolean that must stay in sync with the first. Temporal decomposition is another tell. Phase-named modules repeat the same domain rules across steps.
+You skipped this rule when a new feature adds one more branch to an existing if/else chain, adds a second boolean that must stay in sync with the first, or repeats the same domain rule in several phase-named modules.

@@ -1,0 +1,61 @@
+{
+  "name": "Skills and harness",
+  "ownerWords": "Add a Harness health duty that prunes bloated skills every day. Do not count skill word counts or SKILL.md line counts; those numbers mean nothing.",
+  "goal": "Skills work and agents use them right: every skill passes its smoke check, the owner never gives the same correction twice, every tracked skill is read by an agent within 14 days, no two skills do one job, and the prompt cache read share stays high hour by hour and day by day. Tell the owner only what was fixed and anything that needs his call.",
+  "metrics": [
+    {
+      "key": "skill_smoke_failures",
+      "label": "Skills that fail their smoke check",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "repeat_corrections_7d",
+      "label": "Owner corrections given again in 7 days (ledger repeats)",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "unread_14d",
+      "label": "Tracked skills no agent read in 14 days",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "overlapping_pairs",
+      "label": "Skill pairs whose descriptions overlap 20% or more",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "cache_read_ratio_1h",
+      "label": "Prompt cache read share, last hour",
+      "op": ">=",
+      "target": 90,
+      "unit": "%"
+    },
+    {
+      "key": "cache_read_ratio_24h",
+      "label": "Prompt cache read share, last day",
+      "op": ">=",
+      "target": 94,
+      "unit": "%"
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "04:00"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/harness-health.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Fix skills that fail or that agents keep getting wrong; never trim a skill for its size. One subagent per skill or cache drop. skill_smoke_failures: reproduce, fix the skill or its script, rerun the check until it passes. repeat_corrections_7d: make the rule hold, with a check or test, in the skill, script or memory agents should have followed; a repeat no skill owns stays with Chat system. unread_14d: fix the description so agents load it, or delete it if unneeded. Overlapping pair: merge into one owner. cache_read_ratio: find the session and the plugin or entry that broke the cache (see flagged lines), fix it at the root, and add a test that fails when caching breaks. In auto-sns-agent read skills with `node scripts/skills/read-skill.mjs <skill>` and commit with `node scripts/repo/agent/commit.mjs`; commit sieun-pi/skills locally, no push. Report each fix with the check that now passes. Ask the owner before deleting a skill agents still read or moving ownership in a merge.",
+  "boardGoal": "p215"
+}

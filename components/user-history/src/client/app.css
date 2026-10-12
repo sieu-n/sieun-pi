@@ -31,6 +31,9 @@
   --primary-text: light-dark(#06344f, #0a2233);
   --primary-edge: light-dark(rgba(6, 52, 79, 0.4), rgba(10, 34, 51, 0.28));
   --user-bubble: light-dark(#eef0f3, #26282f);
+  --mine-bubble: light-dark(#dcebf7, #1f3a52);
+  /* Base text size; Settings > Appearance > Text size moves it (`data-text-size`). */
+  --chat-text: 15px;
   --danger: light-dark(#dc2626, #f87171);
   --danger-soft: light-dark(#fef2f2, rgba(220, 38, 38, 0.16));
   --success: light-dark(#0f9d6e, #34d399);
@@ -46,12 +49,36 @@
   --column: 760px;
   --sidebar: 280px;
 }
-/* The OS scheme wins by default; `<html style="color-scheme: dark">` forces one for checks. */
+/*
+ * Settings > Appearance (src/client/appearance.ts) sets data attributes on <html>; with none set the tokens above apply unchanged.
+ * Theme forces a scheme, so every light-dark() token follows it. The OS scheme wins by default.
+ */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-text-size="small"] { --chat-text: 14px; }
+:root[data-text-size="large"] { --chat-text: 16.5px; }
+/* An accent sets its base and bold tone; the soft, fill, button and tint tokens mix from them. `data-swatch` paints a picker dot. */
+[data-swatch="ocean"] { --accent: light-dark(#0077c0, #2e9fe6); }
+:root[data-accent="violet"], [data-swatch="violet"] { --accent: light-dark(#6d4fd8, #a08cf5); --accent-bold: light-dark(#5236b5, #c4b5fd); --accent-fill: #6d4fd8; }
+:root[data-accent="green"], [data-swatch="green"] { --accent: light-dark(#0f8a5f, #34c48b); --accent-bold: light-dark(#0b6b4a, #7ee0b5); --accent-fill: #0f8a5f; }
+:root[data-accent="amber"], [data-swatch="amber"] { --accent: light-dark(#c26a00, #f0a43a); --accent-bold: light-dark(#964f00, #fcc977); --accent-fill: #c26a00; }
+:root[data-accent="rose"], [data-swatch="rose"] { --accent: light-dark(#d23f6b, #f2779b); --accent-bold: light-dark(#a82a52, #f9a8c0); --accent-fill: #d23f6b; }
+:root[data-accent="graphite"], [data-swatch="graphite"] { --accent: light-dark(#4b5563, #a7afbc); --accent-bold: light-dark(#2f3640, #d3d8e0); --accent-fill: #4b5563; }
+:root[data-accent] {
+  --accent-soft: light-dark(color-mix(in srgb, var(--accent) 8%, transparent), color-mix(in srgb, var(--accent) 14%, transparent));
+  --primary: light-dark(color-mix(in srgb, var(--accent) 45%, #fff), var(--accent-bold));
+  --primary-hover: light-dark(color-mix(in srgb, var(--accent) 55%, #fff), color-mix(in srgb, var(--accent-bold) 85%, #fff));
+  --primary-active: light-dark(color-mix(in srgb, var(--accent) 65%, #fff), color-mix(in srgb, var(--accent-bold) 85%, #000));
+  --primary-text: light-dark(color-mix(in srgb, var(--accent) 40%, #000), color-mix(in srgb, var(--accent) 20%, #000));
+  --row-hover: light-dark(color-mix(in srgb, var(--accent) 8%, #fff), color-mix(in srgb, var(--accent) 10%, #17181c));
+  --row-selected: light-dark(color-mix(in srgb, var(--accent) 14%, #fff), color-mix(in srgb, var(--accent) 20%, #17181c));
+  --mine-bubble: light-dark(color-mix(in srgb, var(--accent) 14%, #fff), color-mix(in srgb, var(--accent) 25%, #17181c));
+}
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
   font-family: var(--font);
-  font-size: 15px;
+  font-size: var(--chat-text);
   line-height: 1.6;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   color: var(--text);
@@ -80,6 +107,9 @@ a { color: var(--accent); }
 .prose ul, .prose ol { padding-left: 1.5em; }
 .prose li { padding-left: 0.2em; }
 .prose li + li { margin-top: 0.4em; }
+:root[data-density="compact"] .prose { line-height: 1.55; }
+:root[data-density="compact"] .prose :is(p, ul, ol, blockquote, .table-wrap, .code-block) { margin-bottom: 0.65em; }
+:root[data-density="compact"] .prose li + li { margin-top: 0.15em; }
 .prose li::marker { color: var(--text-faint); }
 .prose li > ul, .prose li > ol { margin: 0.4em 0 0; }
 .prose li > p { margin: 0 0 0.5em; }

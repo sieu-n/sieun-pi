@@ -1,4 +1,4 @@
-import { get, post } from "./api.ts";
+import { get, OWNER_UI_HEADERS, post } from "./api.ts";
 import { clockTime } from "./format.ts";
 import type { DutyRunRecord, DutySchedule, DutyView } from "../shared/chat-duties.ts";
 
@@ -6,7 +6,7 @@ export type DutyAction = "run" | "pause" | "resume" | "schedule";
 const route = (id: string) => "api/threads/" + encodeURIComponent(id) + "/duties";
 export const dutiesApi = {
   view: (id: string) => get<{ duties: DutyView[] }>(route(id)),
-  act: (id: string, duty: string, action: DutyAction, schedule?: DutySchedule) => post<{ duties: DutyView[] }>(route(id), { duty, action, ...(schedule ? { schedule } : {}) }),
+  act: (id: string, duty: string, action: DutyAction, schedule?: DutySchedule) => post<{ duties: DutyView[] }>(route(id), { duty, action, ...(schedule ? { schedule } : {}) }, undefined, OWNER_UI_HEADERS),
 };
 
 /** The dot a duty row shows: its last verdict, or running, paused, or new before its first run. */
@@ -40,21 +40,32 @@ export function nextLabel(view: DutyView, now: number): string {
   return view.nextAt <= now ? "due now" : `next ${whenLabel(view.nextAt, now)}`;
 }
 
-/** The last run in words: "missed 2 of 7 · 23:07 yesterday", "met · 23:07", "no run yet". Skipped slots count in neither number. */
+/**
+ * What the owner reads for a run's verdict (owner 10-10, p256: "Use off target"): a run whose numbers came up short is "off target"; "missed"
+ * is only for a slot that did not run at all (the server's `skipped`).
+ */
+export const VERDICT_WORDS = { met: "met", missed: "off target", error: "precheck failed", skipped: "missed" } as const;
+
+/**
+ * The last run in words: "off target 2 of 7 · 23:07 yesterday", "met · 23:07", "no run yet". The latest slot that did not run reads "missed".
+ * Slots that did not run count in neither number.
+ */
 export function lastLabel(view: DutyView, now: number): string {
+  const newest = view.runs[0];
   const runs = view.runs.filter(run => run.verdict !== "skipped").slice(0, 7);
   const last = runs[0];
+  if (newest && newest.verdict === "skipped" && (!last || newest.at > last.at)) return `${VERDICT_WORDS.skipped} · ${whenLabel(newest.at, now)}`;
   if (!last) return "no run yet";
-  const word = last.verdict === "met" ? "met" : last.verdict === "error" ? "precheck failed" : "missed";
+  const word = VERDICT_WORDS[last.verdict];
   const misses = runs.filter(run => run.verdict === "missed").length;
   return `${word}${misses ? ` ${misses} of ${runs.length}` : ""} · ${whenLabel(last.at, now)}`;
 }
 
-/** The card header: "1 duty", "2 duties, 1 missed". */
+/** The card header: "1 duty", "2 duties, 1 off target". */
 export function dutiesCount(views: readonly DutyView[]): string {
   if (!views.length) return "";
-  const missed = views.filter(view => ["missed", "error"].includes(dutyState(view))).length;
-  return `${views.length} ${views.length === 1 ? "duty" : "duties"}${missed ? `, ${missed} missed` : ""}`;
+  const short = views.filter(view => ["missed", "error"].includes(dutyState(view))).length;
+  return `${views.length} ${views.length === 1 ? "duty" : "duties"}${short ? `, ${short} off target` : ""}`;
 }
 
 /** The pass and fail history, oldest first: one entry per run, skipped slots included as grey. */

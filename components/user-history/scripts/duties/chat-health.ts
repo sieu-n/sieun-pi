@@ -4,18 +4,18 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { BoardStore } from "../../src/chat-board-store.ts";
-import { ACT_CLASSES, type ConvergenceMisses, NO_MISSES, type StepClass } from "../../src/chat-checkin.ts";
+import { type ConvergenceMisses, localTime, NO_MISSES } from "../../src/chat-checkin.ts";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import { placeholderTodo } from "../../src/shared/chat-board.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { CHECK_IN_PREFIX, foldReply, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
+import { foldReply, serverNote, type TurnStarter } from "../../src/shared/chat-feed.ts";
 import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
 import { boardClasses, daemonSessions } from "./board-classes.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
+import { noProgressHours, ownerBoardAsk, unfixedFlags } from "./checkin-quality.ts";
 import { unlinkedJobSentence } from "./job-mentions.ts";
-import { unresolvedAfterTurn } from "./unresolved-after-turn.ts";
 
 const HOUR = 60 * 60_000;
 const WINDOW_MS = 24 * HOUR;
@@ -29,13 +29,6 @@ const CORRECTION = /\b(?:i told you|i (?:already )?(?:said|asked)|didn['\u2019]?
 const QUOTED = /[\u201c"][^\u201d"]*[\u201d"]/g;
 /** The note the pool's extension appends to an error it retries: on a provider error the provider failed, not sieun-pi; on a token hook failure it is a break only if the retry also fails. */
 const POOL_RETRY_NOTE = / pi-pool: [\s\S]*; the retry uses [\s\S]*$/;
-/** An open-steps row of a check-in, with the step's class: `- p9 (stale-chase) "..." blocked, ..., last change 20 h ago`. */
-const CLASS_ROW = /^- (p\d+) \(([a-z-]+)\) /;
-/** The head of a check-in's open-steps list, and its fold line: a list without the fold names every open step. */
-const OPEN_STEPS = "\n\nOpen steps, oldest change first:\n";
-const OPEN_FOLD = /^- and \d+ more$/m;
-/** A step the check-ins kept listing in a class the chat must act on (ACT_CLASSES) for this long is stalled: the chat was told and did not move it. */
-const STALL_MS = 2 * HOUR;
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'\u2019._/-]*/gu;
 const BOARD_PREFIX = "[board] ";
 const BOARD_ANSWER = " and answered: ";
@@ -43,7 +36,7 @@ const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 
-type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; stalls_2h: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unresolved_after_turn: number } & ConvergenceMisses;
+type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -87,39 +80,12 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     if (watch) tally.seen.push({ signature: watch, slice });
   };
   const seen = new Set<string>();
-  /** Since when the check-ins have listed each step in an act class without a break; a row in another class, or a full list without it, ends the run. */
-  const acting = new Map<string, number>();
-  /** Each step listed in an act class for STALL_MS or more, by its id, at its latest such row. */
-  const stalls = new Map<string, { at: number; row: string }>();
   let turn: Turn | undefined;
   let settled = true;
   let failure: Failure | undefined;
   /** The latest token hook failure the pool queued a retry for. It is a break only if the turn ends on it; a later request that gets past the hook clears it. */
   let hookRetry: Failure | undefined;
 
-  /**
-   * `stalls_2h`: a step the check-ins listed in an act class (due, stale-chase, orphan) at every listing for STALL_MS or more. Its first such row
-   * is the check-in telling the chat; a chat that sets a wait, a todo or an owner by the next tick moved the step, whatever its last change.
-   */
-  const countStalls = (text: string, at: number) => {
-    const head = text.indexOf(OPEN_STEPS);
-    if (head < 0) return;
-    const listed = text.slice(head + OPEN_STEPS.length);
-    const seenSteps = new Set<string>();
-    for (const line of listed.split("\n")) {
-      const row = line.trim();
-      const open = CLASS_ROW.exec(row);
-      if (!open) continue;
-      const step = open[1]!;
-      const cls = open[2] as StepClass;
-      seenSteps.add(step);
-      if (!ACT_CLASSES.has(cls)) { acting.delete(step); continue; }
-      const since = acting.get(step) ?? at;
-      acting.set(step, since);
-      if (inWindow(at) && at - since >= STALL_MS) stalls.set(step, { at, row: `${cls} for ${Math.round((at - since) / HOUR)} h since the check-in told the chat: ${row}` });
-    }
-    if (!OPEN_FOLD.test(listed)) for (const step of acting.keys()) if (!seenSteps.has(step)) acting.delete(step);
-  };
   const closeTurn = () => {
     if (!turn || !inWindow(turn.at)) return;
     if (turn.starter === "owner" && turn.lastText) {
@@ -163,7 +129,6 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       if (serverNote(text)) {
         if (settled) openTurn("agent", at);
         settled = false;
-        if (text.startsWith(CHECK_IN_PREFIX)) countStalls(text, at);
         if (!inWindow(at)) continue;
         if (seen.has(text)) { tally.metrics.off_brief++; flag("off_brief", at, `repeated line: ${text}`, signature("repeat", text)); }
         seen.add(text);
@@ -174,6 +139,8 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
       const own = ownerWords(text);
       ownerSaid = own;
       if (inWindow(at) && own && CORRECTION.test(own.replace(QUOTED, ""))) { tally.metrics.corrections++; flag("corrections", at, own); }
+      // owner_board_asks: the owner had to ask the chat to tidy its plan, which the check-in should keep tidy (owner 10-12: remove the odd leftover steps and tidy the plan hierarchy).
+      if (inWindow(at) && own && ownerBoardAsk(own.replace(QUOTED, ""))) { tally.metrics.owner_board_asks++; flag("owner_board_asks", at, own); }
     } else if (message.role === "assistant") {
       failure = undefined;
       hookRetry = undefined;
@@ -204,7 +171,6 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
   closeTurn();
   settleFailure(undefined);
   settleHookRetry();
-  for (const [step, { at, row }] of stalls) { tally.metrics.stalls_2h++; flag("stalls_2h", at, row, `stalls_2h:${chat}:${step}`); }
   return true;
 }
 
@@ -255,13 +221,15 @@ async function readWatch(file: string | undefined): Promise<Watch> {
   catch { return {}; }
 }
 
-/** Yesterday's fixes to recheck, recurrences and corrections first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
+/** Yesterday's fixes to recheck, recurrences, merges without the owner's go, check-in findings left unfixed (the longest streaks, up to FEW) and corrections first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
-  const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("corrections")].slice(0, MAX_FLAGGED);
-  const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("stalls_2h"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
-    newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW),
-    newest("placeholder_todos", FEW), newest("unlinked_job_mentions", FEW), newest("unresolved_after_turn", FEW)];
+  const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("corrections"),
+    ...newest("owner_board_asks")].slice(0, MAX_FLAGGED);
+  const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
+    newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW), newest("idle_goals", FEW), newest("goal_gaps", FEW), newest("blocked_on_others", FEW),
+    newest("finished_open", FEW), newest("loose_goals", FEW), newest("extra_goals", FEW), newest("open_under_closed", FEW), newest("held_elsewhere", FEW), newest("wait_met", FEW), newest("stale_steps", FEW), newest("goals_to_fold", FEW), newest("one_session_load", FEW), newest("redundant_heartbeats", FEW),
+    newest("placeholder_todos", FEW), newest("unlinked_job_mentions", FEW)];
   while (picked.length < MAX_FLAGGED && queues.some(queue => queue.length)) {
     for (const queue of queues) { const next = queue.shift(); if (next && picked.length < MAX_FLAGGED) picked.push(next); }
   }
@@ -277,14 +245,18 @@ async function main(): Promise<void> {
   const sessionsDir = process.env.CHAT_HEALTH_SESSIONS_DIR || join(homedir(), ".prime/agent/sessions");
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
-  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, stalls_2h: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unresolved_after_turn: 0,
-    ...NO_MISSES },
+  const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0,
+    no_progress_hours: 0, ...NO_MISSES },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   await countPlaceholderTodos(new BoardStore(dataDir), ids, now, tally);
-  const unresolved = await unresolvedAfterTurn(dataDir, ids, now - WINDOW_MS, now);
-  tally.metrics.unresolved_after_turn = unresolved.length;
-  tally.flagged.set("unresolved_after_turn", unresolved);
+  const unfixed = (await Promise.all(ids.map(id => unfixedFlags(dataDir, id, now - WINDOW_MS, now)))).flat();
+  tally.metrics.unfixed_flags = unfixed.length;
+  tally.flagged.set("unfixed_flags", unfixed);
+  const stuck = await Promise.all(ids.map(async id => ({ id, hours: await noProgressHours(dataDir, id, now - WINDOW_MS, now) })));
+  tally.metrics.no_progress_hours = stuck.reduce((sum, chat) => sum + chat.hours.length, 0);
+  tally.flagged.set("no_progress_hours", stuck.filter(chat => chat.hours.length).map(chat => ({ chat: chat.id, at: chat.hours.at(-1)!, kind: "no_progress_hours",
+    excerpt: `${chat.hours.length} hours with no plan item done while open steps were not blocked, last at ${localTime(chat.hours.at(-1)!)}` })));
   tally.metrics.dead_hours = tenth(tally.deadMs / HOUR);
   const repeats = repeatsBetween(await new CorrectionLedger(dataDir).read(), now - WINDOW_MS, now);
   tally.metrics.repeat_corrections = repeats.length;

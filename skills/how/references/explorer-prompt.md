@@ -1,52 +1,57 @@
-# Explorer Prompt Template
+# Explorer prompt template
 
-Build each explorer subagent's prompt from this template. Fill in the placeholders.
+Fill in the placeholders.
 
 ---
 
-You are exploring a codebase to understand how something works. Gather facts: trace code paths, read implementations, map components. A separate agent will write the human-facing explanation from your findings, so favor thoroughness and accuracy over prose.
+You are exploring a codebase to learn how something works. Gather facts by tracing code paths, reading implementations, and mapping components. A separate agent writes the explanation from your findings, so favor complete, accurate facts over prose.
 
-Other explorers are investigating different slices of the same subsystem in parallel. Don't try to cover everything. Focus on your assigned angle and go deep.
+Other explorers cover other angles of the same subsystem in parallel. Stay on your angle and go deep.
 
 ## Question
 
 > {QUESTION}
 
-## Your Exploration Angle
+## Your angle
 
 {EXPLORATION_ANGLE}
 
-## Exploration Instructions
+## How to explore
 
-Start by finding the relevant code. Use Glob to find directories and files, Grep to find key symbols, Read to understand the actual implementation. Don't guess from names. Read the code.
+Search with `rg` on a narrow path, then read the code itself. Do not guess from file or function names.
 
-Follow this pattern:
-1. **Find the entry point.** What triggers this behavior? A user action, an API call, a scheduled job? Find where it starts.
-2. **Trace the flow.** Follow the call chain from the entry point. Read each function. Understand what data flows through and how it transforms.
-3. **Map the key abstractions.** What types, interfaces, services, or classes are central? Read their definitions. Understand what they represent and why they exist.
-4. **Find the boundaries.** Where does this subsystem interface with others? What goes in, what comes out?
-5. **Look for the non-obvious.** Anything surprising? Anything that looks like a historical artifact? Anything a newcomer would misunderstand?
+1. Find the entry point, such as the user action, API call, or scheduled job that starts the behavior.
+2. Trace the call chain from there, read each function, and note how the data changes.
+3. Read the definitions of the central types, interfaces, services, and classes, and note what each one represents.
+4. Find where this subsystem meets others, and what goes in and comes out.
+5. Note anything surprising, any historical leftover, and anything a newcomer would misread.
 
-Keep exploring until you can describe the full picture without hand-waving. If you hit a part you can't trace, say so explicitly. "I couldn't determine how X connects to Y" is better than making something up.
+Stop when you can describe the full path from trigger to effect without skipping a step. If you cannot trace a part, say so. "I could not find how X connects to Y" beats a guess.
 
 ## Output
 
-Return your findings in this structure. Be factual and specific. Reference exact file paths, function names, type names, and line numbers where relevant.
+Use this structure. Cite exact file paths, function names, type names, and line numbers.
 
-### Components Found
-The key types, services, classes, and abstractions. For each: name, file path, and a one-sentence description of what it does.
+### Components found
+
+Each key type, service, class, or abstraction, with its file path and one sentence on what it does.
 
 ### Flow
-The execution flow step by step. For each step: what function/method runs, what file it's in, what it does, what it calls next. Include the data that flows between steps.
 
-### Files Read
-Every file you read during exploration, so the explainer can reference them.
+The execution flow step by step. For each step, name the function and its file, what it does, what it calls next, and the data it passes.
+
+### Files read
+
+Every file you read, so the explainer can cite them.
 
 ### Boundaries
-Where this subsystem connects to other parts of the codebase. The inputs and outputs.
 
-### Non-Obvious Things
-Anything surprising, historically motivated, or easy to get wrong. Things that look like they should work one way but actually work another.
+Where this subsystem connects to the rest of the codebase, with its inputs and outputs.
 
-### Open Questions
-Anything you couldn't fully trace or understand. Be honest about gaps.
+### Non-obvious things
+
+Anything surprising, historically motivated, or easy to get wrong.
+
+### Open questions
+
+Anything you could not trace or understand.

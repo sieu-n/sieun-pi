@@ -182,12 +182,13 @@ export function sessionUsage(value: unknown): ThreadInfo["usage"] {
   return { inputTokens, outputTokens, cost };
 }
 
-export function projectInfo(state: NativeState, summary: Pick<SessionSummary, "usage"> | undefined): ThreadInfo {
+/** `model` is the state's model resolved against the catalog: the 0.10.0 daemon names it by id only. */
+export function projectInfo(state: NativeState, summary: Pick<SessionSummary, "usage"> | undefined, model: ModelInfo | null): ThreadInfo {
   return {
     sessionId: state.sessionId,
     ...(state.sessionName?.trim() ? { name: state.sessionName } : {}),
     cwd: state.cwd,
-    model: state.model ? projectModel(state.model) : null,
+    model,
     thinkingLevel: state.thinkingLevel,
     availableThinkingLevels: [...state.availableThinkingLevels],
     isStreaming: state.isStreaming,

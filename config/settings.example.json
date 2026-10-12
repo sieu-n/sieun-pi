@@ -1,8 +1,10 @@
 {
-  "telemetry": false,
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-6-astra",
-  "defaultThinkingLevel": "xhigh",
+  "telemetry": {
+    "enabled": false
+  },
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-opus-5-5",
+  "defaultThinkingLevel": "high",
   "packages": [],
   "bundledSkills": {
     "websearch": false
@@ -16,6 +18,15 @@
       ],
       "startupTimeoutMs": 20000,
       "callTimeoutMs": 130000
+    }
+  },
+  "retry": {
+    "provider": {
+      "waitForUsage": {
+        "pauseUntilReset": false,
+        "maxWaitMs": 18300000,
+        "maxAttempts": 80
+      }
     }
   }
 }

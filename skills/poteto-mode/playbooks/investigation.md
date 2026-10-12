@@ -1,14 +1,11 @@
 ### Investigation
 
-**You own the answer. Plan, route, write.**
+For read-only questions such as "how does X work?", "why was Y built this way?", "are we sure about Z?", and "should we do X or Y?". The output is a cited answer or a recommendation, not a code change.
 
-Read-only requests: "how does X work?", "why was Y built this way?", "are we sure about Z?", "should we do X or Y?". They produce a cited explanation or a recommendation, not a code change.
+1. Route through the how skill, in Explain mode for narrow questions and Critique mode for "are we sure?". Add the why skill for questions about motivation.
+2. Write the throughput checkpoint as one line, `throughput checkpoint: n/a, read-only investigation`.
+3. Produce the how skill's output shape, or a recommendation with a tradeoffs table for a choice between options.
 
-1. Route through the **how** skill (Explain mode for narrow questions, Critique mode for "are we sure?"). For motivation questions, also route through the **why** skill.
-2. Throughput checkpoint stays one line: `throughput checkpoint: n/a, read-only investigation`. The four-item version is for code-shaped work.
-3. Produce the `how`-shaped output (Overview / Key Concepts / How It Works / Where Things Live / Gotchas), or a recommendation with a tradeoffs table if the request is a decision between alternatives.
-4. Apply the **unslop** skill to the reply.
+If the answer leads to a code change, hand back to the user and route to Bug fix or Feature.
 
-No PR, no babysit, no `architect` unless the investigation precedes a code change. If it does, hand back to the user and re-route to Bug fix or Feature.
-
-**Reply:** the investigation output. For "are we sure?" answers, include your real judgment with reasons. Push back if the premise is wrong (see Autonomy).
+Reply with the investigation output. For "are we sure?", give your judgment with reasons, and push back if the premise is wrong.

@@ -1,22 +1,16 @@
 ---
 name: principle-outcome-oriented-execution
-description: "Apply during planned rewrites and migrations with explicit phase boundaries. Converge on the target architecture; don't preserve smooth intermediate states with throwaway compatibility code."
+description: "Use during a planned rewrite or migration that has explicit phases. Go straight to the target architecture, accept planned breakage between phases, and do not write throwaway compatibility code to keep each intermediate step working."
 disable-model-invocation: true
 ---
 
-# Outcome-Oriented Execution
+# Outcome-oriented execution
 
-Optimize for the intended, verifiable end state rather than preserving smooth intermediate states.
+Aim for the verified end state. Do not spend work keeping every intermediate step stable.
 
-**Why:** Keeping every intermediate step fully stable often creates temporary compatibility code that becomes long-lived debt. Converge on the target architecture and prove correctness at explicit verification boundaries.
-
-**Core rule:**
-- Prioritize end-state integrity over transitional stability
-- Intermediate breakage is acceptable when it is planned, scoped, and reversible
-- Always run final verification before declaring done
-
-**Guardrails:**
-- Use this for planned rewrites and migrations with explicit phase boundaries
-- Declare where temporary breakage is acceptable
-- Keep high-signal checks for actively touched areas while migrating
-- Require full static and runtime verification at plan completion
+1. Use this rule only for a planned rewrite or migration with explicit phase boundaries.
+2. Before you start, state which areas may break between phases.
+3. Keep breakage scoped and reversible.
+4. Do not write compatibility code whose only job is to keep an intermediate step working.
+5. While you migrate, keep running the fast checks for the areas you touch.
+6. Run the full static and runtime checks before you call the plan done.

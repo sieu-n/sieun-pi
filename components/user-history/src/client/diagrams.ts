@@ -17,7 +17,7 @@ const MAX_FRAME_HEIGHT = 4000;
 /** A page frame grows with its page; the reader scrolls, not the frame. */
 const MAX_PAGE_HEIGHT = 200_000;
 
-/** The page's actual scheme: the OS setting, or a forced `color-scheme` on <html>. Read from the canvas color. */
+/** The page's actual scheme: the OS setting, or one Settings > Appearance forces on <html>. Read from the canvas color. */
 function theme(): Theme {
   const channels = getComputedStyle(document.body).backgroundColor.match(/\d+(\.\d+)?/g)?.map(Number) ?? [];
   const [r = 255, g = 255, b = 255] = channels;
@@ -61,7 +61,10 @@ function listen(): void {
   if (listening) return;
   listening = true;
   window.addEventListener("message", onMessage);
-  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { for (const entry of frames.values()) send(entry); });
+  const redraw = () => { for (const entry of frames.values()) send(entry); };
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
+  // Settings > Appearance forces a theme through `data-theme` on <html>.
+  new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 }
 
 function mount(block: HTMLElement): void {

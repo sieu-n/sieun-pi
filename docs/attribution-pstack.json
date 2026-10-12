@@ -46,34 +46,6 @@
       "unchanged_at_comparison": false
     },
     {
-      "path": "skills/automate-me/SKILL.md",
-      "upstream_path": "pstack/skills/automate-me/SKILL.md",
-      "upstream_sha256": "1510979b0b71b54284427a19c09918f8b1fdfc168f9b7f9e30098793a5ec88ef",
-      "import_sha256": "9f6dabeea37fd84a9f63f973292766fe8dc625eede21dff47b5ca4adca592261",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/blast-radius/SKILL.md",
-      "upstream_path": "pstack/skills/blast-radius/SKILL.md",
-      "upstream_sha256": "20cb2945f5fe62055166f745107274af5f19428ca033e53a9b8bc69650d3ded1",
-      "import_sha256": "0c67f1864c6eb7619672324f27f908e92895983a23248b85d71da2fce8771d03",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/bro/SKILL.md",
-      "upstream_path": "pstack/skills/bro/SKILL.md",
-      "upstream_sha256": "aa329d0ceeeecb6822a7174ad76bb07a7826a3c52ceb6a588dec4138815084bb",
-      "import_sha256": "aa329d0ceeeecb6822a7174ad76bb07a7826a3c52ceb6a588dec4138815084bb",
-      "unchanged_at_comparison": true
-    },
-    {
-      "path": "skills/comment-sicko/SKILL.md",
-      "upstream_path": "pstack/agents/comment-sicko.md",
-      "upstream_sha256": "c0fd0383008da45fc78cfac17b9007d62c42f87ad1c8d5c2fb658b1fd01f7c82",
-      "import_sha256": "f5c1e39df0191d2ad93cf9b7ea4b5d80d4533d364c76153d446ef23c98fca158",
-      "unchanged_at_comparison": false
-    },
-    {
       "path": "skills/create-verification-skill/SKILL.md",
       "upstream_path": "pstack/skills/create-verification-skill/SKILL.md",
       "upstream_sha256": "644f2551403c1bca01a2855b34611b6e7be0ce0dc5b204514c376c0f6a6e6ac4",
@@ -92,13 +64,6 @@
       "upstream_path": "pstack/skills/create-verification-skill/references/feature-map-example/create-note.md",
       "upstream_sha256": "644a44c74f35d38c2feb7cd05a0121fdebbb623e8dc376c185b565a581d1ccf7",
       "import_sha256": "644a44c74f35d38c2feb7cd05a0121fdebbb623e8dc376c185b565a581d1ccf7",
-      "unchanged_at_comparison": true
-    },
-    {
-      "path": "skills/create-verification-skill/references/feature-map-example/search.md",
-      "upstream_path": "pstack/skills/create-verification-skill/references/feature-map-example/search.md",
-      "upstream_sha256": "6e87b9e7f2791a7776ba1bb83f371cd285c306c67f19d245cc4dd6ca3015c823",
-      "import_sha256": "6e87b9e7f2791a7776ba1bb83f371cd285c306c67f19d245cc4dd6ca3015c823",
       "unchanged_at_comparison": true
     },
     {
@@ -181,13 +146,6 @@
       "unchanged_at_comparison": false
     },
     {
-      "path": "skills/maintain-verification-skill/SKILL.md",
-      "upstream_path": "pstack/skills/maintain-verification-skill/SKILL.md",
-      "upstream_sha256": "515c0eaa054b3f6be1b1fb06f2c2f173c80fddb58bbcac57576f89c479bc68e8",
-      "import_sha256": "db2dc8178e6d787e928f69cbf43e5e9c68756ad78262769e21aca402fdaa48cb",
-      "unchanged_at_comparison": false
-    },
-    {
       "path": "skills/no-comments/SKILL.md",
       "upstream_path": "pstack/skills/no-comments/SKILL.md",
       "upstream_sha256": "5c5b0882297d704c3a9720c52b7a793c68b013eaf717989f0945624efdfe2b05",
@@ -220,20 +178,6 @@
       "upstream_path": "pstack/skills/poteto-mode/playbooks/autonomous-run.md",
       "upstream_sha256": "15e54ad3ac92565613980772d8708de6e19cc4690bfd4bb3fb8836522407377b",
       "import_sha256": "2c51dc7a15d7170dfc80af5547ce7ad0857ceedc820dd4ae9bb0aad87e90f7a0",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/poteto-mode/playbooks/autopilot-full.md",
-      "upstream_path": "pstack/skills/poteto-mode/playbooks/autopilot-full.md",
-      "upstream_sha256": "2042a89a0399b5fe700110bc03746899536c10f0df186e9fb15bbd4a2f6dfce5",
-      "import_sha256": "21c818819560295cb410f37793e09bf4c3fcc9c13b8c7a72ca3a7a9e5abd1b63",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/poteto-mode/playbooks/autopilot-stack.md",
-      "upstream_path": "pstack/skills/poteto-mode/playbooks/autopilot-stack.md",
-      "upstream_sha256": "60e0d997f7b369004a02089c71b9091d3f8e9bc0b4a3c1142598380faa7722fd",
-      "import_sha256": "86f9cd2b8f65d3c7da4c65876615af05903d4daa2974e934d6846f35a7b9d331",
       "unchanged_at_comparison": false
     },
     {
@@ -339,13 +283,6 @@
       "upstream_path": "pstack/skills/poteto-mode/playbooks/session-pickup.md",
       "upstream_sha256": "1604fb463f7c7410d43fa024ca76c1c1824c166a01fd69d61f073d06fdca2a47",
       "import_sha256": "91554969ef7abec32debc4d5ea348e9ff824c8a03564f4c390e6f75917a1bdcf",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/poteto-mode/playbooks/shipping.md",
-      "upstream_path": "pstack/skills/poteto-mode/playbooks/shipping.md",
-      "upstream_sha256": "c301902136e0a9a0a55403c35374f6f5738e501aee66c27458dc197b87557550",
-      "import_sha256": "fe83e36db200a21e6899b57d408a35a1b243e87fe2d64a32ecd7d2d39a2d5204",
       "unchanged_at_comparison": false
     },
     {
@@ -664,48 +601,6 @@
       "unchanged_at_comparison": false
     },
     {
-      "path": "skills/recall/SKILL.md",
-      "upstream_path": "pstack/skills/recall/SKILL.md",
-      "upstream_sha256": "d265b0e5b6dc5b89c0407f3387d24462c988e1990a37d5359735137908128c5a",
-      "import_sha256": "2fe2575d8ffe04b3140186eadedca8c67999998958ee19957e4c28ad03affb21",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/reflect/SKILL.md",
-      "upstream_path": "pstack/skills/reflect/SKILL.md",
-      "upstream_sha256": "6a4d4ccaace9ce88c3e268fcbedf3cfd40e527162a5e5aad6de8edbaf5e2b83f",
-      "import_sha256": "325e29933046befee0d42ce100ba9fc3ab4ccaaf88e9a4df41da0e251e2b6897",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/reflect/references/divergent-reviewer.md",
-      "upstream_path": "pstack/skills/reflect/references/divergent-reviewer.md",
-      "upstream_sha256": "7da0334ce282e6d8d7349c0cff14ffbd10a91a756c0b5c3ccc97291f57b8bed6",
-      "import_sha256": "522870712f5f3f1e8a51ef395c8cec870bc5b9bcaa5070539c50fd6ff5045e22",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/reflect/references/judgment-reviewer.md",
-      "upstream_path": "pstack/skills/reflect/references/judgment-reviewer.md",
-      "upstream_sha256": "917bb2ad21240a42b440aeb2a17766092e09f70d0982417b2f4caa6d74f27164",
-      "import_sha256": "6efc3efa4273766f039f98acd75f092dfee6b923abf0ea4774056c33e11ba9ee",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/reflect/references/synthesizer.md",
-      "upstream_path": "pstack/skills/reflect/references/synthesizer.md",
-      "upstream_sha256": "2f76c847eb45b182dc6fbcbf7d96c8ee7e2986ecfd9e0d640fec44e3cc5a617c",
-      "import_sha256": "afdc68e60eec01f037d5b7b579d9353ffe9d9fffb8249b037127d5a6c862de29",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/reflect/references/tooling-reviewer.md",
-      "upstream_path": "pstack/skills/reflect/references/tooling-reviewer.md",
-      "upstream_sha256": "8c74ebf7811801d634db7ab609b097d77ea00ab77bb4b258d69bd96e671cfa39",
-      "import_sha256": "4a332aab3e9071dbd0b5f2c6b74a198b2210bc33f22fff45bc2805d57905b5b3",
-      "unchanged_at_comparison": false
-    },
-    {
       "path": "skills/setup-pstack/SKILL.md",
       "upstream_path": "pstack/skills/setup-pstack/SKILL.md",
       "upstream_sha256": "5acdc3db4f15f3e9b81fb56eab7f17cdccde1a11a40053ed7743f7467729c8a9",
@@ -738,27 +633,6 @@
       "upstream_path": "pstack/skills/swarm/SKILL.md",
       "upstream_sha256": "d578d877c3b8b9de7163f52579c4683337a940acc0fbe4496a498f5d3b27df30",
       "import_sha256": "e4a7873334c08488fc50895bca6d5a0b40971a415a98f21220b22f54f1409186",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/tdd/SKILL.md",
-      "upstream_path": "pstack/skills/tdd/SKILL.md",
-      "upstream_sha256": "011cab0ecc04a3632121efb493ae4d60aa282a9b72c66de74dd8ad7e4313e05a",
-      "import_sha256": "adad031f9e79d7f7389fa128f7af8e03344831270e282cf4e40bdacb8418c386",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/teach/SKILL.md",
-      "upstream_path": "pstack/skills/teach/SKILL.md",
-      "upstream_sha256": "bd286e5a6290673be2cd28aef7af2ec7f1fb138e6bce156ea657368c7e7fc8a4",
-      "import_sha256": "0a5987b0588dc56e14bfd84d0300e2ab405abc7c5c2aa81e0d3d7c6b243db7a7",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/technical-writing/SKILL.md",
-      "upstream_path": "pstack/skills/technical-writing/SKILL.md",
-      "upstream_sha256": "6d6d9e625ae412ee8f36df8deb6fd9203d7c6acca776d5ee3cabbb9126f8b84c",
-      "import_sha256": "dfa6791cf4657f82df0f1c16eb013fc8b65cf403a859601e27f7ee8e5c7d02f0",
       "unchanged_at_comparison": false
     },
     {
@@ -804,67 +678,11 @@
       "unchanged_at_comparison": false
     },
     {
-      "path": "skills/why/references/source-playbook.md",
-      "upstream_path": "pstack/skills/why/references/source-playbook.md",
-      "upstream_sha256": "9ae9dcb9d09111c9facc68510331c5aba4aed9b1b057314ff1fc0e166ad3993a",
-      "import_sha256": "3cfb0245d5b2019eeeaa7a0e023579d390f2cdcdff6942d2fe009b9efac0eb11",
-      "unchanged_at_comparison": false
-    },
-    {
       "path": "skills/why/references/sources/code-archaeology.md",
       "upstream_path": "pstack/skills/why/references/sources/code-archaeology.md",
       "upstream_sha256": "8c14aa382f0de40829b2668d43e3f54814480bb93a486c9282ada4003f6b9dbd",
       "import_sha256": "8c14aa382f0de40829b2668d43e3f54814480bb93a486c9282ada4003f6b9dbd",
       "unchanged_at_comparison": true
-    },
-    {
-      "path": "skills/why/references/sources/databricks.md",
-      "upstream_path": "pstack/skills/why/references/sources/databricks.md",
-      "upstream_sha256": "236ede7aab6454662a992db088a5393537a5233a4c26719c93188f9e174488f6",
-      "import_sha256": "269a22032f027ee30a33c1b5e30443d13dd6d127ff20d8d1e8a20715b06a69cc",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/why/references/sources/datadog.md",
-      "upstream_path": "pstack/skills/why/references/sources/datadog.md",
-      "upstream_sha256": "ebe9c07bac28e47757ee7f16fb93b0c01d427a08c501957d047f395a2f37b7e7",
-      "import_sha256": "db80803f1635a5015e3190f4753c4228083e6cebf222c84e24fc3c3919aa5574",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/why/references/sources/incident-postmortem.md",
-      "upstream_path": "pstack/skills/why/references/sources/incident-postmortem.md",
-      "upstream_sha256": "a899470f05f86029630a13a2696491cc708ca7b56a6e822a69ff6e954d6ff8cf",
-      "import_sha256": "486132457d3782eea64292ce7a2d3bbe3b24b372b20ca00de4329e820f74cd42",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/why/references/sources/linear.md",
-      "upstream_path": "pstack/skills/why/references/sources/linear.md",
-      "upstream_sha256": "01304e7f1badfcfb78babbb0edcadeb3cc8dd3f713793420cdff24ba190f907c",
-      "import_sha256": "7e1b72ba459089168efd701502f8c268d2481154aeeda1ddd84f840f7e974760",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/why/references/sources/notion.md",
-      "upstream_path": "pstack/skills/why/references/sources/notion.md",
-      "upstream_sha256": "3bcfa695c49dfad4ac036d5d7181c12585f55ac04f1936198d16ab75a2788997",
-      "import_sha256": "2ce336dd3052967187a56ec33d308c7a69e7ef3b04ba7b17386a8b3914a0f000",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/why/references/sources/sentry.md",
-      "upstream_path": "pstack/skills/why/references/sources/sentry.md",
-      "upstream_sha256": "6f292bc4fb1548e956f95e1900b9481abf5134254419f1cd9edec95428c82d73",
-      "import_sha256": "0eef902cb0f835f7fa9bd85a8e19ba1505d05e59a0173dfe852d8d52d828266d",
-      "unchanged_at_comparison": false
-    },
-    {
-      "path": "skills/why/references/sources/slack.md",
-      "upstream_path": "pstack/skills/why/references/sources/slack.md",
-      "upstream_sha256": "58fee61d024b3700b407e7acbed367944720ff05adfddb6954d36c88368f3ba7",
-      "import_sha256": "60e4c8dbb941f563c86aec7267cde66443b1dc651422569c8d112bc9da7551f6",
-      "unchanged_at_comparison": false
     },
     {
       "path": "skills/why/references/synthesizer-prompt.md",

@@ -27,32 +27,11 @@
       "target": ".prime/agent/skills/aside-browser"
     },
     {
-      "id": "skill:automate-me",
+      "id": "skill:board",
       "kind": "link",
-      "source": "skills/automate-me",
+      "source": "skills/board",
       "scope": "home",
-      "target": ".prime/agent/skills/automate-me"
-    },
-    {
-      "id": "skill:blast-radius",
-      "kind": "link",
-      "source": "skills/blast-radius",
-      "scope": "home",
-      "target": ".prime/agent/skills/blast-radius"
-    },
-    {
-      "id": "skill:bro",
-      "kind": "link",
-      "source": "skills/bro",
-      "scope": "home",
-      "target": ".prime/agent/skills/bro"
-    },
-    {
-      "id": "skill:comment-sicko",
-      "kind": "link",
-      "source": "skills/comment-sicko",
-      "scope": "home",
-      "target": ".prime/agent/skills/comment-sicko"
+      "target": ".prime/agent/skills/board"
     },
     {
       "id": "skill:create-verification-skill",
@@ -88,13 +67,6 @@
       "source": "skills/linear-ticket",
       "scope": "home",
       "target": ".prime/agent/skills/linear-ticket"
-    },
-    {
-      "id": "skill:maintain-verification-skill",
-      "kind": "link",
-      "source": "skills/maintain-verification-skill",
-      "scope": "home",
-      "target": ".prime/agent/skills/maintain-verification-skill"
     },
     {
       "id": "skill:no-comments",
@@ -265,20 +237,6 @@
       "target": ".prime/agent/skills/principle-type-system-discipline"
     },
     {
-      "id": "skill:recall",
-      "kind": "link",
-      "source": "skills/recall",
-      "scope": "home",
-      "target": ".prime/agent/skills/recall"
-    },
-    {
-      "id": "skill:reflect",
-      "kind": "link",
-      "source": "skills/reflect",
-      "scope": "home",
-      "target": ".prime/agent/skills/reflect"
-    },
-    {
       "id": "skill:resume-paused-sessions",
       "kind": "link",
       "source": "skills/resume-paused-sessions",
@@ -319,27 +277,6 @@
       "source": "skills/swarm",
       "scope": "home",
       "target": ".prime/agent/skills/swarm"
-    },
-    {
-      "id": "skill:tdd",
-      "kind": "link",
-      "source": "skills/tdd",
-      "scope": "home",
-      "target": ".prime/agent/skills/tdd"
-    },
-    {
-      "id": "skill:teach",
-      "kind": "link",
-      "source": "skills/teach",
-      "scope": "home",
-      "target": ".prime/agent/skills/teach"
-    },
-    {
-      "id": "skill:technical-writing",
-      "kind": "link",
-      "source": "skills/technical-writing",
-      "scope": "home",
-      "target": ".prime/agent/skills/technical-writing"
     },
     {
       "id": "skill:typescript-best-practices",
@@ -392,11 +329,11 @@
       "seed_only": true
     },
     {
-      "id": "virev-extension",
+      "id": "global-rules",
       "kind": "link",
-      "source": "components/virev/extensions/virev.ts",
+      "source": "components/global-rules/index.ts",
       "scope": "home",
-      "target": ".prime/agent/extensions/virev.ts"
+      "target": ".prime/agent/extensions/global-rules.ts"
     },
     {
       "id": "user-history",
@@ -413,30 +350,16 @@
       "link_target": "code/prime-agent-user-history"
     },
     {
-      "id": "virev-projects",
-      "kind": "generated-json",
-      "scope": "home",
-      "target": ".prime/agent/virev-projects.json",
-      "seed_only": false,
-      "merge_projects": true
-    },
-    {
       "id": "legacy-virev-extension",
       "kind": "remove",
-      "scope": "project",
+      "scope": "home",
       "target": ".prime/agent/extensions/virev.ts"
     },
     {
-      "id": "legacy-virev-implementation",
+      "id": "legacy-virev-projects",
       "kind": "remove",
-      "scope": "project",
-      "target": ".prime/agent/ext-impl/virev"
-    },
-    {
-      "id": "legacy-virev-project",
-      "kind": "remove",
-      "scope": "project",
-      "target": ".prime/agent/virev-project.json"
+      "scope": "home",
+      "target": ".prime/agent/virev-projects.json"
     }
   ]
 }

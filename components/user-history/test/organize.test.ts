@@ -222,7 +222,7 @@ test("catalog subtree: cost adds every subagent below a thread, live or saved, a
   const deep = summary("g1", { parentSessionId: "c1", rlmChildId: "sub-2", rosterStatus: "running", usage: { inputTokens: 1, outputTokens: 1, cost: 2.5 } });
   const children = childrenByParent([done, doneResident, deep]);
   const subtree = subtreeOf(parent, children);
-  assert.deepEqual(subtree, { cost: 17, running: 1 }, "one copy per session id, and the grandchild counts");
+  assert.deepEqual(subtree, { cost: 17, running: 1, total: 2 }, "one copy per session id, and the grandchild counts");
   const projected = projectRow(parent, undefined, 0, { subtree });
   assert.deepEqual([projected.status, projected.working, projected.subagentsRunning, projected.cost, projected.unread], ["idle", true, 1, 17, false]);
   const settled = projectRow(parent, undefined, 0, { subtree: subtreeOf(parent, childrenByParent([done])) });

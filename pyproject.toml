@@ -9,6 +9,7 @@ dependencies = [
   "websearch",
   "linear-ticket",
   "aside-browser",
+  "board",
 ]
 
 [tool.uv]
@@ -18,3 +19,4 @@ package = false
 websearch = { path = "skills/websearch", editable = true }
 linear-ticket = { path = "skills/linear-ticket", editable = true }
 aside-browser = { path = "skills/aside-browser", editable = true }
+board = { path = "skills/board", editable = true }

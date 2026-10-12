@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardActionText, countItems, focusPlan, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, openAgentTodos, parentIds, planProgress, planTotals, planWait, ROOT, shortTitle, treeRows, type TreeRow } from "../src/client/board.ts";
-import type { ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../src/shared/types.ts";
+import { boardActionText, countItems, rowDetails, focusPlan, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, openAgentTodos, parentIds, planProgress, planTotals, planWait, ROOT, shortTitle, stepAgent, stepAgentTitle, treeRows, type TreeRow } from "../src/client/board.ts";
+import type { ChatAgent, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../src/shared/types.ts";
 
 const item = (id: string, status: PlanItem["status"], children: PlanItem[] = []): PlanItem => ({ id, text: id, status, children });
 const note = (id: string, children: ScratchItem[] = []): ScratchItem => ({ id, text: id, links: [], at: "2026-10-06T00:00:00Z", children });
@@ -133,4 +133,27 @@ test("planWait: nothing for a plain step; a local time for waitUntil with the ye
   assert.equal(planWait({ ...item("p1", "todo"), waitUntil: "2027-01-02T05:30:00Z" }, now), `waits until ${local("2027-01-02T05:30:00Z", true)}`);
   assert.equal(planWait({ ...item("p1", "todo"), waitUntil: "not a time", waitFor: "" }, now), null);
   assert.equal(planWait({ ...item("p1", "todo"), waitUntil: "2026-10-09T05:30:00Z", waitFor: "land 25" }, now), `waits for land 25 until ${local("2026-10-09T05:30:00Z", false)}`);
+});
+
+test("a collapsed goal shows no note, requirement lines or target; open, it shows them; a step with no children keeps its note (owner 10-10)", () => {
+  const goal = { children: [{}] };
+  assert.deepEqual(rowDetails(goal, false), { note: false, requirements: false, target: false });
+  assert.deepEqual(rowDetails(goal, true), { note: true, requirements: true, target: true });
+  assert.deepEqual(rowDetails({ children: [] }, false), { note: true, requirements: true, target: true });
+});
+
+test("stepAgent: the Agents row that owns the step, else the stored session of a deleted job, else the owner as written, else none", () => {
+  const sid = "01a00000-0000-7000-8000-000000000011";
+  const agent: ChatAgent = { key: "child:sub-1", sessionId: sid, childId: "sub-1", name: "plan-agent-data", job: "plan-agent-data", sender: "plan-agent-data", link: "subagent", state: "working", steps: ["p2", "p3"] };
+  const step = (id: string, extra: Partial<PlanItem> = {}): PlanItem => ({ ...item(id, "doing"), ...extra });
+  const found = stepAgent(step("p3", { job: "plan-agent-data", sessionId: sid }), [agent]);
+  assert.equal(found?.agent, agent);
+  assert.deepEqual({ ...found, agent: undefined }, { name: "plan-agent-data", state: "working", sessionId: sid, agent: undefined });
+  assert.equal(stepAgentTitle(found!), `plan-agent-data · Working · ${sid}`);
+  assert.deepEqual(stepAgent(step("p9", { job: "old-job", sessionId: sid }), [agent]), { name: "old-job", state: null, sessionId: sid }, "a deleted job keeps its name and opens its thread");
+  assert.deepEqual(stepAgent(step("p9", { job: `thread:${sid}` }), []), { name: "01a00000", state: null, sessionId: sid }, "a thread: owner is a session");
+  assert.deepEqual(stepAgent(step("p9", { sessionId: sid }), []), { name: "01a00000", state: null, sessionId: sid });
+  assert.deepEqual(stepAgent(step("p9", { job: "some-job" }), []), { name: "some-job", state: null, job: "some-job" }, "an old board step keeps its owner link");
+  assert.equal(stepAgentTitle(stepAgent(step("p9", { job: "some-job" }), [])!), "some-job");
+  assert.equal(stepAgent(step("p9"), [agent]), null);
 });

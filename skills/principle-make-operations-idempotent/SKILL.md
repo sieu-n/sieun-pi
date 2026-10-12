@@ -1,24 +1,24 @@
 ---
 name: principle-make-operations-idempotent
-description: "Apply when designing commands, lifecycle steps, or processing loops that run amid crashes, restarts, and retries. Converge to the same end state regardless of partial prior runs."
+description: "Use when designing a command, lifecycle step, or processing loop that can crash, restart, or retry. Make it reach the same end state no matter how many times it runs or where a prior run stopped."
 disable-model-invocation: true
 ---
 
-# Make Operations Idempotent
+# Make operations idempotent
 
-Design operations so they converge to the correct state regardless of how many times they run or where they start from. Every state-mutating operation should answer: "What happens if this runs twice? What happens if the previous run crashed halfway?"
+Every operation that changes state must reach the correct end state no matter how many times it runs or where a prior run stopped.
 
-**Why:** Commands, lifecycle operations, and processing loops run where crashes, restarts, and retries are normal. If partial state changes the next run's outcome, every restart becomes a debugging session.
+## The pattern
 
-**The pattern:**
-- Convergent startup: scan for existing state, clean stale artifacts, adopt live sessions
-- Content-based cleanup: compare by content equivalence, not creation order
-- Self-healing locks: use PID-based stale lock detection
-- Idempotent scheduling: failed work respawns cleanly, fresh input regenerated after each cycle
+- On startup, scan for existing state, clean up stale artifacts, and adopt live sessions.
+- Compare artifacts by content when cleaning up, not by creation order.
+- Detect a stale lock by checking whether the PID that holds it is still alive.
+- Let failed work respawn cleanly, and regenerate fresh input after each cycle.
 
-**The test:**
-1. What happens if this runs twice in a row?
-2. What happens if the previous run crashed at every possible point?
-3. Does re-execution converge to the same end state?
+## The test
 
-If any answer is "it depends on what state was left behind," the operation needs a reconciliation step.
+1. Ask what happens if the operation runs twice in a row.
+2. Ask what happens if the previous run crashed at each possible point.
+3. Check that a rerun reaches the same end state.
+
+If an answer depends on what state a prior run left behind, add a step that reconciles that state first.

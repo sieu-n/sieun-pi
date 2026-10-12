@@ -7,7 +7,8 @@
   import { tooltip } from "./ui/tooltip.ts";
   import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
   import { usageMetric } from "./usage-metric.svelte.ts";
-  import { barAt, BUCKET_LABEL, bucketsFor, bucketTitle, cost, defaultBucket, fullTokens, ingestLine, kindLabel, layout, METRIC_LABEL, METRICS, metricOf, modelLabel, share, sourceCounts, sparkPath, tokens, tps, WINDOWS, type Bar } from "./usage.ts";
+  import SettingsActions from "./SettingsActions.svelte";
+  import { barAt, BUCKET_LABEL, bucketsFor, bucketTitle, cost, defaultBucket, fullTokens, hitRate, hitSpark, ingestLine, kindLabel, layout, METRIC_LABEL, METRICS, metricOf, modelLabel, share, sourceCounts, sparkPath, tokens, tps, WINDOWS, type Bar } from "./usage.ts";
 
   /**
    * Settings > Usage: every agent on this Mac together. One token kind (the metric, output by default) drives the headline cards, the chart and
@@ -99,6 +100,8 @@
     { label: `${cardLabel} / min`, note: "last 60 min", rate: summary.perMinute, spark: summary.sparkMinutes[metric] },
     { label: `${cardLabel} / day`, note: "last 24 h", rate: summary.perDay, spark: null },
   ] : []);
+  /** The prompt cache hit rate card: the last 60 min, the last 24 h beside it, and the rate per minute. */
+  const cache = $derived(summary ? { hour: hitRate(summary.perMinute), day: hitRate(summary.perDay), spark: hitSpark(summary.sparkMinutes) } : null);
 
   function onMove(event: PointerEvent): void {
     if (!chart) return;
@@ -120,13 +123,11 @@
 </script>
 
 <section class="usage" aria-label="Usage">
-  <header class="bar">
-    <h3>Usage</h3><span class="faint">All agents on this Mac</span>
-    <div class="spacer"></div>
+  <SettingsActions>
     <div class="segmented" role="radiogroup" aria-label="Token kind">
       {#each METRICS as entry (entry.id)}<button type="button" role="radio" aria-checked={metric === entry.id} class:on={metric === entry.id} onclick={() => usageMetric.set(entry.id)}>{entry.label}</button>{/each}
     </div>
-  </header>
+  </SettingsActions>
 
   {#if unreadable}
     <div class="empty"><div class="error"><Icon name="alert" size={16} /> The chat service runs another build than this page. <button type="button" class="reload" onclick={() => location.reload()}>Reload</button></div></div>
@@ -140,12 +141,20 @@
         <div class="stat">
           <div class="stat-label">{stat.label}</div>
           <div class="stat-value tabular" title={fullTokens(stat.rate[metric])}>{tokens(stat.rate[metric])}</div>
-          <div class="stat-sub tabular">{otherLabel} {tokens(stat.rate[other])} · {stat.note}</div>
+          <div class="stat-sub tabular">{otherLabel} {tokens(stat.rate[other])}<br />{stat.note}</div>
           {#if stat.spark}
             <svg class="spark" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"><path d={sparkPath(stat.spark, 120, 28)} /></svg>
           {/if}
         </div>
       {/each}
+      {#if cache}
+        <div class="stat" title="Cache read / (input + cache read + cache write), all agents on this Mac">
+          <div class="stat-label">Cache hit</div>
+          <div class="stat-value tabular">{cache.hour}</div>
+          <div class="stat-sub tabular">24 h {cache.day}<br />last 60 min</div>
+          <svg class="spark" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"><path d={sparkPath(cache.spark, 120, 28)} /></svg>
+        </div>
+      {/if}
       <div class="stat">
         <div class="stat-label">Cost today</div>
         <div class="stat-value tabular">{cost(summary.costToday)}</div>
@@ -194,6 +203,7 @@
             {#if series.group === "kind" || series.metric !== "total"}
               <div class="hover-row"><span>Total</span><span class="tabular">{fullTokens(hover.bar.tokens.total)}</span></div>
             {/if}
+            <div class="hover-row"><span>Cache hit</span><span class="tabular">{hitRate(hover.bar.tokens)}</span></div>
             <div class="hover-row"><span>Calls</span><span class="tabular">{fullTokens(hover.bar.calls)}</span></div>
             <div class="hover-row"><span>Cost</span><span class="tabular">{cost(hover.bar.costUsd)}</span></div>
             {#if series.group !== "none"}
@@ -225,7 +235,7 @@
 
     {#if rows.length}
       <table class="models">
-        <thead><tr><th>Source</th><th>Model</th><th class="num">Calls</th><th class="num" title="Hover a count for every kind">{cardLabel}</th><th class="num">Cost</th><th class="num" title="Median output tokens per second per call">Out tok/s</th></tr></thead>
+        <thead><tr><th>Source</th><th>Model</th><th class="num">Calls</th><th class="num" title="Hover a count for every kind">{cardLabel}</th><th class="num" title="Cache read / (input + cache read + cache write)">Cache hit</th><th class="num">Cost</th><th class="num" title="Median output tokens per second per call">Out tok/s</th></tr></thead>
         <tbody>
           {#each rows as row (row.source + " " + row.model)}
             <tr>
@@ -233,6 +243,7 @@
               <td class="model" title={row.model}>{modelLabel(row.model)}</td>
               <td class="num tabular">{fullTokens(row.calls)}</td>
               <td class="num tabular" title={splitTitle(row)}>{tokens(metricOf(row.tokens, metric))}</td>
+              <td class="num tabular">{hitRate(row.tokens)}</td>
               <td class="num tabular">{cost(row.costUsd)}</td>
               <td class="num tabular">{tps(row.medianOutputTps)}</td>
             </tr>
@@ -258,9 +269,8 @@
     /* By kind: output is the accent; the other kinds fade toward the panel in one family, cache read (the bulk) the lightest. */
     --kind-output: var(--accent); --kind-input: color-mix(in oklab, var(--accent) 64%, var(--bg-elevated));
     --kind-cacheWrite: color-mix(in oklab, var(--accent) 44%, var(--bg-elevated)); --kind-cacheRead: color-mix(in oklab, var(--accent) 26%, var(--bg-elevated)); }
-  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; border-bottom: 1px solid var(--border); margin: 0 -18px; padding: 0 18px 8px; }
-  h3 { margin: 0; font-size: 13px; font-weight: 600; }
-  .headline { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .headline { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+  @container (width < 640px) { .headline { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   @container (width < 480px) { .headline { grid-template-columns: 1fr 1fr; } }
   .stat { position: relative; display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 10px 12px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); overflow: hidden; }
   .stat-label { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

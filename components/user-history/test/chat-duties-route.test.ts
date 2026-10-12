@@ -13,10 +13,11 @@ test("api/threads/:id/duties: GET lists a chat's duties; POST runs, pauses, resu
   const dir = await mkdtemp(join(tmpdir(), "duties-route-"));
   const store = new DutyStore(dir);
   const now = new Date(2026, 9, 8, 18, 0).getTime();
-  const command = ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { stalls_2h: 0 } }))`];
-  await store.update("chat1", duties => { duties.push(parseDutyInput({ name: "Chat health", ownerWords: "w", goal: "g", onMiss: "m",
-    metrics: [{ key: "stalls_2h", label: "Stalls", op: "<=", target: 0 }], schedule: { kind: "daily", at: "23:07" }, precheck: { command, cwd: dir } }, "d1", now)); });
-  const duties = new Duties(store, { isChat: async id => id === "chat1", notify: async () => {}, now: () => now, tickMs: 0 });
+  const command = ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { orphans: 0 } }))`];
+  await store.update("chat1", duties => { duties.push(parseDutyInput({ name: "Chat system", ownerWords: "w", goal: "g", onMiss: "m",
+    metrics: [{ key: "orphans", label: "Stalls", op: "<=", target: 0 }], schedule: { kind: "daily", at: "23:07" }, precheck: { command, cwd: dir } }, "d1", now)); });
+  const duties = new Duties(store, { isChat: async id => id === "chat1", now: () => now, tickMs: 0,
+    jobs: { chat: async id => ({ id, name: "dev VP", cwd: dir, board: join(dir, id + ".json") }), working: async () => false, start: async (_chat, name) => ({ id: "s1", name }), retire: async () => {} } });
   const backend = { duties, chats: { ids: async () => new Set(["chat1"]) }, close: async () => {} } as unknown as ChatBackend;
   const asset = { body: Buffer.from(""), etag: '"x"', contentType: "text/plain" };
   const server = await startChatServer({ backend, bundle: { js: asset, css: asset, version: "t" }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",

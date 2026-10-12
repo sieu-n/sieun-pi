@@ -1,21 +1,20 @@
 ### Feature
 
-**You own the design. Plan, review, verify.** Delegate implementation; stay in the lead.
+Delegate the implementation and stay in the lead.
 
-1. `how` over the affected subsystem.
-2. `architect` for parallel design exploration. Skipping stays as `architect skipped: <reason>`; do not fold the design decision silently into implementation.
-3. Write the throughput checkpoint as four todo items. A dimension that genuinely does not apply (single file, no fan-out) keeps its item with `n/a: <reason>` rather than being dropped:
-   - **Blocking first steps.** Gates run before fan-out.
-   - **Independent workstreams.** Disjoint files, services, or layers parallelize. Shared writes serialize.
-   - **Shared mutable state.** Default to splitting the target (the **separate-before-serializing-shared-state** principle skill). Serialize only for real invariants.
-   - **Smallest safe decomposition.** If one worker is best, name why.
-4. Delegate code-writing to a subagent using your configured feature model (default `anthropic/claude-sonnet-5 @ xhigh`) with a specific scope (file paths, named data shape and its organizing structure per **principle-model-the-domain** — a state machine over scattered booleans, a table/registry over branching, a typed model over repeated shape assumptions, chosen before the delegate writes logic — and success criteria); review its diff yourself. When the implementation admits multiple valid shapes (error handling, abstraction layer, test structure), delegate via the **arena** skill instead so the runners surface the alternatives and the cross-judge guards the pick. Mandatory: no skip-with-reason escape, and Laziness Protocol does not override it (the gain is review separation, not lines saved). You can spawn a subagent even though you are one; "the app is small" and "a subagent cannot spawn one" are both wrong. A subagent forbidden to spawn satisfies this by owning the diff directly with the same review separation; no "standing by" reply that waits on a nested agent. Comments per **Comments**. Surgical edits, re-ground against the source for upstream-derived files. Port shared-primitive improvements to all consumers and verify each. Commit liberally.
-5. Verify on the matching surface. "Inconclusive" or wrong-surface is not a pass; flag it.
-6. Rebase into small, ordered commits; stack follow-ups.
-   Use the **sequence-verifiable-units** principle skill, building, verifying, and committing each small unit before the next.
-7. If the design is contested, `interrogate` before shipping.
-8. Run **Opening a PR**.
+1. Run the how skill over the affected subsystem.
+2. Run the architect skill. If you skip it, write `architect skipped: <reason>`.
+3. Write the throughput checkpoint as four checklist items. Mark an item that does not apply as `n/a: <reason>`.
+   - Name the blocking first steps that run before any fan-out.
+   - Name the independent workstreams, meaning disjoint files, services, or layers.
+   - Name the shared mutable state, and split it per principle-separate-before-serializing-shared-state unless a real invariant needs one writer.
+   - Name the smallest safe decomposition, and say why if one worker is best.
+4. Delegate the code to a subagent, using the feature role from the model policy in Subagents. Give it file paths, success criteria, and the data shape with its structure from principle-model-the-domain. When the change has several valid shapes, delegate through the arena skill instead. Do this even for a small app. A subagent that cannot spawn writes the diff itself and keeps the review separate. Review the diff yourself. Update every consumer of a shared primitive you change, and verify each one.
+5. Verify on the real surface. An inconclusive result or a different surface is not a pass.
+6. Order the work as small commits, each built and verified before the next.
+7. Run the interrogate skill if the design is contested.
+8. Run `playbooks/opening-a-pr.md`.
 
-Code-coupled work (one feature, one migration) goes to a single owner with the checkpoint inline; that owner fans out internally after the blocking phase. Parent-level fan-out is for slices that produce independent artifacts (audits, cross-subsystem investigations, competing experiments). Rewrite the checkpoint at phase boundaries; spawn a fresh owner rather than chaining interrupts.
+Give code-coupled work to one owner, who fans out after the blocking phase. Fan out from the parent only for slices with independent outputs, such as audits or competing experiments. Rewrite the checkpoint at each phase boundary.
 
-**Reply:** what you built, what you chose and why, open decisions. Tables for design alternatives.
+Reply with what you built, what you chose and why, and open decisions. Use a table for design alternatives.

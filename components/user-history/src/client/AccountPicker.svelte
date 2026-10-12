@@ -6,21 +6,17 @@
 
   /**
    * Pool accounts for one provider, to start a new chat on. Follow the pool is the default and names the account the pool would pick next.
-   * Accounts that cannot serve now (depleted, cooldown, refused) are greyed and need a second click to force; turned off or signed out ones cannot be chosen.
+   * Accounts that cannot serve now (depleted, cooldown, refused, turned off or signed out) are greyed and cannot be chosen.
    */
   let { provider, model, choice, onchoose }: { provider: PoolProvider; model?: string | undefined; choice: NewChatAccount | null; onchoose: (account: NewChatAccount | null) => void } = $props();
-  let confirming = $state<string | null>(null);
 
   const next = $derived(provider.resolution?.account ?? null);
   const nextEmail = $derived(provider.rows.find(row => row.id === next)?.email ?? provider.resolution?.email ?? null);
   const selected = $derived(choice?.provider === provider.provider ? choice.id : null);
-  const blocked = (row: PoolAccount) => row.disabled || row.reason === "needs-reauth";
-  const unusable = (row: PoolAccount) => !row.usable && !blocked(row);
+  const blocked = (row: PoolAccount) => row.disabled || !row.usable;
 
   function pick(row: PoolAccount): void {
-    if (blocked(row)) return;
-    if (unusable(row) && confirming !== row.id) { confirming = row.id; return; }
-    onchoose({ provider: provider.provider, id: row.id, force: unusable(row) });
+    if (!blocked(row)) onchoose({ provider: provider.provider, id: row.id });
   }
 </script>
 
@@ -33,14 +29,13 @@
 {#each provider.rows as row (row.id)}
   {@const state = accountState(row)}
   {@const stale = staleText(row)}
-  <button type="button" class="menu-item account" class:greyed={blocked(row) || unusable(row)} role="menuitemradio" aria-checked={selected === row.id} aria-disabled={blocked(row)}
+  <button type="button" class="menu-item account" class:greyed={blocked(row)} role="menuitemradio" aria-checked={selected === row.id} aria-disabled={blocked(row)}
     data-autofocus={selected === row.id ? true : undefined} onclick={() => pick(row)}>
     <span class="check">{#if selected === row.id}<Icon name="check" size={13} />{/if}</span>
     <span class="text">
       <span class="email">{row.email}</span>
       <span class="sub">
-        {#if confirming === row.id}<span class="warn">This account cannot serve now. Click again to use it anyway.</span>
-        {:else}{[row.plan, row.id === next ? "Next pick" : null, stale].filter(Boolean).join(" · ")}{/if}
+        {[row.plan, row.id === next ? "Next pick" : null, stale].filter(Boolean).join(" · ")}
       </span>
     </span>
     <span class="meters"><UsageMeters windows={row.windows} {model} /></span>
@@ -58,7 +53,6 @@
   .text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
   .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sub { font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .warn { color: var(--warning); white-space: normal; }
   .meters { display: inline-flex; gap: 8px; flex: none; }
   .greyed .email, .greyed .meters { opacity: 0.5; }
   .account[aria-disabled="true"] { cursor: not-allowed; }

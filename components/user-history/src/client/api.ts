@@ -1,5 +1,7 @@
 import type { AccountAction, AccountLogin, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
+import type { NewChatSettings } from "../shared/start-skill.ts";
+import type { Bookmark, BookmarkAction } from "../shared/bookmarks.ts";
 import { subscribeFeed } from "./feeds.ts";
 import { readSummary } from "./usage.ts";
 import type { UsageBucket, UsageGroup, UsageMetric, UsageModelRow, UsageSeries, UsageSummary, UsageWindow } from "../shared/usage.ts";
@@ -27,9 +29,12 @@ export async function get<T>(route: string, timeoutMs = 20000): Promise<T> {
   return parse<T>(await fetch(route, { signal: AbortSignal.timeout(timeoutMs) }));
 }
 
-export async function post<T>(route: string, body: unknown, timeoutMs = 60000): Promise<T> {
-  return parse<T>(await fetch(route, { method: "POST", headers: { "Content-Type": "application/json", "X-Chat-Token": token }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) }));
+export async function post<T>(route: string, body: unknown, timeoutMs = 60000, headers: Record<string, string> = {}): Promise<T> {
+  return parse<T>(await fetch(route, { method: "POST", headers: { ...headers, "Content-Type": "application/json", "X-Chat-Token": token }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) }));
 }
+
+/** Marks a check-in change as the owner's own, made on this page (src/chat-server.ts checkInActor); an agent's call without it is an agent's. */
+export const OWNER_UI_HEADERS = { "X-Chat-Owner-Ui": "1" };
 
 export function requestId(): string {
   return crypto.randomUUID().replaceAll("-", "") + Date.now().toString(36);
@@ -60,6 +65,8 @@ export const api = {
   models: (id: string | null) => get<ModelCatalog>("api/models" + (id ? "?id=" + encodeURIComponent(id) : ""), 30000),
   defaults: () => get<ChatDefaults>("api/defaults"),
   setDefaults: (input: ChatDefaultsInput) => post<ChatDefaults>("api/defaults", input),
+  newChat: () => get<NewChatSettings>("api/new-chat"),
+  setNewChat: (input: NewChatSettings) => post<NewChatSettings>("api/new-chat", input),
   remote: () => get<RemoteAccessView>("api/remote"),
   setRemote: (input: RemoteAccessInput) => post<RemoteAccessView>("api/remote", input, 60000),
   checkRemote: () => post<RemoteAccessView>("api/remote/check", {}, 60000),
@@ -84,6 +91,8 @@ export const api = {
   },
   note: (id: string) => get<ThreadNote>("api/threads/" + encodeURIComponent(id) + "/note"),
   setNote: (id: string, text: string) => post<ThreadNote>("api/threads/" + encodeURIComponent(id) + "/note", { text }),
+  bookmarks: () => get<{ bookmarks: Bookmark[] }>("api/bookmarks").then(body => body.bookmarks),
+  bookmark: (action: BookmarkAction) => post<{ bookmarks: Bookmark[] }>("api/bookmarks", action).then(body => body.bookmarks),
   accountAction: (action: AccountAction) => post<AccountsView>("api/accounts", action, 100000),
   loginStream(onLogin: (login: AccountLogin | null) => void): () => void {
     return subscribeFeed({ feed: "login" }, (event, data) => { if (event === "login") onLogin(data as AccountLogin | null); });

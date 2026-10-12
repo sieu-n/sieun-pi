@@ -16,9 +16,13 @@ if (!output) throw new Error('PI_POOL_TEST_OUTPUT_DIR is required');
 const expectation = process.env.FIXTURE_EXPECT ?? 'swap';
 if (!['baseline', 'swap'].includes(expectation)) throw new Error('FIXTURE_EXPECT must be baseline or swap');
 // What account c answers: a 429 with a one-hour reset, or the 400 Anthropic sent
-// on 2026-10-08 while an account's Consumer Terms were pending.
+// on 2026-10-08 while an account's Consumer Terms were pending. `all`: every
+// account answers 429 until its own reset, c at ALL_RESET_SEC.c and d later, as on
+// 2026-10-12 15:04, when a session slept until its own account's reset while
+// another account came back first.
 const failure = process.env.FIXTURE_FAILURE ?? '429';
-if (!['429', 'terms'].includes(failure)) throw new Error('FIXTURE_FAILURE must be 429 or terms');
+if (!['429', 'terms', 'all'].includes(failure)) throw new Error('FIXTURE_FAILURE must be 429, terms or all');
+if (failure === 'all' && expectation !== 'swap') throw new Error('FIXTURE_FAILURE=all checks the swap only');
 const FAIL_STATUS = failure === 'terms' ? 400 : 429;
 const TERMS_MESSAGE = "We've updated our Consumer Terms and Privacy Policy. You'll need to accept them in claude.ai with the email in /status to continue.";
 const run = mkdtempSync(join(output, 'swap-'));
@@ -28,6 +32,8 @@ const C = 'cccc3333-0000-0000-0000-000000000000';
 const D = 'dddd4444-0000-0000-0000-000000000000';
 const SESSION = 'fixture-swap-session';
 const RESET_SEC = 3600;
+const ALL_RESET_SEC = { c: 20, d: 60 };
+let resetAt;
 
 function jwt(accountId, label) {
   const claims = { exp: Math.floor(Date.now() / 1000) + 30 * 86400, fixture: label, 'https://api.openai.com/auth': { chatgpt_account_id: accountId } };
@@ -68,13 +74,17 @@ const bus = new EventEmitter();
 const server = createServer(async (request, response) => {
   for await (const _chunk of request);
   const record = { n: requests.length + 1, at: Date.now(), path: request.url, keyLabel: jwtLabel(request.headers.authorization ?? '') };
-  record.status = record.keyLabel === 'c' ? FAIL_STATUS : 200;
+  if (failure === 'all') {
+    resetAt ??= Object.fromEntries(Object.entries(ALL_RESET_SEC).map(([label, sec]) => [label, Math.floor(record.at / 1000) + sec]));
+    record.status = record.at < (resetAt[record.keyLabel] ?? 0) * 1000 ? 429 : 200;
+  } else record.status = record.keyLabel === 'c' ? FAIL_STATUS : 200;
   requests.push(record);
   appendFileSync(join(run, 'http.jsonl'), JSON.stringify(record) + '\n');
   bus.emit('request', record);
   if (record.status === 429) {
     response.writeHead(429, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'plus', resets_at: Math.floor(Date.now() / 1000) + RESET_SEC } }));
+    const resets = failure === 'all' ? resetAt[record.keyLabel] : Math.floor(Date.now() / 1000) + RESET_SEC;
+    response.end(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'The usage limit has been reached', plan_type: 'plus', resets_at: resets } }));
   } else if (record.status === 400) {
     response.writeHead(400, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: TERMS_MESSAGE } }));
@@ -144,7 +154,7 @@ async function prime(name, withExtension) {
   const startedAt = Date.now();
   const firstRequest = requests.length;
   await rpc('prompt', { message: 'Return SYNTHETIC_SWAP_OK.' });
-  const done = await waitFor(event => event.type === 'message_end' && event.message.role === 'assistant' && event.message.stopReason === 'stop', 15000);
+  const done = await waitFor(event => event.type === 'message_end' && event.message.role === 'assistant' && event.message.stopReason === 'stop', failure === 'all' ? 45000 : 15000);
   const retryStart = events.find(event => event.type === 'auto_retry_start');
   if (!done) await rpc('abort_retry');
   child.stdin.end();
@@ -152,7 +162,7 @@ async function prime(name, withExtension) {
   await closed;
   clearTimeout(force);
   const assistants = events.filter(event => event.type === 'message_end' && event.message.role === 'assistant').map(event => event.message);
-  const result = { name, withExtension, requests: requests.slice(firstRequest), retryStart, assistants: assistants.map(m => ({ stopReason: m.stopReason, errorMessage: m.errorMessage, diagnostics: m.diagnostics })), doneAfterMs: done ? Date.now() - startedAt : null };
+  const result = { name, withExtension, startedAt, requests: requests.slice(firstRequest), retryStarts: events.filter(event => event.type === 'auto_retry_start'), retryStart, assistants: assistants.map(m => ({ stopReason: m.stopReason, errorMessage: m.errorMessage, diagnostics: m.diagnostics })), doneAfterMs: done ? Date.now() - startedAt : null };
   writeFileSync(join(dir, 'result.json'), JSON.stringify(result, null, 2));
   return result;
 }
@@ -175,30 +185,46 @@ try {
   } else {
     const swapped = await prime('swap', true);
     summary.swap = { requests: swapped.requests.map(r => `${r.keyLabel}:${r.status}`), waitMs: swapped.retryStart?.delayMs, doneAfterMs: swapped.doneAfterMs, errorMessage: swapped.assistants[0]?.errorMessage };
-    assert.deepEqual(summary.swap.requests, [`c:${FAIL_STATUS}`, 'd:200'], 'request 2 of the same turn uses the other account');
-    assert.ok(swapped.retryStart.delayMs < 5000, `Prime retried after ${swapped.retryStart.delayMs}ms, not at the reset`);
-    assert.ok(swapped.doneAfterMs < 10000, 'the turn finished on the new account');
-    const log = readLog();
-    summary.log = log.filter(e => ['limited', 'refused', 'vend'].includes(e.event));
-    if (failure === 'terms') {
-      assert.match(swapped.assistants[0].errorMessage, /pi-pool: c@x is out of the pool \(needs terms\); the retry uses d@x\./);
-      assert.ok(log.some(e => e.event === 'refused' && e.account === 'c@x' && e.reason === 'needs terms' && e.next === 'd@x' && e.session === SESSION));
-      assert.ok(log.some(e => e.event === 'vend' && e.account === 'd@x' && e.why === 'cooldown' && e.shadowed === C && e.previous === 'c@x'));
-      const provider = readState().providers['openai-codex'];
-      assert.equal(provider.cooldown_reasons[C], 'needs terms');
-      assert.ok(provider.cooldowns[C] * 1000 > Date.now() + 23 * 3600 * 1000, 'the account stays out for a day unless a check or a sign-in clears it');
+    if (failure === 'all') {
+      const log = readLog();
+      summary.log = log.filter(e => ['limited', 'wait', 'switch'].includes(e.event));
+      summary.resetAt = resetAt;
+      summary.retryDelaysMs = swapped.retryStarts.map(e => e.delayMs);
+      assert.deepEqual(summary.swap.requests, ['c:429', 'd:429', 'c:200'], 'the turn tries d at once, then waits for c, the account that frees first');
+      const [, second, third] = swapped.requests;
+      assert.ok(swapped.doneAfterMs !== null, 'the same turn finished with no manual continue');
+      assert.ok(third.at >= resetAt.c * 1000, 'the retry waits until c frees');
+      assert.ok(third.at < resetAt.d * 1000 - 20000, 'the retry does not wait for the reset of d, the account the session was on');
+      assert.ok(summary.retryDelaysMs.at(-1) <= resetAt.c * 1000 - second.at + 2000, 'Prime sleeps for the retryAfterMs the extension set');
+      assert.ok(log.some(e => e.event === 'limited' && e.account === 'c@x' && e.next === 'd@x'));
+      assert.ok(log.some(e => e.event === 'limited' && e.account === 'd@x' && e.next === null && e.retry_at));
+      assert.match(swapped.assistants[1].errorMessage, /pi-pool: d@x is limited until .*; this session waits for its slot at .*Try again in \d+ minutes?\./);
     } else {
-      assert.match(swapped.assistants[0].errorMessage, /pi-pool: c@x is limited until .*; the retry uses d@x\./);
-      assert.doesNotMatch(swapped.assistants[0].errorMessage, /Try again in/);
-      assert.ok(log.some(e => e.event === 'limited' && e.account === 'c@x' && e.next === 'd@x' && e.session === SESSION));
-      assert.ok(log.some(e => e.event === 'vend' && e.account === 'd@x' && e.why === 'limited' && e.shadowed === C && e.previous === 'c@x'));
-      const limit = readState().providers['openai-codex'].limits[C];
-      assert.ok(limit.until * 1000 > Date.now() + (RESET_SEC - 60) * 1000, 'the limit lasts until the provider reset');
-    }
+      assert.deepEqual(summary.swap.requests, [`c:${FAIL_STATUS}`, 'd:200'], 'request 2 of the same turn uses the other account');
+      assert.ok(swapped.retryStart.delayMs < 5000, `Prime retried after ${swapped.retryStart.delayMs}ms, not at the reset`);
+      assert.ok(swapped.doneAfterMs < 10000, 'the turn finished on the new account');
+      const log = readLog();
+      summary.log = log.filter(e => ['limited', 'refused', 'vend'].includes(e.event));
+      if (failure === 'terms') {
+        assert.match(swapped.assistants[0].errorMessage, /pi-pool: c@x is out of the pool \(needs terms\); the retry uses d@x\./);
+        assert.ok(log.some(e => e.event === 'refused' && e.account === 'c@x' && e.reason === 'needs terms' && e.next === 'd@x' && e.session === SESSION));
+        assert.ok(log.some(e => e.event === 'vend' && e.account === 'd@x' && e.why === 'cooldown' && e.shadowed === C && e.previous === 'c@x'));
+        const provider = readState().providers['openai-codex'];
+        assert.equal(provider.cooldown_reasons[C], 'needs terms');
+        assert.ok(provider.cooldowns[C] * 1000 > Date.now() + 23 * 3600 * 1000, 'the account stays out for a day unless a check or a sign-in clears it');
+      } else {
+        assert.match(swapped.assistants[0].errorMessage, /pi-pool: c@x is limited until .*; the retry uses d@x\./);
+        assert.doesNotMatch(swapped.assistants[0].errorMessage, /Try again in/);
+        assert.ok(log.some(e => e.event === 'limited' && e.account === 'c@x' && e.next === 'd@x' && e.session === SESSION));
+        assert.ok(log.some(e => e.event === 'vend' && e.account === 'd@x' && e.why === 'limited' && e.shadowed === C && e.previous === 'c@x'));
+        const limit = readState().providers['openai-codex'].limits[C];
+        assert.ok(limit.until * 1000 > Date.now() + (RESET_SEC - 60) * 1000, 'the limit lasts until the provider reset');
+      }
 
-    const restarted = await prime('restart', true);
-    summary.restart = { requests: restarted.requests.map(r => `${r.keyLabel}:${r.status}`) };
-    assert.deepEqual(summary.restart.requests, ['d:200'], 'a new Prime process still avoids the account');
+      const restarted = await prime('restart', true);
+      summary.restart = { requests: restarted.requests.map(r => `${r.keyLabel}:${r.status}`) };
+      assert.deepEqual(summary.restart.requests, ['d:200'], 'a new Prime process still avoids the account');
+    }
   }
 } finally {
   server.closeAllConnections();

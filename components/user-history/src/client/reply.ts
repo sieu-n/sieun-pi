@@ -46,6 +46,12 @@ export function replyExcerpt(markdown: string): string {
   return cut ? text + ELLIPSIS : text;
 }
 
+/** The quote over a chat reply that answers an owner message: the owner's own words, without a quote his message opened with. */
+export function ownerExcerpt(text: string): string {
+  const { quote, body } = splitQuote(text);
+  return replyExcerpt(quote !== null && body.trim() ? body : text);
+}
+
 /** The message sent: the excerpt as `> ` lines, a blank line, the owner's text. No quote, the text alone. */
 export function replyText(quote: string | null, text: string): string {
   if (quote === null || !quote.trim()) return text;

@@ -1,9 +1,11 @@
 <script lang="ts">
   import { api } from "./api.ts";
   import { store } from "./store.svelte.ts";
-  import { accountState, forgetAccounts, loadAccounts, meterTone, PROVIDER_LABEL, rememberAccounts, resetText, resolutionSentence, span, staleText, STATE_LABEL, threadProvider, windowColumns, windowLabel,
-    type AccountState } from "./accounts.ts";
-  import type { AccountAction, AccountLogin as Login, AccountResets, AccountsView, PoolAccount, PoolProvider, ResetGrant, UsageRefresh, UsageRefreshAccount } from "../shared/types.ts";
+  import { accountState, forgetAccounts, loadAccounts, meterTone, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, rememberAccounts, resetText, resolutionSentence, span, staleText, STATE_LABEL,
+    threadProvider, threadsText, windowColumns, windowLabel, type AccountState } from "./accounts.ts";
+  import { labels } from "./labels.ts";
+  import PriorityPicker from "./PriorityPicker.svelte";
+  import type { AccountAction, AccountLogin as Login, AccountResets, AccountsView, PoolAccount, PoolProvider, Priority, ResetGrant, UsageRefresh, UsageRefreshAccount } from "../shared/types.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import Floating from "./ui/Floating.svelte";
@@ -24,6 +26,16 @@
   let confirm = $state<Confirm | null>(null);
   let typed = $state("");
   let menu = $state<{ row: PoolAccount; anchor: HTMLElement } | null>(null);
+  let priorityAnchor = $state<HTMLElement | null>(null);
+  const threadRow = $derived(threadId ? store.session(threadId) : undefined);
+
+  /** Sets the thread's priority label; the server moves the pool class with it, so the page reads the pool again a moment later. */
+  async function setPriority(level: Priority): Promise<void> {
+    priorityAnchor = null;
+    if (!threadId) return;
+    await labels.setPriority([threadId], level);
+    setTimeout(() => { forgetAccounts(); void load(true, true); }, 1500);
+  }
   let notice = $state<string | null>(null);
   let now = $state(Date.now());
   let login = $state<Login | null>(null);
@@ -91,7 +103,7 @@
     const total = job.accounts.length;
     const read = job.accounts.filter(entry => entry.state === "read");
     const failed = job.accounts.filter(entry => entry.state === "failed");
-    const name = (entry: UsageRefreshAccount) => entry.email ?? entry.id;
+    const name = (entry: UsageRefreshAccount) => entry.label ?? entry.email ?? entry.id;
     if (job.status === "running") return total ? `Reading usage: ${settled(job)} of ${total} done.` : "Starting the usage read.";
     if (job.status === "failed" || !total) return `The usage read failed. ${job.message ?? ""}`.trim();
     if (job.account !== null && total === 1) return read.length ? `Read ${name(read[0]!)} just now.` : `Could not read ${name(failed[0]!)}. The reason is on its row.`;
@@ -108,7 +120,7 @@
   const refreshEntry = (row: PoolAccount): UsageRefreshAccount | undefined => shownRefresh?.accounts.find(entry => entry.id === row.id);
   const columns = $derived(current ? windowColumns(current.rows) : []);
   const RANK: Record<AccountState | "ready", number> = { seat: 1, pinned: 1, ready: 2, live: 2, depleted: 3, limited: 3, cooldown: 4, refused: 4, "needs-terms": 4, "needs-login": 5, off: 6 };
-  const rows = $derived([...(current?.rows ?? [])].sort((a, b) => rank(a) - rank(b) || a.email.localeCompare(b.email)));
+  const rows = $derived([...(current?.rows ?? [])].sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label)));
 
   function rank(row: PoolAccount): number {
     return row.id === resolution?.account && !row.disabled ? 0 : RANK[accountState(row) ?? "ready"];
@@ -204,7 +216,7 @@
   function askReset(row: PoolAccount): void {
     const pending = pendingReset(row.resets);
     if (pending) {
-      ask({ title: `Retry the reset on ${row.email}?`, label: "Retry the same claim",
+      ask({ title: `Retry the reset on ${row.label}?`, label: "Retry the same claim",
         body: "The last claim got no answer, so a reset may already be spent. A retry sends the same request id, so Anthropic counts it at most once.",
         action: { action: "reset", provider: "anthropic", account: row.id, grant: pending.grantId } });
       return;
@@ -215,7 +227,7 @@
     const week = row.windows.find(window => window.kind === "weekly");
     const weekSoon = week?.resetsAt && week.resetsAt > now && week.resetsAt - now < 24 * 3600_000 ? ` The week resets by itself in ${span(week.resetsAt - now)}.` : "";
     const usage = row.windows.filter(window => window.kind !== "model").map(window => `${windowLabel(window)} ${Math.round(window.pct)}%`).join(", ");
-    ask({ title: `Use a reset on ${row.email}?`, label: "Use reset",
+    ask({ title: `Use a reset on ${row.label}?`, label: "Use reset",
       body: `This spends 1 of ${grant.resetsLeft} banked reset${grant.resetsLeft === 1 ? "" : "s"}${grant.label ? ` (${grant.label})` : ""}. It clears the ${clears.join(", ") || "eligible"} usage limits now`
         + (usage ? `; usage is ${usage}.` : ".") + weekSoon + " A spent reset cannot be given back.",
       action: { action: "reset", provider: "anthropic", account: row.id, grant: grant.id } });
@@ -228,7 +240,7 @@
     if (state === "off") return ["Off. The pool never picks it.", ...unread];
     const out: string[] = [];
     if (state === "needs-login") out.push("The sign-in expired.");
-    else if (state === "needs-terms") out.push(`Anthropic refuses every request until the updated Consumer Terms are accepted. Open claude.ai signed in as ${row.email}, accept them, then choose Check again.`);
+    else if (state === "needs-terms") out.push(`Anthropic refuses every request until the updated Consumer Terms are accepted. Open claude.ai signed in as ${row.label}, accept them, then choose Check again.`);
     else if (state === "refused" || state === "cooldown") {
       const left = row.cooldownUntil && row.cooldownUntil > now ? ` The pool tries it again in ${span(row.cooldownUntil - now)}.` : "";
       out.push((row.cooldownReason ? `Refused: ${row.cooldownReason}.` : "Cooling down after a failure.") + left);
@@ -243,37 +255,35 @@
     return out;
   }
 
-  /** A row click uses the account for this thread. An account that cannot serve asks first; an account that is off or already in use does nothing. */
-  const pickable = (row: PoolAccount): boolean => threadId !== null && !row.disabled && row.id !== resolution?.account && acting === null;
+  /** A row click uses the account for this thread. One that cannot serve now, is off or is already in use takes no click; the pool may still refuse a full one. */
+  const pickable = (row: PoolAccount): boolean => threadId !== null && row.usable && !row.disabled && row.id !== resolution?.account && acting === null;
 
   function useForThread(provider: Provider, row: PoolAccount): void {
     menu = null;
     if (!threadId || !pickable(row)) return;
-    if (row.usable) { void run({ action: "use", provider, account: row.id, id: threadId, force: false }, row.id); return; }
-    confirm = { title: `Use ${row.email} anyway?`, body: `${row.email} cannot serve right now (${row.reason ?? "not usable"}). This thread keeps it, used up or not, until you follow the pool again. A 429 from the provider still moves it to another account until the reset.`, label: "Use anyway",
-      action: { action: "use", provider, account: row.id, id: threadId, force: true } };
+    void run({ action: "use", provider, account: row.id, id: threadId }, row.id);
   }
   function rowClick(event: MouseEvent, provider: Provider, row: PoolAccount): void {
     if (event.target instanceof Element && event.target.closest(".actions, a")) return;
     useForThread(provider, row);
   }
   function ask(next: Confirm): void { menu = null; typed = ""; confirm = next; }
-  const askPin = (provider: Provider, row: PoolAccount) => ask({ title: `Pin ${row.email} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session uses this account until you unpin it. While it is used up, limited by a 429 or cooling down, sessions use another account and come back when it can serve.`, label: "Pin",
+  const askPin = (provider: Provider, row: PoolAccount) => ask({ title: `Pin ${row.label} for all sessions?`, body: `Every ${PROVIDER_LABEL[provider]} session uses this account until you unpin it. While it is used up, limited by a 429 or cooling down, sessions use another account and come back when it can serve.`, label: "Pin",
     action: { action: "pin", provider, account: row.id } });
   const askUnpin = (provider: Provider) => ask({ title: `Unpin ${PROVIDER_LABEL[provider]}?`, body: "Sessions go back to the pool's own choice.", label: "Unpin", action: { action: "unpin", provider } });
-  const askDropSeat = (provider: Provider, row: PoolAccount) => ask({ title: `Drop the seat on ${row.email}?`, body: "The next request moves the seat to the best account. Running sessions keep their connection.",
+  const askDropSeat = (provider: Provider, row: PoolAccount) => ask({ title: `Drop the seat on ${row.label}?`, body: "The next request moves the seat to the best account. Running sessions keep their connection.",
     label: "Drop seat", action: { action: "switch", provider } });
   const askRecheck = (provider: Provider) => ask({ title: "Check refused accounts again?",
     body: "The pool sends one free request per Claude account, and a one-token message to an account that needs terms. An account the API accepts again returns to the pool. One it refuses cools down for 24 hours.", label: "Check again",
     action: { action: "recheck", provider } });
-  const askRemove = (provider: Provider, row: PoolAccount) => ask({ title: `Remove ${row.email}?`,
-    body: "This deletes its sign-in and drops its pins and seat. To use it again, add it again.", label: "Remove", danger: true, typed: row.email,
+  const askRemove = (provider: Provider, row: PoolAccount) => ask({ title: `Remove ${row.label}?`,
+    body: "This deletes its sign-in and drops its pins and seat. To use it again, add it again.", label: "Remove", danger: true, typed: row.label,
     action: { action: "remove", provider, account: row.id } });
   const actionKey = (action: AccountAction): string => "account" in action && action.account ? action.account : action.action;
 </script>
 
 <section class="accounts" aria-label="Accounts">
-  <header class="bar">
+  <div class="bar">
     {#if view}
       <div class="tabs" role="tablist">
         {#each view.providers as provider (provider.provider)}
@@ -304,10 +314,10 @@
         {:else}<Icon name="refresh" size={14} /> Refresh all{/if}
       </button>
     {/if}
-  </header>
+  </div>
 
   {#if shownLogin}
-    <AccountLogin login={shownLogin} onclose={() => { watched = null; }} onretry={() => shownLogin && void startLogin(shownLogin.provider, shownLogin.account)} />
+    <AccountLogin login={shownLogin} account={view?.providers.flatMap(entry => entry.rows).find(row => row.id === shownLogin.account)?.label} onclose={() => { watched = null; }} onretry={() => shownLogin && void startLogin(shownLogin.provider, shownLogin.account)} />
   {/if}
 
   {#if error && !view}
@@ -319,7 +329,13 @@
     <div class="empty muted"><span class="spinner"></span> Loading accounts</div>
   {:else}
     <div class="uses">
-      <span class:warning={threadId && !resolution?.email}>{threadId ? resolutionSentence(current) : "No thread is open. New chats start on the account marked Next request."}</span>
+      <span class:warning={threadId && (current.wait || !resolution?.email)}>{threadId ? resolutionSentence(current, now) : "No thread is open. New chats start on the account marked Next request."}</span>
+      {#if threadId && view.priority}
+        <button type="button" class="priority" class:high={view.priority === "high"} class:low={view.priority === "low"} aria-haspopup="dialog" aria-expanded={priorityAnchor !== null}
+          use:tooltip={POOL_PRIORITY_HINT} onclick={event => { priorityAnchor = priorityAnchor ? null : event.currentTarget; }}>
+          {POOL_PRIORITY_LABEL[view.priority]}<Icon name="chevronDown" size={12} />
+        </button>
+      {/if}
       {#if threadId && resolution?.pinned}
         <button class="button small" disabled={acting !== null} onclick={() => threadId && void run({ action: "follow", provider: current.provider, id: threadId }, "follow")}>Follow the pool</button>
       {/if}
@@ -353,17 +369,19 @@
           {@const rowNotes = notes(row)}
           {@const canPick = pickable(row)}
           {@const read = refreshEntry(row)}
+          {@const threads = threadsText(row, view?.poolConfig)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
           <div class="row" role="row" class:this={inUse} class:off={row.disabled} class:dead={state === "needs-login"} class:pick={canPick} class:busy={acting === row.id}
             onclick={event => rowClick(event, current.provider, row)}>
             <div class="who" role="cell">
               {#if canPick}
-                <button type="button" class="email" aria-label="Use {row.email} for this thread">{row.email}</button>
+                <button type="button" class="email" aria-label="Use {row.label} for this thread">{row.label}</button>
               {:else}
-                <div class="email">{row.email}</div>
+                <div class="email">{row.label}</div>
               {/if}
               <div class="sub">
                 {#if planText(row)}<span>{planText(row)}</span>{/if}
+                {#if threads}<span use:tooltip={threads.hint}>{threads.label}</span>{/if}
                 {#if state}<span class="badge {STATE_LABEL[state].tone}">{STATE_LABEL[state].label}</span>{/if}
                 {#if pendingReset(row.resets)}<span class="badge warning">Reset unknown</span>
                 {:else if usableGrant(row.resets)}<span class="badge success">{usableGrant(row.resets)!.resetsLeft} reset{usableGrant(row.resets)!.resetsLeft === 1 ? "" : "s"}</span>{/if}
@@ -386,20 +404,20 @@
               {:else}
                 {#if read?.state === "read"}<span class="read-state ok">Updated</span>
                 {:else if read?.state === "failed"}<span class="read-state bad">Not read</span>{/if}
-                <button type="button" class="icon-button small row-refresh" disabled={refreshing} aria-label="Refresh usage for {row.email}" use:tooltip={"Refresh usage"}
+                <button type="button" class="icon-button small row-refresh" disabled={refreshing} aria-label="Refresh usage for {row.label}" use:tooltip={"Refresh usage"}
                   onclick={() => void startRefresh(current.provider, row.id)}><Icon name="refresh" size={14} /></button>
               {/if}
               {#if acting === row.id}<span class="spinner tiny"></span>
-              {:else if canPick}<button type="button" class="hint" aria-label="Use {row.email} for this thread" onclick={() => useForThread(current.provider, row)}>Use</button>{/if}
+              {:else if canPick}<button type="button" class="hint" aria-label="Use {row.label} for this thread" onclick={() => useForThread(current.provider, row)}>Use</button>{/if}
               {#if !row.disabled && (pendingReset(row.resets) || usableGrant(row.resets))}
                 <button class="button small" disabled={acting !== null} onclick={() => askReset(row)}>{pendingReset(row.resets) ? "Retry reset" : "Use reset"}</button>
               {/if}
               {#if row.disabled}
                 <button class="button small" disabled={acting !== null} onclick={() => void run({ action: "enable", provider: current.provider, account: row.id }, row.id)}>Turn on</button>
               {:else if state === "needs-login"}
-                <button class="button small" disabled={running(login)} onclick={() => void startLogin(current.provider, row.email)}>Sign in again</button>
+                <button class="button small" disabled={running(login)} onclick={() => void startLogin(current.provider, row.id)}>Sign in again</button>
               {/if}
-              <button class="icon-button small" aria-label="More actions for {row.email}" aria-haspopup="menu" aria-expanded={menu?.row.id === row.id}
+              <button class="icon-button small" aria-label="More actions for {row.label}" aria-haspopup="menu" aria-expanded={menu?.row.id === row.id}
                 onclick={event => { menu = menu?.row.id === row.id ? null : { row, anchor: event.currentTarget }; }}><Icon name="more" size={16} /></button>
             </div>
             {#if rowNotes.length}
@@ -412,11 +430,18 @@
   {/if}
 </section>
 
+{#if priorityAnchor && threadRow}
+  <Floating anchor={priorityAnchor} width={210} maxHeight={120} label="Priority" onclose={() => { priorityAnchor = null; }}>
+    <div class="menu-heading">Priority label</div>
+    <PriorityPicker value={threadRow.priority} autofocus onchange={level => void setPriority(level)} />
+  </Floating>
+{/if}
+
 {#if menu && current}
   {@const row = menu.row}
   {@const provider = current.provider}
   {@const state = accountState(row)}
-  <Floating anchor={menu.anchor} width={220} align="end" role="menu" label="Actions for {row.email}" onclose={() => { menu = null; }}>
+  <Floating anchor={menu.anchor} width={220} align="end" role="menu" label="Actions for {row.label}" onclose={() => { menu = null; }}>
     {#if pickable(row)}
       <button type="button" class="menu-item" role="menuitem" onclick={() => useForThread(provider, row)}>Use in this thread</button>
     {/if}
@@ -438,7 +463,7 @@
         <button type="button" class="menu-item" role="menuitem" onclick={() => askRecheck(provider)}>Check again</button>
       {/if}
     {/if}
-    <button type="button" class="menu-item" role="menuitem" disabled={running(login)} onclick={() => void startLogin(provider, row.email)}>Sign in again</button>
+    <button type="button" class="menu-item" role="menuitem" disabled={running(login)} onclick={() => void startLogin(provider, row.id)}>Sign in again</button>
     {#if row.disabled}
       <button type="button" class="menu-item" role="menuitem" onclick={() => void run({ action: "enable", provider, account: row.id }, row.id)}>Turn on</button>
     {:else}
@@ -479,6 +504,10 @@
   .spacer { flex: 1; }
   .uses { display: flex; align-items: center; gap: 10px; line-height: 1.4; }
   .uses span { flex: 1; }
+  .priority { display: inline-flex; align-items: center; gap: 3px; flex: none; height: 24px; padding: 0 6px; border-radius: var(--radius-small); font-size: 12px; font-weight: 500; color: var(--text-muted); }
+  .priority:hover, .priority[aria-expanded="true"] { background: var(--bg-hover); color: var(--text); }
+  .priority.high { color: var(--accent-bold); }
+  .priority.low { color: var(--text-faint); }
   .warning { color: var(--warning); }
   .notice { display: flex; align-items: flex-start; gap: 8px; padding: 6px 6px 6px 12px; border-radius: var(--radius-small); background: var(--bg-sunken); color: var(--text-muted); line-height: 1.4; }
   .notice span { flex: 1; overflow-wrap: anywhere; padding-top: 3px; }

@@ -1,44 +1,68 @@
 ---
 name: create-verification-skill
-description: "Generate a project-local verification skill that drives your app the way a user does — any language, framework, or platform. Use for `create-verification-skill`, \"make a control skill for this repo\", or when a project has no scripted way to prove UI/CLI/service behavior."
+description: "Generate a project-local `verify-<app>` skill that launches the app, drives it the way a user does, and captures proof. Works for any language, framework, or platform. Use for `create-verification-skill`, \"make a control skill for this repo\", or when a project has no scripted way to prove UI, CLI, or service behavior."
 disable-model-invocation: true
 ---
 
 # Create a verification skill
 
-Every serious project needs a scripted way to drive the real app and prove behavior: launch it, exercise a feature the way a user would, and capture evidence. This skill generates that as a project-local skill (`.prime/agent/skills/verify-<app>/`) tailored to the repo. You write the generator's output for the next agent, not for a human: it will be read cold, mid-task, by an agent that has never seen the app.
+Write `.prime/agent/skills/verify-<app>/` in the target repo. Its reader is an agent that has never seen the app and opens the skill mid-task.
 
-## 1. Interview the repo, not the user
+## 1. Interview the repo
 
-Answer these from the codebase and only ask the user what you cannot observe:
+Answer these questions from the code. Ask the user only what the code cannot show.
 
-- **Surface:** what does a user actually touch? A web UI, a CLI/TUI, a desktop app, an API, a mobile app, a library? A repo can have several; pick the primary one and note the rest.
-- **Run:** how does the app start locally? Prefer the repo's own documented dev command (package scripts, Makefile, README quickstart). Note ports, env vars, seed data, auth.
-- **Drive:** how can an agent interact with it programmatically? Existing harnesses first: the repo's own e2e specs, expect scripts, PTY helpers, curl-able endpoints, a debug port. Only then pick a generic recipe: the `aside-browser` skill for anything in a browser, a tmux/PTY harness for CLI/TUI, plain HTTP for services.
-- **Observe:** what evidence can be captured? Screenshots, terminal transcripts, response bodies, logs, exit codes, DB state.
-- **Isolate:** can two instances run side by side (ports, data dirs, profiles)? If not, say so in the generated skill: refusing to double-drive a shared instance beats corrupting the user's session.
+- What does a user touch: a web UI, a CLI or TUI, a desktop app, an API, a mobile app, or a library? Pick the primary surface and note the others.
+- How does the app start locally? Use the repo's own dev command from package scripts, a Makefile, or the README, and note ports, env vars, seed data, and auth.
+- How can an agent drive it? Use an existing harness first, such as the repo's e2e specs, expect scripts, PTY helpers, HTTP endpoints, or a debug port. Otherwise use the `aside-browser` skill for a browser, a tmux or PTY session for a CLI or TUI, and plain HTTP for a service.
+- What evidence can you capture: screenshots, terminal transcripts, response bodies, logs, exit codes, or database state?
+- Can two instances run side by side with separate ports, data dirs, and profiles? If not, the generated skill must refuse to drive an instance it did not start.
 
-If the checkout doesn't build or start as-is, fix that first (or report it precisely) before generating; a skill written against a broken base teaches wrong steps. When an irrelevant missing asset blocks startup (a static dir the API never serves, a sample config), the generated skill may create it, clearly marked as verification scaffolding, and remove it in cleanup.
+If the checkout does not build or start, fix it or report the exact failure before you generate anything. If a missing asset that the feature does not use blocks startup, the generated skill may create it as marked scaffolding and remove it during cleanup.
 
-## 2. Generate the skill
+## 2. Write the skill
 
-Write `.prime/agent/skills/verify-<app>/SKILL.md` with YAML frontmatter (`name: verify-<app>` and a `description` that names the app, the surface, and when to reach for it — without frontmatter the skill never registers) and these sections, each grounded in what the interview actually found (no placeholders left):
+`SKILL.md` needs frontmatter with `name: verify-<app>` and a `description` that names the app, the surface, and when to use it. Fill every section below with real commands and handles from the interview. Leave no placeholders.
 
-- **Launch:** the exact command that starts the app for verification, and how to tell it's ready (a log line, a port answering, a prompt). Include teardown. For a short-lived CLI or TUI there is no server to keep alive: launch means build the binary (or install deps) once, then start each drive in its own isolated PTY or tmux session.
-- **Doctor:** one read-only check that answers "is this instance worth driving?" — process up, right version/build, port owned by us, auth valid. An agent runs this first whenever anything looks off.
-- **Drive:** the harness recipe with real selectors/commands from this repo, not examples. Prefer stable handles (ARIA labels, data attributes, prompt strings, route paths) over coordinates and tab order.
-- **Evidence:** what to capture for a proof and where it goes. State the proof standards: exercise the real user path, not internal setters or test-only endpoints; capture the action and the resulting state, not just the final screen; verify side effects (files written, rows inserted, messages sent) alongside what's visible; mocks only where a production boundary already isolates the external system. When the safe path is a dry-run or test mode, verify what it actually skips by observing (files, network, git refs) rather than trusting its name: some dry-runs still touch the network or open a browser.
-- **Cleanup:** how to tear down instances the run created. Never kill by process name; kill what you started. Cleanup removes instances and scratch state, never the evidence: proof artifacts survive the teardown, in a location the skill names.
-- **Helpers:** any script the skill ships is executable and its invocation is shown in the skill body. A helper the reader has to reverse-engineer is not a helper.
+### Launch
+
+Give the exact start command, the ready signal (a log line, an open port, or a prompt), and the teardown command. A short-lived CLI or TUI has no server: build the binary or install deps once, then run each drive in its own PTY or tmux session.
+
+### Doctor
+
+Give one read-only check that the instance is worth driving: the process is up, the build is the expected one, the port belongs to this run, and auth works. The agent runs it first and again whenever something looks wrong.
+
+### Drive
+
+Give the harness recipe with this repo's real selectors and commands. Use stable handles such as ARIA roles and names, data attributes, prompt strings, and route paths. Do not use coordinates or tab order.
+
+### Evidence
+
+Say what to capture and where to write it. Drive the real user path, never internal setters or test-only endpoints. Capture the action and the resulting state. Check side effects such as written files, inserted rows, and sent messages. Mock only at a boundary that production already isolates. If the safe path is a dry-run or test mode, observe files, network, and git refs to confirm what it skips, because some dry-runs still hit the network or open a browser.
+
+### Cleanup
+
+Stop only the processes this run started, never by process name. Remove instances and scratch state, and keep the proof artifacts at the location the skill names.
+
+### Helpers
+
+Make every shipped script executable and show its invocation in `SKILL.md`.
 
 ## 3. Seed the feature map
 
-Create `.prime/agent/skills/verify-<app>/features/README.md` plus one file per user-facing feature you can identify (aim for the top 3-5 to start, from routes, commands, menus, or docs). Follow the shape in [`references/feature-map-example/`](references/feature-map-example/), with a README index and one file per feature. Each file answers, from the user's point of view: what the feature is, how to reach it, how to drive it with the harness, and what observable end state proves it works. The four H2s are `Sub-features`, `How to get to it (user POV)`, `Driving it with <harness>`, and `Gotchas`. The map is the repo's maintained verification source; a proof that drives one convenient entry point is incomplete when the map lists others.
+Create `features/README.md` in the generated skill, plus one file for each of the top 3 to 5 user-facing features you find in routes, commands, menus, or docs. Copy the shape of [`references/feature-map-example/`](references/feature-map-example/). Each feature file uses these four H2 sections in order:
 
-## 4. Prove the generated skill before handing it over
+1. `Sub-features`
+2. `How to get to it (user POV)`
+3. `Driving it with <harness>`
+4. `Gotchas`
 
-Run its own instructions end to end once: launch, doctor, drive ONE mapped feature (one is enough; the map exists so later runs can cover the rest), capture evidence, clean up. After cleanup, confirm the evidence still exists at the named location — a cleanup that eats the proof fails this step. Fix what fails, and run the generated cleanup after every failed iteration too, so broken attempts don't strand processes and ports. A generated skill that was never executed is a draft, not a deliverable.
+The map is the list of what to verify. A proof that drives one entry point is incomplete when the map lists others.
 
-## 5. Offer the maintenance loop
+## 4. Run the generated skill once
 
-Point the user at `maintain-verification-skill` for keeping the map honest as the app changes. Suggest a cadence only if they ask.
+Follow its instructions end to end: launch, doctor, drive one mapped feature, capture evidence, and clean up. After cleanup, confirm the evidence still exists at the named location. Fix each failure, and run the generated cleanup after every failed attempt so no process or port is left behind. Hand the skill over only after a full run passes.
+
+## 5. Tell the user when to rerun
+
+Tell the user to rerun this skill when the app changes and the map drifts.

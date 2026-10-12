@@ -1,27 +1,25 @@
 ### Eval
 
-**You own the experiment design. Plan, blind, run, synthesize.**
+For testing how a skill, structure, or prompt change affects agent behavior before you adopt it. Candidates must not know they are being tested.
 
-Evals test how a change affects agent behavior before promoting it: a new skill variant, a structural change, a prompt tweak. The failure mode is the observer effect. An agent that knows it's being evaluated behaves differently, so candidates must run blind.
+#### Blinding rules
 
-**Non-negotiables for blinding:**
+- Keep these words out of every directory, file, and prompt a candidate sees: eval, test, judge, experiment, rubric, score, compare, benchmark, candidate, arena.
+- Write the candidate prompt as an ordinary user request, such as "build me a small todo cli".
+- Do not ask candidates which skills or principles they used. Grade that from the files they opened and the code they wrote.
+- Name directories the way a user would, not `candidate-1` or `agent-a`.
+- Do not tell a candidate that other candidates exist.
+- Show the judge outputs under neutral labels, never model names.
+- When you compare two variants, one judge scores both sets in one pass on one scale.
 
-- No `eval`, `test`, `judge`, `experiment`, `rubric`, `score`, `compare`, `benchmark`, `candidate`, or `arena` in any directory, file, or prompt the candidate sees.
-- The candidate prompt looks like an organic user request. State the goal, not the meta. "build me a small todo cli" not "show me how you follow the principles chain".
-- No chain-eliciting cues. Don't ask the candidate to list which skills, principles, or files they applied; that meta-prompt inflates citation behavior. Ask for design notes generally and grade chain-following from code shape, not self-report.
-- Sanitize directory and slug names. Use project-shaped names a user might pick, not labels like `candidate-1` or `agent-a`.
-- Don't tell the candidate other candidates exist.
-- The judge can know it's judging but sees outputs by sanitized label only, never by model name.
-- Comparing two variants: one judge scores both sets in a single pass on one scale, blind to which set each came from. Two judge runs with different prompts don't compare, the calibration drifts.
+#### Steps
 
-**Steps:**
+1. Name the variant under test and what success looks like. Write a rubric of 3 to 6 concrete criteria for the judge only.
+2. Give each candidate its own working directory with the variant in place and the context a real task would have.
+3. Write one ordinary prompt and give it to every candidate.
+4. Spawn the candidates on different models per Phase B of the arena skill.
+5. Spawn one blind judge on a different model family per Phase C of the arena skill.
+6. Read each candidate's transcript at `~/.prime/agent/session-artifacts/<this-session-id>/sub-<child>/<child-id>.jsonl`, or preview it with `await agent_observe.recent_messages(<child-name>)`. Do not search `~/.prime/agent/sessions/`, which holds other projects' chats. Grade from the files each candidate opened and the code it wrote.
+7. Read every output yourself and compare it with the judge. A disagreement means a biased model or an unclear rubric.
 
-1. **Frame.** State what variant is under test and what behavior counts as success. Write the rubric (3-6 concrete criteria) for the judge only. Hold it back from candidates.
-2. **Set up sanitized environments.** Per-candidate working dir with the variant in place. Plant any context an organic task would have: a project skeleton, the skills the candidate would naturally read.
-3. **Author one organic prompt.** What a user would type. No leakage of what's being measured.
-4. **Spawn N parallel candidates** on different models per the **arena** skill's Phase B. Each works in its own sanitized dir; same prompt to each.
-5. **Spawn one blinded judge** on a different model family per the **arena** skill's Phase C. Judge sees outputs by sanitized label and the rubric, never a model name.
-6. **Verify the chain from transcripts, not self-report.** Read each candidate child's transcript under `~/.prime/agent/session-artifacts/<this-session-id>/sub-<child>/<child-id>.jsonl`, or use `await agent_observe.recent_messages(<child-name>)` for a bounded preview. Do not sweep `~/.prime/agent/sessions/` blindly; that crosses workspace boundaries and reads private chats from unrelated projects. Look at which files each candidate actually opened. Citing a principle is not reading its leaf skill, and reading it is not applying it. Grade chain-following from the files it really read plus the shape of the code, never from the candidate's own claims.
-7. **Read every candidate output yourself** end to end. Compare to the judge's verdict. Disagreement means a model is biased or the rubric is ambiguous. Synthesize.
-
-**Reply:** variant under test, rubric, per-candidate notes, judge's verdict, your synthesis, and a recommendation for whether to promote the variant.
+Reply with the variant, the rubric, notes per candidate, the judge's verdict, your synthesis, and whether to adopt the variant.

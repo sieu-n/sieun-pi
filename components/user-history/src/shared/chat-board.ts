@@ -1,5 +1,6 @@
-import { normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
-import type { ArtifactLink, BoardActor, BoardOp, ChatBoard, OwnerTodo, PlanItem, PlanItemInput, PlanStatus, ScratchItem } from "./types.ts";
+import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
+import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
+  type Requirement, type RequirementStatus, type ScratchItem } from "./types.ts";
 
 /** The chat board reducer, shared by the `chat_board` tool (agent) and `POST api/threads/<id>/board` (owner). Pure and browser-safe. */
 
@@ -7,9 +8,16 @@ import type { ArtifactLink, BoardActor, BoardOp, ChatBoard, OwnerTodo, PlanItem,
 export const BOARD_PREFIX = "[board] ";
 export const PLAN_STATUSES: readonly PlanStatus[] = ["todo", "doing", "done", "blocked", "dropped"];
 const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove", "scratch_add", "scratch_update", "scratch_remove"]);
-/** `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. */
-export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openAsks: 3, scratch: 200, links: 5, label: 120,
-  choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
+/**
+ * `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. `openGoals` caps the open goals (c44,
+ * owner 10-12: "a few area goals with their open steps under them"): past it new work goes under the goal it belongs to.
+ */
+export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openAsks: 3, openGoals: 6, scratch: 200, links: 5, label: 120,
+  requirements: 30, choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
+const OPEN_STATUSES: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
+/** The open goals: top-level plan items that are todo, doing or blocked. */
+export const openGoals = (plan: readonly PlanItem[]): PlanItem[] => plan.filter(item => OPEN_STATUSES.has(item.status));
+export const GOAL_LIMIT_ERROR = `The plan holds at most ${BOARD_LIMITS.openGoals} open goals. Add this under the goal it belongs to (parent), or close or fold a finished goal first.`;
 
 export type BoardErrorKind = "invalid" | "forbidden" | "unknown";
 export class BoardError extends Error {
@@ -98,6 +106,13 @@ function id(value: unknown, field = "id"): string {
   if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,40}$/.test(value)) invalid(`${field} must be an item id such as p1 or t1.`);
   return value;
 }
+/** A step's `sessionId`: a session id, `thread:<id>` or a pasted chat URL, stored as the bare id; null clears it. */
+function parseSessionId(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  const text = typeof value === "string" ? value.trim() : "";
+  const id = /^[a-zA-Z0-9_-]{1,128}$/.test(text) ? text : jobSession(text);
+  return id ?? invalid("sessionId must be a thread's session id, thread:<id> or a chat URL.");
+}
 /** A step's `waitUntil`: an ISO date-time (a date alone is its midnight UTC), stored in the `toISOString` form. */
 function waitUntil(value: unknown): string {
   const at = typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value) ? Date.parse(value) : NaN;
@@ -116,14 +131,109 @@ function planInput(value: unknown): PlanItemInput {
   if (value.id !== undefined) input.id = id(value.id);
   const s = status(value.status); if (s) input.status = s;
   const job = optStr(value.job, "job", 200); if (job !== undefined) input.job = job;
+  const session = parseSessionId(value.sessionId); if (session) input.sessionId = session;
   const note = optStr(value.note, "note", BOARD_LIMITS.note); if (note !== undefined) input.note = note;
   const until = optWaitUntil(value.waitUntil); if (until !== undefined) input.waitUntil = until;
   const event = optStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) input.waitFor = event;
+  if (value.target !== undefined) input.target = goalTarget(value.target);
+  Object.assign(input, gates(value));
   if (value.children !== undefined) {
     if (!Array.isArray(value.children)) invalid("children must be a list of plan items.");
     input.children = value.children.map(planInput);
   }
   return input;
+}
+
+type Gates = Pick<PlanItem, "go" | "kind" | "requirements">;
+/** A plan op's gate fields: `go` only "needed" (it never clears), `kind` only "build", `requirements` a list of 1 to 30 lines. */
+function gates(value: Record<string, unknown>): Gates {
+  const out: Gates = {};
+  if (value.go !== undefined) { if (value.go !== "needed") invalid('go must be "needed"; once a step needs the owner\'s go, it keeps needing it.'); out.go = "needed"; }
+  if (value.kind !== undefined) { if (value.kind !== "build") invalid('kind must be "build".'); out.kind = "build"; }
+  if (value.requirements !== undefined) out.requirements = requirements(value.requirements);
+  return out;
+}
+function requirements(value: unknown): Requirement[] {
+  const max = BOARD_LIMITS.requirements;
+  if (!Array.isArray(value) || !value.length || value.length > max) invalid(`requirements must be a list of 1 to ${max} lines {text, status, evidence?, note?}.`);
+  return value.map(line => {
+    if (!isRecord(line)) invalid("Each requirement must be an object with text and status.");
+    if (!REQUIREMENT_STATUSES.includes(line.status as RequirementStatus)) invalid(`A requirement's status must be one of ${REQUIREMENT_STATUSES.join(", ")}.`);
+    const out: Requirement = { text: str(line.text, "requirement text", BOARD_LIMITS.text), status: line.status as RequirementStatus };
+    const evidence = optStr(line.evidence, "requirement evidence", BOARD_LIMITS.note); if (evidence !== undefined) out.evidence = evidence;
+    const note = optStr(line.note, "requirement note", BOARD_LIMITS.note); if (note !== undefined) out.note = note;
+    return out;
+  });
+}
+
+const TARGET_SHAPE = "target must be {metric, target, unit, current?, measuredAt?, source?, cadence?}";
+/** A goal's target from an op: metric, a positive target and unit; the measurement (current, measuredAt, source) all three or none; cadence only "daily". */
+function goalTarget(value: unknown): GoalTarget {
+  if (!isRecord(value)) invalid(`${TARGET_SHAPE}.`);
+  const amount = (field: "target" | "current"): number => {
+    const n = value[field];
+    if (typeof n !== "number" || !Number.isFinite(n) || (field === "target" ? n <= 0 : n < 0)) invalid(`target.${field} must be a ${field === "target" ? "positive" : "non-negative"} number.`);
+    return n;
+  };
+  const out: GoalTarget = { metric: str(value.metric, "target.metric", BOARD_LIMITS.label), target: amount("target"), unit: str(value.unit, "target.unit", 40) };
+  const measured = ["current", "measuredAt", "source"].filter(field => value[field] !== undefined && value[field] !== null);
+  if (measured.length && measured.length < 3) invalid("A measurement is target.current, target.measuredAt and target.source together: give all three, or none for a goal not measured yet.");
+  if (measured.length) {
+    out.current = amount("current");
+    const at = typeof value.measuredAt === "string" && /^\d{4}-\d{2}-\d{2}/.test(value.measuredAt) ? Date.parse(value.measuredAt) : NaN;
+    if (!Number.isFinite(at)) invalid("target.measuredAt must be an ISO date-time such as 2026-10-09T09:00:00+09:00.");
+    out.measuredAt = new Date(at).toISOString();
+    out.source = str(value.source, "target.source", BOARD_LIMITS.waitFor);
+  }
+  if (value.cadence !== undefined && value.cadence !== null) { if (value.cadence !== "daily") invalid('target.cadence must be "daily".'); out.cadence = "daily"; }
+  return out;
+}
+
+const GOAL_ONLY = "Only a goal (a top-level plan item) carries a target.";
+/** A measurement from the future would never go stale: measuredAt may be at most 5 minutes after now. */
+function measuredBy(target: GoalTarget | undefined, now: string): void {
+  if (target?.measuredAt && Date.parse(target.measuredAt) > Date.parse(now) + 5 * 60_000) invalid("target.measuredAt is in the future; give the time the measurement was taken.");
+}
+
+/** A measurement older than this many check-in intervals is stale; a daily metric's (`cadence: "daily"`) after 24 h. */
+export const TARGET_STALE_INTERVALS = 2;
+export const targetStaleMs = (target: Pick<GoalTarget, "cadence">, everyMs: number): number => target.cadence === "daily" ? 24 * 60 * 60_000 : TARGET_STALE_INTERVALS * everyMs;
+/** A goal's progress toward its target: not measured yet, or its last measurement as a whole percent of the target (`ratio` unrounded) and whether that is stale. */
+export type TargetState = { kind: "unmeasured" } | { kind: "measured"; ratio: number; percent: number; measuredAt: number; stale: boolean };
+export function targetState(target: GoalTarget, everyMs: number, now: number): TargetState {
+  const at = Date.parse(target.measuredAt ?? "");
+  if (target.current === undefined || !Number.isFinite(at)) return { kind: "unmeasured" };
+  const ratio = target.current / target.target;
+  return { kind: "measured", ratio, percent: Math.round(ratio * 100), measuredAt: at, stale: now - at > targetStaleMs(target, everyMs) };
+}
+const amountText = (n: number): string => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+const unitText = (unit: string): string => unit === "%" ? unit : ` ${unit}`;
+/** "8 / 200 Mbps (4%)", or "target 200 Mbps, not measured". */
+export const targetText = (target: GoalTarget): string => target.current === undefined ? `target ${amountText(target.target)}${unitText(target.unit)}, not measured` :
+  `${amountText(target.current)} / ${amountText(target.target)}${unitText(target.unit)} (${Math.round(target.current / target.target * 100)}%)`;
+
+/** Words that say nothing about a goal's area: plan phases, time words and common words. */
+const AREA_STOP_WORDS = new Set(["about", "after", "again", "also", "before", "being", "both", "build", "check", "could", "does", "done", "each", "every", "first",
+  "from", "full", "goal", "have", "into", "just", "make", "more", "most", "only", "other", "over", "owner", "plan", "ready", "real", "should", "some", "step",
+  "still", "than", "that", "their", "them", "then", "there", "these", "they", "this", "those", "today", "under", "until", "verify", "when", "where", "which",
+  "while", "whole", "will", "with", "without", "would", "work"]);
+/** The area words of a goal's text: words of 4 letters or more, lowercase, a plural `s` cut, not a stop word. */
+export const areaWords = (text: string): Set<string> => new Set((text.toLowerCase().match(/[a-z][a-z0-9]*/g) ?? [])
+  .filter(word => word.length >= 4 && !AREA_STOP_WORDS.has(word)).map(word => word.length > 4 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word));
+/**
+ * The open goal a new goal's text shares its area with (correction c44, owner 10-10: "new work goes under the goal it belongs to instead of a
+ * new top-level goal"): the open goal sharing the most area words, when it shares at least 2 and at least half of the new text's; a tie goes to
+ * the first in board order. One shared word is not enough: a vendor name can sit in three separate goals of one board.
+ */
+export function sameAreaGoal(plan: readonly PlanItem[], text: string): PlanItem | undefined {
+  const words = areaWords(text);
+  let best: { goal: PlanItem; shared: number } | undefined;
+  for (const goal of openGoals(plan)) {
+    const other = areaWords(goal.text);
+    const shared = [...words].filter(word => other.has(word)).length;
+    if (shared >= 2 && shared * 2 >= words.size && shared > (best?.shared ?? 0)) best = { goal, shared };
+  }
+  return best?.goal;
 }
 
 const TARGET_FORMS = "job:<name>, thread:<sessionId> or thread:<sessionId>@<ms>, wiki:<path>, file:<absolute path>, or an http(s) URL";
@@ -167,19 +277,25 @@ export function parseBoardOp(value: unknown): BoardOp {
       if (value.parent !== undefined && value.parent !== null) op.parent = id(value.parent, "parent");
       const s = status(value.status); if (s) op.status = s;
       const job = optStr(value.job, "job", 200); if (job !== undefined) op.job = job;
+      const session = parseSessionId(value.sessionId); if (session) op.sessionId = session;
       const until = optWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
       const event = optStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) op.waitFor = event;
-      return op;
+      if (value.target !== undefined) op.target = goalTarget(value.target);
+      return Object.assign(op, gates(value));
     }
     case "plan_update": {
       const op: BoardOp = { op: "plan_update", id: id(value.id) };
+      if (value.parent !== undefined) op.parent = value.parent === null ? null : id(value.parent, "parent");
       const text = optStr(value.text, "text", BOARD_LIMITS.text); if (text !== undefined) op.text = text;
       const s = status(value.status); if (s) op.status = s;
       const job = nullableStr(value.job, "job", 200); if (job !== undefined) op.job = job;
+      const session = parseSessionId(value.sessionId); if (session !== undefined) op.sessionId = session;
       const note = nullableStr(value.note, "note", BOARD_LIMITS.note); if (note !== undefined) op.note = note;
       const until = nullableWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
       const event = nullableStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) op.waitFor = event;
-      return op;
+      if (value.target !== undefined) op.target = value.target === null ? null : goalTarget(value.target);
+      const set = gates({ go: value.go, kind: value.kind ?? undefined, requirements: value.requirements ?? undefined });
+      return Object.assign(op, set, value.kind === null ? { kind: null } : {}, value.requirements === null ? { requirements: null } : {});
     }
     case "plan_remove": return { op: "plan_remove", id: id(value.id) };
     case "scratch_add": {
@@ -198,6 +314,7 @@ export function parseBoardOp(value: unknown): BoardOp {
     case "todo_add": {
       const op: BoardOp = { op: "todo_add", text: str(value.text, "text", BOARD_LIMITS.text) };
       if (value.choices !== undefined) op.choices = choices(value.choices);
+      if (value.step !== undefined) op.step = id(value.step, "step");
       return op;
     }
     case "todo_update": {
@@ -230,7 +347,12 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
   if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos and the scratchpad; the agent keeps the plan.");
   // Summaries are written lowercase ("checked ...") and voiced here: "Owner checked ..." for the owner, "Checked ..." for the agent.
   const voice = (sentence: string) => actor === "owner" ? `Owner ${sentence}` : sentence[0]!.toUpperCase() + sentence.slice(1);
-  const done = (next: Partial<ChatBoard>, summary: string) => ({ board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: voice(summary) });
+  const done = (next: Partial<ChatBoard>, summary: string) => {
+    // A board that already holds more open goals than the limit (from before it) may keep them, but no change adds one.
+    if (next.plan && openGoals(next.plan).length > Math.max(BOARD_LIMITS.openGoals, openGoals(board.plan).length)) invalid(GOAL_LIMIT_ERROR);
+    if (actor === "agent" && next.plan) { checkGates(board, next.plan); next = { ...next, plan: markMerges(next.plan) }; }
+    return { board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: voice(summary) };
+  };
   const unknown = (what: string, missing: string): never => { throw new BoardError("unknown", `No ${what} ${missing} on the board. Read it again with no ops.`); };
   switch (op.op) {
     case "plan_set": {
@@ -239,45 +361,91 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       walkInputs(op.items, input => { if (input.id) claimed.add(input.id); });
       const used = new Set<string>();
       const fresh = () => { let next = newId("p"); while (claimed.has(next)) next = newId("p"); claimed.add(next); return next; };
-      const build = (input: PlanItemInput): PlanItem => {
+      const build = (input: PlanItemInput, goal: boolean): PlanItem => {
         const itemId = input.id && !used.has(input.id) ? input.id : fresh();
         used.add(itemId);
+        // An item that keeps its id keeps the gate fields and the target its input leaves out: plan_set never drops a go, a requirements check or a target.
+        // It keeps its job's session id too while its job stays the same.
+        const kept = itemId === input.id ? find(board.plan, itemId)?.item : undefined;
         const job = planJob(input.job);
-        return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
-          children: (input.children ?? []).map(build) };
+        const session = input.sessionId ?? jobSession(input.job) ?? (job && job === kept?.job ? kept.sessionId : undefined);
+        if (input.target && !goal) invalid(GOAL_ONLY);
+        const target = goal ? input.target ?? kept?.target : undefined;
+        if (input.target) measuredBy(input.target, now);
+        return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
+          ...gateFields({ go: input.go ?? kept?.go, kind: input.kind ?? kept?.kind, requirements: input.requirements ?? kept?.requirements }), ...(target ? { target } : {}),
+          children: (input.children ?? []).map(child => build(child, false)) };
       };
-      const plan = op.items.map(build);
+      const plan = op.items.map(input => build(input, true));
       if (count(plan) > BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
       return done({ plan }, `Set the plan: ${count(plan)} items`);
     }
     case "plan_add": {
       if (count(board.plan) >= BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
       const job = planJob(op.job);
-      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...waits(op), children: [] };
-      if (op.parent === undefined) return done({ plan: [...board.plan, item] }, `added ${item.id} ${quote(item.text)}`);
+      const session = op.sessionId ?? jobSession(op.job);
+      if (op.target) { if (op.parent !== undefined) invalid(GOAL_ONLY); measuredBy(op.target, now); }
+      const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...waits(op), ...gateFields(op), ...(op.target ? { target: op.target } : {}),
+        children: [] };
+      if (op.parent === undefined) {
+        const area = actor === "agent" ? sameAreaGoal(board.plan, item.text) : undefined;
+        return done({ plan: [...board.plan, item] }, `added ${item.id} ${quote(item.text)}${gateText(item)}${item.target ? `, ${item.target.metric} ${targetText(item.target)}` : ""}` +
+          (area ? `. ${area.id} ${quote(area.text)} covers the same area: put new work under it unless it is a separate area` : ""));
+      }
       const parent = find(board.plan, op.parent) ?? unknown("plan item", op.parent);
       // A step under a finished goal reopens the goal and every finished goal above it: a done parent with open work is a lie.
       const reopened = [...parent.ancestors, parent.item].filter(above => above.status === "done").map(above => above.id);
       let plan = map(board.plan, op.parent, p => ({ ...p, children: [...p.children, item] }));
       for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo" }));
-      return done({ plan }, `added ${item.id} ${quote(item.text)} under ${parent.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
+      return done({ plan }, `added ${item.id} ${quote(item.text)}${gateText(item)} under ${parent.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
     }
     case "plan_update": {
-      const { item } = find(board.plan, op.id) ?? unknown("plan item", op.id);
+      const { item, ancestors } = find(board.plan, op.id) ?? unknown("plan item", op.id);
+      const from = ancestors.at(-1)?.id ?? null;
+      const to = op.parent === undefined || op.parent === from ? undefined : op.parent === null ? null : find(board.plan, op.parent) ?? unknown("plan item", op.parent);
+      if (to && (to.item.id === item.id || to.ancestors.some(above => above.id === item.id))) invalid(`${item.id} cannot move under itself or under one of its own steps.`);
+      const goal = to === undefined ? from === null : to === null;
       const next: PlanItem = { ...item };
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== item.text) { next.text = op.text; parts.push(`renamed it ${quote(op.text)}`); }
       if (op.status !== undefined && op.status !== item.status) { next.status = op.status; parts.push(`marked it ${op.status}`); }
       const job = op.job === null ? null : op.job === undefined ? undefined : planJob(op.job) ?? null;
-      if (job === null) { delete next.job; if (item.job) parts.push("unlinked its job"); }
-      else if (job !== undefined && job !== item.job) { next.job = job; parts.push(`linked job ${job}`); }
+      // A new job drops the old job's session id; the same job keeps it. sessionId null clears it, a given one replaces it.
+      const session = job === null || op.sessionId === null ? undefined
+        : op.sessionId ?? jobSession(op.job ?? undefined) ?? (job === undefined || job === item.job ? item.sessionId : undefined);
+      if (job === null) { delete next.job; delete next.sessionId; if (item.job || item.sessionId) parts.push("unlinked its job"); }
+      else if ((job !== undefined && job !== item.job) || session !== item.sessionId) {
+        if (job !== undefined) next.job = job;
+        if (session) next.sessionId = session; else delete next.sessionId;
+        parts.push(session ? `linked ${next.job ? `job ${next.job}` : "thread"}${session !== next.job ? ` (thread:${session})` : ""}` : job !== undefined ? `linked job ${job}` : "unlinked its thread");
+      }
       if (op.note === null) { delete next.note; if (item.note) parts.push("cleared its note"); }
       else if (op.note !== undefined && op.note !== item.note) { next.note = op.note; parts.push("updated its note"); }
       if (op.waitUntil === null) { delete next.waitUntil; if (item.waitUntil) parts.push("cleared its wait time"); }
       else if (op.waitUntil !== undefined && op.waitUntil !== item.waitUntil) { next.waitUntil = op.waitUntil; parts.push(`set it to wait until ${op.waitUntil}`); }
       if (op.waitFor === null) { delete next.waitFor; if (item.waitFor) parts.push("cleared what it waits for"); }
       else if (op.waitFor !== undefined && op.waitFor !== item.waitFor) { next.waitFor = op.waitFor; parts.push(`set it to wait for ${quote(op.waitFor)}`); }
-      return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
+      if (op.go && !item.go) { next.go = op.go; parts.push("marked it as needing the owner's go"); }
+      if (op.kind === null) { delete next.kind; if (item.kind) parts.push("cleared its Build mark"); }
+      else if (op.kind && !item.kind) { next.kind = op.kind; parts.push("marked it a Build step"); }
+      if (op.requirements === null) { delete next.requirements; if (item.requirements) parts.push("cleared its requirements"); }
+      else if (op.requirements && JSON.stringify(op.requirements) !== JSON.stringify(item.requirements)) { next.requirements = op.requirements; parts.push(`set its requirements: ${requirementCount(op.requirements)}`); }
+      if (op.target === null) { delete next.target; if (item.target) parts.push("cleared its target"); }
+      else if (op.target && JSON.stringify(op.target) !== JSON.stringify(item.target)) {
+        if (!goal) invalid(GOAL_ONLY);
+        measuredBy(op.target, now);
+        next.target = op.target; parts.push(`set its target: ${targetText(op.target)}`);
+      }
+      if (to === undefined) return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
+      if (next.target && !goal) invalid(GOAL_ONLY);
+      // The item moves with its steps and keeps its id; an open item under a finished goal reopens it and every finished goal above it, as plan_add does.
+      const rest = map(board.plan, op.id, () => null);
+      if (to === null) return done({ plan: [...rest, next] }, `updated ${item.id} ${quote(item.text)}: ${[...parts, "moved it to the top level"].join(", ")}`);
+      const reopened = OPEN_STATUSES.has(next.status) ? [...to.ancestors, to.item].filter(above => above.status === "done").map(above => above.id) : [];
+      let plan = map(rest, to.item.id, p => ({ ...p, children: [...p.children, next] }));
+      for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo" }));
+      parts.push(`moved it under ${to.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
+      return done({ plan }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ")}`);
     }
     case "plan_remove": {
       const { item } = find(board.plan, op.id) ?? unknown("plan item", op.id);
@@ -315,13 +483,18 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (actor === "agent" && board.todos.filter(todo => todo.from === "agent" && !todo.done).length >= BOARD_LIMITS.openAsks) {
         invalid(`The owner already has ${BOARD_LIMITS.openAsks} open asks. Decide this yourself and note it in the scratchpad, or remove an ask first.`);
       }
-      const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), from: actor, at: now };
+      if (actor === "agent" && op.step !== undefined && !find(board.plan, op.step)) unknown("plan item", op.step);
+      const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), ...(op.step ? { step: op.step } : {}), from: actor, at: now };
       if (actor === "agent" && placeholderTodo(todo)) invalid(PLACEHOLDER_TODO_ERROR);
       return done({ todos: [...board.todos, todo] },
-        `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}${todo.choices ? ` with choices ${todo.choices.map(quote).join(" / ")}` : ""}`);
+        `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}${todo.step ? ` for ${todo.step}` : ""}${todo.choices ? ` with choices ${todo.choices.map(quote).join(" / ")}` : ""}`);
     }
     case "todo_update": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
+      if (actor === "agent" && op.reply !== undefined) throw new BoardError("forbidden", AGENT_REPLY_ERROR);
+      if (actor === "agent" && todo.answeredBy === "owner" && op.text !== undefined && op.text !== todo.text) {
+        throw new BoardError("forbidden", "The owner answered this todo; its question stays as asked. Add a new todo for a new question.");
+      }
       const next: OwnerTodo = { ...todo };
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== todo.text) {
@@ -334,13 +507,16 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       // A reply that is one of the offered choices is a tap: "chose X for Q", which also covers the check that comes with it.
       const chose = op.reply !== undefined && op.reply !== null && op.reply !== todo.reply && todo.choices?.includes(op.reply) === true;
       if (op.done !== undefined && op.done !== todo.done) { next.done = op.done; if (!(chose && op.done)) parts.push(`${op.done ? "checked" : "unchecked"} ${label()}`); }
-      if (op.reply === null) { delete next.reply; if (todo.reply) parts.push(`cleared the answer on ${label()}`); }
-      else if (chose) { next.reply = op.reply!; parts.push(`chose ${quote(op.reply!)} for ${quote(next.text)}`); }
-      else if (op.reply !== undefined && op.reply !== todo.reply) { next.reply = op.reply; parts.push(parts.length ? `answered: ${op.reply}` : `answered ${label()}: ${op.reply}`); }
+      if (op.reply === null) { delete next.reply; delete next.answeredBy; if (todo.reply) parts.push(`cleared the answer on ${label()}`); }
+      else if (chose) { next.reply = op.reply!; next.answeredBy = "owner"; parts.push(`chose ${quote(op.reply!)} for ${quote(next.text)}`); }
+      else if (op.reply !== undefined && op.reply !== todo.reply) { next.reply = op.reply; next.answeredBy = "owner"; parts.push(parts.length ? `answered: ${op.reply}` : `answered ${label()}: ${op.reply}`); }
       return done({ todos: board.todos.map(entry => entry.id === op.id ? next : entry) }, parts.length ? parts.join(" and ") : `left ${quote(todo.text)} as it was`);
     }
     case "todo_remove": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
+      if (actor === "agent" && todo.answeredBy === "owner" && goSteps(board.plan).some(step => linksStep(todo, step.id))) {
+        throw new BoardError("forbidden", "This todo holds the owner's answer on a step that needs the owner's go; it stays on the board.");
+      }
       return done({ todos: board.todos.filter(entry => entry.id !== op.id) }, `removed the todo ${quote(todo.text)}`);
     }
   }
@@ -358,38 +534,278 @@ export function planJob(job: string | undefined): string | undefined {
   return parsed?.kind === "thread" ? parsed.sessionId : parsed?.kind === "job" ? parsed.name : text;
 }
 
+/** The session id a job names itself: `thread:<id>`, `thread:<id>@<ms>`, a pasted chat URL or a bare session id. Undefined for a job name. */
+export function jobSession(job: string | undefined): string | undefined {
+  const text = job?.trim();
+  if (!text) return undefined;
+  const target = normalizeArtifactTarget(text);
+  const parsed = target ? parseArtifactTarget(target) : null;
+  return parsed?.kind === "thread" ? parsed.sessionId : isSessionId(text) ? text : undefined;
+}
+
+/**
+ * The board with each step in `links` given its owner's session id, where the step has none yet and still names the same job; null when no step
+ * changed. The server stores these when it finds a step's job among the chat's agents, so the link survives the job's delete or rename.
+ */
+export function linkStepSessions(board: ChatBoard, links: ReadonlyMap<string, { job: string; sessionId: string }>, now: string): ChatBoard | null {
+  const visit = (items: PlanItem[]): PlanItem[] => {
+    let changed = false;
+    const out = items.map(item => {
+      const link = links.get(item.id);
+      const children = visit(item.children);
+      const own = link !== undefined && !item.sessionId && item.job === link.job;
+      if (!own && children === item.children) return item;
+      changed = true;
+      return { ...item, ...(own ? { sessionId: link.sessionId } : {}), children };
+    });
+    return changed ? out : items;
+  };
+  const plan = visit(board.plan);
+  return plan === board.plan ? null : { ...board, plan, rev: board.rev + 1, updatedAt: now };
+}
+
+/** What the reducer says when the agent writes a todo's answer. */
+export const AGENT_REPLY_ERROR = "Only the owner answers a todo; the agent cannot write or clear an answer. Ask with a todo and let the owner answer it on the board.";
+
+/*
+ * The owner's go and the requirements check (W50, frontend bro 10-09): a design the owner picked on the demo reached production as if it were
+ * approved ("only move things to 5174 when i say 5180 is good enough"), and a variant system missed the owner's ask for separate implementations.
+ * Code holds these two gates for the agent; the agents decide everything else.
+ */
+const HOLD = /\b(?:no|nope|not|wait|hold|later|stop|never|cancel|reject(?:ed)?|don['’]?t|do\s+not)\b|아직|아니|잠깐|보류|말고|하지\s*마|안\s*돼|기다|멈춰|나중/i;
+const APPROVE = /\b(?:go|ship|approved?|yes|yep|ok|okay|lgtm|proceed)\b|좋아|ㄱㄱ|고고|승인|진행|ㅇㅋ|오케이|ㅇㅇ/i;
+/**
+ * Whether an owner's answer is a go: it says go, ship, approve, yes, 좋아 or ㄱㄱ, and nothing that holds it back (not yet, wait, no, 아직).
+ * A tapped choice is judged by its lead, up to the first comma or dash: the chat writes choices like "Go, 5.5 high with no fallback", whose
+ * "no" is part of what is approved (10-09, t29 on p234 read as no go).
+ */
+export const approves = (reply: string, choices: readonly string[] = []): boolean => {
+  const text = choiceLead(reply, choices);
+  return !HOLD.test(text) && APPROVE.test(text);
+};
+/** A tapped choice's lead, up to the first comma or dash; a typed answer whole. */
+const choiceLead = (reply: string, choices: readonly string[]): string =>
+  choices.includes(reply.trim()) ? reply.trim().split(/[,;:.\u2013\u2014]|\s-\s/)[0]! : reply;
+/** Whether the owner tapped the first choice, the agent's recommendation ("Send it"), and its lead holds nothing back. */
+export const tapsFirstChoice = (reply: string, choices: readonly string[] = []): boolean =>
+  choices.length > 0 && reply.trim() === choices[0]!.trim() && !HOLD.test(choiceLead(reply, choices));
+/** Whether a todo asks about a plan step: its `step` field, or the step id as a whole word in its text. */
+export const linksStep = (todo: Pick<OwnerTodo, "text" | "step">, stepId: string): boolean =>
+  todo.step === stepId || new RegExp(`(?<![\\w-])${stepId}(?![\\w-])`).test(todo.text);
+/** Whether an answer is a go or a hold; a reply to a side question on the step ("Leave it in the old history") is neither. */
+const goOrHold = (reply: string, choices: readonly string[]): boolean => {
+  const text = choiceLead(reply, choices);
+  return HOLD.test(text) || APPROVE.test(text);
+};
+/** The owner's go on a step: the last go-or-hold answer the owner gave on a todo linked to it, when it approves. A later "not yet" takes a go back. */
+export function ownerGo(board: Pick<ChatBoard, "todos">, stepId: string): OwnerTodo | null {
+  const last = board.todos.filter(todo => todo.answeredBy === "owner" && linksStep(todo, stepId) && goOrHold(todo.reply ?? "", todo.choices ?? [])).at(-1);
+  return last && approves(last.reply!, last.choices ?? []) ? last : null;
+}
+/*
+ * Merges (owner 10-12, c49): "never auto merge anything without my approval". A step whose text merges a PR or a branch, turns on auto-merge or
+ * lands code needs the owner's go even when the chat did not mark it, and a go on it counts only when the approving todo names the PR the step
+ * names. A merge word about something else (a merge conflict, merge-ready, a merge train, merged versions) is no merge step.
+ */
+const MERGE = new RegExp([
+  String.raw`\bauto-?merg`,
+  String.raw`\bgh\s+pr\s+merge\b`,
+  String.raw`^\s*(?:[\w ]{1,20}:\s*)?merge\b(?![-\s]?(?:conflicts?|ready|train|queue)\b)`,
+  String.raw`\bmerg(?:e|es|ed|ing)\s+(?:(?:the|this|that|its?|my|our|both|all|open|green)\s+)?(?:[\w-]+\s+)?(?:prs?\b|pull\s+requests?\b|branch(?:es)?\b|#\d+|\S*\/pulls?\/\d+)`,
+  String.raw`\bmerg(?:e|es|ed|ing)\s+(?:(?:it|them|this|that)\s+)?(?:in)?to\s+(?:main|master|staging|dev|prod|production|origin|the\s+[\w-]+\s+branch)\b`,
+  String.raw`\b(?:prs?|pull\s+requests?)\s*#?\d+\s+(?:is\s+|was\s+|gets\s+)?merged?(?![-\w])`,
+  String.raw`\bland(?:s|ed|ing)?\s+(?!pages?\b)(?:(?:the|this|that|its?|my|our|both|all)\s+)?(?:[\w-]+\s+)?(?:prs?\b|pull\s+requests?\b|branch(?:es)?\b|code\b|changes?\b|commits?\b|patch(?:es)?\b|fix(?:es)?\b|#\d+)`,
+].join("|"), "i");
+/**
+ * A push that moves main or master (the merge guard's default branches, sieun-pi a3a2b23 and 468b49c): "push the fix to main", "git push origin
+ * HEAD:main", "land it on master". A push to staging or a dev branch such as sieun/dev is none: staging needs no go.
+ */
+const PUSH = new RegExp([
+  String.raw`\bpush(?:es|ed|ing)?\s+(?:[\w.'#/-]+\s+){0,4}?(?:to|into|onto)\s+(?:origin\s+|upstream\s+)?(?:main|master)\b`,
+  String.raw`\bgit\s+push\s+(?:-\S+\s+)*[\w.:/@-]+\s+(?:\+?[\w./-]+:)?(?:refs\/heads\/)?(?:main|master)\b`,
+  String.raw`\bland(?:s|ed|ing)?\s+(?:[\w.'#/-]+\s+){0,3}?(?:on|to|into)\s+(?:main|master)\b`,
+].join("|"), "i");
+/** The merge rule as every brief says it: the chat brief, the job reply guideline and the duty job brief. */
+export const MERGE_RULE = "Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Production needs his " +
+  "explicit approval of that specific PR or push in For you (c49): never merge a PR into the production branch, turn on auto-merge for one, push to " +
+  "main or master, or promote to production before a todo linked to the step, whose text names the PR (for a push, the repo and the branch or the " +
+  "word push), is answered by him with a go and checked off. There is no standing \"merge once checks pass\" approval, and a go on another step, PR " +
+  "or push does not carry over. For such a merge or push the global-rules merge guard refuses the command until it carries that todo as " +
+  "OWNER_OK=<chat id>/<todo id>: an env prefix in bash (`OWNER_OK=<chat>/<todo> gh pr merge 123`), or a `# OWNER_OK=<chat>/<todo>` line in an ipython cell. " +
+  "The guard passes staging pushes and branch merges that name base staging with no token, but it still refuses `gh pr merge <n>` for a staging PR, " +
+  "because that command never names the base: merge a staging PR through a path that names the base, or the land script.";
+/** A step that states the merge rule itself ("Nothing merges without your go", "the guard refuses gh pr merge") merges nothing. */
+const RULE_TEXT = /\bwithout\s+(?:the\s+owner['\u2019]?s|your|his|an?)\s+(?:explicit\s+)?(?:go|approval|ok)\b|\b(?:refuses?|blocks?)\s+(?:gh\s+pr\s+merge|auto-?merges?|merges?|pushes)\b/i;
+/** MERGE_RULE in one sentence, for the short job reply guideline. */
+export const MERGE_RULE_SHORT = "Never ask the owner to confirm a staging land or deploy; never merge a PR into production, push to main or master, or " +
+  "promote to production without his go on a For you todo that names that PR or push, passed to the command as OWNER_OK=<chat id>/<todo id> (c49).";
+/** Whether a step's text says it merges a PR or a branch, turns on auto-merge, lands code or pushes to main or master. */
+export const mergeStep = (text: string): boolean => (MERGE.test(text) || PUSH.test(text)) && !RULE_TEXT.test(text);
+/** The default branch a push step moves, or null when the step pushes nothing to main or master. */
+export const pushBranch = (text: string): string | null => PUSH.exec(text)?.[0].match(/\b(main|master)\b(?![\s\S]*\b(?:main|master)\b)/i)?.[1]!.toLowerCase() ?? null;
+/** The PR numbers a text names: "#123", "PR 123", "pull request 123", "gh pr merge 123" or a ".../pull/123" URL. */
+export const prNumbers = (text: string): string[] =>
+  [...new Set([...text.matchAll(/(?:#|\bprs?\s*#?\s*|\bpr\s+merge\s+|\bpull(?:\s+requests?)?\s*#?\s*|\/pulls?\/)(\d+)(?!\d)/gi)].map(match => match[1]!))];
+/**
+ * Whether a todo's text names the PR: `#123`, `PR 123`, `pull request 123` or a `/pull/123` link. The same pattern as `prSubject` in
+ * components/global-rules/merge-guard.ts, which refuses a merge command whose OWNER_OK todo does not name the PR; test/merge-gate.test.ts keeps the two equal.
+ */
+export const namesPr = (text: string, pr: string): boolean => new RegExp(String.raw`(?:#|\bPRs?\s*#?\s*|\bpull(?:\s+request)?\s*#?\s*|/pulls?/)${pr}(?!\d)`, "i").test(text);
+/**
+ * Whether an owner's answer approves an action the way owner-ok.ts and the global-rules guards read it: the todo is checked off, and the owner
+ * tapped its first choice or answered with another go.
+ */
+export const approvedTodo = (todo: Pick<OwnerTodo, "answeredBy" | "reply" | "done" | "choices">): boolean =>
+  todo.answeredBy === "owner" && !!todo.reply?.trim() && todo.done && (tapsFirstChoice(todo.reply, todo.choices ?? []) || approves(todo.reply, todo.choices ?? []));
+/*
+ * Staging needs no go (owner 10-12, after a chat asked to land 32b to staging: "bro never fucking ask me for any confirmation to deploy to staging
+ * ever again"). A step whose target is staging only, by its text, is exempt even when the chat marked it: it names staging, sieun/dev or a dev
+ * branch, or it lands with no PR number, and it names no production target (prod, production, promote, main, master, a real app, a live site
+ * or app, public).
+ */
+const PRODUCTION = /\bprod(?:uction)?\b|\bpromot(?:e|es|ed|ing|ion)\b|\bmain\b|\bmaster\b|\breal\s+(?:[\w-]+\s+){0,2}app\b|\blive\s+(?:site|app)\b|\bpublic\b/i;
+const STAGING = /\bstaging\b|\bsieun\/dev\b|\bdev\s+branch\b/i;
+const LAND = /\bland(?:s|ed)?\b/i;
+/** Whether a step's only target is staging, so it never needs the owner's go. */
+export const stagingOnly = (text: string): boolean => !PRODUCTION.test(text) && (STAGING.test(text) || (LAND.test(text) && !prNumbers(text).length));
+/** Whether a step needs the owner's go: the chat marked it, or it is a merge step, and its target is not staging only. */
+export const needsGo = (item: Pick<PlanItem, "go" | "text">): boolean => (item.go === "needed" || mergeStep(item.text)) && !stagingOnly(item.text);
+/**
+ * The owner's go that counts for this step. On a merge step it is the last go-or-hold answer on a todo linked to the step, when that todo is
+ * approved (`approvedTodo`), its text names each PR the step names, and on a push to main, master or staging it says push or names the branch:
+ * the rule the merge guard applies to an OWNER_OK todo. The guard also wants the repo's name, which the command knows and a step may not. Elsewhere `ownerGo`.
+ */
+export function stepGo(board: Pick<ChatBoard, "todos">, item: Pick<PlanItem, "id" | "text">): OwnerTodo | null {
+  if (!mergeStep(item.text)) return ownerGo(board, item.id);
+  const last = board.todos.filter(todo => todo.answeredBy === "owner" && linksStep(todo, item.id) &&
+    (goOrHold(todo.reply ?? "", todo.choices ?? []) || tapsFirstChoice(todo.reply ?? "", todo.choices ?? []))).at(-1);
+  const branch = pushBranch(item.text);
+  const pushNamed = branch === null || new RegExp(String.raw`\bpush|(?<![\w/-])${branch}(?![\w-])`, "i").test(last?.text ?? "");
+  return last && approvedTodo(last) && prNumbers(item.text).every(pr => namesPr(last.text, pr)) && pushNamed ? last : null;
+}
+/** Every plan item that needs the owner's go, in board order. */
+export function goSteps(plan: readonly PlanItem[]): PlanItem[] {
+  const steps: PlanItem[] = [];
+  walk(plan, item => { if (needsGo(item)) steps.push(item); });
+  return steps;
+}
+/** The plan with every merge step marked `go: "needed"`, so renaming it later does not drop its gate. */
+const markMerges = (plan: readonly PlanItem[]): PlanItem[] => plan.map(item => {
+  const children = markMerges(item.children);
+  return !item.go && mergeStep(item.text) && !stagingOnly(item.text) ? { ...item, go: "needed", children } : { ...item, children };
+});
+/** A Build step: its text starts with "Build", or it carries `kind: build`. */
+export const isBuildStep = (item: Pick<PlanItem, "text" | "kind">): boolean => item.kind === "build" || /^build\b/i.test(item.text.trim());
+/** The goal a Build step answers to (`above` is the chain over it, outermost first): the nearest item above with requirements, else its parent, else itself. */
+export const buildGoal = (item: PlanItem, above: readonly PlanItem[]): PlanItem => [...above].reverse().find(goal => goal.requirements) ?? above.at(-1) ?? item;
+/**
+ * Why a goal's requirements check fails, as words that follow the goal ("p1 has no requirements list"), or null when it passes: no list, a met
+ * line with no evidence, an unmet or open line with no note.
+ */
+export function requirementGaps(goal: Pick<PlanItem, "requirements">): string | null {
+  const lines = goal.requirements ?? [];
+  if (!lines.length) return "has no requirements list";
+  const gaps = lines.flatMap((line, index) => line.status === "met"
+    ? line.evidence?.trim() ? [] : [`line ${index + 1} ${quote(line.text)} is met with no evidence`]
+    : line.note?.trim() ? [] : [`line ${index + 1} ${quote(line.text)} is ${line.status} with no note`]);
+  return gaps.length ? `fails its requirements check: ${gaps.join("; ")}` : null;
+}
+
+const MOVES: ReadonlySet<PlanStatus> = new Set(["doing", "done"]);
+/**
+ * The agent's plan change against both gates: an item that moves to doing or done (new, or with another status before) while it or an item
+ * above it needs the owner's go and has none (`stepGo`: a go on a step above never covers a merge step); a Build step that moves to doing (or skips to done) while its goal's requirements check fails.
+ * A step already doing may finish. The owner never changes the plan, so the owner never meets a gate.
+ */
+function checkGates(before: ChatBoard, plan: readonly PlanItem[]): void {
+  const was = new Map<string, PlanStatus>();
+  walk(before.plan, item => was.set(item.id, item.status));
+  const visit = (items: readonly PlanItem[], above: PlanItem[]) => {
+    for (const item of items) {
+      const prior = was.get(item.id);
+      if (MOVES.has(item.status) && prior !== item.status) {
+        const held = [...above, item].find(step => needsGo(step) && !stepGo(before, step));
+        if (held) {
+          const prs = mergeStep(held.text) ? prNumbers(held.text).map(pr => `#${pr}`) : [];
+          const merge = mergeStep(held.text) ? ` Only his answer on this merge counts${prs.length ? `, on a todo that names ${prs.join(" and ")}` : ""}; ` +
+            `a standing "merge once checks pass" go does not.` : " Only the owner's answer counts.";
+          throw new BoardError("forbidden", `${item.id} ${quote(item.text)} cannot move to ${item.status}: ${held === item ? "it needs" : `${held.id} ${quote(held.text)} above it needs`} ` +
+            `the owner's go. Add one For you todo with step "${held.id}" and choices, the go first (like "Go" and "Not yet"), and wait for the owner's answer.${merge}`);
+        }
+        const goal = buildGoal(item, above);
+        const gap = isBuildStep(item) && prior !== "doing" ? requirementGaps(goal) : null;
+        if (gap) {
+          throw new BoardError("forbidden", `${item.id} ${quote(item.text)} is a Build step and cannot move to ${item.status}: its goal ${goal.id} ${gap}. Have the plan or design job ` +
+            `quote each line of the owner's request and check it against the design, then record it with plan_update {"id":"${goal.id}","requirements":` +
+            `[{"text":"<the owner's words>","status":"met","evidence":"<where the design meets it>"}]}; an unmet or open line needs a note.`);
+        }
+      }
+      visit(item.children, [...above, item]);
+    }
+  };
+  visit(plan, []);
+}
+/** The gate fields that are set, for a stored plan item. */
+const gateFields = ({ go, kind, requirements: lines }: { [K in keyof Gates]?: Gates[K] | undefined }): Gates => ({ ...(go ? { go } : {}), ...(kind ? { kind } : {}), ...(lines?.length ? { requirements: lines } : {}) });
+const gateText = (item: PlanItem): string => needsGo(item) ? ", which needs the owner's go" : "";
+const requirementCount = (lines: readonly Requirement[]): string => `${lines.length} ${lines.length === 1 ? "line" : "lines"}, ${lines.filter(line => line.status === "met").length} met`;
+
 function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInput) => void): void {
   for (const item of items) { visit(item); walkInputs(item.children ?? [], visit); }
 }
 
-/** The first line of every board the agent reads, so the reply cap is in its context each turn. */
-export const REPLY_RULE = "Reply rule: at most 60 words; explain in an article and link it in your message.";
+/** Where the agent reads what the open checklist leaves out: the board Python skill. */
+export const BOARD_PY_CALLS = "board.get(id), board.notes(), board.done(), board.todos(all=True)";
+const clip = (text: string, max: number): string => text.length > max ? text.slice(0, max - 1) + "…" : text;
+const MARKS: Record<PlanStatus, string> = { todo: "[ ]", doing: "[~]", done: "[x]", blocked: "[!]", dropped: "[-]" };
 
 /**
- * The board as compact text for the agent: the reply rule, this chat's own link target and its check-in line, the plan as an indented checklist, the owner's todos
- * with their choices and answers, then the scratchpad as an indented bullet list with each note's links.
+ * The board as the agent reads it from chat_board: this chat's link target and check-in line, the goals and steps that are open or hold an open
+ * step, one line each, then the open owner todos, then one line counting what it left out. Notes, requirements, done items, answered todos and the
+ * scratchpad stay in the board file, read on demand through the board Python skill.
  */
-export function renderBoard(board: ChatBoard | null, sessionId?: string, checkIn?: string): string {
-  const self = [REPLY_RULE, ...(sessionId ? [`This chat: thread:${sessionId}`] : []), ...(checkIn ? [checkIn] : [])];
-  if (!board) return [...self, "The board is empty: no plan, no todos, no scratchpad."].join("\n");
-  const mark: Record<PlanStatus, string> = { todo: "[ ]", doing: "[~]", done: "[x]", blocked: "[!]", dropped: "[-]" };
-  const lines = [...self, `Board rev ${board.rev}, updated ${board.updatedAt}`, "Plan:"];
-  if (!board.plan.length) lines.push("  (empty)");
-  walk(board.plan, (item, depth) => {
-    const waiting = `${item.waitUntil ? `, waits until ${item.waitUntil}` : ""}${item.waitFor ? `, waits for ${quote(item.waitFor)}` : ""}`;
-    lines.push(`${"  ".repeat(depth + 1)}${mark[item.status]} ${item.id} ${item.text} (${item.status}${item.job ? `, job ${item.job}` : ""}${waiting})`);
-    if (item.note) lines.push(`${"  ".repeat(depth + 2)}note: ${item.note}`);
-  });
-  lines.push("Owner todos:");
-  if (!board.todos.length) lines.push("  (empty)");
-  for (const todo of board.todos) {
-    const offered = todo.choices ? `, choices: ${todo.choices.map((choice, index) => quote(choice) + (index === 0 ? " (recommended)" : "")).join(" / ")}` : "";
-    lines.push(`  ${todo.done ? "[x]" : "[ ]"} ${todo.id} ${todo.text} (from ${todo.from})${offered}${todo.reply !== undefined ? `, answer: ${todo.reply}` : ""}`);
+export function renderOpenPlan(board: ChatBoard | null, sessionId?: string, checkIn?: string): string {
+  const lines = [...(sessionId ? [`This chat: thread:${sessionId}`] : []), ...(checkIn ? [checkIn] : [])];
+  if (!board) return [...lines, "The board is empty: no plan, no todos, no scratchpad."].join("\n");
+  lines.push(`Board rev ${board.rev}. Open plan (goals and steps not done):`);
+  const hidden = { steps: 0, notes: 0 };
+  const hasOpen = (item: PlanItem): boolean => OPEN_STATUSES.has(item.status) || item.children.some(hasOpen);
+  const visit = (items: readonly PlanItem[], depth: number) => {
+    for (const item of items) {
+      if (!hasOpen(item)) { hidden.steps += count([item]); continue; }
+      if (item.note || item.requirements?.length) hidden.notes++;
+      const go = needsGo(item) ? stepGo(board, item) : null;
+      const marks = [
+        ...(item.job ? [`job ${item.job}${item.sessionId && item.sessionId !== item.job ? ` (thread:${item.sessionId})` : ""}`] : item.sessionId ? [`thread:${item.sessionId}`] : []),
+        ...(item.waitUntil ? [`waits until ${item.waitUntil}`] : []),
+        ...(item.waitFor ? [`waits for ${clip(item.waitFor, 60)}`] : []),
+        ...(isBuildStep(item) ? ["build"] : []),
+        ...(needsGo(item) ? [go ? `owner's go on ${go.id}` : "needs owner's go"] : []),
+        ...(item.target ? [targetText(item.target)] : []),
+      ];
+      lines.push(`${"  ".repeat(depth + 1)}${MARKS[item.status]} ${item.id} ${clip(item.text, 110)}${marks.length ? ` (${marks.join(", ")})` : ""}`);
+      visit(item.children, depth + 1);
+    }
+  };
+  visit(board.plan, 0);
+  if (lines.at(-1)?.endsWith("not done):")) lines.push("  (none)");
+  const open = board.todos.filter(todo => !todo.done);
+  lines.push(`Owner todos open: ${open.length ? "" : "none"}`.trimEnd());
+  for (const todo of open) {
+    const offered = todo.choices ? `, choices: ${todo.choices.map(choice => quote(choice)).join(" / ")}` : "";
+    lines.push(`  [ ] ${todo.id} ${clip(todo.text, 160)} (from ${todo.from}${todo.step ? `, for ${todo.step}` : ""})${offered}`);
   }
-  lines.push("Scratchpad:");
-  if (!board.scratch.length) lines.push("  (empty)");
-  walk(board.scratch, (item, depth) => lines.push(`${"  ".repeat(depth + 1)}- ${item.id} ${item.text}${item.links.length ? " " + item.links.map(markdownLink).join(" ") : ""}`));
+  const left = [`${hidden.steps} done or dropped steps`, `${board.todos.length - open.length} answered todos`, `${count(board.scratch)} notes`,
+    `${hidden.notes} step notes and requirements`];
+  lines.push(`Not shown: ${left.join(", ")}. Read them with ${BOARD_PY_CALLS} in Python.`);
   return lines.join("\n");
+}
+
+/** The one line a chat_board call with ops returns after the op summaries. */
+export function boardRevLine(board: ChatBoard): string {
+  let steps = 0;
+  walk(board.plan, item => { if (OPEN_STATUSES.has(item.status)) steps++; });
+  return `Board rev ${board.rev}: ${steps} open steps, ${board.todos.filter(todo => !todo.done).length} open todos.`;
 }
 
 /** Plan steps of a chat for its sidebar line: every item that is not dropped, and how many are done (the board card counts the same way). */

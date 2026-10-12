@@ -38,14 +38,27 @@ export function anchorStamp(stamps: readonly number[], at: number): number | nul
 export function revealMessage(root: HTMLElement, at: number): boolean {
   const nodes = [...root.querySelectorAll<HTMLElement>("[data-at]")];
   const stamp = anchorStamp(nodes.map(node => Number(node.dataset.at)), at);
-  const target = stamp === null ? null : nodes.find(node => Number(node.dataset.at) === stamp);
+  return reveal(root, stamp === null ? null : nodes.find(node => Number(node.dataset.at) === stamp));
+}
+
+/** Scrolls `root` to the feed line with that id (elements carry `data-line`) and flashes it for 2 s. False when the feed does not show it. */
+export function revealLine(root: HTMLElement, line: string): boolean {
+  return reveal(root, [...root.querySelectorAll<HTMLElement>("[data-line]")].find(node => node.dataset.line === line));
+}
+
+function reveal(root: HTMLElement, target: HTMLElement | null | undefined): boolean {
   if (!target) return false;
   target.style.scrollMarginTop = "12px";
   target.scrollIntoView({ block: target.offsetHeight > root.clientHeight * 0.8 ? "start" : "center" });
+  clearTimeout(flashes.get(target));
+  target.classList.remove("linked");
+  void target.offsetWidth;
   target.classList.add("linked");
-  setTimeout(() => target.classList.remove("linked"), 2000);
+  flashes.set(target, setTimeout(() => target.classList.remove("linked"), 2000));
   return true;
 }
+/** The pending end of each element's flash, so a second reveal of the same message restarts it in full. */
+const flashes = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
 export async function copyPermalink(id: string, at: number): Promise<boolean> {
   try { await navigator.clipboard.writeText(permalink(id, at)); return true; } catch { return false; }

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel } from "../src/client/duty-cadence.ts";
 import { CHECK_IN_DUTY, type DutyRunRecord, type DutyView } from "../src/shared/chat-duties.ts";
 
-const record = (changes: Partial<DutyRunRecord>): DutyRunRecord => ({ duty: "checkin", at: 1, trigger: "schedule", ms: 0, verdict: "missed", metrics: {}, summary: "", told: true, ...changes });
+const record = (changes: Partial<DutyRunRecord>): DutyRunRecord => ({ duty: "checkin", at: 1, trigger: "schedule", ms: 0, verdict: "missed", metrics: {}, summary: "", ...changes });
 const view = (runs: DutyRunRecord[]): DutyView => ({ duty: { ...CHECK_IN_DUTY, status: "active" }, builtin: "checkin", schedule: { kind: "every", minutes: 15 }, paused: false,
   nextAt: null, running: false, runs });
 
@@ -19,13 +19,13 @@ test("duty cadence editor: the draft starts from the schedule; the check-in save
   assert.deepEqual(cadenceSchedule({ kind: "daily", minutes: 0, at: "7:30" }, false), { error: "Give a time like 23:07." });
 });
 
-test("check-in card: the last run's classes, what it flagged by step, and what the recheck after the chat's turn found handled or left", () => {
-  const run = record({ at: 10, classes: { live: 5, foryou: 7, waiting: 5, due: 0, "stale-chase": 0, orphan: 1 },
+test("check-in card: the last run's classes, what it flagged by step, and the duty job the last run started", () => {
+  const run = record({ at: 10, classes: { live: 5, foryou: 7, waiting: 5, due: 0, "stale-chase": 0, orphan: 1 }, job: { id: "s1", name: "check-in 14:00" },
     flagged: [{ kind: "orphan_steps", excerpt: "x", item: "p56" }, { kind: "job_end_unrecorded", excerpt: "y", item: "p56" }, { kind: "due_late", excerpt: "z", item: "p18" }] });
   assert.equal(classesLabel(run), "live 5 · foryou 7 · waiting 5 · orphan 1");
   assert.equal(classesLabel(undefined), "");
-  assert.deepEqual(flaggedLabel(view([run])), { flagged: "p56 orphan steps, p56 job end unrecorded, p18 due late", handled: "", left: "" });
-  const after = record({ at: 20, trigger: "after-turn", handled: ["p18"], unresolved: [{ kind: "orphan_steps", excerpt: "x", item: "p56" }] });
-  assert.deepEqual(flaggedLabel(view([after, run])), { flagged: "p56 orphan steps, p56 job end unrecorded, p18 due late", handled: "p18", left: "p56 orphan steps" });
-  assert.deepEqual(flaggedLabel(view([record({ at: 30 }), after, run])), { flagged: "", handled: "", left: "" }, "a newer run replaces the recheck of an older one");
+  assert.deepEqual(flaggedLabel(view([run])), { flagged: "p56 orphan steps, p56 job end unrecorded, p18 due late", job: "check-in 14:00" });
+  const skipped = record({ at: 20, verdict: "skipped", summary: "skipped: previous run still working" });
+  assert.deepEqual(flaggedLabel(view([skipped, run])), { flagged: "p56 orphan steps, p56 job end unrecorded, p18 due late", job: "check-in 14:00" }, "a skipped run measures nothing new");
+  assert.deepEqual(flaggedLabel(view([record({ at: 30 })])), { flagged: "", job: "" });
 });

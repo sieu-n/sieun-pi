@@ -128,3 +128,13 @@ test("reply notes: each owner message after a reply with findings carries them, 
   assert.equal(lastOwnerText(messages), "thanks");
   assert.equal(lastOwnerText([user("<skill name=\"unslop\">\nlots of rules about pipelines\n</skill>\nunslop this", 1)]), "unslop this");
 });
+
+test("reply check on an owner turn: text after an accepted tell_owner is notes and gets no check; text with no accepted tell_owner still does (W59)", () => {
+  const slop = SLOP_REPLIES["standing duty bullets"]!;
+  const answered = [user(slop.owner, 1), told("Three jobs started; I report when they finish.", 2, "t1"), result("t1", 3), said(slop.reply, 4)];
+  assert.equal(replyCheck(answered), null, "the owner read the told text; the long text after it is notes");
+  assert.deepEqual(replyNotes([...answered, user("ok", 5)]), new Map(), "and the model's view carries no finding for it");
+  const refusedFirst = [user(slop.owner, 1), told(slop.reply, 2, "t1"), result("t1", 3, true), said(slop.reply, 4)];
+  assert.equal(replyCheck(refusedFirst)?.at, 4, "a refused tell_owner leaves the plain text as the reply, so the [reply check] still fires");
+  assert.equal(replyCheck([user(slop.owner, 1), said(slop.reply, 2)])?.at, 2, "plain text alone keeps the check");
+});

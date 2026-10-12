@@ -1,14 +1,12 @@
 ### Prototype
 
-**You own the design decision, not the code. The prototype is a throwaway instrument; the real build follows Feature.** For "prototype", "mock it up", "sketch this", "try this layout", or exploring a UI, interaction, or layout before committing. Also for settling an empirical fork (which behavior, which timing, which approach) by observing it run, when you would otherwise ask the human a question a quick sketch could answer for you.
+For "prototype", "mock it up", "sketch this", or "try this layout", and for any question that running a small sketch would answer faster than asking the user. The prototype is throwaway, and the real build follows Feature. Favor speed over polish, and offer variations the user did not ask for.
 
-The one playbook where the Laziness Protocol's "smallest change" and the verification bar invert. Speed over polish, code quality does not matter, no planning. The rigor is in picking the right design cheaply. Be bold: propose variations the user didn't ask for, throw an approach away and try another.
+1. Name the decision the prototype exists to make. If there is none, route to Feature.
+2. When the design space is open, collect prior art and let the user pick directions. Skip this when the direction is set.
+3. Build in a scratch directory outside production source. For a visual question, use plain HTML, CSS, and JS with CDN dependencies and a hot-reload server. For a behavior or timing question, write the smallest script that exercises it. Skip tests and abstractions.
+4. Put competing variants behind one labeled switcher, such as buttons or a key press.
+5. Check each variant on the real surface. Screenshot visual variants. Log the timing or output for behavior questions.
+6. Present the variants, tradeoffs, and a recommendation. Hand the chosen direction to Feature or the architect skill.
 
-1. Scope the decision the prototype exists to make: which layout, which interaction, which density, or for an empirical fork which behavior, timing, or approach. No decision means no prototype; route to Feature.
-2. Gather references when the design space is open. Search for prior art, summarize a moodboard of themes, palettes, and layouts, let the user pick directions before building. Skip when the direction is set.
-3. Build throwaway in an isolated scratch dir, separate from production source. For a visual decision, vanilla HTML/CSS/JS or the lightest stack that renders the idea, CDN deps, a dev server with hot reload. For a behavioral or timing decision, the smallest script that exercises the question. No production framework, no tests, no abstractions.
-4. When comparing alternatives, build them behind one switcher (buttons or a keypress), each variant labeled so the user can name it. This is the **exhaust-the-design-space** principle skill made cheap.
-5. Verify on the matching surface. For a visual decision, screenshot each variant via the control skill and drive the interaction; the eye is the test. For a behavioral or timing decision, observe the thing you are deciding by logging the timing, printing the output, or watching the render. The observation is the test here, not an assertion.
-6. Present alternatives, tradeoffs, and a recommendation. The output is the decision plus the throwaway artifact, not shippable code. Hand the chosen direction to **Feature** (or `architect` for the shape) for the real build.
-
-**Reply:** the variants explored, the evidence (screenshots for a visual decision, the observed output or timing for a behavioral one), tradeoffs, your recommendation, and the scratch path. Say plainly that the prototype is throwaway.
+Reply with the variants, the evidence, the tradeoffs, your recommendation, and the scratch path. State that the prototype is throwaway.

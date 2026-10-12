@@ -44,8 +44,11 @@ function parse(line: string): Record<string, unknown> | null {
  *   tokscale also reverses a parent aggregate that a fork may persist; 33,031 attributions on this Mac all point at a
  *   message carrying its own usage (not the aggregate), so that reversal is not ported.
  * - the call id is `message.responseId`, else the entry id with its timestamp, so fork copies collapse.
+ * - the request start is `message.timestamp`; an `aborted` or `error` message is stamped when it stopped (1 to 63 ms before its entry on this
+ *   Mac), so it has no start and makes no rate.
  * Prime Agent also records the price it charged in `usage.cost.total`; that is kept as the call's cost.
  */
+const STOPPED = new Set(["aborted", "error"]);
 export const piFormat: ParserSpec = {
   version: "1",
   needles: [{ text: '"type":"session"', within: 1 }, { text: '"type":"title"', within: 1 }, { text: '"role":"assistant"', within: 320 }],
@@ -78,7 +81,7 @@ export const piFormat: ParserSpec = {
         if (callId === null) return [];
         return [{
           source: context.source, callId, sessionId: state.sessionId, endedAt: endedAt ?? context.fallbackTime,
-          startedAt: typeof message.timestamp === "number" && Number.isFinite(message.timestamp) ? message.timestamp : null,
+          startedAt: typeof message.timestamp === "number" && Number.isFinite(message.timestamp) && !STOPPED.has(String(message.stopReason)) ? message.timestamp : null,
           provider: text(message.provider), model: model || "unknown",
           input: count(usage.input), output: count(usage.output), cacheRead: count(usage.cacheRead), cacheWrite: count(usage.cacheWrite), reasoning: 0,
           costUsd: cost, cwd: state.cwd,

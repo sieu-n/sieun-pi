@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import stat
-import subprocess
 import sys
 import uuid
 
@@ -123,13 +122,20 @@ def installation_lock(home):
         os.close(fd)
 
 
+def rules_registration(name):
+    return "global-rules" in name or "virev" in name
+
+
+KNOWN_RULES_ENTRIES = {"global-rules.ts", "virev.ts"}
+
+
 def reject_duplicate_registrations(home):
     extensions = home / ".prime/agent/extensions"
-    safe_parents(extensions / "virev.ts", home)
+    safe_parents(extensions / "global-rules.ts", home)
     if extensions.exists():
         for entry in extensions.iterdir():
-            if "virev" in entry.name.lower() and entry.name != "virev.ts":
-                raise InstallError(f"Review the extra Virev registration before installing: {entry}")
+            if rules_registration(entry.name.lower()) and entry.name not in KNOWN_RULES_ENTRIES:
+                raise InstallError(f"Review the extra global-rules registration before installing: {entry}")
     settings = home / ".prime/agent/settings.json"
     safe_parents(settings, home)
     if settings.is_symlink():
@@ -141,42 +147,8 @@ def reject_duplicate_registrations(home):
         for key in ("extensions", "packages"):
             for item in value.get(key, []):
                 name = str(item).lower()
-                if "virev" in name or "prime-agent-user-history" in name or name.endswith("/user-history"):
+                if rules_registration(name) or "prime-agent-user-history" in name or name.endswith("/user-history"):
                     raise InstallError(f"Review the duplicate {key} registration in settings: {item}")
-
-
-def original_file(target, prior, home, plan_id):
-    if prior is None:
-        return target if target.exists() else None
-    if prior["before"] == MISSING:
-        return None
-    if fingerprint(target) == prior["before"]:
-        return target
-    receipt = receipt_location(home, plan_id)
-    saved = backup_path(receipt, prior["index"])
-    safe_parents(saved, home)
-    if fingerprint(saved) == prior["before"]:
-        return saved
-    raise InstallError(f"Destination changed after planning: {target}")
-
-
-def projects_value(path, project):
-    value = json.loads(path.read_text()) if path else {"projects": []}
-    if not isinstance(value, dict) or not isinstance(value.get("projects"), list):
-        raise InstallError("virev-projects.json must contain a projects array")
-    projects = value["projects"]
-    for entry in projects:
-        if not isinstance(entry, dict) or not isinstance(entry.get("root"), str) or not Path(entry["root"]).is_absolute():
-            raise InstallError("Each Virev project needs an absolute root")
-        if not isinstance(entry.get("policy"), str):
-            raise InstallError("Each Virev project needs a policy")
-    if project is not None:
-        matches = [entry for entry in projects if Path(entry["root"]).resolve() == project]
-        if any(entry["policy"] != "auto-sns-agent" for entry in matches):
-            raise InstallError(f"Project already has a different Virev policy: {project}")
-        if not matches:
-            projects.append({"root": str(project), "policy": "auto-sns-agent"})
-    return value
 
 
 def read_manifest():
@@ -186,25 +158,22 @@ def read_manifest():
     return manifest
 
 
-def specifications(home, project, plan=None):
-    prior = {op["id"]: {**op, "index": i} for i, op in enumerate(plan["operations"])} if plan else {}
+def specifications(home, plan=None):
+    prior = {op["id"]: op for op in plan["operations"]} if plan else {}
     specs = []
     ids, targets = set(), set()
     for entry in read_manifest()["entries"]:
         scope = entry["scope"]
-        if scope not in {"home", "project"}:
+        if scope != "home":
             raise InstallError(f"Invalid manifest scope: {scope}")
-        if scope == "project" and project is None:
-            continue
-        anchor = home if scope == "home" else project
         relative = Path(entry["target"])
         if relative.is_absolute() or ".." in relative.parts:
             raise InstallError(f"Invalid manifest target: {relative}")
-        target = anchor / relative
+        target = home / relative
         protect(target)
         if target.is_relative_to(ROOT):
             raise InstallError(f"Runtime target cannot be inside the checkout: {target}")
-        safe_parents(target, anchor)
+        safe_parents(target, home)
         if entry["id"] in ids or target in targets:
             raise InstallError("Manifest ids and targets must be unique")
         ids.add(entry["id"])
@@ -224,20 +193,8 @@ def specifications(home, project, plan=None):
             spec["after"] = {"kind": "link", "target": spec["source"]}
         elif entry["kind"] == "generated-json":
             spec["seed_only"] = entry["seed_only"]
-            if entry.get("merge_projects"):
-                spec["merge_projects"] = True
-                old_file = original_file(target, prior.get(entry["id"]), home, plan["id"] if plan else None)
-                if old_file and not old_file.is_file():
-                    raise InstallError(f"Virev projects must be an ordinary JSON file: {target}")
-                if target.is_symlink():
-                    raise InstallError(f"Virev projects cannot be a symlink: {target}")
-                spec["value"] = projects_value(old_file, project)
-                old_value = json.loads(old_file.read_text()) if old_file else None
-                spec["after"] = fingerprint(old_file) if old_value == spec["value"] else {
-                    "kind": "file", "sha256": digest(json_bytes(spec["value"])), "mode": 0o600}
-            else:
-                spec["value"] = json.loads(Path(spec["source"]).read_text()) if "source" in spec else entry["value"]
-                spec["after"] = {"kind": "file", "sha256": digest(json_bytes(spec["value"])), "mode": 0o600}
+            spec["value"] = json.loads(Path(spec["source"]).read_text()) if "source" in spec else entry["value"]
+            spec["after"] = {"kind": "file", "sha256": digest(json_bytes(spec["value"])), "mode": 0o600}
         elif entry["kind"] == "remove":
             if "link_target" in entry:
                 spec["link_target"] = str(home / entry["link_target"])
@@ -251,17 +208,17 @@ def specifications(home, project, plan=None):
     return specs
 
 
-def make_plan(home, project):
+def make_plan(home):
     state_root(home)
     reject_duplicate_registrations(home)
     operations = []
-    for spec in specifications(home, project):
+    for spec in specifications(home):
         before = fingerprint(Path(spec["target"]))
         if spec.get("seed_only") and before != MISSING:
             spec["after"] = before
         operations.append({**spec, "before": before})
     return {"version": 1, "id": uuid.uuid4().hex, "root": str(ROOT), "home": str(home),
-            "project": str(project) if project else None, "manifest_sha256": digest(MANIFEST.read_bytes()),
+            "manifest_sha256": digest(MANIFEST.read_bytes()),
             "operations": operations}
 
 
@@ -274,19 +231,18 @@ def plan_bindings(plan):
     except (ValueError, KeyError, TypeError) as error:
         raise InstallError("Invalid plan id") from error
     home = binding(plan["home"])
-    project = binding(plan["project"]) if plan["project"] else None
-    if str(home) != plan["home"] or (project and str(project) != plan["project"]):
+    if str(home) != plan["home"]:
         raise InstallError("Plan bindings changed")
     state_root(home)
-    return home, project
+    return home
 
 
 def validate_plan(plan):
-    home, project = plan_bindings(plan)
+    home = plan_bindings(plan)
     if digest(MANIFEST.read_bytes()) != plan["manifest_sha256"]:
         raise InstallError("Manifest changed after planning; create a new plan")
     reject_duplicate_registrations(home)
-    specs = specifications(home, project, plan)
+    specs = specifications(home, plan)
     if len(specs) != len(plan["operations"]):
         raise InstallError("Plan operations do not match the manifest")
     for spec, operation in zip(specs, plan["operations"]):
@@ -294,7 +250,7 @@ def validate_plan(plan):
             spec["after"] = operation["before"]
         if {key: value for key, value in operation.items() if key != "before"} != spec:
             raise InstallError(f"Source or plan changed for {spec['id']}; create a new plan")
-    return home, project
+    return home
 
 
 def receipt_location(home, plan_id):
@@ -319,14 +275,13 @@ def physical_state(operation, backup):
 
 
 def validate_owned_operations(plan):
-    home, project = plan_bindings(plan)
-    entries = [entry for entry in read_manifest()["entries"] if entry["scope"] == "home" or project is not None]
+    home = plan_bindings(plan)
+    entries = read_manifest()["entries"]
     if len(entries) != len(plan["operations"]):
         raise InstallError("Receipt ownership no longer matches the manifest")
     for entry, operation in zip(entries, plan["operations"]):
-        anchor = home if entry["scope"] == "home" else project
         expected = {"id": entry["id"], "kind": entry["kind"], "scope": entry["scope"],
-                    "target": str(anchor / entry["target"])}
+                    "target": str(home / entry["target"])}
         if "source" in entry:
             expected["source"] = str(ROOT / entry["source"])
         if any(operation.get(key) != value for key, value in expected.items()):
@@ -339,11 +294,6 @@ def validate_owned_operations(plan):
             if "value" in entry and operation["value"] != entry["value"]:
                 raise InstallError("Receipt changed generated JSON")
             after = {"kind": "file", "sha256": digest(json_bytes(operation["value"])), "mode": 0o600}
-            if entry.get("merge_projects"):
-                if operation.get("merge_projects") is not True:
-                    raise InstallError("Receipt changed the project merge policy")
-                if operation["before"] == operation["after"]:
-                    after = operation["before"]
             if entry["seed_only"] and operation["before"] != MISSING:
                 after = operation["before"]
         elif operation["kind"] == "remove":
@@ -363,7 +313,7 @@ def validate_owned_operations(plan):
 def validate_receipt(receipt, receipt_path, *, rollback=False):
     plan = receipt["plan"]
     validate_owned_operations(plan)
-    home, project = plan_bindings(plan)
+    home = plan_bindings(plan)
     if receipt_path != receipt_location(home, plan["id"]):
         raise InstallError("Receipt must stay in its original external state directory")
     safe_parents(receipt_path, home)
@@ -371,9 +321,8 @@ def validate_receipt(receipt, receipt_path, *, rollback=False):
         raise InstallError("Invalid receipt changes")
     allowed_directories = set()
     for operation in plan["operations"]:
-        anchor = home if operation["scope"] == "home" else project
         for directory in Path(operation["target"]).parents:
-            if directory.is_relative_to(anchor):
+            if directory.is_relative_to(home):
                 allowed_directories.add(str(directory))
     if any(directory not in allowed_directories for directory in receipt["created_directories"]):
         raise InstallError("Receipt directory is outside manifest ownership")
@@ -383,7 +332,7 @@ def validate_receipt(receipt, receipt_path, *, rollback=False):
     }
     for index, (operation, change) in enumerate(zip(plan["operations"], receipt["changes"])):
         target = Path(operation["target"])
-        safe_parents(target, home if operation["scope"] == "home" else project)
+        safe_parents(target, home)
         if change["state"] == "unchanged":
             if not rollback and fingerprint(target) != operation["after"]:
                 raise InstallError(f"Destination changed after planning: {target}")
@@ -447,7 +396,7 @@ def publish(operation, plan_id):
 
 
 def apply_plan(plan):
-    home, project = validate_plan(plan)
+    home = validate_plan(plan)
     with installation_lock(home):
         validate_plan(plan)
         receipt_path = receipt_location(home, plan["id"])
@@ -475,13 +424,12 @@ def apply_plan(plan):
             if change["state"] in {"unchanged", "applied"}:
                 continue
             target = Path(operation["target"])
-            anchor = home if operation["scope"] == "home" else project
-            safe_parents(target, anchor)
+            safe_parents(target, home)
             backup = backup_path(receipt_path, index)
             physical = physical_state(operation, backup)
             change["state"] = "prepared"
             save_json(receipt_path, receipt)
-            ensure_target_parents(target, anchor, receipt, receipt_path)
+            ensure_target_parents(target, home, receipt, receipt_path)
             if physical == "original" and operation["before"] != MISSING:
                 os.rename(target, backup)
                 sync_directory(target.parent)
@@ -514,7 +462,7 @@ def rollback_receipt(receipt_path):
     if receipt_path.is_symlink():
         raise InstallError("Receipt cannot be a symlink")
     receipt = json.loads(receipt_path.read_text())
-    home, _ = plan_bindings(receipt["plan"])
+    home = plan_bindings(receipt["plan"])
     with installation_lock(home):
         validate_receipt(receipt, receipt_path, rollback=True)
         receipt["state"] = "rolling-back"
@@ -557,9 +505,9 @@ def rollback_receipt(receipt_path):
     return receipt_path
 
 
-def verify(home, project, check_patch=False):
+def verify(home):
     reject_duplicate_registrations(home)
-    specs = specifications(home, project)
+    specs = specifications(home)
     errors = []
     for spec in specs:
         current = fingerprint(Path(spec["target"]))
@@ -569,13 +517,7 @@ def verify(home, project, check_patch=False):
             errors.append(spec["target"])
     if errors:
         raise InstallError("Managed targets do not match source: " + ", ".join(errors))
-    if check_patch:
-        env = {**os.environ, "HOME": str(home), "PI_POOL_DIR": str(home / ".config/pi-pool"),
-               "PRIME_AGENT_CODING_AGENT_DIR": str(home / ".prime/agent")}
-        result = subprocess.run([sys.executable, "-B", str(ROOT / "components/pi-pool/vend.py"), "--cli", "patch", "--check"], env=env)
-        if result.returncode:
-            raise InstallError(f"Pool patch check failed with exit code {result.returncode}")
-    return {"verified": len(specs), "project": str(project) if project else "not selected", "patch_checked": check_patch}
+    return {"verified": len(specs)}
 
 
 def main():
@@ -584,11 +526,8 @@ def main():
     for name in ("plan", "verify"):
         command = commands.add_parser(name)
         command.add_argument("--home", default=str(Path.home()))
-        command.add_argument("--project")
         if name == "plan":
             command.add_argument("--out", type=Path, required=True)
-        else:
-            command.add_argument("--check-patch", action="store_true")
     commands.add_parser("apply").add_argument("--plan", type=Path, required=True)
     for name in ("rollback", "uninstall"):
         commands.add_parser(name).add_argument("--receipt", type=Path, required=True)
@@ -596,9 +535,8 @@ def main():
     try:
         if args.command in {"plan", "verify"}:
             home = binding(args.home)
-            project = binding(args.project) if args.project else None
             if args.command == "plan":
-                plan = make_plan(home, project)
+                plan = make_plan(home)
                 output = args.out.absolute()
                 protect(output)
                 if output.exists() or output.is_symlink():
@@ -606,18 +544,15 @@ def main():
                 output = output.resolve()
                 protect(output)
                 runtime = [home / ".prime", home / ".config/pi-pool", home / ".local/bin", state_root(home)]
-                if project is not None:
-                    runtime.append(project / ".prime")
                 if any(output.is_relative_to(directory) for directory in runtime):
                     raise InstallError("Plan output must be outside managed runtime directories")
                 if output.is_relative_to(ROOT) and not output.is_relative_to(ROOT / ".work"):
                     raise InstallError("Plan output inside the checkout must use ignored .work")
                 output.parent.mkdir(parents=True, exist_ok=True)
                 save_json(output, plan)
-                print(json.dumps({"plan": str(output), "changes": sum(op["before"] != op["after"] for op in plan["operations"]),
-                                  "project": plan["project"] or "not selected"}))
+                print(json.dumps({"plan": str(output), "changes": sum(op["before"] != op["after"] for op in plan["operations"])}))
             else:
-                print(json.dumps(verify(home, project, args.check_patch)))
+                print(json.dumps(verify(home)))
         elif args.command == "apply":
             protect(args.plan.absolute())
             if args.plan.is_symlink():

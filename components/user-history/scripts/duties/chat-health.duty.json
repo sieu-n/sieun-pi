@@ -1,5 +1,5 @@
 {
-  "name": "Chat health",
+  "name": "Chat system",
   "ownerWords": "keep monitoring all the usage patterns of the Chat feature for that day, and periodically refine the framework so same stupid errors don't happen again.\nnow, this is a common patter, i want you to deep-research what to do. i want it to be owned by Chat though, maybe in a Cron/heartbeat tab within it with semantic goal defined",
   "goal": "Chats never sit stopped, never repeat themselves, and the owner never corrects the same thing twice. No bug seen in sieun-pi or prime-agent stays without a root fix and a test, or an open step. The spec rules hold: the sieun-pi server is a frontend-first wrapper around the prime-agent server, and prime-agent never needs sieun-pi to run.",
   "metrics": [
@@ -34,14 +34,20 @@
       "target": 0
     },
     {
-      "key": "sieun_pi_breaks",
-      "label": "Failed turns caused by sieun-pi code",
+      "key": "unfixed_flags",
+      "label": "Check-in findings left unfixed for 4 check-ins in a row",
       "op": "<=",
       "target": 0
     },
     {
-      "key": "stalls_2h",
-      "label": "Steps stalled over 2 h",
+      "key": "owner_board_asks",
+      "label": "Times the owner had to ask a chat to tidy its plan",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "sieun_pi_breaks",
+      "label": "Failed turns caused by sieun-pi code",
       "op": "<=",
       "target": 0
     },
@@ -60,7 +66,7 @@
     },
     {
       "key": "long_replies",
-      "label": "Owner replies over 60 words",
+      "label": "Owner replies that break the reply rule",
       "op": "<=",
       "target": 10,
       "unit": "%"
@@ -114,8 +120,92 @@
       "target": 0
     },
     {
-      "key": "unresolved_after_turn",
-      "label": "Flagged items still untouched after the chat's turn",
+      "key": "idle_goals",
+      "label": "Open goals with no live job and an open step nobody owns",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "merges_without_go",
+      "label": "Merge steps done without the owner's go on that PR",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "goal_gaps",
+      "label": "Goals more than 50% short of their target with no live job",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "blocked_on_others",
+      "label": "Steps blocked on CI, a release or a thread over 1 h with no fix job",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "finished_open",
+      "label": "Open goals or steps whose work looks finished",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "loose_goals",
+      "label": "Top-level plan items with no steps under them",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "extra_goals",
+      "label": "Open goals over the limit of 6",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "open_under_closed",
+      "label": "Open steps under a closed goal",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "held_elsewhere",
+      "label": "Open goals whose every open step waits on another thread",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "wait_met",
+      "label": "Open steps whose named wait is already over",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "goals_to_fold",
+      "label": "Open goals whose work runs as a duty or rides other goals' jobs",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "one_session_load",
+      "label": "Goals with more than 3 (or over half) of their open steps on one other session",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "redundant_heartbeats",
+      "label": "Active chat heartbeats whose work the check-in already does",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "no_progress",
+      "label": "Chats with nothing done in the last hour and steps not blocked",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "no_progress_hours",
+      "label": "Hours a check-in found nothing done and steps not blocked",
       "op": "<=",
       "target": 0
     }
@@ -131,7 +221,7 @@
       "tsx",
       "scripts/duties/chat-health.ts"
     ],
-    "cwd": "/Users/sieunpark/Documents/Github/sieun-pi/components/user-history",
+    "cwd": "../..",
     "timeoutMs": 120000
   },
   "onMiss": "Start one job that reads the details file and judges each flagged item. Each problem gets a root fix with a test, or stays an open step that names the cause; a retry or a workaround does not close it. Route each fix: the chat brief (send the owner's words to the realtime layer thread), code with a unit test in components/user-history/test, or a skill. Everything flagged today is on the watch list for the next 7 days, so a recurred item means an earlier fix did not hold: reopen it. A sieun_pi_breaks item breaks the rule that prime-agent runs without sieun-pi. Each fix names the metric it must move. A recheck item is a fix(user-history) commit from the day before with today's value of the metric its subject names: if that metric still misses, the fix did not hold; reopen it. A repeat_corrections item is a correction in corrections.json the owner had to give again in that chat: a sev; its fix is code or a test, and the chat records it with correction_add id.",

@@ -1,11 +1,9 @@
-import type { ChatBoard, PlanItem } from "./types.ts";
-
 /**
  * Duties: standing work a chat owns. A duty is a goal in the owner's words with numeric targets, a schedule, and a code precheck that measures
- * the targets for 0 tokens. The server runs the precheck when the duty is due; only a miss or an error wakes the chat, with one `[check-in]` line.
- * After the chat's turn the same check runs again: an item still flagged that the chat did not touch goes back to it by name (`afterTurnCheck`).
- * Every chat also has one built-in duty, the check-in (`CHECK_IN_DUTY`): its schedule is the chat's check-in setting, its precheck the step
- * classes (src/chat-checkin.ts) and its runner the chat server's check-in (src/chats.ts), which records each run here.
+ * the targets for 0 tokens. On every scheduled run the server runs the precheck, then starts one duty job linked to the chat with the precheck
+ * as context (src/chat-duty-job.ts). The targets are information for that job, never a gate: a run that meets them still starts the job, and
+ * the job decides what needs work. Every chat also has one built-in duty, the check-in (`CHECK_IN_DUTY`): its schedule is the chat's check-in
+ * setting and its precheck the step classes (src/chat-checkin.ts, run by src/chats.ts).
  * Pure types and rules here; the store is src/chat-duty-store.ts and the runner src/chat-duty-run.ts.
  */
 
@@ -18,10 +16,7 @@ export interface DutyMetric { key: string; label: string; op: "<=" | ">="; targe
  */
 export interface DutyPrecheck { command: string[]; cwd: string; timeoutMs: number }
 export interface PrecheckOutput { metrics: Record<string, number>; flagged?: FlaggedSlice[] }
-/**
- * One thing the precheck found that a person or a job should read: the chat (session id), when, what kind, and a short excerpt. `item` is the
- * plan item id on the duty's chat board it is about; only such items are checked again after the chat's turn.
- */
+/** One thing the precheck found that the duty job should read: the chat (session id), when, what kind, a short excerpt, and the plan item it is about. */
 export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string }
 
 export interface Duty {
@@ -34,7 +29,7 @@ export interface Duty {
   metrics: DutyMetric[];
   schedule: DutySchedule;
   precheck: DutyPrecheck;
-  /** What the chat does on a miss; it ends the `[check-in]` line. */
+  /** What the duty job does about a miss. */
   onMiss: string;
   /** The plan item the fixes go under. */
   boardGoal?: string;
@@ -51,22 +46,22 @@ export interface Duty {
 export interface CheckInDutyState { createdAt: number; runCount: number; lastRunAt?: number }
 export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutyState }
 
-/**
- * What started a run: its schedule, a catch-up, the owner's Run now, a job event that wakes the check-in duty (a job that ended with no report,
- * one that says it waits, one that stopped on an error), or the recheck after the chat's turn.
- */
-export type DutyTrigger = "schedule" | "catch-up" | "owner" | "job-ended" | "job-waiting" | "job-stopped" | "after-turn";
+/** What started a run: its schedule, a catch-up, or the owner's Run now. */
+export type DutyTrigger = "schedule" | "catch-up" | "owner";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
 export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean }
+/** A duty job the server started: its session id and name. */
+export interface DutyJobRef { id: string; name: string }
 /**
- * One line of `<dataDir>/duties/<chatId>.runs.jsonl`. `detail` is the saved precheck output; `told` says the chat got a line. A check-in run
- * keeps its step counts per class and its flagged items inline (`classes`, `flagged`); a recheck after the chat's turn keeps the items the
- * chat handled and the ones it left (`handled`, `unresolved`).
+ * One line of `<dataDir>/duties/<chatId>.runs.jsonl`. `slot` is the scheduled time the run covers (one duty job per duty per slot); `detail` the
+ * saved precheck output; `job` the duty job the run started. The verdict is the measure against the targets, kept as information; `skipped`
+ * is a run that started no job (a missed daily slot, or the last duty job still at work). A check-in run keeps its step counts per class and its
+ * flagged items inline (`classes`, `flagged`).
  */
 export interface DutyRunRecord {
-  duty: string; at: number; trigger: DutyTrigger; ms: number; verdict: DutyVerdict;
-  metrics: Record<string, MetricResult>; summary: string; detail?: string; error?: string; told: boolean;
-  classes?: Record<string, number>; flagged?: FlaggedSlice[]; handled?: string[]; unresolved?: FlaggedSlice[];
+  duty: string; at: number; slot?: number; trigger: DutyTrigger; ms: number; verdict: DutyVerdict;
+  metrics: Record<string, MetricResult>; summary: string; detail?: string; error?: string;
+  classes?: Record<string, number>; flagged?: FlaggedSlice[]; job?: DutyJobRef;
 }
 /** The part of a duty the card shows; the check-in duty has the same fields. */
 export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string };
@@ -154,25 +149,6 @@ export function errorStreak(runs: readonly DutyRunRecord[]): number {
   return count;
 }
 
-/**
- * The line the chat gets for a run, or null for a met or skipped run (quiet days stay quiet). A metric that missed twice in a row, or an error
- * streak that paused the duty, asks for one tell_owner.
- */
-export function dutyLine(duty: Duty, record: DutyRunRecord, repeats: readonly string[], paused: boolean): string | null {
-  const head = `duty ${duty.id} "${duty.name}"`;
-  if (record.verdict === "missed") {
-    const detail = record.detail ? ` Details: ${record.detail}.` : "";
-    const repeat = repeats.length ? ` ${repeats.join(", ")} missed two runs in a row: call tell_owner once.` : "";
-    const under = duty.boardGoal ? ` File each fix as a step under ${duty.boardGoal}.` : "";
-    return `${head} missed: ${record.summary}.${detail} ${duty.onMiss}${under}${repeat}`;
-  }
-  if (record.verdict === "error") {
-    const pause = paused ? ` It failed ${ERROR_PAUSE_RUNS} runs in a row and is paused until resumed: give the precheck to a job, then call tell_owner once.` : " Give the precheck to a job if it fails again.";
-    return `${head} precheck failed: ${record.error ?? record.summary}.${pause}`;
-  }
-  return null;
-}
-
 /** A duty schedule from a file or a request: `{ kind: daily, at: HH:MM }` or `{ kind: every, minutes }` with 5 or more whole minutes. Throws otherwise. */
 export function parseSchedule(schedule: unknown): DutySchedule {
   if (isRecord(schedule) && schedule.kind === "daily" && typeof schedule.at === "string" && HHMM.test(schedule.at)) return { kind: "daily", at: schedule.at };
@@ -181,20 +157,56 @@ export function parseSchedule(schedule: unknown): DutySchedule {
   throw new Error("schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 to 10080).");
 }
 
+/**
+ * Why a duty name is not the system the duty looks after in two to four plain words, or null for a good name. The owner (10-10)
+ * asked for names that say what the system does, like a short plain phrase about git rules or CI, then settled on "Chat system" over
+ * "Chat health". Refused: fewer than 2 or more than 4 words, a last word "health", or two or more Title-Case words; a capital first letter is fine.
+ */
+export function dutyNameProblem(name: string): string | null {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const problem = words.length < 2 ? "it has fewer than 2 words"
+    : words.length > 4 ? "it has more than 4 words"
+    : /^health$/i.test(words.at(-1)!.replace(/[^\p{L}]/gu, "")) ? "it ends in health"
+    : words.filter(word => /^\p{Lu}\p{Ll}/u.test(word)).length >= 2 ? "it has Title-Case words"
+    : null;
+  return problem && `name: the system the duty looks after, in two to four plain words, like "Chat system" or "Skills and harness"; "${name.trim()}" is refused: ${problem}.`;
+}
+
+const TEXT_UNIT = "words?|lines?|bytes?|chars?|characters?|tokens?";
+const TEXT_SIZE_LABEL = new RegExp(`\\b(?:\\d[\\d,.]*\\s*(?:${TEXT_UNIT})|(?:${TEXT_UNIT})\\s+(?:in|of|per|count)|(?:total|number of|count of)\\s+(?:${TEXT_UNIT})|file ?sizes?)\\b`, "i");
+const TEXT_SIZE_WORD = new RegExp(`^(?:${TEXT_UNIT}|filesize)$`, "i");
+
+/**
+ * Why a metric counts the size of text, or null for an outcome. The owner (10-10, c39) said word and line counts of
+ * skills and SKILL.md files mean nothing to watch. A duty measures real outcomes: a thing works, a mistake stops repeating.
+ * Refused: a key part or a unit that is words, lines, bytes, characters or tokens, and a label that counts them ("over 500 lines", "words in", "total tokens") or names a file size.
+ * A label that only mentions words ("replies with jargon words"), time, latency, a process's memory in MB and counts of failures or items pass.
+ */
+export function metricSizeProblem(metric: Pick<DutyMetric, "key" | "label" | "unit">): string | null {
+  const counted = metric.key.split("_").find(part => TEXT_SIZE_WORD.test(part)) ?? (TEXT_SIZE_WORD.test(metric.unit?.trim() ?? "") ? metric.unit!.trim() : undefined) ??
+    TEXT_SIZE_LABEL.exec(metric.label)?.[0];
+  return counted ? `"${metric.label}" counts the size of text (${counted.toLowerCase()}); a duty measures outcomes (a thing works, a mistake stops repeating), never the size of text.` : null;
+}
+
 /** Parses a duty definition from a file or a request: the fields a person writes. Run state starts empty. Throws with the first bad field. */
 export function parseDutyInput(value: unknown, id: string, now: number): Duty {
   if (!isRecord(value)) throw new Error("A duty is an object.");
   const { name, ownerWords, goal, metrics, schedule, precheck, onMiss, boardGoal } = value;
   if (!str(name, 80)) throw new Error("name: 1 to 80 characters.");
+  const nameProblem = dutyNameProblem(name);
+  if (nameProblem) throw new Error(nameProblem);
   if (!str(ownerWords, 4000)) throw new Error("ownerWords: the owner's words, verbatim.");
   if (!str(goal, 400)) throw new Error("goal: what good means, in plain words.");
-  if (!str(onMiss, 1000)) throw new Error("onMiss: what the chat does on a miss.");
+  if (!str(onMiss, 1000)) throw new Error("onMiss: what the duty job does about a miss.");
   if (boardGoal !== undefined && !(typeof boardGoal === "string" && /^p\d+$/.test(boardGoal))) throw new Error("boardGoal: a plan item id like p87.");
-  if (!Array.isArray(metrics) || !metrics.length || metrics.length > 20) throw new Error("metrics: 1 to 20.");
+  if (!Array.isArray(metrics) || !metrics.length || metrics.length > 40) throw new Error("metrics: 1 to 40.");
   const parsedMetrics = metrics.map((metric: unknown, index): DutyMetric => {
     if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label, 80) || (metric.op !== "<=" && metric.op !== ">=") ||
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);
-    return { key: metric.key, label: metric.label, op: metric.op, target: metric.target, ...(typeof metric.unit === "string" ? { unit: metric.unit } : {}) };
+    const parsed: DutyMetric = { key: metric.key, label: metric.label, op: metric.op, target: metric.target, ...(typeof metric.unit === "string" ? { unit: metric.unit } : {}) };
+    const sizeProblem = metricSizeProblem(parsed);
+    if (sizeProblem) throw new Error(`metrics[${index}]: ${sizeProblem}`);
+    return parsed;
   });
   const parsedSchedule = parseSchedule(schedule);
   if (!isRecord(precheck) || !Array.isArray(precheck.command) || !precheck.command.length || !precheck.command.every(word => typeof word === "string" && word.length > 0) ||
@@ -236,16 +248,22 @@ export function parseDutyFile(value: unknown): DutyFile {
 export const CHECK_IN_DUTY_ID = "checkin";
 /**
  * The built-in duty every chat has: the check-in. It runs on the chat's check-in setting (the header's control and this card edit the same
- * setting) and on job events; its precheck sorts every open step into a class and its prompt is the `[check-in]` steer or the check-in job.
- * These metrics are what a run measures; the steer lines act on each miss, so a miss needs no line of its own.
+ * setting); its precheck sorts every open step into a class (src/chat-checkin.ts) and its run starts one check-in job with that as context.
+ * The metrics are what a run measures, as information for that job.
  */
 export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
   id: CHECK_IN_DUTY_ID,
   name: "Check-in",
-  ownerWords: "look, eventually on it's own all threads should resolve to\nsome items in FOR YOU\nTODO all cleared, only ones blocked by FOR YOU remaining.\n" +
+  ownerWords: "YES. it - checks and synchronizes the agent swarm with user intent ( todo ). it's like driving the agent swarm - set the interface layer " +
+    "for user: report message when needed, syncs plan and for you. - fixes quirks like agents giving up, .. so this is a core component in this AI " +
+    "harness for steering agent swarm\n\n" +
+    "look, eventually on it's own all threads should resolve to\nsome items in FOR YOU\nTODO all cleared, only ones blocked by FOR YOU remaining.\n" +
     "manage stale shit, properly nudge push through, ... is you (chat agent's responsiblitity).\n" +
     "그럴거면 check in은 왜있어? checkin이 그렇게 되도록 해야지. check in을 duty로 모델링을 하는건 좋은거 같아",
-  goal: "Every open plan step is done, moved by a live owner, or blocked only by an open For you todo. The board matches what the jobs reported.",
+  goal: "The check-in keeps two things true in every chat, so the owner never has to ask. The plan matches reality and stays organized: a few " +
+    "area goals with their open steps under them, shipped work closed or folded, new work under its goal. And every goal keeps moving: it holds " +
+    "the whole status and messages, restarts or starts the jobs and threads that stalled, died or are missing. End state: every open step is done, " +
+    "moved by a live owner, or blocked only by an open For you todo, and no goal stays open only to wait on another thread's work.",
   metrics: [
     { key: "orphan_steps", label: "Open steps with no live owner, todo or wait", op: "<=", target: 0 },
     { key: "due_late", label: "Steps due for more than one check-in", op: "<=", target: 0 },
@@ -253,59 +271,23 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
     { key: "job_end_unrecorded", label: "Steps whose job ended a check-in ago, not updated", op: "<=", target: 0 },
     { key: "job_end_silent", label: "Steps whose job stopped on an error with no report, not updated", op: "<=", target: 0 },
     { key: "scope_misses", label: "Open steps the owner gave to another thread", op: "<=", target: 0 },
+    { key: "idle_goals", label: "Open goals with no live job and an open step nobody owns", op: "<=", target: 0 },
+    { key: "stalled_steps", label: "Steps on the same wait for over 2 h, or with a waitUntil pushed later twice", op: "<=", target: 0 },
+    { key: "go_missing", label: "Steps that need the owner's go, at work without it", op: "<=", target: 0 },
+    { key: "requirements_missing", label: "Goals with a Build step at work and a missing or failing requirements check", op: "<=", target: 0 },
+    { key: "merges_without_go", label: "Merge steps done without the owner's go on that PR", op: "<=", target: 0 },
+    { key: "goal_gaps", label: "Goals more than 50% short of their target with no live job", op: "<=", target: 0 },
+    { key: "blocked_on_others", label: "Steps blocked on CI, a release or a thread over 1 h with no fix job", op: "<=", target: 0 },
+    { key: "finished_open", label: "Open goals or steps whose work looks finished", op: "<=", target: 0 },
+    { key: "loose_goals", label: "Top-level plan items with no steps under them", op: "<=", target: 0 },
+    { key: "extra_goals", label: "Open goals over the limit of 6", op: "<=", target: 0 },
+    { key: "open_under_closed", label: "Open steps under a closed goal", op: "<=", target: 0 },
+    { key: "stale_steps", label: "Steps with a waitUntil over 24 h past, or a job that ended with no update", op: "<=", target: 0 },
+    { key: "held_elsewhere", label: "Open goals whose every open step waits on another thread", op: "<=", target: 0 },
+    { key: "wait_met", label: "Open steps whose named wait is already over", op: "<=", target: 0 },
+    { key: "no_progress", label: "Nothing done in the last hour while open steps are not blocked", op: "<=", target: 0 },
+    { key: "goals_to_fold", label: "Open goals whose work runs as a duty or rides other goals' jobs", op: "<=", target: 0 },
+    { key: "one_session_load", label: "Goals with more than 3 (or over half) of their open steps on one other session", op: "<=", target: 0 },
+    { key: "redundant_heartbeats", label: "Active chat heartbeats whose work the check-in already does", op: "<=", target: 0 },
   ],
 };
-
-/** A flagged item checked again after the chat's turn: the slice, and its plan step as it was when the chat was told (`stepMark`). */
-export interface ArmedItem { slice: FlaggedSlice & { item: string }; mark: string | null }
-
-/** A plan item by id, anywhere in the plan. */
-export function planItem(board: ChatBoard | null, id: string): PlanItem | undefined {
-  const find = (items: readonly PlanItem[]): PlanItem | undefined => {
-    for (const item of items) { if (item.id === id) return item; const below = find(item.children); if (below) return below; }
-    return undefined;
-  };
-  return find(board?.plan ?? []);
-}
-/** What the chat can change on a step to handle it: status, text, owner, waits and note. Null when the step is gone. */
-export function stepMark(board: ChatBoard | null, id: string): string | null {
-  const item = planItem(board, id);
-  return item ? JSON.stringify([item.status, item.text, item.job ?? "", item.waitFor ?? "", item.waitUntil ?? "", item.note ?? ""]) : null;
-}
-/** The flagged items the after-turn recheck follows: those that name a plan item, with their step as the chat saw it. */
-export function armItems(flagged: readonly FlaggedSlice[], board: ChatBoard | null): ArmedItem[] {
-  return flagged.filter((slice): slice is FlaggedSlice & { item: string } => typeof slice.item === "string")
-    .map(slice => ({ slice, mark: stepMark(board, slice.item) }));
-}
-/**
- * The recheck after the chat's turn: an item is handled when its step changed (a board change, a job started for it, a wait set) or the check no
- * longer flags it; it is unresolved when the same check flags it again and its step is as it was.
- */
-export function afterTurnCheck(armed: readonly ArmedItem[], flagged: readonly FlaggedSlice[], board: ChatBoard | null): { handled: string[]; unresolved: FlaggedSlice[] } {
-  const handled: string[] = [];
-  const unresolved: FlaggedSlice[] = [];
-  for (const { slice, mark } of armed) {
-    const again = flagged.find(next => next.item === slice.item && next.kind === slice.kind);
-    if (again && stepMark(board, slice.item) === mark) unresolved.push(again);
-    else handled.push(slice.item);
-  }
-  return { handled: [...new Set(handled)], unresolved };
-}
-/** Flagged slices grouped by their item, in first-seen order: one entry per step, with every kind it was flagged for. */
-export function byItem(slices: readonly FlaggedSlice[]): { item: string; kinds: string[]; excerpt: string }[] {
-  const groups = new Map<string, { item: string; kinds: string[]; excerpt: string }>();
-  for (const slice of slices) {
-    const key = slice.item ?? slice.kind;
-    const group = groups.get(key);
-    if (group) { if (!group.kinds.includes(slice.kind)) group.kinds.push(slice.kind); }
-    else groups.set(key, { item: key, kinds: [slice.kind], excerpt: slice.excerpt });
-  }
-  return [...groups.values()];
-}
-/** The line that sends the unresolved items back to the chat, one per step. */
-export function afterTurnLine(duty: Pick<DutyCard, "id" | "name">, unresolved: readonly FlaggedSlice[]): string {
-  const items = byItem(unresolved);
-  return `duty ${duty.id} "${duty.name}": after your turn the same check still flags ${items.length === 1 ? "this step" : `these ${items.length} steps`} ` +
-    `and the board shows no change on ${items.length === 1 ? "it" : "them"}. Act on each now (a board change, a job for it, or a wait):\n` +
-    items.map(group => `- ${group.item} (${group.kinds.join(", ")}): ${group.excerpt}`).join("\n");
-}

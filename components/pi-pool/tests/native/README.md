@@ -21,6 +21,7 @@ node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_EXPECT=baseline node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_FAILURE=terms node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_FAILURE=terms FIXTURE_EXPECT=baseline node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+FIXTURE_FAILURE=all node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_HOOK=fail node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_EXPECT=baseline node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
@@ -42,6 +43,7 @@ It does not test real OAuth rotation. `retry.mjs` checks the native completion r
 Request 1 gets a 429 with a one-hour reset; request 2 of the same turn must use the other account within seconds.
 A second Prime process then must go straight to the other account. `FIXTURE_EXPECT=baseline` runs without the extension and checks that Prime sleeps until the reset.
 `FIXTURE_FAILURE=terms` makes request 1 a 400 with Anthropic's Consumer Terms text instead; the swap and the restart must behave the same, and the baseline checks that the turn fails with no retry.
+`FIXTURE_FAILURE=all` makes every account answer 429 until its own reset, c after 20 s and d after 60 s. The turn must try d at once, then sleep until c frees and finish there, with no manual continue and well before d's reset.
 `hook-timeout.mjs` runs the real pool hook through `slow-hook.py`, whose first run sleeps past Prime's 10 s apiKey timeout.
 The turn must fail once, retry, run the hook again and finish. `FIXTURE_HOOK=fail` makes every hook run exit 1; the turn must stop after `retry.maxRetries` retries.
 `FIXTURE_EXPECT=baseline` runs without the extension and checks that Prime ends the turn with no retry.

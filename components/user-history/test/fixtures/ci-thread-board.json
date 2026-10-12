@@ -1,0 +1,504 @@
+{
+ "source": "A synthetic CI thread board: the shape of a real board the c46 check-in failed to fold (three goals that ride other goals' jobs or a duty), with the fields the fold reads.",
+ "board": {
+  "v": 2,
+  "rev": 1872,
+  "updatedAt": "2026-10-12T05:19:15.469Z",
+  "scratch": [],
+  "todos": [],
+  "plan": [
+   {
+    "id": "p1",
+    "text": "CI is never one slow queue on one machine",
+    "status": "doing",
+    "target": {
+     "metric": "CI machines taking jobs",
+     "target": 2,
+     "unit": "machines",
+     "current": 1,
+     "measuredAt": "2026-10-12T05:10:00.000Z",
+     "source": "CI monitor at 05:10Z"
+    },
+    "children": [
+     {
+      "id": "p2",
+      "text": "Plan: measure waits and run times and map today's rules to the targets",
+      "status": "done",
+      "job": "ci-audit",
+      "children": []
+     },
+     {
+      "id": "p4",
+      "text": "Build: remove the serial points the audit finds",
+      "status": "doing",
+      "job": "01a00000-0000-7000-8000-000000000001",
+      "go": "needed",
+      "children": [
+       {
+        "id": "p19",
+        "text": "Light lanes for small test jobs, and slow tests only when their code changed",
+        "status": "doing",
+        "job": "disk guard rework",
+        "children": []
+       },
+       {
+        "id": "p21",
+        "text": "First-in-first-out probe dispatcher in place of the hand order",
+        "status": "doing",
+        "job": "promote gates rework",
+        "children": [
+         {
+          "id": "p112",
+          "text": "Follow-up: the dispatcher learns the new promote workflow",
+          "status": "doing",
+          "job": "promote gates rework",
+          "children": [
+           {
+            "id": "p114",
+            "text": "Follow-up: the CI monitor flags a failed demo deploy run",
+            "status": "todo",
+            "job": "promote gates rework",
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "id": "p22",
+        "text": "Runner care: disk guard, setup per job, prune, more runners",
+        "status": "doing",
+        "job": "01a00000-0000-7000-8000-000000000001",
+        "children": [
+         {
+          "id": "p29",
+          "text": "Disk guard: refuse work on low disk and report it",
+          "status": "doing",
+          "job": "disk guard rework",
+          "children": []
+         },
+         {
+          "id": "p30",
+          "text": "Package setup in its own temp folder in land and promote jobs",
+          "status": "doing",
+          "job": "promote gates rework",
+          "children": []
+         },
+         {
+          "id": "p31",
+          "text": "Scheduled prune of CI-owned containers",
+          "status": "todo",
+          "job": "disk guard rework",
+          "children": []
+         },
+         {
+          "id": "p32",
+          "text": "Two more light runners",
+          "status": "todo",
+          "job": "01a00000-0000-7000-8000-000000000001",
+          "children": []
+         }
+        ]
+       },
+       {
+        "id": "p23",
+        "text": "Landing finishes without polling and reuses a green check on the same tree",
+        "status": "todo",
+        "job": "01a00000-0000-7000-8000-000000000001",
+        "children": []
+       },
+       {
+        "id": "p36",
+        "text": "The deploy waits for running probes, so one probe may run beside a candidate",
+        "status": "todo",
+        "job": "01a00000-0000-7000-8000-000000000001",
+        "children": []
+       }
+      ]
+     },
+     {
+      "id": "p5",
+      "text": "Verify: one full day of live numbers shows short waits",
+      "status": "todo",
+      "job": "01a00000-0000-7000-8000-000000000001",
+      "children": []
+     },
+     {
+      "id": "p41",
+      "text": "Build: second CI machine, one week of shadow, then canary",
+      "status": "doing",
+      "job": "second machine kit",
+      "children": []
+     },
+     {
+      "id": "p45",
+      "text": "Build: agents send PRs to staging, pilot first",
+      "status": "todo",
+      "job": "01a00000-0000-7000-8000-000000000001",
+      "children": []
+     }
+    ]
+   },
+   {
+    "id": "p10",
+    "text": "Staging promotes to prod on its own",
+    "status": "doing",
+    "target": {
+     "metric": "promotes to prod with no person",
+     "target": 1,
+     "unit": "promotes",
+     "current": 0,
+     "measuredAt": "2026-10-12T05:10:00.000Z",
+     "source": "CI monitor at 05:10Z"
+    },
+    "children": [
+     {
+      "id": "p11",
+      "text": "Plan: what blocks automatic promote",
+      "status": "done",
+      "job": "promote-auto-plan",
+      "children": []
+     },
+     {
+      "id": "p13",
+      "text": "Build: automatic promote",
+      "status": "doing",
+      "job": "01a00000-0000-7000-8000-000000000001",
+      "children": [
+       {
+        "id": "p25",
+        "text": "Gate failures carry clear labels, and gate config cannot drift",
+        "status": "doing",
+        "job": "promote gates rework",
+        "children": []
+       },
+       {
+        "id": "p26",
+        "text": "Staging posts what it serves, and promote refuses anything else",
+        "status": "doing",
+        "job": "promote gates rework",
+        "children": []
+       },
+       {
+        "id": "p27",
+        "text": "Pin, decision module and scheduled dispatcher",
+        "status": "doing",
+        "job": "promote gates rework",
+        "children": []
+       },
+       {
+        "id": "p28",
+        "text": "Shadow week, then switch on",
+        "status": "todo",
+        "job": "01a00000-0000-7000-8000-000000000001",
+        "children": []
+       }
+      ]
+     },
+     {
+      "id": "p14",
+      "text": "Verify: one real promote runs by itself",
+      "status": "todo",
+      "job": "01a00000-0000-7000-8000-000000000001",
+      "children": []
+     }
+    ]
+   },
+   {
+    "id": "p15",
+    "text": "This thread watches how CI is used",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p16",
+      "text": "Build: a snapshot of CI use without an LLM, refreshed every 15 min",
+      "status": "done",
+      "job": "ci-watch",
+      "children": []
+     },
+     {
+      "id": "p37",
+      "text": "Fix: the daily CI health check counts failed probes as a red dev branch",
+      "status": "doing",
+      "job": "disk guard rework",
+      "children": []
+     },
+     {
+      "id": "p56",
+      "text": "Always-on CI dashboard with charts: queue, slot waits, runner use",
+      "status": "doing",
+      "job": "disk guard rework",
+      "children": []
+     }
+    ]
+   },
+   {
+    "id": "p60",
+    "text": "Standing duty: 50 agents ship code without waiting on CI, and every land rule holds",
+    "status": "doing",
+    "target": {
+     "metric": "passed land run time, p50 over 7 days",
+     "target": 45,
+     "unit": "min",
+     "current": 74.6,
+     "measuredAt": "2026-10-12T04:30:23.000Z",
+     "source": "CI monitor at 05:10Z"
+    },
+    "children": [
+     {
+      "id": "p61",
+      "text": "Plan: find waste, meaning duplicate checks and missing caching",
+      "status": "done",
+      "job": "ci efficiency audit",
+      "children": []
+     },
+     {
+      "id": "p62",
+      "text": "Build: one fix job per waste found, each through review, a test push and a land",
+      "status": "doing",
+      "children": [
+       {
+        "id": "p65",
+        "text": "W1 to W4: stray test path, double type check, lint waits on secrets",
+        "status": "doing",
+        "job": "disk guard rework",
+        "children": []
+       },
+       {
+        "id": "p66",
+        "text": "W5 and W6: build cache kept between runs, unchanged tests skipped",
+        "status": "doing",
+        "job": "turbo and pytest caching",
+        "children": []
+       },
+       {
+        "id": "p67",
+        "text": "W8: one shared integration test list",
+        "status": "doing",
+        "job": "turbo and pytest caching",
+        "children": []
+       },
+       {
+        "id": "p68",
+        "text": "W7: the land reuses a green check on the same code",
+        "status": "todo",
+        "job": "01a00000-0000-7000-8000-000000000001",
+        "children": []
+       },
+       {
+        "id": "p85",
+        "text": "W8d: a missing integration test file fails the build",
+        "status": "doing",
+        "job": "turbo and pytest caching",
+        "children": []
+       },
+       {
+        "id": "p106",
+        "text": "Fix: the land gate ignores the test run of the same commit",
+        "status": "doing",
+        "job": "disk guard rework",
+        "children": []
+       }
+      ]
+     },
+     {
+      "id": "p64",
+      "text": "Verify: a commit reaches staging in under 1 h at p50 for a full week",
+      "status": "todo",
+      "job": "01a00000-0000-7000-8000-000000000001",
+      "children": []
+     },
+     {
+      "id": "p69",
+      "text": "Daily CI guarantees measured every day",
+      "status": "done",
+      "job": "01a00000-0000-7000-8000-000000000001",
+      "children": []
+     },
+     {
+      "id": "p70",
+      "text": "Plan and build: the guarantee list with targets from today's numbers",
+      "status": "doing",
+      "job": "disk guard rework",
+      "children": []
+     },
+     {
+      "id": "p86",
+      "text": "Code guard: stop agents writing the shared git index",
+      "status": "doing",
+      "job": "shared index guard",
+      "children": []
+     },
+     {
+      "id": "p89",
+      "text": "Clean ship flow for other agents: one command from commit to staging",
+      "status": "doing",
+      "job": "ship command build",
+      "children": [
+       {
+        "id": "p97",
+        "text": "The ship command accepts a test run by its code snapshot",
+        "status": "doing",
+        "job": "ship command build",
+        "children": []
+       },
+       {
+        "id": "p115",
+        "text": "Fix: the commit check refuses hand-pushed test branches",
+        "status": "doing",
+        "job": "ship command build",
+        "children": []
+       }
+      ]
+     },
+     {
+      "id": "p103",
+      "text": "Fix: the land workflow passes a deploy token as a command flag",
+      "status": "doing",
+      "job": "deploy token flag fix",
+      "children": []
+     },
+     {
+      "id": "p107",
+      "text": "Fix: the staging deploy refuses the first land try",
+      "status": "doing",
+      "job": "staging deploy first try",
+      "children": []
+     },
+     {
+      "id": "p108",
+      "text": "Fix: the env key check reports a false mismatch",
+      "status": "doing",
+      "job": "disk guard rework",
+      "children": []
+     },
+     {
+      "id": "p116",
+      "text": "Run a side repo's CI on the spare runner",
+      "status": "doing",
+      "job": "spare runner",
+      "children": []
+     }
+    ]
+   },
+   {
+    "id": "p72",
+    "text": "Repo rules hold every day: only the release owner pushes and promotes, no unreviewed workflow change",
+    "status": "doing",
+    "job": "01a00000-0000-7000-8000-000000000001",
+    "children": [
+     {
+      "id": "p73",
+      "text": "Plan and build: list every repo rule, check each daily from the CI monitor, 7-day baseline",
+      "status": "doing",
+      "job": "disk guard rework",
+      "children": []
+     },
+     {
+      "id": "p74",
+      "text": "Run: daily repo rules review, tell each rule breaker and the release owner",
+      "status": "done",
+      "job": "01a00000-0000-7000-8000-000000000001",
+      "children": []
+     },
+     {
+      "id": "p110",
+      "text": "Fix: the shared folder lags the dev branch, because changes land without updating it",
+      "status": "doing",
+      "job": "tree sync tool",
+      "children": []
+     }
+    ]
+   },
+   {
+    "id": "p75",
+    "text": "Monorepo and GitHub Actions are designed right, checked by a qualitative review every week",
+    "status": "doing",
+    "job": "01a00000-0000-7000-8000-000000000001",
+    "children": [
+     {
+      "id": "p76",
+      "text": "Plan: first-principles review of monorepo shape, Actions design and release model",
+      "status": "done",
+      "job": "monorepo and actions review",
+      "children": []
+     },
+     {
+      "id": "p79",
+      "text": "Fix 4: one shared check suite instead of two drifting copies",
+      "status": "doing",
+      "job": "shared check suite",
+      "children": []
+     },
+     {
+      "id": "p80",
+      "text": "Fix 5 and 6: delete dead apps, one app manifest",
+      "status": "doing",
+      "job": "turbo and pytest caching",
+      "children": []
+     },
+     {
+      "id": "p81",
+      "text": "Fix 2: the guard blocks a plain push to the dev branch",
+      "status": "doing",
+      "job": "dev branch push block",
+      "children": []
+     },
+     {
+      "id": "p84",
+      "text": "Fix the leftover docs that still teach the old push",
+      "status": "doing",
+      "job": "disk guard rework",
+      "children": []
+     },
+     {
+      "id": "p88",
+      "text": "Find secrets committed anywhere in the repo history and plan a history clean",
+      "status": "doing",
+      "job": "secrets in git history",
+      "children": [
+       {
+        "id": "p94",
+        "text": "Plan: the history clean, with a dry run",
+        "status": "done",
+        "job": "secrets in git history",
+        "children": []
+       },
+       {
+        "id": "p96",
+        "text": "Clean the repo history in a freeze window",
+        "status": "todo",
+        "job": "secrets in git history",
+        "go": "needed",
+        "children": []
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "duties": [
+  {
+   "id": "d1",
+   "name": "CI system",
+   "goal": "CI never makes an agent wait, and lands and promotes stay green. Every runner is online. 9 of 10 jobs start within 20 min on runner-a and 15 min on runner-b. Half of the verify runs end within 20 min. At least 80% of land and promote runs pass over 7 days. Half of the lands end within 45 min. The daily CI health run passes and is less than 26 h old.",
+   "status": "active",
+   "boardGoal": "p69"
+  },
+  {
+   "id": "d2",
+   "name": "Git rules",
+   "goal": "Every release rule and probe rule holds every day. Only the release owner pushes the dev branch and starts the land and promote workflows. Nobody force-pushes. staging moves only through the land workflow, and main only through the promote workflow. Nobody re-runs a test run. One probe runs at a time. Each break names the session that made it.",
+   "status": "active",
+   "boardGoal": "p72"
+  },
+  {
+   "id": "d3",
+   "name": "Repo design",
+   "goal": "The monorepo and GitHub Actions stay well designed. Code, not docs, enforces the release rule. There is one check suite, one CI lane per app, and no dead apps. The rules every agent loads stay short. Lands pass and happen often. Every week a review says whether we still do the right thing and starts a fix for each new problem.",
+   "status": "active",
+   "boardGoal": "p75"
+  }
+ ]
+}

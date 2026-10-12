@@ -35,9 +35,13 @@ if (provider === "openai-codex") {
 }
 `;
 
+/** node:test cancels a test at this bound and aborts its signal; the stream test closes its server on that abort, so the file exits after a failure too. */
+const TEST_MS = 15_000;
+
 function fixture(): { dir: string; executable: string; args: () => string[] } {
   const dir = mkdtempSync(join(tmpdir(), "chat-login-"));
-  const executable = join(dir, "pi-pool");
+  // .cjs keeps the fake CommonJS even when TMPDIR sits under a "type": "module" package, where an extensionless script is ESM and require throws.
+  const executable = join(dir, "pi-pool.cjs");
   writeFileSync(executable, FAKE.replace("#!/usr/bin/env node", "#!" + process.execPath));
   chmodSync(executable, 0o755);
   process.env.FAKE_ARGS = join(dir, "args.json");
@@ -51,7 +55,7 @@ function until(logins: AccountLogins, done: (login: AccountLogin) => boolean, ms
   });
 }
 
-test("the adapter holds the exact pi-pool command lines", () => {
+test("the adapter holds the exact pi-pool command lines", { timeout: TEST_MS }, () => {
   assert.deepEqual(poolCommand.disable("anthropic", "a@x"), ["off", "a@x", "--provider", "anthropic"]);
   assert.deepEqual(poolCommand.enable("openai-codex", "c@x"), ["on", "c@x", "--provider", "openai-codex"]);
   assert.deepEqual(poolCommand.remove("anthropic", "a@x"), ["rm", "a@x", "--provider", "anthropic"]);
@@ -59,7 +63,7 @@ test("the adapter holds the exact pi-pool command lines", () => {
   assert.deepEqual(poolCommand.login("anthropic", "a@x", 600), ["login", "a@x", "--provider", "anthropic", "--timeout", "600"]);
 });
 
-test("login events parse at the boundary and drop links that are not https", () => {
+test("login events parse at the boundary and drop links that are not https", { timeout: TEST_MS }, () => {
   assert.deepEqual(parseLoginEvent('{"event":"url","url":"http://evil","manual_url":"https://claude.ai/x","code":null,"paste":true}'),
     { event: "url", url: null, manualUrl: "https://claude.ai/x", code: null, paste: true });
   assert.deepEqual(parseLoginEvent('{"event":"done","ok":true,"message":"added a@x"}'), { event: "done", ok: true, message: "added a@x" });
@@ -67,7 +71,7 @@ test("login events parse at the boundary and drop links that are not https", () 
   assert.equal(parseLoginEvent('{"event":"other"}'), null);
 });
 
-test("a Claude login takes a pasted code, survives a refused one, and ends done", async () => {
+test("a Claude login takes a pasted code, survives a refused one, and ends done", { timeout: TEST_MS }, async () => {
   const { dir, executable, args } = fixture();
   const logins = new AccountLogins({ executable, deadlineMs: 20_000, graceMs: 500 });
   try {
@@ -89,7 +93,7 @@ test("a Claude login takes a pasted code, survives a refused one, and ends done"
   } finally { await logins.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("a Codex sign-in again shows the device code and cancels by closing stdin", async () => {
+test("a Codex sign-in again shows the device code and cancels by closing stdin", { timeout: TEST_MS }, async () => {
   const { dir, executable, args } = fixture();
   const logins = new AccountLogins({ executable, deadlineMs: 20_000, graceMs: 500 });
   try {
@@ -104,7 +108,7 @@ test("a Codex sign-in again shows the device code and cancels by closing stdin",
   } finally { await logins.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("the deadline kills a login that ignores stdin and SIGTERM", async () => {
+test("the deadline kills a login that ignores stdin and SIGTERM", { timeout: TEST_MS }, async () => {
   const { dir, executable } = fixture();
   process.env.FAKE_IGNORE_TERM = "1";
   const logins = new AccountLogins({ executable, deadlineMs: 400, graceMs: 200 });
@@ -116,7 +120,7 @@ test("the deadline kills a login that ignores stdin and SIGTERM", async () => {
   } finally { delete process.env.FAKE_IGNORE_TERM; await logins.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("login routes stream state and need the page token and origin", async () => {
+test("login routes stream state and need the page token and origin", { timeout: TEST_MS }, async t => {
   const { dir, executable } = fixture();
   const logins = new AccountLogins({ executable, deadlineMs: 20_000, graceMs: 500 });
   const backend = { close: async () => {} } as unknown as ChatBackend;
@@ -131,7 +135,7 @@ test("login routes stream state and need the page token and origin", async () =>
     assert.equal((await post("api/accounts/login", { provider: "anthropic" }, { Origin: origin })).status, 403);
     assert.equal((await post("api/accounts/login", { provider: "anthropic" }, { "X-Chat-Token": "token", Origin: "http://evil.example" })).status, 403);
     assert.equal((await post("api/accounts/login", { provider: "gemini" })).status, 400);
-    const stream = await fetch(server.url + "api/accounts/login/stream", { signal: events.signal });
+    const stream = await fetch(server.url + "api/accounts/login/stream", { signal: AbortSignal.any([events.signal, t.signal]) });
     const reader = stream.body!.pipeThrough(new TextDecoderStream()).getReader();
     let seen = "";
     const read = async (pattern: RegExp) => { while (!pattern.test(seen)) { const { value, done } = await reader.read(); if (done) throw new Error(seen); seen += value; } };

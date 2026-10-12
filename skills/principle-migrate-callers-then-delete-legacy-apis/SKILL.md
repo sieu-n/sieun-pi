@@ -1,22 +1,17 @@
 ---
 name: principle-migrate-callers-then-delete-legacy-apis
-description: "Apply when introducing a new internal API while old callers still exist. Migrate callers and delete the old API in the same wave instead of preserving compatibility layers."
+description: "Use when you add a new internal API and old callers still use the old one. Move every caller to the new API and delete the old API in the same change; do not keep a compatibility layer."
 disable-model-invocation: true
 ---
 
-# Migrate Callers Then Delete Legacy APIs
+# Migrate callers, then delete the legacy API
 
-When we decide a new API is the right design, migrate callers and remove the old API in the same refactor wave instead of preserving compatibility layers.
+Use this rule when no external user depends on the old API and the project can take a coordinated breaking change.
 
-**Rule:**
-- Do not keep legacy API paths alive only because internal callers still exist
-- Inventory callers, migrate them, and delete the old API immediately
-- Treat temporary adapters as exceptional and time-boxed, not default architecture
-- Update tests to assert the new contract, and delete tests that only protect pre-refactor implementation details
+1. List every caller of the old API.
+2. Move each caller to the new API.
+3. Delete the old API in the same change.
+4. Rewrite tests to check the new contract, and delete tests that only pin the old implementation.
 
-**When this applies:**
-- No external users depend on backward compatibility
-- The project can absorb coordinated breaking changes
-- The new API is part of a simplification or refactor initiative
-
-Keeping both old and new APIs creates dual-path complexity, slows cleanup, and makes the codebase feel append-only.
+Do not keep the old API alive because internal callers still use it.
+Add a temporary adapter only when the change cannot land in one step, and give it a removal date.

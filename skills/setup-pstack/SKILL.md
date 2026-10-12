@@ -1,22 +1,19 @@
 ---
 name: setup-pstack
-description: Configure which models pstack uses per role in Prime Agent. Detects the models this session can actually reach with rlm.find_models, then writes ~/.prime/agent/pstack-models.json. Use for "configure pstack models", "setup pstack", or changing pstack's model choices.
+description: "Use when the user asks to set or change which models pstack uses per role. Writes ~/.prime/agent/pstack-models.json."
 ---
 
 # Setup pstack
 
-Write `~/.prime/agent/pstack-models.json`, the per-role model config every pstack
-skill reads before it spawns a subagent. The skills fall back to their inline
-defaults when a role is absent, so this is an override layer, not a requirement.
+Write `~/.prime/agent/pstack-models.json`. Every pstack skill reads its `roles` before it spawns a subagent.
+A skill with no entry for its role uses its own default.
 
-The model policy lives in this file's `policy` block: the default (`inherit-parent`,
-the child runs on the parent's model), the allowed models, per-task recommendations
-such as `frontend`, and the banned models. `~/.prime/agent/AGENTS.md` points here and
-holds no model rules of its own. Never write a banned model into `roles`, whatever
-`rlm.find_models` reports. Other models only when the user names them for a role.
+The `policy` block in that file is the only model policy.
+It holds the default (`inherit-parent`), the allowed models, per-task recommendations such as `frontend`, and the banned models.
+Never write a banned model into `roles`, even when `rlm.find_models` lists it.
+Write a model outside `allowed` only when the user names it for a role.
 
-Prime Agent has no always-applied rules file, so nothing loads this config for
-you. Each skill reads it explicitly:
+Nothing loads the config for a skill. Each skill reads it like this:
 
 ```python
 import json, pathlib
@@ -24,137 +21,97 @@ CFG = pathlib.Path.home() / ".prime/agent/pstack-models.json"
 roles = json.loads(CFG.read_text())["roles"] if CFG.exists() else {}
 entries = roles.get("swarm workers", [])          # always a list
 model = entries[0]["model"]                        # "provider/model" selector
-thinking = entries[0].get("thinking", "high")      # off|minimal|low|medium|high|xhigh|max
+thinking = entries[0].get("thinking")              # off|minimal|low|medium|high|xhigh|max
 ```
 
-A panel role (`how critics`, `arena runners`, `architect runners`,
-`interrogate reviewers`, `arena cross-judge pool`) is a list with one entry per
-subagent, so the list length sets the fan-out. An entry of
-`{"model": "inherit-parent"}` means: omit `model=` in the `await rlm(...)` call
-so the child runs on the parent's model. It still counts toward the fan-out.
+A panel role (`how critics`, `arena runners`, `architect runners`, `interrogate reviewers`, `arena cross-judge pool`) has one entry per subagent, so the list length sets the fan-out.
+For an entry of `{"model": "inherit-parent"}`, omit `model=` in `rlm.spawn(...)`. It still counts toward the fan-out.
 
 ## Steps
 
-### 1. Detect available models
+### 1. Find reachable models
 
 ```python
 models = await rlm.find_models("claude", limit=20)   # limit must be 1-20
 for m in models:
-    print(m.selector)                                 # e.g. anthropic/claude-opus-5
+    print(m.selector)
 ```
 
-`rlm.find_models` is the dependable source: it only returns models backed by
-live credentials in this session. Run several queries (`""`, `"claude"`,
-`"gpt"`, `"codex"`, provider names) and take the union, because one call returns
-at most 20 entries. Never write a selector you have not seen in that output.
-`inherit-parent` is always valid because it is an alias, not a slug.
+`rlm.find_models` returns only models with live credentials in this session.
+One call returns at most 20 entries, so run several queries (`""`, `"claude"`, `"gpt"`, `"codex"`, provider names) and take the union.
+Never write a selector you have not seen in that output. `inherit-parent` is an alias and is always valid.
 
-**Presence in `find_models` is not the same as reachability.** A provider can be
-listed and still fail on the first request (no balance, expired key, region
-block). Confirm each selector you intend to write with one real call:
+A listed model can still fail on the first request because of no balance, an expired key, or a region block.
+Test each selector you plan to write with one real call:
 
 ```bash
 prime-agent -p --no-session --model <selector> --thinking <level> "Reply with exactly: MODEL_OK"
 ```
 
-`MODEL_OK` means the pair works. An HTTP error, or empty output, means it does
-not — drop that selector and pick another. Thinking levels are validated at
-spawn time and must be one of `off, minimal, low, medium, high, xhigh, max`.
+`MODEL_OK` means the pair works. An HTTP error or empty output means it does not, so drop that selector.
+The thinking level must be one of `off, minimal, low, medium, high, xhigh, max`.
 
 ### 2. Load current state
 
-If `~/.prime/agent/pstack-models.json` exists, read it and treat its values as
-the current choices. Otherwise start from the shape in step 5.
+If `~/.prime/agent/pstack-models.json` exists, its values are the current choices.
+If it does not, start from `config/pstack-models.json` in the sieun-pi repo.
 
 ### 3. Map and confirm
 
-Show every role with its current model, marking any selector that is not in the
-detected-and-reachable set as needing a choice. Ask whether to accept as-is or
-change specific roles. Prime Agent has no structured-question tool, so ask in
-chat with a short numbered list of the detected models plus `inherit-parent`,
-and mark the default.
+Show every role with its current model. Mark each selector that failed step 1 as needing a choice.
+Ask in chat whether to keep the config or change specific roles. Give a short numbered list of the reachable models plus `inherit-parent`, and mark the default.
 
-`swarm workers` is the default model for every worker unless a race or
-comparison assigns another model per arm. `arena cross-judge pool` is a list
-from which Arena picks one entry whose model family differs from the parent's
-when possible.
+`swarm workers` is the model for every worker unless a race or comparison sets a model per arm.
+Arena picks one entry from `arena cross-judge pool`, from a model family other than the parent's when it can.
 
 ### 4. Validate
 
-Every selector written must be in the detected set **and** have returned
-`MODEL_OK` in step 1. A config pointing at a model the user cannot reach breaks
-every delegation that reads it, and the failure surfaces as a dead subagent, not
-as a config error.
+Write only selectors that `rlm.find_models` listed and that returned `MODEL_OK` in step 1.
+An unreachable selector shows up later as a dead subagent, with no config error.
 
 ### 5. Write the config
 
-Overwrite the whole file so re-runs stay idempotent.
+Overwrite the whole file, so a re-run gives the same result.
 
 ```json
 {
   "version": 1,
   "verified_at": "<ISO date>",
   "roles": {
-    "feature, refactoring":  [{"model": "openai-codex/gpt-5.6-sol", "thinking": "max"}],
-    "bug-fix":               [{"model": "openai-codex/gpt-5.6-sol", "thinking": "max"}],
-    "judgment and prose":    [{"model": "anthropic/claude-opus-5",  "thinking": "xhigh"}],
+    "feature, refactoring": [{"model": "inherit-parent"}],
     "how critics": [
-      {"model": "anthropic/claude-opus-5",   "thinking": "xhigh"},
-      {"model": "openai-codex/gpt-5.6-sol",  "thinking": "max"}
+      {"model": "inherit-parent"},
+      {"model": "<selector from step 1>", "thinking": "<level>"}
     ]
-  }
+  },
+  "policy": {}
 }
 ```
 
-Carry the `policy` block over unchanged unless the user changes the policy. It is
-the single source of truth for model choice; do not copy it into AGENTS.md or a
-skill.
+Copy the `policy` block over unchanged unless the user changes the policy. Do not copy it into AGENTS.md or a skill.
 
-Keep the role labels exactly as poteto-mode and the workflow skills use them:
-`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`,
-`judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`,
-`how critics`, `why investigators`, `why synthesizer`, `reflect tooling`,
-`reflect judgment, divergent, synthesizer`, `arena runners`,
-`arena cross-judge pool`, `swarm workers`, `architect runners`,
-`interrogate reviewers`.
+Use these role labels exactly:
+`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`, `judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`, `how critics`, `why investigators`, `why synthesizer`, `arena runners`, `arena cross-judge pool`, `swarm workers`, `architect runners`, `interrogate reviewers`, `frontend`.
 
 ### 6. Confirm
 
-Tell the user the config was written, name the path, and note that skills read
-it at spawn time, so it takes effect on the next delegation with no restart.
+Tell the user the path you wrote. Skills read the file at spawn time, so the change applies on the next spawn with no restart.
 
-### 7. Offer a verification skill (optional)
+### 7. Offer a verification skill
 
-Check whether the project has a way to drive the real app for proof (a
-`verify-*` skill, or an existing harness). If not, offer once: "want a
-project-local verification skill, so agents can drive the app the way a user
-does and prove changes work? I can generate one with `create-verification-skill`."
-On yes, invoke the `create-verification-skill` skill. On no, move on without
-pushing.
+If the project has no `verify-*` skill or other way to drive the real app, offer once to generate one with the `create-verification-skill` skill.
+If the user says no, move on.
 
 ## Skill visibility
 
-pstack ships 39 of its 46 skills with `disable-model-invocation: true`. Prime
-Agent honours that flag exactly as Cursor did: the skill still loads, but it is
-left out of the `<available_skills>` block, so the model will not route to it on
-its own. It stays reachable with `/skill:<name>`, and any skill can read another
-skill's file by path.
+Most pstack skills ship with `disable-model-invocation: true`.
+Prime Agent leaves those skills out of `<available_skills>`, so the model does not pick them on its own.
+`/skill:<name>` still loads them, and any skill can read another skill's file by path.
 
-Report or change that with:
+Show or change the flag with:
 
 ```bash
 python3 ~/.prime/agent/skills/setup-pstack/scripts/toggle-model-invocation.py --show
-python3 ~/.prime/agent/skills/setup-pstack/scripts/toggle-model-invocation.py --expose   # model-invocable
-python3 ~/.prime/agent/skills/setup-pstack/scripts/toggle-model-invocation.py --hide     # back to pstack defaults
+python3 ~/.prime/agent/skills/setup-pstack/scripts/toggle-model-invocation.py --expose   # make every pstack skill model-invocable
+python3 ~/.prime/agent/skills/setup-pstack/scripts/toggle-model-invocation.py --hide     # restore the pstack defaults
 ```
-
-## Prime Agent port notes
-
-This skill was a Cursor plugin skill. What changed and why:
-
-| Cursor | Prime Agent | Reason |
-|---|---|---|
-| `~/.cursor/rules/pstack-models.mdc` with `alwaysApply: true` | `~/.prime/agent/pstack-models.json`, read explicitly by each skill | Prime Agent has no always-applied rules layer |
-| model slug carries the reasoning tier (`-max`, `-xhigh`) | `model` selector + separate `thinking` level | `await rlm(prompt, model=..., thinking=...)` takes them apart |
-| "slugs you can pass to a `Task` subagent" | `await rlm.find_models(query, limit)` | there is no `Task` tool here |
-| Cursor models API/CLI | `prime-agent -p --model <selector>` smoke call | the only way to prove reachability, not just listing |

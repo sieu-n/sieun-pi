@@ -193,6 +193,12 @@
             {#if running}<span class="meta working">{running} {running === 1 ? "agent" : "agents"} running</span>
             {:else if pulse && pulse.level !== "live"}<span class="meta working {pulse.level}">{pulse.text}</span>{/if}
             {#if !row.plan && !running}<span class="meta date">No plan yet</span>{/if}
+            {#if row.progress !== "none" || row.priority > 0}
+              <span class="marks">
+                {#if row.progress !== "none"}<ProgressSteps progress={row.progress} />{/if}
+                {#if row.priority > 0}<PriorityBars level={row.priority} />{/if}
+              </span>
+            {/if}
           </span>
           {:else}
           <span class="line sub">
@@ -308,6 +314,7 @@
     <div class="foot">
       <button type="button" class="foot-button" use:tooltip={"Settings"} onclick={() => { store.drawer = "accounts"; }}><Icon name="settings" size={15} /><span>Settings</span></button>
       <button type="button" class="icon-button small" aria-label="Agents view" use:tooltip={"Agents view ⌘K"} onclick={() => { ui.agentsOpen = true; }}><Icon name="table" /></button>
+      <button type="button" class="icon-button small" aria-label="Bookmarks" use:tooltip={"Bookmarks"} onclick={() => { ui.bookmarksOpen = true; }}><Icon name="bookmark" /></button>
       <InterruptedRuns />
     </div>
   </div>
@@ -408,6 +415,8 @@
   .chats-label { display: flex; align-items: center; gap: 5px; padding-top: 6px; }
   .link { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; color: inherit; text-decoration: none; min-width: 0; border-radius: var(--radius-small); }
   .link.tree { padding-left: 22px; }
+  :global(:root[data-density="compact"]) .link { padding-top: 2px; padding-bottom: 2px; }
+  :global(:root[data-density="compact"]) .group-label { padding-top: 8px; }
   .tree-toggle { position: absolute; left: 2px; top: 6px; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; color: var(--text-faint); }
   .tree-toggle:hover { background: var(--bg-active); color: var(--text); }
   /* Job rows sit 14 px in from the chat's title, the mark column centered under its first letters; the open job's row stays marked while its drawer shows. */
@@ -441,6 +450,7 @@
   .cost.unknown { color: var(--text-faint); }
   .model { flex: 0 1 auto; min-width: 3ch; max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
   .chips { display: inline-flex; align-items: center; gap: 3px; flex: 1; min-width: 0; overflow: hidden; }
+  .marks { display: inline-flex; align-items: center; gap: 5px; flex: none; margin-left: auto; }
   .more-tags { flex: none; font-size: 11px; color: var(--text-faint); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
   .dot.failed { background: var(--danger); }

@@ -1,11 +1,11 @@
 ### Runtime forensics
 
-**You own the diagnosis. Instrument the live process, don't theorize from source.** For "why is X leaking / spinning / slow at runtime", heap snapshots, idle-but-busy processes, intermittent glitches. The deliverable is a cited diagnosis, not a fix.
+For a live process that leaks, spins, glitches, or slows down. The output is a cited diagnosis, not a fix.
 
-1. Capture the live signal on the matching surface via the control skill: a CPU profile for a spinning process, a heap snapshot for a leak, a performance trace from the Aside REPL for a visual glitch. A real artifact, not a guess.
-2. Reduce the artifact to the smoking gun: the function on the hot path, the retainer chain from the leaked object to a GC root, the loop firing without input. Parse large artifacts in a subagent (the **guard-the-context-window** principle skill), keep the reduced finding in the main thread.
-3. Prove the mechanism before believing it. Inject instrumentation through the Aside REPL (`await aside_browser(js)`) on the running page, or hotfix the live code without reloading, to confirm the hypothesis cheaply. A plausible-but-unconfirmed cause can be wrong while the real one sits one layer over.
-4. Map the finding back to source: file, symbol, the line that allocates or schedules.
-5. Throughput checkpoint stays one line: `throughput checkpoint: n/a, read-only forensics`.
+1. Capture the live signal on the real surface, such as a CPU profile for a spin, a heap snapshot for a leak, or a performance trace from the Aside REPL for a visual glitch.
+2. Reduce the artifact to the cause, such as the hot function, the retainer chain to a GC root, or the loop that fires without input. Parse large artifacts in a subagent.
+3. Prove the mechanism before you trust it. Inject instrumentation into the running page through the aside-browser skill, or hotfix the live code, to test the hypothesis.
+4. Map the finding to a file, symbol, and line.
+5. Write the throughput checkpoint as one line, `throughput checkpoint: n/a, read-only forensics`.
 
-**Reply:** the signal captured, the reduced finding, how you proved the mechanism, the source location, artifact paths. No fix unless asked; hand back to Bug fix or Perf once the cause is known.
+Reply with the signal captured, the finding, how you proved the mechanism, the source location, and the artifact paths. Hand off to Bug fix or Perf issue for the fix.

@@ -1,18 +1,13 @@
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 
-/**
- * The owner's corrections ledger, `<data dir>/corrections.json`. A chat records each correction with `correction_add` in the turn the owner gives
- * it; every chat reads the active rules from this file before each model call, so a new correction holds in every chat from its next call.
- * A correction whose theme matches an earlier one is a repeat: the earlier fix did not hold.
- */
 export const CORRECTION_TOOL = "correction_add";
 export const CORRECTIONS_FILE = "corrections.json";
 export const ENFORCEMENTS = ["brief", "code", "test"] as const;
 export const CORRECTION_STATUSES = ["active", "reopened", "retired"] as const;
 export type Enforcement = typeof ENFORCEMENTS[number];
 export type CorrectionStatus = typeof CORRECTION_STATUSES[number];
-/** At most this many rules reach a chat's context; older ones stay in the file. */
+/** At most this many rules reach a chat's context; older ones stay in the file and board.corrections() reads them. */
 export const LEDGER_PROMPT_LINES = 40;
 
 export interface ChatRef { id: string; name: string }
@@ -36,7 +31,8 @@ export interface Correction {
   handoff?: Handoff;
 }
 /** A thread (its name or id, as `waitTarget` resolves it) and the key words of the work that belongs to it. */
-export interface Handoff { to: string; topics: string[] }
+/** `with`: when set, a step flags only if its text also names one of these words (10-10, c36: 'CI health check' is not a local uptime check). */
+export interface Handoff { to: string; topics: string[]; with?: string[] }
 export interface Ledger { corrections: Correction[] }
 
 /** A new correction from the owner. */
@@ -134,7 +130,9 @@ export function parseHandoff(value: unknown): Handoff {
   const list = Array.isArray(record.topics) ? record.topics : typeof record.topics === "string" ? record.topics.split(",") : [];
   const topics = [...new Set(list.filter((topic): topic is string => typeof topic === "string").map(topic => topic.replace(/\s+/g, " ").trim()).filter(Boolean))];
   if (!topics.length) throw new Error("handoff.topics needs key words");
-  return { to: text(record.to, "handoff.to"), topics };
+  const withList = Array.isArray(record.with) ? record.with : typeof record.with === "string" ? record.with.split(",") : [];
+  const withWords = [...new Set(withList.filter((word): word is string => typeof word === "string").map(word => word.replace(/\s+/g, " ").trim()).filter(Boolean))];
+  return { to: text(record.to, "handoff.to"), topics, ...(withWords.length ? { with: withWords } : {}) };
 }
 
 /**
@@ -221,20 +219,43 @@ export class CorrectionLedger {
 }
 
 const lastAt = (entry: Correction): string => entry.repeats.at(-1)?.at ?? entry.at;
+/** The rules in force: reopened first, then newest first. */
+const liveRules = (ledger: Ledger): Correction[] => ledger.corrections.filter(entry => entry.status !== "retired")
+  .sort((a, b) => Number(b.status === "reopened") - Number(a.status === "reopened") || lastAt(b).localeCompare(lastAt(a)));
+const fullLine = (entry: Correction): string =>
+  `- ${entry.id}${entry.status === "reopened" ? ` (reopened: the owner repeated it ${entry.repeats.length}x; fix it in code or a test)` : ""} ${entry.rule}` +
+  (entry.handoff ? ` Steps on ${entry.handoff.topics.join(", ")} belong to ${entry.handoff.to}.` : "");
+/** How many theme words a title line shows. */
+export const TITLE_WORDS = 4;
+const titleLine = (entry: Correction): string => `- ${entry.id} ${entry.theme.slice(0, TITLE_WORDS).join(" ")}`;
+/** Code or a test holds the rule: it names one and no fix is pending. */
+const landed = (entry: Correction): boolean => entry.enforcedBy !== "brief" && !/^pending\b/i.test(entry.ref);
+
+/** The correction ids a brief names, like "(c47)": the rules it holds in full. */
+export const briefCorrections = (lines: readonly string[]): ReadonlySet<string> => new Set(lines.join("\n").match(/\bc\d+\b/g) ?? []);
+export const READ_RULE = "Read one in full with board.corrections(\"c12\") in Python, or all with board.corrections().";
+
 /**
- * The text every chat reads before each model call: the active and reopened rules, reopened first, then newest first, one line each, at most
- * LEDGER_PROMPT_LINES. Null with no rule in force.
+ * A chat's rules, at most LEDGER_PROMPT_LINES and a line counting the rest. A rule the brief or landed code or a test holds shows as its id and
+ * theme; the rest, and every reopened rule, in full, because a rule the model never reads in full is a rule it does not follow. Null with no rule.
  */
-export function ledgerPrompt(ledger: Ledger): string | null {
-  const live = ledger.corrections.filter(entry => entry.status !== "retired")
-    .sort((a, b) => Number(b.status === "reopened") - Number(a.status === "reopened") || lastAt(b).localeCompare(lastAt(a)));
+export function ledgerPrompt(ledger: Ledger, brief: ReadonlySet<string>): string | null {
+  const live = liveRules(ledger);
   if (!live.length) return null;
-  const lines = live.slice(0, LEDGER_PROMPT_LINES).map(entry =>
-    `- ${entry.id}${entry.status === "reopened" ? ` (reopened: the owner repeated it ${entry.repeats.length}x; fix it in code or a test)` : ""} ${entry.rule}` +
-    (entry.handoff ? ` Steps on ${entry.handoff.topics.join(", ")} belong to ${entry.handoff.to}.` : ""));
+  const lines = live.slice(0, LEDGER_PROMPT_LINES).map(entry => entry.status !== "reopened" && (brief.has(entry.id) || landed(entry)) ? titleLine(entry) : fullLine(entry));
   const more = live.length - lines.length;
-  return [`[corrections] The owner's corrections, live from the ledger. Each one holds in this chat now; the owner must never give one twice. ` +
-    `Record a new correction with ${CORRECTION_TOOL} in the same turn.`, ...lines, ...(more > 0 ? [`and ${more} older ones in ${CORRECTIONS_FILE}`] : [])].join("\n");
+  return [`[corrections] The owner's corrections, live from the ledger. Each holds in this chat now; record a new one with ${CORRECTION_TOOL} ` +
+    `in the same turn. A theme-only line is held by the brief, code or a test. ${READ_RULE}`,
+  ...lines, ...(more > 0 ? [`and ${more} older ones`] : [])].join("\n");
+}
+
+export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticket or support reply, a customer message, a post) check these rules; " +
+  "c37: nothing goes out without the owner's ok on a For you todo.";
+/** The rules a job reads in full: outside sends, acting directly, the model, writing, Convex, merges and staging. */
+export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c31", "c35", "c37", "c47", "c49", "c50"]);
+export function jobLedgerPrompt(ledger: Ledger | null): string {
+  return [`[corrections] The owner's corrections that bind jobs, live from the ledger; every other correction holds in this job too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,
+    ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(fullLine) : [])].join("\n");
 }
 
 /** Every repeat in [since, until], oldest first, with its entry: the Chat health repeat_corrections count. */
@@ -246,5 +267,7 @@ export function repeatsBetween(ledger: Ledger, since: number, until: number): { 
 
 /** A handoff in force: the correction that set it (not retired), the thread that owns the work, and its topics. */
 export interface HandoffRule extends Handoff { correction: string }
+/** The ids of the corrections in force (not retired), for steps a correction parks. */
+export const activeCorrections = (ledger: Ledger): string[] => ledger.corrections.filter(entry => entry.status !== "retired").map(entry => entry.id);
 export const handoffRules = (ledger: Ledger): HandoffRule[] =>
-  ledger.corrections.flatMap(entry => entry.status !== "retired" && entry.handoff ? [{ correction: entry.id, to: entry.handoff.to, topics: entry.handoff.topics }] : []);
+  ledger.corrections.flatMap(entry => entry.status !== "retired" && entry.handoff ? [{ correction: entry.id, to: entry.handoff.to, topics: entry.handoff.topics, ...(entry.handoff.with ? { with: entry.handoff.with } : {}) }] : []);

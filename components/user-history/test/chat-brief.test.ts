@@ -6,14 +6,14 @@ import { test } from "node:test";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { checkInRecord, checkInSettings } from "../src/chat-checkin.ts";
 import { startChatServer } from "../src/chat-server.ts";
-import { BRIEF_NOTE_CHARS, briefChanges, briefNote, CHAT_BRIEF, chatBrief, Chats, type ChatThreads, type CheckInSource, loadRecord, reloadAction } from "../src/chats.ts";
+import { BRIEF_NOTE_CHARS, briefChanges, briefNote, CHAT_BRIEF, chatBrief, Chats, type ChatThreads, type CheckInSource, loadRecord, reloadAction, replyCheckRecord } from "../src/chats.ts";
 import { briefRows, briefStatus, currentBrief } from "../src/client/brief.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { SessionRow } from "../src/shared/types.ts";
 
 type Observer = Parameters<ChatThreads["observe"]>[0];
 const source = (dir: string): CheckInSource => ({ board: async () => null, rows: async () => [], memory: checkInRecord(join(dir, "check-ins.json")),
-  settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0 });
+  replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0 });
 /** The hub calls a reload touches: reload, notice and every way to start a turn, logged in order. */
 function fakeThreads(calls: string[]) {
   let observer: Observer | undefined;
@@ -177,7 +177,7 @@ test("POST api/chats/update: needs the write token, reloads idle chats now and b
   } finally { await server.close(); chats.close(); }
 });
 
-test("Settings > Chats rows: unarchived chats with a brief, not up to date first, then by name; the current brief from any row", () => {
+test("Settings > Updates chat rules rows: unarchived chats with a brief, not up to date first, then by name; the current brief from any row", () => {
   const row = (id: string, name: string, brief: SessionRow["brief"], extra: Partial<SessionRow> = {}) => ({ id, name, chat: true, archived: false, ...(brief ? { brief } : {}), ...extra }) as SessionRow;
   const rows = [
     row("a", "zeta", { version: "cur00000", current: "cur00000", updating: false }),

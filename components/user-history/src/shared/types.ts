@@ -69,8 +69,8 @@ export interface Pulse {
   summaryCurrent?: true;
   silentSince?: string; failed?: boolean;
 }
-/** The pool account a new chat starts on; `force` uses an account that cannot serve now, after the user confirmed. */
-export interface NewChatAccount { provider: string; id: string; force: boolean }
+/** The pool account a new chat starts on. */
+export interface NewChatAccount { provider: string; id: string }
 export interface ChildPulse extends Pulse { rlmChildId: string; sessionId: string }
 export interface SessionPulse extends Pulse { subagents: ChildPulse[] }
 /** A subagent's native session id and cost, matched to a ChildAgent by `rlmChildId` (its id) or its session name. */
@@ -92,7 +92,30 @@ export type PlanStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
  * `waitUntil` (an ISO date-time) and `waitFor` (a short text naming an event or a thread) mark a step that waits on purpose: the check-in
  * counts it `waiting` until that time, or for STEP_STALE_MS of no progress, then `due` or `stale-chase` (`stepClass` in src/chat-checkin.ts).
  */
-export interface PlanItem { id: string; text: string; status: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string; children: PlanItem[] }
+export interface PlanItem {
+  id: string; text: string; status: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string;
+  /** The session id of the thread that owns the step (a job of the chat or another thread), kept when the job is deleted or renamed; `job` keeps what the chat wrote. */
+  sessionId?: string;
+  /** The step ships, ports, deploys, merges to a shared app, or moves demo work to a real app: it moves only after the owner's go (`ownerGo`). Once set, it stays. */
+  go?: "needed";
+  /** A Build step: one whose text starts with "Build", or this flag. It starts only after its goal's requirements check passes (`requirementGaps`). */
+  kind?: "build";
+  /** A goal's requirements check: one line per owner requirement, quoting the owner's words. */
+  requirements?: Requirement[];
+  /** A goal's measurable target and its last measurement (`goalGaps` in src/chat-checkin.ts); only a top-level plan item carries one. */
+  target?: GoalTarget;
+  children: PlanItem[];
+}
+/**
+ * A goal's target, as the chat set it: `metric` reaches `target` (a positive number, in `unit`), higher is better. `current`, `measuredAt` (ISO)
+ * and `source` (how it was measured) are the last measurement, all three or none. `cadence: "daily"` marks a metric a daily duty measures: its
+ * measurement goes stale after 24 h instead of 2 check-in intervals.
+ */
+export interface GoalTarget { metric: string; target: number; unit: string; current?: number; measuredAt?: string; source?: string; cadence?: "daily" }
+export const REQUIREMENT_STATUSES = ["met", "unmet", "open"] as const;
+export type RequirementStatus = typeof REQUIREMENT_STATUSES[number];
+/** One line of the owner's request on a goal: the owner's words, whether the design meets it, the evidence for met, a note for an unmet or open line the owner put off. */
+export interface Requirement { text: string; status: RequirementStatus; evidence?: string; note?: string }
 /**
  * Where an artifact link points. Stored as a string, resolved by the page (src/shared/artifact-link.ts):
  * `job:<name>` opens that job's drawer in this chat; `thread:<sessionId>` opens a thread, `thread:<sessionId>@<timestamp>` jumps to one message
@@ -106,19 +129,29 @@ export interface ScratchItem { id: string; text: string; links: ArtifactLink[]; 
  * Something only the owner can give: a decision, a login, an approval. `choices` are the answers the agent offers (first one is its
  * recommendation); the owner taps one or writes `reply`.
  */
-export interface OwnerTodo { id: string; text: string; done: boolean; reply?: string; choices?: string[]; from: "agent" | "owner"; at: string }
+export interface OwnerTodo {
+  id: string; text: string; done: boolean; reply?: string; choices?: string[]; from: "agent" | "owner"; at: string;
+  /** The plan step this todo asks the owner's go for; a step id in the text links it too (`linksStep`). */
+  step?: string;
+  /** Who wrote `reply`. Only the owner answers; a reply without it predates the field and is no go. */
+  answeredBy?: "owner";
+}
 export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; scratch: ScratchItem[]; todos: OwnerTodo[]; updatedAt: string }
 export type BoardActor = "agent" | "owner";
-export type PlanItemInput = { id?: string; text: string; status?: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string; children?: PlanItemInput[] };
+/** The gate fields a plan op can set: `go` only to "needed" (it never clears), `kind` and `requirements` (null clears them on plan_update). */
+type GateInput = { go?: "needed"; kind?: "build"; requirements?: Requirement[] };
+export type PlanItemInput = { id?: string; text: string; status?: PlanStatus; job?: string; sessionId?: string; note?: string; waitUntil?: string; waitFor?: string; target?: GoalTarget;
+  children?: PlanItemInput[] } & GateInput;
 export type BoardOp =
   | { op: "plan_set"; items: PlanItemInput[] }
-  | { op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string; waitUntil?: string; waitFor?: string }
-  | { op: "plan_update"; id: string; text?: string; status?: PlanStatus; job?: string | null; note?: string | null; waitUntil?: string | null; waitFor?: string | null }
+  | ({ op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string; sessionId?: string; waitUntil?: string; waitFor?: string; target?: GoalTarget } & GateInput)
+  | { op: "plan_update"; id: string; parent?: string | null; text?: string; status?: PlanStatus; job?: string | null; sessionId?: string | null; note?: string | null; waitUntil?: string | null;
+      waitFor?: string | null; go?: "needed"; kind?: "build" | null; requirements?: Requirement[] | null; target?: GoalTarget | null }
   | { op: "plan_remove"; id: string }
   | { op: "scratch_add"; parent?: string; text: string; links?: ArtifactLink[] }
   | { op: "scratch_update"; id: string; text?: string; links?: ArtifactLink[] }
   | { op: "scratch_remove"; id: string }
-  | { op: "todo_add"; text: string; choices?: string[] }
+  | { op: "todo_add"; text: string; choices?: string[]; step?: string }
   | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null }
   | { op: "todo_remove"; id: string };
 
@@ -137,7 +170,7 @@ export interface ThreadSnapshot {
   /** Chats only: while the server waits to restart a failed owner turn, what it waits for; the feed shows it under the owner's message. */
   wait?: ChatWait | null;
 }
-/** `retry`: the turn is restarted at `at`. `account`: Claude has no account that can serve and no fallback model exists; `until` is when one frees up. Epoch ms. */
+/** `retry`: the turn is restarted at `at`. `account`: no Claude account can serve the selected Anthropic model; `until` is when one frees up. Epoch ms. */
 export type ChatWait = { kind: "retry"; error: string; at: number } | { kind: "account"; until: number | null };
 
 export interface ThreadState extends ThreadSnapshot { connection: ThreadConnection; error?: string }
@@ -220,7 +253,7 @@ export interface SessionRow {
   unreadCount?: number;
   /** Chats only: the check-in schedule the owner set (`<dataDir>/check-in-settings.json`). */
   checkIn?: CheckInState;
-  /** Chats only: the brief it last loaded against the current one (Settings > Chats). */
+  /** Chats only: the brief it last loaded against the current one (Settings > Updates, Chat rules). */
   brief?: ChatBriefState;
   /**
    * Who started the thread: a person through this chat (`threads.json`, `chats.json`) or an agent through `rlm.create_session` (its name precedes
@@ -254,7 +287,7 @@ export type AgentLink = "subagent" | "root" | "step" | "message";
  * last exchange with the chat is a message it sent that asks something, so the chat owes it an answer.
  */
 export type AgentState = "working" | "waiting" | "idle" | "done" | "failed";
-/** Output tokens per second of a thread, from the usage store's calls: `live` when a call ended in the last minute, else the last call's rate. */
+/** Output tokens per second of a thread, from the usage store's calls: `live` from the calls that ended in the last minute, else the average over its calls. */
 export interface TokenRate { tps: number; live: boolean }
 /**
  * One thread linked to a chat, in the sessions stream on the chat's row (`SessionRow.agents`, computed by `chatAgents` on the server): the Agents card,
@@ -281,6 +314,10 @@ export interface ChatAgent {
   steps: string[];
   /** Its output tokens per second, when the usage store has a timed call for its session. */
   rate?: TokenRate;
+  /** Running subagents below it at any depth, the sidebar's `SessionRow.subagentsRunning`; absent at 0. */
+  subagentsRunning?: number;
+  /** Every subagent it spawned at any depth, finished and deleted ones included; absent at 0. */
+  subagentsTotal?: number;
 }
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
 
@@ -318,11 +355,14 @@ export type SendMode = "steer" | "followUp";
 
 export interface PoolWindow { kind: "session" | "weekly" | "model"; label: string; pct: number; resetsAt: number | null }
 export interface PoolAccount {
-  id: string; email: string; plan?: string; usage: string; session_pct: number | null; weekly_pct: number | null;
-  usable: boolean; reason: string | null; current: boolean; pinned: boolean; force: boolean; live: boolean; seat: boolean; score: number | null;
+  /** `label` is what to show: the email, plus the organization when two pooled accounts share the email. */
+  id: string; email: string; label: string; plan?: string; usage: string; session_pct: number | null; weekly_pct: number | null;
+  usable: boolean; reason: string | null; current: boolean; pinned: boolean; live: boolean; seat: boolean; score: number | null;
   tier: string | null; windows: PoolWindow[]; usageAt: number | null; cooldownUntil: number | null; cooldownReason: string | null; disabled: boolean;
   /** Epoch ms until which the provider answered 429 for this account (`pi-pool limited`); null when no limit is on file. */
   limitedUntil: number | null;
+  /** Threads on this account: root sessions (each with its jobs) whose last request through the pool was within `active_session_sec`. */
+  sessions: number;
   /** Claude only: the last read of the account's banked usage-limit resets; null when never read. */
   resets?: AccountResets | null;
 }
@@ -339,15 +379,25 @@ export interface AccountResets {
   pending: { grantId: string; createdAt: number } | null;
 }
 export interface PoolResolution { account: string | null; email: string | null; reason: string | null; pinned: boolean }
-export interface PoolProvider { provider: "anthropic" | "openai-codex"; rows: PoolAccount[]; resolution: PoolResolution | null; poolPin?: string | null; error?: string }
-export interface AccountsView { sessionId: string | null; checkedAt: string; providers: PoolProvider[]; notice?: string }
-export type AccountAction = { action: "use"; provider: string; account: string; id: string; force: boolean; newSession?: boolean } | { action: "follow"; provider: string; id: string }
+/** A thread's class in the pool (`pi-pool priority`): high trees get admission slots first, low ones wait for the emptiest accounts. */
+export type PoolPriority = "high" | "normal" | "low";
+export const POOL_PRIORITIES: readonly PoolPriority[] = ["high", "normal", "low"];
+/** The pool holds the thread until `account` admits it at `slotAt` (epoch ms): its 429 ends, its 5h window resets, or a slot frees. */
+export interface PoolWait { account: string; slotAt: number }
+/** `wait` is null when the thread does not wait on this provider. */
+export interface PoolProvider { provider: "anthropic" | "openai-codex"; rows: PoolAccount[]; resolution: PoolResolution | null; wait?: PoolWait | null; poolPin?: string | null; error?: string }
+/** The numeric settings of `pi-pool config` (vend.py DEFAULTS merged with ~/.config/pi-pool/config.json), by key. */
+export type PoolConfig = Readonly<Record<string, number>>;
+/** `poolConfig` is null when `pi-pool config` could not be read; the client then shows pi-pool's defaults. */
+/** `priority` is the thread's pool class, null with no thread or when the pool does not say. */
+export interface AccountsView { sessionId: string | null; checkedAt: string; providers: PoolProvider[]; poolConfig: PoolConfig | null; priority?: PoolPriority | null; notice?: string }
+export type AccountAction = { action: "use"; provider: string; account: string; id: string; newSession?: boolean } | { action: "follow"; provider: string; id: string }
   | { action: "pin"; provider: string; account: string } | { action: "unpin"; provider: string } | { action: "switch"; provider: string }
   | { action: "recheck"; provider: string } | { action: "resets"; provider: string; account?: string } | { action: "reset"; provider: string; account: string; grant?: string }
   | { action: "disable"; provider: string; account: string } | { action: "enable"; provider: string; account: string } | { action: "remove"; provider: string; account: string };
 /** One account inside a usage refresh. `usageAt` and `retryAt` are epoch ms. */
 export interface UsageRefreshAccount {
-  id: string; email: string | null; state: "queued" | "reading" | "read" | "failed"; reason: string | null; usageAt: number | null; retryAt: number | null;
+  id: string; email: string | null; label: string | null; state: "queued" | "reading" | "read" | "failed"; reason: string | null; usageAt: number | null; retryAt: number | null;
 }
 /** One `pi-pool refresh --stream` run: every account of a provider, or one account. The last run per provider stays readable after it ends. */
 export interface UsageRefresh {
@@ -419,9 +469,11 @@ export type SlackChatInput =
 
 /** A chat-client SDK update. `failed` comes back after a restart until the daemon version changes or Retry succeeds. */
 export interface SdkUpdateState { state: "idle" | "running" | "failed" | "restarting"; target?: string; message: string; log: string[]; at?: string }
-/** Settings > Versions: the Prime Agent daemon, the prime-agent package this chat loaded, and the chat build. */
+/** Settings > Updates: the Prime Agent daemon, the prime-agent package this chat loaded, and the chat build. */
 export interface SdkView {
   daemon: string | null;
+  /** The prime-agent SDK version the daemon ships; the Rust daemon (0.10.0+) ships an older TypeScript SDK. Null until the daemon reports. */
+  sdk: string | null;
   client: string;
   build: string;
   matched: boolean;

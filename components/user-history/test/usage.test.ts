@@ -60,6 +60,17 @@ test("Prime Agent: one call per assistant message, own cost kept, attribution bo
   assert.equal(calls[1]!.callId, `msg:a2:${Date.parse("2026-10-07T11:06:23.517Z")}`);
 });
 
+test("Prime Agent: an aborted or failed call has no start time, since its timestamp is when it stopped", () => {
+  const stopped = (id: string, stopReason: string) => {
+    const entry = JSON.parse(prime.assistant(id, null, 779)) as { message: Record<string, unknown> };
+    entry.message.stopReason = stopReason;
+    entry.message.timestamp = Date.parse("2026-10-07T11:06:23.513Z");
+    return JSON.stringify(entry);
+  };
+  const calls = run(piFormat, [prime.header(), prime.user, prime.assistant("a1", "msg_1"), stopped("a2", "aborted"), stopped("a3", "error")]);
+  assert.deepEqual(calls.map(call => [call.output, call.startedAt]), [[677, 1791371170814], [779, null], [779, null]]);
+});
+
 test("Prime Agent: a file without a session header is not a transcript; a child without a timestamp is skipped", () => {
   assert.equal(run(piFormat, [prime.assistant("a1", "msg_1")]).length, 0);
   const noTime = JSON.parse(prime.assistant("a3", "msg_3")) as Record<string, unknown>;

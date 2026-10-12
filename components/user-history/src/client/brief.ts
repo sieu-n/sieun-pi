@@ -1,6 +1,6 @@
 import type { ChatBriefState, SessionRow } from "../shared/types.ts";
 
-/** What Settings > Chats says about one chat's brief. */
+/** What Settings > Updates, Chat rules, says about one chat's brief. */
 export type BriefStatus = "updating" | "update pending" | "up to date";
 const ORDER: Record<BriefStatus, number> = { updating: 0, "update pending": 1, "up to date": 2 };
 

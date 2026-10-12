@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createServer, request } from "node:http";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
+import { reapServeOnExit } from "./serve-reaper.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const execute = promisify(execFile);
@@ -42,6 +43,7 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
   const artifacts = process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(root, "components/user-history/.test-artifacts");
   await mkdir(artifacts, { recursive: true });
   const directory = await mkdtemp(join(artifacts, "service-"));
+  const reaper = reapServeOnExit(directory);
   const data = join(directory, "browser-chat");
   const socket = join(directory, "absent.sock");
   const port = await unusedChatPort();
@@ -52,7 +54,7 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
   const env = { ...process.env, HOME: home, PRIME_AGENT_CODING_AGENT_DIR: join(directory, "profile") };
   const run = async (command: string, extra: string[] = []) => (await execute(process.execPath,
     [join(root, "scripts/cli.mjs"), "chat", command, "--data-dir", data, ...extra], { env, timeout: 25000 })).stdout.trim();
-  const flags = ["--port", String(port), "--socket", socket];
+  const flags = ["--port", String(port), "--socket", socket, "--no-adopt"];
   try {
     const urls = await Promise.all([run("start", flags), run("start", flags)]);
     assert.equal(urls[0], urls[1]);
@@ -60,6 +62,9 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.equal(new URL(url).port, String(port));
     assert.equal(await run("url"), url);
     assert.match(await run("status"), /Chat is running/);
+    assert.match(await readFile(join(data, "service.log"), "utf8"), /acts only on the chats it created/, "a test serve never adopts live chats");
+    await assert.rejects(run("status", ["--no-adopt"]), /with chat start or serve/);
+    await assert.rejects(run("start", [...flags, "--adopt-live"]), /--no-adopt or --adopt-live, not both/);
     const first = await (await fetch(url + "api/identity")).json();
     assert.equal(await run("start", flags), url);
     assert.deepEqual(await (await fetch(url + "api/identity")).json(), first);
@@ -84,6 +89,7 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.match((await unavailable.json()).error, /daemon is not reachable/);
     for (const file of ["configuration.json", "instance.json", "service.log"]) assert.equal((await stat(join(data, file))).mode & 0o777, 0o600);
     const configuration = JSON.parse(await readFile(join(data, "configuration.json"), "utf8"));
+    assert.equal(configuration.daemonGateChat, undefined, "a new configuration names no daemon gate chat");
     const headers = { "Content-Type": "application/json", Origin: new URL(url).origin };
     assert.equal((await fetch(url + "api/service-stop", { method: "POST", headers, body: "{}" })).status, 403);
     assert.equal((await fetch(url + "api/service-stop", { method: "POST", headers: { ...headers, "X-Chat-Stop-Token": configuration.csrfToken }, body: "{}" })).status, 403);
@@ -109,8 +115,13 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
     assert.equal(await run("start", flags), url, "a stale instance record never blocks a new listener");
     assert.notEqual((await (await fetch(url + "api/identity")).json()).instanceId, restarted.instanceId);
     await run("stop");
+    await writeFile(join(data, "configuration.json"), JSON.stringify({ ...configuration, daemonGateChat: 7 }));
+    await assert.rejects(run("start", flags), /daemonGateChat is a chat id or null/);
+    await writeFile(join(data, "configuration.json"), JSON.stringify({ ...configuration, daemonGateChat: "chat-vp" }));
     const publicOrigin = "https://chat.example.ts.net";
     assert.equal(await run("start", [...flags, "--public-origin", publicOrigin + "/"]), url);
+    const saved = JSON.parse(await readFile(join(data, "configuration.json"), "utf8"));
+    assert.deepEqual([saved.publicOrigin, saved.daemonGateChat], [publicOrigin, "chat-vp"], "a settings save keeps the hand-set daemon gate chat");
     const remote = { Host: new URL(publicOrigin).host, Origin: publicOrigin };
     assert.equal((await (await fetch(url + "api/remote")).json()).mode, "custom", "an explicit origin on an extra instance stays fixed");
     const page = await viaHost(url, { headers: remote });
@@ -172,7 +183,62 @@ test("standalone CLI converges concurrent starts, preserves its URL, and stops o
       assert.equal(await (await fetch(url)).text(), "unrelated");
     } finally { await new Promise<void>(resolve => occupant.close(() => resolve())); }
     await writeFile(join(directory, "result.json"), JSON.stringify({ passed: true, port, url, first, restarted }));
-  } finally { await run("stop"); }
+  } finally {
+    try { await run("stop"); } finally { await reaper.stop(); }
+  }
+});
+
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test("a failed or hung chat start leaves no serve behind, and chat stop ends a serve that never answered", { timeout: 400000 }, async () => {
+  const artifacts = process.env.HISTORY_TEST_ARTIFACTS_DIR ?? join(root, "components/user-history/.test-artifacts");
+  await mkdir(artifacts, { recursive: true });
+  const directory = await mkdtemp(join(artifacts, "service-silent-"));
+  const reaper = reapServeOnExit(directory);
+  const data = join(directory, "browser-chat");
+  const home = join(directory, "home");
+  await mkdir(home);
+  const pidFile = join(directory, "serve.pid");
+  const fixture = pathToFileURL(join(root, "components/user-history/test/fixtures/silent-serve.mjs")).href;
+  const env = (mode: "hang" | "fail") => ({ ...process.env, HOME: home, PRIME_AGENT_CODING_AGENT_DIR: join(directory, "profile"),
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import ${fixture}`.trim(), SILENT_SERVE_MODE: mode, SILENT_SERVE_PID_FILE: pidFile,
+    // The failing serve must reach its listen call before chat start gives up; a hung one is given up on after 8 s.
+    SIEUN_PI_CHAT_START_TIMEOUT_MS: mode === "hang" ? "8000" : "120000" });
+  const flags = ["--port", String(await unusedChatPort()), "--socket", join(directory, "absent.sock"), "--no-adopt"];
+  const run = async (mode: "hang" | "fail", command: string, extra: string[] = []) => (await execute(process.execPath,
+    [join(root, "scripts/cli.mjs"), "chat", command, "--data-dir", data, ...extra], { env: env(mode), timeout: 150000 })).stdout.trim();
+  const servePid = async () => Number(await readFile(pidFile, "utf8"));
+  const recorded = async () => (await readdir(join(data, "serves")).catch(() => [])).map(Number);
+  try {
+    await assert.rejects(run("fail", "start", flags), /EACCES/);
+    const failed = await servePid();
+    assert.equal(alive(failed), false, "a serve that reported an error is gone when chat start returns");
+    assert.deepEqual(await recorded(), [], "the failed serve removed its record");
+
+    await rm(pidFile);
+    await assert.rejects(run("hang", "start", flags), /timed out after 8 s/);
+    const hung = await servePid();
+    assert.equal(alive(hung), false, "a serve that never answered is ended when chat start times out");
+
+    // A serve whose starter died with it (a killed terminal, a crashed start): nothing waits on it, and it never wrote instance.json.
+    await rm(pidFile);
+    const orphan = spawn(process.execPath, [join(root, "components/user-history/src/chat-service-cli.mjs"), "serve", "--data-dir", data, ...flags],
+      { env: env("hang"), detached: true, stdio: "ignore" });
+    orphan.unref();
+    assert(orphan.pid);
+    for (let waited = 0; !(await recorded()).includes(orphan.pid); waited += 200) {
+      assert(waited < 60000, "the orphan serve recorded itself");
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    await assert.rejects(access(join(data, "instance.json")));
+    assert.match(await run("hang", "status"), new RegExp(`Chat is stopped\\.[\\s\\S]*never answered runs as PID ${orphan.pid}\\.`));
+    assert.equal(await run("hang", "stop"), `Chat is stopped. Ended a chat process that never answered (PID ${orphan.pid}).`);
+    assert.equal(alive(orphan.pid), false);
+    assert.doesNotMatch(await run("hang", "status"), /never answered/);
+    assert.equal(await run("hang", "stop"), "Chat is stopped.");
+  } finally {
+    assert.deepEqual(await reaper.stop(), [], "no serve was left for the reaper");
+  }
 });
 
 test("extension has no browser executor or session-owned server", async () => {

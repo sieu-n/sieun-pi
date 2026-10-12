@@ -10,7 +10,6 @@ const TARGETS: readonly (readonly [string, RegExp])[] = [
   ["long_replies", /\b(?:long (?:owner )?repl(?:y|ies)|60 words|reply rule|reply cap)\b/i],
   ["slop_replies", /\b(?:slop|reply lint|reply check)\b/i],
   ["off_brief", /\b(?:wakes?|wake-ups?|off[- ]brief|repeat(?:s|ed)?|notices?|tell_owner)\b/i],
-  ["stalls_2h", /\b(?:stall(?:s|ed)?|stuck|quiet steps?|waitUntil|waitFor)\b/i],
   ["corrections", /\bcorrections?\b/i],
   ["unretried_errors", /\b(?:retr(?:y|ies)|failed turns?|restarts?)\b/i],
   ["sieun_pi_breaks", /\b(?:pi-pool|token hook|sieun-pi breaks?)\b/i],

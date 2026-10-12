@@ -1,0 +1,107 @@
+{
+  "name": "Wiki dream",
+  "ownerWords": "Make the llm-wiki duty keep the wiki in sync and organized by its principles, like a dream pass: a daily job that cleans the wiki, finds the mistakes agents repeat, and fixes the related skills so they stop. The wiki's article list must always be up to date.",
+  "goal": "The wiki matches the repo and itself. Every curated page is in its hub, every link opens, no curated page links to a session folder or a superseded page, and one topic has one page. Fewer pages break the writing rules each day. A mistake agents make twice in a week becomes a rule in its skill and does not come back. The owner hears only which skill rules changed and what needs his call.",
+  "metrics": [
+    {
+      "key": "hub_orphans",
+      "label": "Pages no hub lists",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "dead_links",
+      "label": "Links to a missing page",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "session_links",
+      "label": "Curated links into session folders",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "superseded_linked",
+      "label": "Hub links to superseded pages",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "missing_meta",
+      "label": "Pages missing date, description or title",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "stale_vs_code",
+      "label": "Pages older than the code they describe",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "dup_unjudged",
+      "label": "Possible duplicate pages not judged",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "lint_over_glide",
+      "label": "Pages breaking writing rules, over plan",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "memory_rules_over_glide",
+      "label": "Repo rules kept only in Prime memory, over plan",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "open_mistakes",
+      "label": "Repeated agent mistakes with no skill fix",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "mistakes_back",
+      "label": "Fixed mistakes that came back in 7 days",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "dream_reverts",
+      "label": "Dream commits reverted in 7 days",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "pages_retouched",
+      "label": "Pages the dream edited twice in 7 days",
+      "op": "<=",
+      "target": 2
+    },
+    {
+      "key": "source_errors",
+      "label": "Inputs the precheck could not read",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "01:30"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/wiki-dream.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Follow the playbook .agents/skills/apps/llm-wiki/references/wiki-dream.md in auto-sns-agent; read it with `node scripts/skills/read-skill.mjs apps/llm-wiki/references/wiki-dream.md`. The ledger is wiki-dream-ledger.json in this chat's duties folder, ~/.prime/agent/browser-chat/duties/<this chat id>/; read it first and write it last, after your commits. Work from the flagged items. Start one subagent per output item (a hub, a page, a duplicate pair, a skill) and read each result yourself. Caps per day: 10 page subagents and 3 skill subagents. Every commit uses the scope wiki-dream, for example docs(wiki-dream): ...; auto-sns-agent commits go through commit.mjs, sieun-pi commits are plain local commits. Never push either repo. When unsure, leave it and ask the owner. A quiet day (all on target, nothing changed) sends no message.",
+  "boardGoal": "p249"
+}

@@ -1,0 +1,114 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { checkInPrecheck, checkInPrecheckText, convergenceMisses, dutyFor, type DutyRef, foldOps, goalsToFold, type JobFact, openUnderClosed } from "../src/chat-checkin.ts";
+import { applyBoardOp, nextIds, openGoals } from "../src/shared/chat-board.ts";
+import type { BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
+
+/**
+ * c46: a goal whose open steps ride other goals' jobs or a duty folds. The fixture is a synthetic CI thread board with the shape of a check-in
+ * that left p15, p72 and p75 open until the thread folded them by hand, with the chat's duties.
+ */
+const FIXTURE = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "ci-thread-board.json"), "utf8")) as { board: ChatBoard; duties: DutyRef[] };
+const VP = "01a00000-0000-7000-8000-000000000001";
+const SELF = new Set([VP, "CI thread"]);
+const NOW = Date.parse("2026-10-12T05:19:30Z");
+const EVERY = 30 * 60_000;
+const board = (): ChatBoard => structuredClone(FIXTURE.board);
+const summary = (folds: ReturnType<typeof goalsToFold>) => folds.map(fold => ({ goal: fold.goal.id, duty: fold.duty?.id,
+  moves: fold.moves.map(move => `${move.item.id}>${move.home.id}`), left: fold.left.map(item => item.id) }));
+const item = (id: string, text: string, extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "doing", children: [], ...extra });
+const find = (plan: readonly PlanItem[], id: string): PlanItem | undefined => {
+  for (const entry of plan) { if (entry.id === id) return entry; const below = find(entry.children, id); if (below) return below; }
+  return undefined;
+};
+
+test("goals to fold: the CI thread's board folds p15 by its steps' jobs, p72 and p75 by their duties", () => {
+  assert.deepEqual(summary(goalsToFold(board(), [], SELF, FIXTURE.duties)), [
+    { goal: "p15", duty: undefined, moves: ["p37>p19", "p56>p19"], left: [] },
+    { goal: "p72", duty: "d2", moves: ["p73>p19"], left: ["p110"] },
+    { goal: "p75", duty: "d3", moves: ["p80>p66", "p84>p19"], left: ["p79", "p81", "p88"] },
+  ]);
+  assert.deepEqual(summary(goalsToFold(board(), [], SELF, [])).map(fold => fold.goal), ["p15"], "without the duties only p15 folds: p110, p79, p81 and p88 have no home");
+});
+
+test("goals to fold: the ops apply on the real board and leave no goal to fold and nothing open under a closed goal", () => {
+  const folds = goalsToFold(board(), [], SELF, FIXTURE.duties);
+  assert.deepEqual(foldOps(folds[0]!), [
+    { op: "plan_update", id: "p37", parent: "p19" },
+    { op: "plan_update", id: "p56", parent: "p19" },
+    { op: "plan_update", id: "p15", status: "done", note: "Folded (c46): its open steps ride other goals' jobs; p37 moved under p19, p56 moved under p19." },
+  ]);
+  assert.deepEqual(foldOps(folds[1]!).at(-1), { op: "plan_update", id: "p72", status: "done",
+    note: "Folded (c46): the duty d2 \"Git rules\" runs this goal's work; p73 moved under p19." });
+  // The check-in places each step with no home itself; these are the thread's own choices from its hand fold.
+  const placed: Record<string, BoardOp[]> = { p72: [{ op: "plan_update", id: "p110", parent: "p60" }],
+    p75: [{ op: "plan_update", id: "p79", parent: "p62" }, { op: "plan_update", id: "p81", parent: "p19" }] };
+  let next = board();
+  for (const fold of folds) {
+    const ops = foldOps(fold);
+    for (const op of [...ops.slice(0, -1), ...placed[fold.goal.id] ?? [], ops.at(-1)!]) next = applyBoardOp(next, op, "agent", "2026-10-12T05:20:00.000Z", nextIds(next)).board;
+  }
+  next = applyBoardOp(next, { op: "plan_update", id: "p88", parent: null }, "agent", "2026-10-12T05:20:00.000Z", nextIds(next)).board;
+  assert.deepEqual(["p15", "p72", "p75"].map(id => find(next.plan, id)?.status), ["done", "done", "done"]);
+  assert.deepEqual(["p37", "p56", "p73", "p84", "p81"].map(id => find(next.plan, id) === find(find(next.plan, "p19")!.children, id)), [true, true, true, true, true]);
+  assert.ok(find(find(next.plan, "p66")!.children, "p80"));
+  assert.deepEqual(openUnderClosed(next), []);
+  assert.deepEqual(goalsToFold(next, [], SELF, FIXTURE.duties), []);
+  assert.deepEqual(openGoals(next.plan).map(goal => goal.id), ["p1", "p10", "p60", "p88"]);
+});
+
+test("goals to fold: counted in the check-in duty, listed with the exact ops in the brief, and not again under Look done", () => {
+  const precheck = checkInPrecheck(undefined, [], board(), NOW, { self: [...SELF], rows: [], everyMs: EVERY, duties: FIXTURE.duties });
+  const output = convergenceMisses(VP, precheck.steps, precheck, {}, EVERY, NOW);
+  assert.equal(output.metrics.goals_to_fold, 3);
+  assert.deepEqual(output.flagged.filter(slice => slice.kind === "goals_to_fold").map(slice => slice.item), ["p15", "p72", "p75"]);
+  assert.ok(!output.flagged.some(slice => slice.kind === "finished_open" && ["p15", "p72", "p75"].includes(slice.item!)), "one source per goal");
+  const text = checkInPrecheckText(precheck, [], output.flagged, NOW);
+  const section = text.split("\n\n").find(part => part.startsWith("### Goals to fold"))!;
+  assert.deepEqual(section.split("\n").slice(1).map(line => line.slice(2, 5)), ["p15", "p72", "p75"]);
+  assert.ok(section.includes('p15 "This thread watches how CI is used": every open step under it rides another goal\'s job. Move p37 under p19 (p19 has its ' +
+    'job disk guard rework), p56 under p19 (p19 has its job disk guard rework): {"op":"plan_update","id":"p37","parent":"p19"}, {"op":"plan_update","id":"p56","parent":"p19"}. ' +
+    'Then close the goal: {"op":"plan_update","id":"p15","status":"done","note":"Folded (c46): its open steps ride other goals\' jobs; p37 moved under p19, p56 moved under p19."}'));
+  assert.match(section, /p72 .*the duty d2 "Git rules" runs its work\. Move p73 under p19 .*p110 "Fix: the shared folder lags .*" has no home on another goal: move it under the goal/);
+  assert.doesNotMatch(text.split("\n\n").find(part => part.startsWith("### Look done")) ?? "", /\bp(15|72|75)\b/);
+});
+
+test("goals to fold: a duty matches by its boardGoal or by 3 shared area words that are half the goal's; p10 and p60 share too few", () => {
+  const goals = board().plan;
+  const unlinked = FIXTURE.duties.map(({ boardGoal: _boardGoal, ...duty }) => duty);
+  assert.deepEqual(goals.map(goal => `${goal.id}:${dutyFor(goal, unlinked)?.id ?? "-"}`), ["p1:-", "p10:-", "p15:-", "p60:-", "p72:d2", "p75:d3"]);
+  assert.equal(dutyFor(find(goals, "p72")!, FIXTURE.duties)?.id, "d2");
+  assert.equal(dutyFor(find(goals, "p72")!, FIXTURE.duties.map(duty => ({ ...duty, status: "paused" as const }))), undefined, "a paused duty runs nothing");
+});
+
+test("goals to fold: a goal with its own live job, or with an open step and no job (idle_goals), is not folded", () => {
+  const plan = board().plan.filter(goal => goal.id === "p1");
+  const own = item("p200", "Find secrets committed anywhere in the repo history", { children: [item("p201", "Wipe the old keys", { job: "secrets in git history" })] });
+  const idle = item("p210", "Old chats show in the sidebar again", { children: [item("p211", "Build: the sidebar fix", { status: "todo" })] });
+  const live: JobFact[] = [{ key: "k1", name: "secrets in git history", state: "working", activityAt: NOW }];
+  const next: ChatBoard = { ...board(), plan: [...plan, own, idle] };
+  assert.deepEqual(goalsToFold(next, live, SELF, []), []);
+  const precheck = checkInPrecheck(undefined, live, next, NOW, { self: [...SELF], rows: [], everyMs: EVERY });
+  const metrics = convergenceMisses(VP, precheck.steps, precheck, {}, EVERY, NOW).metrics;
+  assert.deepEqual([metrics.goals_to_fold, metrics.idle_goals], [0, 1]);
+});
+
+test("goals to fold: a step with no job of its own rides another goal by a waitFor naming its item or its job; a goal another fold moves into does not fold; a thread is no home", () => {
+  const plan = board().plan.filter(goal => goal.id === "p1");
+  const byId = item("p300", "Watch CI use", { children: [item("p301", "Dashboard", { job: VP, waitFor: "p21 lands" })] });
+  const byJob = item("p310", "Repo rules report", { children: [item("p311", "Rules report", { waitFor: "promote gates rework push, about 09:25Z" })] });
+  assert.deepEqual(summary(goalsToFold({ ...board(), plan: [...plan, byId, byJob] }, [], SELF, [])), [
+    { goal: "p300", duty: undefined, moves: ["p301>p21"], left: [] }, { goal: "p310", duty: undefined, moves: ["p311>p21"], left: [] }]);
+  const own = item("p370", "Wipe the keys", { children: [item("p371", "Wipe", { job: "secrets in git history", waitFor: "p21 lands" })] });
+  assert.deepEqual(goalsToFold({ ...board(), plan: [...plan, own] }, [], SELF, []), [], "a step with its own job stays, whatever it waits for");
+  const a = item("p320", "Area A", { children: [item("p321", "A step", { job: "shared job" })] });
+  const b = item("p330", "Area B", { children: [item("p331", "B step", { job: "shared job" })] });
+  assert.deepEqual(summary(goalsToFold({ ...board(), plan: [a, b] }, [], SELF, [])).map(fold => fold.goal), ["p320"]);
+  const thread: JobFact[] = [{ key: "thread:01a0e1da-0000-7000-8000-000000000000", name: "release owner", state: "working" }];
+  const held = (job: string) => item("p340", "Held", { children: [item("p341", "Held step", { job })] });
+  const other = item("p350", "Other", { children: [item("p351", "Other step", { job: "01a0e1da-0000-7000-8000-000000000000" })] });
+  assert.deepEqual(goalsToFold({ ...board(), plan: [held("01a0e1da-0000-7000-8000-000000000000"), other] }, thread, SELF, []), []);
+  assert.deepEqual(goalsToFold({ ...board(), plan: [held(VP), item("p360", "Mine", { children: [item("p361", "Mine step", { job: VP })] })] }, [], SELF, []), []);
+});

@@ -1,17 +1,18 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { loadAccounts, meterTone, PROVIDER_LABEL, span } from "./accounts.ts";
-  import { poolSummary } from "./pool-meter.ts";
+  import { poolCaps, poolSummary } from "./pool-meter.ts";
   import { store } from "./store.svelte.ts";
   import type { AccountsView } from "../shared/types.ts";
+  import AgentsLine from "./AgentsLine.svelte";
   import ThroughputLine from "./ThroughputLine.svelte";
 
   /** The whole pool's spent share per provider, at the bottom of the sidebar. A click opens account settings. */
   let view = $state<AccountsView | null>(null);
-  const rows = $derived((view?.providers ?? []).filter(provider => provider.rows.length).map(provider => ({ provider, summary: poolSummary(provider) })));
+  const rows = $derived((view?.providers ?? []).filter(provider => provider.rows.length).map(provider => ({ provider, summary: poolSummary(provider, poolCaps(view?.poolConfig, view?.priority)) })));
 
   function title(label: string, summary: ReturnType<typeof poolSummary>): string {
-    return [`${label} pool: ${summary.usable} of ${summary.total} accounts can serve now.`,
+    return [`${label} pool: ${summary.usable} of ${summary.total} accounts take a new thread now.`,
       ...summary.meters.map(meter => `${meter.key === "week" ? "Week" : meter.key}: ${Math.round(meter.pct)}% of the pool used (blocked accounts count as full).`),
       summary.nextFree ? `Next blocked account frees in ${span(summary.nextFree - Date.now())}.` : "", "Open account settings"].filter(Boolean).join("\n");
   }
@@ -26,6 +27,7 @@
 
 <div class="pool">
   <ThroughputLine />
+  <AgentsLine />
   {#if rows.length}
     {#each rows as { provider, summary } (provider.provider)}
       {@const label = PROVIDER_LABEL[provider.provider]}

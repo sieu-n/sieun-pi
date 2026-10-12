@@ -89,13 +89,41 @@ def run_tests(release):
     return " ".join(line for line in tail if line.strip())
 
 
+# tokenmaxxing's index per provider. A provider with no index file, or none of its
+# accounts listed, has nothing to vend yet: a fresh machine installs the pool before
+# its first `pi-pool login`.
+TM_INDEX = {"anthropic": "accounts.json", "openai-codex": "codex-accounts.json"}
+
+
+def pooled_accounts(home, provider):
+    tm = Path(os.environ.get("TOKENMAXXING_HOME") or home / ".config/tokenmaxxing")
+    try:
+        index = json.loads((tm / TM_INDEX[provider]).read_text())
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError):
+        return None  # present but unreadable: let the hook report it
+    return len(index.get("accounts") or []) if isinstance(index, dict) else None
+
+
 def check_hooks(home):
     """Both token hooks through the runtime link, the way Prime runs them. Only the
-    length of the token is read; it is never printed."""
+    length of the token is read; it is never printed. A provider with no pooled
+    account is skipped; then `pi-pool config` must still run through the link."""
     hook = home / ".config/pi-pool/bin/pi-pool-token"
     results = {}
     for args in PROVIDERS:
         started = time.monotonic()
+        if pooled_accounts(home, args[1]) == 0:
+            try:
+                done = subprocess.run([str(home / ".local/bin/pi-pool"), "config"], capture_output=True,
+                                      text=True, timeout=10, env=dict(os.environ, PI_POOL_DIR=str(home / ".config/pi-pool")))
+                exit_code = done.returncode
+            except (OSError, subprocess.TimeoutExpired) as e:
+                exit_code = type(e).__name__
+            results[args[1]] = {"ok": exit_code == 0, "exit": exit_code, "skipped": "no pooled account yet",
+                                "sec": round(time.monotonic() - started, 2)}
+            continue
         # HOME stays the caller's: the macOS Keychain the anthropic stores live in follows it.
         try:
             done = subprocess.run([str(hook), *args], capture_output=True, text=True, timeout=10,

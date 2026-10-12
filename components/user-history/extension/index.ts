@@ -4,19 +4,22 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-age
 import { agentLines } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
-import { CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, fileChatName, hasChatMarker, JOB_REPLY_TOOL, jobOf,
-  jobPersonaGuideline, jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, withChatTool, withReplyCap } from "../src/chats.ts";
-import { parseBoardOps, PLAN_STATUSES, renderBoard } from "../src/shared/chat-board.ts";
+import { BRIEF_CORRECTIONS, CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, hasChatMarker, JOB_REPLY_TOOL, jobOf,
+  jobPersonaGuideline, jobRegistry, jobReplyGuideline, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
+import { boardRevLine, parseBoardOps, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
+import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/chat-checkin.ts";
-import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, ledgerPrompt, parseCorrectionCall } from "../src/chat-corrections.ts";
+import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
+import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { lastOwnerText } from "../src/shared/reply-lint.ts";
-import type { ChatAgent, ThreadMessage } from "../src/shared/types.ts";
+import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
   const images = new ImageFitter();
   pi.on("context", async event => {
-    const messages = await images.messages(event.messages);
+    const short = shortNotices(event.messages);
+    const messages = await images.messages(short ?? event.messages) ?? short;
     return messages ? { messages } : undefined;
   });
   pi.registerFlag(CHAT_FLAG, { description: "Create this session as a browser chat (the chat server sets it; the session entry chat_mode is the durable mark)", type: "boolean" });
@@ -26,35 +29,29 @@ export default function historyExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: CHAT_BOARD_TOOL,
     label: "Chat board",
-    description: "Read or change this chat's board, which the owner sees next to the chat: the plan (a nested checklist of goals and steps, any depth, each " +
-      "step linked to its job), the owner's todo list (asks only the owner can answer, each with choices), and the scratchpad (short notes, nested to any " +
-      "depth, each with links to what it is about). Ops apply in order, all or none. No ops returns the current board. Every result shows the whole board with item " +
-      "ids (p1, t1, s1) and this chat's own link target. check_in changes this chat's own check-in (a pause or the interval).",
+    description: "Read or change this chat's board: the plan of goals and steps, the owner's todos and the scratchpad. No ops returns the open checklist " +
+      "with item ids; a call with ops returns the op summaries. Read notes, done items and the scratchpad with the board Python skill.",
     promptGuidelines: [...CHAT_BRIEF],
     parameters: {
       type: "object",
       properties: {
         ops: {
           type: "array",
-          description: "Board ops. plan_set {items:[{text,status?,job?,note?,waitUntil?,waitFor?,children?}]} replaces the plan. plan_add {text,parent?,status?,job?,waitUntil?,waitFor?} " +
-            "adds a goal, or a step under parent. plan_update {id,text?,status?,job?,note?,waitUntil?,waitFor?} (null clears job, note, waitUntil or waitFor). " +
-            "waitUntil (an ISO date-time) or waitFor (the event or thread, in a few words) marks a step that waits on purpose: the check-in leaves it until " +
-            "that time and then has you act on it, or for 2 h after you last changed it and then has you chase it (a thread named in waitFor is nudged every 2 h); " +
-            "after 24 h a chase must become a For you todo or a new plan. plan_remove {id} removes an item and its steps. " +
-            "scratch_add {text,parent?,links?} adds one note, or a note under the note parent; scratch_update {id,text?,links?} (links replaces the list, [] clears it); " +
-            "scratch_remove {id} removes a note and the notes under it. " +
-            "A link is {label,target}, up to 5 per bullet; target is job:<name> (a job's report), thread:<sessionId> or thread:<sessionId>@<message " +
-            "timestamp ms> (a thread or one message in it), wiki:<path under the llm-wiki content>, file:<absolute path to a text file>, or an http(s) URL. " +
-            "todo_add {text,choices?} asks the owner one short question; choices are 2 to 4 short answers, your recommendation first. " +
-            "todo_update {id,text?,done?,reply?}. todo_remove {id}.",
+          description: "Ops, applied in order, all or none. Links target job:<name>, thread:<id>, wiki:<path>, file:<path> or a URL. The board skill's " +
+            "SKILL.md explains each op, go, kind, requirements, target and waits.",
           items: {
             type: "object",
             properties: {
               op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratch_add", "scratch_update", "scratch_remove", "todo_add", "todo_update", "todo_remove"] },
-              id: { type: "string" }, parent: { type: "string" }, text: { type: "string" },
-              status: { type: "string", enum: [...PLAN_STATUSES] }, job: { type: ["string", "null"] }, note: { type: ["string", "null"] },
+              id: { type: "string" }, parent: { type: ["string", "null"] }, text: { type: "string" },
+              status: { type: "string", enum: [...PLAN_STATUSES] }, job: { type: ["string", "null"] }, sessionId: { type: ["string", "null"] }, note: { type: ["string", "null"] },
               waitUntil: { type: ["string", "null"] }, waitFor: { type: ["string", "null"] },
-              done: { type: "boolean" }, reply: { type: ["string", "null"] },
+              done: { type: "boolean" }, step: { type: "string" },
+              go: { type: "string", enum: ["needed"] }, kind: { type: ["string", "null"], enum: ["build", null] },
+              requirements: { type: ["array", "null"], items: { type: "object", properties: { text: { type: "string" }, status: { type: "string", enum: [...REQUIREMENT_STATUSES] },
+                evidence: { type: "string" }, note: { type: "string" } }, required: ["text", "status"] } },
+              target: { type: ["object", "null"], properties: { metric: { type: "string" }, target: { type: "number" }, unit: { type: "string" }, current: { type: "number" },
+                measuredAt: { type: "string" }, source: { type: "string" }, cadence: { type: "string", enum: ["daily"] } }, required: ["metric", "target", "unit"] },
               links: { type: "array", items: { type: "object", properties: { label: { type: "string" }, target: { type: "string" } }, required: ["target"] } },
               choices: { type: "array", items: { type: "string" } },
               items: { type: "array", items: { type: "object" } },
@@ -64,8 +61,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
         },
         check_in: {
           type: "object",
-          description: "Change this chat's own check-in, in the owner's settings: pause \"1h\" or \"tomorrow\" (until 09:00), null to resume your own pause, " +
-            "and/or every_minutes (1 to 240). A pause the owner set stays; the owner's later change replaces yours. The feed shows the owner one line.",
+          description: "Pause this chat's check-in (\"1h\", \"tomorrow\", null resumes) or set every_minutes (1 to 240).",
           properties: { pause: { type: ["string", "null"], enum: ["1h", "tomorrow", null] }, every_minutes: { type: "integer", minimum: 1, maximum: 240 } },
         },
       },
@@ -79,21 +75,25 @@ export default function historyExtension(pi: ExtensionAPI): void {
       const now = Date.now();
       const changed = change ? [await chatCheckIn(settings, sessionId, change, now)] : [];
       const { board, summaries } = await boards().apply(sessionId, ops, "agent");
+      if (ops.length && board) return { content: [{ type: "text", text: [...changed, ...summaries, boardRevLine(board)].join("\n") }], details: undefined };
       const checkIn = checkInLine(await settings.get(sessionId), now);
       const agents = agentLines(await chatAgentsOf(sessionId), now);
-      return { content: [{ type: "text", text: [...changed, ...summaries, renderBoard(board, sessionId, checkIn), ...agents].join("\n") }], details: undefined };
+      return { content: [{ type: "text", text: [...changed, renderOpenPlan(board, sessionId, checkIn), ...agents].join("\n") }], details: undefined };
     },
   });
-  // The feed shows this call's text as a bubble on any turn; on a turn the owner did not start it is the only text the owner sees.
+  // The feed shows this call's text as a bubble on any turn. On a wake-up it is the only text the owner sees; on an owner turn that calls it,
+  // the chat's own text folds into notes.
   pi.registerTool({
     name: TELL_OWNER_TOOL,
     label: "Tell the owner",
-    description: "Say one or two sentences to the owner on a turn the owner did not start (a job report, another thread, a check-in). " +
-      `Up to ${TELL_OWNER_LIMIT} characters; longer is refused, and so is text the reply lint flags (labels, dashes, jargon, abstract words), with the fixes. Call it once per wake-up, at the end, only when a goal finished, something failed ` +
-      "or is blocked, or you need a decision. On a turn the owner started, reply with text instead.",
+    description: `Send the owner a message; it is the only text the owner reads. Text over ${TELL_OWNER_LIMIT} characters, or with dashes, labels, ` +
+      "headings or jargon, is refused with the fixes.",
     parameters: {
       type: "object",
-      properties: { text: { type: "string", description: `What the owner reads: one or two casual spoken sentences that read straight through, with no ids, hashes or asides; up to ${TELL_OWNER_LIMIT} characters.` } },
+      properties: {
+        text: { type: "string", description: `One or two plain spoken sentences, up to ${TELL_OWNER_LIMIT} characters.` },
+        reply_to: { type: "string", description: "Id of the owner message this answers, when it is not the last one." },
+      },
       required: ["text"],
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -124,18 +124,15 @@ export default function historyExtension(pi: ExtensionAPI): void {
   };
   const jobs = () => jobRegistry(join(dataDir(), "chat-jobs.json"));
   const corrections = () => new CorrectionLedger(dataDir());
-  // The owner's corrections reach a chat before every model call, read live from <data dir>/corrections.json. The context event runs for
-  // every call of every turn kind (owner prompts, agent-message wakes, heartbeats, check-ins, tool-call continuations), unlike before_agent_start,
-  // which agent-message wakes skip. The ledger goes first, so the cached prefix changes only when the ledger does. Each owner message carries
-  // the reply cap (withReplyCap). Any error fails open.
-  pi.on("context", async event => {
-    if (!marked) return undefined;
+  pi.on("context", async (event, ctx) => {
+    if (!marked && !job && !underChat) return undefined;
     let messages = event.messages;
-    try { messages = withReplyCap(messages) ?? messages; } catch { /* no cap */ }
-    try {
-      const text = ledgerPrompt(await corrections().read());
-      return text ? { messages: [{ role: "user", content: [{ type: "text", text }], timestamp: 0 }, ...messages] } : { messages };
-    } catch { return { messages }; }
+    if (marked) try { messages = withReplyCap(messages) ?? messages; } catch { /* no cap */ }
+    let ledger: Ledger | null = null;
+    try { ledger = await corrections().read(); } catch { /* no ledger */ }
+    messages = deliverCorrections({ messages, branch: ctx.sessionManager.getBranch(), ledger, job: !marked, brief: BRIEF_CORRECTIONS,
+      append: data => pi.appendEntry(CORRECTION_CHECKPOINT, data) });
+    return { messages };
   });
   // correction_add exists only in a chat: registered at the chat's session_start, so jobs and other sessions never see it.
   let correctionTool = false;
@@ -145,26 +142,20 @@ export default function historyExtension(pi: ExtensionAPI): void {
     pi.registerTool({
       name: CORRECTION_TOOL,
       label: "Record an owner correction",
-      description: "Record the owner's correction of how chats work, in the same turn the owner gives it. Every chat reads the active corrections " +
-        "before each model call. A correction whose theme matches an earlier one is recorded as a repeat and reopens it: a repeat is a sev, and " +
-        "its fix must be code or a test. With id instead of words, record that the fix for that correction landed (enforcedBy, ref), set its handoff, or retire it.",
+      description: "Record the owner's correction of how chats work, in the turn the owner gives it. With id, record its fix or retire it.",
       parameters: {
         type: "object",
         properties: {
-          words: { type: "string", description: "The owner's message, verbatim, in the owner's language." },
-          rule: { type: "string", description: "The rule in one plain English line every chat follows, like 'Job reports stay folded; the chat sends a short message with a job: link.'" },
-          theme: { type: "string", description: "3 to 6 key words naming what the correction is about (job report folded link). Reuse an earlier entry's words when it is the same thing." },
-          enforcedBy: { type: "string", enum: [...ENFORCEMENTS], description: "What holds the rule now: the chat brief, code, or a test." },
-          ref: { type: "string", description: "The brief bullet, file, commit or test name that enforces it, or 'pending <job>' while the fix is in flight." },
-          id: { type: "string", description: "A correction id (c3) to update instead of adding: its fix landed (enforcedBy, ref) or status retired." },
-          status: { type: "string", enum: ["active", "retired"], description: "With id: active (the default when enforcedBy or ref is given) or retired." },
+          words: { type: "string", description: "The owner's message, verbatim." },
+          rule: { type: "string", description: "The rule as one plain English line every chat follows." },
+          theme: { type: "string", description: "3 to 6 key words; reuse an earlier entry's words for the same thing." },
+          enforcedBy: { type: "string", enum: [...ENFORCEMENTS], description: "What holds the rule now." },
+          ref: { type: "string", description: "The brief bullet, file, commit or test that enforces it, or 'pending <job>'." },
+          id: { type: "string", description: "A correction id to update instead of adding." },
+          status: { type: "string", enum: ["active", "retired"] },
           handoff: {
-            type: "object", description: "When the correction gives work to one thread: that thread and the work's key words. A check-in then flags " +
-              "every open step on those words in any other chat, to hand off. With id, sets it on that correction.",
-            properties: {
-              to: { type: "string", description: "The thread's name or id, like 'ops guy (+observability)'." },
-              topics: { type: "array", items: { type: "string" }, description: "Words or short phrases a step on that work names, like 'M1 Air', 'swap'." },
-            },
+            type: "object", description: "The thread this work belongs to and the words its steps name; a check-in flags matching steps in other chats.",
+            properties: { to: { type: "string" }, topics: { type: "array", items: { type: "string" } }, with: { type: "array", items: { type: "string" } } },
             required: ["to", "topics"],
           },
         },
@@ -184,20 +175,27 @@ export default function historyExtension(pi: ExtensionAPI): void {
   // again. Any error fails open: no tool.
   let job: ChatJobOf | null = null;
   let rootLooked = false;
+  // A subagent at any depth whose top session is a chat or a root a chat started: it reads the corrections ledger like a job.
+  let underChat = false;
   const findJob = async (ctx: ExtensionContext): Promise<void> => {
     if (job) return;
     const header = ctx.sessionManager.getHeader();
     const depth = depthOf(header);
-    const parentChat = depth === 1 && header?.parentSession ? await fileChatName(header.parentSession) : null;
-    const name = depth === 0 && !marked ? ctx.sessionManager.getSessionName()?.trim() : undefined;
-    job = jobOf({ depth, marked, parentChat, registered: name ? await jobs().chatOf(name) : undefined });
+    const top = depth > 0 && header?.parentSession ? await topSession(header.parentSession) : null;
+    if (top) underChat = top.chat || await jobs().chatOf(top.id) !== undefined || (top.name !== "" && await jobs().chatOf(top.name) !== undefined);
+    const parentChat = depth === 1 && top?.chat ? top.name : null;
+    const root = depth === 0 && !marked;
+    const name = root ? ctx.sessionManager.getSessionName()?.trim() : undefined;
+    // A duty job is registered by its session id (src/chat-duty-job.ts), a create_session root by its name.
+    const registered = root ? await jobs().chatOf(ctx.sessionManager.getSessionId()) ?? (name ? await jobs().chatOf(name) : undefined) : undefined;
+    job = jobOf({ depth, marked, parentChat, registered });
     if (!job) return;
     const guideline = jobReplyGuideline(job);
     const persona = jobPersonaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
     pi.registerTool({
       name: JOB_REPLY_TOOL,
       label: "Report to the chat",
-      description: "Shows how this job reports to the chat that started it. Calling it is optional; the instruction is already in your guidelines.",
+      description: "Shows how this job reports to its chat.",
       promptGuidelines: persona ? [persona, guideline] : [guideline],
       parameters: { type: "object", properties: {} },
       async execute() { return { content: [{ type: "text", text: guideline }], details: undefined }; },

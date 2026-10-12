@@ -1,22 +1,12 @@
 ---
 name: no-comments
-description: "Spawn Comment Sicko, fix accepted findings, and offer encodings for claimed constraints."
+description: "Strip comments from a diff before review. A comment-hating subagent deletes comments and flags code to reshape; you check its work, fix accepted flags, and offer to encode claimed constraints. Use before review, or when asked to remove comments from files or a diff."
 disable-model-invocation: true
 ---
 
 # No comments
 
-> **Prime Agent subagent contract.** This skill was ported from a Cursor plugin.
-> Subagents are `handle = await rlm(brief, model=..., thinking=..., name=...)`, which
-> returns on admission and never returns the child's answer: every brief must end with
-> `await agent_message.send(<report>, receiver_role="parent")`. Read
-> `~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md` before fanning out,
-> and check `RLM_MAX_DEPTH` — at the ceiling `await rlm(...)` raises and you must run inline.
-
-
-Spawn Comment Sicko. Act on accepted findings.
-
-Authoring agents defend comments. Defer to Comment Sicko's fresh perspective.
+You wrote these comments, so you will want to keep them. Defer to the child's judgment.
 
 ## Scope
 
@@ -24,9 +14,16 @@ Use the caller's files or diff. Otherwise use the current diff against the base 
 
 ## Steps
 
-1. Spawn `await rlm(brief, model=..., thinking=..., name="comment-sicko")` where `brief` is the full body of the installed `comment-sicko` skill (`~/.prime/agent/skills/comment-sicko/SKILL.md`) followed by the scope. Prime Agent has no named subagent types, so the persona has to travel in the brief. Do not restate its rules.
-2. Inspect its report and diff. Reject application-code edits, scope escapes, exception-protected deletions, misstated `MUST KILL` reasons, and flags that treat kept intentional code as guilty. Reshape flags on our-code surprises stay actionable. Do not restore those comments. A keep survives only with proof it is about something we cannot change. Audit missed scoped lint and TypeScript suppressions. Correctness or safety suppressions stay actionable `MUST KILL`s. Restore deletions only with exact exceptions and scoped proof. Before accepting thin `IMPORTANT` or `do not remove` kills or keeps, run `how` or `why` on their symbol. If a kill is ambiguous, do not restore. If a keep is refuted or still ambiguous, delete it. Revert and rerun one rejected report with the failure named. Reject a second, report it open, and fail `no-comments`.
-3. Fix trivial accepted flags directly by deleting a dead path, dropping a parameter, or using the real API. If any fix needs a shape, run `architect` once for the accepted set and surrounding code. Stop at the sketch. Architect shapes. Step 4 implements.
-4. Implement the smallest root-cause fix in scope. Remove every named workaround. If the root cause is out of scope, land the smallest in-scope fix and report the rest open. The **principle-fix-root-causes** and **principle-redesign-from-first-principles** skills guide intent only: fix real causes, redesign as if requirements always existed, never bolt on symptom guards. Neither authorizes widening the fence nor fixing instances outside it.
-5. Constraint comments say `do not remove`, `do not change wording`, or `talk to X before changing`. Leave keeps about things we cannot change. Offer the cheapest in-scope type, runtime, test, or CI lint. Wait for interactive approval. Unattended and eval require caller pre-approval. If approved, encode then delete. Otherwise delete, report the constraint open, and sketch out-of-scope work.
-6. Report the deletion count, restored comments, reruns, architect sketch, fixes, encoding offers, encodings, unenforced constraints, and other open work.
+1. Spawn one child named `comment-sicko` per `../setup-pstack/references/prime-agent-runtime.md`. Its brief is the full text of `references/comment-sicko.md` in this skill directory, then the scope, then the report line. Take the model from `~/.prime/agent/pstack-models.json`. If `RLM_MAX_DEPTH` blocks the spawn, apply the persona inline and say so in the report.
+2. Check the child's report and diff.
+   - Reject edits to application code, edits outside the scope, deletions of comments an exception protects, `MUST KILL` flags with a wrong reason, and flags against intentional code that stays.
+   - Keep `MUST KILL` flags that ask to reshape a surprise in our own code, and do not restore those comments.
+   - Keep a comment only with proof that it is about something we cannot change.
+   - Find lint and TypeScript suppressions in scope that the child missed. A suppression that protects correctness or safety becomes a `MUST KILL`.
+   - Restore a deleted comment only when you can name its exact exception and prove it inside the scope.
+   - Before you accept a thin `IMPORTANT` or `do not remove` kill or keep, run the `how` or `why` skill on its symbol. Leave an ambiguous kill deleted. Delete a keep that is refuted or still ambiguous.
+   - If you reject the report, revert the child's diff and rerun it once with the failure named. If you reject the second report, report it open and fail `no-comments`.
+3. Fix trivial accepted flags directly, for example by deleting a dead path, dropping a parameter, or using the real API. If any fix needs a new shape, run the `architect` skill once over the accepted set and the code around it. Stop at its sketch.
+4. Implement the smallest root-cause fix in scope and remove every named workaround. Apply `principle-fix-root-causes` and `principle-redesign-from-first-principles` inside the scope only. If the root cause is outside the scope, land the smallest in-scope fix and report the rest open.
+5. Handle constraint comments such as `do not remove`, `do not change wording`, or `talk to X before changing`. Leave keeps about things we cannot change. For the rest, offer the cheapest in-scope type, runtime check, test, or CI lint that enforces the constraint. Wait for approval in an interactive session. Unattended and eval runs need approval from the caller up front. If approved, add the check and delete the comment. Otherwise delete the comment, report the constraint open, and sketch the out-of-scope work.
+6. Report the deletion count, restored comments, reruns, the architect sketch, fixes, encoding offers, encodings added, unenforced constraints, and other open work.

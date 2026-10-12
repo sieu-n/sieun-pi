@@ -125,14 +125,15 @@ It lists the pool with usage and flags, plus a "Follow the pool" row. Codex rows
 carry the plan (`email  plus  0%/100%  [depleted]`); `ls --json` puts it in a `plan`
 field on codex rows only. Pick a row.
 The tray shows `<email> (next request)` and the switch lands on that session's next
-request. Picking an account that is depleted or in cooldown asks first, then pins it
-anyway.
+request when the account can take the session (see "Which account a request gets").
+Picking an account that cannot take it now asks first; the pin then waits, and the
+session moves there only when it must move or starts cold.
 
 From a shell inside the session:
 
     pi-pool use claude1@example.test      # pin this session tree
-    pi-pool use claude1@example.test --force   # pin it even when it is depleted
     pi-pool use --follow                 # drop the pin, follow the pool again
+    pi-pool priority high                # this tree's class: high, normal or low
     pi-pool who                          # what this session resolves to now
     pi-pool ls                           # the rows /account renders
 
@@ -141,17 +142,19 @@ until the session's next provider request runs the hook.
 
 ## Commands
 
-    pi-pool                       one card per account: usage bars, sessions, pick chance; switches today
+    pi-pool                       one card per account: usage bars, sessions, score, waiters; switches today
     pi-pool status --provider openai-codex
     pi-pool watch [sec]           the same cards full screen, redrawn every sec seconds (default 5)
-    pi-pool use <email|id> [--force] [--follow] [--provider p] [--session id] [--new-session]
+    pi-pool use <email|id> [--follow] [--provider p] [--session id] [--new-session]
                                   --new-session pins a session created a moment ago (full uuid) before its first request
+    pi-pool priority high|normal|low [--session id] [--provider p]
+                                  the tree's class; a full uuid with no record yet creates one
     pi-pool who [--json] [--session id]
     pi-pool ls [--json] [--provider p] [--session id]
     pi-pool pin <email>           force EVERY session onto one account
     pi-pool unpin
-    pi-pool switch [--session id] this session's next request moves to another account (weighted pick)
-    pi-pool enable openai-codex   wire the codex provider into models.json
+    pi-pool switch [--session id] this session's next request moves to the best account that takes it now
+    pi-pool enable anthropic|openai-codex   point that provider in models.json at the pool hook
     pi-pool adopt-logins          move a stored /login that would bypass the pool into fallback.json
     pi-pool refresh [<email|id> ...] [--provider p] [--json | --stream]
                                   read usage now for every account, or the named ones (needs --provider)
@@ -159,7 +162,7 @@ until the session's next provider request runs the hook.
     pi-pool on <email|id> [--provider <p>]    let the pool pick it again
     pi-pool rm <email|id> [--provider <p>]    `tokenmaxxing rm`, then drop its pins here
     pi-pool login [<email|id>] [--provider <p>] [--timeout <sec>]
-                                  add an account (`tokenmaxxing add`) or sign one in again (`tokenmaxxing auth`)
+                                  add an account or sign one in again (Claude: by organization, see below)
                                   for a browser: stdout is JSON lines ({"event":"url"} with the link and the
                                   Codex device code, {"event":"retry"}, one {"event":"done","ok":...}); stdin takes
                                   one pasted Claude code per line, and closing stdin cancels
@@ -167,7 +170,8 @@ until the session's next provider request runs the hook.
     pi-pool reset <email|id> [--grant <id>] [--json]   spend one banked reset
     pi-pool probe [--force]       check every Claude account for an API refusal (no token refresh)
     pi-pool limited --until <epoch sec> [--provider p] [--session id]
-                                  the provider answered 429 for this session's account; prints the next account or null
+                                  the provider answered 429 for this session's account; prints the next
+                                  account, or null and retry_at, the session's own slot time
     pi-pool refused <error text> [--provider p] [--session id]
                                   an account-level refusal (terms, OAuth off) cools this session's account down; prints the next account or null
     pi-pool log [n]               last n pool events
@@ -175,9 +179,37 @@ until the session's next provider request runs the hook.
 
 `--session` takes a session uuid, a uuid prefix, or the short active id.
 
-`ls --json` names the pool `pin`. Its rows also carry what `status` draws, and `weight`, the
-runway hours a switch of this session would weigh the account by (null for its own account
-and for an account that cannot serve): `tier` (`max 20x`, `pro`), `windows`
+## One login in two organizations
+
+One Claude login can hold several organizations, for example a personal Max plan and a
+team seat on the same email. tokenmaxxing keys an account by the login's account uuid
+alone, so `tokenmaxxing add` for the second organization overwrites the first one's
+record and Keychain item.
+
+So `pi-pool login` for Claude runs `tokenmaxxing add` in a scratch home under
+`<state>/logins/<pid>` and files the result itself, under tokenmaxxing's pool lock:
+
+1. It reads the harvested record's `oauthAccount` (account uuid and organization uuid).
+2. A record of the same pair is signed in again in place. A record with no organization
+   on file matches by account uuid alone.
+3. A new pair becomes a new record. The first organization of a login keeps the account
+   uuid as its id; another gets uuid5(`ORG_ID_NAMESPACE`, `<account>:<org>`), with its own
+   store, Keychain item, usage, limits and cooldowns.
+4. With an account named (`pi-pool login <id>`), a login of any other pair is refused and
+   nothing is written.
+5. The scratch Keychain items and folder are deleted, whatever the outcome.
+
+Rows carry `label`: the email, or `email (organization)` when two accounts share the email
+(`personal` for the organization Anthropic makes per login). Every command takes an id, a
+label, a unique id prefix, or an email only one account has; a shared email exits with the
+labels to choose from. Add a second organization only through `pi-pool login` or
+Settings > Accounts: a hand-run `tokenmaxxing add` or `auth` still keys by the login.
+
+`ls --json` names the pool `pin`, the tree's `priority` and its `wait` (`{account, slot_at}`
+or null; `who --json` carries the same `wait` per provider and `priority` at the top). Its
+rows carry `usable` (the account takes this tree now), `serves` (a tree already on it stays),
+`score` (null when it cannot take the tree), `slot_cap`, `admitted_recently`, `waiting`, and
+what `status` draws: `tier` (`max 20x`, `pro`), `windows`
 (one entry per usage window in display order, each with `kind` session, weekly or model,
 `label`, live `pct`, `resets_at` in epoch seconds or null, `window_sec`, `sampled_at`),
 `usage_at` and `usage_age_sec`, `sessions` (vends in the last hour), `cooldown_until`
@@ -193,6 +225,11 @@ endpoint set, and reports it with the time of the next read. If an auto-update r
 function it calls, it fails with the missing name, and the contract test in
 `tests/test_core.py` fails too. It writes only tokenmaxxing's usage figures and moves no
 session or pin. tokenmaxxing may refresh an expiring store under its own lock while it reads.
+
+A team seat's usage has a 5h window and no weekly one, and tokenmaxxing's read rejects that
+body. When tokenmaxxing's read fails without a rate limit, `usage-read.ts` reads the account
+once more and lands the 5h and per-model windows (`app/usage-seat.ts`). tokenmaxxing's minute
+`check` still skips such an account, so its figures move only on a `refresh`.
 
 `--stream` prints one JSON line per event while the reads run: `accounts` (the list),
 `reading`, `read` with `ok` and `usage_at` or `reason` and `retry_at` (epoch seconds),
@@ -233,72 +270,82 @@ comes from the CLIProxyAPI Management Center (`src/services/api/claudeResetGrant
 
 ## Which account a request gets
 
-Each session keeps the account it was last vended while that account is usable. A move
-drops the provider's prompt cache (cache_read and cache_write start over), so a session
-moves only when it must, and never because another session moved. Before 2026-10-08 every
-unpinned session shared one "seat" and moved together to the one best-scored account.
+The pool keys by session tree (next sections), and the hook asks the scheduler on every
+request. Its answer is one of three: stay on the tree's account, admit the tree to an
+account, or wait for a slot. `decide` in `vend.py` holds the rules, first match wins.
 
-First match wins, per provider:
+```mermaid
+flowchart TD
+  R[request of a tree] --> P{pin set since the last request, and its account takes the tree?}
+  P -- yes --> A[admit to the pin]
+  P -- no --> S{own account still serves?}
+  S -- yes --> STAY[stay]
+  S -- no --> B{move budget left, or a high tree that must move?}
+  B -- yes --> C{an account under the admit cap with a free slot?}
+  B -- no --> W
+  C -- yes --> A2[admit to the best score]
+  C -- no --> W[wait for the first slot]
+```
 
-| # | source | set by | yields when |
-|---|---|---|---|
-| 1 | session pin | `/account`, `pi-pool use` | the account cannot serve. With `--force`, only when its credential cannot serve (needs re-auth, off, refusal cooldown) or the provider answered 429 (`limited`) |
-| 2 | pool pin | `pi-pool pin` | the account cannot serve: depleted, limited, in cooldown, needs re-auth, or off |
-| 3 | the session's account (`stay`) | its own last vend | the account cannot serve, `pi-pool switch` asked it to leave, or a usable codex account sits on a higher plan (`upgrade`) |
-| 4 | weighted pick (`switch`, or `new` for a session's first request) | `switch_weights` | no usable account is left |
-| 5 | last resort | no account is usable | the session's own account while the provider still serves it; else a depleted account the provider still serves (no 429 on file, every window under 100%), least used first; `pi-pool limited` names it as `next`. When none serves, the account whose limits reset first is vended anyway, so the request gets the provider's 429 and reset time instead of an auth error. Dead logins, disabled accounts and refusal cooldowns are never vended. No account left is an error |
+| # | rule | effect |
+|---|---|---|
+| R1 stay | the tree's own account still serves: no 429 on file, every counting window under 100%, credential ok | it stays, warm or cold. No move because of a cutoff, a better account, a pin set earlier or another tree's move |
+| R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (70) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap | holds for new trees, moves after a 429, pins and `pi-pool switch` |
+| R3 score | among the accounts that pass R2, the highest weekly pace x 5h headroom / load | weekly pace is `(98 - week%) / hours to the weekly reset`, so a week that resets soon with budget left is spent first. Headroom is `(70 - 5h%) / 70`. Load is `(trees vended in the last hour + 1) / tier units` |
+| R4 slots | an account admits one tree per `admit_slot_sec / slot_cap` seconds, where `slot_cap` is `admit_per_unit` x tier units (max 20x 4, max 5x and team 1, pro 0.5, at least 1) | a full account is skipped. The admission is written under the pool flock in the same decision, so trees that leave together see each other |
+| R5 wait | nothing passes R2 to R4 for this tree | the tree gets its own `slot_at` on the account that frees first (429 end, 5h reset or its next free slot), ordered by priority, then by wait start |
+| R6 move budget | the tree moved `max_moves_per_day[priority]` times in 24 h (high 6, normal 3, low 1) | it waits for its own account when that account frees within `budget_wait_max_sec` (3600); otherwise it moves anyway and logs `why: budget_overrun`. A high tree is refused only an optional move (`pi-pool switch`) |
+| R7 priority | low trees enter only under `low_admit_5h_max_pct` (50) | high trees rank first for slots. When one account is left, the last slot of each `admit_slot_sec` window is for high trees |
 
-A pin that yields writes nothing, so it re-applies by itself the moment the window
-resets or the limit expires. `pi-pool who` names the pin it is shadowing and why. Every
-vend that changes a session's account logs one `vend` line with `reason`, the yielded pin
-in `shadowed`, the cause in `why` (`depleted`, `limited`, ...) and the `previous` account,
-and one `switch` line with `previous`, `account`, `reason`, `why` (the old account's
-unusable reason, `asked`, `plan`, `pin`, `credential` or `last_resort`) and the `weights`
-the pick drew from. `pi-pool status` counts today's `switch` lines per provider.
+A tree that waits gets its own account from the hook while the provider refuses that
+account, so the request comes back as a 429 that writes no cache. `pi-pool limited` then
+prints `retry_at`, the tree's slot, and the extension sets the message's `retryAfterMs` to
+it, at most 15 minutes at a time. Prime 0.9.8's wait-for-usage reads `retryAfterMs` from the
+message's `provider_stream_failure` diagnostic first and sleeps exactly that long, bounded
+by `retry.provider.waitForUsage.maxWaitMs` and `maxAttempts`. When the tree's own account
+serves again before its slot, the hook gives no token, and the extension turns that hook
+failure into the same wait.
 
-### The weighted pick
+A slot holds one tree. A tree that ranks ahead (higher priority, or the same priority and an
+earlier wait start) may take a slot a later tree was promised; that tree finds its slot taken
+when it wakes and is given the next one. So a reset admits the waiting trees at slot pace,
+high trees first. On 2026-10-12 15:30, 25 vends landed on claude7 in 4 seconds; at the
+2026-10-10 21:00 reset 26 trees landed on claude9 in 2 seconds.
 
-A switch draws one usable account at random, with chance proportional to the cube of its
-runway. The runway is how many hours until it crosses a pool cutoff
-(`five_hour_max_pct` on the 5h window, `seven_day_max_pct` on the weekly window and the
-Fable cap) if the sessions already on it plus the switching one each burn
-`burn_5h_pct_per_hour` (2.5) of the 5h window and `burn_week_pct_per_hour` (0.5) of the
-week per hour. A supervised claude/codex session on the account counts as one more.
+A pin is an owner intent applied once: the tree's next request moves to the pinned
+account if it passes R2 (a high tree skips R4). After that the pin steers the tree only
+when it must move or starts cold (no request for `cache_ttl_sec`), and it never pulls a warm
+tree back. A pool pin (`pi-pool pin`) moves trees at slot pace while its account passes R2.
+On load the pool drops pins whose `by` starts with `recovery:` (the lost 2026-10-11 recovery
+pool), pins older than `pin_ttl_sec` and the old `recovery_batches` key.
 
-    runway = min over the counting windows of (cutoff - used%) / (sessions x rate)
+Every vend that changes a tree's account logs one `vend` line with `reason` (`new`,
+`switch`, `back`, `session_pin`, `pool_pin`, `upgrade`), the yielded pin in `shadowed`
+with `why` (`depleted`, `limited`, `busy`, ...) and the `previous` account, and one `switch`
+line with `why` (the old account's reason, `asked`, `waiting`, `plan`, `pin` or
+`credential`) and the top `scores`. A new wait logs one `wait` line with the slot.
+`pi-pool status` counts today's `switch` lines per provider.
 
-A window that resets before it gets there stops binding. A weekly reset frees the account
-up to the cap. A 5h reset starts a fresh window, which binds only if the sessions can fill
-it to the cutoff within its 5 hours. So an account at 80% whose 5h window resets in 10
-minutes weighs more than one at 60% that resets in 4 hours. Runway is capped at
-`runway_horizon_hours` (24): past a day, more runway saves no switch. An account with less
-than `min_runway_hours` (1) is left out unless every usable account is under it, so a switch
-lands where it will last.
+Removed on 2026-10-12: the hop onto a depleted account when nothing was usable (on
+2026-10-12 15:01-15:04 it moved 18 trees 85 times in 4 minutes, each onto an account that
+answered 429 a minute later), the random runway-cubed pick, `use --force`, and a pin pulling
+its tree back the moment its account reset. `tests/replay_scheduler.py` replays a day of real
+requests through the old resolver and this one; its numbers are in the pool-scheduler session
+folder (`replay.md`). `tests/test_scheduler.py` holds one or more tests per rule, and
+`tests/mutation_check.py` takes each rule out of a copy of the code and fails when no test
+in that file notices.
 
-The draw is random so that the sessions that leave one account at the same moment spread
-over several accounts instead of all landing on, and draining, the same one. The cube makes
-an account with twice the runway eight times as likely. `tests/sim_switching.py` replays a
-day of real requests against the old seat picker and this one. On 2026-10-08's 34,785
-Claude requests the seat picker made 171 switches; this one made 11.5 a day with runway as
-the weight, 8.6 with its square, 8.0 with its cube and 7.2 with the fifth power (mean of 20
-seeds). Always taking the longest runway made 0, so the randomness costs a few switches a
-day. The rates
-came from 2026-10-08: 18 sessions took one Max 20x account to 43% of its 5h window in 1.6
-hours, and one account spent 87% of a 5h window for 16% of its week.
+The Fable cap only counts for a tree that runs Fable: the `/account` extension records each
+session's model (`pi-pool model`) at session start and on every model change, and a tree
+with no Fable model ignores the cap. A tree with no recorded model keeps it. A cooldown
+comes from a refusal probe (see the dependency section).
 
-Excluded from the pick: needs-reauth, depleted (at or over the 5h or weekly cutoff or the
-Fable cap), limited (a 429 on file), and accounts in cooldown. The Fable cap only counts
-for a session tree that runs Fable: the `/account` extension records each session's model
-(`pi-pool model`) at session start and on every model change, and a tree with no Fable
-model ignores the cap. A tree with no recorded model keeps it. A cooldown comes from a
-refusal probe (see the dependency section) and also overrides a `--force` pin.
-
-The codex plan upgrade exists because a session otherwise moves only when its account
+The codex plan upgrade exists because a tree otherwise moves only when its account
 cannot serve. A free codex account taken while the paid one was depleted would hold the
-session after the paid window resets, and the API refuses several models on a free plan
-with a 400 "not supported when using Codex with a ChatGPT account". The upgrade draws
-among the usable accounts on a higher plan (reason `upgrade`) and touches no pin.
-Anthropic accounts carry no plan, so it never fires there.
+tree after the paid window resets, and the API refuses several models on a free plan
+with a 400 "not supported when using Codex with a ChatGPT account". The upgrade admits
+the tree to an account on a higher plan (reason `upgrade`), and a higher plan ranks first
+for every admission. Anthropic accounts carry no plan, so it never fires there.
 
 ## A 429 moves the session in the same turn
 
@@ -306,21 +353,29 @@ Usage figures come from tokenmaxxing samples that can be 15 minutes old, so the 
 own 429 is the first sign that an account is used up. The extension handles it on
 `message_end`:
 
-1. An assistant error with status 429 and a `retryAfterMs` on a pooled provider runs
-   `pi-pool limited --provider <p> --until <now + retryAfterMs>`.
+1. An assistant error with status 429 on a pooled provider runs
+   `pi-pool limited --provider <p> --until <now + retryAfterMs>` (5 minutes when the
+   provider sent no reset).
 2. `limited` finds the account the session tree last vended, writes
    `providers.<p>.limits.<account> = {until, at, session}` to `state.json` under the flock,
-   logs a `limited` line, and prints `{"account", "until", "next"}`.
+   runs the scheduler for the tree's retry, holds what it decides (a slot now, or the
+   tree's wait), logs a `limited` line, and prints `{"account", "until", "next", "retry_at"}`.
 3. When `next` names an account, the extension returns the message without `retryAfterMs`
    and without the "Try again in" phrase. Prime's usage wait then pings after about one
    second instead of sleeping until the reset, and that ping's hook call vends `next`.
-4. When `next` is null, the message stays as it is and Prime waits for the provider's reset.
+4. When `next` is null, `retry_at` is the tree's own slot. The extension sets the
+   message's `retryAfterMs` to `retry_at - now`, at most 15 minutes, with a matching "Try
+   again in N minutes" text, so Prime sleeps until the slot and not until the provider's
+   reset. On 2026-10-12 15:04 a tree slept 1 h 45 min for claude10's reset while claude7
+   came back at 15:30.
 
 The limit lives in `state.json`, so a restarted worker or daemon still skips the account.
 The hook prunes it when it expires. A successful `pi-pool login` for the account drops it,
 since the 429 belonged to the replaced credential. `tests/native/swap.mjs` runs this against a copied
 Prime install: request 1 gets a 429 on one Codex account, request 2 of the same turn uses
-the other one, and a restarted Prime process goes straight to the other account.
+the other one, and a restarted Prime process goes straight to the other account. With
+`FIXTURE_FAILURE=all` every account answers 429 until its own reset; the same turn sleeps
+until the first account frees and finishes there with no manual continue.
 
 ## An account-level refusal moves the session the same way
 
@@ -339,7 +394,8 @@ these on `message_end` too:
    with the reason in `cooldown_reasons`, logs a `refused` line, and prints
    `{"account", "reason", "next"}`.
 4. When `next` names an account, the extension marks the failure a rate limit, so Prime's
-   usage wait retries in about a second and that retry's hook call vends `next`.
+   usage wait retries in about a second and that retry's hook call vends `next`. When it is
+   null, the failure becomes a rate limit that waits until `retry_at`, the session's slot.
 
 Settings > Accounts shows a `needs terms` account as "Needs terms". To bring it back, sign
 in to claude.ai as that account, accept the terms, then choose Check again (`pi-pool probe
@@ -400,11 +456,11 @@ the tray line. Prime 0.9.5 ships as one compiled binary, so that patch is gone.
 
 | part | what it does |
 |---|---|
-| `/account` | pick this session's account, or follow the pool. Usable accounts are listed first |
-| account line | one widget line by the editor: `account <email> 5h 25% · week 7% · fable 12%`, plus `→ <email>` when the next request switches. Refreshed at session start, on model change, after every turn, and every 60 seconds |
+| `/account` | pick this session's account, or follow the pool. Accounts that take the session are listed first, best score first |
+| account line | one widget line by the editor: `account <email> 5h 25% · week 7% · fable 12%`, plus `→ <email>` when the next request switches. Drawn at session start, on model change, after every turn, and every 60 seconds. One `pi-pool who` run per 60 seconds serves every session in the process, and a model or account change runs it at once. A session with no UI and an RLM child session run no `who` at all (`tests/test_extension_status.py`) |
 | login adoption | at session start it runs `pi-pool adopt-logins` (next section) and tells you if it moved a login |
-| 429 swap | on a 429 it runs `pi-pool limited` and, when another account can serve, drops the reset from the message so Prime retries in about a second on that account (see "A 429 moves the session in the same turn") |
-| hook retry | a turn that failed with "Failed to resolve API key ... pi-pool-token" loses Prime's lifecycle-failure tag, so Prime retries it like any unclassified error |
+| 429 swap | on a 429 it runs `pi-pool limited`; when another account takes the session it drops the reset from the message so Prime retries in about a second on that account, else it sets the reset to the session's slot (see "A 429 moves the session in the same turn") |
+| hook retry | a turn that failed with "Failed to resolve API key ... pi-pool-token" loses Prime's lifecycle-failure tag, so Prime retries it like any unclassified error; when `pi-pool who` shows the session waiting, the failure becomes a rate limit that waits until its slot |
 | refusal probe | at session start it runs `pi-pool probe`, which sends one free `count_tokens` request per account with a valid token, at most every 6 hours. A refused account gets a 24h cooldown in the pool and `enforcedUntil` in tokenmaxxing's index, so supervised `claude` sessions avoid it too |
 
 Prime 0.9.5 keeps `setStatus` text but its footer never draws it, which is why the account
@@ -434,11 +490,14 @@ request then carries the current token, at the cost of the WebSocket's cached co
 ## Config
 
 `~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (vend.py): `refresh_skew_sec`,
-`five_hour_max_pct`, `seven_day_max_pct`, `cooldown_sec`, `session_penalty`,
-`active_account_penalty`, `allow_active_account`, `switch_models`, `pin_ttl_sec`,
-`active_session_sec`, `refused_cooldown_sec`, `probe_interval_sec`.
-v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode` are gone with the
-per-process mode and the per-session balancing they tuned.
+`admit_5h_max_pct`, `low_admit_5h_max_pct`, `seven_day_max_pct`, `admit_slot_sec`,
+`admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`, `allow_active_account`,
+`switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,
+`refused_cooldown_sec`, `probe_interval_sec`. `pi-pool set` takes a JSON object for
+`tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
+(`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
+`min_runway_hours`) and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
+are gone; a leftover key in `config.json` is ignored.
 
 ## Safety properties
 

@@ -30,7 +30,6 @@ try {
   requireFile(".venv/bin/python", "uv sync --locked");
   requireFile("node_modules/typescript/bin/tsc", "npm ci --ignore-scripts");
   requireFile("node_modules/prime-agent/dist/index.d.ts", "npm ci --ignore-scripts");
-  requireFile("components/daily-recap/node_modules/sunsama-api/package.json", "npm ci --ignore-scripts --prefix components/daily-recap");
   requireFile("components/user-history/node_modules/tsx/dist/cli.mjs", "npm ci --ignore-scripts --prefix components/user-history");
   requireFile("skills/poteto-mode/scripts/node_modules/typescript/bin/tsc", "cd skills/poteto-mode/scripts && bun install --frozen-lockfile");
   const host = JSON.parse(readFileSync(join(root, "node_modules/prime-agent/package.json"), "utf8"));
@@ -47,11 +46,10 @@ try {
     python("-m", "unittest", "discover", "-s", "components/pi-pool/tests", "-p", suite);
   }
   python("-m", "unittest", "discover", "-s", "skills/linear-ticket/tests");
-  const virevTests = readdirSync(join(root, "tests")).filter((name) => /^virev.*\.mjs$/.test(name)).sort();
-  if (virevTests.length === 0) throw new Error("No Virev Node suites found.");
-  run(process.execPath, ["--test", ...virevTests.map((name) => `tests/${name}`), "tests/agent-utilities.test.mjs"]);
+  const rulesTests = readdirSync(join(root, "tests")).filter((name) => /^global-rules-.*\.test\.mjs$/.test(name)).sort();
+  if (rulesTests.length === 0) throw new Error("No global-rules Node suites found.");
+  run(process.execPath, ["--test", ...rulesTests.map((name) => `tests/${name}`), "tests/agent-utilities.test.mjs", "tests/git-stale-index.test.mjs"]);
   run(process.execPath, ["node_modules/typescript/bin/tsc", "--project", "tsconfig.json"]);
-  run("npm", ["test"], join(root, "components/daily-recap"));
   run("npm", ["test"], join(root, "components/user-history"));
   run("npm", ["run", "typecheck"], join(root, "components/user-history"));
   const poteto = join(root, "skills/poteto-mode/scripts");

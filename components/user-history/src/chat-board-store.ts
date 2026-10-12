@@ -2,7 +2,7 @@ import { watch as watchDir, type FSWatcher } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
-import { applyBoardOp, emptyBoard, migrateBoard, nextIds } from "./shared/chat-board.ts";
+import { applyBoardOp, emptyBoard, linkStepSessions, migrateBoard, nextIds } from "./shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "./shared/types.ts";
 
 const sessionIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -43,6 +43,15 @@ export class BoardStore {
       return summaries;
     });
     return { board: state, summaries: result };
+  }
+
+  /** Stores the owner's session id on the steps in `links` that have none and still name that job (`linkStepSessions`); writes nothing when none changes. */
+  async linkSessions(id: string, links: ReadonlyMap<string, { job: string; sessionId: string }>): Promise<void> {
+    if (!links.size) return;
+    await transactJsonFile(this.file(id), state => {
+      const next = linkStepSessions(state, links, new Date().toISOString());
+      if (next) Object.assign(state, next);
+    });
   }
 
   /**

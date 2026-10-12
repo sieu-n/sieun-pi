@@ -1,9 +1,11 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { access, chmod, constants, link, mkdir, open, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { access, chmod, constants, link, mkdir, open, readdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { userInfo } from "node:os";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { parsePublicOrigin, parseRemoteFlag, type RemoteSetting } from "./chat-origin.ts";
 import { KeepRunning } from "./chat-autostart.ts";
@@ -13,13 +15,19 @@ import { RemoteAccess, type RemoteControl } from "./chat-remote.ts";
 import { runsSlack, SlackBridge, slackChats } from "./chat-slack.ts";
 import type { RemoteMode } from "./shared/types.ts";
 
-type Options = { port?: number; socketPath?: string; dataDir?: string; remote?: RemoteSetting; supervised?: boolean };
+/**
+ * `adopt`: which chats a serve acts on. `live` is every chat in its chats.json plus the session-file scan, `own` only the chats it created.
+ * Unset: `live` for the main instance, `own` for any other, so a test or scratch serve never attaches, steers or reloads a live chat.
+ */
+type Options = { port?: number; socketPath?: string; dataDir?: string; remote?: RemoteSetting; supervised?: boolean; adopt?: "live" | "own" };
 type Configuration = {
   port: number; socketPath: string; capability: string; csrfToken: string; stopToken: string;
   /** The remote HTTPS origin: fixed for `custom`, the last tailnet name seen for `tailscale`. */
   publicOrigin: string | null; remoteAccess: RemoteMode; keepRunning: boolean;
   /** Settings > Phone access > "Open the app at login". On unless turned off. */
   openAppAtLogin: boolean;
+  /** The chat whose check-in the daemon health gate never pauses and that hears of each pause and resume; null for none. Set by hand. */
+  daemonGateChat: string | null;
 };
 type Instance = { pid: number; instanceId: string; url: string };
 type Service = { directory: string; config: Configuration; url: string; primary: boolean };
@@ -70,8 +78,10 @@ function configuration(value: unknown, primary: boolean): Configuration {
   if (remoteAccess === "custom" && !publicOrigin) throw new Error("Invalid private chat configuration: custom remote access needs publicOrigin.");
   const keepRunning = typeof value.keepRunning === "boolean" ? value.keepRunning : primary && process.platform === "darwin";
   const openAppAtLogin = typeof value.openAppAtLogin === "boolean" ? value.openAppAtLogin : true;
+  const daemonGateChat = value.daemonGateChat ?? null;
+  if (daemonGateChat !== null && !(typeof daemonGateChat === "string" && daemonGateChat)) throw new Error("Invalid private chat configuration: daemonGateChat is a chat id or null.");
   return { port: validPort(value.port), socketPath: value.socketPath, capability: value.capability, csrfToken: value.csrfToken, stopToken: value.stopToken,
-    publicOrigin, remoteAccess, keepRunning, openAppAtLogin };
+    publicOrigin, remoteAccess, keepRunning, openAppAtLogin, daemonGateChat };
 }
 async function saveConfiguration(service: Service, patch: Partial<Pick<Configuration, "publicOrigin" | "remoteAccess" | "keepRunning" | "openAppAtLogin">>): Promise<void> {
   Object.assign(service.config, patch);
@@ -174,6 +184,54 @@ async function waitForService(service: Service, timeoutMs: number): Promise<Inst
   }
   return null;
 }
+/** The marker every chat serve process carries on its command line (`chat-service-cli.mjs serve ...`). */
+const SERVE = "chat-service-cli.mjs serve";
+/**
+ * `<data dir>/serves/<pid>`: one empty file per serve process of this data directory, written before the serve opens the usage database
+ * and removed when it exits. A serve that dies before it publishes instance.json (a failed start, a hung build) is still found here.
+ */
+async function recordServe(service: Service): Promise<void> {
+  const directory = join(service.directory, "serves");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, String(process.pid));
+  await writeFile(path, "", { mode: 0o600 });
+  process.once("exit", () => { try { unlinkSync(path); } catch { /* already gone */ } });
+}
+async function isServe(pid: number): Promise<boolean> {
+  try { return (await promisify(execFile)("ps", ["-ww", "-o", "command=", "-p", String(pid)])).stdout.includes(SERVE); }
+  catch { return false; }
+}
+/** Live serve processes recorded for this data directory, other than `except`. A record whose process is gone, or is no serve now, is removed. */
+async function recordedServes(service: Service, except?: number): Promise<number[]> {
+  const directory = join(service.directory, "serves");
+  let names: string[];
+  try { names = await readdir(directory); }
+  catch (error) { if (hasCode(error, "ENOENT")) return []; throw error; }
+  const live: number[] = [];
+  for (const name of names) {
+    const pid = Number(name);
+    if (!Number.isSafeInteger(pid) || pid < 1 || String(pid) !== name || pid === except) continue;
+    if (await isServe(pid)) live.push(pid);
+    else await unlink(join(directory, name)).catch(() => {});
+  }
+  return live;
+}
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return hasCode(error, "EPERM"); } };
+/** SIGTERM, then SIGKILL after 5 s. Resolves once the process is gone or 2 s after the SIGKILL. */
+async function terminate(pid: number): Promise<void> {
+  try { process.kill(pid, "SIGTERM"); } catch { return; }
+  for (let waited = 0; waited < 5000 && alive(pid); waited += 100) await delay(100);
+  if (!alive(pid)) return;
+  try { process.kill(pid, "SIGKILL"); } catch { return; }
+  for (let waited = 0; waited < 2000 && alive(pid); waited += 100) await delay(100);
+}
+const exited = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null;
+/** The start timeout, 60 s. SIEUN_PI_CHAT_START_TIMEOUT_MS shortens it for one process (the failed-start test uses it). */
+function startTimeoutMs(): number {
+  const value = Number(process.env.SIEUN_PI_CHAT_START_TIMEOUT_MS);
+  return Number.isSafeInteger(value) && value > 0 ? value : 60_000;
+}
+const adoptFlag = (options: Options): string[] => options.adopt === "own" ? ["--no-adopt"] : options.adopt === "live" ? ["--adopt-live"] : [];
 const withPhone = (service: Service, record: Instance): Instance & { phoneUrl: string | null } => ({ ...record, phoneUrl: phoneUrl(service) });
 
 export async function ensureChatService(options: Options = {}): Promise<Instance & { phoneUrl: string | null }> {
@@ -194,18 +252,29 @@ export async function ensureChatService(options: Options = {}): Promise<Instance
   const log = await open(join(service.directory, "service.log"), "a", 0o600);
   await log.chmod(0o600);
   const child = spawn("node", [cliPath, "serve", "--data-dir", service.directory,
-    "--port", String(service.config.port), "--socket", service.config.socketPath], { detached: true, stdio: ["ignore", log.fd, log.fd, "ipc"] });
+    "--port", String(service.config.port), "--socket", service.config.socketPath, ...adoptFlag(options)], { detached: true, stdio: ["ignore", log.fd, log.fd, "ipc"] });
   await log.close();
-  const result = await new Promise<string | null>((accept, reject) => {
-    const timeout = setTimeout(() => { child.kill(); reject(new Error("Chat startup timed out. Inspect " + join(service.directory, "service.log"))); }, 60000);
-    const finish = (error: string | null) => { clearTimeout(timeout); if (child.connected) child.disconnect(); child.unref(); accept(error); };
-    child.once("error", error => { clearTimeout(timeout); reject(error); });
+  const timeoutMs = startTimeoutMs();
+  const result = await new Promise<string | null>(accept => {
+    let settled = false;
+    const finish = (error: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (child.connected) child.disconnect();
+      child.unref();
+      accept(error);
+    };
+    const timeout = setTimeout(() => finish(`Chat startup timed out after ${Math.round(timeoutMs / 1000)} s. Inspect ${join(service.directory, "service.log")}.`), timeoutMs);
+    child.once("error", error => finish(error.message));
     child.once("message", value => {
       if (isRecord(value) && value.ready === true) finish(null);
       else if (isRecord(value) && typeof value.error === "string") finish(value.error);
     });
     child.once("exit", code => finish(`Chat process exited (${code}). Inspect ${join(service.directory, "service.log")}.`));
   });
+  // A serve that failed or timed out may already hold the usage database lock; it never outlives the start that spawned it.
+  if (result !== null && child.pid !== undefined && !exited(child)) await terminate(child.pid);
   // The bind winner can still be publishing its private identity when another starter loses the port race.
   for (let attempt = 0; attempt < 20; attempt++) {
     const record = await running(service);
@@ -235,6 +304,7 @@ async function serve(options: Options): Promise<void> {
   }
   const existing = await running(service);
   if (existing) throw new Error(`Chat already runs at ${existing.url}. Use chat start to reuse it.`);
+  await recordServe(service);
   const identity = { pid: process.pid, instanceId: randomUUID(), socketPath: service.config.socketPath };
   const { DaemonKeeper } = await import("./chat-daemon.ts");
   // Started first, so the daemon boots while the rest loads. The catalog and threads reconnect on their own once it answers.
@@ -247,7 +317,10 @@ async function serve(options: Options): Promise<void> {
   // listens; the page and app.js wait for it, the API answers at once.
   const bundle = buildClientBundle();
   bundle.catch(error => { process.stderr.write(`${new Date().toISOString()} client bundle: ${error instanceof Error ? error.message : String(error)}\n`); });
-  const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory });
+  const adopt = options.adopt ?? (service.primary ? "live" : "own");
+  if (adopt === "own") process.stderr.write(`${new Date().toISOString()} chats: this serve acts only on the chats it created (${join(service.directory, "own-chats.json")})\n`);
+  const backend = await createChatBackend({ socketPath: service.config.socketPath, dataDir: service.directory, daemonGateChat: service.config.daemonGateChat,
+    ownChatsOnly: adopt === "own" });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = runsSlack(service.primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
@@ -337,6 +410,11 @@ export async function runChatCommand(args: string[]): Promise<void> {
   for (let index = 0; index < flags.length; index += 2) {
     const flag = flags[index], value = flags[index + 1];
     if (flag === "--supervised") { options.supervised = true; index--; continue; }
+    if (flag === "--no-adopt" || flag === "--adopt-live") {
+      const adopt = flag === "--no-adopt" ? "own" : "live";
+      if (options.adopt && options.adopt !== adopt) throw new Error("Use --no-adopt or --adopt-live, not both.");
+      options.adopt = adopt; index--; continue;
+    }
     if (!value || value.startsWith("--")) throw new Error("Chat options require values: --port, --socket, --data-dir, --public-origin.");
     if (flag === "--port") options.port = validPort(Number(value));
     else if (flag === "--socket") options.socketPath = resolve(value);
@@ -346,6 +424,7 @@ export async function runChatCommand(args: string[]): Promise<void> {
   }
   if (options.remote !== undefined && command !== "start" && command !== "serve") throw new Error("Use --public-origin with chat start or serve.");
   if (options.supervised && command !== "serve") throw new Error("Use --supervised with chat serve.");
+  if (options.adopt && command !== "start" && command !== "serve") throw new Error("Use --no-adopt or --adopt-live with chat start or serve.");
   if (command === "start") { process.stdout.write((await ensureChatService(options)).url + "\n"); return; }
   if (command === "open") {
     const record = await ensureChatService(options);
@@ -358,7 +437,8 @@ export async function runChatCommand(args: string[]): Promise<void> {
   if (command === "serve") { await serve(options); process.exit(process.exitCode ?? 0); }
   if (!["url", "status", "stop"].includes(command)) {
     if (!["help", "--help", "-h"].includes(command)) throw new Error("Unknown chat command: " + command);
-    process.stdout.write("sieun-pi chat start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none]\nOnly open starts a window: the installed app, else the default browser. Keep the URL private: it grants chat access.\n"); return;
+    process.stdout.write("sieun-pi chat start|open|serve|status|url|stop [--port 5182] [--socket PATH] [--data-dir PATH] [--public-origin tailscale|https://HOST|none] [--no-adopt|--adopt-live]\nOnly open starts a window: the installed app, else the default browser. Keep the URL private: it grants chat access.\n" +
+      "A serve outside ~/.prime/agent/browser-chat acts only on the chats it created; --adopt-live makes it adopt every chat in its chats.json, --no-adopt keeps any serve to its own.\n"); return;
   }
   const service = await loadService(options, false);
   if (!service) {
@@ -371,21 +451,28 @@ export async function runChatCommand(args: string[]): Promise<void> {
     const phone = phoneUrl(service);
     const { daemonAnswers } = await import("./chat-daemon.ts");
     const daemon = await daemonAnswers(service.config.socketPath) ? "answering" : "not running";
+    const strays = await recordedServes(service, record?.pid);
     process.stdout.write((record ? `Chat is running (PID ${record.pid}).` : "Chat is stopped.") + "\n" + service.url + "\n" + (phone ? `Phone: ${phone}\n` : "") +
-      `Daemon: ${daemon} on ${service.config.socketPath}\n`); return;
+      `Daemon: ${daemon} on ${service.config.socketPath}\n` +
+      (strays.length ? `A chat process that never answered runs as PID ${strays.join(", ")}. sieun-pi chat stop ends it.\n` : "")); return;
   }
   if (record) {
     const response = await fetch(service.url + "api/service-stop", { method: "POST", signal: AbortSignal.timeout(3000), redirect: "error",
       headers: { Origin: new URL(service.url).origin, "Content-Type": "application/json", "X-Chat-Stop-Token": service.config.stopToken },
       body: JSON.stringify({ instanceId: record.instanceId }) });
     if (!response.ok) throw new Error(`Chat stop returned HTTP ${response.status}. No PID was signaled.`);
-    for (let attempt = 0; attempt < 100; attempt++) {
+    let closed = false;
+    for (let attempt = 0; attempt < 100 && !closed; attempt++) {
       const current = await running(service);
-      if (!current) { process.stdout.write("Chat is stopped. Native sessions keep running.\n"); return; }
-      if (current.instanceId !== record.instanceId) throw new Error("Another chat instance started. It was left running.");
-      await delay(50);
+      if (!current) closed = true;
+      else if (current.instanceId !== record.instanceId) throw new Error("Another chat instance started. It was left running.");
+      else await delay(50);
     }
-    throw new Error("Chat stop was accepted but the listener has not closed.");
+    if (!closed) throw new Error("Chat stop was accepted but the listener has not closed.");
   }
-  process.stdout.write("Chat is stopped.\n");
+  // A serve that never published instance.json (a failed or hung start) answers no stop request; it is found by its record and signaled.
+  const strays = await recordedServes(service, record?.pid);
+  for (const pid of strays) await terminate(pid);
+  const ended = strays.length ? ` Ended a chat process that never answered (PID ${strays.join(", ")}).` : "";
+  process.stdout.write(`Chat is stopped.${ended}${record ? " Native sessions keep running." : ""}\n`);
 }

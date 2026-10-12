@@ -8,19 +8,26 @@ export interface PendingSend { id: string; text: string; images: ImagePart[]; at
 export const TELL_OWNER_TOOL = "tell_owner";
 /** The longest text `tell_owner` accepts; the tool refuses longer with "shorter: one or two sentences". */
 export const TELL_OWNER_LIMIT = 400;
-/** A user message the chat server sends on its own: the check-in digest and the no-report notice. The feed folds them into updates and the turn they start is not the owner's. */
+/**
+ * A user message the chat server sends on its own: the restart of a failed turn and the job notices (and, in transcripts from before W44, the
+ * check-in digest). The feed folds them into updates and the turn they start is not the owner's.
+ */
 export const CHECK_IN_PREFIX = "[check-in] ";
 export const JOB_NOTICE_PREFIX = "[job] ";
 /** The server's note after an owner-turn reply that failed the reply lint (src/shared/reply-lint.ts); the turn it starts is not the owner's. */
 export const REPLY_CHECK_PREFIX = "[reply check] ";
-const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"], [REPLY_CHECK_PREFIX, "reply check"]];
-/** In a server note that restarts a failed owner turn: the turn it starts stays the owner's, so the chat's answer is a bubble and check-ins wait. */
+/** The server's note after a chat spawned a job whose brief failed the brief check (src/shared/brief-check.ts); the turn it starts is not the owner's. */
+export const BRIEF_CHECK_PREFIX = "[brief check] ";
+const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"], [REPLY_CHECK_PREFIX, "reply check"], [BRIEF_CHECK_PREFIX, "brief check"]];
+/** In a server note that restarts a failed owner turn: the turn it starts stays the owner's, so the chat's answer is a bubble. */
 export const OWNER_RETRY_MARK = "The owner's message is still unanswered: ";
 /** The first line of a chat_board result when the chat changed its own check-in; the feed shows that line as a notice. */
 export const CHAT_CHECK_IN_LINE = "The chat set its check-in: ";
-/** A line the server writes into a chat's transcript without starting a turn (the model switch to and from the fallback); the feed shows it as a notice. */
 export const CHAT_NOTICE = "chat_notice";
-/** The server's nudge to a thread a stale step waits on, in the asking chat's name: `[from <chat>] your step ...`. The owner did not type it. */
+/**
+ * The server's nudge to a thread a stale step waited on, in the asking chat's name: `[from <chat>] your step ...`. The server sent these before
+ * W44 (check-in jobs chase threads themselves now); the feed still reads them in older transcripts as notes the owner did not type.
+ */
 export const NUDGE_PREFIX = "[from ";
 /** Who sent a server note ("check-in", "jobs", or the chat a nudge asks for), or undefined for a message the owner typed. */
 export function serverNote(text: string): string | undefined {
@@ -39,11 +46,34 @@ export function serverNote(text: string): string | undefined {
  * - notice: an error, a stopped reply, a restart or a compaction, as one muted line.
  */
 export type ChatLine =
-  | { kind: "user"; id: string; text: string; images: ImagePart[]; at: number; pending?: true }
-  | { kind: "agent"; id: string; text: string; at: number; streaming?: true; told?: true }
+  | { kind: "user"; id: string; text: string; images: ImagePart[]; at: number; pending?: true; replies?: string[] }
+  | { kind: "agent"; id: string; text: string; at: number; streaming?: true; told?: true; replyTo?: ReplyQuote }
   | { kind: "job"; id: string; from: string; title: string; body: string; at: number; clipped?: { message: number; part: number } }
   | { kind: "notes"; id: string; text: string; at: number }
   | { kind: "notice"; id: string; text: string; at: number };
+/**
+ * An agent line that answers one owner message: that message's feed line id and its text. The owner line lists the agent lines that answer it
+ * in `replies`, oldest first, for its "See reply" button.
+ */
+export interface ReplyQuote { id: string; text: string }
+
+/**
+ * The id the model reads after each owner message (`[message id: <id>]`, src/chats.ts withReplyCap) and passes back as `reply_to`: the
+ * message's timestamp in base 36, so it survives compaction and needs no index. The feed finds the owner line by its `at`.
+ */
+export const ownerMessageId = (at: number): string => at.toString(36);
+/** The note after an owner message in the model's view that gives its id. */
+export const messageIdNote = (at: number): string => `[message id: ${ownerMessageId(at)}]`;
+/** The marker line a chat's text reply opens with to answer an older owner message: `reply_to: <id>`, then the reply. */
+export const REPLY_TO_MARKER = "reply_to:";
+const MARKER_LINE = /^reply_to:[ \t]*(\S*)[ \t]*(?:\n+|$)/;
+
+/** A text reply with its `reply_to:` line taken off: the id it names (null without the line) and the text the owner reads. */
+export function splitReplyTo(text: string): { replyTo: string | null; text: string } {
+  const match = MARKER_LINE.exec(text);
+  return match ? { replyTo: match[1]!, text: text.slice(match[0].length).trim() } : { replyTo: null, text };
+}
+
 /** The quiet lines: between two visible lines they fold into one updates item. */
 export type Update = Extract<ChatLine, { kind: "job" | "notes" }>;
 /** One item of the feed on screen: a visible line, or a run of quiet lines folded into one. */
@@ -74,18 +104,46 @@ export function senderName(from: string, nameOf: NameOf = () => undefined): stri
 type Refused = (toolCallId: string) => boolean;
 /** The check-in line a tool result opens with, when the chat changed its check-in; undefined otherwise. */
 type CheckInChanged = (toolCallId: string) => string | undefined;
-function assistantLines(message: AssistantMessage, id: string, starter: TurnStarter, streaming: boolean, refused: Refused, checkInChanged: CheckInChanged = () => undefined): ChatLine[] {
+/** The owner message a `reply_to` id names, recorded on it as answered by the agent line `answer`; undefined for an unknown id. */
+type Answer = (replyTo: unknown, answer: string) => ReplyQuote | undefined;
+
+/** Every owner line seen so far by its `ownerMessageId`, and the linker that ties an agent line to one of them. */
+function replyLinks(): { owner: (line: Extract<ChatLine, { kind: "user" }>) => void; answer: Answer } {
+  const owners = new Map<string, Extract<ChatLine, { kind: "user" }>>();
+  return {
+    owner: line => { if (Number.isFinite(line.at)) owners.set(ownerMessageId(line.at), line); },
+    answer: (replyTo, answer) => {
+      const line = typeof replyTo === "string" ? owners.get(replyTo.trim()) : undefined;
+      if (!line) return undefined;
+      (line.replies ??= []).push(answer);
+      return { id: line.id, text: line.text };
+    },
+  };
+}
+
+/** The text of a `tell_owner` call the tool did not refuse; "" for any other part. */
+function toldText(part: AssistantMessage["content"][number], refused: Refused): string {
+  if (part.type !== "toolCall" || part.name !== TELL_OWNER_TOOL || refused(part.id)) return "";
+  return typeof part.arguments.text === "string" ? part.arguments.text.trim() : "";
+}
+
+/** `shown` is how the message's text shows: a reply bubble, or notes (a wake-up, or an owner turn the chat answered with tell_owner). */
+function assistantLines(message: AssistantMessage, id: string, shown: "reply" | "notes", streaming: boolean, refused: Refused, answer: Answer, checkInChanged: CheckInChanged = () => undefined): ChatLine[] {
   const lines: ChatLine[] = [];
-  const text = messageText(message).trim();
-  if (text && starter === "owner") lines.push({ kind: "agent", id, text, at: message.timestamp, ...(streaming ? { streaming: true } : {}) });
-  else if (text && !streaming) lines.push({ kind: "notes", id, text, at: message.timestamp });
+  const raw = messageText(message).trim();
+  const { replyTo, text } = streaming && REPLY_TO_MARKER.startsWith(raw) ? { replyTo: null, text: "" } : splitReplyTo(raw);
+  if (text && shown === "reply") {
+    const quote = answer(replyTo, id);
+    lines.push({ kind: "agent", id, text, at: message.timestamp, ...(streaming ? { streaming: true } : {}), ...(quote ? { replyTo: quote } : {}) });
+  } else if (text && !streaming) lines.push({ kind: "notes", id, text, at: message.timestamp });
   if (streaming) return lines;
   message.content.forEach((part, index) => {
     const changed = part.type === "toolCall" ? checkInChanged(part.id) : undefined;
     if (changed) lines.push({ kind: "notice", id: `${id}-c${index}`, text: changed, at: message.timestamp });
-    if (part.type !== "toolCall" || part.name !== TELL_OWNER_TOOL || refused(part.id)) return;
-    const told = typeof part.arguments.text === "string" ? part.arguments.text.trim() : "";
-    if (told) lines.push({ kind: "agent", id: `${id}-t${index}`, text: told, at: message.timestamp, told: true });
+    const told = toldText(part, refused);
+    if (!told || part.type !== "toolCall") return;
+    const quote = answer(part.arguments.reply_to, `${id}-t${index}`);
+    lines.push({ kind: "agent", id: `${id}-t${index}`, text: told, at: message.timestamp, told: true, ...(quote ? { replyTo: quote } : {}) });
   });
   if (message.stopReason === "aborted") lines.push({ kind: "notice", id: id + "-stop", text: "Reply stopped", at: message.timestamp });
   else if (message.stopReason === "error") lines.push({ kind: "notice", id: id + "-error", text: "Error: " + (message.errorMessage?.trim() || "the model returned an error"), at: message.timestamp });
@@ -107,12 +165,22 @@ function customLines(message: CustomMessage, id: string, index: number, nameOf: 
 /**
  * Every committed message as lines, in order, with the turn tracked the way `buildTurns` does: a user message starts an owner turn; a
  * wake-up custom (agent message, heartbeat, job notice, background completion) starts an agent turn when the last run had settled, and
- * joins the running turn otherwise. The chat's text is an agent line on an owner turn and a notes line on an agent turn; a `tell_owner` call
- * is an agent line on either, unless the tool refused the text. Check-ins, job notices and background completions themselves produce nothing: what the chat told the owner
+ * joins the running turn otherwise. The chat's text is an agent line on an owner turn and a notes line on an agent turn, or on an owner turn
+ * with a `tell_owner` call the tool accepted (the told text is the reply); a `tell_owner` call is an agent line on either, unless the tool
+ * refused the text. Check-ins, job notices and background completions themselves produce nothing: what the chat told the owner
  * about them is the line. toolResult, bashExecution, branchSummary and non-prompt customs produce nothing.
  */
 export function chatLines(messages: readonly ThreadMessage[], nameOf: NameOf = () => undefined): ChatLine[] {
+  return linesOf(messages, nameOf).lines;
+}
+
+/**
+ * `chatLines` with the reply linker and how the running turn's text shows (`current`), for the streaming reply that follows them. An agent
+ * line whose `reply_to` names an earlier owner message (`ownerMessageId`) quotes it; an unknown id is dropped.
+ */
+function linesOf(messages: readonly ThreadMessage[], nameOf: NameOf): { lines: ChatLine[]; answer: Answer; current: "reply" | "notes" } {
   const lines: ChatLine[] = [];
+  const links = replyLinks();
   const track = turnTracker();
   const results = toolResults(messages);
   const refused: Refused = toolCallId => results.get(toolCallId)?.isError === true;
@@ -122,18 +190,23 @@ export function chatLines(messages: readonly ThreadMessage[], nameOf: NameOf = (
     const first = messageText(result).split("\n", 1)[0]!.trim();
     return first.startsWith(CHAT_CHECK_IN_LINE) ? first : undefined;
   };
+  const told = toldTurns(messages, refused);
+  let current: "reply" | "notes" = "reply";
   messages.forEach((message, index) => {
     const id = "m" + index;
-    const starter = track(message);
+    const { starter, turn } = track(message);
+    current = starter === "owner" && !told.has(turn) ? "reply" : "notes";
     switch (message.role) {
       case "user": {
         const text = messageText(message).trim();
         const from = serverNote(text);
         if (from) { const body = text.slice(text.indexOf("]") + 1).trim(); lines.push({ kind: "job", id, from, title: firstLine(body), body, at: message.timestamp }); return; }
-        lines.push({ kind: "user", id, text, images: imagesOf(message), at: message.timestamp });
+        const line = { kind: "user" as const, id, text, images: imagesOf(message), at: message.timestamp };
+        links.owner(line);
+        lines.push(line);
         return;
       }
-      case "assistant": lines.push(...assistantLines(message, id, starter, false, refused, checkInChanged)); return;
+      case "assistant": lines.push(...assistantLines(message, id, current, false, refused, links.answer, checkInChanged)); return;
       case "custom": lines.push(...customLines(message, id, index, nameOf)); return;
       case "compactionSummary": lines.push({ kind: "notice", id, text: "Older messages were summarized to free space", at: message.timestamp }); return;
       case "toolResult":
@@ -142,29 +215,58 @@ export function chatLines(messages: readonly ThreadMessage[], nameOf: NameOf = (
         return;
     }
   });
-  return lines;
+  return { lines, answer: links.answer, current };
 }
 
-/** Feeds each message in order and answers who started the turn it belongs to. */
-function turnTracker(): (message: ThreadMessage) => TurnStarter {
+/**
+ * Feeds each message in order and answers who started the turn it belongs to and the turn's number: each owner message starts a turn, and a
+ * wake-up starts one when the last run had settled.
+ */
+function turnTracker(): (message: ThreadMessage) => { starter: TurnStarter; turn: number } {
   let starter: TurnStarter = "owner";
   let settled = true;
+  let turn = 0;
+  const start = (who: TurnStarter) => { starter = who; settled = false; turn++; };
   return message => {
-    if (message.role === "user" && messageText(message).includes(OWNER_RETRY_MARK) && serverNote(messageText(message).trim())) { starter = "owner"; settled = false; }
-    else if (message.role === "user" && serverNote(messageText(message).trim())) { if (settled) starter = "agent"; settled = false; }
-    else if (message.role === "user") { starter = "owner"; settled = false; }
+    if (message.role === "user" && messageText(message).includes(OWNER_RETRY_MARK) && serverNote(messageText(message).trim())) start("owner");
+    else if (message.role === "user" && serverNote(messageText(message).trim())) { if (settled) start("agent"); settled = false; }
+    else if (message.role === "user") start("owner");
     else if (message.role === "assistant") settled = message.stopReason !== "toolUse";
-    else if (message.role === "custom" && isPromptCustom(message)) { if (settled) starter = "agent"; settled = false; }
-    return starter;
+    else if (message.role === "custom" && isPromptCustom(message)) { if (settled) start("agent"); settled = false; }
+    return { starter, turn };
   };
+}
+
+/** The turns (by `turnTracker` number) with a `tell_owner` call the tool accepted: the chat's text on such an owner turn is notes. */
+function toldTurns(messages: readonly ThreadMessage[], refused: Refused): Set<number> {
+  const track = turnTracker();
+  const told = new Set<number>();
+  for (const message of messages) {
+    const { turn } = track(message);
+    if (message.role === "assistant" && message.content.some(part => toldText(part, refused) !== "")) told.add(turn);
+  }
+  return told;
 }
 
 /** Who started the turn the thread is on now: the owner until something else wakes a settled chat. */
 export function turnStarter(messages: readonly ThreadMessage[]): TurnStarter {
   const track = turnTracker();
   let starter: TurnStarter = "owner";
-  for (const message of messages) starter = track(message);
+  for (const message of messages) starter = track(message).starter;
   return starter;
+}
+
+/** The message that started the turn the thread was on at `at` (ms), and who started it; undefined when no message is that old. */
+export function turnAt(messages: readonly ThreadMessage[], at: number): { starter: TurnStarter; message: ThreadMessage } | undefined {
+  const track = turnTracker();
+  let turn = 0;
+  let start: { starter: TurnStarter; message: ThreadMessage } | undefined;
+  for (const message of messages) {
+    if (message.timestamp > at) break;
+    const now = track(message);
+    if (now.turn !== turn) { turn = now.turn; start = { starter: now.starter, message }; }
+  }
+  return start;
 }
 
 const isUpdate = (line: ChatLine): line is Update => line.kind === "job" || line.kind === "notes";
@@ -217,12 +319,12 @@ export function settledPending(messages: readonly ThreadMessage[], pending: read
 }
 
 /**
- * The whole chat, oldest first: every message as lines with the quiet runs folded, then the streaming reply when the owner started the turn,
- * then the sends the thread has not echoed yet.
+ * The whole chat, oldest first: every message as lines with the quiet runs folded, then the streaming reply when the owner started the turn
+ * and the chat has not answered it with tell_owner, then the sends the thread has not echoed yet.
  */
 export function chatFeed(state: Pick<ThreadState, "messages" | "streaming" | "wait">, pending: readonly PendingSend[] = [], nameOf: NameOf = () => undefined): ChatItem[] {
-  const lines = chatLines(state.messages, nameOf);
-  if (state.streaming) lines.push(...assistantLines(state.streaming, "streaming", turnStarter(state.messages), true, () => true));
+  const { lines, answer, current } = linesOf(state.messages, nameOf);
+  if (state.streaming) lines.push(...assistantLines(state.streaming, "streaming", current, true, () => true, answer));
   const items = collapseUpdates(lines);
   const settled = settledPending(state.messages, pending);
   for (const send of pending) {
@@ -237,7 +339,7 @@ const clock = (at: number): string => { const date = new Date(at); return `${Str
 /** The line under the owner's unanswered message while the server waits to restart its failed turn, in the reader's local time. */
 export function waitText(wait: ChatWait): string {
   if (wait.kind === "retry") return `Turn failed (${wait.error}). Retrying at ${clock(wait.at)}.`;
-  return wait.until === null ? "Waiting for a Claude account." : `Waiting for a Claude account until ${clock(wait.until)}.`;
+  return wait.until === null ? "Waiting for a Claude account. Your selected model stays unchanged." : `Waiting for a Claude account until ${clock(wait.until)}. Your selected model stays unchanged.`;
 }
 
 /** An owner-turn reply longer than this many words shows only its first ones, with "More" to show the rest. */

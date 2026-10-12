@@ -4,17 +4,22 @@ import { BoardStore } from "./chat-board-store.ts";
 import { Catalog } from "./chat-catalog.ts";
 import { ChatLabels } from "./chat-labels.ts";
 import { ChatNotes } from "./chat-notes.ts";
+import { ChatBookmarks } from "./chat-bookmarks.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
 import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord, checkInSettings } from "./chat-checkin.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
-import { fallbackRecord } from "./chat-fallback.ts";
-import { claudeReader } from "./chat-pool.ts";
-import { Chats, extensionBuild, jobRegistry, loadRecord } from "./chats.ts";
+import { claudeReader, setPoolPriority } from "./chat-pool.ts";
+import { dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
+import { briefCheckRecord, Chats, extensionBuild, jobRegistry, loadRecord, replyCheckRecord } from "./chats.ts";
 import { Duties } from "./chat-duty-run.ts";
+import { archiveDutyJob, dutyJobHost } from "./chat-duty-job.ts";
+import { ArchiveQueue } from "./chat-archive-queue.ts";
+import { DaemonGate } from "./chat-daemon-gate.ts";
 import { DutyStore } from "./chat-duty-store.ts";
 import { IdIndex } from "./id-index.ts";
+import { newChatStore, type NewChatStore } from "./chat-new-chat.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { UsageService } from "./usage/service.ts";
@@ -32,7 +37,11 @@ export interface ChatBackend {
   readState: ChatReadState;
   labels: ChatLabels;
   notes: ChatNotes;
+  /** `<dataDir>/bookmarks.json`: chat messages the owner saved, listed in the Bookmarks view. */
+  bookmarks: ChatBookmarks;
   defaults: ChatDefaultsStore;
+  /** `<dataDir>/new-chat.json`: the New chat box's start skill. */
+  newChat: NewChatStore;
   chats: Chats;
   /** `<dataDir>/boards/<id>.json`: each chat's board. Changes from either writer reach the open thread as a board event. */
   boards: BoardStore;
@@ -42,6 +51,8 @@ export interface ChatBackend {
   usage?: UsageService;
   /** `<dataDir>/duties/`: each chat's standing duties and their runs; the runner ticks every 30 s. Absent in tests that fake a backend. */
   duties?: Duties;
+  /** Each live root's pool class (`pi-pool priority`), synced every 30 s and after a priority label change. Absent in tests that fake a backend. */
+  poolPriorities?: PoolPriorities;
   close(): Promise<void>;
 }
 
@@ -68,14 +79,17 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
   };
 }
 
-export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string } = {}): Promise<ChatBackend> {
+/** `ownChatsOnly`: this serve does not own the live chats, so it acts only on the chats it created (`CheckInSource.owned`). */
+export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; daemonGateChat?: string | null; ownChatsOnly?: boolean } = {}): Promise<ChatBackend> {
   const socketPath = options.socketPath ?? defaultDaemonSocketPath();
   const agentDir = options.agentDir ?? getAgentDir();
   const dataDir = options.dataDir ?? join(agentDir, "browser-chat");
   const readState = new ChatReadState(join(dataDir, "read-state.json"));
   const labels = new ChatLabels(join(dataDir, "labels.json"));
   const notes = new ChatNotes(join(dataDir, "notes.json"));
+  const bookmarks = new ChatBookmarks(join(dataDir, "bookmarks.json"));
   const defaults = chatDefaultsStore(agentDir);
+  const newChat = newChatStore(join(dataDir, "new-chat.json"));
   await readState.snapshot().catch(() => null);
   const index = new IdIndex(join(dataDir, "chats.json"), "Chat index");
   const created = new IdIndex(join(dataDir, "threads.json"), "Thread index");
@@ -86,17 +100,37 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(dataDir);
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined);
-  // Each chat's duties: the standing ones run here; the built-in check-in duty runs in Chats and is recorded here, and its card edits the check-in setting.
-  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id),
-    notify: (id, message) => threads.prompt(id, { message, images: [], mode: "steer" }), log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`),
-    board: id => boards.read(id),
-    checkIn: { view: id => chats.checkInView(id), run: id => chats.runCheckIn(id), measure: id => chats.measure(id),
-      set: async (id, change) => { const view = await chats.setCheckIn(id, change); if (view) await catalog.notify(); return view; } } });
+  const registry = jobRegistry(join(dataDir, "chat-jobs.json"));
+  const poolPriorities = new PoolPriorities({ rows: () => catalog.rows(), duties: rows => dutyJobIds(rows, registry), set: setPoolPriority,
+    log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
+  // Each chat's duties: every run starts one duty job linked to the chat. The standing ones are scheduled here; the built-in check-in duty is
+  // scheduled and measured in Chats and handed here, and its card edits the check-in setting.
+  const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
+  const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
+  // While the daemon is slow the gate pauses every chat's check-in but the configured daemonGateChat's, and resumes them when it answers again.
+  const keep = options.daemonGateChat ?? undefined;
+  const gate = new DaemonGate({ settings, chats: () => chats.ids(), keep: new Set(keep ? [keep] : []), ...(keep ? { tell: keep } : {}), log: dutyLog,
+    steer: (id, message) => threads.prompt(id, { message, images: [], mode: "steer" }), changed: () => catalog.notify(),
+    list: async timeoutMs => {
+      await catalog.connect();
+      const response = await catalog.client.request({ type: "list", all: true }, timeoutMs, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+    } });
+  // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
+  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog,
+    tried: (ms, ok) => { void gate.kill(ms, ok); } });
+  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate,
+    jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
+      started: id => poolPriorities.set(id, "low") }),
+    checkIn: { view: id => chats.checkInView(id), run: id => chats.runCheckIn(id),
+      set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
-    { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry: jobRegistry(join(dataDir, "chat-jobs.json")),
-      settings: checkInSettings(join(dataDir, "check-in-settings.json")), claude: claudeReader(), fallbacks: fallbackRecord(join(dataDir, "chat-fallbacks.json")),
-      awake: working => awake.update(working), writeBoard: (id, ops) => boards.apply(id, ops, "agent"),
-      checkInJobs: { dir: join(dataDir, "check-in-jobs"), board: id => join(boards.dir, id + ".json") }, corrections: () => corrections.read(), duty: duties },
+    { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
+      replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")),
+      briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")),
+      settings, claude: claudeReader(),
+      awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
+      ...(options.ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}) },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
@@ -105,17 +139,24 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const usage = new UsageService({ dataDir, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   usage.start();
   catalog.ratesSource = ids => usage.rates(ids);
+  catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
+    .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
+  const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
+  prioritySync.unref();
+  void poolPriorities.sync();
   let closed = false;
   return {
-    catalog, threads, readState, labels, notes, defaults, chats, boards, created, usage, duties,
+    catalog, threads, readState, labels, notes, bookmarks, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
     async close() {
       if (closed) return;
       closed = true;
+      clearInterval(prioritySync);
       unwatchBoards();
       stopPublish();
       duties.close();
+      archives.close();
       await usage.close();
       chats.close();
       awake.close();

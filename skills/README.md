@@ -1,6 +1,6 @@
 # Skill source checks
 
-This tree contains 51 `SKILL.md` definitions and the auxiliary `skills` Python package.
+This tree contains the `SKILL.md` definitions listed in `package.json` and the auxiliary `skills` Python package.
 The source checker reports current counts. Dependency directories and build output do not count as source.
 
 ## Read-only checker
@@ -27,7 +27,7 @@ All test writes use temporary directories. The tests do not run session recovery
 
 ## Python packages
 
-Each of `websearch`, `linear-ticket`, and `aside-browser` has its own `pyproject.toml` and `uv.lock`.
+Each of `websearch`, `linear-ticket`, `aside-browser`, and `board` has its own `pyproject.toml` and `uv.lock`.
 For example, these commands build and import the packaged websearch module without a Prime Agent runtime.
 
 ```sh
@@ -36,9 +36,9 @@ uv build --project skills/websearch --out-dir skills/websearch/dist
 uv run --project skills/websearch --no-sync python -I -c 'import websearch; print(websearch.__file__)'
 ```
 
-The other module names are `linear_ticket` and `aside_browser`.
+The other module names are `linear_ticket`, `aside_browser`, and `board`.
 The `-I` import checks the installed package, without the checkout or `PYTHONPATH` on the import path.
-The root environment installs all three packages as editable dependencies.
+The root environment installs all four packages as editable dependencies.
 
 `uv run python -m unittest discover -s skills/linear-ticket/tests -v` runs the local ticket checks and HTML rendering tests.
 No test uploads assets or changes a Linear issue.
@@ -89,4 +89,4 @@ The auxiliary `skills/prime_agent/fleet_health.py` is importable through `PYTHON
 Its full import is `from skills.prime_agent.fleet_health import fleet_health`.
 In an installed profile, that path becomes `PYTHONPATH=<profile>/skills`.
 It has no skill definition and no automatic pre-import. Prime Agent's Python-skill loader requires both `SKILL.md` and `src/<module>/__init__.py`.
-The helper remains source-only rather than adding a 52nd skill definition.
+The helper stays source-only and has no skill definition.

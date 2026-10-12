@@ -1,251 +1,107 @@
 ---
 name: unslop
-description: "The single writing standard for this user. Cut AI tells from any text before sending it. Always apply to chat replies, reports, commits, PR bodies, and every published article - llm-wiki pages, SEO articles, landing page copy, blog posts, and docs. Any text a human will read, including text written by scripts/seo-agent or into apps/llm-wiki/content. Merges pstack's unslop with the user's own writing rules, so there is one standard and not two. llm-wiki page shape lives in auto-sns-agent's llm-wiki writing reference."
+description: "The writing standard. Use for any text a human will read: replies, reports, commits, docs, specs, tickets, and articles."
 ---
 
 # Unslop
 
-## When this applies
+Apply this to any text a human will read. Published text matters most, because an SEO article or landing page shows its slop to every visitor and stays up. Do not announce that you applied this skill, and do not print a checklist. Return the cleaned text only.
 
-Always, to any text a human will read. Named surfaces, because these are the ones that get missed:
+This file is the one writing standard. If another writing rule disagrees, this file wins.
 
-| surface | where |
-|---|---|
-| chat replies and status reports | this conversation |
-| llm-wiki articles | `apps/llm-wiki/content/**`, plus the page standard in the llm-wiki skill's `references/writing.md` |
-| SEO articles | anything written by `scripts/seo-agent` |
-| landing and marketing copy | `apps/search` public routes |
-| blog posts and docs | any `.md` meant for a reader |
-| commits and PR bodies | `commit.mjs` messages, PR descriptions |
-| specs and tickets | `apps/llm-wiki/specs/**` (the `/specs` page), Linear issues |
-
-Published articles are the highest-stakes case. A slopped chat reply costs one reader a moment.
-A slopped SEO article or landing page ships the slop to every visitor and stays up.
-
-Do not announce that you applied this skill. Do not print a rule checklist before the text.
-Return the cleaned text only.
-
-One standard for every word sent to this user. It merges two sources:
-
-- pstack `unslop` (31 rules), for the formatting and punctuation tells.
-- The user's own prompt notes `writing_no_editorialising_headers_or_slogans`,
-  `plain_language_applies_to_chat_not_just_wiki`, and
-  `failure_reports_name_component_error_and_own_cause`.
-
-llm-wiki pages add one page-level standard on top of this file: the page is in the 메르 style,
-and a subagent writes it. The body is numbered short lines, one plain sentence each, with a
-mermaid diagram or image for every flow, structure or comparison, short sections, and no prose
-paragraphs. That standard lives only in auto-sns-agent's
-`.agents/skills/apps/llm-wiki/references/writing.md` (read it with
-`node scripts/skills/read-skill.mjs apps/llm-wiki/references/writing.md`), and
-`apps/llm-wiki/scripts/prose-lint.mjs` enforces both files on every page write and commit.
-
-If any of those seem to disagree, this file wins. Do not maintain a second writing standard.
+llm-wiki pages add the 메르 style, and a subagent writes each page. The body is numbered short lines, one plain sentence each, with a mermaid diagram or image for every flow, structure or comparison, short sections, and no prose paragraphs. That standard lives only in auto-sns-agent's `.agents/skills/apps/llm-wiki/references/writing.md` (read it with `node scripts/skills/read-skill.mjs apps/llm-wiki/references/writing.md`), and `apps/llm-wiki/scripts/prose-lint.mjs` enforces both files on every page write and commit.
 
 ## The one test
 
-Read the sentence once at speech pace. If a reader would re-read it to parse it, or reach for a
-dictionary, rewrite it with the common word. A sentence's job is to move one fact. Any word that
-slows the transfer is a defect, however precise it feels.
-
-## Process
-
-1. Write the draft.
-2. Run the formatting pass. It is mechanical and catches the most hits.
-3. Run the words and sentences pass.
-4. Self-audit: "what makes this obviously AI generated?" Fix what is left.
+Read the sentence once at speech pace. If a reader would re-read it to parse it, or reach for a dictionary, rewrite it with the common word. Any word that slows the transfer of the fact is a defect.
 
 ## Formatting and punctuation
 
-Measured on 4,237 words of real output for this user: 75 em dashes, 94 bold spans, 30
-mid-sentence colons. This section is where the hits are. Run it first.
+Run this pass first. It catches the most hits.
 
-1. **No em dashes.** Not one. End the sentence or use a comma. Do not swap in parentheses, en
-   dashes, or a spaced hyphen; that trades one tell for another. Two em dashes in a sentence is
-   the loudest tell in the language.
-2. **Colons introduce a list or an example.** Never as a mid-sentence connector, and never as a
-   reveal ("The best part: it learns"). Write the plain sentence.
-3. **Bold inside a paragraph marks a short label, nothing else.** Bolding a clause or a whole
-   sentence to make it sound important is the slogan rule in markup form. Keep mid-paragraph bold
-   under about 40 characters, and aim for 2 or 3 bold spans in a message.
-4. **No label opens a paragraph or a bullet.** A bold lead-in (`**Layer 1, LLM proxy.** As
-   in...`), a colon label (`**Runbook:** the runbook...`, `Live now: ...`) and a bold sentence
-   dropped mid-paragraph are all out (owner, 2026-10-08 and 2026-10-09). Write the plain sentence.
-4a. **Every bullet is one normal, complete sentence.** It has a subject and a verb and ends in a
-   period. No fragments, no `label: value` pairs, no clauses stuffed together with semicolons or
-   comma chains. Two ideas are two bullets. In chat and docs, use a list only for parallel items;
-   everything else is a paragraph. An llm-wiki page is the exception: its body is numbered
-   one-sentence lines, and a paragraph there is one or two sentences of connective text.
-
-5. **Sentence case headings.** No title case.
-6. **No decorative emoji.** Not in headings, not as status ticks in bullets.
-7. **Straight quotes only.** No curly quotes or apostrophes.
-8. **Italics for emphasis are the same defect as bold.** Use the word order instead.
+1. Use no em dashes. End the sentence or use a comma. Do not swap in parentheses, en dashes, or a spaced hyphen.
+2. Use a colon only to introduce a list or an example. Never use one as a mid-sentence connector or a reveal ("The best part: it learns").
+3. Use bold inside a paragraph only for a short label, under about 40 characters, with 2 or 3 bold spans in a message. Italics for emphasis are the same defect.
+4. Let no label open a paragraph or a bullet. A bold lead-in (`**Layer 1, LLM proxy.** As in...`), a colon label (`**Runbook:** the runbook...`, `Live now: ...`) and a bold sentence dropped mid-paragraph are all out.
+5. Make every bullet one normal, complete sentence with a subject and a verb, ending in a period. No fragments, no `label: value` pairs, and no clauses stuffed together with semicolons or comma chains. Two ideas are two bullets. In chat and docs, use a list only for parallel items and write everything else as a paragraph. An llm-wiki page body is the exception described above.
+6. Write headings in sentence case. Use no decorative emoji, and only straight quotes.
+7. Use numbered lists for sequences. Link text names where the link goes, never "click here".
 
 ## Headers and writing about your own work
 
-From the user's note `writing_no_editorialising_headers_or_slogans`.
-
-9. **A header or bullet label says what it contains, never how to feel about it.** Banned shapes,
-   all of them produced and rejected before: "The most durable win", "the finding to keep", "the
-   one X that survived the night", "the cleanest finding of the round", "The uncomfortable parts,
-   kept", "The one thing I would carry forward", "answered honestly". Correct replacements from
-   the same pages: "The gold ceiling moved, 68.2% to 72.9%", "Agency addresses: four attempts, no
-   solution", "Nine defects in the labeller itself".
-10. **Never announce that you are being honest or transparent, or that a caveat is
-    uncomfortable.** No "The honest answer to...", "stated with its limits", "the honest framing
-    is". State the limit in one sentence and move on.
-11. **Never compress a measurement into a slogan.** Expand it into words a coworker would say out
-    loud. Not "supply transferred across four frames and ranking did not", but "finding new
-    addresses worked on all four test sets; re-ordering addresses we already had only worked on
-    the one it was built from".
-12. **No hollow superlatives on your own work.** "the most valuable act", "the right call",
-    "the sharpest example", "earned its way in", "the return on every hour spent tonight". Report
-    what changed and what it cost.
-13. **Real measurement names stay verbatim.** recall_strict, e2e_yield, p-value, McNemar b/a,
-    precision, error rate, and every real file, commit, run, and arm name. Only the narrative
-    around them has to be plain.
+8. A header or bullet label says what it contains, never how to feel about it. Rejected before: "The most durable win", "the finding to keep", "The uncomfortable parts, kept", "answered honestly". Accepted: "The gold ceiling moved, 68.2% to 72.9%", "Nine defects in the labeller itself".
+9. Never announce that you are being honest or transparent, or that a caveat is uncomfortable. Cut "The honest answer to..." and "stated with its limits". State the limit in one sentence and move on.
+10. Never compress a measurement into a slogan. Write the words a coworker would say out loud. Not "supply transferred across four frames and ranking did not", but "finding new addresses worked on all four test sets; re-ordering addresses we already had only worked on the one it was built from".
+11. Do not praise your own work ("the right call", "the sharpest example", "earned its way in"). Report what changed and what it cost.
+12. Keep real names verbatim: recall_strict, e2e_yield, p-value, and every real file, commit, run, and arm name. Only the narrative around them has to be plain.
 
 ## Words
 
-14. **Use the word a coworker would say out loud.** start (not commence), use (not utilize or
-    leverage), end (not terminate), fix (not remediate), after (not subsequent to), before (not
-    prior to), stop (not cease), enough (not sufficient), way (not methodology), help (not
-    facilitate), many (not numerous), if (not in the event that).
-15. **Banned fancy words.** delve, foster, leverage, utilize, facilitate, empower, streamline,
-    robust, cutting-edge, paradigm, tapestry, realm, beacon, multifaceted, meticulous, intricate,
-    paramount, transformative, elevate, embark, supercharge, harness, ever-evolving, seamless,
-    comprehensive, pivotal, holistic, myriad, additionally, crucial, enhance, enduring, garner,
-    interplay, showcase, testament, underscore, landscape (as an abstract noun), vibrant.
-16. **Banned marketing words.** easy, simple, simply, quick, powerful. Replace with the concrete
-    fact: "one command", "default settings work".
-17. **Empty qualifiers, cut them.** very, just, really, actually, essentially, exactly, arguably,
-    significantly, typically, generally, fundamentally, importantly, strictly. If a quantity
-    matters, give the number.
-18. **Cut adverbs or use a stronger verb.** "runs quickly" becomes "is fast" or the number.
-    "significantly improves" becomes the measured delta. An adverb propping up a weak verb means
-    the verb is wrong.
-19. **Repo names beat the banned list.** `browser-harness.mjs` stays "the browser harness".
-    "harness the power of" does not.
+13. Use the word a coworker would say out loud: start (not commence), use (not utilize or leverage), end (not terminate), fix (not remediate), after (not subsequent to), before (not prior to), enough (not sufficient), way (not methodology), help (not facilitate), if (not in the event that), to (not in order to), because (not due to the fact that).
+14. Do not use these words: delve, foster, leverage, utilize, facilitate, empower, streamline, robust, cutting-edge, paradigm, tapestry, realm, beacon, multifaceted, meticulous, intricate, paramount, transformative, elevate, embark, supercharge, harness, ever-evolving, seamless, comprehensive, pivotal, holistic, myriad, additionally, crucial, enhance, enduring, garner, interplay, showcase, testament, underscore, landscape (as an abstract noun), vibrant.
+15. Do not use marketing words: easy, simple, simply, quick, powerful. Write the concrete fact, such as "one command".
+16. Cut empty qualifiers and adverbs: very, just, really, actually, essentially, exactly, arguably, significantly, typically, generally, fundamentally, importantly, strictly. If a quantity matters, give the number. An adverb that props up a weak verb means the verb is wrong.
+17. Repo names beat the banned lists. `browser-harness.mjs` stays "the browser harness". "harness the power of" does not.
 
 ## Sentences
 
-20. **Active voice.** Append "by monkeys". If it still parses, it is passive; name the actor.
-    "The lock is acquired" becomes "the wrapper takes the lock".
-21. **Verbs do the work.** "made a decision" becomes "decided". "has the ability to" becomes
-    "can". "serves as", "stands as", "boasts", "features", "provides", "offers" all become "is"
-    or "has".
-22. **About 20 words per sentence, one idea each.** If the reader has to backtrack, split it.
-23. **Vary the length on purpose.** One idea per sentence does not mean one length per sentence.
-    Short sentences land a point. A longer sentence can carry a fact with its condition. All
-    clipped is as machine-made as all long.
-24. **Concrete beats abstract, the portability test.** If the sentence could move unchanged into
-    another project, it says nothing about this one. Cut it or replace it with a fact, number,
-    path, or consequence. "improves efficiency" becomes "cut deploy time from 40 min to 4". "The
-    finish line is measured in days" becomes "at ~150,000 posts a day the remaining brands finish
-    in three days".
-25. **Say what it does, not how it feels.** "the database stays close at hand", "SQL you can
-    read" name a feeling. The fix names the mechanism or a number: "`.toSQL()` returns the exact
-    string sent to the database", "a column rename fails the build".
-26. **Machines do not do human-physical actions.** "the token holds" becomes "the token stores".
+18. Use active voice and name the actor. "The lock is acquired" becomes "the wrapper takes the lock".
+19. Let verbs do the work. "made a decision" becomes "decided". "serves as", "boasts", "features", "provides", and "offers" become "is" or "has", or say what it does in this flow.
+20. Keep sentences to about 20 words and one idea each, but vary the length on purpose. All clipped reads as machine-made as all long.
+21. Apply the portability test. If the sentence could move unchanged into another project, it says nothing about this one. Replace it with a fact, number, path, or consequence: "improves efficiency" becomes "cut deploy time from 40 min to 4". Say what a thing does, not how it feels: "SQL you can read" becomes "`.toSQL()` returns the exact string sent to the database".
+22. Machines do not do human-physical actions. "the token holds" becomes "the token stores".
+23. Put the condition before the instruction: "To delete the document, click Delete." Write instructions as commands, one per sentence.
+24. Keep "only" and "not" next to the word they change. Make every "it" and "this" point at one obvious noun, and keep "the" and "a".
+25. Make every count, path, and symbol true at the commit that lands it, and give the command that regenerates a count.
 
 ## AI-tell patterns, cut on sight
 
-27. **Importance puffery.** "plays a vital role", "marks a pivotal moment", "underscores", "a
-    testament to", "setting the stage for". State the fact; the reader judges importance.
-28. **Binary contrasts.** "It's not X, it's Y", "not just X but Y", "not a wrong number but a
-    correct one". State Y.
-29. **Faux insight.** "here's the thing", "what most people miss". Make the claim stand alone.
-30. **Meta-narration and summary transitions.** "this section describes", "as mentioned", "it's
-    worth noting", "let's look at", "in other words", "with this setup complete", "now that we've
-    explored". Delete and state the point.
-31. **Superficial -ing clauses that pretend to explain.** "..., highlighting the team's
-    commitment", "ensuring reliability". Replace with the real consequence or delete.
-32. **Weasel attribution.** "studies show", "experts believe", "industry reports suggest",
-    "widely regarded". Name the file, log, measurement, or person, or cut the claim.
-33. **Synonym cycling.** the wrapper, the runner, the tool, the harness for one thing. Pick the
-    code's name and repeat it.
-34. **Spec-sheet voice.** "provides", "is configurable", "offers". Say what it does in this
-    flow.
-35. **Rule of three.** Do not force ideas into groups of three, and do not build alliterative
-    triples ("Good data, good method, good insights"). Use the natural number. Three real items
-    counted from data are fine.
-36. **False ranges.** "from X to Y" where X and Y are not on a scale. List the items.
-37. **Filler phrases.** "in order to" becomes "to". "due to the fact that" becomes "because".
-    "it is important to note that" is deleted.
-38. **Excessive hedging.** "could potentially possibly be argued that it might" becomes "may", or
-    becomes the measurement.
-39. **Chatbot phrases and sycophancy.** "I hope this helps", "Let me know if", "Of course",
-    "Certainly", "Found the smoking gun", "Great question", "You're absolutely right". Answer
-    directly.
-40. **Cutoff disclaimers.** "While specific details are limited". Go find the fact or drop the
-    claim.
-41. **Generic conclusions.** "The future looks bright." State the plan or the number.
+26. Cut importance puffery such as "plays a vital role", "marks a pivotal moment", and "setting the stage for". State the fact.
+27. Cut binary contrasts such as "It's not X, it's Y" and "not just X but Y". State Y.
+28. Cut faux insight such as "here's the thing" and "what most people miss".
+29. Cut meta-narration such as "this section describes", "as mentioned", "it's worth noting", and "let's look at".
+30. Cut -ing clauses that pretend to explain, such as "..., highlighting the team's commitment". Write the real consequence or delete the clause.
+31. Cut weasel attribution such as "studies show". Name the file, log, measurement, or person, or cut the claim.
+32. Call one thing by one name. Pick the code's name and repeat it instead of cycling through "the wrapper", "the runner", and "the tool".
+33. Do not force ideas into groups of three or build alliterative triples. Use the natural number.
+34. Do not write "from X to Y" when X and Y are not on a scale. List the items.
+35. Cut hedging. "could potentially be argued that it might" becomes "may", or the measurement.
+36. Cut chatbot phrases such as "I hope this helps", "Let me know if", "Certainly", "Great question", and "You're absolutely right". Answer directly.
+37. Cut cutoff disclaimers ("While specific details are limited") and generic conclusions ("The future looks bright"). Find the fact, or state the plan or the number.
 
 ## Invented jargon and abstract metaphor nouns
 
-42. **Repo jargon is fine, invented jargon is not.** `frontier`, `quiesce` where the code says
-    quiesce, `CAS`: fine, the code names these. Inventing dramatic vocabulary for ordinary things
-    is not: "epilogue" for cleanup, "the noise machine" for a worker, "the spine" for a module
-    list, "the zero-LLM walker on an unseen frame" for a code-only finder run against a test set
-    it was never tuned against.
-43. **Abstract metaphor nouns, with their plain replacement.** substrate (base), wedge in (add),
-    vector (way, method), locus, vantage, nexus, primitive as a noun, harness as a metaphor,
-    surface as in "API surface", bedrock, scaffolding as a metaphor, modality, gold-plating (more
-    than the job needs), ratchet (the mechanism's real name, or "a limit that only tightens"),
-    evacuate (move out), endgame (the last phase), north star, flywheel.
-44. **The list is not the rule.** Rule 24, the portability test, is the rule. "Gate the parcel,
-    not the desk" is on no ban list and is still invented jargon, because the sentence could be
-    pasted into any repo and would still say nothing. The correct form names the mechanism: "lint
-    the commit being pushed, not the working tree".
+38. Use repo jargon the code names, such as `frontier` or `CAS`. Do not invent dramatic words for ordinary things: "epilogue" for cleanup, "the spine" for a module list.
+39. Replace abstract metaphor nouns with the plain word: substrate (base), wedge in (add), vector (way), locus, vantage, nexus, primitive as a noun, harness as a metaphor, surface as in "API surface", bedrock, scaffolding, modality, gold-plating (more than the job needs), ratchet (the real mechanism name, or "a limit that only tightens"), evacuate (move out), endgame (the last phase), north star, flywheel.
+40. The portability test is the rule, and the lists only give examples. "Gate the parcel, not the desk" is on no list and still says nothing. Name the mechanism: "lint the commit being pushed, not the working tree".
 
 ## Failure reports
 
-From the user's note `failure_reports_name_component_error_and_own_cause`. Every failure report
-carries all five, in this order.
+Every failure report carries all five, in this order.
 
-45. The service and its address.
-46. The exact status codes or exception types, with counts.
-47. How many units of work failed, and how the failures split by kind.
-48. Whether it works now, with a measured number.
-49. Your own contribution, before any vendor blame.
+41. The service and its address.
+42. The exact status codes or exception types, with counts.
+43. How many units of work failed, and how the failures split by kind.
+44. Whether it works now, with a measured number.
+45. Your own contribution, before any vendor blame.
 
-Never use a vague noun for the failing thing: "the gateway", "infra", "capacity", "transport".
-State what happened, not a rounded story. If one run failed and two later probes hung, say that.
-Do not compress it into "both attempts".
+Never use a vague noun for the failing thing: "the gateway", "infra", "capacity", "transport". State what happened, not a rounded story. If one run failed and two later probes hung, say that. Do not compress it into "both attempts".
 
 ## Specs and tickets
 
 A spec or ticket should read like the owner typed it in a minute. Model: auto-sns-agent SPEC-13.
 
-50. **Title says what works.** "Every link on the landing page opens."
-51. **Notes are 0 to 3 short lines,** only what the tester needs: account, target, known blocker. No
-    background story, dates, commit ids, decision codes, session links, or "planned checks" lists.
-52. **One criterion is one short line,** about 15 words, starting with `Local:`, `Staging:` or
-    `Production:`. It says what a person would see. No tool lists, no reasons, no "(60 today)".
-53. **Evidence goes elsewhere.** Put the audit, numbers and history in the session report and link it
-    once if needed.
-
-## What was dropped from pstack unslop, and why
-
-- **The whole "Adding soul" section.** It told the writer to have opinions, use "I", "let some
-  mess in", and acknowledge complexity, with the worked example "there's something unsettling
-  about agents churning away at 3am". That sentence names a feeling, so it is banned by pstack
-  unslop's own rule 27 and by the user's note on editorialising. The two survivable pieces are
-  kept above: vary the rhythm (rule 23) and be specific over sterile (rule 24).
-- **Name-dropping media outlets, promotional travel copy, formulaic "despite challenges"
-  sentences.** Journalism failure modes. Zero hits in 4,237 words of this user's real output.
-- **The suggestion to cite this file's rule numbers.** Rewrite the text; do not annotate it.
-
-Verification, meaning how you prove a claim rather than how you word it, is a separate rule. See
-the prompt note `liveness_checks_probe_the_capability_you_need`. This file does not cover it.
+46. The title says what works: "Every link on the landing page opens."
+47. Notes are 0 to 3 short lines with only what the tester needs: account, target, known blocker. No background story, dates, commit ids, decision codes, session links, or "planned checks" lists.
+48. One criterion is one short line, about 15 words, starting with `Local:`, `Staging:` or `Production:`. It says what a person would see. No tool lists, no reasons, no "(60 today)".
+49. Evidence goes elsewhere. Put the audit, numbers and history in the session report and link it once if needed.
 
 ## Self-audit before sending
 
-Count, do not eyeball:
+Ask "what makes this obviously AI generated?" and fix it. Then count:
 
-- em dashes: must be 0.
-- bold spans: 3 or fewer, none longer than about 40 characters.
-- headings: sentence case, each one naming its contents.
-- any sentence that could be pasted into another project unchanged: cut it.
-- any praise of your own work: cut it.
+- The text has 0 em dashes.
+- The text has 3 or fewer bold spans, none longer than about 40 characters.
+- Each heading is sentence case and names its contents.
+- No sentence could be pasted unchanged into another project.
+- No sentence praises your own work.

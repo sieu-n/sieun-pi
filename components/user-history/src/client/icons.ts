@@ -51,6 +51,13 @@ export const ICON_PATHS = {
   grip: "M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01",
   expandBox: "M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7",
   external: "M14 4h6v6M20 4l-9 9M11 6H5v13h13v-6",
+  chart: "M4 20h16M7 16v-4M12 16V7M17 16v-7",
+  palette: "M12 3a9 9 0 0 0 0 18c1 0 1.7-.7 1.7-1.6 0-.5-.2-.8-.5-1.2-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5c0-4.1-4-7.5-9-7.5zM7.5 11.5h.01M9.5 7.5h.01M14.5 7.5h.01M17 11h.01",
+  phone: "M8 3h8a1.5 1.5 0 0 1 1.5 1.5v15A1.5 1.5 0 0 1 16 21H8a1.5 1.5 0 0 1-1.5-1.5v-15A1.5 1.5 0 0 1 8 3zM11 18h2",
+  hash: "M5 9h15M4 15h15M10 4L8 20M16 4l-2 16",
+  download: "M12 4v11M7 10l5 5 5-5M5 20h14",
+  bookmark: "M6.5 3.5h11v17L12 16.5l-5.5 4z",
+  book: "M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3M9 7h6",
 } as const;
 export type IconName = keyof typeof ICON_PATHS;
 

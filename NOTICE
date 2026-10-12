@@ -12,8 +12,8 @@ pstack
   docs/attribution-pstack.json, including the poteto-agent and comment-sicko
   personas. Local changes adapt Cursor instructions to Prime Agent, update
   model selection, and add the owner's workflow and writing rules.
-  The pstack-derived writing rules also inform the Virev linter and the
-  linear-ticket writing checks. The notice does not claim pstack authorship
+  The pstack-derived writing rules also inform the global-rules writing
+  rules and the linear-ticket writing checks. The notice does not claim pstack authorship
   of those local implementations.
 
 Prime Agent and Pi

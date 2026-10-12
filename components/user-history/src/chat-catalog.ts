@@ -1,9 +1,10 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { DaemonClient, parseSkillBlock, type SessionSummary } from "prime-agent";
 import type { ChatLabels } from "./chat-labels.ts";
-import { chatAgents, withRates, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { chatAgents, stepSessions, withRates, type AgentRow, type SubagentSession } from "./chat-agents.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
@@ -195,31 +196,40 @@ export function childrenByParent(children: readonly SessionSummary[]): Map<strin
   return map;
 }
 
-export interface Subtree { cost?: number; running: number }
+export interface Subtree { cost?: number; running: number; total: number }
 
 /**
  * The terminal agents view's numbers for a thread's subagent tree: `recursiveCost` (own cost plus every subagent below it, live or saved, as
- * `computeRecursiveRollups` adds it) and `runningSubagentCount` (running subagents at any depth).
+ * `computeRecursiveRollups` adds it), `runningSubagentCount` (running subagents at any depth) and `total`, every subagent the daemon still lists
+ * below it.
  */
 export function subtreeOf(row: SessionSummary, children: ReadonlyMap<string, SessionSummary[]>): Subtree {
   let cost = row.usage && Number.isFinite(row.usage.cost) ? row.usage.cost : undefined;
   let running = 0;
+  let total = 0;
   const seen = new Set<string>([row.sessionId]);
   const pending = [...(children.get(row.sessionId) ?? [])];
   for (let child = pending.pop(); child; child = pending.pop()) {
     if (seen.has(child.sessionId)) continue;
     seen.add(child.sessionId);
+    total++;
     if (child.usage && Number.isFinite(child.usage.cost)) cost = (cost ?? 0) + child.usage.cost;
     if (nativeStatus(child) === "running") running++;
     pending.push(...(children.get(child.sessionId) ?? []));
   }
-  return { ...(cost !== undefined ? { cost } : {}), running };
+  return { ...(cost !== undefined ? { cost } : {}), running, total };
 }
 
 export interface RowExtras { labels?: ThreadLabels; schedule?: ThreadSchedule; pulse?: SessionPulse; subtree?: Subtree; chat?: boolean; origin?: ThreadOrigin; agents?: ChatAgent[]; checkIn?: CheckInState; brief?: ChatBriefState }
 
-/** A chat's direct subagent sessions as `chatAgents` takes them: the daemon status, the failure, and the first task text for a derived display name. */
-export function subagentSessions(children: readonly SessionSummary[]): SubagentSession[] {
+/** Running subagents below a session at any depth, the count the sidebar shows under a thread ("2 subagents"). */
+export const runningSubagents = (row: SessionSummary, subtree?: Subtree): number => Math.max(subtree?.running ?? 0, row.hasRunningRlmChildren === true ? 1 : 0);
+
+/**
+ * A chat's direct subagent sessions as `chatAgents` takes them: the daemon status, the failure, the first task text for a derived display name,
+ * and the running and listed subagents below each one, from `tree` (sessions by parent id).
+ */
+export function subagentSessions(children: readonly SessionSummary[], tree: ReadonlyMap<string, SessionSummary[]> = new Map()): SubagentSession[] {
   return children.map((row): SubagentSession => {
     const running = nativeStatus(row) === "running";
     const failed = row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row);
@@ -227,9 +237,45 @@ export function subagentSessions(children: readonly SessionSummary[]): SubagentS
     const at = row.lastActivityAt ?? row.modified;
     const name = row.sessionName?.replace(/\s+/g, " ").trim();
     const first = firstTask(row);
+    const subtree = subtreeOf(row, tree);
+    const subagents = runningSubagents(row, subtree);
+    const total = Math.max(subtree.total, subagents);
     return { sessionId: row.sessionId, ...(row.rlmChildId ? { childId: row.rlmChildId } : {}), ...(name ? { name } : {}), ...(first ? { first } : {}), running, failed,
-      ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: at } : {}) };
+      ...(activity ? { activity } : {}), ...(at ? { lastActivityAt: at } : {}), ...(subagents ? { subagentsRunning: subagents } : {}), ...(total ? { subagentsTotal: total } : {}) };
   });
+}
+
+/**
+ * The folder whose `sub-*` folders are a session's spawned subagents: a subagent's own folder beside its session file, a top-level session's
+ * `session-artifacts/<id>`. Undefined without a session file.
+ */
+export function subagentFolder(row: Pick<SessionSummary, "sessionId" | "sessionFile" | "parentSessionId">): string | undefined {
+  if (!row.sessionFile) return undefined;
+  return row.parentSessionId ? dirname(row.sessionFile) : join(dirname(dirname(row.sessionFile)), "session-artifacts", row.sessionId);
+}
+
+/** How long a folder's spawned count is reused; the daemon tree covers subagents spawned since. */
+export const SPAWNED_MS = 30_000;
+const spawnedCounts = new Map<string, { at: number; count: number }>();
+async function countSpawned(folder: string): Promise<number> {
+  const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
+  const counts = await Promise.all(entries.filter(entry => entry.isDirectory() && entry.name.startsWith("sub-")).map(async entry => {
+    const child = join(folder, entry.name);
+    const inner = await readdir(child).catch(() => [] as string[]);
+    return (inner.includes("rlm-subagent.json") ? 1 : 0) + await countSpawned(child);
+  }));
+  return counts.reduce((sum, count) => sum + count, 0);
+}
+/**
+ * Every subagent ever spawned below `folder` at any depth, finished and deleted ones included: each `sub-*` folder holding an rlm-subagent.json.
+ * The daemon drops a subagent from its list once rlm.delete_subagent removes it, but its folder stays. Cached per folder for SPAWNED_MS.
+ */
+export async function spawnedSubagents(folder: string, now = Date.now()): Promise<number> {
+  const cached = spawnedCounts.get(folder);
+  if (cached && now - cached.at < SPAWNED_MS) return cached.count;
+  const count = await countSpawned(folder);
+  spawnedCounts.set(folder, { at: now, count });
+  return count;
 }
 
 /** Working: the thread's own turn runs, or any subagent below it runs (`isSessionSummaryBusy` in the daemon counts both). */
@@ -244,7 +290,7 @@ export function projectRow(row: SessionSummary, readMarker: number | undefined, 
   const finishedAt = Number.isFinite(lastActivity) ? lastActivity : 0;
   const status: SessionRow["status"] = !live ? "saved" : nativeStatus(row) === "running" ? "running" : "idle";
   const working = isWorking(row, extras.subtree);
-  const subagentsRunning = Math.max(extras.subtree?.running ?? 0, row.hasRunningRlmChildren === true ? 1 : 0);
+  const subagentsRunning = runningSubagents(row, extras.subtree);
   const cost = extras.subtree ? extras.subtree.cost : row.usage && Number.isFinite(row.usage.cost) ? row.usage.cost : undefined;
   return {
     id: row.sessionId,
@@ -307,13 +353,20 @@ export class Catalog {
   readonly client: DaemonClient;
   /** Output rates by session id, from the usage service once the backend wires it; the default answers with none. */
   ratesSource: (sessionIds: readonly string[]) => Promise<Record<string, TokenRate>> = async () => ({});
+  /** Stores a chat's step owners' session ids on its board (`stepSessions`), once the backend wires the board store; it never rejects. The default stores none. */
+  linkSessions: (chatId: string, links: ReadonlyMap<string, { job: string; sessionId: string }>) => Promise<void> = async () => {};
   private rates: { key: string; at: number; value: Record<string, TokenRate> } | undefined;
   private ratesTimer: ReturnType<typeof setTimeout> | undefined;
   private summaries = new Map<string, SessionSummary>();
   private childSummaries: SessionSummary[] = [];
   private schedules = new Map<string, ThreadSchedule>();
-  /** Called with `daemon_hello.appVersion` after each daemon connect, so a Prime Agent update is seen when the daemon comes back. */
-  onDaemonVersion: (version: string | undefined) => void = () => {};
+  private observedDaemonVersion: { version: string | undefined } | undefined;
+  private daemonVersionListener: (version: string | undefined) => void = () => {};
+  /** A backend can connect before SDK sync is attached. Replay that hello as well as later reconnects. */
+  set onDaemonVersion(listener: (version: string | undefined) => void) {
+    this.daemonVersionListener = listener;
+    if (this.observedDaemonVersion) listener(this.observedDaemonVersion.version);
+  }
   private readonly listeners = new Set<(event: SessionsEvent) => void>();
   private daemon: "up" | "down" = "down";
   private lastError: string | undefined;
@@ -366,7 +419,8 @@ export class Catalog {
       try {
         await this.client.reconnect(1500);
         const hello = await this.client.waitForHello(1500);
-        this.onDaemonVersion(hello.appVersion);
+        this.observedDaemonVersion = { version: hello.appVersion };
+        this.daemonVersionListener(hello.appVersion);
         const response = await this.client.request({ type: "roster_subscribe" }, 10000, { recoverable: false });
         if (!response.success) throw new Error(response.error);
         this.subscribed = true;
@@ -471,8 +525,10 @@ export class Catalog {
     const chatRows = rows.filter(row => row.chat);
     for (const row of chatRows) {
       const links = await this.chats.links(row.id).catch(() => null);
-      row.agents = chatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? []),
+      row.agents = chatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children),
         board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
+      const sessions = stepSessions(links?.board ?? null, row.agents);
+      if (sessions.size) void this.linkSessions(row.id, sessions);
       if (links?.board?.plan.length) row.plan = planCounts(links.board.plan);
       const forYou = links?.board?.todos.filter(todo => !todo.done).length ?? 0;
       if (forYou) row.forYou = forYou;
@@ -483,6 +539,12 @@ export class Catalog {
     }
     const rates = await this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
     for (const row of chatRows) row.agents = withRates(row.agents ?? [], rates);
+    await Promise.all(chatRows.flatMap(row => row.agents ?? []).map(async agent => {
+      const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
+      const folder = session ? subagentFolder(session) : undefined;
+      const spawned = folder ? await spawnedSubagents(folder, now) : 0;
+      if (spawned > (agent.subagentsTotal ?? 0)) agent.subagentsTotal = spawned;
+    }));
     this.scheduleRates(chatRows.some(row => row.agents?.some(agent => agent.state === "working")));
     return { rows, tags: labels?.tags ?? [] };
   }

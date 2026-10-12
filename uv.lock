@@ -21,6 +21,11 @@ version = "0.1.0"
 source = { editable = "skills/aside-browser" }
 
 [[package]]
+name = "board"
+version = "1.0.0"
+source = { editable = "skills/board" }
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -236,6 +241,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aside-browser" },
+    { name = "board" },
     { name = "httpx" },
     { name = "linear-ticket" },
     { name = "pillow" },
@@ -246,6 +252,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aside-browser", editable = "skills/aside-browser" },
+    { name = "board", editable = "skills/board" },
     { name = "httpx" },
     { name = "linear-ticket", editable = "skills/linear-ticket" },
     { name = "pillow" },

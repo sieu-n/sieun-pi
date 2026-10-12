@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { SdkSync } from "../src/chat-sdk.ts";
+import { loadedClientVersion, packageVersionAbove, SdkSync } from "../src/chat-sdk.ts";
 
 function fakeScript(dir: string, exitCode: number): string {
   const script = join(dir, `sync-${exitCode}.mjs`);
@@ -57,5 +57,46 @@ test("sdk: a failed update is kept across restarts and not retried until Retry o
     await second.daemonVersion("9.9.10");
     assert.equal(calls(dir).length, 2, "auto off runs nothing");
     assert.equal((await second.view()).auto, false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("sdk: a daemon that ships the SDK the chat already uses is matched once checked, with no restart and no second run", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "chat-sdk-"));
+  try {
+    const script = join(dir, "sync-ships.mjs");
+    writeFileSync(script, `
+      import { appendFileSync } from "node:fs";
+      appendFileSync(${JSON.stringify(join(dir, "calls.txt"))}, process.argv.slice(2).join(" ") + "\\n");
+      console.log(JSON.stringify({ step: "done", message: "The chat client already uses prime-agent 0.9.8, the SDK Prime Agent 0.10.0 ships.", target: "0.10.0", sdk: "0.9.8", changed: false }));
+    `);
+    const options = { client: "0.9.8", build: "b1", canRestart: true, restart: () => { throw new Error("must not restart"); }, script };
+    const first = new SdkSync(join(dir, "sdk.json"), options);
+    await first.daemonVersion("0.10.0");
+    const view = await settle(first);
+    assert.deepEqual(calls(dir), ["--version 0.10.0 --json"]);
+    assert.equal(view.update.state, "idle");
+    assert.equal(view.matched, true);
+    assert.equal(view.sdk, "0.9.8");
+    const second = new SdkSync(join(dir, "sdk.json"), options);
+    await second.daemonVersion("0.10.0");
+    assert.equal((await second.view()).matched, true, "the shipped SDK survives a restart");
+    assert.equal(calls(dir).length, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("sdk: the loaded prime-agent version comes from the package Node resolved, wherever its node_modules sits", () => {
+  const dir = mkdtempSync(join(tmpdir(), "chat-sdk-resolve-"));
+  try {
+    // An npm install hoists prime-agent next to sieun-pi: <prefix>/node_modules/prime-agent, with no node_modules inside the component.
+    const entry = join(dir, "node_modules", "prime-agent", "dist", "index.js");
+    mkdirSync(join(dir, "node_modules", "prime-agent", "dist"), { recursive: true });
+    writeFileSync(entry, "");
+    writeFileSync(join(dir, "node_modules", "prime-agent", "dist", "package.json"), JSON.stringify({ type: "module" }));
+    writeFileSync(join(dir, "node_modules", "prime-agent", "package.json"), JSON.stringify({ name: "prime-agent", version: "9.8.7" }));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "sieun-pi", version: "1.0.0" }));
+    assert.equal(packageVersionAbove(entry, "prime-agent"), "9.8.7", "a nested package.json without the name is passed over");
+    assert.equal(packageVersionAbove(join(dir, "elsewhere", "index.js"), "prime-agent"), null);
+    const installed = JSON.parse(readFileSync(join(import.meta.dirname, "..", "node_modules", "prime-agent", "package.json"), "utf8")) as { version: string };
+    assert.equal(loadedClientVersion(), installed.version, "a checkout resolves the component's own copy");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -249,7 +249,7 @@
   .composer { position: relative; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--bg-elevated); box-shadow: var(--shadow-small); transition: border-color 0.15s ease, box-shadow 0.15s ease; }
   .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong)); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow-small); }
   .composer.dragging { border-color: var(--accent); background: var(--accent-soft); }
-  textarea { display: block; width: 100%; resize: none; border: 0; background: none; outline: none; padding: 13px 16px 4px; line-height: 1.5; max-height: 40vh; font-size: 15px; }
+  textarea { display: block; width: 100%; resize: none; border: 0; background: none; outline: none; padding: 13px 16px 4px; line-height: 1.5; max-height: 40vh; font-size: var(--chat-text); }
   textarea::placeholder { color: var(--text-faint); }
   .bar { display: flex; align-items: center; gap: 4px; padding: 4px 8px 8px; min-width: 0; }
   .slot { display: flex; align-items: center; gap: 2px; min-width: 0; }

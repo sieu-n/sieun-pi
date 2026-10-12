@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { boardClasses, type DaemonSession } from "../scripts/duties/board-classes.ts";
 import { fixArgs } from "../scripts/corrections-fix.ts";
-import { checkInDigest, checkInJobBrief, checkInJobMessage, isHandoffTarget, matchTopic, scopeLine, scopeMisses, STEP_STALE_MS } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, isHandoffTarget, matchTopic, scopeLine, scopeMisses } from "../src/chat-checkin.ts";
 import { applyCorrection, type ChatRef, CorrectionLedger, correctionResult, handoffRules, type HandoffRule, type Ledger, ledgerPrompt, parseCorrectionCall, parseLedger } from "../src/chat-corrections.ts";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
@@ -53,7 +53,7 @@ test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad 
     assert.equal(broken.corrections.length, 1, "the entry stays");
     assert.equal(broken.corrections[0]!.handoff, undefined);
     assert.deepEqual(handoffRules(read), [{ correction: "c1", to: OPS, topics: TOPICS }]);
-    assert.match(ledgerPrompt(read)!, /- c1 Machine work goes to ops guy\. Steps on M1 Air, M2 Air, Mac load, load average, swap, memory pressure, launchd belong to ops guy \(\+observability\)\./);
+    assert.match(ledgerPrompt(read, new Set())!, /- c1 Machine work goes to ops guy\. Steps on M1 Air, M2 Air, Mac load, load average, swap, memory pressure, launchd belong to ops guy \(\+observability\)\./);
     await store.apply(parseCorrectionCall({ id: "c1", status: "retired" }), VP);
     assert.deepEqual(handoffRules(await store.read()), []);
     const args = fixArgs(["c1", "--ref", "abc1234", "--status", "active", "--handoff-to", OPS, "--topics", "swap,launchd", "--data-dir", dir]);
@@ -66,7 +66,7 @@ test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("scope: a topic as whole words in a step's text or note; not in the target chat, not when handed off, waiting on or owned by the target", () => {
+test("scope: a topic as whole words in a step's text; not in the target chat, not when handed off, waiting on or owned by the target", () => {
   const cases: [string, string | undefined][] = [
     ["Check the M2 Air swap use", "M2 Air"], ["Find why the m1-air is slow", "M1 Air"], ["Mac load is 40", "Mac load"], ["Lower memory pressure on this Mac", "memory pressure"],
     ["Swapper service config", undefined], ["Air quality chart", undefined], ["Reload averages", undefined], ["Ship the launch page", undefined], ["Two launchd agents", "launchd"],
@@ -78,8 +78,8 @@ test("scope: a topic as whole words in a step's text or note; not in the target 
   assert.equal(isHandoffTarget(OPS, ["vp", "dev VP"]), false);
 
   const plan = board([
-    step("p1", "Machines", "doing", { note: "the M1 Air swaps", children: [step("p2", "Check swap on the M1 Air", "todo"), step("p3", "Also launchd", "todo")] }),
-    step("p4", "Usage panel", "doing", { note: "load average spikes at 14:00", children: [] }),
+    step("p1", "Machines on the M1 Air", "doing", { note: "the M1 Air swaps", children: [step("p2", "Check swap on the M1 Air", "todo"), step("p3", "Also launchd", "todo")] }),
+    step("p4", "Usage panel: load average spikes at 14:00", "doing", { children: [] }),
     step("p5", "Land the fix", "doing"),
     step("p6", "Memory pressure", "todo", { note: "handed off to ops guy at 13:10" }),
     step("p7", "Mac load", "blocked", { waitFor: "ops guy answer" }),
@@ -90,32 +90,22 @@ test("scope: a topic as whole words in a step's text or note; not in the target 
   const misses = scopeMisses(plan, [RULE], ["vp", "dev VP"]);
   assert.deepEqual(misses.map(miss => `${miss.item.id} ${miss.topic}`), ["p1 M1 Air", "p4 load average", "p10 launchd"],
     "a goal covers its steps; a done step, a handoff, a wait on the target and the target as owner are left");
-  assert.equal(scopeLine(misses[0]!), `p1 "Machines" belongs to ${OPS} (correction c7): hand it off with a message to that thread and remove it from this plan`);
+  assert.equal(scopeLine(misses[0]!), `p1 "Machines on the M1 Air" belongs to ${OPS} (correction c7): hand it off with a message to that thread and remove it from this plan`);
   const byId = { ...RULE, to: `${OPS}, thread:01a11af8-962e-773d-a19a-ee4104011987` };
   assert.deepEqual(scopeMisses(plan, [byId], ["vp", "dev VP"]).map(miss => miss.item.id), ["p1", "p4"], "an owner by the session id that `to` holds");
   assert.deepEqual(scopeMisses(plan, [RULE], ["01a11af8-962e-773d-a19a-ee4104011987", OPS]), [], "the target chat keeps its own work");
 });
 
-test("check-in digest: a step on another thread's work gives the scope line, again after 2 h; it is a scope item for the fan-out and its brief", () => {
-  const context = { self: ["vp", "dev VP"], name: "dev VP", handoffs: [RULE] };
-  const plan = board([step("p1", "Find what eats memory", "todo", { note: "swap 12 GB, load average 30" }), step("p2", "Write the docs", "doing", { job: "vp" })]);
-  const first = checkInDigest(undefined, [], plan, NOW, context);
-  const line = `p1 "Find what eats memory" belongs to ${OPS} (correction c7): hand it off with a message to that thread and remove it from this plan`;
-  assert.ok(first.lines.includes(line), first.lines.join(" | "));
-  assert.equal(first.memory.steps.p1!.scope, NOW);
-  const soon = checkInDigest(first.memory, [], plan, NOW + 15 * MIN, context);
-  assert.ok(!soon.lines.includes(line), "told once");
-  assert.equal(soon.memory.steps.p1!.scope, NOW);
-  assert.ok(checkInDigest(soon.memory, [], plan, NOW + STEP_STALE_MS, context).lines.includes(line), "again after 2 h");
-  const other = checkInDigest(undefined, [], plan, NOW, { ...context, self: ["ops", OPS], name: OPS });
-  assert.ok(!other.lines.some(text => text.includes("belongs to")), "not in the target chat");
-
-  const fan = checkInDigest(undefined, [], plan, NOW, { ...context, fanOut: true });
-  assert.deepEqual(fan.job?.items.map(item => `${item.id} ${item.kind}`), ["p1 scope", "p1 orphan"], "scope and orphan are two kinds: the fan-out threshold");
-  assert.match(fan.job!.items[0]!.facts, /^p1 "Find what eats memory" todo, belongs to ops guy \(\+observability\) by correction c7 \(topic "load average"\); note: "swap 12 GB, load average 30"$/);
-  assert.match(checkInJobMessage("[check-in] ", fan.job!, "/b.md"), /^\[check-in\] 2 items need checking: scope p1, orphan p1\./);
-  assert.match(checkInJobBrief(fan.job!, { id: "vp", name: "dev VP", board: "/b.json" }), /### Scope \(the owner gave this work to another thread: hand it off and remove it from the plan\)\n- p1 "Find/);
-  assert.equal(checkInDigest(undefined, [], plan, NOW, { ...context, fanOut: true, handoffs: [] }).job, undefined, "without the handoff: one kind, one item");
+test("check-in precheck: a step on another thread's work is listed with its scope line for the duty job, not in the target chat", () => {
+  const context = { self: ["vp", "dev VP"], handoffs: [RULE] };
+  const plan = board([step("p1", "Find what eats swap", "todo", { note: "12 GB, load 30" }), step("p2", "Write the docs", "doing", { job: "vp" })]);
+  const first = checkInPrecheck(undefined, [], plan, NOW, context);
+  const line = `p1 "Find what eats swap" belongs to ${OPS} (correction c7): hand it off with a message to that thread and remove it from this plan`;
+  assert.deepEqual(first.scope.map(scopeLine), [line]);
+  assert.match(checkInPrecheckText(first, [], [], NOW), new RegExp(`### Owned by another thread by an owner ruling\\n- ${line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  const other = checkInPrecheck(undefined, [], plan, NOW, { ...context, self: ["ops", OPS] });
+  assert.deepEqual(other.scope, [], "not in the target chat");
+  assert.deepEqual(checkInPrecheck(undefined, [], plan, NOW, { ...context, handoffs: [] }).scope, [], "without the handoff");
 });
 
 test("board classes: a step on another thread's work is a scope miss; chat health counts scope_misses and placeholder_todos per chat", async () => {
@@ -152,13 +142,46 @@ test("board classes: a step on another thread's work is a scope miss; chat healt
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("scope: a step's text may name any topic, its note only a phrase of two or more words (VP of CI 10-09: p56 flagged for 'swap' in a note)", () => {
+test("scope: only a step's own text names machine work; a note that names a machine as context never flags (VP of CI 10-09, Crawler VP 10-10)", () => {
   const plan = board([step("p1", "Goal", "doing", { children: [
     step("p2", "Always-on CI dashboard with charts", "doing", { note: "The ops thread's board gets CPU, memory, swap and Docker VM numbers for both Airs." }),
     step("p3", "A services test flakes under load on a busy runner", "doing"),
     step("p4", "Cut swap on this Mac", "todo"),
     step("p5", "Watch the build", "doing", { note: "Mac load average went over 60 again during the build." }),
+    step("p79", "Build: staging memory caps in compose (crawler-api 12 to 16 GiB, redis 10 to 6 GiB, total unchanged)", "doing",
+      { note: "Committed as 1f3a5c6c69; rides land 31. Land 31's final CI (run 38023165747) runs since 04:46Z after an M1 Air queue; staging lands about 05:45Z, then two staging memory reads." }),
+    step("p8", "Free memory on the M1 Air: stop idle kernels", "todo"),
   ] })]);
-  assert.deepEqual(scopeMisses(plan, [RULE], ["ci", "VP of CI"]).map(miss => `${miss.item.id} ${miss.topic}`), ["p4 swap", "p5 Mac load"],
-    "no false positive on a one-word topic in a note or a bare 'load'; the step text and a phrase in a note still flag (no false negative)");
+  assert.deepEqual(scopeMisses(plan, [RULE], ["crawler", "Crawler VP"]).map(miss => `${miss.item.id} ${miss.topic}`), ["p4 swap", "p8 M1 Air"],
+    "notes never flag (p2 swap, p5 Mac load average, p79 the M1 Air CI queue); a step whose own text is machine work still flags (p4, p8)");
+});
+
+test("scope: a handoff with `with` words flags only steps that also name one of them (VP of CI 10-10, c36: a CI health check is not a local uptime check)", () => {
+  const rule: HandoffRule = { correction: "c36", to: OPS, topics: ["200 check", "health check", "uptime", "local environment"],
+    with: ["wiki", "5174", "Convex", "crawler API", "local environment", "frontend app", "localhost"] };
+  const plan = board([step("p1", "Goal", "doing", { children: [
+    step("p37", "Fix: the daily CI health check counts failed probes as a red dev branch", "doing"),
+    step("p69", "Daily CI guarantees: verify-dev, land and agent-experience targets, measured every day by the existing health check", "doing"),
+    step("p70", "Plan and build: the guarantee list with targets from today's numbers, computed in the daily health check, plus an article", "todo"),
+    step("p80", "Uptime checks for the wiki and Convex: answer 200 every 10 min", "todo"),
+  ] })]);
+  assert.deepEqual(scopeMisses(plan, [rule], ["ci", "VP of CI"]).map(miss => `${miss.item.id} ${miss.topic}`), ["p80 uptime"],
+    "the three CI steps name no local target; the wiki and Convex uptime step still flags");
+  assert.deepEqual(scopeMisses(plan, [{ ...rule, with: undefined } as unknown as HandoffRule], ["ci", "VP of CI"]).map(miss => miss.item.id), ["p70", "p80"],
+    "without `with`, a step that names CI is CI work; p70 does not name CI and its goal here does not either");
+});
+
+test("scope: a step that names CI, or sits under a goal that does, is never another thread's by a handoff whose topics do not name CI (VP of CI 10-12, c36 with no `with` words in the live ledger)", () => {
+  const rule: HandoffRule = { correction: "c36", to: OPS, topics: ["200 check", "health check", "uptime", "local environment"] };
+  const plan = board([
+    step("p15", "This thread watches how CI is used", "doing", { children: [
+      step("p37", "Fix: the daily CI health check counts failed probes as a red dev branch", "doing", { job: "disk guard rework" })] }),
+    step("p60", "Standing duty: 50 agents ship code without waiting on CI, and every land rule holds", "doing", { children: [
+      step("p69", "Daily CI guarantees: verify-dev, land and agent-experience targets, measured every day by the existing health check", "doing"),
+      step("p70", "Plan and build: the guarantee list with targets from today's numbers, computed in the daily health check, plus an article", "doing")] }),
+    step("p90", "Local dev servers stay up", "doing", { children: [step("p91", "Uptime checks for the wiki and Convex: answer 200 every 10 min", "todo")] }),
+  ]);
+  assert.deepEqual(scopeMisses(plan, [rule], ["ci", "VP of CI"]).map(miss => `${miss.item.id} ${miss.topic}`), ["p91 uptime"]);
+  assert.deepEqual(scopeMisses(plan, [{ ...rule, topics: [...rule.topics, "CI runner"] }], ["ci", "VP of CI"]).map(miss => miss.item.id), ["p37", "p69", "p70", "p91"],
+    "a handoff about CI work still takes CI steps");
 });

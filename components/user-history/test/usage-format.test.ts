@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { barAt, barValue, bucketsFor, cost, defaultBucket, ingestLine, kindLabel, layout, metricOf, modelLabel, niceMax, readSummary, share, sparkPath, tokens, tps } from "../src/client/usage.ts";
+import { cacheHitShare } from "../src/shared/cache-health.ts";
+import { barAt, barValue, bucketsFor, cost, defaultBucket, hitRate, hitSpark, ingestLine, kindLabel, layout, metricOf, modelLabel, niceMax, readSummary, share, sparkPath, tokens, tps } from "../src/client/usage.ts";
 import type { UsageIngest, UsageSeries } from "../src/shared/usage.ts";
 
 const NOW = 1_791_300_000_000;
@@ -13,6 +14,18 @@ test("usage formats: tokens, cost and tok/s read like a coworker would say them"
   assert.deepEqual([null, 42.34, 128.4].map(tps), ["–", "42.3", "128"]);
   assert.equal(modelLabel("anthropic/claude-opus-5-5-20260301"), "claude-opus-5-5");
   assert.equal(modelLabel("gpt-6-astra"), "gpt-6-astra");
+});
+
+test("usage cache hit: cache read over the whole prompt, shown with one decimal, a dash with no prompt", () => {
+  assert.equal(cacheHitShare({ input: 2_000, cacheRead: 96_000, cacheWrite: 2_000 }), 0.96);
+  assert.equal(hitRate({ input: 2_000, cacheRead: 96_000, cacheWrite: 2_000 }), "96.0%");
+  assert.equal(hitRate({ input: 1_234, cacheRead: 98_766, cacheWrite: 0 }), "98.8%");
+  assert.equal(hitRate({ input: 10, cacheRead: 99_990, cacheWrite: 0 }), "100%");
+  assert.equal(hitRate({ input: 50_000, cacheRead: 0, cacheWrite: 50_000 }), "0.0%");
+  assert.equal(cacheHitShare({ input: 0, cacheRead: 0, cacheWrite: 0 }), null);
+  assert.equal(hitRate({ input: 0, cacheRead: 0, cacheWrite: 0 }), "–");
+  const spark = { input: [0, 10, 0, 50], cacheRead: [0, 90, 0, 50], cacheWrite: [0, 0, 0, 0], output: [0, 0, 0, 0], total: [0, 0, 0, 0] };
+  assert.deepEqual(hitSpark(spark), [0.9, 0.9, 0.9, 0.5]);
 });
 
 test("usage windows: each window has a default bucket that keeps the bar count sane", () => {

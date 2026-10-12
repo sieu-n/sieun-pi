@@ -8,10 +8,11 @@
     "skipLibCheck": true,
     "types": [
       "node"
-    ]
+    ],
+    "allowImportingTsExtensions": true
   },
   "include": [
-    "components/virev/extensions/**/*.ts",
+    "components/global-rules/**/*.ts",
     "components/pi-pool/app/extension/**/*.ts"
   ]
 }

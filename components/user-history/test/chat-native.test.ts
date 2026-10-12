@@ -14,6 +14,7 @@ import type { SessionsEvent, ThreadEvent, ThreadState } from "../src/shared/type
 import { applyThreadEvent } from "../src/shared/thread-state.ts";
 import { messageText } from "../src/shared/turns.ts";
 import { chatNativeProviderSource, startChatNativeCli, stopChatNativeDaemon, waitForChatNativeFile } from "./chat-native-fixture.ts";
+import { reapServeOnExit } from "./serve-reaper.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const primeRoot = resolve(dirname(fileURLToPath(import.meta.resolve("prime-agent"))), "..");
@@ -146,7 +147,8 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
   const chatData = join(config, "browser-chat");
   const chatCli = async (command: string) => (await promisify(execFile)(node,
     [join(packageRoot, "../../scripts/cli.mjs"), "chat", command, "--port", String(chatPort), "--socket", socket, "--data-dir", chatData], { env, timeout: 40000 })).stdout.trim();
-  context.after(async () => { await chatCli("stop").catch(() => {}); });
+  const reaper = reapServeOnExit(root);
+  context.after(async () => { await chatCli("stop").catch(() => {}); await reaper.stop(); });
   const chatUrl = await chatCli("start");
   const shell = await fetch(chatUrl);
   assert.equal(shell.status, 200);
@@ -168,7 +170,8 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
   const nativeArgs = [cli, "--mode", "rpc", "--daemon-socket", socket, "--agent-chat-socket", socket, "--agent-chat-port", String(chatPort), "--agent-chat-data-dir", chatData,
     "--cwd", cwd, "--no-extensions", "-e", extension, "--no-skills", "--skill", join(skillDir, "SKILL.md"), "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
     "--tools", "browser_proof_tool", "--no-themes", "--provider", "chat-native-test", "--model", "synthetic", "--no-session"];
-  const native = startChatNativeCli({ node, cwd, env, args: nativeArgs });
+  // The CLI, and the daemon it starts, run outside the project folder, so a thread that takes the daemon's folder shows up as the wrong workspace.
+  const native = startChatNativeCli({ node, cwd: root, env, args: nativeArgs });
   const daemon = new DaemonClient(socket);
   const watchers: { events: ThreadEvent[] }[] = [];
   try {
@@ -329,6 +332,7 @@ test("browser chat drives native sessions: create, stream, follow up, resume, st
     const liveSnapshot = await savedThread.waitFor(event => event.type === "snapshot" && event.snapshot.kind === "live", 30000, "resumed live snapshot");
     assert(liveSnapshot.type === "snapshot");
     assert.equal(liveSnapshot.snapshot.info.sessionId, saved.sessionId);
+    assert.equal(liveSnapshot.snapshot.info.cwd, cwd, "a resumed thread works in its recorded folder, not in the folder the daemon runs in");
     await savedThread.waitFor(event => event.type === "event" && event.event.type === "message_end" && event.event.message.role === "assistant" && JSON.stringify(event.event.message.content).includes(resumePrompt), 30000, "resumed reply");
     await savedThread.waitFor(event => event.type === "info" && !event.info.isStreaming, 20000, "resumed idle");
     const resumedTexts = savedThread.state?.messages.map(message => message.role === "user" || message.role === "assistant" ? messageText(message) : message.role);

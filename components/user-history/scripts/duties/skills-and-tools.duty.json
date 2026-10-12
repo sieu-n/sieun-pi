@@ -1,0 +1,53 @@
+{
+  "name": "Skills and tools",
+  "ownerWords": "Next to Harness health, add a duty that checks skills are configured correctly, in particular\n- computer use (Cua)\n- the search tool\nand anything else agents use.",
+  "goal": "Every skill and tool agents use on this Mac is installed, signed in and answers a real call: computer use (Cua), web search, the Aside browser, the MCP servers, the Prime skills, the Claude and Codex account sign-ins, the peer CLIs, the service CLIs and the repo skill reader. Tell the owner only what needs him.",
+  "metrics": [
+    {
+      "key": "checks_failed",
+      "label": "Skill and tool checks that fail",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "owner_fixes",
+      "label": "Failed checks only the owner can fix",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "cua_failed",
+      "label": "Failed computer use (Cua) checks",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "websearch_failed",
+      "label": "Failed web search checks",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "checks_run",
+      "label": "Checks that ran",
+      "op": ">=",
+      "target": 25
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "04:30"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/skills-and-tools.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Read each fail. Fix the agent ones yourself, one subagent per broken tool: config in ~/.prime/agent/settings.json, a stale skill text or link (commit auto-sns-agent skills with `node scripts/repo/agent/commit.mjs`; sieun-pi with a plain local commit), a CLI sign-in done in the owner's Aside browser, the websearch kernel copy. Re-check with `node --import tsx scripts/duties/skills-and-tools.ts --only <id>` in sieun-pi components/user-history. In your own kernel also run the read-only in-session calls: agent_observe.list_agents(), goal.get(), rlm_heartbeat.list(), compact.status(), mcp.list_connections(), aside_browser tabs, and await websearch(...) must not say \"not set up\". Put each owner fix (a password, a key, a macOS grant, approving a vendor install) in For you as one plain item with the exact step. off is not news. Never send anything outside.",
+  "boardGoal": "p254"
+}

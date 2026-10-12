@@ -26,9 +26,8 @@ Owner's custom setup         Public upstream source
 | --- | --- | --- |
 | pstack skills and personas | Listed in `docs/attribution-pstack.json` | MIT, copyright 2026 Lauren Tan. Upstream source and license verified below. |
 | Owner's Prime adaptations and custom skills | Local additions in `skills/`; `aside-browser`, `linear-ticket`, `resume-paused-sessions`, `spec-report`, `websearch`, and auxiliary `skills/skills` | Imported from the owner's setup. The copied Aside manual was excluded from the public source; the wrapper remains owner-authored material. |
-| Owner's app extensions and Git guards | `components/virev/` | Imported from the owner's `auto-sns-agent` repository. Its history credits Sieun Park. The writing rules include adapted pstack guidance. |
+| Global guards | `components/global-rules/` | Imported from the owner's `auto-sns-agent` repository. Its history credits Sieun Park. |
 | Owner's account pool | `components/pi-pool/` | Imported from the owner's maintained pool source. Tokenmaxxing-derived behavior and Prime bundle excerpts retain separate notices below. |
-| Daily recap | `components/daily-recap/` | Imported from the owner's `auto-sns-agent/scripts/sieun/daily_recap` source. Its Git history credits Sieun Park. Sunsama client code remains a separately installed dependency. |
 | Saved history and agent chat | `components/user-history/` | Imported from the owner's `prime-agent-user-history` baseline `289feca4885bbb0f92939a3ae5523007f00128ed`, with the UI update from `a069eb63da99b02ab13c3ccd2875dac0e1d20163` and a canonical saved-image display fix. Local history credits Sieun Park. See the component's `SOURCE.md`. |
 | Agent identity and Prime context utilities | `utils/agent-identity.mjs`, `utils/prime-context.mjs` | Extracted from `auto-sns-agent/scripts/skills/agent-identity.mjs` and `derive-context.mjs`. Local Git history credits Sieun Park. Private incident examples were removed. |
 | Setup and source tooling | `config/`, root manifests, `scripts/`, `tests/` | Owner-authored source and repository-specific work. The repository history records the changes. |
@@ -48,7 +47,7 @@ The 2026-09-11 comparison found 123 upstream counterparts across 46 local skill 
 Two older `how` references were located in upstream history because current pstack no longer includes them.
 Their per-file revision is recorded in the attribution map.
 Thirty files were byte-identical to the current comparison revision.
-`comment-sicko/SKILL.md` and `poteto-agent/SKILL.md` correspond to upstream files under `pstack/agents/`.
+`no-comments/references/comment-sicko.md` and `poteto-agent/SKILL.md` correspond to upstream files under `pstack/agents/`.
 Other counterparts retain their paths under `pstack/skills/`.
 The exact file mapping and upstream hashes are in [`attribution-pstack.json`](attribution-pstack.json).
 
@@ -56,7 +55,7 @@ The initial import did not record its upstream commit.
 The comparison revision is evidence of origin, not a claim that the initial import used that revision.
 Local changes replace Cursor calls with Prime's runtime, change model rules, and adapt the owner's workflows.
 `unslop` also incorporates the owner's writing rules and app-specific plain-language guidance.
-Its derivative guidance informs Virev's linter and the ticket writing checks; those local implementations are not represented as upstream pstack code.
+Its derivative guidance informs the ticket writing checks; those local implementations are not represented as upstream pstack code.
 
 ## Prime Agent and Pi excerpts
 
@@ -103,7 +102,6 @@ The source license audit does not cover future imports automatically.
 Review new components against their actual source before adding them to the inventory.
 
 The release source removes the private Linear examples and the private email-editor spec reference.
-The spec skill uses the owner-authored `references/evidence-driven-review.md` instead.
 The Linear pipeline now uses operator-supplied configuration rather than private deployment instructions.
 Its spec-page guidance requires synthetic public mock data and no private API examples.
 Changes and remaining source checks are listed in [security and public artifacts](security.md).

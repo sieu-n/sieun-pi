@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
+import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG, UNKNOWN_ACTIVE } from "./chats.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
@@ -138,6 +140,8 @@ export class ThreadHub {
   readonly projector = new Projector(this.images);
   private readonly threads = new Map<string, Thread>();
   private readonly opening = new Map<string, Promise<Thread>>();
+  /** Resumes in flight, so a second ask for the same thread waits on the first instead of attaching again. */
+  private readonly resuming = new Map<string, { ask: { foreground: boolean }; promise: Promise<Thread> }>();
   /** Every model the last catalog read listed, by "provider/id", so a saved thread can name the model it last ran. */
   private readonly knownModels = new Map<string, ModelInfo>();
   private readonly sweeper: ReturnType<typeof setInterval>;
@@ -284,7 +288,7 @@ export class ThreadHub {
     const [snapshot, queue] = await Promise.all([connection.getInitialSnapshot(), connection.getQueue()]);
     const messages = this.projector.messages([...this.compactedHistory(snapshot.messages, summary), ...snapshot.messages]);
     const streaming = snapshot.streamingMessage?.role === "assistant" ? this.projector.assistant(snapshot.streamingMessage) : null;
-    return { kind: "live", info: projectInfo(snapshot.state, summary), messages, streaming, queue: { steering: [...queue.steering], followUp: [...queue.followUp] },
+    return { kind: "live", info: projectInfo(snapshot.state, summary, this.catalogModel(snapshot.state.model ?? null)), messages, streaming, queue: { steering: [...queue.steering], followUp: [...queue.followUp] },
       children: (snapshot.children ?? []).map(projectChild), tools: [], retry: null,
       runStartedAt: snapshot.state.isStreaming ? runStartedAtFromMessages(messages) : null };
   }
@@ -323,22 +327,24 @@ export class ThreadHub {
       if (entry.type === "model_change") ran = { provider: entry.provider, id: entry.modelId };
       if (entry.type === "message" && entry.message.role === "assistant" && entry.message.provider && entry.message.model) ran = { provider: entry.message.provider, id: entry.message.model };
     }
-    const info: ThreadInfo = { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: summary.model ? projectModel(summary.model) : this.savedModel(ran),
+    const info: ThreadInfo = { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: this.catalogModel(summary.model ?? ran),
       thinkingLevel: summary.thinkingLevel ?? thinkingLevel, availableThinkingLevels: [], isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0,
       messageCount: messages.length, context: null, usage: sessionUsage(summary.usage), sessionAction: null, queuedActions: 0 };
     return { messages, info };
   }
 
   /**
-   * The daemon's summary of a saved session carries no model, so the composer showed "Model" and the account chip guessed the provider.
-   * The session file records the last model it ran; the name comes from the last model catalog read, else the model id stands in.
+   * A model's full entry by provider and id. The 0.10.0 daemon names a session's model (state and summary) by id, name and provider only, and
+   * a saved session's summary may carry none, so the session file's last model stands in. The entry comes from the last model catalog read,
+   * else from a full model (a 0.9.8 daemon sends one), else the id stands in.
    */
-  private savedModel(ran: { provider: string; id: string } | null): ModelInfo | null {
+  private catalogModel(ran: { provider: string; id: string; name?: string } | null): ModelInfo | null {
     if (!ran) return null;
     const known = this.knownModels.get(ran.provider + "/" + ran.id);
     if (known) return known;
+    if (Array.isArray((ran as { input?: unknown }).input)) return projectModel(ran as Parameters<typeof projectModel>[0]);
     if (!this.knownModels.size) void this.models(null).catch(() => {});
-    return { provider: ran.provider, id: ran.id, name: ran.id, input: ["text"], contextWindow: 0, reasoning: false };
+    return { provider: ran.provider, id: ran.id, name: ran.name ?? ran.id, input: ["text"], contextWindow: 0, reasoning: false };
   }
 
   private bind(thread: Thread, connection: DaemonAgentConnection, activeSessionId: string): void {
@@ -351,7 +357,7 @@ export class ThreadHub {
     if (!live) return;
     const [state, summary] = await Promise.all([live.connection.getState(), this.catalog.summary(thread.id)]);
     if (thread.live !== live) return;
-    thread.broadcast({ type: "info", info: projectInfo(state, summary) });
+    thread.broadcast({ type: "info", info: projectInfo(state, summary, this.catalogModel(state.model ?? null)) });
   }
 
   private async refreshQueue(thread: Thread): Promise<void> {
@@ -500,22 +506,39 @@ export class ThreadHub {
     return { thread, live: thread.live };
   }
 
-  async resume(id: string, background = false): Promise<Thread> {
+  /**
+   * Makes a saved thread live, once per thread at a time: a pinned chat coming back after a daemon restart and the chat's turn restart (or an
+   * owner send) can ask together, and two attaches would both subscribe, so every later event reached the thread twice and the feed drew each
+   * message twice. A foreground ask joins a background one and moves it ahead in the attach queue.
+   */
+  resume(id: string, background = false): Promise<Thread> {
     if (!background) this.attaches.promote(id);
-    const thread = await this.open(id, background);
+    const running = this.resuming.get(id);
+    if (running) { if (!background) running.ask.foreground = true; return running.promise; }
+    const ask = { foreground: !background };
+    const promise = this.resumeOnce(id, ask).finally(() => { this.resuming.delete(id); });
+    this.resuming.set(id, { ask, promise });
+    return promise;
+  }
+
+  private async resumeOnce(id: string, ask: { foreground: boolean }): Promise<Thread> {
+    const thread = await this.open(id, !ask.foreground);
     if (thread.live) return thread;
     const summary = await this.summary(id);
     if (summary.activeSessionId === undefined) {
       if (!summary.sessionFile) throw new ThreadError(409, "This thread has no session file to resume.");
       await this.catalog.connect();
-      const response = await this.catalog.client.request({ type: "create", lifecycle: "resident", sessionPath: summary.sessionFile, config: {} }, 60000, { recoverable: false });
+      // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
+      // A folder that is gone resumes in the daemon's folder rather than not at all.
+      const config = await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
+      const response = await this.catalog.client.request({ type: "create", lifecycle: "resident", sessionPath: summary.sessionFile, config }, 60000, { recoverable: false });
       if (!response.success) throw new ThreadError(502, response.error);
     }
     await this.catalog.refresh();
     const resumed = await this.summary(id);
     if (resumed.activeSessionId === undefined) throw new ThreadError(502, "Prime Agent did not resume this thread.");
     const activeSessionId = resumed.activeSessionId;
-    const { connection, snapshot } = await this.attaches.run(id, background, async () => {
+    const { connection, snapshot } = await this.attaches.run(id, !ask.foreground, async () => {
       const connection = await this.attach(activeSessionId);
       try { return { connection, snapshot: await this.liveSnapshot(connection, resumed) }; }
       catch (error) { await connection.dispose().catch(() => {}); throw error; }
@@ -528,11 +551,11 @@ export class ThreadHub {
   }
 
   /** `kind: "chat"` sets the extension flag the user-history extension turns into the session's chat marker at its first session_start. */
-  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat" }): Promise<Thread> {
+  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; timeoutMs?: number }): Promise<Thread> {
     await this.catalog.connect();
     const response = await this.catalog.client.request({ type: "create", lifecycle: "resident", ...(input.name ? { name: input.name } : {}), config: { cwd: input.cwd,
       ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
-      ...(input.kind === "chat" ? { extensionFlagValues: { [CHAT_FLAG]: true } } : {}) } }, 60000, { recoverable: false });
+      ...(input.kind === "chat" ? { extensionFlagValues: { [CHAT_FLAG]: true } } : {}) } }, input.timeoutMs ?? 60000, { recoverable: false });
     if (!response.success) throw new ThreadError(502, response.error);
     const data = response.data;
     if (typeof data !== "object" || data === null || !("sessionId" in data) || typeof data.sessionId !== "string" || !("activeSessionId" in data) || typeof data.activeSessionId !== "string") {
@@ -555,8 +578,9 @@ export class ThreadHub {
     const thread = await this.resume(id);
     const live = thread.live!;
     if (input.images.length) {
-      const state = await live.connection.getState();
-      if (!state.model?.input.includes("image")) throw new ThreadError(400, "Choose a model that accepts images.");
+      const [state, catalog] = await Promise.all([live.connection.getState(), live.connection.getModelCatalog()]);
+      const model = state.model && catalog.models.find(candidate => candidate.provider === state.model!.provider && candidate.id === state.model!.id);
+      if (!model?.input.includes("image")) throw new ThreadError(400, "Choose a model that accepts images.");
     }
     if (input.message.trimStart().startsWith("/")) {
       const invocation = input.message.trimStart().split(/\s/, 1)[0]?.slice(1);
@@ -756,7 +780,7 @@ export class ThreadHub {
     const models = catalog.models.map(projectModel);
     for (const model of models) this.knownModels.set(model.provider + "/" + model.id, model);
     const shared = { models, configuredProviders: [...catalog.configuredProviders] };
-    if (thread) return { ...shared, current: state.model ? projectModel(state.model) : null, thinkingLevel: state.thinkingLevel, availableThinkingLevels: [...state.availableThinkingLevels] };
+    if (thread) return { ...shared, current: this.catalogModel(state.model ?? null), thinkingLevel: state.thinkingLevel, availableThinkingLevels: [...state.availableThinkingLevels] };
     const defaults = this.defaults();
     const current = models.find(model => model.provider === defaults.provider && model.id === defaults.modelId) ?? null;
     const availableThinkingLevels = current?.thinkingLevels ?? [];

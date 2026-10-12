@@ -60,16 +60,6 @@
         "model": "inherit-parent"
       }
     ],
-    "reflect tooling": [
-      {
-        "model": "inherit-parent"
-      }
-    ],
-    "reflect judgment, divergent, synthesizer": [
-      {
-        "model": "inherit-parent"
-      }
-    ],
     "arena runners": [
       {
         "model": "inherit-parent"

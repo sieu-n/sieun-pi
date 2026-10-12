@@ -18,7 +18,7 @@ Private rotation journals live under the pool state directory.
 
 stdout = the token, and nothing else. All diagnostics go to the log file.
 """
-import base64, collections, concurrent.futures, dataclasses, datetime, fcntl, hashlib, json, os, queue, random, re, shlex, shutil, signal, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error, uuid
+import base64, collections, concurrent.futures, dataclasses, datetime, fcntl, hashlib, json, math, os, queue, re, shlex, shutil, signal, subprocess, sys, threading, time, unicodedata, urllib.request, urllib.error, uuid
 
 HOME = os.path.expanduser("~")
 TM = os.environ.get("TOKENMAXXING_HOME") or os.path.join(HOME, ".config", "tokenmaxxing")
@@ -56,25 +56,28 @@ JOURNAL_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL"
 DEFAULTS = {
     # refresh a parked credential when it expires within this many seconds
     "refresh_skew_sec": 900,
-    # an account is considered depleted at/above these cached usage percentages
-    "five_hour_max_pct": 95,
+    # R2: an account takes a tree that is not on it only under this 5h percentage
+    # (low-priority trees: under low_admit_5h_max_pct) and under seven_day_max_pct
+    # of its week and of its Fable cap. A tree already on an account stays there
+    # until the provider stops serving it (429 or a window at 100%).
+    "admit_5h_max_pct": 70,
+    "low_admit_5h_max_pct": 50,
     "seven_day_max_pct": 98,
+    # R4: an account admits admit_per_unit trees per tier unit (at least one) every
+    # admit_slot_sec, so trees that leave one account together, or wake on one reset,
+    # enter at slot pace. 2026-10-12 15:30: 25 vends landed on claude7 in 4 s.
+    "admit_slot_sec": 120,
+    "admit_per_unit": 1,
+    # what one plan is worth in tier units, by tokenmaxxing's tier name or its
+    # first word; anything else is 1. Measured 2026-10-12: a max 20x account took
+    # about $7.5 of API-equivalent spend per 5h point, a max 5x or team seat $1.9.
+    "tier_units": {"max 20x": 4, "max 5x": 1, "team": 1, "pro": 0.5},
+    # R6: moves a tree may make in 24 h before it waits for its own account, and
+    # the longest such wait; when its own account frees later, the tree moves anyway
+    "max_moves_per_day": {"high": 6, "normal": 3, "low": 1},
+    "budget_wait_max_sec": 3600,
     # cooldown applied to an account after a vend-failure signal
     "cooldown_sec": 1200,
-    # the switch picker's runway model (runway_hours): what one active session
-    # burns per hour, in percentage points of the 5h window and of the weekly
-    # window. Measured 2026-10-08 on Max 20x accounts: 18 sessions took
-    # sieunpark77 to 43% of its 5h window in 1.6 h, 6 took sieun@virev.ai to 22%
-    # in 1.45 h; claude7 spent 87% of a 5h window for 16% of its week, and
-    # sieunpark77 43% for 12%, so one 5h point costs about a fifth of a week point.
-    "burn_5h_pct_per_hour": 2.5,
-    "burn_week_pct_per_hour": 0.5,
-    # runway beyond this many hours counts as this many: past a day, a longer
-    # runway saves no switch
-    "runway_horizon_hours": 24,
-    # a switch skips an account with less runway than this, unless every usable
-    # account is under it
-    "min_runway_hours": 1,
     # allow an account a supervised session is running on
     "allow_active_account": True,
     # anthropic-only per-model weekly caps that also count toward depletion
@@ -83,6 +86,11 @@ DEFAULTS = {
     "pin_ttl_sec": 7 * 24 * 3600,
     # a session counts as running on an account if it vended within this window
     "active_session_sec": 3600,
+    # a session tree that vended within this window still has a prompt cache on
+    # its account: the daemon runs with PI_CACHE_RETENTION=long (1 h TTL), and
+    # 2026-10-12 transcripts read 58-98% of the prompt from cache up to 3600 s
+    # after the previous call, then 0-8%
+    "cache_ttl_sec": 3600,
     # cooldown for an anthropic account whose organization refuses OAuth
     # (HTTP 403 oauth_not_allowed_for_organization) or rejects its token
     "refused_cooldown_sec": 24 * 3600,
@@ -199,6 +207,13 @@ def kc_write(service, secret):
     r = subprocess.run(["/usr/bin/security", "-i"], input=line, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"keychain write failed for {service}: {r.stderr.strip()[:200]}")
+
+
+def kc_delete(service):
+    r = subprocess.run(["/usr/bin/security", "delete-generic-password", "-s", service, "-a", KC_ACCOUNT],
+                       capture_output=True, text=True)
+    if r.returncode not in (0, 44):
+        raise RuntimeError(f"keychain delete failed for {service}: exit {r.returncode}")
 
 
 def store_dir(account_id):
@@ -709,29 +724,13 @@ class Account:
     # Epoch seconds until which the provider refused this account with a 429
     # (`pi-pool limited`). 0 when no limit is on file.
     limited_until: float = 0
+    # What people see: the email, plus the organization when another pooled
+    # account shares the email (one login can hold several organizations).
+    label: str = ""
 
-
-@dataclasses.dataclass(frozen=True)
-class Intent:
-    """What humans asked for, for one (session, provider)."""
-    session_pin: "str | None" = None
-    session_pin_force: bool = False
-    pool_pin: "str | None" = None
-    # The account this session was last vended (its own record, never another
-    # session's), and the account it asked to leave with `pi-pool switch`.
-    current: "str | None" = None
-    leave: "str | None" = None
-
-
-@dataclasses.dataclass(frozen=True)
-class Resolution:
-    account: Account
-    reason: str
-    shadowed: "tuple | None" = None
-    # On a switch: (account id the session left, why), and the weights the
-    # pick drew from as ((email, runway hours), ...).
-    left: "tuple | None" = None
-    weights: tuple = ()
+    def __post_init__(self):
+        if not self.label:
+            object.__setattr__(self, "label", self.email)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -844,15 +843,38 @@ def _read_index(path):
     return idx
 
 
+def org_suffix(record):
+    """The organization part of a label: its name, or "personal" for the
+    organization Anthropic makes for every login ("<email>'s Organization")."""
+    org = record.get("oauthAccount") or {}
+    name = org.get("organizationName")
+    email = record.get("email") or record.get("label")
+    return "personal" if not name or name == f"{email}'s Organization" else name
+
+
+def record_labels(records):
+    """Display label per record id: the email, or `email (organization)` when
+    more than one record has that email; the id prefix breaks a remaining tie."""
+    emails = collections.Counter(r.get("email") or r["label"] for r in records)
+    labels = {}
+    for r in records:
+        email = r.get("email") or r["label"]
+        labels[r["id"]] = email if emails[email] == 1 else f"{email} ({org_suffix(r)})"
+    shown = collections.Counter(labels.values())
+    return {i: (f"{l} {i[:8]}" if shown[l] > 1 else l) for i, l in labels.items()}
+
+
 def _load_index_anthropic():
     idx = _read_index(TM_ACCOUNTS)
     cfg, now, live = config(), time.time(), presence_account_ids(TM_LIVE)
+    records = idx.get("accounts", [])
+    labels = record_labels(records)
     out = []
-    for a in idx.get("accounts", []):
+    for a in records:
         five, seven = usage_pct(a, now)
         store = store_dir(a["id"])
         out.append(Account(
-            provider="anthropic", id=a["id"], email=a.get("email") or a["label"],
+            provider="anthropic", id=a["id"], email=a.get("email") or a["label"], label=labels[a["id"]],
             needs_reauth=bool(a.get("needsReauth")), session_pct=five, weekly_pct=seven,
             gated_pct=gated_pct(a, cfg, now), is_live=a["id"] in live,
             cred=Keychain(store_service(store), store),
@@ -879,17 +901,27 @@ def _load_index_codex():
     return out
 
 
-def find_account(accounts, email_or_id):
-    for a in accounts:
-        if a.email == email_or_id or a.id == email_or_id:
-            return a
-    hits = [a for a in accounts if a.id.startswith(email_or_id)]
+def find_account(accounts, selector):
+    """The account an id, a label, an email or a unique id prefix names; None
+    when none does. An email two accounts share names neither: that exits
+    with the labels and ids to choose from."""
+    for match in (lambda a: a.id == selector, lambda a: a.label == selector):
+        hit = next((a for a in accounts if match(a)), None)
+        if hit:
+            return hit
+    hits = [a for a in accounts if a.email == selector]
+    if len(hits) > 1:
+        raise SystemExit(f"{selector} names {len(hits)} accounts; pick one by label or id: "
+                         + ", ".join(f"{a.label} ({a.id})" for a in hits))
+    if hits:
+        return hits[0]
+    hits = [a for a in accounts if a.id.startswith(selector)]
     return hits[0] if len(hits) == 1 else None
 
 
 # ---------------------------------------------------------------- state.json
 def empty_provider_state():
-    return {"pin": None, "cooldowns": {}, "disabled": {}, "limits": {}}
+    return {"pin": None, "cooldowns": {}, "disabled": {}, "limits": {}, "admissions": {}}
 
 
 def with_pool_state(accounts, state, provider):
@@ -908,7 +940,7 @@ def with_pool_state(accounts, state, provider):
     return out
 
 
-def migrate(raw, by_email, now):
+def migrate(raw, by_email, now, pin_ttl=DEFAULTS["pin_ttl_sec"]):
     """v1 -> v2, pure and idempotent.
 
     v1 keyed assignments by "<pid>:<lstart>", which no session id can be
@@ -916,14 +948,27 @@ def migrate(raw, by_email, now):
     counter, and the next request of each live session rebuilds them. The v1
     pin holds an email; it is resolved to an account id here, the one boundary
     that has the index in hand.
+
+    A v2 file loses what no rule reads any more: the shared seat (ended
+    2026-10-08), the lost 10-11 recovery pool's `recovery_batches` and the pins it
+    wrote (`by: recovery:...`), a pin the owner set more than pin_ttl ago, and the
+    `force` flag.
     """
     if raw.get("version") == 2:
         for provider in PROVIDERS:
             prov = raw.setdefault("providers", {}).setdefault(provider, empty_provider_state())
             prov.setdefault("limits", {})
-            # The shared seat ended 2026-10-08: each session keeps its own account.
+            prov.setdefault("admissions", {})
             prov.pop("seat", None)
-        raw.setdefault("sessions", {})
+            prov.pop("recovery_batches", None)
+        for rec in raw.setdefault("sessions", {}).values():
+            pins = rec.get("pins") or {}
+            for provider, pin in list(pins.items()):
+                if (not pin or str(pin.get("by") or "").startswith("recovery:")
+                        or now - (pin.get("at") or 0) > pin_ttl):
+                    del pins[provider]
+                else:
+                    pin.pop("force", None)
         return raw
     anthropic = empty_provider_state()
     if raw.get("pin"):
@@ -951,44 +996,156 @@ def load_state():
             by_email = {a.email: a.id for a in load_index("anthropic")}
         except Exception:
             by_email = {}
-    return migrate(raw, by_email, time.time())
-
-
-def intent_for(state, key, provider):
-    """Project state.json down to the facts the resolver needs."""
-    prov = state["providers"].get(provider) or empty_provider_state()
-    rec = (state["sessions"].get(key.key) if key else None) or {}
-    pin = (rec.get("pins") or {}).get(provider) or {}
-    return Intent(session_pin=pin.get("account_id"),
-                  session_pin_force=bool(pin.get("force")),
-                  pool_pin=prov.get("pin"),
-                  current=((rec.get("vends") or {}).get(provider) or {}).get("account_id"),
-                  leave=((rec.get("leave") or {}).get(provider) or {}).get("account_id"))
+    return migrate(raw, by_email, time.time(), config()["pin_ttl_sec"])
 
 
 # ---------------------------------------------------------------- the pure core
-def unusable_reason(a, cooldowns, cfg, now):
-    """None when the account can serve, else why it cannot."""
+# The scheduler. One tree (a root session and every subagent under it) asks for an
+# account on each provider request, and `decide` answers stay, admit or wait. Rules,
+# first match wins:
+#   R1 stay: the tree's own account still serves (no 429, every window under 100%,
+#      credential ok), warm or cold. No move because of a cutoff, a better account,
+#      a pin set earlier or another tree's move.
+#   R2 admit cap: an account takes a tree that is not on it only under
+#      admit_5h_max_pct (low trees: low_admit_5h_max_pct) of its 5h window and under
+#      seven_day_max_pct of its week and its Fable cap.
+#   R3 score: among admissible accounts the highest weekly pace x 5h headroom / load.
+#   R4 admission slots: an account admits one tree per admit_slot_sec / slot_cap(a).
+#   R5 wait: nothing passes R2-R4, so the tree gets its own slot_at on the account
+#      that frees first, ordered by priority, then by wait start.
+#   R6 move budget: a tree that moved max_moves_per_day[priority] times in 24 h
+#      waits for its own account; a high tree is refused only optional moves.
+#   R7 priority share: low trees enter only under low_admit_5h_max_pct; when one
+#      account is left, the last cell of each slot window is for high trees.
+PRIORITIES = ("high", "normal", "low")
+PRIORITY_RANK = {p: i for i, p in enumerate(PRIORITIES)}
+# The tree record the CLI and the hook keep per provider.
+ADMISSION_KEEP_SEC = 1800
+MOVE_WINDOW_SEC = 24 * 3600
+# A wait whose slot passed this long ago with no request from the tree is dropped.
+WAIT_STALE_SEC = 900
+# How far ahead a slot is searched, in cells.
+SLOT_SEARCH_CELLS = 5000
+
+
+@dataclasses.dataclass(frozen=True)
+class Tree:
+    """What the scheduler knows about one session tree on one provider."""
+    key: "str | None" = None
+    # The account the tree was last vended, and when; None for a new tree.
+    current: "str | None" = None
+    current_at: float = 0
+    # The owner's pin, and when it was set. A pin set after the tree's last vend
+    # is pending: the next request applies it once.
+    pin: "str | None" = None
+    pin_at: float = 0
+    pool_pin: "str | None" = None
+    # The account `pi-pool switch` asked the tree to leave.
+    leave: "str | None" = None
+    priority: str = "normal"
+    # Epoch seconds of the tree's moves in the last 24 h.
+    moves: tuple = ()
+    # (account id, slot_at, since) while the tree waits for a slot.
+    wait: "tuple | None" = None
+
+
+@dataclasses.dataclass(frozen=True)
+class Book:
+    """Who entered or will enter each account, as the slot rule reads it.
+    `admitted`: {account id: ((at, tree key), ...)} over ADMISSION_KEEP_SEC.
+    `waiting`: {account id: ((slot_at, tree key, rank), ...)} of the other trees.
+    `load`: {account id: trees vended within active_session_sec}."""
+    admitted: dict = dataclasses.field(default_factory=dict)
+    waiting: dict = dataclasses.field(default_factory=dict)
+    load: dict = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass(frozen=True)
+class Stay:
+    account: Account
+    reason: str = "stay"
+    shadowed: "tuple | None" = None
+    # Open admissible accounts, best first, for a credential that fails.
+    fallbacks: tuple = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class Admit:
+    account: Account
+    # new | switch | back | session_pin | pool_pin | upgrade
+    reason: str
+    shadowed: "tuple | None" = None
+    # (account id the tree left, why) on a move.
+    left: "tuple | None" = None
+    fallbacks: tuple = ()
+    scores: tuple = ()
+
+
+@dataclasses.dataclass(frozen=True)
+class Wait:
+    slot_at: float
+    slot_account: Account
+    # The account the hook vends meanwhile: the tree's own account when the
+    # provider refuses it, so the request gets a 429 and writes no cache. None
+    # when no such account exists: the hook then gives no token and the extension
+    # turns that failure into a wait until slot_at.
+    vend: "Account | None" = None
+    shadowed: "tuple | None" = None
+    left: "tuple | None" = None
+
+
+def admit_cap(cfg, priority):
+    """R2/R7: the 5h percentage under which an account takes a tree of this class."""
+    return cfg["low_admit_5h_max_pct"] if priority == "low" else cfg["admit_5h_max_pct"]
+
+
+def week_pct(a):
+    return max(a.weekly_pct, 0 if a.gate_off else a.gated_pct)
+
+
+def used_pct(a):
+    """The fullest window that counts for this tree, 0-100."""
+    return max(a.session_pct, week_pct(a))
+
+
+def credential_reason(a, cooldowns, now):
+    """Why the account fails every request whatever its usage, or None."""
     if a.disabled:
         return "disabled"
     if a.needs_reauth:
         return "needs-reauth"
     if cooldowns.get(a.id, 0) > now:
         return "cooldown"
+    return None
+
+
+def serve_reason(a, cooldowns, now):
+    """R1: None while the provider still answers this account."""
+    why = credential_reason(a, cooldowns, now)
+    if why:
+        return why
     if a.limited_until > now:
         return "limited"
-    if a.session_pct >= cfg["five_hour_max_pct"] or a.weekly_pct >= cfg["seven_day_max_pct"]:
+    if used_pct(a) >= 100:
         return "depleted"
-    if a.gated_pct >= cfg["seven_day_max_pct"] and not a.gate_off:
+    return None
+
+
+def admit_reason(a, cooldowns, cfg, now, priority="normal"):
+    """R2: None when the account may take a tree that is not on it."""
+    why = serve_reason(a, cooldowns, now)
+    if why:
+        return why
+    if a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg["seven_day_max_pct"]:
         return "depleted"
     if a.is_live and not cfg["allow_active_account"]:
         return "live-elsewhere"
     return None
 
 
-def format_reason(a, cooldowns, cfg, now):
-    """unusable_reason with a cooldown countdown, for a human or JSON row."""
-    reason = unusable_reason(a, cooldowns, cfg, now)
+def format_reason(a, cooldowns, cfg, now, priority="normal"):
+    """admit_reason with a countdown, for a human or JSON row."""
+    reason = admit_reason(a, cooldowns, cfg, now, priority)
     if reason == "cooldown":
         return f"cooldown {fmt_dur(max(60.0, cooldowns.get(a.id, now) - now))}"
     if reason == "limited":
@@ -996,149 +1153,97 @@ def format_reason(a, cooldowns, cfg, now):
     return reason
 
 
-def runway_hours(a, sessions, cfg, now):
-    """Hours until this account crosses a pool cutoff (five_hour_max_pct on the
-    5h window, seven_day_max_pct on the weekly window and a gated model cap)
-    if `sessions` sessions each burn the configured rate on it, capped at
-    runway_horizon_hours. A window that resets before it reaches its cutoff
-    stops binding: a weekly reset frees the account up to the cap, and a 5h
-    reset starts a fresh window that binds only if the sessions fill it to the
-    cutoff inside its own 5 hours."""
-    horizon = cfg["runway_horizon_hours"]
-    families = [f.lower() for f in cfg["switch_models"]]
-    # (used %, is the 5h window, seconds to its reset or None, window hours)
-    windows = [(live_pct(w, now), w.get("name") is None and is_session_window(w),
-                reset_in(w, now), (w.get("windowSeconds") or 0) / 3600)
-               for w in a.windows if w.get("name") is None
-               or (not a.gate_off and any(f in family_tokens(w["name"]) for f in families))]
-    if not a.windows:
-        windows = [(a.session_pct, True, None, 5),
-                   (max(a.weekly_pct, 0 if a.gate_off else a.gated_pct), False, None, 168)]
-    hours = horizon
-    for pct, short, left, length in windows:
-        cutoff = cfg["five_hour_max_pct"] if short else cfg["seven_day_max_pct"]
-        rate = sessions * (cfg["burn_5h_pct_per_hour"] if short else cfg["burn_week_pct_per_hour"])
-        until_cut = max(0.0, cutoff - pct) / rate
-        if left is not None and left / 3600 <= until_cut:
-            fresh = cutoff / rate
-            until_cut = left / 3600 + fresh if short and fresh < length else horizon
-        hours = min(hours, until_cut)
-    return hours
-
-
-def switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=()):
-    """[(account, runway hours)] a switching session draws from, longest first.
-    The runway is runway_hours with the sessions already on the account plus the
-    one switching, and one more for an account a supervised claude/codex
-    session runs on. An account under min_runway_hours is left out unless
-    every usable account is, so a switch lands where it will last."""
-    weights = [(a, runway_hours(a, in_use.get(a.id, 0) + 1 + int(a.is_live), cfg, now))
-               for a in accounts
-               if a.id not in exclude and unusable_reason(a, cooldowns, cfg, now) is None]
-    lasting = [p for p in weights if p[1] >= cfg["min_runway_hours"]]
-    return sorted(lasting or weights, key=lambda p: (-p[1], p[0].email))
-
-
-# A draw weighs an account by its runway cubed. Replaying 2026-10-08's 34,785
-# Claude requests (tests/sim_switching.py, 20 seeds) gave 11.5 switches a day with
-# runway, 8.6 with its square, 8.0 with its cube and 7.2 with the fifth power; at a
-# heavier burn, 61, 58, 56 and 57. Past the cube, more sharpness bought nothing
-# while it took away the spread that keeps sessions leaving together apart.
-PICK_POWER = 3
-
-
-def pick_chances(weights):
-    """{account id: chance} of one weighted_pick over switch_weights."""
-    powered = [(a, w ** PICK_POWER) for a, w in weights]
-    total = sum(w for _, w in powered)
-    if total <= 0:
-        return {a.id: 1.0 / len(powered) for a, _ in powered}
-    return {a.id: w / total for a, w in powered}
-
-
-def weighted_pick(weights, rng):
-    """One account from switch_weights, with chance proportional to its runway
-    to the PICK_POWER."""
-    chances = pick_chances(weights)
-    x = rng.random()
-    for a, _ in weights:
-        x -= chances[a.id]
-        if x < 0:
-            return a
-    return weights[-1][0]
-
-
-def window_free_at(window, cfg, now):
-    """When this window stops blocking, epoch seconds; None when it does not
-    block now. Mirrors unusable_reason's cutoffs: the session window against
-    five_hour_max_pct, every other window against seven_day_max_pct."""
-    cutoff = cfg["five_hour_max_pct"] if is_session_window(window) else cfg["seven_day_max_pct"]
-    if live_pct(window, now) < cutoff:
-        return None
+def window_reset_at(window):
+    """When a window empties, epoch seconds; inf when nothing says."""
     if window.get("resetsAt") is not None:
         return window["resetsAt"] / 1000
-    secs = window.get("windowSeconds")
-    if secs is not None:
-        return (window.get("sampledAt") or 0) / 1000 + secs
+    if window.get("windowSeconds") is not None:
+        return (window.get("sampledAt") or 0) / 1000 + window["windowSeconds"]
     return float("inf")
 
 
-def account_free_at(a, cfg, now):
-    """When every blocking window of this account has reset, and the
-    provider's own 429 reset when that is later."""
+def admissible_at(a, cooldowns, cfg, now, priority="normal"):
+    """When the account passes R2 for this class again, epoch seconds; inf when
+    no reset is known or its credential cannot serve."""
+    if a.disabled or a.needs_reauth or (a.is_live and not cfg["allow_active_account"]):
+        return float("inf")
+    at = max(now, a.limited_until, cooldowns.get(a.id, 0))
     families = [f.lower() for f in cfg["switch_models"]]
-
-    def counts(w):
+    if not a.windows:
+        if a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg["seven_day_max_pct"]:
+            return float("inf")
+        return at
+    for w in a.windows:
         name = w.get("name")
-        if name is None:
-            return True
-        return not a.gate_off and any(f in family_tokens(name) for f in families)
-
-    blocking = [t for t in (window_free_at(w, cfg, now) for w in a.windows if counts(w))
-                if t is not None]
-    if a.limited_until > now:
-        blocking.append(a.limited_until)
-    return max(blocking) if blocking else now
+        if name is not None and (a.gate_off or not any(f in family_tokens(name) for f in families)):
+            continue
+        short = name is None and is_session_window(w)
+        limit = admit_cap(cfg, priority) if short else cfg["seven_day_max_pct"]
+        if live_pct(w, now) >= limit:
+            at = max(at, window_reset_at(w))
+    return at
 
 
-def used_pct(a):
-    """The fullest window that counts for this session, 0-100."""
-    return max(a.session_pct, a.weekly_pct, 0 if a.gate_off else a.gated_pct)
+def tier_units(a, cfg):
+    """How many 'max 5x' plans the account is worth: max 20x 4, max 5x and team 1,
+    pro 0.5. Codex plans and unknown tiers count 1."""
+    if a.provider != "anthropic":
+        return 1
+    units = cfg["tier_units"]
+    tier = (a.tier or "").lower()
+    return units.get(tier, units.get(tier.split(" ")[0], 1)) if tier else 1
 
 
-def provider_serves(a, now):
-    """True while the provider itself would still answer: no 429 on file and
-    every counting window under 100%. A depleted account is only past our own
-    cutoff (five_hour_max_pct, seven_day_max_pct) and still serves."""
-    return a.limited_until <= now and used_pct(a) < 100
+def slot_cap(a, cfg):
+    """R4: trees the account admits per admit_slot_sec."""
+    return max(1, round(cfg["admit_per_unit"] * tier_units(a, cfg)))
 
 
-def last_resort(accounts, cooldowns, cfg, now, current=None):
-    """When nothing is usable: the session's `current` account while the
-    provider still serves it (a move would drop its prompt cache for nothing),
-    else the depleted account that still has headroom, least used first; when
-    none has any, the account whose limits reset first.
+def slot_spacing(a, cfg):
+    return cfg["admit_slot_sec"] / slot_cap(a, cfg)
 
-    An account past our cutoff but under 100% still serves requests, so it
-    beats any account the provider already answered 429 for (verified
-    2026-10-08: 16 sessions waited 2.5 h on a 429'd account while another sat
-    at 85% of its 5h window).
 
-    The hook vends the pick anyway, so a request on a full account comes back
-    as the provider's own 429 with its reset time. Prime Agent waits on that
-    (retry.provider.waitForUsage); a hook that returns no token is an auth
-    error to it, which it never waits on. Accounts that fail every request
-    (dead login, disabled, API refusal cooldown) are never offered.
-    """
-    pool = [a for a in accounts
-            if unusable_reason(a, cooldowns, cfg, now) in ("depleted", "limited", "live-elsewhere")]
-    serving = [a for a in pool if provider_serves(a, now)]
-    stay = next((a for a in serving if a.id == current), None)
-    if stay is not None:
-        return stay
-    if serving:
-        return min(serving, key=lambda a: (used_pct(a), account_free_at(a, cfg, now), a.email))
-    return min(pool, key=lambda a: (account_free_at(a, cfg, now), a.email)) if pool else None
+def score(a, cfg, now, priority, load):
+    """R3: weekly pace x 5h headroom / load. Weekly pace is the % per hour the
+    account can spend before its week resets, so a week that resets soon with
+    budget left is spent first and one far from its reset with little left is
+    saved."""
+    weekly = weekly_window({"windows": a.windows})
+    left = reset_in(weekly, now) if weekly else None
+    hours = left / 3600 if left else 168
+    pace = max(0.0, cfg["seven_day_max_pct"] - week_pct(a)) / max(1.0, hours)
+    cap = admit_cap(cfg, priority)
+    headroom = max(0.0, cap - a.session_pct) / cap
+    trees = load.get(a.id, 0) + 1 + int(a.is_live)
+    return pace * headroom * tier_units(a, cfg) / trees
+
+
+def tree_rank(tree, now):
+    """R5/R7 order among waiters: priority, then wait start, then key."""
+    return (PRIORITY_RANK.get(tree.priority, 1), tree.wait[2] if tree.wait else now, tree.key or "")
+
+
+def cell_taken(a, cell, tree, rank, book, cfg):
+    """A cell holds one tree: one admitted in it, or one waiting for it that ranks
+    ahead of this tree. A lower-ranked waiter yields its cell and is given a later
+    one on its next request."""
+    sp = slot_spacing(a, cfg)
+    if any(t != tree.key and int(at // sp) == cell for at, t in book.admitted.get(a.id, ())):
+        return True
+    return any(t != tree.key and int(at // sp) == cell and r < rank
+               for at, t, r in book.waiting.get(a.id, ()))
+
+
+def first_open(a, t0, tree, rank, book, cfg, sole):
+    """The first time at or after t0 the account has a cell for this tree."""
+    sp, cap = slot_spacing(a, cfg), slot_cap(a, cfg)
+    cell = int(t0 // sp)
+    for c in range(cell, cell + SLOT_SEARCH_CELLS):
+        if sole and cap > 1 and tree.priority != "high" and c % cap == cap - 1:
+            continue
+        if not cell_taken(a, c, tree, rank, book, cfg):
+            return max(t0, c * sp)
+    return float("inf")
 
 
 PLAN_TIERS = {"free": 0, "plus": 1, "pro": 2, "team": 3}
@@ -1147,92 +1252,130 @@ PLAN_TIERS = {"free": 0, "plus": 1, "pro": 2, "team": 3}
 def plan_tier(a):
     """Codex plan rank. An account with no plan (every anthropic account, and a
     codex account whose planType we do not know) sits at the bottom, so the
-    upgrade rule below is a no-op for anthropic."""
+    upgrade rule is a no-op for anthropic."""
     return PLAN_TIERS.get(a.plan, 0)
 
 
-def resolve(intent, accounts, in_use, cooldowns, cfg, now, rng=random):
-    """The precedence table, and the only place it exists.
-
-    session pin > pool pin > the session's current account > a weighted pick.
-
-    A session stays on the account it was last vended while that account is
-    usable ("stay"), whatever other sessions do. A move drops the prompt cache
-    (cache_read and cache_write start over), so a session moves only when it
-    must: its account turned unusable, `pi-pool switch` asked it to leave
-    (intent.leave), or a usable codex account sits on a strictly higher plan
-    ("upgrade"; a free account taken while the paid one was depleted would
-    otherwise keep the session after the paid window resets, and the API
-    refuses several models on a free plan). The move, and the first account of
-    a new session ("new"), is one weighted random draw over switch_weights, so
-    sessions that leave one account together spread out instead of all
-    landing on, and draining, the same one.
-
-    Every pin yields when its account cannot serve. Nothing is written, so the
-    pin re-applies the moment the window resets or the limit expires. A session
-    pin set with --force holds a depleted account, and yields only when the
-    credential cannot serve (dead login, disabled, refusal cooldown) or the
-    provider itself answered 429 ("limited"). `shadowed` names the first pin
-    that yielded and why; `left` names the current account a switch left and
-    why.
-    """
+def decide(tree, accounts, book, cooldowns, cfg, now):
+    """Stay, Admit or Wait for one request of one tree; None when no account can
+    ever serve it. Pure: the caller writes what it decides under the pool flock,
+    so trees that ask together see each other's admissions and waits."""
     by_id = {a.id: a for a in accounts}
+    p = tree.priority if tree.priority in PRIORITY_RANK else "normal"
+    rank = tree_rank(tree, now)
+    cur = by_id.get(tree.current)
+    load = book.load
+
+    def why_not(a):
+        return "missing" if a is None else admit_reason(a, cooldowns, cfg, now, p)
+
+    admissible = [a for a in accounts if why_not(a) is None]
+    sole = len(admissible) == 1
+    # A higher codex plan comes first: the API refuses several models on a free
+    # plan (2026-10-09 drill). Anthropic accounts carry no plan.
+    ranked = sorted(admissible, key=lambda a: (-plan_tier(a), -score(a, cfg, now, p, load), a.label))
+    scores = tuple((a.label, round(score(a, cfg, now, p, load), 2)) for a in ranked)
+
+    def own_cell(a):
+        """The tree's reservation on `a` is due and nobody ranked ahead took its cell."""
+        if not tree.wait or tree.wait[0] != a.id or tree.wait[1] > now + 2:
+            return False
+        return not cell_taken(a, int(tree.wait[1] // slot_spacing(a, cfg)), tree, rank, book, cfg)
+
+    def open_now(a):
+        return own_cell(a) or first_open(a, now, tree, rank, book, cfg, sole) <= now
+
+    def others(skip):
+        return tuple(a for a in ranked if a.id != skip and open_now(a))
+
+    cur_why = "missing" if tree.current and cur is None else (serve_reason(cur, cooldowns, now) if cur else None)
+    left = (tree.current, cur_why) if tree.current else None
     shadowed = None
 
-    if intent.session_pin:
-        a = by_id.get(intent.session_pin)
-        why = "missing" if a is None else unusable_reason(a, cooldowns, cfg, now)
-        forced = intent.session_pin_force and why in ("depleted", "live-elsewhere")
-        if a is not None and (why is None or forced):
-            return Resolution(a, "session_pin", None)
-        shadowed = (intent.session_pin, why)
+    pending = tree.pin and tree.pin != tree.current and tree.pin_at > tree.current_at
+    if pending:
+        a = by_id.get(tree.pin)
+        why = why_not(a)
+        if why is None and (p == "high" or open_now(a)):
+            return Admit(a, "session_pin", None, left and (left[0], "pin"), others(a.id), scores)
+        shadowed = (tree.pin, why or "busy")
+    if tree.pool_pin and tree.pool_pin != tree.current:
+        a = by_id.get(tree.pool_pin)
+        why = why_not(a)
+        if why is None and open_now(a):
+            return Admit(a, "pool_pin", shadowed, left and (left[0], "pin"), others(a.id), scores)
+        shadowed = shadowed or (tree.pool_pin, why or "busy")
+    if cur_why and tree.current in (tree.pin, tree.pool_pin):
+        shadowed = shadowed or (tree.current, cur_why)
 
-    if intent.pool_pin:
-        a = by_id.get(intent.pool_pin)
-        why = "missing" if a is None else unusable_reason(a, cooldowns, cfg, now)
-        if why is None:
-            return Resolution(a, "pool_pin", shadowed)
-        shadowed = shadowed or (intent.pool_pin, why)
+    if cur_why is None and cur is not None and not tree.wait and tree.leave != cur.id:
+        better = [a for a in ranked if plan_tier(a) > plan_tier(cur) and open_now(a)]
+        if better:
+            return Admit(better[0], "upgrade", shadowed, (cur.id, "plan"), others(better[0].id), scores)
+        cold = now - tree.current_at >= cfg["cache_ttl_sec"]
+        pin = by_id.get(tree.pin) if tree.pin and tree.pin != cur.id else None
+        if cold and pin is not None and why_not(pin) is None and open_now(pin):
+            return Admit(pin, "session_pin", shadowed, (cur.id, "pin"), others(pin.id), scores)
+        return Stay(cur, "session_pin" if tree.pin == cur.id else "stay", shadowed, others(cur.id))
 
-    left = None
-    if intent.current:
-        a = by_id.get(intent.current)
-        why = "missing" if a is None else unusable_reason(a, cooldowns, cfg, now)
-        if why is None and intent.leave != a.id:
-            better = [p for p in switch_weights(accounts, in_use, cooldowns, cfg, now)
-                      if plan_tier(p[0]) > plan_tier(a)]
-            if not better:
-                return Resolution(a, "stay", shadowed)
-            return Resolution(weighted_pick(better, rng), "upgrade", shadowed,
-                              (a.id, "plan"), weight_view(better))
-        left = (intent.current, why or "asked")
+    # The tree enters an account: it is new, its account stopped serving, it was
+    # asked to leave, or it waits for a slot.
+    if left and cur_why is None:
+        left = (tree.current, "asked" if tree.leave == tree.current else "waiting")
+    optional = cur is not None and cur_why is None
+    moved = sum(1 for t in tree.moves if now - t < MOVE_WINDOW_SEC)
+    budget = cfg["max_moves_per_day"].get(p, cfg["max_moves_per_day"].get("normal", 3))
+    own_ok = cur is not None and credential_reason(cur, cooldowns, now) is None
+    stuck = own_ok and moved >= budget and (p != "high" or optional)
+    # R6 holds only while the tree's own account frees within budget_wait_max_sec.
+    # Past that the tree moves anyway: a stalled tree costs the owner the work, a
+    # move costs one cache rewrite (about 0.5M tokens).
+    if stuck and admissible_at(cur, cooldowns, cfg, now, p) - now > cfg["budget_wait_max_sec"]:
+        stuck = False
+        left = (tree.current, "budget_overrun")
 
-    weights = switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=(intent.current,))
-    # A new session or a move draws only from the highest codex plan that can serve, the
-    # rule "upgrade" applies to a current account: a draw that landed on the free account
-    # sent the first request of a new session there, and the API refused gpt-6-sol on it
-    # (2026-10-09 drill). Anthropic accounts have no plan, so this keeps every one.
-    if weights:
-        top = max(plan_tier(a) for a, _ in weights)
-        weights = [p for p in weights if plan_tier(p[0]) == top]
-    if not weights:
-        if left and left[1] == "asked":
-            return Resolution(by_id[intent.current], "stay", shadowed)
+    def leaving(a):
+        return tree.leave is not None and a.id == tree.leave == tree.current
+
+    def allowed(a):
+        return not leaving(a) and (not stuck or a.id == tree.current)
+
+    candidates = [a for a in ranked if allowed(a)]
+    pin = next((a for a in candidates if a.id == tree.pin), None)
+    if pin is not None:
+        candidates = [pin] + [a for a in candidates if a.id != pin.id]
+    for a in candidates:
+        if open_now(a):
+            reason = ("session_pin" if a.id == tree.pin else "back" if a.id == tree.current
+                      else "switch" if tree.current else "new")
+            return Admit(a, reason, shadowed, None if a.id == tree.current else left, others(a.id), scores)
+    if tree.leave and cur is not None and tree.leave == cur.id and cur_why is None and not tree.wait:
+        return Stay(cur, "stay", shadowed)
+
+    frees = [(a, admissible_at(a, cooldowns, cfg, now, p)) for a in accounts
+             if allowed(a) and not credential_reason(a, cooldowns, now)]
+    frees = [(a, t0) for a, t0 in frees if t0 != float("inf")]
+    options = []
+    for a, t0 in frees:
+        if tree.wait and tree.wait[0] == a.id and tree.wait[1] >= t0 and not cell_taken(
+                a, int(tree.wait[1] // slot_spacing(a, cfg)), tree, rank, book, cfg):
+            t = max(tree.wait[1], now)
+        else:
+            t = first_open(a, t0, tree, rank, book, cfg, len(frees) == 1)
+        options.append((t, -score(a, cfg, t, p, load), a.label, a))
+    if not options:
         return None
-    return Resolution(weighted_pick(weights, rng), "switch" if left else "new", shadowed,
-                      left, weight_view(weights))
-
-
-def weight_view(weights):
-    """switch_weights as ((email, runway hours), ...), for the log and `who`."""
-    return tuple((a.email, round(w, 1)) for a, w in weights)
+    slot_at, _, _, slot_account = min(options, key=lambda o: o[:3])
+    if slot_at == float("inf"):
+        return None
+    vend = cur if own_ok and cur_why is not None else None
+    return Wait(slot_at, slot_account, vend, shadowed, left)
 
 
 def in_use_counts(state, provider, now=None, window_sec=None):
-    """Sessions currently vending each account, for the picker's smoothing.
-    Only a vend within `active_session_sec` counts: a session record lives for
-    pin_ttl_sec (a week) after its last request, and counting those idle
-    records charged an account for sessions that ended days ago."""
+    """Trees vended each account within active_session_sec: the load in R3.
+    A session record lives for pin_ttl_sec (a week) after its last request, and
+    counting those idle records charged an account for sessions that ended days ago."""
     now = time.time() if now is None else now
     window_sec = config()["active_session_sec"] if window_sec is None else window_sec
     counts = {}
@@ -1243,30 +1386,88 @@ def in_use_counts(state, provider, now=None, window_sec=None):
     return counts
 
 
+def tree_for(state, key, provider):
+    """Project state.json down to the facts `decide` reads for one tree."""
+    prov = state["providers"].get(provider) or empty_provider_state()
+    rec = (state["sessions"].get(key.key) if key else None) or {}
+    pin = (rec.get("pins") or {}).get(provider) or {}
+    last = (rec.get("vends") or {}).get(provider) or {}
+    wait = (rec.get("wait") or {}).get(provider)
+    return Tree(key=key.key if key else None,
+                current=last.get("account_id"), current_at=last.get("at") or 0,
+                pin=pin.get("account_id"), pin_at=pin.get("at") or 0, pool_pin=prov.get("pin"),
+                leave=((rec.get("leave") or {}).get(provider) or {}).get("account_id"),
+                priority=rec.get("priority") or "normal",
+                moves=tuple((rec.get("moves") or {}).get(provider) or ()),
+                wait=(wait["account"], wait["slot_at"], wait["since"]) if wait else None)
+
+
+def book_for(state, provider, key, cfg, now):
+    """The admissions and waits of every tree on this provider but `key`'s own."""
+    prov = state["providers"].get(provider) or empty_provider_state()
+    admitted = {a: tuple((at, t) for at, t in entries if now - at <= ADMISSION_KEEP_SEC)
+                for a, entries in (prov.get("admissions") or {}).items()}
+    waiting = {}
+    for k, rec in state["sessions"].items():
+        wait = (rec.get("wait") or {}).get(provider)
+        if not wait or (key and k == key.key):
+            continue
+        rank = (PRIORITY_RANK.get(rec.get("priority") or "normal", 1), wait["since"], k)
+        waiting.setdefault(wait["account"], []).append((wait["slot_at"], k, rank))
+    return Book(admitted, {a: tuple(v) for a, v in waiting.items()},
+                in_use_counts(state, provider, now, cfg["active_session_sec"]))
+
+
 class HookWriter:
-    """The hook's whole mutation surface on state.json. It never writes a pin."""
+    """The hook's mutation surface on state.json: vends, admissions, waits,
+    cooldowns and limits. It never writes a pin. `pi-pool limited` and `refused`
+    write through it too, because they record what the provider answered."""
 
     def __init__(self, state):
         self._state = state
 
-    def record_vend(self, key, provider, account, source, reason, shadowed, now, parent):
-        """`parent` is (pid, start) of the calling process, read before the flock."""
+    def _rec(self, key, now):
         rec = self._state["sessions"].setdefault(key.key, {})
+        rec.setdefault("uuid", key.uuid)
+        rec.setdefault("active_id", key.active_id)
+        rec.setdefault("pins", {})
+        rec.setdefault("last_seen", now)
+        return rec
+
+    def record_vend(self, key, provider, account, source, reason, shadowed, now, parent, moved=False):
+        """`parent` is (pid, start) of the calling process, read before the flock.
+        A vend ends the tree's wait; `moved` adds one move to its 24 h budget."""
+        rec = self._rec(key, now)
         rec["uuid"], rec["active_id"] = key.uuid, key.active_id
         rec["pid"], rec["pid_start"] = parent
         rec["last_seen"] = now
-        rec.setdefault("pins", {})
         prev = (rec.setdefault("vends", {})).get(provider) or {}
         same = prev.get("account_id") == account.id
         rec["vends"][provider] = {
-            "account_id": account.id, "email": account.email, "source": source,
+            "account_id": account.id, "email": account.label, "source": source,
             "reason": reason, "shadowed": list(shadowed) if shadowed else None,
             "at": now, "n": (prev.get("n", 0) + 1) if same else 1,
             # since when the tree has been on this account: a 429 from a request sent
             # before it belongs to the account the tree had then (cmd_limited --since)
             "from": prev.get("from", prev.get("at", now)) if same else now,
         }
+        (rec.get("wait") or {}).pop(provider, None)
+        if moved:
+            rec.setdefault("moves", {}).setdefault(provider, []).append(now)
         return rec["vends"][provider]
+
+    def admit(self, key, provider, account_id, now):
+        """R4: one tree entered `account_id` now; its cell is taken."""
+        entries = self._state["providers"][provider].setdefault("admissions", {}).setdefault(account_id, [])
+        entries.append([now, key.key if key else None])
+
+    def set_wait(self, key, provider, account_id, slot_at, now):
+        """R5: the tree waits for its slot on `account_id`. Its wait start stays
+        the first one, so a tree keeps its place in the queue."""
+        rec = self._rec(key, now)
+        waits = rec.setdefault("wait", {})
+        since = (waits.get(provider) or {}).get("since", now)
+        waits[provider] = {"account": account_id, "slot_at": slot_at, "since": since}
 
     def set_cooldown(self, provider, account_id, until, reason=None):
         prov = self._state["providers"][provider]
@@ -1283,25 +1484,36 @@ class HookWriter:
                               "session": key.key if key else None}
 
     def prune(self, cfg, now):
-        """Drop expired cooldowns and limits, and sessions that have not vended for
-        pin_ttl_sec. Returns whether anything changed, so a request that prunes
-        nothing does not rewrite the file. Liveness is NOT a pid test: a session
-        resumed in a new worker keeps its pin, which is the whole point of
-        keying by uuid."""
+        """Drop expired cooldowns and limits, admissions older than
+        ADMISSION_KEEP_SEC, moves older than a day, waits whose slot passed
+        WAIT_STALE_SEC ago, and sessions that have not vended for pin_ttl_sec.
+        Returns whether anything changed, so a request that prunes nothing does
+        not rewrite the file. Liveness is NOT a pid test: a session resumed in a
+        new worker keeps its pin, which is the whole point of keying by uuid."""
         dropped = 0
         for provider in PROVIDERS:
-            cd = self._state["providers"][provider]["cooldowns"]
-            reasons = self._state["providers"][provider].get("cooldown_reasons") or {}
+            prov = self._state["providers"][provider]
+            cd = prov["cooldowns"]
+            reasons = prov.get("cooldown_reasons") or {}
             for account_id in [u for u, t in cd.items() if t <= now]:
                 del cd[account_id]
                 dropped += 1
             for account_id in [u for u in reasons if u not in cd]:
                 del reasons[account_id]
                 dropped += 1
-            limits = self._state["providers"][provider].get("limits") or {}
+            limits = prov.get("limits") or {}
             for account_id in [u for u, rec in limits.items() if rec["until"] <= now]:
                 del limits[account_id]
                 dropped += 1
+            admissions = prov.get("admissions") or {}
+            for account_id, entries in list(admissions.items()):
+                kept = [e for e in entries if now - e[0] <= ADMISSION_KEEP_SEC]
+                if len(kept) != len(entries):
+                    dropped += 1
+                    if kept:
+                        admissions[account_id] = kept
+                    else:
+                        del admissions[account_id]
         ttl = cfg["pin_ttl_sec"]
         for key in list(self._state["sessions"]):
             rec = self._state["sessions"][key]
@@ -1310,22 +1522,44 @@ class HookWriter:
             if now - last > ttl:
                 del self._state["sessions"][key]
                 dropped += 1
+                continue
+            waits = rec.get("wait") or {}
+            for provider in [p for p, w in waits.items() if w["slot_at"] < now - WAIT_STALE_SEC]:
+                del waits[provider]
+                dropped += 1
+            moves = rec.get("moves") or {}
+            for provider, times in list(moves.items()):
+                kept = [t for t in times if now - t < MOVE_WINDOW_SEC]
+                if len(kept) != len(times):
+                    dropped += 1
+                    if kept:
+                        moves[provider] = kept
+                    else:
+                        del moves[provider]
         return dropped > 0
 
 
 class IntentWriter:
-    """`pi-pool use` / `pin` / `unpin` / `switch`. It never writes a vend."""
+    """`pi-pool use` / `pin` / `unpin` / `switch` / `priority`. It never writes a vend."""
 
     def __init__(self, state):
         self._state = state
 
-    def set_pin(self, key, provider, account_id, force, by, now):
+    def _rec(self, key, now):
         rec = self._state["sessions"].setdefault(key.key, {})
         rec["uuid"], rec["active_id"] = key.uuid, key.active_id
         rec.setdefault("vends", {})
         rec.setdefault("last_seen", now)
-        rec.setdefault("pins", {})[provider] = {"account_id": account_id, "at": now,
-                                                "force": bool(force), "by": by}
+        return rec
+
+    def set_pin(self, key, provider, account_id, by, now):
+        self._rec(key, now).setdefault("pins", {})[provider] = {"account_id": account_id, "at": now, "by": by}
+
+    def set_priority(self, key, priority, now):
+        """R7: the tree's class. A tree with no record yet (a thread made a moment
+        ago) gets one, so its first request already counts as this class."""
+        self._rec(key, now)["priority"] = priority
+
 
     def clear_pin(self, key, provider):
         rec = self._state["sessions"].get(key.key)
@@ -1360,12 +1594,15 @@ class IntentWriter:
         prov = self._state["providers"][provider]
         if prov.get("pin") == account_id:
             prov["pin"] = None
-        for key in ("disabled", "cooldowns", "cooldown_reasons", "limits"):
+        for key in ("disabled", "cooldowns", "cooldown_reasons", "limits", "admissions"):
             (prov.get(key) or {}).pop(account_id, None)
         for rec in self._state["sessions"].values():
             pins = rec.get("pins") or {}
             if (pins.get(provider) or {}).get("account_id") == account_id:
                 del pins[provider]
+            waits = rec.get("wait") or {}
+            if (waits.get(provider) or {}).get("account") == account_id:
+                del waits[provider]
 
 
 # ----------------------------------------------------------------- credentials
@@ -1379,9 +1616,9 @@ def credential_for_keychain(a, cfg):
     adapter = KeychainAdapter(service)
     creds = adapter.read()
     if not creds:
-        raise RuntimeError(f"no credential in {a.email}'s store; run `tokenmaxxing auth {a.email}`")
+        raise RuntimeError(f"no credential in {a.label}'s store; run `pi-pool login {a.id}`")
     if not creds.get("accessToken") or not creds.get("refreshToken"):
-        raise RuntimeError(f"{a.email}'s store was cleared after a failed refresh (needs reauth)")
+        raise RuntimeError(f"{a.label}'s store was cleared after a failed refresh (needs reauth)")
     remaining = (creds["expiresAt"] - time.time() * 1000) / 1000
     if remaining > cfg["refresh_skew_sec"]:
         return creds["accessToken"], "store"
@@ -1402,7 +1639,7 @@ def credential_for_keychain(a, cfg):
         journal_write(service, merged)
         adapter.write(merged)
         journal_clear(service)
-        log("refreshed", account=a.email, provider="anthropic",
+        log("refreshed", account=a.label, provider="anthropic",
             expires_in_h=round((merged["expiresAt"] - time.time() * 1000) / 3600000, 2))
         return merged["accessToken"], "refreshed"
 
@@ -1415,7 +1652,7 @@ def credential_for_codex(a, cfg):
     store_key = "codex-" + a.id[:8]
     blob = adapter.read()
     if not blob or not (blob.get("tokens") or {}).get("access_token"):
-        raise RuntimeError(f"no credential in {a.email}'s codex store; run `tokenmaxxing auth --codex {a.email}`")
+        raise RuntimeError(f"no credential in {a.label}'s codex store; run `pi-pool login {a.id} --provider openai-codex`")
     token = blob["tokens"]["access_token"]
     if jwt_claims(token)["exp"] - time.time() > cfg["refresh_skew_sec"]:
         assert_codex_identity(token, a.id)
@@ -1441,7 +1678,7 @@ def credential_for_codex(a, cfg):
         journal_clear(store_key)
         token = merged["tokens"]["access_token"]
         assert_codex_identity(token, a.id)
-        log("refreshed", account=a.email, provider="openai-codex",
+        log("refreshed", account=a.label, provider="openai-codex",
             expires_in_h=round((jwt_claims(token)["exp"] - time.time()) / 3600, 2))
         return token, "refreshed"
 
@@ -1578,7 +1815,7 @@ def apply_refusal(provider, account, refusal, cfg, now):
     try:
         mark_refused(account.id, until)
     except Exception as e:
-        log("mark_refused_failed", account=account.email, error=str(e))
+        log("mark_refused_failed", account=account.label, error=str(e))
 
 
 def cmd_probe(rest=()):
@@ -1609,7 +1846,7 @@ def cmd_probe(rest=()):
         refusal = anthropic_refusal(creds["accessToken"], infer=reasons.get(a.id) == NEEDS_TERMS)
         if refusal:
             apply_refusal("anthropic", a, refusal, cfg, now)
-            lines.append(f"{a.email}: {refusal}")
+            lines.append(f"{a.label}: {refusal}")
         elif a.id in reasons:
             with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
                 state = load_state()
@@ -1617,7 +1854,7 @@ def cmd_probe(rest=()):
                 p["cooldowns"].pop(a.id, None)
                 (p.get("cooldown_reasons") or {}).pop(a.id, None)
                 save_json(STATE, state)
-            lines.append(f"{a.email}: accepted again")
+            lines.append(f"{a.label}: accepted again")
     log("probe", results=lines)
     if lines:
         print("; ".join(lines))
@@ -1625,19 +1862,19 @@ def cmd_probe(rest=()):
 
 
 # ---------------------------------------------------------------------- vend
-# Resolution reasons that put a session on an account it did not use before.
-MOVES = ("switch", "new", "upgrade")
-
-
-def switch_why(res, account, reason):
-    """Why a session left its account, for the switch log line."""
-    if account.id != res.account.id:
+def switch_why(d, account):
+    """Why a tree left its account, for the switch log line."""
+    if account.id != d.account.id:
         return "credential"
-    if res.left:
-        return res.left[1]
-    if reason in ("session_pin", "pool_pin"):
+    if getattr(d, "left", None):
+        return d.left[1]
+    if d.reason in ("session_pin", "pool_pin"):
         return "pin"
-    return reason
+    return d.reason
+
+
+def iso(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(epoch))
 
 
 def last_vend_account(state, key, provider, accounts, now):
@@ -1659,17 +1896,51 @@ def last_vend_account(state, key, provider, accounts, now):
     return account
 
 
+def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
+    """Run `decide` for this tree and write what it takes, under the pool flock
+    the caller holds: an admission takes its cell, a wait its slot. With
+    `admit_now` false (`pi-pool limited` and `refused`, whose retry vends a second
+    later) an admission is held as a wait due now. Returns the decision, the tree
+    and whether state changed."""
+    accounts = with_pool_state(accounts, state, provider)
+    accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
+    tree = tree_for(state, key, provider)
+    cooldowns = dict(state["providers"][provider]["cooldowns"])
+    d = decide(tree, accounts, book_for(state, provider, key, cfg, now), cooldowns, cfg, now)
+    writer = HookWriter(state)
+    if key is None or d is None:
+        return d, tree, False
+    if isinstance(d, Admit) and admit_now:
+        writer.admit(key, provider, d.account.id, now)
+        return d, tree, True
+    if isinstance(d, Admit):
+        writer.set_wait(key, provider, d.account.id, now, now)
+        return d, tree, True
+    if isinstance(d, Wait) and (tree.wait is None or tree.wait[:2] != (d.slot_account.id, d.slot_at)):
+        writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now)
+        log("wait", provider=provider, session=key.key, account=d.slot_account.label,
+            slot_at=iso(d.slot_at), priority=tree.priority, vend=d.vend and d.vend.label,
+            left=d.left and d.left[1])
+        return d, tree, True
+    return d, tree, False
+
+
 def vend(provider):
-    """Resolve one account for this session and write its access token to
+    """Decide one account for this session tree and write its access token to
     stdout. stdout is the token and nothing else; every other byte goes to
     the log.
 
-    Lock discipline: take the pool flock for read + prune + resolve only,
-    release it, fetch or refresh the credential under tokenmaxxing's own
-    lock, then re-take the pool flock to record the vend. The pool flock is
-    never held across a refresh, so `pi-pool use` never queues behind one.
-    When the flock stays busy past STATE_LOCK_TIMEOUT, the session keeps the
-    account it was last vended, if that account can still serve.
+    Lock discipline: take the pool flock to read, prune, decide and write the
+    admission or wait, release it, fetch or refresh the credential under
+    tokenmaxxing's own lock, then re-take the pool flock to record the vend. The
+    pool flock is never held across a refresh, so `pi-pool use` never queues
+    behind one. When the flock stays busy past STATE_LOCK_TIMEOUT, the tree keeps
+    the account it was last vended, if that account can still serve.
+
+    A tree that waits gets its own account while the provider refuses it, so the
+    request comes back as a 429 that writes no cache and `pi-pool limited` hands
+    the extension the slot time. With no such account the hook exits non-zero
+    with no token, and the extension turns that failure into the same wait.
     """
     cfg = config()
     accounts = load_index(provider)
@@ -1681,79 +1952,83 @@ def vend(provider):
         with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
             state = load_state()
             now = time.time()
-            if HookWriter(state).prune(cfg, now):
+            pruned = HookWriter(state).prune(cfg, now)
+            d, tree, wrote = schedule(state, key, provider, accounts, cfg, now)
+            if pruned or wrote:
                 save_json(STATE, state)
-            accounts = with_pool_state(accounts, state, provider)
-            accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
-            intent = intent_for(state, key, provider)
-            in_use = in_use_counts(state, provider)
-            cooldowns = dict(state["providers"][provider]["cooldowns"])
-            res = resolve(intent, accounts, in_use, cooldowns, cfg, now)
     except TimeoutError:
         # save_json replaces state.json in one rename, so an unlocked read sees a whole file.
         account = last_vend_account(load_json(STATE, {}) or {}, key, provider, accounts, time.time())
         if account is None:
             raise
         token, source = credential_for(account, cfg)
-        log("vend_lock_busy", provider=provider, account=account.email, source=source, session=key.key)
+        log("vend_lock_busy", provider=provider, account=account.label, source=source, session=key.key)
         sys.stdout.write(token)
         return
 
-    if res is None:
-        # Vend a depleted account rather than nothing, so the caller gets the
-        # provider's 429 and its reset time instead of an auth error.
-        fallback = last_resort(accounts, cooldowns, cfg, now, intent.current)
-        if fallback is None:
-            raise RuntimeError(f"no usable {provider} account")
-        res = Resolution(fallback, "last_resort", None)
+    if d is None:
+        raise RuntimeError(f"no {provider} account can serve this session")
+    if isinstance(d, Wait):
+        if d.vend is not None:
+            try:
+                token, _ = credential_for(d.vend, cfg)
+            except Exception as e:
+                log("account_unusable", provider=provider, account=d.vend.label, error=str(e))
+            else:
+                sys.stdout.write(token)
+                return
+        raise SystemExit(f"pi-pool: this session waits for a slot on {d.slot_account.label} "
+                         f"at {iso(d.slot_at)}")
 
-    order = [res.account] + [a for a, _ in switch_weights(accounts, in_use, cooldowns, cfg, now)
-                             if a.id != res.account.id]
+    order = [d.account] + list(d.fallbacks)
     errors = []
     for account in order:
         try:
             token, source = credential_for(account, cfg)
         except Exception as e:
-            errors.append(f"{account.email}: {e}")
-            log("account_unusable", provider=provider, account=account.email, error=str(e))
+            errors.append(f"{account.label}: {e}")
+            log("account_unusable", provider=provider, account=account.label, error=str(e))
             continue
-        reason = res.reason if account.id == res.account.id else "switch"
-        # A switch or a fresh rotation is rare (hours apart per session), so it
-        # can afford one no-spend probe; that is where an organization-level
-        # OAuth refusal shows up, which usage figures and needsReauth never reflect.
-        if provider == "anthropic" and (source == "refreshed" or reason in MOVES):
+        reason = d.reason if account.id == d.account.id else ("switch" if tree.current else "new")
+        entering = account.id != tree.current
+        # Entering an account is rare (hours apart per tree), so it can afford one
+        # no-spend probe; that is where an organization-level OAuth refusal shows
+        # up, which usage figures and needsReauth never reflect.
+        if provider == "anthropic" and (source == "refreshed" or entering):
             refusal = anthropic_refusal(token)
             if refusal:
-                errors.append(f"{account.email}: {refusal}")
-                log("account_refused", provider=provider, account=account.email, error=refusal)
+                errors.append(f"{account.label}: {refusal}")
+                log("account_refused", provider=provider, account=account.label, error=refusal)
                 apply_refusal(provider, account, refusal, cfg, now)
-                cooldowns[account.id] = now + cfg["refused_cooldown_sec"]
                 continue
         prev = vended = None
         try:
             with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
                 state = load_state()
+                writer = HookWriter(state)
                 prev = ((state["sessions"].get(key.key) or {}).get("vends") or {}).get(provider) if key else None
-                vended = HookWriter(state).record_vend(key, provider, account, source, reason,
-                                                       res.shadowed, now, parent) if key else None
+                if key and account.id != d.account.id:
+                    writer.admit(key, provider, account.id, now)
+                vended = writer.record_vend(key, provider, account, source, reason, d.shadowed, now, parent,
+                                            moved=entering and tree.current is not None) if key else None
                 save_json(STATE, state)
         except TimeoutError:
-            # The token is valid; a vend left off the record only skews the next pick.
-            log("vend_unrecorded", provider=provider, account=account.email, session=key and key.key)
+            # The token is valid; a vend left off the record only skews the next decision.
+            log("vend_unrecorded", provider=provider, account=account.label, session=key and key.key)
         # The hook runs on every provider request, so a line per vend would be a log of
-        # thousands. Log the transitions only: a session changing account, and a last resort.
-        # `why` says why the pin in `shadowed` did not serve (depleted, limited, ...).
-        if vended is None or vended["n"] == 1 or reason == "last_resort":
-            log("vend", provider=provider, account=account.email, source=source,
-                reason=reason, shadowed=res.shadowed and res.shadowed[0],
-                why=res.shadowed and res.shadowed[1],
+        # thousands. Log the transitions only: a tree entering an account.
+        # `why` says why the pin in `shadowed` did not serve (depleted, limited, busy, ...).
+        if vended is None or vended["n"] == 1:
+            log("vend", provider=provider, account=account.label, source=source,
+                reason=reason, shadowed=d.shadowed and d.shadowed[0],
+                why=d.shadowed and d.shadowed[1],
                 previous=(prev or {}).get("email"), session=key and key.key)
         if prev and prev.get("account_id") != account.id:
-            # One line per move of one session: `pi-pool status` and the chat
+            # One line per move of one tree: `pi-pool status` and the chat
             # health review count these.
             log("switch", provider=provider, session=key.key, previous=prev.get("email"),
-                account=account.email, reason=reason, why=switch_why(res, account, reason),
-                weights=dict(res.weights))
+                account=account.label, reason=reason, why=switch_why(d, account),
+                scores=dict(getattr(d, "scores", ())[:6]))
         sys.stdout.write(token)
         return
 
@@ -1818,25 +2093,26 @@ def session_key_for(session_arg, state):
     return None
 
 
-def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, cooldown_reasons=None):
-    """The rows /account renders. Pure: no I/O, no clock reads beyond `now`."""
+def build_rows(accounts, tree, book, cooldowns, cfg, now, cooldown_reasons=None):
+    """The rows /account and Settings > Accounts render, for one tree. Pure: no
+    I/O, no clock reads beyond `now`. `usable` means the account takes this tree
+    now (R2); `serves` means a tree already on it keeps it (R1); `score` is R3,
+    null when the account cannot take the tree."""
     cooldown_reasons = cooldown_reasons or {}
-    weights = {a.id: w for a, w in switch_weights(accounts, in_use, cooldowns, cfg, now, exclude=(current_id,))}
+    p = tree.priority
     rows = []
     for a in accounts:
-        reason = format_reason(a, cooldowns, cfg, now)
-        pinned = a.id in (intent.session_pin, intent.pool_pin)
-        force = a.id == intent.session_pin and intent.session_pin_force
-        usable = reason is None
+        reason = format_reason(a, cooldowns, cfg, now, p)
         row = {
-            "id": a.id, "email": a.email,
+            "id": a.id, "email": a.email, "label": a.label,
             "usage": f"{a.session_pct}%/{a.weekly_pct}%",
             "session_pct": a.session_pct, "weekly_pct": a.weekly_pct, "gated_pct": a.gated_pct,
-            "usable": usable, "reason": reason,
-            "current": a.id == current_id, "pinned": pinned, "force": force,
+            "usable": reason is None, "serves": serve_reason(a, cooldowns, now) is None, "reason": reason,
+            "current": a.id == tree.current, "pinned": a.id in (tree.pin, tree.pool_pin),
             # user-history's parsePoolRows requires a boolean `seat`; false until it drops the field.
             "live": a.is_live, "seat": False, "disabled": a.disabled,
-            "weight": round(weights[a.id], 1) if a.id in weights else None,
+            "score": round(score(a, cfg, now, p, book.load), 2) if reason is None else None,
+            "slot_cap": slot_cap(a, cfg),
         }
         if a.plan:
             row["plan"] = a.plan
@@ -1847,7 +2123,9 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, cooldo
             "windows": usage_windows(a, now),
             "usage_at": round(a.usage_at) if a.usage_at else None,
             "usage_age_sec": max(0, round(now - a.usage_at)) if a.usage_at else None,
-            "sessions": in_use.get(a.id, 0),
+            "sessions": book.load.get(a.id, 0),
+            "admitted_recently": sum(1 for at, _ in book.admitted.get(a.id, ()) if now - at <= cfg["admit_slot_sec"]),
+            "waiting": len(book.waiting.get(a.id, ())),
             "cooldown_until": round(cooldowns[a.id]) if cooling else None,
             "cooldown_reason": cooldown_reasons.get(a.id) if cooling else None,
             "limited_until": round(a.limited_until) if limited else None,
@@ -1859,7 +2137,7 @@ def build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id, cooldo
 # ------------------------------------------------------------------ rendering
 # `status` and `watch` draw one card per account in a grid, the same layout as
 # `tokenmaxxing status`, plus what only the pool knows: pins, the
-# sessions on each account, cooldowns, and each account's chance in a switch.
+# sessions on each account, cooldowns, waiters, and each account's score.
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 CARD_GAP = 3
 NOTE_INDENT = "    "
@@ -1942,8 +2220,10 @@ def account_card(p, a, ctx):
     badges = []
     if ctx["pool_pin"] == a.id:
         badges.append(p.cyan("pool pin"))
-    if a.id in ctx["chances"]:
-        badges.append(p.cyan(f"pick {ctx['chances'][a.id]:.0%}"))
+    if a.id in ctx["scores"]:
+        badges.append(p.cyan(f"score {ctx['scores'][a.id]:.2f}"))
+    if ctx["waiting"].get(a.id):
+        badges.append(p.yellow(f"{ctx['waiting'][a.id]} waiting"))
     if sessions:
         badges.append(p.green(f"{sessions} session{'s' if sessions != 1 else ''}"))
     if a.is_live:
@@ -1953,21 +2233,23 @@ def account_card(p, a, ctx):
     elif reason == "needs-reauth":
         badges.append(p.red("needs-reauth"))
     elif reason == "depleted":
-        badges.append(p.yellow("exhausted"))
-    elif reason and reason.startswith("cooldown"):
+        badges.append(p.yellow("full" if ctx["serves"].get(a.id) is False else "takes no new trees"))
+    elif reason and reason.startswith(("cooldown", "limited")):
         badges.append(p.yellow(reason))
     tier = f" {p.dim(a.tier)}" if a.tier else ""
-    lines = [f"{marker} {p.bold(a.email)}{tier}" + (f" {' '.join(badges)}" if badges else "")]
+    lines = [f"{marker} {p.bold(a.label)}{tier}" + (f" {' '.join(badges)}" if badges else "")]
     lines += window_rows(p, a, now) if a.windows else [f"{NOTE_INDENT}{p.dim('never sampled')}"]
     notes = []
     if reason == "disabled":
-        notes.append((p.dim, f"off: never picked until pi-pool on {a.email}"))
+        notes.append((p.dim, f"off: never picked until pi-pool on {a.label}"))
     elif reason == "needs-reauth":
-        flag = " --codex" if a.provider == "openai-codex" else ""
-        notes.append((p.red, f"login is dead: tokenmaxxing auth{flag} {a.email}"))
+        flag = " --provider openai-codex" if a.provider == "openai-codex" else ""
+        notes.append((p.red, f"login is dead: pi-pool login {a.id}{flag}"))
     elif reason and reason.startswith("cooldown"):
         why = ctx["cooldown_reasons"].get(a.id)
         notes.append((p.yellow, f"refused: {why}" if why else "cooling down after a failure"))
+    elif reason and reason.startswith("limited"):
+        notes.append((p.yellow, "the provider answered 429; skipped until the limit ends"))
     if a.windows and reason != "needs-reauth" and now - a.usage_at > STALE_USAGE_SEC:
         notes.append((p.dim, f"usage from {fmt_ago(now - a.usage_at)}"))
     return lines, notes
@@ -2020,7 +2302,7 @@ def render_grid(cards, term_width):
 def card_order(a, ctx):
     reason = ctx["reasons"].get(a.id)
     rank = (0 if reason is None else 3 if reason == "disabled" else 2 if reason == "needs-reauth" else 1)
-    return (rank, -ctx["chances"].get(a.id, 0), a.email)
+    return (rank, -ctx["scores"].get(a.id, 0), a.label)
 
 
 def switches_today(provider, now):
@@ -2050,8 +2332,9 @@ def switches_today(provider, now):
 def status_lines(providers, p, term_width, now=None):
     now = time.time() if now is None else now
     cfg, state = config(), load_state()
-    out = [p.dim(f"pool limits 5h {cfg['five_hour_max_pct']}%  week {cfg['seven_day_max_pct']}%"
-                 f"  {'/'.join(cfg['switch_models'])} {cfg['seven_day_max_pct']}%"), ""]
+    out = [p.dim(f"new trees enter under 5h {cfg['admit_5h_max_pct']}% (low {cfg['low_admit_5h_max_pct']}%)"
+                 f"  week {cfg['seven_day_max_pct']}%  {'/'.join(cfg['switch_models'])} {cfg['seven_day_max_pct']}%"
+                 f"  one per {cfg['admit_slot_sec']}s per tier unit"), ""]
     for provider in providers:
         title = PROVIDER_TITLES.get(provider, provider)
         try:
@@ -2061,26 +2344,28 @@ def status_lines(providers, p, term_width, now=None):
             continue
         accounts = with_pool_state(accounts, state, provider)
         prov = state["providers"][provider]
-        in_use = in_use_counts(state, provider, now)
+        book = book_for(state, provider, None, cfg, now)
         cooldowns = prov["cooldowns"]
-        weights = switch_weights(accounts, in_use, cooldowns, cfg, now)
         reasons = {a.id: format_reason(a, cooldowns, cfg, now) for a in accounts}
-        ctx = {"now": now, "in_use": in_use, "pool_pin": prov.get("pin"),
-               "chances": pick_chances(weights),
+        ctx = {"now": now, "in_use": book.load, "pool_pin": prov.get("pin"),
+               "scores": {a.id: score(a, cfg, now, "normal", book.load) for a in accounts if reasons[a.id] is None},
+               "serves": {a.id: serve_reason(a, cooldowns, now) is None for a in accounts},
+               "waiting": {a: len(w) for a, w in book.waiting.items()},
                "reasons": reasons, "cooldown_reasons": prov.get("cooldown_reasons") or {}}
         head = [f"{title}  ({len(accounts)} accounts)"]
         if prov.get("pin"):
-            pinned = next((a.email for a in accounts if a.id == prov["pin"]), prov["pin"])
+            pinned = next((a.label for a in accounts if a.id == prov["pin"]), prov["pin"])
             head.append(f"pool pinned to {pinned}")
         moves, movers = switches_today(provider, now)
         head.append(f"{moves} switches today ({movers} sessions)")
-        fallback = (load_fallback().get(provider) or {}).get("type") == "oauth"
-        if weights:
-            head.append(f"{len(weights)} usable")
+        if ctx["scores"]:
+            head.append(f"{len(ctx['scores'])} take new trees")
         else:
-            head.append(p.yellow("0 usable, requests use your own login (fallback.json)" if fallback
-                                 else "0 usable, requests will fail"))
-        head.append(f"{sum(in_use.values())} active sessions")
+            head.append(p.yellow("0 take new trees, new trees wait for a slot"))
+        waiting = sum(ctx["waiting"].values())
+        if waiting:
+            head.append(p.yellow(f"{waiting} waiting"))
+        head.append(f"{sum(book.load.values())} active sessions")
         out += [p.dim("  \u00b7  ".join(head)), ""]
         cards = [account_card(p, a, ctx) for a in sorted(accounts, key=lambda a: card_order(a, ctx))]
         out += render_grid(cards, term_width)
@@ -2135,19 +2420,19 @@ def cmd_pin(rest):
     accounts = load_index(provider)
     account = find_account(accounts, positional[0])
     if account is None:
-        known = ", ".join(a.email for a in accounts)
+        known = ", ".join(a.label for a in accounts)
         raise SystemExit(f"{positional[0]} is not in the {provider} pool ({known})")
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
         if account.id in (state["providers"][provider].get("disabled") or {}):
-            raise SystemExit(f"{account.email} is off; turn it on first (pi-pool on {account.email} --provider {provider})")
+            raise SystemExit(f"{account.label} is off; turn it on first (pi-pool on {account.label} --provider {provider})")
         if state["providers"][provider].get("pin") == account.id:
-            print(f"already pinned: {account.email}")
+            print(f"already pinned: {account.label}")
             return 0
         IntentWriter(state).set_pool_pin(provider, account.id)
         save_json(STATE, state)
-    log("pin", provider=provider, account=account.email)
-    print(f"pinned: every {provider} request now vends {account.email} "
+    log("pin", provider=provider, account=account.label)
+    print(f"pinned: every {provider} request now vends {account.label} "
           f"(release with: pi-pool unpin --provider {provider})")
     return 0
 
@@ -2169,14 +2454,14 @@ def cmd_unpin(rest):
 
 
 def cmd_switch(rest):
-    """This session's next request leaves the account it is on, by the same
-    weighted pick a session makes when its account runs out."""
+    """This session's next request leaves the account it is on for the best
+    account that takes it now (R2-R4); with none, it stays."""
     f = parse_flags(rest)
     provider = f["provider"]
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
         key = session_key_for(f["session"], state)
-        current = intent_for(state, key, provider).current if key else None
+        current = tree_for(state, key, provider).current if key else None
         if current is None:
             print(f"no {provider} account on file for this session; nothing to switch from")
             return 2
@@ -2207,6 +2492,10 @@ def cmd_set(rest):
         val = float(value)
     elif isinstance(d, list):
         val = [s for s in value.split(",") if s]
+    elif isinstance(d, dict):
+        val = json.loads(value)
+        if not isinstance(val, dict):
+            raise SystemExit(f"{key} takes a JSON object, like {json.dumps(d)}")
     else:
         val = value
     cur = load_json(CONFIG, {}) or {}
@@ -2226,23 +2515,38 @@ def cmd_log(rest):
     return 0
 
 
+def write_key(f, state):
+    """The tree a CLI write names: --session, else this process's tree. A tree
+    with no record yet is accepted only as a full uuid with --new-session (`use`)
+    or always (`priority`), since the hook keys a tree by its root uuid and a
+    record under that uuid applies from the tree's first request."""
+    key = session_key_for(f["session"], state)
+    if key is None and SESSION_UUID_RE.fullmatch(f["session"] or ""):
+        key = SessionKey(f["session"], f["session"], None)
+    if key is None:
+        if f["session"] is not None:
+            print(f"--session {f['session']} matches no known session")
+        else:
+            print("no session id in this environment. Run this inside a Prime Agent "
+                  "session, or pass --session <id>.")
+    return key
+
+
 def cmd_use(rest):
     f = parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
+    if f["force"]:
+        print("--force is gone: a pin applies only when its account can take the session "
+              f"(5h under {config()['admit_5h_max_pct']}%), on the next request")
+        return 2
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
-        key = session_key_for(f["session"], state)
-        if key is None and f["new_session"] and SESSION_UUID_RE.fullmatch(f["session"] or ""):
-            # A session created a moment ago has no record until its first vend. The hook
-            # keys a tree by its root session uuid, so a pin under that uuid applies from
-            # the very first request. Only an explicit --new-session with a full uuid does this.
-            key = SessionKey(f["session"], f["session"], None)
+        known = session_key_for(f["session"], state)
+        if known is None and f["session"] is not None and not f["new_session"]:
+            print(f"--session {f['session']} matches no known session")
+            return 2
+        key = write_key(f, state)
         if key is None:
-            if f["session"] is not None:
-                print(f"--session {f['session']} matches no known session")
-                return 2
-            print("no session id in this environment. Run this inside a Prime Agent "
-                  "session, or pass --session <id>.")
             return 2
         rec = state["sessions"].get(key.key, {})
         prev_pin = (rec.get("pins") or {}).get(provider)
@@ -2259,7 +2563,7 @@ def cmd_use(rest):
             return 0
 
         if not positional:
-            raise SystemExit("usage: pi-pool use <email|id> [--force] [--follow] [--new-session]")
+            raise SystemExit("usage: pi-pool use <email|id> [--follow] [--new-session]")
         try:
             accounts = load_index(provider)
         except Exception as e:
@@ -2267,21 +2571,43 @@ def cmd_use(rest):
             return 2
         account = find_account(accounts, positional[0])
         if account is None:
-            known = ", ".join(a.email for a in accounts)
+            known = ", ".join(a.label for a in accounts)
             print(f"{positional[0]} is not in the {provider} pool ({known})")
             return 2
         if account.id in (state["providers"][provider].get("disabled") or {}):
-            print(f"{account.email} is off; turn it on first (pi-pool on {account.email} --provider {provider})")
+            print(f"{account.label} is off; turn it on first (pi-pool on {account.label} --provider {provider})")
             return 2
-        if prev_pin and prev_pin["account_id"] == account.id and bool(prev_pin.get("force")) == f["force"]:
-            print(f"already on {account.email}")
+        if prev_pin and prev_pin["account_id"] == account.id:
+            print(f"already on {account.label}")
             return 0
-        IntentWriter(state).set_pin(key, provider, account.id, f["force"], "cli", time.time())
+        IntentWriter(state).set_pin(key, provider, account.id, "cli", time.time())
         save_json(STATE, state)
-        log("use", session=key.key, provider=provider, account=account.email,
-            previous=prev_pin["account_id"] if prev_pin else None, force=f["force"])
-        print(f"{account.email} selected for this session tree; applies on the next request")
+        log("use", session=key.key, provider=provider, account=account.label,
+            previous=prev_pin["account_id"] if prev_pin else None)
+        print(f"{account.label} selected for this session tree; the next request moves there "
+              f"if it can take the tree, and later moves prefer it")
         return 0
+
+
+def cmd_priority(rest):
+    """R7: `pi-pool priority high|normal|low [--session id]` sets the tree's class.
+    One class per tree, whatever the provider."""
+    f = parse_flags(rest)
+    positional = f["positional"]
+    if len(positional) != 1 or positional[0] not in PRIORITIES:
+        raise SystemExit("usage: pi-pool priority high|normal|low [--session <id>] [--provider <p>]")
+    with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
+        state = load_state()
+        key = write_key(f, state)
+        if key is None:
+            return 2
+        prev = (state["sessions"].get(key.key) or {}).get("priority") or "normal"
+        IntentWriter(state).set_priority(key, positional[0], time.time())
+        save_json(STATE, state)
+    if prev != positional[0]:
+        log("priority", session=key.key, priority=positional[0], previous=prev)
+    print(f"{key.key}: {positional[0]}")
+    return 0
 
 
 REFRESH_TIMEOUT_SEC = 180
@@ -2319,7 +2645,7 @@ def tokenmaxxing_runtime():
 
 def read_usage(selection, emit, timeout=REFRESH_TIMEOUT_SEC):
     """Run usage-read.ts once per provider, all at once, and pass each event to
-    `emit` with its provider and email. `selection` maps a provider to account
+    `emit` with its provider, email and label. `selection` maps a provider to account
     ids, or to None for every account. An account still unread at the deadline
     is reported as not finished. Returns the providers that failed as a whole."""
     bun, src = tokenmaxxing_runtime()
@@ -2337,6 +2663,12 @@ def read_usage(selection, emit, timeout=REFRESH_TIMEOUT_SEC):
         pumps.append(threading.Thread(target=pump, daemon=True))
         pumps[-1].start()
     emails, pending, open_, listed = {}, {p: set() for p in procs}, set(procs), set()
+    labels = {}
+    for provider in procs:
+        try:
+            labels.update({(provider, a.id): a.label for a in load_index(provider)})
+        except Exception:
+            pass
     deadline = time.monotonic() + timeout
     while open_:
         try:
@@ -2357,6 +2689,7 @@ def read_usage(selection, emit, timeout=REFRESH_TIMEOUT_SEC):
             listed.add(provider)
             for a in event.get("accounts") or []:
                 emails[(provider, a.get("id"))] = a.get("email")
+                a["label"] = labels.get((provider, a.get("id"))) or a.get("email")
                 pending[provider].add(a.get("id"))
         elif kind == "read":
             pending[provider].discard(event.get("id"))
@@ -2364,6 +2697,7 @@ def read_usage(selection, emit, timeout=REFRESH_TIMEOUT_SEC):
             errors[provider] = str(event.get("message") or "usage-read failed")
         if kind in ("reading", "read"):
             event["email"] = emails.get((provider, event.get("id")))
+            event["label"] = labels.get((provider, event.get("id"))) or event["email"]
         emit(dict(event, provider=provider))
     for provider, proc in procs.items():
         killed = proc.poll() is None
@@ -2377,6 +2711,7 @@ def read_usage(selection, emit, timeout=REFRESH_TIMEOUT_SEC):
             emit({"event": "error", "provider": provider, "message": errors[provider]})
         for account in sorted(pending[provider], key=str):
             emit({"event": "read", "provider": provider, "id": account, "email": emails.get((provider, account)),
+                  "label": labels.get((provider, account)) or emails.get((provider, account)),
                   "ok": False, "reason": f"the read did not finish in {timeout}s", "retry_at": None})
     for pump in pumps:
         pump.join(timeout=5)
@@ -2426,17 +2761,17 @@ def cmd_refresh(rest):
 
     def emit(event):
         if event.get("event") == "read":
-            rows[event["provider"]].append({k: event.get(k) for k in ("id", "email", "ok", "reason", "retry_at", "usage_at")})
+            rows[event["provider"]].append({k: event.get(k) for k in ("id", "email", "label", "ok", "reason", "retry_at", "usage_at")})
         if stream:
             print(json.dumps(event), flush=True)
         elif not as_json and event.get("event") == "read":
-            print(f"{event['provider']:14s} {event.get('email') or event.get('id')}  {'read' if event.get('ok') else event.get('reason')}", flush=True)
+            print(f"{event['provider']:14s} {event.get('label') or event.get('id')}  {'read' if event.get('ok') else event.get('reason')}", flush=True)
 
     try:
         errors = read_usage(selection, emit)
     except RuntimeError as e:
         return fail(str(e))
-    failed = [r["email"] or r["id"] for provider_rows in rows.values() for r in provider_rows if not r["ok"]]
+    failed = [r["label"] or r["id"] for provider_rows in rows.values() for r in provider_rows if not r["ok"]]
     log("usage_refresh", providers=list(selection), accounts=sum(len(r) for r in rows.values()), failed=failed, errors=errors)
     if stream:
         print(json.dumps({"event": "end"}), flush=True)
@@ -2717,18 +3052,18 @@ def cmd_resets(rest):
                 cache = load_json(RESETS, {}) or {}
                 cache[a.id] = {**(cache.get(a.id) or {}), "error": entry["error"], "error_at": entry["checked_at"]}
                 save_json(RESETS, cache)
-    log("resets_read", accounts=[a.email for a, _ in results], failed=[a.email for a, e in results if "error" in e])
-    rows = [{"id": a.id, "email": a.email, **e} for a, e in results]
+    log("resets_read", accounts=[a.label for a, _ in results], failed=[a.label for a, e in results if "error" in e])
+    rows = [{"id": a.id, "email": a.email, "label": a.label, **e} for a, e in results]
     if f["json"]:
         print(json.dumps({"accounts": rows}, indent=2))
         return 0
     for r in rows:
         if "error" in r:
-            print(f"{r['email']}  not read: {r['error']}")
+            print(f"{r['label']}  not read: {r['error']}")
             continue
         st = r["status"]
         left = sum(g["resets_left"] for g in st["grants"])
-        print(f"{r['email']}  {left} reset(s) left" + ("" if st["eligible"] else f"  (ineligible: {st['ineligible_reason']})"))
+        print(f"{r['label']}  {left} reset(s) left" + ("" if st["eligible"] else f"  (ineligible: {st['ineligible_reason']})"))
     return 0
 
 
@@ -2779,7 +3114,7 @@ def cmd_reset(rest):
                 spent = grant is None or grant["resets_left"] < claim["left_before"]
                 claim["code"] = "reset" if spent else "not_spent"
                 save_json(RESET_CLAIMS, claims)
-                log("reset_resolved", account=a.email, grant=claim["grant_id"], spent=spent)
+                log("reset_resolved", account=a.label, grant=claim["grant_id"], spent=spent)
                 if spent:
                     return done(0, "reset", "The earlier claim did spend the reset; usage limits were reset.", grant_id=claim["grant_id"])
                 claim = None
@@ -2799,7 +3134,7 @@ def cmd_reset(rest):
             claims[a.id] = claim
             save_json(RESET_CLAIMS, claims)
         payload = {"program": RESET_PROGRAM, "grant_id": claim["grant_id"], "request_id": claim["request_id"]}
-        log("reset_claim", account=a.email, grant=claim["grant_id"], retry=retry)
+        log("reset_claim", account=a.label, grant=claim["grant_id"], retry=retry)
         try:
             code, body = anthropic_call(RESET_URL.format(org=org), token, payload, timeout=25.0)
             result = "rate_limited" if code == 429 else "auth_error" if code in (401, 403) else (
@@ -2811,7 +3146,7 @@ def cmd_reset(rest):
             claims = load_json(RESET_CLAIMS, {}) or {}
             claims[a.id] = {**claim, "code": result}
             save_json(RESET_CLAIMS, claims)
-        log("reset_result", account=a.email, grant=claim["grant_id"], result=result or "unknown")
+        log("reset_result", account=a.label, grant=claim["grant_id"], result=result or "unknown")
         try:
             save_reset_status(a.id, {"checked_at": round(time.time()), "status": read_grant_status(token)})
         except Exception:
@@ -2829,6 +3164,24 @@ def cmd_reset(rest):
 
 
 
+def tree_view(state, key, provider, accounts, f, cfg, now):
+    """(accounts, tree, book, cooldowns) for a read-only command about one tree."""
+    accounts = with_pool_state(accounts, state, provider)
+    accounts = with_models(accounts, [f["model"]] if f.get("model") else session_models(state, key, provider, cfg, now), cfg)
+    tree = tree_for(state, key, provider) if key else Tree(pool_pin=state["providers"][provider].get("pin"))
+    return accounts, tree, book_for(state, provider, key, cfg, now), state["providers"][provider]["cooldowns"]
+
+
+def wait_view(tree, d):
+    """The tree's wait as {account, slot_at}: the one on file, else the one the
+    next request would get; None when it does not wait."""
+    if tree.wait:
+        return {"account": tree.wait[0], "slot_at": math.ceil(tree.wait[1])}
+    if isinstance(d, Wait):
+        return {"account": d.slot_account.id, "slot_at": math.ceil(d.slot_at)}
+    return None
+
+
 def cmd_ls(rest):
     f = parse_flags(rest)
     provider = f["provider"]
@@ -2840,21 +3193,14 @@ def cmd_ls(rest):
         print(json.dumps({"error": msg}) if f["json"] else msg)
         return 1
     state = load_state()
-    accounts = with_pool_state(accounts, state, provider)
     key = session_key_for(f["session"], state)
     if f["session"] is not None and key is None:
         msg = f"--session {f['session']} matches no known session"
         print(json.dumps({"error": msg}) if f["json"] else msg)
         return 2
-    accounts = with_models(accounts, [f["model"]] if f["model"] else session_models(state, key, provider, cfg, now), cfg)
-    intent = intent_for(state, key, provider) if key else Intent()
-    in_use = in_use_counts(state, provider)
-    cooldowns = state["providers"][provider]["cooldowns"]
-    current_id = None
-    if key:
-        rec = state["sessions"].get(key.key) or {}
-        current_id = ((rec.get("vends") or {}).get(provider) or {}).get("account_id")
-    rows = build_rows(accounts, intent, in_use, cooldowns, cfg, now, current_id,
+    accounts, tree, book, cooldowns = tree_view(state, key, provider, accounts, f, cfg, now)
+    d = decide(tree, accounts, book, cooldowns, cfg, now) if key else None
+    rows = build_rows(accounts, tree, book, cooldowns, cfg, now,
                       state["providers"][provider].get("cooldown_reasons"))
     if provider == "anthropic":
         resets = reset_rows(accounts)
@@ -2862,25 +3208,27 @@ def cmd_ls(rest):
             row["resets"] = resets.get(row["id"])
     pin_account = next((a for a in accounts if a.id == state["providers"][provider].get("pin")), None)
     out = {"provider": provider, "session": key.key if key else None,
-           "pin": {"id": pin_account.id, "email": pin_account.email} if pin_account else None,
+           "pin": {"id": pin_account.id, "email": pin_account.email, "label": pin_account.label} if pin_account else None,
+           "priority": tree.priority, "wait": wait_view(tree, d) if key else None,
            "rows": rows}
     if f["json"]:
         print(json.dumps(out, indent=2))
         return 0
-    print(f"{provider}  session {out['session'] or '-'}")
-    width = max([len("account")] + [len(r["email"]) for r in rows])
+    print(f"{provider}  session {out['session'] or '-'}  priority {tree.priority}"
+          + (f"  waits for {out['wait']['account']} at {iso(out['wait']['slot_at'])}" if out["wait"] else ""))
+    width = max([len("account")] + [len(r["label"]) for r in rows])
     print(f"{'account':{width}s} {'usage':>9}  flags")
     for r in rows:
         flags = []
         if r["pinned"]:
-            flags.append("pinned+force" if r["force"] else "pinned")
+            flags.append("pinned")
         if r["current"]:
             flags.append("current")
         if r["live"]:
             flags.append("live")
         if r["reason"]:
             flags.append(r["reason"])
-        print(f"{r['email']:{width}s} {r['usage']:>9}  {' '.join(flags) or 'available'}")
+        print(f"{r['label']:{width}s} {r['usage']:>9}  {' '.join(flags) or 'available'}")
     return 0
 
 
@@ -2919,10 +3267,12 @@ def cmd_model(rest):
 
 def cmd_limited(rest):
     """The provider answered 429 for the account this session tree last vended.
-    Record the limit until `--until` (epoch seconds), so every pin and every
-    session on that account yield to it, and print what the tree's next request gets:
-    {"account", "until", "next"}. `next` is null when no other account can
-    serve; the caller then waits for the provider's own reset."""
+    Record the limit until `--until` (epoch seconds), so every tree on that
+    account and every pin yield to it, and print what the tree's next request
+    gets: {"account", "until", "next", "retry_at"}. `next` names the account the
+    retry enters now. When it is null the tree waits, and `retry_at` is its own
+    slot time (epoch sec): the extension sets the message's retryAfterMs to it, so
+    Prime sleeps until the tree's slot, not until the provider's reset."""
     f = parse_flags(rest)
     provider, until = f["provider"], f["until"]
     if until is None:
@@ -2942,46 +3292,44 @@ def cmd_limited(rest):
         # in-flight requests of one tree re-reported one Codex account's 429 after each
         # move, and all three codex accounts got its reset (limited 4d16h, at 0% and 8% used).
         stale = f["since"] is not None and last.get("from", last.get("at", 0)) > f["since"]
-        if stale:
-            nxt = None
-        else:
+        if not stale:
             HookWriter(state).set_limit(provider, last["account_id"], until, key, now)
+            d = plan_next(state, key, provider, accounts, cfg, now)
             save_json(STATE, state)
-            nxt = next_account(state, key, provider, accounts, cfg, now)
     if stale:
-        out = {"account": None, "until": round(until), "next": last["email"], "stale": True}
+        out = {"account": None, "until": round(until), "next": last["email"], "retry_at": None, "stale": True}
         log("limited_stale", provider=provider, current=last["email"], session=key.key,
-            sent=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(f["since"])))
+            sent=iso(f["since"]))
         print(json.dumps(out))
         return 0
-    out = {"account": last["email"], "until": round(until), "next": nxt.email if nxt else None}
+    out = {"account": last["email"], "until": round(until), **next_fields(d)}
     log("limited", provider=provider, account=last["email"], session=key.key,
-        until=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(until)), next=out["next"])
+        until=iso(until), next=out["next"], retry_at=out["retry_at"] and iso(out["retry_at"]))
     print(json.dumps(out))
     return 0
 
 
-def next_account(state, key, provider, accounts, cfg, now):
-    """The account this tree's next request gets, or None when the caller has
-    to wait for a reset. With nothing usable the next request still goes to a
-    depleted account the provider serves (last_resort)."""
-    accounts = with_pool_state(accounts, state, provider)
-    accounts = with_models(accounts, session_models(state, key, provider, cfg, now), cfg)
-    cooldowns = state["providers"][provider]["cooldowns"]
-    intent = intent_for(state, key, provider)
-    res = resolve(intent, accounts, in_use_counts(state, provider), cooldowns, cfg, now)
-    if res:
-        return res.account
-    nxt = last_resort(accounts, cooldowns, cfg, now, intent.current)
-    return nxt if nxt is not None and provider_serves(nxt, now) else None
+def plan_next(state, key, provider, accounts, cfg, now):
+    """The decision for the tree's retry after its account failed, held in
+    state: the cell it enters now, or its slot."""
+    return schedule(state, key, provider, accounts, cfg, now, admit_now=False)[0]
+
+
+def next_fields(d):
+    """{"next", "retry_at"}: the account the retry enters now, or the tree's slot."""
+    if isinstance(d, (Admit, Stay)):
+        return {"next": d.account.label, "retry_at": None}
+    if isinstance(d, Wait):
+        return {"next": None, "retry_at": math.ceil(d.slot_at)}
+    return {"next": None, "retry_at": None}
 
 
 def cmd_refused(rest):
     """A request of this session tree failed with an error whose text names an
     account-level refusal (account_refusal). Cool the account the tree last
     vended down, as a probe refusal does, and print {"account", "reason",
-    "next"}. Error text that names no refusal prints {"reason": null} and
-    changes nothing. `next` is null when no other account can serve."""
+    "next", "retry_at"}. Error text that names no refusal prints {"reason": null}
+    and changes nothing."""
     f = parse_flags(rest)
     provider = f["provider"]
     reason = account_refusal(" ".join(f["positional"]))
@@ -3000,9 +3348,11 @@ def cmd_refused(rest):
         return 2
     apply_refusal(provider, account, reason, cfg, now)
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
-        nxt = next_account(load_state(), key, provider, accounts, cfg, now)
-    out = {"account": account.email, "reason": reason, "next": nxt.email if nxt else None}
-    log("refused", provider=provider, account=account.email, reason=reason, session=key.key, next=out["next"])
+        state = load_state()
+        d = plan_next(state, key, provider, accounts, cfg, now)
+        save_json(STATE, state)
+    out = {"account": account.label, "reason": reason, **next_fields(d)}
+    log("refused", provider=provider, account=account.label, reason=reason, session=key.key, next=out["next"])
     print(json.dumps(out))
     return 0
 
@@ -3017,37 +3367,38 @@ def cmd_who(rest):
         return 2
     cfg, now = config(), time.time()
     providers_out = {}
+    priority = "normal"
     for provider in PROVIDERS:
         try:
-            accounts = with_pool_state(load_index(provider), state, provider)
+            accounts = load_index(provider)
         except Exception as e:
             providers_out[provider] = {"error": str(e)}
             continue
-        accounts = with_models(accounts, [f["model"]] if f["model"] else session_models(state, key, provider, cfg, now), cfg)
-        intent = intent_for(state, key, provider) if key else Intent()
-        in_use = in_use_counts(state, provider)
-        cooldowns = state["providers"][provider]["cooldowns"]
-        res = resolve(intent, accounts, in_use, cooldowns, cfg, now)
-        rec = state["sessions"].get(key.key) if key else None
-        vend_rec = ((rec or {}).get("vends") or {}).get(provider) or {}
+        accounts, tree, book, cooldowns = tree_view(state, key, provider, accounts, f, cfg, now)
+        priority = tree.priority
+        d = decide(tree, accounts, book, cooldowns, cfg, now)
+        res = d if isinstance(d, (Stay, Admit)) else None
         by_id = {a.id: a for a in accounts}
-        current = by_id.get(vend_rec.get("account_id")) or (res.account if res else None)
+        current = by_id.get(tree.current) or (res.account if res else None)
         providers_out[provider] = {
             "account": res.account.id if res else None,
             "email": res.account.email if res else None,
-            "reason": res.reason if res else None,
-            "pinned": bool(intent.session_pin),
-            "shadowed": list(res.shadowed) if res and res.shadowed else None,
-            "at": vend_rec.get("at"),
+            "label": res.account.label if res else None,
+            "reason": res.reason if res else ("wait" if isinstance(d, Wait) else None),
+            "pinned": bool(tree.pin),
+            "shadowed": list(d.shadowed) if d is not None and d.shadowed else None,
+            "at": tree.current_at or None,
+            "wait": wait_view(tree, d),
+            "moves_today": len([t for t in tree.moves if now - t < MOVE_WINDOW_SEC]),
             # What the session's requests actually use: its last vend, else what the
             # next vend resolves to. The extension's footer status shows this.
-            "current": {"email": current.email, "session_pct": current.session_pct,
+            "current": {"email": current.email, "label": current.label, "session_pct": current.session_pct,
                         "weekly_pct": current.weekly_pct, "gated_pct": current.gated_pct,
-                        "next": vend_rec.get("account_id") is not None and res is not None
-                                and res.account.id != vend_rec.get("account_id") and res.account.email}
+                        "next": tree.current is not None and res is not None
+                                and res.account.id != tree.current and res.account.label}
                        if current else None,
         }
-    out = {"session": key.key if key else None, "providers": providers_out}
+    out = {"session": key.key if key else None, "priority": priority, "providers": providers_out}
     if f["json"]:
         print(json.dumps(out, indent=2))
     else:
@@ -3055,20 +3406,34 @@ def cmd_who(rest):
             if info.get("error"):
                 print(f"{provider:14s} unavailable: {info['error']}")
                 continue
-            if not info["email"]:
-                print(f"{provider:14s} no usable account")
+            if info["wait"]:
+                label = next((a.label for a in load_index(provider) if a.id == info["wait"]["account"]),
+                             info["wait"]["account"])
+                print(f"{provider:14s} waits for {label} until {iso(info['wait']['slot_at'])}")
                 continue
-            why = "pinned" if info["pinned"] else info["reason"]
-            line = f"{provider:14s} {info['email']}  ({why})"
+            if not info["email"]:
+                print(f"{provider:14s} no account can serve")
+                continue
+            line = f"{provider:14s} {info['label']}  ({info['reason']})"
             if info["shadowed"]:
                 line += f"  pin {info['shadowed'][0]} {info['shadowed'][1]}"
             print(line)
     return 0
 
 
+ # The provider entries `enable` writes. Each needs `baseUrl` and `api`: an entry with
+# only `apiKey` fails Prime's validateConfig and takes every model down.
+ENABLE = {
+    "anthropic": {"baseUrl": "https://api.anthropic.com", "api": "anthropic-messages", "args": ""},
+    "openai-codex": {"baseUrl": "https://chatgpt.com/backend-api", "api": "openai-codex-responses",
+                     "args": " --provider openai-codex"},
+}
+
+
 def cmd_enable(rest):
-    if rest != ["openai-codex"]:
-        raise SystemExit("usage: pi-pool enable openai-codex")
+    if len(rest) != 1 or rest[0] not in ENABLE:
+        raise SystemExit("usage: pi-pool enable anthropic|openai-codex")
+    provider = rest[0]
     models_path = os.path.join(agent_dir(), "models.json")
 
     models = load_json(models_path, {}) or {}
@@ -3078,23 +3443,24 @@ def cmd_enable(rest):
     hook = os.path.join(POOL, "bin", "pi-pool-token")
     if not os.path.exists(hook):
         hook = os.path.join(CODE_ROOT, "bin", "pi-pool-token")
-    entry = {"baseUrl": "https://chatgpt.com/backend-api",
-             "api": "openai-codex-responses",
-             "apiKey": f"!{shlex.quote(hook)} --provider openai-codex"}
-    changed = providers.get("openai-codex") != entry
+    spec = ENABLE[provider]
+    # An existing entry keeps its other fields (custom models, overrides); only these three change.
+    entry = {**(providers.get(provider) or {}), "baseUrl": spec["baseUrl"], "api": spec["api"],
+             "apiKey": f"!{shlex.quote(hook)}{spec['args']}"}
+    changed = providers.get(provider) != entry
     if changed:
-        providers["openai-codex"] = entry
+        providers[provider] = entry
         save_json(models_path, models)
 
-    log("enable", provider="openai-codex", agent_dir=agent_dir(), changed=changed)
+    log("enable", provider=provider, agent_dir=agent_dir(), changed=changed)
     status = "enabled" if changed else "already enabled"
-    print(f"openai-codex {status} in {models_path}. The native login remains managed by Prime.")
+    print(f"{provider} {status} in {models_path}. The native login remains managed by Prime.")
     return 0
 
 
 def cmd_toggle(rest, off):
     """`pi-pool off` / `pi-pool on`: keep an account in tokenmaxxing's pool but
-    never pick it while off. Every pin on it yields, a forced one too."""
+    never pick it while off. Every pin on it yields."""
     verb = "off" if off else "on"
     f = parse_flags(rest)
     provider, positional = f["provider"], f["positional"]
@@ -3103,17 +3469,17 @@ def cmd_toggle(rest, off):
     accounts = load_index(provider)
     account = find_account(accounts, positional[0])
     if account is None:
-        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.email for a in accounts)})")
+        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.label for a in accounts)})")
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
         was_off = account.id in (state["providers"][provider].get("disabled") or {})
         if was_off == off:
-            print(f"{account.email} is already {verb}")
+            print(f"{account.label} is already {verb}")
             return 0
         IntentWriter(state).set_disabled(provider, account.id, off, time.time())
         save_json(STATE, state)
-    log("account_" + verb, provider=provider, account=account.email)
-    print(f"{account.email} is {verb}" + ("; the pool never picks it until pi-pool on" if off else "; the pool can pick it again"))
+    log("account_" + verb, provider=provider, account=account.label)
+    print(f"{account.label} is {verb}" + ("; the pool never picks it until pi-pool on" if off else "; the pool can pick it again"))
     return 0
 
 
@@ -3129,16 +3495,16 @@ def cmd_unlimited(rest):
     accounts = load_index(provider)
     account = find_account(accounts, positional[0])
     if account is None:
-        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.email for a in accounts)})")
+        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.label for a in accounts)})")
     with Flock(LOCK, timeout=STATE_LOCK_TIMEOUT):
         state = load_state()
         limit = (state["providers"][provider].get("limits") or {}).pop(account.id, None)
         if limit is None:
-            print(f"{account.email} has no limit on file")
+            print(f"{account.label} has no limit on file")
             return 0
         save_json(STATE, state)
-    log("limit_dropped", provider=provider, account=account.email, reason="unlimited")
-    print(f"{account.email} is no longer limited (was until {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(limit['until']))})")
+    log("limit_dropped", provider=provider, account=account.label, reason="unlimited")
+    print(f"{account.label} is no longer limited (was until {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(limit['until']))})")
     return 0
 
 
@@ -3153,7 +3519,7 @@ def cmd_rm(rest):
     accounts = load_index(provider)
     account = find_account(accounts, positional[0])
     if account is None:
-        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.email for a in accounts)})")
+        raise SystemExit(f"{positional[0]} is not in the {provider} pool ({', '.join(a.label for a in accounts)})")
     exe = tokenmaxxing_exe()
     if not exe:
         raise SystemExit("tokenmaxxing is not installed")
@@ -3169,8 +3535,8 @@ def cmd_rm(rest):
         state = load_state()
         IntentWriter(state).forget_account(provider, account.id)
         save_json(STATE, state)
-    log("account_removed", provider=provider, account=account.email)
-    print(f"removed {account.email} from the {provider} pool")
+    log("account_removed", provider=provider, account=account.label)
+    print(f"removed {account.label} from the {provider} pool")
     return 0
 
 
@@ -3320,17 +3686,133 @@ def stop_login(pid, fd):
     return None
 
 
+# ------------------------------------------------- claude sign-in, by organization
+# One Claude login can belong to several organizations (a personal plan and a
+# team seat, say). tokenmaxxing keys an account by the login's account uuid
+# alone, so `tokenmaxxing add` for a second organization overwrites the first.
+# pi-pool therefore runs `tokenmaxxing add` against a scratch home and files the
+# result itself, keyed by (account uuid, organization uuid). The first
+# organization of a login keeps the account uuid as its id, as tokenmaxxing
+# would give it; another organization gets ORG_ID_NAMESPACE's uuid5 of the pair.
+ORG_ID_NAMESPACE = uuid.UUID("5a0f4b8e-6c1d-4f7a-9b2e-3d8c1e7f6a90")
+
+
+class LoginRefused(Exception):
+    pass
+
+
+def login_pair(record):
+    """(account uuid, organization uuid or None) of a tokenmaxxing record."""
+    org = record.get("oauthAccount") or {}
+    return org.get("accountUuid") or record["id"], org.get("organizationUuid")
+
+
+def place_login(records, harvest):
+    """(id, record or None): where a harvested login belongs. A record of the
+    same login and organization is signed in again; a record with no
+    organization on file matches by login alone."""
+    login, org = login_pair(harvest)
+    for r in records:
+        r_login, r_org = login_pair(r)
+        if r_login == login and r_org in (org, None):
+            return r["id"], r
+    taken = {r["id"] for r in records}
+    new_id = login if login not in taken else str(uuid.uuid5(ORG_ID_NAMESPACE, f"{login}:{org}"))
+    if any(i[:8] == new_id[:8] for i in taken):
+        raise LoginRefused(f"the store for {new_id} would share stores/{new_id[:8]} with another account")
+    return new_id, None
+
+
+def file_claude_login(scratch, target_id=None):
+    """Move the login `tokenmaxxing add` harvested into `scratch` into the real
+    pool: its credential into the store of the account it belongs to, its
+    record into accounts.json under tokenmaxxing's lock. With `target_id`, a
+    login of any other account is refused and nothing is written. Returns the
+    sentence to show."""
+    harvested = (load_json(os.path.join(scratch, "accounts.json")) or {}).get("accounts") or []
+    if len(harvested) != 1:
+        raise LoginRefused("no sign-in was recorded")
+    h = harvested[0]
+    blob = kc_read(store_service(os.path.join(scratch, "stores", h["id"][:8])))
+    if not blob:
+        raise LoginRefused("the sign-in left no credential")
+    with Flock(TM_LOCK, timeout=TM_LOCK_TIMEOUT):
+        idx = _read_index(TM_ACCOUNTS)
+        records = idx["accounts"]
+        account_id, existing = place_login(records, h)
+        if target_id is not None and account_id != target_id:
+            want = next((r for r in records if r["id"] == target_id), {})
+            raise LoginRefused(f"that sign-in is {h.get('email')} ({org_suffix(h)}), not "
+                               f"{want.get('email')} ({org_suffix(want)}); nothing changed")
+        store = store_dir(account_id)
+        os.makedirs(store, mode=0o700, exist_ok=True)
+        with ClaudeRefreshLock(store):
+            kc_write(store_service(store), blob)
+        fresh = {k: h[k] for k in ("email", "tier", "oauthAccount") if k in h}
+        fresh["needsReauth"] = False
+        if h.get("lastUsageAt"):
+            fresh.update(windows=h.get("windows") or [], lastUsageAt=h["lastUsageAt"])
+        if existing is not None:
+            if h.get("lastUsageAt"):
+                existing.pop("usageRetryAt", None)
+            existing.update(fresh)
+        else:
+            shared = any(r.get("email") == h.get("email") for r in records)
+            records.append({"id": account_id, "label": f"{h.get('email')} ({org_suffix(h)})" if shared else h.get("label") or h.get("email"),
+                            "addedAt": h.get("addedAt") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            "windows": [], **{k: h[k] for k in ("usageRetryAt",) if k in h}, **fresh})
+        tmp = f"{TM_ACCOUNTS}.tmp.{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write(json.dumps(idx, indent=2) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, TM_ACCOUNTS)
+        label = record_labels(records)[account_id]
+        size = len(records)
+    log("login_filed", account=label, id=account_id, new=existing is None)
+    tier = f" ({h['tier']})" if h.get("tier") else ""
+    said = f"added {label}{tier} \u2192 pool now has {size} accounts" if existing is None else f"reauthed {label}{tier}"
+    return said, account_id
+
+
+def scratch_login_home():
+    """A private tokenmaxxing home for one sign-in, with the real config (so
+    the same claude binary runs) and nothing else."""
+    home = os.path.join(POOL, "logins", str(os.getpid()))
+    shutil.rmtree(home, ignore_errors=True)
+    os.makedirs(home, mode=0o700)
+    if os.path.exists(os.path.join(TM, "config.json")):
+        shutil.copy(os.path.join(TM, "config.json"), os.path.join(home, "config.json"))
+    return home
+
+
+def drop_scratch_login(home):
+    """Delete every credential a scratch sign-in can leave: the harvested
+    store's Keychain item, claude's onboarding item, and the folder."""
+    services = [store_service(os.path.join(home, "onboard"))]
+    for r in (load_json(os.path.join(home, "accounts.json")) or {}).get("accounts") or []:
+        services.append(store_service(os.path.join(home, "stores", r["id"][:8])))
+    stores = os.path.join(home, "stores")
+    if os.path.isdir(stores):
+        services += [store_service(os.path.join(stores, name)) for name in os.listdir(stores)]
+    for service in dict.fromkeys(services):
+        try:
+            kc_delete(service)
+        except RuntimeError as e:
+            log("login_cleanup_failed", error=str(e))
+    shutil.rmtree(home, ignore_errors=True)
+
+
 def cmd_login(rest):
     """`pi-pool login [<email|id>] [--provider p]`: add an account, or sign one
-    in again, through tokenmaxxing's own isolated login (`tokenmaxxing add` or
-    `tokenmaxxing auth`), driven for a browser.
+    in again, through tokenmaxxing's own isolated login, driven for a browser.
+    Claude runs `tokenmaxxing add` in a scratch home and file_claude_login
+    files the result by organization; codex runs `tokenmaxxing add|auth`.
 
     stdout is JSON lines: {"event":"url"} with the sign-in link (and the codex
     device code), {"event":"retry"}, then one {"event":"done","ok":...}.
     stdin takes a pasted claude sign-in code per line; closing stdin cancels.
     claude's own browser opener is replaced by app/login-browser, which
     records the localhost-callback link instead of opening a tab."""
-    import pty, select, signal, struct, termios
     rest, timeout = list(rest), LOGIN_TIMEOUT_SEC
     if "--timeout" in rest:
         at = rest.index("--timeout")
@@ -3348,17 +3830,31 @@ def cmd_login(rest):
     if not exe:
         emit({"event": "done", "ok": False, "message": "tokenmaxxing is not installed"})
         return 1
+    account = None
     if positional:
         account = find_account(load_index(provider), positional[0])
         if account is None:
             emit({"event": "done", "ok": False, "message": f"{positional[0]} is not in the {provider} pool"})
             return 1
+    # Claude always signs in through `add` in a scratch home; file_claude_login
+    # then files it by organization (see ORG_ID_NAMESPACE).
+    if positional and provider != "anthropic":
         argv = [exe, "auth", *TM_FLAGS[provider], account.id]
     else:
         argv = [exe, "add", *TM_FLAGS[provider]]
     os.makedirs(POOL, exist_ok=True)
+    home = scratch_login_home() if provider == "anthropic" else None
+    try:
+        return run_login(provider, argv, home, account, timeout, emit)
+    finally:
+        if home:
+            drop_scratch_login(home)
+
+
+def run_login(provider, argv, home, account, timeout, emit):
+    import pty, select, signal, struct, termios
     url_file = os.path.join(POOL, f"login-{os.getpid()}.urls")
-    env = dict(os.environ, TOKENMAXXING_HOME=TM, BROWSER=LOGIN_BROWSER, PI_POOL_LOGIN_URLS=url_file,
+    env = dict(os.environ, TOKENMAXXING_HOME=home or TM, BROWSER=LOGIN_BROWSER, PI_POOL_LOGIN_URLS=url_file,
                TERM="xterm-256color")
     for name in (SESSION_ENV, JOURNAL_ENV):
         env.pop(name, None)
@@ -3438,13 +3934,20 @@ def cmd_login(rest):
         result = {"event": "done", "ok": False, "message": failure or "cancelled"}
     else:
         result = driver.outcome(status)
-    log("login_end", provider=provider, mode=argv[1], ok=result["ok"], message=result["message"])
-    if result["ok"]:
+    signed_in = None
+    if result["ok"] and home:
+        try:
+            result["message"], signed_id = file_claude_login(home, account.id if account else None)
+            signed_in = next((a for a in load_index(provider) if a.id == signed_id), None)
+        except (LoginRefused, RuntimeError, TimeoutError) as e:
+            result = {"event": "done", "ok": False, "message": str(e)[:300]}
+    elif result["ok"]:
         said = result["message"].split()
-        signed_in = account if positional else (
+        signed_in = account or (
             find_account(load_index(provider), said[1]) if len(said) > 1 and said[0] in ("added", "reauthed") else None)
-        if signed_in is not None:
-            drop_login_blocks(provider, signed_in)
+    log("login_end", provider=provider, mode=argv[1], ok=result["ok"], message=result["message"])
+    if signed_in is not None:
+        drop_login_blocks(provider, signed_in)
     emit(result)
     return 0 if result["ok"] else 1
 
@@ -3469,27 +3972,30 @@ def drop_login_blocks(provider, account):
             return
         save_json(STATE, state)
     if limit is not None:
-        log("limit_dropped", provider=provider, account=account.email, reason="login")
+        log("limit_dropped", provider=provider, account=account.label, reason="login")
     if terms:
-        log("refusal_dropped", provider=provider, account=account.email, reason="login", refusal=NEEDS_TERMS)
+        log("refusal_dropped", provider=provider, account=account.label, reason="login", refusal=NEEDS_TERMS)
 
 
 USAGE = """usage: pi-pool [command]
-  status [--provider <p>]        one card per account: usage bars, sessions, pick chance, switches today
+  status [--provider <p>]        one card per account: usage bars, sessions, score, waiters, switches today
   watch [sec] [--provider <p>]   full-screen status, redrawn every sec seconds (default 5)
   pin <email> [--provider <p>]   force EVERY request onto one account until unpin
   unpin [--provider <p>]         release the pool pin (each session keeps its own account again)
   switch [--provider <p>] [--session <id>]  this session's next request moves to another account
-  use <email|id> [--force] [--follow] [--provider <p>] [--session <id>] [--new-session]
+  use <email|id> [--follow] [--provider <p>] [--session <id>] [--new-session]
                                   pin (or, with --follow, unpin) this session tree
+  priority high|normal|low [--session <id>]
+                                  the tree's class: who gets slots first, and its daily move budget
   ls [--json] [--provider <p>] [--session <id>] [--model <id>]
                                   the rows /account renders; --model judges per-model caps
                                   for that model instead of the session's recorded ones
   who [--json] [--session <id>] [--model <id>]
-                                  what this session resolves to now, per provider
+                                  what this session resolves to now, per provider, and its wait
   limited --until <epoch sec> [--since <epoch sec>] [--provider <p>] [--session <id>]
                                   the provider answered 429 for this session's account; every
-                                  pin yields to it until then. Prints the next account or null.
+                                  pin yields to it until then. Prints the next account, or null
+                                  and retry_at, the session's own slot time.
                                   --since: when the failed request was sent; a request sent before
                                   the session moved to its account marks nothing ("stale")
   unlimited <email|id> [--provider <p>]
@@ -3536,7 +4042,7 @@ def cli(args):
         "resets": cmd_resets, "reset": cmd_reset,
         "off": lambda rest: cmd_toggle(rest, True), "on": lambda rest: cmd_toggle(rest, False),
         "rm": cmd_rm, "login": cmd_login, "model": cmd_model, "limited": cmd_limited,
-        "refused": cmd_refused, "unlimited": cmd_unlimited,
+        "refused": cmd_refused, "unlimited": cmd_unlimited, "priority": cmd_priority,
     }
     if cmd in handlers:
         return handlers[cmd](rest)

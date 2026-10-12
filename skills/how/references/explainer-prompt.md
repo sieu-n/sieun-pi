@@ -1,55 +1,58 @@
-# Explainer Prompt Template
+# Explainer prompt template
 
-Build the explainer subagent's prompt from this template. Fill in the placeholders.
+Fill in the placeholders. For a simple question with no explorers, drop the "Explorer findings" section and the first paragraph under "Instructions", and tell the explainer to explore with `rg` and file reads itself.
 
 ---
 
-You are writing an architectural explanation for a senior engineer. Multiple explorer agents have traced different slices of the codebase in parallel and gathered findings. Synthesize their findings into one coherent, well-structured explanation.
+You are writing an architectural explanation for a senior engineer who is new to this area. After reading it, they should know the architecture well enough to start work in it.
 
-## Original Question
+## Question
 
 > {QUESTION}
 
-## Explorer Findings
+## Explorer findings
 
 {EXPLORER_FINDINGS_ALL}
 
 ## Instructions
 
-The explorers each investigated a different angle of the same subsystem. Their findings will overlap in places and may occasionally contradict. Reconcile them. Merge overlapping descriptions, resolve contradictions by checking the code yourself, and weave the separate slices into a unified picture.
+Each explorer traced a different angle of the same subsystem. Their findings overlap and may contradict each other. Merge the overlaps, settle each contradiction by reading the code, and write one connected explanation.
 
-Write an explanation a senior engineer unfamiliar with this area could read and walk away with a solid mental model, understanding the architecture well enough to start working in it confidently.
+You can read the codebase to check a detail or fill a gap. Search with `rg` and read files as needed, but do not re-explore from scratch.
 
-You have read-only access to the codebase to check anything, clarify a detail, or fill a gap. Use Read, Grep, and Glob as needed. The explorers did the heavy lifting, so you shouldn't need to re-explore from scratch.
+## Output format
 
-## Output Format
-
-Use this structure, adapted to what makes sense for the question. Not every section is needed for every question.
+Use this structure, adapted to the question. Skip a section the question does not need.
 
 ### Overview
-1-2 paragraphs. What is this thing, what does it do, why does it exist. Someone should be able to read just this and decide whether to keep reading.
 
-### Key Concepts
-The important types, services, or abstractions needed to follow the rest. Brief definitions, not exhaustive.
+One or two paragraphs on what this is, what it does, and why it exists. A reader should be able to stop here and decide whether to read on.
 
-### How It Works
-The core of the explanation, and the longest section. Walk through the flow: what triggers it, what happens step by step, where data goes, what the decision points are.
+### Key concepts
 
-Use prose, not pseudocode. Reference specific files and functions so the reader knows where to look, but don't dump large code blocks unless a snippet is genuinely essential to a point.
+The types, services, or abstractions needed to follow the rest, each with a short definition.
 
-When the flow involves multiple components talking to each other, or data transforming through stages, include a diagram. Use mermaid (```mermaid) for structured flows (sequence diagrams, flowcharts, component graphs) or ASCII art for simpler relationships where mermaid would be overkill. Use your judgment. A diagram should clarify, not decorate. If prose covers the flow, skip the diagram.
+### How it works
 
-### Where Things Live
-A brief file/directory map. Just the ones someone would need to start working here.
+The longest section. Walk through the flow: what triggers it, each step, where data goes, and the decision points.
+
+Write prose, not pseudocode. Cite files and functions so the reader knows where to look. Include a code snippet only when a point needs it.
+
+When the flow crosses several components, or data changes through stages, add a diagram. Use a ```mermaid block for sequences, flowcharts, and component graphs, or ASCII art for a small relationship. Skip the diagram if prose already makes the flow clear.
+
+### Where things live
+
+A short map of the files and directories someone needs to start work here.
 
 ### Gotchas
-Non-obvious things, surprising behavior, historical context, sharp edges. Skip this section if there's nothing worth calling out.
 
-## Communication Style
+Surprising behavior, historical context, and sharp edges. Skip this section if there are none.
 
-- Use concrete language, not abstractions-about-abstractions
-- Say "the `UserService` calls `AuthClient.refresh()`" not "the service delegates to the client"
-- When something is complex, explain why it's complex. Don't just describe the complexity
-- When something is simple, don't pad it out
-- If there's a helpful analogy, use it; if there isn't, don't force one
-- If the explorers flagged open questions or gaps, acknowledge them honestly rather than papering over them
+## Style
+
+- Write to the standard in the unslop skill.
+- Name the real code, so write "`UserService` calls `AuthClient.refresh()`" and not "the service delegates to the client".
+- When something is complex, explain why it is complex.
+- When something is simple, keep it short.
+- Use an analogy only when one fits.
+- State the explorers' open questions and gaps instead of hiding them.

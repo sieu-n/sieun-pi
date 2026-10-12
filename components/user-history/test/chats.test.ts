@@ -1,22 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInRecord, checkInSettings, clockTime, localTime } from "../src/chat-checkin.ts";
+import { checkInRecord, checkInSettings, clockTime, localTime, OWNER_UI } from "../src/chat-checkin.ts";
 import type { Ledger } from "../src/chat-corrections.ts";
-import { fallbackRecord } from "../src/chat-fallback.ts";
-import { CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileChatName, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
-  jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, REPLY_CAP_NOTE, TELL_OWNER_LIMIT, tellOwner, type ThreadView, withChatTool, withReplyCap } from "../src/chats.ts";
+import { BRIEF_CHECK_MAX_AGE_MS, briefCheckRecord, CHAT_BRIEF, Chats, chatGuard, type ChatThreads, chatModeAt, type CheckInSource, createSessionNames, extensionBuild, fileHasChatMarker, hasChatMarker, jobNameLiterals, jobOf, jobRegistry,
+  jobPersonaGuideline, jobReplyGuideline, judgeChatCode, loadRecord, OLD_CHECK_IN, reloadAction, REPLY_CAP_NOTE, REPLY_CHECK_MAX_AGE_MS, replyCheckRecord, TELL_OWNER_LIMIT, tellOwner, type ThreadView, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
 import { SessionManager } from "prime-agent";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { AttachQueue, ThreadHub } from "../src/chat-threads.ts";
 import { isThreadBusy, isTurnRunning } from "../src/shared/thread-state.ts";
-import { Duties } from "../src/chat-duty-run.ts";
+import { type CheckInRun, Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatAgent, ChatBoard, ChatWait, ChildAgent, ModelInfo, SessionRow, ThreadMessage, ThreadState } from "../src/shared/types.ts";
 import { fileOrigin, ThreadOrigins } from "../src/thread-origin.ts";
+import { lintOwnerReply } from "../src/shared/reply-lint.ts";
+import { MERGE_RULE_SHORT } from "../src/shared/chat-board.ts";
 
 // Notice times are the owner's local HH:MM; the expected strings are written for Seoul.
 process.env.TZ = "Asia/Seoul";
@@ -135,13 +136,22 @@ test("the reply cap follows every message the owner typed, and no server note, w
     { role: "user", content: [{ type: "text", text: "[board] Owner checked \"x\" and answered: close them" }, image], timestamp: 7 },
   ];
   const view = withReplyCap(messages);
+  const id = (text: string) => ({ type: "text", text: `[message id: ${text}]` });
   assert.deepEqual(view?.map(message => message.content), [
-    [{ type: "text", text: "why is CI slow?" }, cap], messages[1]!.content, messages[2]!.content, messages[3]!.content, messages[4]!.content, messages[5]!.content,
-    [{ type: "text", text: "[board] Owner checked \"x\" and answered: close them" }, image, cap],
+    [{ type: "text", text: "why is CI slow?" }, id("1"), cap], messages[1]!.content, messages[2]!.content, messages[3]!.content, messages[4]!.content, messages[5]!.content,
+    [{ type: "text", text: "[board] Owner checked \"x\" and answered: close them" }, image, id("7"), cap],
   ]);
+  assert.deepEqual(withReplyCap([{ role: "user", content: "hi", timestamp: 1760000000000 }])?.[0]?.content, [{ type: "text", text: "hi" }, id("mgj6k3cw"), cap],
+    "the id is the message's timestamp in base 36");
+  assert.deepEqual(withReplyCap([{ role: "user", content: "hi" }])?.[0]?.content, [{ type: "text", text: "hi" }, cap], "no timestamp, no id");
   assert.equal(messages[0]!.content, "why is CI slow?", "the transcript is not changed");
   assert.equal(withReplyCap(messages.slice(1, 6)), undefined, "no owner message, no new view");
   assert.match(REPLY_CAP_NOTE, /at most 60 words, bullets included/);
+});
+
+test("brief: a reply that answers an older owner message sets reply_to; one to the last message does not", () => {
+  assert.ok(CHAT_BRIEF.includes("Each owner message carries `[message id: <id>]`; when you answer an older message, pass `reply_to: \"<id>\"` to tell_owner."),
+    "the reply_to line, verbatim");
 });
 
 test("tell_owner takes up to the limit and refuses longer or empty text", () => {
@@ -154,86 +164,80 @@ test("tell_owner takes up to the limit and refuses longer or empty text", () => 
 
 const child = (status: ChildAgent["status"]): ChildAgent => ({ id: status, label: status, status });
 
-test("brief: the board shape and corrections-stick bullets, and the check-in bullet that reads the server digest", () => {
+/** The board skill and its references, which the brief points to for the rules of one kind of action. */
+const boardSkill = async (file: string): Promise<string> => readFile(new URL(`../../../skills/board/${file}`, import.meta.url), "utf8");
+const SKILL_FILES = ["SKILL.md", "references/jobs.md", "references/check-ins.md", "references/git.md", "references/owner.md", "references/corrections.md"];
+
+test("brief: the core rules stay in the prompt in one short line each, and the brief points to every board skill file", async () => {
   const brief = CHAT_BRIEF.join("\n");
-  assert.ok(CHAT_BRIEF.includes("Name every job and thread you start like the owner names threads: a few plain lowercase words with spaces naming the topic (stripe and payments, " +
-    "realtime layer, crawler ops, readme check). No kebab-case, no ids, no numbered suffixes like -2."), "the naming line, verbatim");
-  assert.match(brief, /Board shape: every goal gets its phases as child steps from the start: Plan \(research or design\), Decide \(only when the owner must choose\), Build, Verify\./);
-  assert.match(brief, /including blocked steps nobody works on yet/);
-  assert.match(brief, /Link a job on the step it does, not on the goal\./);
-  assert.match(brief, /Plan \(doing, job messenger-bridge-research\), Decide \(blocked\), Build \(blocked\), Verify \(todo\)/);
-  assert.match(brief, /Corrections stick: when the owner corrects how you work/);
-  assert.ok(brief.includes("A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal."), "board shape: app features nest");
-  assert.ok(brief.includes("A correction changes the brief or a skill, never only a local note: send the owner's exact words to the thread named `realtime layer` with " +
-    '`await agent_message.send(..., receiver_role="sibling", receiver_name="realtime layer")` for a brief or code change, or call `await refine.run()` aimed at a global skill or prompt entry. ' +
-    "A local memory alone does not count."), "corrections change the brief or a skill");
-  assert.ok(CHAT_BRIEF.includes("If the owner says talk first, reply with your proposal and the default you start at the next check-in unless they object; at that check-in, start it."),
-    "talk first is a proposal with a default that starts at the next check-in");
   assert.equal(CHAT_BRIEF[1], "Call a feature live only for what you saw on the real screen, and say what you checked.", "live means seen, the item after the first");
-  assert.ok(CHAT_BRIEF.some(line => line.startsWith("When a plan step waits on the owner's choice or action, add one short owner todo in For you at once, with 2 to 4 choices and your recommendation first, " +
-    "instead of leaving the step blocked with a note.")), "an owner wait is a For you ask");
-  assert.match(brief, /receiver_role="sibling", receiver_name="realtime layer"/);
-  assert.match(brief, /await refine\.run\(\)/);
-  assert.match(brief, /never have to give the same correction twice/);
-  assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or another thread as `thread:<id>` or its session name\) and its next action; otherwise mark it blocked with the exact thing that unblocks it\. A step that waits on someone else is still yours to chase\. Before you mark a step done, check the real state \(the commit, the live service, the report\), never an old note\./);
-  assert.ok(brief.includes("End state: every open step is done, moved by a live owner (a job at work, or a thread active in the last 2 h), or blocked only by an open " +
-    "For you todo. The check-in is your built-in duty for this end state: it measures it at every check-in and job event, and after your turn " +
-    "it checks again and names each flagged step you left unchanged. A `[check-in]` lists what changed, then every open step with its class, owner and time since its last change. In that same " +
-    "turn act on every step whose class needs you: due (its waitUntil passed): act on it or set a new waitUntil; stale-chase (it waits on " +
-    "another thread or an event with no progress for 2 h): chase it now, and after 24 h make it a For you todo or replan it; orphan (no live " +
-    "owner, no todo, no wait): start a job, take it yourself, or ask the owner in For you. live, foryou and waiting need nothing. A step that " +
-    "truly waits on the owner has exactly one For you todo. When a job ends or replies, update its step in that same turn; at the next check-in " +
-    "the server writes the job's report into a step you left unchanged. Watching and reporting alone is not progress."), "one end-state rule with the action per class (owner 10-09)");
-  assert.ok(!/board convergence/i.test(brief), "no separate Board convergence duty: the check-in owns board convergence (correction c15)");
-  assert.ok(!brief.includes("A step stalled 2 h or more"), "the class rule replaces the old stall bullet");
-  assert.ok(CHAT_BRIEF.includes("A check-in turn is triage. Read its lines and decide what to do; do not verify open steps one by one yourself. When a `[check-in]` says to " +
-    "start a check-in job, run the exact call it gives and end the turn. The job checks the steps in its own subagents and sends you board ops " +
-    "and owner lines. Apply them, tell the owner only what matters, and delete the job like any finished job."), "a check-in turn is triage; a check-in job checks (owner 10-09)");
-  assert.match(brief, /Make the board match reality/);
-  assert.match(brief, /send a job only its own plan item, not the whole board/);
-  assert.ok(brief.includes("no board ids, commit hashes, model ids or internal names inside sentences, no parenthetical asides"), "replies read straight through (owner 10-08)");
-  assert.ok(brief.includes("Job and thread names are not internal names and are exempt: they always appear, as links. Whenever a reply starts, steers, mentions or reports on a job, name it by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough)"), "jobs are named as links (owner 10-09)");
-  assert.ok(brief.includes("When the owner seems to miss a fact or asks for something unusual, on any topic and not only security, say so with your reason before you act"), "push back with a reason (owner 10-09, c16)");
-  assert.ok(CHAT_BRIEF.includes("An llm-wiki page is always written by its own subagent, one page per subagent. The writer follows " +
-    "`.agents/skills/apps/llm-wiki/references/writing.md` and makes `node apps/llm-wiki/scripts/prose-lint.mjs <page>` pass. The parent then reads " +
-    "the page against that file before it links the page to anyone."), "wiki pages by their own subagent (owner 10-09, c20)");
-  assert.ok(brief.includes("rewriting unpushed local sieun-pi commits (rebase, amend) before a push needs no owner ask; never force-push"), "unpushed sieun-pi commits may be rewritten (owner 10-09)");
-  assert.ok(brief.includes("Write like a text message from a coworker: spoken style, no report formatting. Never open with a label or a colon lead-in (Live now:, Fixed X:, Update:, Done:); just say it in a normal sentence."), "casual spoken style (owner 10-08)");
-  assert.ok(brief.includes("Everything you send another agent (briefs, relays, answers) is in English: after the owner's exact words, say in plain English what they mean and what to do, and translate any Korean."), "relays to agents in English with the meaning (owner 10-08)");
-  assert.ok(brief.includes("When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot per variant inline in the chat message itself"), "UI picks show links and screenshots inline (owner 10-09)");
-  assert.ok(brief.includes("open it in the owner's Aside browser through the aside-browser skill and complete the Google or GitHub sign-in there. Ask the owner only when no OAuth path works"), "logins through Aside, not owner todos (owner 10-09)");
-  assert.ok(brief.includes("An explanation the owner asked for is a plan step until it is done; when the article is ready, send its link in a chat message " +
-    "(tell_owner on a wake-up), never only in a board note. For you holds only what the owner must decide or do now, never a placeholder for something not ready."),
-    "a pending explanation is a plan step; its link goes in a chat message (owner 10-09)");
-  assert.ok(!brief.includes("tracked as an owner todo") && !brief.includes("in that todo"), "no placeholder todos in For you (owner 10-09)");
-  assert.ok(brief.includes("Job reports stay folded in the feed. The owner sees only what you send. When a job reports, send a short message with the outcome and a link to the report (job:<name>), plus the decision or next step if one is needed. Do not paste the report."), "job reports stay folded; the chat mentions and links them (owner 10-09)");
-  assert.ok(!brief.includes("shows open in the chat feed"), "the raw-report rule is gone");
-  assert.ok(!brief.includes("propose a split"), "a chat with many goals is fine (owner 10-09)");
-  assert.ok(brief.includes("One job = one goal: hand each goal (or step) to its own job, never one job for several goals."), "one goal per job (owner 10-09)");
-  assert.ok(brief.includes("then one subagent per article to draft it, never one context writing 10 articles") && brief.includes("The job plans, coordinates and checks its subagents' results"), "jobs fan out one subagent per output item (owner 10-09)");
-  assert.ok(brief.includes("Work of 1 to 3 tool calls stays inline") && brief.includes("never start a \"-2\" or \"finish\" copy of it"), "inline small work, steer live jobs (owner 10-09)");
-  assert.ok(brief.includes("when a step moves to another thread for good, remove it from this plan (plan_remove) and add one scratch note saying who owns it now"), "handed-off steps leave the plan (owner 10-09)");
-  assert.ok(brief.includes("No all-caps labels (SECURITY:, URGENT:), no slash-joined names, no repo jargon (origin/main, xoxb, HEAD) when a plain word works."), "plain board notes (owner correction 10-08)");
-  // Audit 2026-10-08 (0409-chat-usage-audit): each line names the counter it should lower at the next audit.
-  // Stalls and owner corrections: one chase, then a job.
-  assert.ok(brief.includes("A stuck owner gets at most one message. If it has not moved by the next check-in, or its last turn ended in an error, replace it with a job in that check-in. " +
-    "A takeover you promised for the next check-in is due at that check-in: do it, do not restate it. Never ask the owner to relay a message to another thread."));
-  // Wake turns (chat health off_brief, 470 wake turns with text on 10-08): the brief matches the feed, which folds that text as notes.
-  assert.ok(brief.includes("On a wake-up the owner did not start, your text is only your notes (the owner sees it folded); reach the owner only through tell_owner. " +
-    "If a goal finished, something is blocked or you need a decision, call tell_owner once. Never write 'nothing needs you', 'already handled', or a relay line."));
-  assert.doesNotMatch(brief, /end the turn with no text|end with no text/, "the old no-text rule is gone");
-  // Replies over 60 words (chat health long_replies, 19 of 21 over 60 words after 22c3ba4): a concrete cap, and longer answers go to an article.
-  // long_replies stayed at 66% over 60 words after 130ba16 (Chat health 10-09): the cap is its own bullet with a concrete shape.
-  assert.ok(CHAT_BRIEF.includes("Owner reply: 60 words at most, bullets and links included: one answer line, then at most 3 short lines. Starting or steering a job is one line " +
-    "with its job link; its plan goes on the board. Anything longer is a wiki page: one line and the link."));
-  assert.ok(brief.includes("Voice: the owner's language, short. If the owner asks you to explain, or the answer needs more, write a wiki article page (a job, or a scratch note with a link if one exists) and reply with one or two lines and the link."));
-  assert.ok(brief.includes("When you mean jobs in general (a kind of job, or a rule for jobs), write the plural with no link"), "general jobs need no link (10-09)");
-  // Stalled steps (chat health stalls_2h, 24 steps quiet 2 h or more after 7f24e91).
-  assert.match(brief, /`\[job\] <name> ended at <time> with no report` means/);
-  assert.ok(CHAT_BRIEF.includes("After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it waiting on purpose; finished jobs hold memory."));
-  assert.match(brief, /`\[job\] <name> is waiting for you since <time>` or a check-in line `<step> \(job <name>\) waits: "\.\.\."` means the job waits on you/);
-  assert.doesNotMatch(brief, /15 to 60 words/, "the old count, which bullets slipped past, is gone");
+  assert.ok(CHAT_BRIEF.includes("Name every job and thread you start like the owner names threads: a few plain lowercase words with spaces naming the topic (stripe and payments, " +
+    "crawler ops). No kebab-case, no ids, no numbered suffixes like -2."), "the naming line, verbatim");
+  assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or a thread as `thread:<id>`\) and its next action, or is blocked with the exact thing that unblocks it\. A step that waits on someone else is still yours to chase\./);
+  assert.match(brief, /Reach the owner only through tell_owner, on every kind of turn, within the \[reply cap\]\./);
+  assert.match(brief, /on a wake-up the owner did not start, your text is only folded notes\. Call tell_owner once when a goal finished, something is blocked or you need a decision\. Never write 'nothing needs you', 'already handled' or a relay line\./);
+  assert.match(brief, /A brief opens with `Owner's words \(verbatim\):` and the 1 or 2 owner messages that started the job, each numbered with its time and exact text in straight double quotes, or `Owner's words: none, started by <who>`\. Then come `My read:`, a `Split:` line/);
+  assert.match(brief, /End state: every open step is done, moved by a live owner \(a job at work, or a thread active in the last 2 h\), or blocked only by an open For you todo\./);
+  assert.match(brief, /Chase a stuck owner once, then replace it with a job\. Never ask the owner to relay a message to another thread\./);
+  assert.match(brief, /Delete heartbeats and watcher loops the check-in already covers\./);
+  assert.match(brief, /anthropic\/claude-opus-5-5", thinking=\\?"high\\?"\)`; this chat and every job run on that model unless the owner says otherwise \(c31\)/);
+  assert.match(brief, /Act directly and ship; invent no waiting rules, review rounds or safety gates unless the owner asks for caution \(c47\)\./);
+  assert.match(brief, /Nothing goes outside \(an email, a ticket or support reply, a customer message, a post\) until the owner approves the draft on a For you todo \(c37\)\./);
+  assert.match(brief, /record it with `correction_add` in the same turn, so he never gives it twice/);
   assert.doesNotMatch(brief, /—/, "no em dashes");
+  assert.ok(!/board convergence/i.test(brief), "no separate Board convergence duty: the check-in owns board convergence (correction c15)");
+  for (const file of SKILL_FILES) {
+    assert.ok(brief.includes(file === "SKILL.md" ? "SKILL.md before a board write" : file), `the brief points to ${file}`);
+    assert.ok((await boardSkill(file)).length > 0, file);
+  }
+});
+
+test("brief: every rule that left the prompt sits in the board skill file the brief points to, once", async () => {
+  const brief = CHAT_BRIEF.join("\n");
+  const homes: [string, string, string][] = [
+    ["SKILL.md", "Every goal gets its phases as child steps from the start: Plan (research or design), Decide (only when the owner must choose), Build and Verify.", "board shape"],
+    ["SKILL.md", "including blocked steps nobody works on yet", "blocked steps show"],
+    ["SKILL.md", "Link a job on the step it does, not on the goal.", "jobs on steps"],
+    ["SKILL.md", "Plan (doing, job messenger-bridge-research), Decide (blocked), Build (blocked), Verify (todo)", "the board shape example"],
+    ["SKILL.md", "A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal.", "app features nest"],
+    ["SKILL.md", "give it a new waitUntil, the job's result, done or dropped in that turn", "plan upkeep (c44)"],
+    ["SKILL.md", "fold the goal in the same turn (c46)", "fold a goal (c46)"],
+    ["SKILL.md", "remove it with plan_remove and add one scratch note naming its new owner", "hand-off (c8)"],
+    ["SKILL.md", "does not stay open (c45)", "a goal that only waits closes (c45)"],
+    ["SKILL.md", "Send a job only its own plan item, never the whole board.", "a job gets its own item"],
+    ["SKILL.md", "no all-caps labels (SECURITY:, URGENT:), no slash-joined names, and no repo jargon (origin/main, xoxb, HEAD)", "plain board notes"],
+    ["SKILL.md", "A go said in chat does not count", "the go gate"],
+    ["SKILL.md", "Push the step that closes the largest gap, because waiting steps are not progress (c23).", "goal targets drive the check-in"],
+    ["references/jobs.md", "cut only with \"...\" between exact pieces", "brief quotes"],
+    ["references/jobs.md", "`receiver_role=\"sibling\", receiver_name=<your session name>`", "root reply line"],
+    ["references/jobs.md", "translate any Korean (c2)", "relays in English"],
+    ["references/jobs.md", "never one context writing 10 articles", "one subagent per output"],
+    ["references/jobs.md", "Work of 1 to 3 tool calls stays inline", "inline small work"],
+    ["references/jobs.md", "never start a \"-2\" or \"finish\" copy of it", "steer a live job"],
+    ["references/jobs.md", "`[job] <name> ended at <time> with no report` or `[job] <name> stopped ... and sent no report` means", "silent job ends"],
+    ["references/jobs.md", "`[job] <name> is waiting for you since <time>` means the job waits on you", "waiting jobs"],
+    ["references/jobs.md", "delete the job with `await rlm.delete_subagent(name)` unless a step keeps it waiting on purpose", "delete finished jobs"],
+    ["references/jobs.md", "`node apps/llm-wiki/scripts/prose-lint.mjs <page>` pass", "wiki pages (c20)"],
+    ["references/check-ins.md", "named like `check-in 14:00`, with the precheck as context", "duty jobs"],
+    ["references/check-ins.md", "like \"Chat system\" or \"Skills and harness\"", "duty names"],
+    ["references/check-ins.md", "the server refuses size metrics (c39)", "duty metrics"],
+    ["references/git.md", "rebase, amend) before a push needs no owner ask (c21)", "unpushed sieun-pi commits"],
+    ["references/git.md", "run `git add -- <your files>` on the shared index afterwards", "private index commits"],
+    ["references/owner.md", "ask yourself whether the CTO would be annoyed to be asked", "few asks"],
+    ["references/owner.md", "one screenshot per variant inline in the chat message itself", "UI picks inline (c3)"],
+    ["references/owner.md", "complete the Google or GitHub sign-in there", "logins through Aside (c4)"],
+    ["references/owner.md", "If the owner says talk first, reply with your proposal and the default you start at your next wake-up", "talk first"],
+    ["references/owner.md", "like [secrets walkthrough](job:secrets walkthrough)", "job links"],
+    ["references/owner.md", "mermaid diagrams", "images and diagrams"],
+    ["references/corrections.md", "receiver_role=\"sibling\", receiver_name=\"realtime layer\"", "corrections change the brief"],
+    ["references/corrections.md", "await refine.run()", "corrections change a skill"],
+  ];
+  const texts = new Map(await Promise.all(SKILL_FILES.map(async file => [file, await boardSkill(file)] as const)));
+  for (const [file, phrase, why] of homes) {
+    assert.ok(texts.get(file)!.includes(phrase), `${why}: in ${file}`);
+    assert.ok(!brief.includes(phrase), `${why}: not repeated in the brief`);
+    assert.deepEqual(SKILL_FILES.filter(other => texts.get(other)!.includes(phrase)), [file], `${why}: in one file`);
+  }
 });
 
 test("job reply: a direct subagent of a chat and a root the chat started get the guideline; nothing else does", async () => {
@@ -244,12 +248,8 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
   assert.deepEqual(jobOf({ depth: 0, marked: false, registered: "Feature X" }), { chat: "Feature X", root: true });
   assert.equal(jobOf({ depth: 0, marked: true, registered: "Feature X" }), null, "a chat is never a job");
   assert.equal(jobOf({ depth: 0, marked: false, registered: undefined }), null);
-  assert.equal(jobReplyGuideline({ chat: "chat-ab12", root: false }), 'You are a job of the chat chat-ab12. When you finish, fail or get blocked, send your report to the parent first; that is how the board updates: `await agent_message.send(report, receiver_role="parent")`. ' +
-    "Send at most one progress message before that. Write the report for a reader: lead with the answer, use ## headers for its parts, a table for numbers, " +
-    "and a ```mermaid diagram when there is a flow or structure. If you also wrote a wiki page, link it; the chat shows it next to your report. " +
-    "Fan out to sub-jobs (`rlm.spawn`) when your work has 2 or more independent parts, or once it passes 150 tool calls or 60 active minutes; " +
-    "keep work of 1 to 3 tool calls inline. Give each unit of output (an article, a page, a report section) its own subagent, never one context " +
-    "for many; you plan, coordinate and check their results.");
+  assert.equal(jobReplyGuideline({ chat: "chat-ab12", root: false }), 'You are a job of the chat chat-ab12. When you finish, fail or get blocked, send your report ' +
+    `first with \`await agent_message.send(report, receiver_role="parent")\`, and lead it with the answer. ${MERGE_RULE_SHORT}`);
   assert.match(jobReplyGuideline({ chat: "Feature X", root: true }), /receiver_role="sibling", receiver_name="Feature X"/);
   assert.match(jobReplyGuideline({ chat: "", root: false }), /^You are a job of the chat\. /);
 
@@ -280,16 +280,23 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
   await writeFile(chatFile, lines([{ type: "session", id: "c" }, { type: "session_info", id: "i", name: "chat-ab12" }, { type: "session_state", id: "s" },
     { type: "custom", customType: "chat_mode", data: { v: 1 } }, { type: "session_info", id: "j", name: "renamed later" }]));
   await writeFile(plainFile, lines([{ type: "session", id: "p" }, { type: "session_info", id: "i", name: "plain" }]));
-  assert.equal(await fileChatName(chatFile), "chat-ab12");
-  assert.equal(await fileChatName(plainFile), null);
-  assert.equal(await fileChatName(join(dir, "missing.jsonl")), null);
+  assert.deepEqual(await topSession(chatFile), { id: "c", name: "chat-ab12", chat: true });
+  assert.deepEqual(await topSession(plainFile), { id: "p", name: "plain", chat: false });
+  assert.equal(await topSession(join(dir, "missing.jsonl")), null);
+  const jobFile = join(dir, "job.jsonl");
+  const helperFile = join(dir, "helper.jsonl");
+  await writeFile(jobFile, lines([{ type: "session", id: "j", parentSession: chatFile, rlmDepth: 1 }, { type: "session_info", id: "i", name: "job" }]));
+  await writeFile(helperFile, lines([{ type: "session", id: "h", parentSession: jobFile, rlmDepth: 2 }]));
+  assert.deepEqual(await topSession(helperFile), { id: "c", name: "chat-ab12", chat: true }, "a job's own subagent finds the chat at the top");
+  await writeFile(join(dir, "orphan.jsonl"), lines([{ type: "session", id: "o", parentSession: join(dir, "missing.jsonl") }]));
+  assert.equal(await topSession(join(dir, "orphan.jsonl")), null);
 });
 
 type Observer = Parameters<ChatThreads["observe"]>[0];
 /** A check-in source with no timer: an empty board unless one is given, no catalog rows, and its memory in `dir`. */
 function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () => 0, rows: () => SessionRow[] = () => []): CheckInSource {
   return { board: async id => boards[id] ?? null, rows: async () => rows(), memory: checkInRecord(join(dir, "check-ins.json")),
-    settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now, noReportGraceMs: 0 };
+    replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now, noReportGraceMs: 0 };
 }
 function fakeThreads(calls: string[], pinLimit = 8) {
   let observer: Observer | undefined;
@@ -311,6 +318,7 @@ function fakeThreads(calls: string[], pinLimit = 8) {
     async abort(id: string) { calls.push(`abort ${id}`); },
     async resumeQueue(id: string) { calls.push(`resume ${id}`); },
     async deleteSubagent(id: string, childId: string) { calls.push(`delete ${id} ${childId}`); },
+    async unarchive(id: string) { calls.push(`unarchive ${id}`); },
     catalog: { models: [] as ModelInfo[], configuredProviders: [] as string[] },
     async models(_id: string) { return { ...this.catalog, current: null, thinkingLevel: null, availableThinkingLevels: [] }; },
     async setModel(id: string, provider: string, modelId: string) { calls.push(`model ${id} ${provider}/${modelId}`); },
@@ -447,7 +455,13 @@ test("chats: a job that goes quiet with no message since its wake is told once p
   chats.close();
 });
 
-test("chats: the check-in tick steers only what changed, stays quiet with no change, and pauses with no job and no open step", async () => {
+/** A duty runner fake for Chats: the check-in runs it was handed, by chat. */
+function dutySink() {
+  const runs: { id: string; run: CheckInRun }[] = [];
+  return { runs, duty: { async checkIn(id: string, run: CheckInRun) { runs.push({ id, run }); } } };
+}
+
+test("chats: every scheduled check-in hands one run with the precheck to the duty runner, all targets met included; it sends the chat nothing; a chat with nothing open starts none", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
@@ -457,176 +471,67 @@ test("chats: the check-in tick steers only what changed, stays quiet with no cha
     { id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] },
     { id: "p3", text: "Build", status: "blocked", waitUntil: new Date(1_000_000 + 86_400_000).toISOString(), children: [] }] }] };
   let now = 1_000_000;
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now));
+  const sink = dutySink();
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+    { ...source(dir, { c1: board }, () => now), duty: sink.duty });
   await chats.adopt();
   const job = (working: boolean): ChildAgent => ({ id: "k1", label: "audit", sessionName: "api-audit", status: working ? "running" : "done", lastActivityAt: now, repliedSinceTask: true });
   threads.fire().live("c1", [job(true)]);
   await chats.settled();
   calls.length = 0;
-  assert.deepEqual(await chats.checkIn("c1"), [], "the first tick only takes the baseline");
-  now += 60_000;
-  assert.deepEqual(await chats.checkIn("c1"), [], "no change, no steer");
+  now += 15 * 60_000;
+  assert.deepEqual(await chats.tick(), ["c1"]);
+  await chats.settled();
+  assert.equal(sink.runs.length, 1, "exactly one run");
+  const [{ id, run }] = sink.runs as [{ id: string; run: CheckInRun }];
+  assert.equal(id, "c1");
+  assert.deepEqual(Object.values(run.output.metrics).filter(value => Number(value) > 0), [], "every target met, and the run still goes to a job");
+  assert.deepEqual([run.at, run.trigger, run.classes.live, run.classes.waiting], [now, "schedule", 1, 1]);
+  assert.equal(run.findings, `### Jobs\n- job api-audit: working, last activity 15 min ago, on p2 "Plan" (doing)\n\n### Every open step, oldest change first\n` +
+    `- p2 (live) "Plan" doing, owner job api-audit (working), last change 0 min ago\n- p3 (waiting) "Build" blocked, no owner, waits until ${localTime(1_000_000 + 86_400_000)}, last change 0 min ago`);
+  assert.deepEqual(calls, [], "no steer, no nudge, no note: the duty job decides");
+  assert.deepEqual(await chats.tick(), [], "a second wake in the same slot does not run it again");
   threads.fire().children("c1", [job(false)]);
   await chats.settled();
-  now += 60_000;
-  const lines = await chats.checkIn("c1");
-  const orphan = 'p2 "Plan" has no live owner (job api-audit idle): start a job, take it yourself, or ask the owner in For you';
-  assert.deepEqual(lines, ["p2 (job api-audit) finished; the board still says doing", orphan]);
-  assert.deepEqual(calls, [`steer c1 [check-in] What changed:\n- p2 (job api-audit) finished; the board still says doing\n- ${orphan}\n\nOpen steps, oldest change first:\n` +
-    '- p2 (orphan) "Plan" doing, owner job api-audit (idle), last change 2 min ago\n- p3 (waiting) "Build" blocked, no owner, waits until ' +
-    `${localTime(1_000_000 + 86_400_000)}, last change 2 min ago`], "the goal p1 has open steps below it and is not listed");
-  calls.length = 0;
-  now += 61_000;
-  assert.deepEqual(await chats.checkIn("c1"), [`p2 "Plan": job api-audit ended at ${clockTime(1_060_000)} and the step was not updated; I put its report in the step's note: update the step now`, orphan],
-    "the finish is told once; the orphan step is told at every tick until the chat acts; a step left unchanged a tick after its job ended gets the report note");
-  calls.length = 0;
-  now += 61_000;
+  now += 15 * 60_000;
+  await chats.tick();
+  await chats.settled();
+  assert.match(sink.runs[1]!.run.findings, /### Steps whose class needs action\n- p2 "Plan" has no live owner \(job api-audit idle\): start a job, take it yourself, or ask the owner in For you/);
+  assert.equal(sink.runs[1]!.run.output.metrics.orphan_steps, 1);
   board.plan = [{ ...board.plan[0]!, status: "done", children: board.plan[0]!.children.map(step => ({ ...step, status: "done" as const })) }];
-  assert.deepEqual(await chats.checkIn("c1"), [], "no job at work and no open step: paused");
+  now += 15 * 60_000;
+  await chats.tick();
+  await chats.settled();
+  assert.equal(sink.runs.length, 2, "no job at work and no open step: nothing to check");
   assert.deepEqual(calls, []);
   chats.close();
 });
 
-test("chats: a check-in tick with work of several kinds tells the chat to start one check-in job from a brief file; below the threshold, within the hour, or while a check-in job works it steers as before", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "chats-"));
-  const calls: string[] = [];
-  const threads = fakeThreads(calls);
-  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-  await index.add("c1");
-  let now = 1_000_000;
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [
-    { id: "p1", text: "Ship the landing page", status: "doing", children: [{ id: "p2", text: "Build", status: "done", children: [] }] },
-    { id: "p3", text: "Usage panel", status: "doing", children: [{ id: "p4", text: "Wire the API", status: "todo", children: [] },
-      { id: "p5", text: "Check the load", status: "blocked", waitUntil: new Date(now + 30 * 60_000).toISOString(), children: [] }] }] };
-  const jobs = join(dir, "check-in-jobs");
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, { c1: board }, () => now), checkInJobs: { dir: jobs, board: id => join(dir, "boards", id + ".json") } });
-  await chats.adopt();
-  threads.fire().live("c1", []);
-  await chats.settled();
-  calls.length = 0;
-  const name = `check-in ${clockTime(now)}`;
-  const brief = join(jobs, `c1-${localTime(now).replace(" ", "-").replace(":", "")}.md`);
-  assert.deepEqual(await chats.checkIn("c1"), [`start ${name}: p1 looks done, p4 orphan`, 'p4 "Wire the API" can start: the steps before it are done and it has no job']);
-  assert.deepEqual(calls, [`steer c1 [check-in] 2 items need checking: looks done p1, orphan p4. Do not check them yourself. Start one check-in job now with this call, then end the turn:\n` +
-    `\`await rlm.spawn(open(${JSON.stringify(brief)}).read(), name="${name}")\`\n` +
-    "It checks each item in its own subagents and sends you board ops and owner lines. Apply them, and tell the owner only what matters.\n\n" +
-    'What changed:\n- p4 "Wire the API" can start: the steps before it are done and it has no job'], "two kinds: one check-in job, the step checks are its own");
-  const text = await readFile(brief, "utf8");
-  for (const part of ['# Check-in job for the chat "c1"', join(dir, "boards", "c1.json"), "### Look done", '- p1 (orphan) "Ship the landing page" doing, no owner',
-    "### Orphan", '- p4 (orphan) "Wire the API" todo, no owner']) assert.ok(text.includes(part), part);
-  calls.length = 0;
-  now += 61_000;
-  assert.deepEqual(await chats.checkIn("c1"), ['p4 "Wire the API" has no live owner: start a job, take it yourself, or ask the owner in For you'], "one line of one kind: the plain steer");
-  assert.ok(calls[0]!.startsWith("steer c1 [check-in] What changed:\n- p4 "), calls[0]);
-  calls.length = 0;
-  threads.fire().children("c1", [{ id: "k9", label: "check-in", sessionName: name, status: "running", lastActivityAt: now, repliedSinceTask: false }]);
-  await chats.settled();
-  now += 60 * 60_000;
-  const held = await chats.checkIn("c1");
-  assert.ok(!held[0]!.startsWith("start "), "a check-in job still works: no second one");
-  assert.ok(calls.every(call => !call.includes("rlm.spawn")), calls.join("\n"));
-  calls.length = 0;
-  threads.fire().children("c1", [{ id: "k9", label: "check-in", sessionName: name, status: "done", lastActivityAt: now, repliedSinceTask: true }]);
-  await chats.settled();
-  now += 61_000;
-  const again = await chats.checkIn("c1");
-  assert.equal(again[0], `start check-in ${clockTime(now)}: p1 looks done, p5 due, p4 orphan`, "it ended and the hour passed: a new check-in job");
-  assert.ok(again.includes(`job ${name} finished`), "the finished check-in job is the chat's own line");
-  calls.length = 0;
-  now += 61_000;
-  board.plan = board.plan.map(goal => ({ ...goal, status: "done" as const, children: goal.children.map(child => ({ ...child, status: "done" as const })) }));
-  assert.deepEqual(await chats.checkIn("c1"), [], "a quiet tick: no steer, no job");
-  assert.deepEqual(calls, []);
-  chats.close();
-});
 
-test("chats: the check-in reads the ledger's handoffs: a step on another thread's work is a line", async () => {
+test("chats: the check-in reads the ledger's handoffs: a step on another thread's work is in the duty job's findings", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   const now = 100_000_000;
-  const logs: string[] = [];
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [],
     plan: [{ id: "p1", text: "Find what eats swap", status: "doing", job: "c1", note: "at 12 GB", children: [] }] };
   const ledger: Ledger = { corrections: [{ id: "c7", at: "", chat: { id: "vp", name: "dev VP" }, words: "w", rule: "Machine work goes to ops guy.", enforcedBy: "code",
     ref: "pending commit", status: "reopened", theme: ["mac"], repeats: [], handoff: { to: "ops guy (+observability)", topics: ["swap", "M1 Air"] } }] };
+  const sink = dutySink();
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, { c1: board }, () => now), corrections: async () => ledger }, line => logs.push(line));
+    { ...source(dir, { c1: board }, () => now), corrections: async () => ledger, duty: sink.duty });
   await chats.adopt();
   threads.fire().live("c1", []);
   await chats.settled();
-  calls.length = 0;
-  const lines = await chats.checkIn("c1");
-  assert.deepEqual(lines, ['p1 "Find what eats swap" belongs to ops guy (+observability) (correction c7): hand it off with a message to that thread and remove it from this plan']);
-  assert.equal(calls.length, 1, logs.join("\n"));
-  chats.close();
-});
-
-test("chats: a job told as waiting is not told again by the next check-in", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "chats-"));
-  const calls: string[] = [];
-  const threads = fakeThreads(calls);
-  const messages: ThreadMessage[] = [];
-  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-  await index.add("c1");
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] }] };
-  let now = 1_000_000;
-  const chats = new Chats(index, { ...threads, state: () => ({ messages }) }, async () => ({ lifecycle: "live" }), "b1",
-    loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now));
-  await chats.adopt();
-  const job = (working: boolean): ChildAgent => ({ id: "k1", label: "audit", sessionName: "api-audit", status: "done",
-    ...(working ? { activity: { kind: "writing" as const } } : {}), lastActivityAt: 1_000_000, repliedSinceTask: false });
-  threads.fire().live("c1", [job(true)]);
-  await chats.settled();
-  assert.deepEqual(await chats.checkIn("c1"), [], "the first tick takes the baseline: the job works");
-  calls.length = 0;
-  now += 60_000;
-  messages.push({ role: "custom", customType: "agent_message", content: "[agent-message from child:api-audit]\nReady for review, waiting for your go.", timestamp: now });
-  threads.fire().children("c1", [job(false)]);
-  await new Promise(resolve => setTimeout(resolve, 5));
-  await chats.settled();
-  assert.deepEqual(calls, ['steer c1 [job] api-audit is waiting for you since 09:17 (last message: "Ready for review, waiting for your go.")']);
-  calls.length = 0;
-  now += 120_000;
-  const lines = await chats.checkIn("c1");
-  assert.ok(!lines.some(line => /api-audit\) (?:waits|finished)/.test(line)), `the notice told this end: ${JSON.stringify(lines)}`);
-  chats.close();
-});
-
-test("chats: a check-in less than 60 s after the last steer waits and joins the next one, at the first wake after the 60 s", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "chats-"));
-  const calls: string[] = [];
-  const threads = fakeThreads(calls);
-  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-  await index.add("c1");
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
-    { id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] }, { id: "p3", text: "Docs", status: "doing", job: "docs", children: [] }] }] };
-  let now = 1_000_000;
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now));
-  await chats.adopt();
-  const job = (id: string, name: string, working: boolean): ChildAgent => ({ id, label: name, sessionName: name, status: working ? "running" : "done", lastActivityAt: now, repliedSinceTask: true });
-  threads.fire().live("c1", [job("k1", "api-audit", true), job("k2", "docs", true)]);
-  await chats.settled();
   await chats.checkIn("c1");
-  threads.fire().children("c1", [job("k1", "api-audit", false), job("k2", "docs", true)]);
-  now += 60_000;
-  assert.deepEqual((await chats.checkIn("c1"))[0], "p2 (job api-audit) finished; the board still says doing");
-  threads.fire().children("c1", [job("k1", "api-audit", false), job("k2", "docs", false)]);
-  now += 10_000;
-  calls.length = 0;
-  assert.deepEqual(await chats.checkIn("c1"), [], "10 s after the last steer: it waits");
-  now += 30_000;
-  assert.deepEqual(await chats.tick(), [], "40 s: still waiting");
-  now += 30_000;
-  assert.deepEqual(await chats.tick(), ["c1"], "70 s: the waiting check-in runs");
-  await chats.settled();
-  assert.equal(calls.filter(call => call.startsWith("steer c1 [check-in]")).length, 1);
-  assert.match(calls.find(call => call.startsWith("steer c1 [check-in]"))!, /p3 \(job docs\) finished/);
+  assert.match(sink.runs[0]!.run.findings, /### Owned by another thread by an owner ruling\n- p1 "Find what eats swap" belongs to ops guy \(\+observability\) \(correction c7\): hand it off/);
+  assert.equal(sink.runs[0]!.run.output.metrics.scope_misses, 1);
   chats.close();
 });
+
+
 
 test("chats: the scheduler runs each chat at its own interval, skips a paused one, resumes it when the pause ends, and keeps the setting across a restart", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
@@ -636,10 +541,11 @@ test("chats: the scheduler runs each chat at its own interval, skips a paused on
   let now = new Date(2026, 9, 8, 14, 0).getTime();
   const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now));
   assert.equal(await chats.checkInView("plain"), null, "not a chat");
-  assert.equal(await chats.setCheckIn("plain", { everyMs: 60_000 }), null);
-  assert.deepEqual(await chats.checkInView("fast"), { everyMs: 900_000, paused: false, nextAt: now + 900_000, pausedUntil: null, lastAt: null }, "default 15 min from the start");
-  await chats.setCheckIn("fast", { everyMs: 60_000 });
-  await chats.setCheckIn("slow", { everyMs: 15 * 60_000 });
+  assert.equal(await chats.setCheckIn("plain", { everyMs: 60_000 }, OWNER_UI), null);
+  assert.deepEqual(await chats.checkInView("fast"), { everyMs: 900_000, paused: false, nextAt: now, pausedUntil: null, lastAt: null },
+    "a chat with no check-in on record is due at once, not one interval after the service started");
+  await chats.setCheckIn("fast", { everyMs: 60_000 }, OWNER_UI);
+  await chats.setCheckIn("slow", { everyMs: 15 * 60_000 }, OWNER_UI);
   const ran: Record<string, number> = { fast: 0, slow: 0 };
   for (let second = 30; second <= 30 * 60; second += 30) {
     now += 30_000;
@@ -647,19 +553,19 @@ test("chats: the scheduler runs each chat at its own interval, skips a paused on
   }
   assert.deepEqual(ran, { fast: 30, slow: 2 }, "30 min: every 1 min and every 15 min");
   await chats.settled();
-  assert.equal((await chats.checkInView("fast"))?.lastAt, now);
+  assert.equal((await chats.checkInView("fast"))?.lastAt, now - 30_000, "due at the first wake, then every minute");
 
-  await chats.setCheckIn("fast", { everyMs: 5 * 60_000 });
+  await chats.setCheckIn("fast", { everyMs: 5 * 60_000 }, OWNER_UI);
   const before = now;
   let fast = 0;
   for (let second = 30; second <= 10 * 60; second += 30) { now += 30_000; if ((await chats.tick()).includes("fast")) fast++; }
   assert.equal(fast, 2, "the new interval applies at the next wake");
-  assert.equal((await chats.checkInView("fast"))?.lastAt, before + 10 * 60_000);
+  assert.equal((await chats.checkInView("fast"))?.lastAt, before + 9.5 * 60_000);
 
-  const long = await chats.setCheckIn("slow", { pause: "1h" });
+  const long = await chats.setCheckIn("slow", { pause: "1h" }, OWNER_UI);
   assert.deepEqual([long?.pausedUntil, long?.nextAt], [now + 3_600_000, now + 3_600_000], "the pause end, then the run it allows");
-  await chats.setCheckIn("slow", { pause: null });
-  const paused = await chats.setCheckIn("fast", { pause: "1h" });
+  await chats.setCheckIn("slow", { pause: null }, OWNER_UI);
+  const paused = await chats.setCheckIn("fast", { pause: "1h" }, OWNER_UI);
   assert.equal(paused?.paused, true);
   assert.equal(paused?.pausedUntil, now + 3_600_000);
   assert.equal(paused?.nextAt, now + 3_600_000);
@@ -671,7 +577,7 @@ test("chats: the scheduler runs each chat at its own interval, skips a paused on
   assert.deepEqual((await chats.tick()).includes("fast"), true, "the pause ended: it runs at once");
   assert.equal((await chats.checkInView("fast"))?.paused, false);
 
-  await chats.setCheckIn("fast", { pause: "forever" });
+  await chats.setCheckIn("fast", { pause: "forever" }, OWNER_UI);
   now += 24 * 3_600_000;
   assert.equal((await chats.tick()).includes("fast"), false, "paused until resumed");
   assert.deepEqual(await chats.checkIns(), new Map([["slow", { everyMs: 900_000, paused: false, pausedUntil: null, nextAt: (await chats.checkInView("slow"))!.nextAt }],
@@ -681,50 +587,68 @@ test("chats: the scheduler runs each chat at its own interval, skips a paused on
 
   const again = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now));
   assert.deepEqual(await again.checkInView("fast"), { everyMs: 300_000, paused: true, nextAt: null, pausedUntil: "forever", lastAt: null }, "the setting survives a restart");
-  const resumed = await again.setCheckIn("fast", { pause: null });
-  assert.deepEqual(resumed, { everyMs: 300_000, paused: false, nextAt: now + 300_000, pausedUntil: null, lastAt: null }, "resume keeps the interval");
+  const resumed = await again.setCheckIn("fast", { pause: null }, OWNER_UI);
+  assert.deepEqual(resumed, { everyMs: 300_000, paused: false, nextAt: now, pausedUntil: null, lastAt: null }, "resume keeps the interval; with no check-in on record it is due at once");
   now += 300_000;
-  assert.deepEqual(await again.tick(), ["fast"], "the slow chat waits 15 min after the restart, the resumed one 5");
+  assert.deepEqual(await again.tick(), ["fast", "slow"], "neither has a check-in on record in this service (their boards had nothing to check), so both are due at the first wake");
   await again.settled();
   again.close();
 });
 
-test("chats: a service restart keeps each chat's check-in schedule from its memory; a held check-in leaves one log line; adopting a chat creates no duty", async () => {
+test("chats: a check-in whose job could not start runs again 5 min later, not a whole interval later (slack green guy 10-12)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("sg");
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
+    { id: "p2", text: "Build", status: "doing", children: [] }] }] };
+  let now = 10 * 60 * 60_000;
+  const starts: string[] = [];
+  const duty = { async checkIn(id: string, run: CheckInRun) { starts.push(`${id} ${(run.at - 10 * 60 * 60_000) / 60_000}`); return starts.length === 1 ? "failed" as const : "done" as const; } };
+  const chats = new Chats(index, fakeThreads([]), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), { ...source(dir, { sg: board }, () => now), duty });
+  await chats.setCheckIn("sg", { everyMs: 60 * 60_000 }, OWNER_UI);
+  await chats.tick(); await chats.settled();
+  now += 5 * 60_000;
+  await chats.tick(); await chats.settled();
+  now += 5 * 60_000;
+  await chats.tick(); await chats.settled();
+  assert.deepEqual(starts, ["sg 0", "sg 5"], "retried after 5 min, then back on its hourly schedule");
+  chats.close();
+});
+
+test("chats: a service restart keeps each chat's check-in schedule from its memory; an owner turn holds no check-in; adopting a chat creates no duty", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
-  const logs: string[] = [];
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   for (const id of ["vp", "fresh"]) await index.add(id);
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
     { id: "p7", text: "Check the load", status: "doing", job: "vp", waitUntil: new Date(1_000_000).toISOString(), children: [] }] }] };
   let now = 10 * 60 * 60_000;
-  await checkInRecord(join(dir, "check-ins.json")).set("vp", { at: now - 20 * 60_000, jobs: {}, steps: { p7: { sig: JSON.stringify(["doing", "Check the load", "vp", new Date(1_000_000).toISOString(), ""]), at: 0 } },
-    answered: [], ready: [] });
+  await checkInRecord(join(dir, "check-ins.json")).set("vp", { at: now - 20 * 60_000, steps: { p7: { sig: JSON.stringify(["doing", "Check the load", "vp", new Date(1_000_000).toISOString(), ""]), at: 0 } } });
   const store = new DutyStore(dir);
-  const duties = new Duties(store, { isChat: async () => true, notify: async () => {}, tickMs: 0, now: () => now });
+  const started: string[] = [];
+  const duties = new Duties(store, { isChat: async () => true, tickMs: 0, now: () => now,
+    jobs: { chat: async id => ({ id, name: id, cwd: "/repo", board: "/b.json" }), working: async () => false, retire: async () => {},
+      start: async (chat, name, brief) => { started.push(`${chat.id} ${name}`); assert.match(brief, /p7 "Check the load" is due since/); return { id: `job-${chat.id}`, name }; } } });
   const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, { vp: board, fresh: board }, () => now), duty: duties }, line => logs.push(line));
+    { ...source(dir, { vp: board, fresh: board }, () => now), duty: duties });
   await chats.adopt();
   assert.deepEqual([await store.chats(), await store.list("vp")], [[], []], "no Board convergence duty: the check-in is the chat's one built-in duty");
-  assert.deepEqual(await chats.tick(), ["vp"], "the chat checked in 20 min before the restart is due at the first wake; the old code waited 15 min from the start");
+  assert.deepEqual(await chats.tick(), ["fresh", "vp"], "the chat checked in 20 min before the restart is due at the first wake, and so is one with " +
+    "no check-in on record (ops guy 10-12: each release restart pushed its 2 h check-in back again)");
   await chats.settled();
-  assert.ok(calls.some(call => call.startsWith("steer vp [check-in]") && call.includes('p7 "Check the load" is due since')), calls.join(" | "));
-  assert.deepEqual([(await store.read("vp")).duties, (await store.read("vp")).checkIn?.runCount], [[], 1], "the tick is a run of the built-in duty, and no standing duty appears");
-  now += 15 * 60_000;
+  assert.deepEqual(started.sort(), [`fresh check-in fresh ${clockTime(now)}`, `vp check-in vp ${clockTime(now)}`]);
+  assert.deepEqual([(await store.read("vp")).duties, (await store.read("vp")).checkIn?.runCount], [[], 1], "the run is a run of the built-in duty, and no standing duty appears");
   const threads = fakeThreads(calls);
-  const held = new Chats(index, { ...threads, running: () => true, state: () => ({ messages: [{ role: "user", content: "hi", timestamp: now }] }) }, async () => ({ lifecycle: "live" }), "b1",
-    loadRecord(join(dir, "extension-loads.json")), source(dir, { vp: board, fresh: board }, () => now), line => logs.push(line));
+  const busy = new Chats(index, { ...threads, running: () => true, state: () => ({ messages: [{ role: "user", content: "hi", timestamp: now }] }) }, async () => ({ lifecycle: "live" }), "b1",
+    loadRecord(join(dir, "extension-loads.json")), source(dir, { vp: board, fresh: board }, () => now));
   now += 15 * 60_000;
-  await held.tick();
-  now += 30_000;
-  await held.tick();
-  assert.deepEqual(logs.filter(line => line.includes("check-in held")).sort(), ["chat fresh: check-in held: an owner turn runs", "chat vp: check-in held: an owner turn runs"],
-    "one line per chat and reason, not one per wake");
+  assert.deepEqual((await busy.tick()).sort(), ["fresh", "vp"], "the duty job runs beside the owner's turn: no hold");
+  await busy.settled();
   chats.close();
-  held.close();
+  busy.close();
 });
 
-test("chats: adopt pins what the daemon still lists, forgets archived and missing, keeps an unknown one while the daemon is down", async () => {
+test("chats: adopt pins what the daemon still lists, unarchives what the daemon archived, forgets missing, keeps an unknown one while the daemon is down", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   for (const id of ["gone", "archived", "down", "live"]) await index.add(id);
@@ -737,14 +661,42 @@ test("chats: adopt pins what the daemon still lists, forgets archived and missin
     if (id === "down") throw new Error("Prime Agent daemon is not reachable.");
     return { lifecycle: "live" };
   }, "b1", loads, source(dir));
-  assert.deepEqual(await chats.adopt(), { pinned: ["live", "down"], forgotten: ["archived", "gone"], adopted: [] }, "newest first, as the index lists them");
-  assert.deepEqual(calls, ["pin live", "pin down", "unpin archived", "unpin gone"]);
-  assert.deepEqual(await index.ids(), ["live", "down"]);
+  assert.deepEqual(await chats.adopt(), { pinned: ["live", "down", "archived"], forgotten: ["gone"], adopted: [] }, "newest first, as the index lists them");
+  assert.deepEqual(calls, ["pin live", "pin down", "unarchive archived", "pin archived", "unpin gone"]);
+  assert.deepEqual(await index.ids(), ["live", "down", "archived"]);
   const lines: string[] = [];
   const full = new Chats(index, fakeThreads([], 0), async () => ({ lifecycle: "live" }), "b1", loads, source(dir), line => lines.push(line));
   assert.deepEqual(await full.adopt(), { pinned: [], forgotten: [], adopted: [] });
-  assert.equal(lines.length, 2, "the live limit is logged, not thrown");
+  assert.equal(lines.length, 3, "the live limit is logged, not thrown");
   chats.close(); full.close();
+});
+
+test("chats: a forced daemon shutdown archives every live session; the next serve start keeps every chat in the index and the next create adds to it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  const old = ["vp", "ops", "ci", "crawler"];
+  for (const id of [...old].reverse()) await index.add(id);
+  const calls: string[] = [];
+  const lines: string[] = [];
+  const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "archived" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir), line => lines.push(line));
+  const adopted = await chats.adopt();
+  assert.deepEqual(adopted.forgotten, [], "an archived state the chat list did not write never drops a chat");
+  assert.deepEqual(await index.ids(), old);
+  assert.deepEqual(calls.filter(call => call.startsWith("unarchive")), old.map(id => `unarchive ${id}`));
+  assert.match(lines.join("\n"), /chat vp: unarchived: the daemon archived it, the chat list did not/);
+  const { id } = await chats.create({ cwd: "/repo" });
+  assert.deepEqual(await index.ids(), [id, ...old], "the new chat goes first and every old one stays");
+  chats.close();
+});
+
+test("id index: a file it cannot parse fails the write and stays on disk; it is never replaced by an empty list", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const path = join(dir, "chats.json");
+  await writeFile(path, '{"ids":["a","b"');
+  const index = new IdIndex(path, "Chat index");
+  await assert.rejects(index.add("c"));
+  await assert.rejects(index.ids());
+  assert.equal(await readFile(path, "utf8"), '{"ids":["a","b"');
 });
 
 test("chats: undo after archive brings a chat back as a chat (index, pin, steering); a plain thread stays plain", async () => {
@@ -790,6 +742,19 @@ test("stale extension: the decision, and the reload once a chat attaches (now wh
   const build = extensionBuild();
   assert.match(build, /^[0-9a-f]{16}$/);
   assert.equal(extensionBuild(), build, "the same sources hash the same");
+  const tree = await mkdtemp(join(tmpdir(), "build-"));
+  const src = join(tree, "components", "user-history", "src");
+  await cp(join(import.meta.dirname, "..", "src"), src, { recursive: true });
+  await cp(join(import.meta.dirname, "..", "extension"), join(tree, "components", "user-history", "extension"), { recursive: true });
+  await cp(join(import.meta.dirname, "..", "..", "global-rules"), join(tree, "components", "global-rules"), { recursive: true });
+  let before = extensionBuild(src);
+  for (const file of ["correction-delivery.ts", "../../global-rules/standing-rules.ts"]) {
+    await appendFile(join(src, file), "\n");
+    const after = extensionBuild(src);
+    assert.notEqual(after, before, `${file} shapes a chat's requests, so a change to it reloads the chat`);
+    before = after;
+  }
+  await rm(tree, { recursive: true, force: true });
 
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
@@ -874,7 +839,7 @@ const ownerAsks = (text: string, at: number): ThreadMessage => ({ role: "user", 
 const reply = (stopReason: "stop" | "error", at: number, errorMessage?: string): ThreadMessage =>
   ({ role: "assistant", content: [], provider: "p", model: "m", stopReason, timestamp: at, ...(errorMessage ? { errorMessage } : {}) });
 
-test("chats: a chat whose last turn failed gets a new turn 5, 10, then every 20 min, even with nothing open; a good turn resets; a busy or paused chat waits; no check-in or notice queues behind it", async () => {
+test("chats: a chat whose last turn failed gets a new turn 5, 10, then every 20 min, even with nothing open; a good turn resets; a busy or paused chat waits; no notice queues behind it", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
@@ -906,10 +871,11 @@ test("chats: a chat whose last turn failed gets a new turn 5, 10, then every 20 
   assert.deepEqual(calls.filter(call => call.startsWith("steer")), [], "no check-in steer queues into the failed chat");
   assert.match(lines.join("\n"), /chat c1: last turn failed \(Provider rate limit exceeded \(rate_limit_error, 429\)\); started a new turn, try 4/);
 
+  const sink = dutySink();
   const withBoard = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, { c1: board }, () => now), memory }, line => lines.push(line));
-  assert.deepEqual(await withBoard.checkIn("c1"), [], "the digest waits for the restart");
-  assert.equal(await memory.get("c1"), undefined, "its memory is not moved, so the changes are told after the restart");
+    { ...source(dir, { c1: board }, () => now), memory, duty: sink.duty }, line => lines.push(line));
+  await withBoard.checkIn("c1");
+  assert.equal(sink.runs.length, 1, "the check-in job runs beside the restart schedule: it steers no chat, so it waits for nothing");
   const job = (working: boolean, at: number): ChildAgent => ({ id: "k1", label: "a", sessionName: "ai-risk-blog", status: "done", ...(working ? { activity: { kind: "writing" as const } } : {}),
     repliedSinceTask: false, lastActivityAt: at });
   threads.fire().live("c1", [job(true, 1)]);
@@ -934,56 +900,28 @@ test("chats: a chat whose last turn failed gets a new turn 5, 10, then every 20 
   threads.busyIds.delete("c1");
   await run(1);
   assert.deepEqual(restarted, [Math.round((failedAgain - start) / 60_000) + 31], "the count started over: the first wait (5 min) has long passed");
-  await chats.setCheckIn("c1", { pause: "forever" });
+  await chats.setCheckIn("c1", { pause: "forever" }, OWNER_UI);
   restarted.length = 0;
   await run(60);
   assert.deepEqual(restarted, [], "the owner paused the chat");
   chats.close();
 });
 
-test("chats: a check-in waits while an owner turn runs and goes at the first wake after it; an agent turn does not hold it", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "chats-"));
-  const calls: string[] = [];
-  const threads = fakeThreads(calls);
-  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
-  await index.add("c1");
-  let now = 1_000_000_000;
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [] }] };
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now));
-  await chats.adopt();
-  threads.transcripts.set("c1", [ownerAsks("hows this doing?", now)]);
-  threads.busyIds.add("c1");
-  now += 15 * 60_000;
-  assert.deepEqual(await chats.tick(), [], "the owner's turn runs: held");
-  assert.deepEqual(await chats.checkIn("c1"), [], "a direct call is held too");
-  now += 30_000;
-  assert.deepEqual(await chats.tick(), [], "still held");
-  threads.busyIds.delete("c1");
-  threads.transcripts.get("c1")!.push(reply("stop", now));
-  now += 30_000;
-  assert.deepEqual(await chats.tick(), ["c1"], "the turn ended: the held check-in goes at the next wake, not a whole interval later");
-  await chats.settled();
-  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] What changed:\n- p1 ...", now));
-  threads.busyIds.add("c1");
-  now += 15 * 60_000;
-  assert.deepEqual(await chats.tick(), ["c1"], "a turn a check-in started does not hold the next one");
-  await chats.settled();
-  chats.close();
-});
 
-test("chats: a board the server cannot read is a check-in line", async () => {
+test("chats: a board the server cannot read is a fact in the duty job's findings", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const threads = fakeThreads(calls);
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   const lines: string[] = [];
+  const sink = dutySink();
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir), board: async () => { throw new Error("Chat board file is malformed."); } }, line => lines.push(line));
+    { ...source(dir), board: async () => { throw new Error("Chat board file is malformed."); }, duty: sink.duty }, line => lines.push(line));
   await chats.adopt();
-  assert.deepEqual(await chats.checkIn("c1"), ["the board cannot be read: Chat board file is malformed.; call chat_board again"], "with no job and no step it still runs");
-  assert.deepEqual(calls.filter(call => call.startsWith("steer")), ["steer c1 [check-in] What changed:\n- the board cannot be read: Chat board file is malformed.; call chat_board again"]);
-  assert.deepEqual(await chats.checkIn("c1"), [], "once per error");
+  await chats.checkIn("c1");
+  assert.equal(sink.runs[0]!.run.findings, "### Other facts\n- the board cannot be read: Chat board file is malformed.", "with no job and no step it still runs");
+  assert.deepEqual(calls.filter(call => call.startsWith("steer")), []);
   assert.match(lines.join("\n"), /check-in board: Chat board file is malformed\./);
   chats.close();
 });
@@ -1026,6 +964,49 @@ test("chats: adopt and the scheduler's scan bring back a recent unarchived threa
   assert.deepEqual(await index.ids(), ["later", "lost", "kept"], "the scheduler's scan finds it without a restart");
   assert.equal(read.includes("plain"), false, "a thread found plain is not read again");
   chats.close();
+});
+
+test("chats: a serve that does not own the live chats pins, steers, reloads and checks in only the chats it created, even with a copy of the live chats.json; the main serve still adopts them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const found = join(dir, "found.jsonl");
+  await writeFile(found, [{ type: "session", id: "f" }, { type: "custom", customType: "chat_mode", data: { v: 1 } }, { type: "message", id: "m" }].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  let now = Date.parse("2026-10-10T04:00:00Z");
+  const recent = new Date(now - 60_000).toISOString();
+  const rows = [row("vp", recent), row("dev", recent), row("found", recent)];
+  const summary = async (id: string) => ({ lifecycle: "live" as const, ...(id === "found" ? { sessionFile: found } : {}) });
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  for (const id of ["dev", "vp"]) await index.add(id);
+  const owned = new IdIndex(join(dir, "own-chats.json"), "Own chat index");
+  const loads = loadRecord(join(dir, "extension-loads.json"));
+  const calls: string[] = [];
+  const threads = fakeThreads(calls);
+  threads.transcripts.set("vp", [ownerAsks("go on", now - 120_000), reply("error", now - 90_000, "429 rate limit")]);
+  const scratch = new Chats(index, threads, summary, "b2", loads, { ...source(dir, {}, () => now, () => rows), owned });
+  assert.deepEqual(await scratch.adopt(), { pinned: [], forgotten: [], adopted: [] }, "no live chat pinned, and the session-file scan stays off");
+  threads.fire().live("vp", []);
+  threads.fire().idle("dev");
+  now += 60 * 60_000;
+  assert.deepEqual(await scratch.tick(), [], "no check-in, though every chat in the copied index is due");
+  await scratch.settled();
+  assert.equal(await scratch.restore("found"), false, "an unarchive of a chat it did not create is not taken");
+  assert.deepEqual([calls, [...await scratch.ids()], await index.ids()], [[], [], ["vp", "dev"]], "nothing attached, steered, restarted or reloaded");
+
+  const { id } = await scratch.create({ cwd: "/repo" });
+  assert.deepEqual([await owned.ids(), [...await scratch.ids()]], [[id], [id]]);
+  scratch.close();
+  const againCalls: string[] = [];
+  const again = new Chats(index, fakeThreads(againCalls), summary, "b2", loads, { ...source(dir, {}, () => now, () => rows), owned });
+  assert.deepEqual(await again.adopt(), { pinned: [id], forgotten: [], adopted: [] }, "after a restart it adopts its own chat");
+  again.close();
+
+  const mainCalls: string[] = [];
+  const mainThreads = fakeThreads(mainCalls);
+  const main = new Chats(index, mainThreads, summary, "b2", loads, source(dir, {}, () => now, () => rows));
+  assert.deepEqual(await main.adopt(), { pinned: [id, "vp", "dev"], forgotten: [], adopted: ["found"] });
+  mainThreads.fire().live("vp", []);
+  await main.settled();
+  assert.ok(mainCalls.includes("steering vp all") && mainCalls.includes("reload vp"), "the main serve attaches and reloads as before");
+  main.close();
 });
 
 test("thread hub: running ignores queued input that busy counts; restart sends the text, then resumes the session's queued input", async () => {
@@ -1170,7 +1151,7 @@ test("thread hub: a session the daemon list calls active but the daemon does not
 test("jobs of a chat work in poteto-mode when the skill is installed, and get nothing extra when it is not", () => {
   const skill = "/home/x/.prime/agent/skills/poteto-mode/SKILL.md";
   const line = jobPersonaGuideline(skill, path => path === skill);
-  assert.ok(line?.startsWith(`Work in poteto-mode: read ${skill} in full before your first step`), String(line));
+  assert.equal(line, `Work in poteto-mode: read ${skill} before your first step.`);
   assert.equal(jobPersonaGuideline(skill, () => false), null, "no skill installed: no persona line");
 });
 
@@ -1178,7 +1159,7 @@ const SOL = { provider: "openai-codex", id: "gpt-6-sol", name: "GPT-6 Sol", inpu
 const OPUS = { provider: "anthropic", id: "claude-opus-5-5", name: "Claude Opus 5.5", input: ["text"], contextWindow: 0, reasoning: true } as ModelInfo;
 const TOKEN_FAILURE = 'Failed to resolve API key for provider "anthropic" from shell command: /Users/sieunpark/.config/pi-pool/bin/pi-pool-token';
 const RATE_LIMITED = "Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit.";
-async function fallbackChat(claude: { serves: boolean; freeAt: number | null } | null) {
+async function recoveryChat(claude: { serves: boolean; freeAt: number | null } | null) {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const lines: string[] = [];
@@ -1187,109 +1168,93 @@ async function fallbackChat(claude: { serves: boolean; freeAt: number | null } |
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   const clock = { now: 1_000_000_000, claude };
-  const fallbacks = fallbackRecord(join(dir, "chat-fallbacks.json"));
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, {}, () => clock.now), claude: async () => clock.claude, fallbacks }, line => lines.push(line));
+    { ...source(dir, {}, () => clock.now), claude: async () => clock.claude }, line => lines.push(line));
   await chats.adopt();
   const info = (model: ModelInfo, extra: Partial<NonNullable<ThreadView["info"]>> = {}) =>
     threads.extras.set("c1", { info: { model, thinkingLevel: "high", availableThinkingLevels: ["low", "high"], retryAttempt: 0, queuedActions: 0, ...extra } });
   const step = async (seconds = 30) => { clock.now += seconds * 1000; calls.length = 0; await chats.tick(); await chats.settled(); return [...calls]; };
-  return { chats, threads, calls, lines, clock, fallbacks, info, step };
+  return { chats, threads, calls, lines, clock, info, step };
 }
 
-test("chats: Claude cannot serve (the pool token failed): the chat moves to GPT-6 Sol at once with its thinking level, one notice, a restart quoting the owner; it moves back between turns once Claude serves", async () => {
-  const { chats, threads, clock, fallbacks, info, step, lines } = await fallbackChat({ serves: false, freeAt: null });
+test("chats: a token failure with no usable Claude account waits and retries on the selected model with unchanged effort", async () => {
+  const { chats, threads, clock, info, step } = await recoveryChat({ serves: false, freeAt: clockTimeReset });
   info(OPUS);
   threads.transcripts.set("c1", [ownerAsks("what was the response to t5 question???", clock.now), reply("error", clock.now, TOKEN_FAILURE)]);
-  assert.deepEqual(await step(), [
-    "model c1 openai-codex/gpt-6-sol",
-    "notice c1 Claude has no free account; switched to GPT-6 Sol. I switch back when one frees up.",
+  assert.deepEqual(await step(10), []);
+  assert.deepEqual(threads.waits.get("c1"), { kind: "account", until: clockTimeReset });
+  assert.deepEqual(await step(20), [
     `restart c1 [check-in] Your last turn failed at 22:46 (${TOKEN_FAILURE}). The owner's message is still unanswered: "what was the response to t5 question???". Answer it first.`,
-  ], "30 s after the failure, not 5 min");
-  assert.deepEqual(await fallbacks.get("c1"), { original: { provider: "anthropic", id: "claude-opus-5-5", thinkingLevel: "high" }, fallback: { provider: "openai-codex", id: "gpt-6-sol" }, at: clock.now });
-  assert.match(lines.join("\n"), /Claude cannot serve .*; switched anthropic\/claude-opus-5-5 to openai-codex\/gpt-6-sol/);
-
-  info(SOL, { thinkingLevel: "medium" });
-  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] retry", clock.now), reply("stop", clock.now));
-  assert.deepEqual(await step(), [], "the chat answered on Sol; Claude still has no account");
-  clock.claude = { serves: true, freeAt: null };
-  threads.queuedIds.add("c1");
-  assert.deepEqual(await step(), [], "mid-turn: wait for the turn to end");
-  threads.queuedIds.delete("c1");
-  assert.deepEqual(await step(), ["model c1 anthropic/claude-opus-5-5", "thinking c1 high", "notice c1 A Claude account is free again; switched back to Claude Opus 5.5."],
-    "back to Opus at the level it had");
-  assert.equal(await fallbacks.get("c1"), undefined);
+  ]);
+  assert.deepEqual(threads.extras.get("c1")?.info?.model, OPUS);
+  assert.equal(threads.extras.get("c1")?.info?.thinkingLevel, "high");
   chats.close();
 });
 
-test("chats: a turn that fails on the fallback goes back to Claude once Claude serves, instead of retrying on the fallback", async () => {
-  const { chats, threads, clock, fallbacks, info, step } = await fallbackChat({ serves: false, freeAt: null });
-  info(OPUS);
-  threads.transcripts.set("c1", [ownerAsks("drill turn 1", clock.now), reply("error", clock.now, TOKEN_FAILURE)]);
-  assert.equal((await step())[0], "model c1 openai-codex/gpt-6-sol");
-  const CODEX_REFUSED = "Codex error: The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.";
-  info(SOL, { thinkingLevel: "medium" });
-  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] retry", clock.now), reply("error", clock.now, CODEX_REFUSED));
-  assert.deepEqual(await step(), [], "Claude is still down: the failed fallback turn waits on the usual schedule");
-  clock.claude = { serves: true, freeAt: null };
-  const calls = await step();
-  assert.deepEqual(calls.slice(0, 3), ["model c1 anthropic/claude-opus-5-5", "thinking c1 high", "notice c1 A Claude account is free again; switched back to Claude Opus 5.5."],
-    "back to Opus at the level it had");
-  assert.match(calls[3] ?? "", new RegExp(`^restart c1 \\[check-in\\] Your last turn failed at .*${CODEX_REFUSED.replace(/[.()']/g, ".")}`), "the failed turn restarts on Claude now");
-  assert.equal(calls.length, 4);
-  assert.equal(await fallbacks.get("c1"), undefined);
-  chats.close();
-});
+const clockTimeReset = 1_000_000_000 + 45 * 60_000;
 
-test("chats: the switch keeps the thinking level the new model supports; a 429 switches only when the pool has no usable account; no Codex model: the owner sees the wait", async () => {
-  const served = await fallbackChat({ serves: true, freeAt: null });
+test("chats: 429 waits on the pinned model if no account serves; usable pool and chosen Codex use normal retry", async () => {
+  for (const failure of [RATE_LIMITED, TOKEN_FAILURE]) {
+    const down = await recoveryChat({ serves: false, freeAt: null });
+    down.info(OPUS);
+    down.threads.transcripts.set("c1", [ownerAsks("hi", down.clock.now), reply("error", down.clock.now, failure)]);
+    assert.deepEqual(await down.step(10), []);
+    assert.deepEqual(down.threads.waits.get("c1"), { kind: "account", until: down.clock.now + 20_000 });
+    assert.deepEqual(await down.step(20), [`restart c1 [check-in] Your last turn failed at 22:46 (${failure}). The owner's message is still unanswered: "hi". Answer it first.`]);
+    assert.deepEqual(down.threads.extras.get("c1")?.info?.model, OPUS);
+    assert.equal(down.threads.extras.get("c1")?.info?.thinkingLevel, "high");
+    down.chats.close();
+  }
+
+  const served = await recoveryChat({ serves: true, freeAt: null });
   served.info(OPUS);
   served.threads.transcripts.set("c1", [ownerAsks("hi", served.clock.now), reply("error", served.clock.now, RATE_LIMITED)]);
-  assert.deepEqual(await served.step(), [`restart c1 [check-in] Your last turn failed at 22:46 (${RATE_LIMITED}). The owner's message is still unanswered: "hi". Answer it first.`],
-    "another account serves: a plain restart after 30 s");
+  assert.deepEqual(await served.step(10), []);
+  assert.deepEqual(served.threads.waits.get("c1"), { kind: "retry", error: RATE_LIMITED, at: served.clock.now + 20_000 });
+  assert.equal((await served.step(20))[0]?.startsWith("restart c1"), true);
   served.chats.close();
 
-  const down = await fallbackChat({ serves: false, freeAt: null });
-  down.info(OPUS);
-  const original = down.threads.setModel.bind(down.threads);
-  down.threads.setModel = async (id, provider, modelId) => { await original(id, provider, modelId); down.info(SOL, { thinkingLevel: "low", availableThinkingLevels: ["low", "high"] }); };
-  down.threads.transcripts.set("c1", [ownerAsks("hi", down.clock.now), reply("error", down.clock.now, RATE_LIMITED)]);
-  assert.deepEqual((await down.step()).slice(0, 2), ["model c1 openai-codex/gpt-6-sol", "thinking c1 high"]);
-  down.chats.close();
-
-  const none = await fallbackChat({ serves: false, freeAt: 1_000_000_000 + 45 * 60_000 });
-  none.threads.catalog = { models: [OPUS], configuredProviders: ["anthropic"] };
-  none.info(OPUS);
-  none.threads.transcripts.set("c1", [ownerAsks("hi", none.clock.now), reply("error", none.clock.now, TOKEN_FAILURE)]);
-  assert.deepEqual(await none.step(10), []);
-  assert.deepEqual(none.threads.waits.get("c1"), { kind: "account", until: 1_000_000_000 + 45 * 60_000 }, "the feed says when an account frees up");
-  assert.equal((await none.step(30))[0]?.startsWith("restart c1"), true, "it still tries at 30 s");
-  assert.equal(none.threads.waits.get("c1"), null);
-  none.chats.close();
-
-  const codex = await fallbackChat({ serves: false, freeAt: null });
+  const codex = await recoveryChat({ serves: false, freeAt: null });
   codex.info(SOL);
   codex.threads.transcripts.set("c1", [ownerAsks("hi", codex.clock.now), reply("error", codex.clock.now, TOKEN_FAILURE)]);
-  assert.deepEqual(await codex.step(10), [], "the owner picked Codex: never switched");
+  assert.deepEqual(await codex.step(10), []);
   assert.deepEqual(codex.threads.waits.get("c1"), { kind: "retry", error: TOKEN_FAILURE, at: codex.clock.now + 20_000 });
+  assert.equal((await codex.step(20))[0]?.startsWith("restart c1"), true);
   codex.chats.close();
 });
 
-test("chats: an owner who moved off the fallback keeps that model; the record is dropped", async () => {
-  const { chats, threads, clock, fallbacks, info, step } = await fallbackChat({ serves: false, freeAt: null });
+test("chats: a provider no-account error shows account wait even if the pool cannot be read", async () => {
+  const { chats, threads, clock, info, step } = await recoveryChat(null);
   info(OPUS);
-  threads.transcripts.set("c1", [ownerAsks("hi", clock.now), reply("error", clock.now, TOKEN_FAILURE)]);
-  await step();
-  info({ ...SOL, id: "gpt-6-astra" });
-  threads.transcripts.get("c1")!.push(ownerAsks("[check-in] retry", clock.now), reply("stop", clock.now));
-  clock.claude = { serves: true, freeAt: null };
-  assert.deepEqual(await step(), []);
-  assert.equal(await fallbacks.get("c1"), undefined);
+  threads.transcripts.set("c1", [ownerAsks("hi", clock.now), reply("error", clock.now, "No Claude account")]);
+  assert.deepEqual(await step(10), []);
+  assert.deepEqual(threads.waits.get("c1"), { kind: "account", until: clock.now + 20_000 });
+  assert.deepEqual(await step(20), [`restart c1 [check-in] Your last turn failed at 22:46 (No Claude account). The owner's message is still unanswered: "hi". Answer it first.`]);
+  assert.deepEqual(threads.extras.get("c1")?.info?.model, OPUS);
+  assert.equal(threads.extras.get("c1")?.info?.thinkingLevel, "high");
   chats.close();
 });
 
+test("chats: scheduler never switches the selected model or effort after a failure or recovery", async () => {
+  for (const selected of [OPUS, SOL]) {
+    const { chats, threads, clock, info, step } = await recoveryChat({ serves: false, freeAt: null });
+    info(selected);
+    threads.setModel = async () => { throw new Error("scheduled model change"); };
+    threads.setThinking = async () => { throw new Error("scheduled effort change"); };
+    threads.transcripts.set("c1", [ownerAsks("hi", clock.now), reply("error", clock.now, RATE_LIMITED)]);
+    assert.deepEqual(await step(10), []);
+    clock.claude = { serves: true, freeAt: null };
+    await step(20);
+    threads.transcripts.get("c1")!.push(reply("stop", clock.now));
+    assert.deepEqual(await step(), []);
+    assert.deepEqual(threads.extras.get("c1")?.info?.model, selected);
+    assert.equal(threads.extras.get("c1")?.info?.thinkingLevel, "high");
+    chats.close();
+  }
+});
+
 test("chats: a provider retry that holds queued input is aborted and restarted; one with nothing queued is the session's own", async () => {
-  const { chats, threads, clock, info, step } = await fallbackChat({ serves: true, freeAt: null });
+  const { chats, threads, clock, info, step } = await recoveryChat({ serves: true, freeAt: null });
   threads.transcripts.set("c1", [ownerAsks("[check-in] What changed: p1", clock.now), reply("error", clock.now, "Connection error.")]);
   threads.busyIds.add("c1");
   info(OPUS, { retryAttempt: 3 });
@@ -1328,7 +1293,7 @@ test("chats: a step-owner thread whose last turn failed with input queued gets a
 });
 
 test("chats: after the owner changes the model or account, a stalled chat restarts now; a plain thread in a provider retry is aborted and resumed", async () => {
-  const { chats, threads, clock, info, calls } = await fallbackChat({ serves: true, freeAt: null });
+  const { chats, threads, clock, info, calls } = await recoveryChat({ serves: true, freeAt: null });
   const lastCalls = () => calls.splice(0);
   info(SOL);
   threads.transcripts.set("c1", [ownerAsks("hi", clock.now), reply("error", clock.now, RATE_LIMITED)]);
@@ -1362,15 +1327,14 @@ test("chats: the attach clears only the old daemon check-in heartbeat, never a d
   chats.close();
 });
 
-test("chats: a token-command timeout restarts after 30 s, 1 min, 2 min with an unreadable pool (no switch to Codex); a wake from sleep restarts at once and starts the schedule over", async () => {
-  const { chats, threads, clock, info, step, lines, fallbacks } = await fallbackChat(null);
+test("chats: a token-command timeout restarts after 30 s, 1 min, 2 min with an unreadable pool (no account wait or model switch); a wake from sleep restarts at once and starts the schedule over", async () => {
+  const { chats, threads, clock, info, step, lines } = await recoveryChat(null);
   info(OPUS);
   threads.transcripts.set("c1", [ownerAsks("[check-in] What changed: p1", clock.now), reply("error", clock.now, TOKEN_FAILURE)]);
   const start = clock.now;
   const restarts: number[] = [];
   for (let half = 0; half < 20; half++) if ((await step()).some(call => call.startsWith("restart c1"))) restarts.push((clock.now - start) / 1000);
   assert.deepEqual(restarts, [30, 90, 210, 510], "30 s, then 1 min, 2 min, 5 min after each restart");
-  assert.equal(await fallbacks.get("c1"), undefined, "never switched: the pool could not be read");
   assert.deepEqual(await step(40 * 60), [`restart c1 [check-in] Your last turn failed at 22:46 (${TOKEN_FAILURE}). Re-check the board and continue.`], "the Mac slept 40 min: at once");
   assert.match(lines.join("\n"), /chats: woke after 2400 s; transient failures restart now/);
   assert.match(lines.join("\n"), /started a new turn, try 1 after a sleep/);
@@ -1472,7 +1436,7 @@ test("chats: a job whose session is gone (not in the catalog, or listed active w
   chats.close();
 });
 
-test("chats: a job that ends on a provider error, an abort, a stop mid-tool or the length limit with no report is told to the chat at once, with its step's note; once per end, across a restart; a transient failure is woken instead, and a job that reported, a cancelled one and an old end are not told", async () => {
+test("chats: a job that ends on a provider error, an abort, a stop mid-tool or the length limit with no report is told to the chat at once as one plain [job] line; once per end, across a restart; a transient failure is woken instead, and a job that reported, a cancelled one and an old end are not told", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const lines: string[] = [];
@@ -1491,12 +1455,10 @@ test("chats: a job that ends on a provider error, an abort, a stop mid-tool or t
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
     { id: "p2", text: "Build the API", status: "doing", job: "api audit", note: "started 10:00", children: [] },
     { id: "p3", text: "Root work", status: "todo", job: "thread:r1", children: [] }] }] };
-  const written: string[] = [];
   const make = () => new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, { c1: board }, () => now, rows), writeBoard: async (id, ops) => { written.push(`${id} ${JSON.stringify(ops)}`); } }, line => lines.push(line));
+    source(dir, { c1: board }, () => now, rows), line => lines.push(line));
   let chats = make();
   await chats.adopt();
-  await checkInRecord(join(dir, "check-ins.json")).set("c1", { at: endAt - 60_000, jobs: { "sub-1": { state: "working", activityAt: endAt - 60_000 } }, steps: {}, answered: [], ready: [] });
   const child = (id: string, name: string, extra: Partial<ChildAgent> = {}): ChildAgent =>
     ({ id, label: name, sessionName: name, status: "done", repliedSinceTask: false, lastActivityAt: endAt, ...extra });
   threads.fire().children("c1", [child("sub-1", "api audit"), child("sub-k", "fixer"), child("sub-rep", "reporter", { repliedSinceTask: true }),
@@ -1516,24 +1478,16 @@ test("chats: a job that ends on a provider error, an abort, a stop mid-tool or t
   threads.views.set("old1", { messages: [task(endAt - 3 * 60 * 60_000), said("toolUse", endAt - 3 * 60 * 60_000)] });
   agents = agents.map(entry => entry.sessionId === "old1" ? agent("old1", "old one", "subagent", "sub-old", endAt - 3 * 60 * 60_000) : entry);
   const step = async (seconds = 30) => { now += seconds * 1000; calls.length = 0; await chats.tick(); await chats.settled(); return calls.filter(call => !call.startsWith("pin") && !call.startsWith("steering")); };
-  const tail = "and sent no report: re-brief it with a follow-up, restart it, or replace it";
-  const apiText = `Job api audit stopped on a provider error ("${quota}") at ${clockTime(endAt)} ${tail}`;
-  const rootText = `Job root work hit the output length limit at ${clockTime(endAt)} ${tail}`;
+  const apiText = `api audit stopped on a provider error ("${quota}") at ${clockTime(endAt)} and sent no report`;
+  const rootText = `root work hit the output length limit at ${clockTime(endAt)} and sent no report`;
 
   const first = await step();
   assert.deepEqual(first.sort(), [
     "restart k1 continue",
-    `steer c1 [check-in] What changed:\n- p2 "Build the API": ${apiText}`,
-    `steer c1 [check-in] What changed:\n- p3 "Root work": ${rootText}`,
-  ], "at once: the error and the length limit with their steps; the transient failure is woken, not told; the reporter, the cancelled job, the root that wrote since its start and an end 3 h old are not told");
-  assert.deepEqual(written.sort(), [
-    `c1 ${JSON.stringify([{ op: "plan_update", id: "p2", note: `${apiText}\nstarted 10:00` }])}`,
-    `c1 ${JSON.stringify([{ op: "plan_update", id: "p3", note: rootText }])}`,
-  ], "the same text tops each step's note");
+    `steer c1 [job] ${apiText}`,
+    `steer c1 [job] ${rootText}`,
+  ], "at once, as information: the error and the length limit; the transient failure is woken, not told; the reporter, the cancelled job, the root that wrote since its start and an end 3 h old are not told");
   assert.deepEqual(await step(), [], "once per end");
-  now += 60_000;
-  const digest = await chats.checkIn("c1");
-  assert.ok(digest.length > 0 && !digest.some(line => /api audit (failed|finished)/.test(line)), `the next check-in does not tell the same end again: ${digest.join(" | ")}`);
   assert.deepEqual(Object.keys(await checkInRecord(join(dir, "check-ins.json")).ends("c1")).sort(), ["sub-1", "thread:r1"]);
 
   threads.views.set("k1", { messages: [task(endAt - 5_000), said("error", endAt, TOKEN_FAILURE), ownerAsks("continue", now), said("stop", now)] });
@@ -1550,8 +1504,136 @@ test("chats: a job that ends on a provider error, an abort, a stop mid-tool or t
     said("toolUse", now + 1_000)] });
   agents = agents.map(entry => entry.sessionId === "j1" ? agent("j1", "api audit", "subagent", "sub-1", now + 1_000) : entry);
   const again = await step();
-  assert.deepEqual(again, [`steer c1 [check-in] What changed:\n- p2 "Build the API": Job api audit stopped in the middle of a tool call at ${clockTime(now - 29_000)} ${tail}`],
+  assert.deepEqual(again, [`steer c1 [job] api audit stopped in the middle of a tool call at ${clockTime(now - 29_000)} and sent no report`],
     "a new end after a re-brief is told once more");
-  assert.match(lines.join("\n"), /chat c1: job api audit ended \(error\) with no report; told the chat and noted p2/);
+  assert.match(lines.join("\n"), /chat c1: job api audit ended \(error\) with no report; told the chat$/m);
   chats.close();
+});
+
+test("brief: a reply to the owner always goes through tell_owner, and every example sentence the brief and its owner reference tell chats to write passes the reply lint (W59)", async () => {
+  const brief = CHAT_BRIEF.join("\n");
+  assert.match(brief, /Reach the owner only through tell_owner, on every kind of turn/);
+  assert.match(REPLY_CAP_NOTE, /Send the reply with tell_owner\./);
+  const extension = await readFile(new URL("../extension/index.ts", import.meta.url), "utf8");
+  assert.ok(!extension.includes("reply with text instead"), "tell_owner no longer tells the model to skip it on an owner turn");
+  assert.match(extension, /Send the owner a message; it is the only text the owner reads/);
+  const owner = await readFile(new URL("../../../skills/board/references/owner.md", import.meta.url), "utf8");
+  const examples = [...`${brief}\n${owner}`.matchAll(/\blike "([^"]+)"/g)].map(match => match[1]!);
+  assert.ok(examples.length >= 1, "the plural example is found");
+  for (const example of examples) assert.deepEqual(lintOwnerReply(example), [], `the example "${example}" passes the lint a chat's reply must pass`);
+  assert.ok(examples.includes("jobs now report to the chat when they finish"));
+});
+
+test("reply check: kept on disk, so a restart right after a long reply still sends one [reply check], and no later server sends it again (W59, 19:34Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("vp");
+  const replyAt = 1_000_000;
+  let clock = replyAt + 30_000;
+  const long = Array.from({ length: 80 }, (_, at) => `word${at}`).join(" ");
+  const messages: ThreadMessage[] = [
+    { role: "user", content: "youre so far back, push hard", timestamp: replyAt - 60_000 },
+    { role: "assistant", content: [{ type: "text", text: long }], stopReason: "stop", timestamp: replyAt } as unknown as ThreadMessage,
+  ];
+  const start = () => {
+    const calls: string[] = [];
+    const threads = fakeThreads(calls);
+    threads.transcripts.set("vp", messages);
+    const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => clock));
+    return { calls, threads, chats, checks: () => calls.filter(call => call.startsWith("steer vp [reply check]")) };
+  };
+  await loadRecord(join(dir, "extension-loads.json")).set("vp", "b1");
+  const first = start();
+  await first.chats.adopt();
+  first.threads.fire().live("vp", []);
+  await first.chats.settled();
+  assert.equal(first.checks().length, 1, "a server started 30 s after the reply sends its check when the chat attaches");
+  assert.match(first.checks()[0]!, /- 80 words: /);
+  first.threads.fire().idle("vp");
+  await first.chats.settled();
+  assert.equal(first.checks().length, 1, "the turn end after it sends none");
+  first.chats.close();
+  const second = start();
+  await second.chats.adopt();
+  second.threads.fire().live("vp", []);
+  second.threads.fire().idle("vp");
+  await second.chats.settled();
+  assert.deepEqual(second.checks(), [], "a second restart on the same data dir sends none");
+  assert.deepEqual(JSON.parse(await readFile(join(dir, "reply-checks.json"), "utf8")), { vp: replyAt });
+  second.chats.close();
+
+  await index.add("busy");
+  const third = start();
+  third.threads.transcripts.set("busy", messages);
+  third.threads.busyIds.add("busy");
+  await third.chats.adopt();
+  third.threads.fire().live("busy", []);
+  await third.chats.settled();
+  assert.deepEqual(third.calls.filter(call => call.startsWith("steer busy")), [], "a chat attached mid-turn waits for its turn end");
+  third.threads.busyIds.delete("busy");
+  third.threads.fire().idle("busy");
+  await third.chats.settled();
+  assert.equal(third.calls.filter(call => call.startsWith("steer busy [reply check]")).length, 1);
+  third.chats.close();
+
+  await index.add("old");
+  clock = replyAt + REPLY_CHECK_MAX_AGE_MS + 1;
+  const fourth = start();
+  fourth.threads.transcripts.set("old", messages);
+  await fourth.chats.adopt();
+  fourth.threads.fire().idle("old");
+  await fourth.chats.settled();
+  assert.deepEqual(fourth.calls.filter(call => call.startsWith("steer old")), [], "a reply over an hour old gets no check");
+  assert.equal(await replyCheckRecord(join(dir, "reply-checks.json")).claim("old", replyAt), true, "and is not recorded as checked");
+  fourth.chats.close();
+});
+
+test("brief check: a new job of a chat whose brief breaks the Jobs rule gets one [brief check] steer, once across restarts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "brief-check-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("vp");
+  await loadRecord(join(dir, "extension-loads.json")).set("vp", "b1");
+  const sessionFile = join(dir, "sessions", "vp.jsonl");
+  const spawn = async (childId: string, prompt: string, createdAt: number) => {
+    await mkdir(join(dir, "session-artifacts", "vp", childId), { recursive: true });
+    await writeFile(join(dir, "session-artifacts", "vp", childId, "rlm-subagent.json"), JSON.stringify({ type: "rlm_subagent", childId, sessionName: childId, prompt, createdAt }));
+  };
+  const askAt = 1_791_000_000_000;
+  const clock = askAt + 120_000;
+  const messages = [
+    { role: "user", content: "can you simulate what you send to the agent?", timestamp: askAt },
+    { role: "assistant", content: [{ type: "text", text: "on it" }], stopReason: "toolUse", timestamp: askAt + 1_000 },
+  ] as unknown as ThreadMessage[];
+  await spawn("bad", "Owner's words (verbatim):\n1. \"show me what you send to agents\"\nMy read: audit the briefs.\nDo it.", askAt + 2_000);
+  await spawn("good", `Owner's words (verbatim):\n1. 10:00 "can you simulate what you send to the agent?"\nMy read: audit the briefs.\nSplit: inline, two reads.`, askAt + 3_000);
+  await spawn("old", "no block", askAt - BRIEF_CHECK_MAX_AGE_MS - 1);
+  const job = (id: string): ChildAgent => ({ id, label: id, sessionName: id, status: "running" });
+  const start = () => {
+    const calls: string[] = [];
+    const threads = fakeThreads(calls);
+    threads.transcripts.set("vp", messages);
+    const chats = new Chats(index, threads, async () => ({ lifecycle: "live", sessionFile }), "b1", loadRecord(join(dir, "extension-loads.json")),
+      { ...source(dir, {}, () => clock), briefChecks: briefCheckRecord(join(dir, "brief-checks.json"), () => clock) });
+    return { threads, chats, checks: () => calls.filter(call => call.startsWith("steer vp [brief check]")) };
+  };
+  const first = start();
+  await first.chats.adopt();
+  first.threads.fire().live("vp", [job("old")]);
+  first.threads.fire().children("vp", [job("old"), job("bad"), job("good")]);
+  await first.chats.settled();
+  assert.equal(first.checks().length, 1, "one steer: the good brief passes and the old job is skipped");
+  assert.match(first.checks()[0]!, /^steer vp \[brief check\] Your brief for \[bad\]\(job:bad\) breaks the Jobs rule:\n- "show me what you send to agents" is not in any owner message/);
+  assert.match(first.checks()[0]!, /- No `Split:` line\./);
+  assert.match(first.checks()[0]!, /receiver_name="bad"/);
+  first.threads.fire().children("vp", [job("old"), { ...job("bad"), status: "done" }, job("good")]);
+  await first.chats.settled();
+  assert.equal(first.checks().length, 1, "a second snapshot sends none");
+  first.chats.close();
+  const second = start();
+  await second.chats.adopt();
+  second.threads.fire().live("vp", [job("bad"), job("good")]);
+  await second.chats.settled();
+  assert.deepEqual(second.checks(), [], "a restart does not send it again");
+  assert.deepEqual(Object.keys(JSON.parse(await readFile(join(dir, "brief-checks.json"), "utf8"))), ["bad"]);
+  second.chats.close();
 });

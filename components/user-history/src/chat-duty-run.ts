@@ -1,39 +1,31 @@
 import { execFile } from "node:child_process";
 import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
+import type { CheckInActor } from "./chat-checkin.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
-import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
-import { afterTurnCheck, afterTurnLine, armItems, type ArmedItem, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, dutyLine, ERROR_PAUSE_RUNS, errorStreak, judge,
-  nextRunAt, parseSchedule, repeatMisses, type Duty, type DutyRunRecord, type DutyTrigger, type DutyView, type FlaggedSlice,
-  type PrecheckOutput } from "./shared/chat-duties.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView } from "./shared/types.ts";
+import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, repeatMisses, type Duty, type DutyJobRef,
+  type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type CheckInPause, type CheckInView } from "./shared/types.ts";
 
-/**
- * The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one), a run now, and its
- * precheck alone, with no steer, for the recheck after the chat's turn.
- */
+/** The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one) and a run now. */
 export interface CheckInDutyHost {
   view(chatId: string): Promise<CheckInView | null>;
-  set(chatId: string, change: { everyMs?: number; pause?: CheckInPause | null }): Promise<CheckInView | null>;
+  set(chatId: string, change: { everyMs?: number; pause?: CheckInPause | null }, actor: CheckInActor): Promise<CheckInView | null>;
   run(chatId: string): Promise<void>;
-  measure(chatId: string): Promise<PrecheckOutput | null>;
 }
-/** One run of the check-in duty as the chat server ran it: the measure (none for a job event), the step classes, what it told the chat. */
+/**
+ * One run of the check-in duty as the chat server measured it: the slot time, its trigger, the chat's check-in interval, the misses, the step
+ * classes, and the findings for the job's brief.
+ */
 export interface CheckInRun {
-  at: number; trigger: DutyTrigger; summary: string; told: boolean;
-  output?: PrecheckOutput & { flagged: FlaggedSlice[] }; classes?: Record<string, number>;
-  /** False when the run handed its items to a check-in job: the job is the work started for them, so no recheck after the chat's turn. */
-  recheck?: boolean;
+  at: number; trigger: DutyTrigger; everyMs: number; output: PrecheckOutput & { flagged: FlaggedSlice[] }; classes: Record<string, number>; findings: string;
 }
-/** A check-in run with no tell, no event and the same metrics as the last record is kept at most this often. */
-export const CHECK_IN_RECORD_EVERY_MS = 60 * 60_000;
 
-/** What the runner needs from the server: which threads are chats, and a way to steer a chat. Tests pass fakes. */
+/** What the runner needs from the server: which threads are chats, and the duty jobs. Tests pass fakes. */
 export interface DutyHost {
   isChat(id: string): Promise<boolean>;
-  notify(chatId: string, message: string): Promise<void>;
-  /** The chat's board, for the after-turn recheck (did the chat touch a flagged step). Absent: no recheck. */
-  board?: (chatId: string) => Promise<ChatBoard | null>;
+  jobs: DutyJobHost;
   /** The built-in check-in duty. Absent (tests of standing duties): the card lists no check-in. */
   checkIn?: CheckInDutyHost;
   log?: (line: string) => void;
@@ -42,11 +34,55 @@ export interface DutyHost {
   tickMs?: number;
   /** The node binary a precheck whose first word is `node` runs with; default this process's. */
   node?: string;
+  /** The daemon health gate (src/chat-daemon-gate.ts): each wake lets it probe the daemon, at most once a minute. */
+  daemon?: { tick(): Promise<void> };
 }
 
 export const DUTY_TICK_MS = 30_000;
 /** The card shows this many runs per duty. */
 export const VIEW_RUNS = 14;
+/**
+ * What the check-in job looks at besides the generic duty rules (owner 10-09: "fixes quirks like agents giving up"; Crawler VP 10-09: "split
+ * tasks to subagent & Jobs actively").
+ */
+export const CHECK_IN_FOCUS: readonly string[] = [
+  "Organize the plan first, in every run, with board ops: close or fold what shipped (name the evidence), move a loose step under its goal with " +
+    "plan_update parent, remove a step another thread now owns (one scratch note names the new owner), close a step a duty now covers, and fix " +
+    "stale notes. A run that only rewrites notes and wait times while Plan shape or Look done lists items has not done its job: the owner should " +
+    "never have to ask a chat to tidy its plan (c44, owner 10-12).",
+  "A goal held only by other threads (Plan shape lists it) or a step whose wait is over is finished work behind a wait: check the wait " +
+    "against the real state in this run (the release holds the commit, the land is green, the thread answered). When it is met, close the " +
+    "step and the goal on that evidence. When it is not, send the holding thread the leftover in one message with what it must check, close " +
+    "the step here with a note naming that thread, and close the goal. A wait being new is no reason to keep the goal open (c45, owner 10-12: " +
+    "\"even for simple shit like this, it doesn't close/update plan desplite actually have finished\").",
+  "Then push every goal: a job or thread that stalled, died or ended without a report gets a message, a restart or a replacement in this run, and " +
+    "an open goal with independent work and no live job gets jobs at once, in parallel, each fanning out one subagent per unit of output. A finding " +
+    "the last check-ins already listed is yours to finish now, not to list again.",
+];
+/**
+ * How a check-in run ended for the scheduler: `failed` when its job could not start (a daemon create or brief error), so the chat retries in
+ * CHECK_IN_RETRY_MS instead of a whole interval (slack green guy 10-12: "daemon client closed" at 04:54Z, and its next try was 05:54Z).
+ */
+export type CheckInStart = "done" | "failed";
+/** The summary of a run that started no job because the duty's last job still works. */
+export const STILL_WORKING = "skipped: previous run still working";
+/** A duty job may work this long before a later run counts it as stuck, however short its duty's interval. */
+export const STUCK_MIN_MS = 90 * 60_000;
+/**
+ * A duty job still working this long after its run started is stuck, however long its duty's interval: a daily slot can run CATCH_UP_MS (6 h)
+ * late, so the next slot can come 18 h after its job started, and the limit must be under that.
+ */
+export const STUCK_MAX_MS = 12 * 60 * 60_000;
+/**
+ * How long a duty job may work before the next run of its duty retires it as stuck and starts a new one: one interval, at least STUCK_MIN_MS and
+ * at most STUCK_MAX_MS. A daily duty's interval is a day. Without the limit one hung job skipped every later run: slack green guy 10-10, 37 h with
+ * no check-in; ops guy 10-11, a 10-minute duty skipped for 17 h; AI harness VP 10-11, three daily duties skipped a day on jobs whose model
+ * requests hung for hours and were aborted at each restart.
+ */
+export function stuckAfterMs(schedule: DutySchedule): number {
+  const intervalMs = schedule.kind === "every" ? schedule.minutes * 60_000 : 24 * 60 * 60_000;
+  return Math.min(Math.max(intervalMs, STUCK_MIN_MS), STUCK_MAX_MS);
+}
 
 const pad = (value: number): string => String(value).padStart(2, "0");
 /** `261008-2307`, local time: names a run's saved output. */
@@ -54,6 +90,11 @@ export function runStamp(at: number): string {
   const date = new Date(at);
   return `${pad(date.getFullYear() % 100)}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
 }
+
+/** What a run's start of its duty job did: started one (`replaced` notes a stuck job it retired), skipped with why, or nothing (the slot already has its job). */
+type Launched = { job: DutyJobRef; replaced?: string } | { skipped: string } | null;
+/** The duty's last job as a new run finds it: the slot already has its job (null), it still works (skip), or it is the job to retire, if any. */
+type Previous = { last?: DutyJobRef; replaced?: string } | { skipped: string } | null;
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
@@ -68,15 +109,16 @@ function checkInMinutes(value: unknown): number {
 
 /**
  * Runs each chat's due duties on the server: a skip policy on overlap (a duty with a run going starts no other), one catch-up for a daily slot
- * missed by at most CATCH_UP_MS, the precheck with the file contract and its timeout, the verdict against the targets, one `[check-in]` line to
- * the chat for a miss or an error, and a pause after ERROR_PAUSE_RUNS errors in a row. A met run tells nobody. A told run whose flagged items
- * name plan steps is checked again when the chat's turn ends (`afterTurn`). The check-in duty runs on the chat server; its runs are recorded
- * here (`recordCheckIn`) and its card reads and edits the chat's check-in setting.
+ * missed by at most CATCH_UP_MS, the precheck with the file contract and its timeout, the measure against the targets, and then one duty job
+ * per run with the precheck as context (src/chat-duty-job.ts), met or missed. One job per duty per slot: a run whose slot already has a job
+ * starts none, and while the duty's last job still works a run starts none and is recorded as skipped, unless that job is stuck past
+ * `stuckAfterMs` of its duty's schedule, which the run replaces. The run that starts a job retires the
+ * last one: it leaves the registry at once and its archive is queued, so a slow daemon never holds up the start. A precheck that errors ERROR_PAUSE_RUNS times in a row pauses the duty; that run's job is told to fix it. The check-in duty's
+ * schedule and precheck live on the chat server, which hands each run here (`checkIn`); its card reads and edits the chat's check-in setting.
  */
 export class Duties {
-  private readonly running = new Map<string, Promise<void>>();
-  /** Told runs waiting for the end of the chat's turn, by `<chatId>/<dutyId>`: when the chat was told, and the items to check again. */
-  private readonly armed = new Map<string, { at: number; items: ArmedItem[] }>();
+  /** The run going per `<chatId>/<dutyId>`; a second start shares it. */
+  private readonly running = new Map<string, Promise<CheckInStart | void>>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -94,6 +136,7 @@ export class Duties {
 
   /** One wake: every duty of every chat that is due starts, and a daily slot too late to run is recorded as skipped. */
   tick(): Promise<void> {
+    void this.host.daemon?.tick().catch(error => this.log(`duties: daemon probe: ${message(error)}`));
     return this.ticking ??= this.scan().catch(error => this.log(`duties: tick: ${message(error)}`)).finally(() => { this.ticking = undefined; });
   }
 
@@ -111,8 +154,8 @@ export class Duties {
   private async skip(chatId: string, duty: Duty, slot: number): Promise<void> {
     const at = this.now();
     await this.store.update(chatId, duties => { const found = duties.find(entry => entry.id === duty.id); if (found) { found.lastSlotAt = slot; found.lastSkippedAt = at; } });
-    await this.store.appendRun(chatId, { duty: duty.id, at, trigger: "schedule", ms: 0, verdict: "skipped", metrics: {},
-      summary: `the ${new Date(slot).toTimeString().slice(0, 5)} run was missed by more than 6 h (machine asleep)`, told: false });
+    await this.store.appendRun(chatId, { duty: duty.id, at, slot, trigger: "schedule", ms: 0, verdict: "skipped", metrics: {},
+      summary: `the ${new Date(slot).toTimeString().slice(0, 5)} run was missed by more than 6 h (machine asleep)` });
     this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: skipped a slot missed by more than 6 h`);
   }
 
@@ -126,13 +169,14 @@ export class Duties {
     return true;
   }
 
-  /** The owner's "Run now": false when the duty is unknown or already running. Paused duties run too; the pause only stops the schedule. */
+  /**
+   * The owner's "Run now": false when the duty is unknown or already running. Paused duties run too; the pause only stops the schedule. The
+   * check-in's run goes through the chat server's queue, which measures and hands it to `checkIn`.
+   */
   async runNow(chatId: string, dutyId: string): Promise<boolean> {
     if (dutyId === CHECK_IN_DUTY_ID && this.host.checkIn) {
-      const key = `${chatId}/${dutyId}`;
-      if (this.running.has(key)) return false;
-      const run = this.host.checkIn.run(chatId).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${message(error)}`)).finally(() => this.running.delete(key));
-      this.running.set(key, run);
+      if (this.running.has(`${chatId}/${dutyId}`)) return false;
+      void this.host.checkIn.run(chatId).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${message(error)}`));
       return true;
     }
     if (!(await this.store.list(chatId)).some(duty => duty.id === dutyId)) return false;
@@ -141,10 +185,10 @@ export class Duties {
 
   /**
    * Pause or resume; resuming a daily duty does not run the slots it missed while paused. False when the duty is unknown. The check-in duty's
-   * pause is the chat's check-in pause until resumed, the same one the header's control sets.
+   * pause is the chat's check-in pause until resumed, the same one the header's control sets, recorded as `actor`'s.
    */
-  async setStatus(chatId: string, dutyId: string, status: Duty["status"]): Promise<boolean> {
-    if (dutyId === CHECK_IN_DUTY_ID && this.host.checkIn) return (await this.host.checkIn.set(chatId, { pause: status === "paused" ? "forever" : null })) !== null;
+  async setStatus(chatId: string, dutyId: string, status: Duty["status"], actor: CheckInActor): Promise<boolean> {
+    if (dutyId === CHECK_IN_DUTY_ID && this.host.checkIn) return (await this.host.checkIn.set(chatId, { pause: status === "paused" ? "forever" : null }, actor)) !== null;
     const at = this.now();
     return this.store.update(chatId, duties => {
       const duty = duties.find(entry => entry.id === dutyId);
@@ -161,8 +205,8 @@ export class Duties {
    * writes the chat's check-in setting (the header's control shows the change); a daily time is refused for it. A daily duty moved to a time
    * already past today waits for tomorrow's slot. Throws on a bad schedule; false when the duty is unknown.
    */
-  async setSchedule(chatId: string, dutyId: string, value: unknown): Promise<boolean> {
-    if (dutyId === CHECK_IN_DUTY_ID && this.host.checkIn) return (await this.host.checkIn.set(chatId, { everyMs: checkInMinutes(value) * 60_000 })) !== null;
+  async setSchedule(chatId: string, dutyId: string, value: unknown, actor: CheckInActor): Promise<boolean> {
+    if (dutyId === CHECK_IN_DUTY_ID && this.host.checkIn) return (await this.host.checkIn.set(chatId, { everyMs: checkInMinutes(value) * 60_000 }, actor)) !== null;
     const schedule = parseSchedule(value);
     const at = this.now();
     return this.store.update(chatId, duties => {
@@ -187,69 +231,75 @@ export class Duties {
   }
 
   /**
-   * Records one check-in run as a run of the check-in duty: its metrics against `CHECK_IN_DUTY`'s targets (a job event has none), its step
-   * classes and flagged items. A quiet scheduled run with the same metrics as the last record is kept at most every CHECK_IN_RECORD_EVERY_MS,
-   * so the history stays readable. A told run whose items name steps is checked again when the chat's turn ends.
+   * One run of the check-in duty, measured by the chat server: its misses against `CHECK_IN_DUTY`'s targets, its step classes and flagged
+   * items go in the record, and one check-in job starts with the findings as context (`launch`). A second call while one is going shares it.
    */
-  async recordCheckIn(chatId: string, run: CheckInRun): Promise<void> {
-    const judged = run.output ? judge(CHECK_IN_DUTY.metrics, run.output) : undefined;
-    const record: DutyRunRecord = { duty: CHECK_IN_DUTY_ID, at: run.at, trigger: run.trigger, ms: Math.max(0, this.now() - run.at),
-      verdict: judged?.verdict ?? "missed", metrics: judged?.metrics ?? {}, summary: run.summary, told: run.told,
-      ...(run.classes ? { classes: run.classes } : {}), ...(run.output?.flagged.length ? { flagged: run.output.flagged } : {}) };
-    if (run.told && run.recheck !== false && run.output && this.host.board) {
-      const items = armItems(run.output.flagged, await this.host.board(chatId).catch(() => null));
-      if (items.length) this.armed.set(`${chatId}/${CHECK_IN_DUTY_ID}`, { at: run.at, items });
+  checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart> {
+    const key = `${chatId}/${CHECK_IN_DUTY_ID}`;
+    const going = this.running.get(key);
+    if (going) return going.then(() => "done" as const);
+    const task = this.checkInRun(chatId, run).catch((error): CheckInStart => { this.log(`duty ${chatId.slice(0, 8)}/${CHECK_IN_DUTY_ID}: ${message(error)}`); return "done"; })
+      .finally(() => this.running.delete(key));
+    this.running.set(key, task);
+    return task;
+  }
+
+  private async checkInRun(chatId: string, run: CheckInRun): Promise<CheckInStart> {
+    const judged = judge(CHECK_IN_DUTY.metrics, run.output);
+    const record: DutyRunRecord = { duty: CHECK_IN_DUTY_ID, at: run.at, slot: run.at, trigger: run.trigger, ms: 0, verdict: judged.verdict, metrics: judged.metrics,
+      summary: judged.summary, classes: run.classes, ...(run.output.flagged.length ? { flagged: run.output.flagged } : {}) };
+    let launched: Launched;
+    let failed = false;
+    try {
+      launched = await this.launch(chatId, CHECK_IN_DUTY_ID, { kind: "every", minutes: run.everyMs / 60_000 }, run.at, run.at,
+        { duty: CHECK_IN_DUTY, measure: judged.summary, findings: run.findings, focus: CHECK_IN_FOCUS });
     }
-    const last = (await this.store.runs(chatId)).find(entry => entry.duty === CHECK_IN_DUTY_ID && entry.trigger !== "after-turn" && Object.keys(entry.metrics).length > 0);
-    const same = last !== undefined && JSON.stringify(last.metrics) === JSON.stringify(record.metrics);
-    if (!run.told && run.trigger === "schedule" && same && run.at - last.at < CHECK_IN_RECORD_EVERY_MS) return;
+    catch (error) { failed = true; launched = { skipped: `the duty job did not start: ${message(error).slice(0, 300)}` }; }
+    if (launched === null) return "done";
+    if ("skipped" in launched) { record.verdict = "skipped"; record.summary = launched.skipped; }
+    else { record.job = launched.job; if (launched.replaced) record.summary += launched.replaced; }
+    record.ms = Math.max(0, this.now() - run.at);
     await this.store.updateFile(chatId, file => {
       const state = file.checkIn ??= { createdAt: run.at, runCount: 0 };
       state.runCount += 1;
       state.lastRunAt = run.at;
     });
     await this.store.appendRun(chatId, record);
+    this.log(`duty ${chatId.slice(0, 8)}/${CHECK_IN_DUTY_ID}: ${record.verdict}, ${record.job ? `started ${record.job.name}` : record.summary}`);
+    return failed ? "failed" : "done";
   }
 
   /**
-   * The end of a chat's turn: each told run of the chat waiting for it is checked again with the same check (the precheck, or the check-in's
-   * classes), once. An item the check still flags on a step the chat did not touch goes back to the chat by name, and the record keeps it as
-   * unresolved (Chat health's `unresolved_after_turn`). An item the chat handled, or the check no longer flags, is kept as handled.
+   * The duty's last job as a run for `slot` finds it: null when a run already started a job for the slot, a skip while the last job still works
+   * and has not worked past `stuckAfterMs(schedule)` since its run started, else the job to retire, with a note when it was stuck.
    */
-  afterTurn(chatId: string): Promise<void> {
-    const now = this.now();
-    const due = [...this.armed].filter(([key, armed]) => key.startsWith(chatId + "/") && armed.at < now);
-    return Promise.all(due.map(async ([key, armed]) => {
-      this.armed.delete(key);
-      const dutyId = key.slice(chatId.length + 1);
-      try { await this.recheck(chatId, dutyId, armed.items); }
-      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: after-turn recheck: ${message(error)}`); }
-    })).then(() => {});
+  private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
+    const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
+    if (runs.some(run => run.slot === slot && run.job !== undefined)) return null;
+    const started = runs.find(run => run.job);
+    const last = started?.job;
+    if (!started || !last || !(await this.host.jobs.working(last))) return last ? { last } : {};
+    const workingMs = this.now() - started.at;
+    if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})` };
+    return { last, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };
   }
 
-  private async recheck(chatId: string, dutyId: string, items: readonly ArmedItem[]): Promise<void> {
-    const started = this.now();
-    const standing = dutyId === CHECK_IN_DUTY_ID ? undefined : (await this.store.list(chatId)).find(entry => entry.id === dutyId);
-    const duty = standing ?? (dutyId === CHECK_IN_DUTY_ID ? CHECK_IN_DUTY : undefined);
-    if (!duty) return;
-    let output: PrecheckOutput | null;
-    if (standing) {
-      const dir = this.store.chatDir(chatId);
-      output = await this.precheck(standing, dir, join(dir, `${dutyId}-${runStamp(started)}-after-turn.json`), []);
-    } else output = await this.host.checkIn!.measure(chatId);
-    if (!output) return;
-    const board = await this.host.board!(chatId).catch(() => null);
-    const { handled, unresolved } = afterTurnCheck(items, output.flagged ?? [], board);
-    const judged = judge(duty.metrics, output);
-    const record: DutyRunRecord = { duty: dutyId, at: started, trigger: "after-turn", ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics,
-      summary: `after the chat's turn: ${handled.length} handled, ${unresolved.length} still flagged with no change`, told: false,
-      ...(handled.length ? { handled } : {}), ...(unresolved.length ? { unresolved } : {}) };
-    if (unresolved.length) {
-      try { await this.host.notify(chatId, CHECK_IN_PREFIX + afterTurnLine(duty, unresolved)); record.told = true; }
-      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: tell the chat: ${message(error)}`); }
-    }
-    await this.store.appendRun(chatId, record);
-    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: after-turn recheck: ${record.summary}`);
+  /**
+   * Starts the duty job of one run: null when the slot already has its job (a re-entrant tick or a restart), skipped while the duty's last job
+   * still works, else the last job is retired (its archive queued) and a new one starts with the brief. A chat the catalog does not list is
+   * skipped too. A last job stuck past `stuckAfterMs` of the duty's schedule is retired and replaced like a finished one.
+   */
+  private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
+    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus">): Promise<Launched> {
+    const previous = await this.previous(chatId, dutyId, schedule, slot);
+    if (previous === null || "skipped" in previous) return previous;
+    const { last, replaced } = previous;
+    const chat = await this.host.jobs.chat(chatId);
+    if (!chat) return { skipped: "skipped: the catalog does not list the chat" };
+    if (last) await this.host.jobs.retire(last).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: retire ${last.name}: ${message(error)}`));
+    const name = dutyJobName(brief.duty.name, chat.name, at);
+    const job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }));
+    return replaced ? { job, replaced } : { job };
   }
 
   /** Resolves once every run going now has ended, for tests. */
@@ -259,21 +309,8 @@ export class Duties {
     const duty = (await this.store.list(chatId)).find(entry => entry.id === dutyId);
     if (!duty) return;
     const started = this.now();
-    const previous = (await this.store.runs(chatId)).filter(run => run.duty === dutyId && run.verdict !== "skipped");
-    const dir = this.store.chatDir(chatId);
-    const detail = join(dir, `${dutyId}-${runStamp(started)}.json`);
-    let record: DutyRunRecord;
-    try {
-      const output = await this.precheck(duty, dir, detail, previous.slice(0, 10));
-      const judged = judge(duty.metrics, output);
-      record = { duty: dutyId, at: started, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
-        ...(judged.verdict === "error" ? { error: judged.summary } : {}), told: false };
-    } catch (error) {
-      await rm(detail, { force: true });
-      record = { duty: dutyId, at: started, trigger, ms: this.now() - started, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500), told: false };
-    }
-    const pause = record.verdict === "error" && errorStreak([record, ...previous]) >= ERROR_PAUSE_RUNS;
-    await this.store.update(chatId, duties => {
+    const at = slot ?? started;
+    const markRun = (pause: boolean) => this.store.update(chatId, duties => {
       const found = duties.find(entry => entry.id === dutyId);
       if (!found) return;
       found.runCount += 1;
@@ -281,18 +318,47 @@ export class Duties {
       if (slot !== null && found.schedule.kind === "daily") found.lastSlotAt = slot;
       if (pause) { found.status = "paused"; found.updatedAt = this.now(); }
     });
-    const line = dutyLine(duty, record, repeatMisses(record, previous[0]), pause);
-    if (line) {
-      try { await this.host.notify(chatId, CHECK_IN_PREFIX + line); record.told = true; }
-      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: tell the chat: ${message(error)}`); }
+    const previousJob = await this.previous(chatId, dutyId, duty.schedule, at);
+    if (previousJob === null) return;
+    if ("skipped" in previousJob) {
+      await markRun(false);
+      await this.store.appendRun(chatId, { duty: dutyId, at: started, slot: at, trigger, ms: 0, verdict: "skipped", metrics: {}, summary: previousJob.skipped });
+      this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${previousJob.skipped}`);
+      return;
     }
-    if (record.told && record.verdict === "missed" && this.host.board) {
-      const flagged = await readFile(detail, "utf8").then(text => (JSON.parse(text) as PrecheckOutput).flagged ?? [], () => []);
-      const items = armItems(flagged, await this.host.board(chatId).catch(() => null));
-      if (items.length) this.armed.set(`${chatId}/${dutyId}`, { at: started, items });
+    const previous = (await this.store.runs(chatId)).filter(run => run.duty === dutyId && run.verdict !== "skipped");
+    const dir = this.store.chatDir(chatId);
+    const detail = join(dir, `${dutyId}-${runStamp(started)}.json`);
+    let record: DutyRunRecord;
+    let flagged: FlaggedSlice[] = [];
+    try {
+      const output = await this.precheck(duty, dir, detail, previous.slice(0, 10));
+      const judged = judge(duty.metrics, output);
+      flagged = output.flagged ?? [];
+      record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary, detail,
+        ...(judged.verdict === "error" ? { error: judged.summary } : {}) };
+    } catch (error) {
+      await rm(detail, { force: true });
+      record = { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: "error", metrics: {}, summary: "the precheck failed", error: message(error).slice(0, 500) };
     }
+    const pause = record.verdict === "error" && errorStreak([record, ...previous]) >= ERROR_PAUSE_RUNS;
+    await markRun(pause);
+    const repeats = repeatMisses(record, previous[0]);
+    const findings = [
+      ...(record.verdict === "error" ? [`The precheck failed: ${record.error ?? record.summary}. ${pause ? `It failed ${ERROR_PAUSE_RUNS} runs in a row and the duty is ` +
+        "paused until resumed: fix the precheck, then tell the chat to resume the duty." : "Fix the precheck or check the duty by hand."}`] : []),
+      ...(record.detail && record.verdict !== "error" ? [`The full precheck output is ${record.detail}.`] : []),
+      ...(repeats.length ? [`Missed in the last run too: ${repeats.join(", ")}.`] : []),
+      ...(flagged.length ? [`### Flagged\n${flagged.map(slice => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`).join("\n")}`] : []),
+    ].join("\n\n");
+    try {
+      const launched = await this.launch(chatId, dutyId, duty.schedule, at, started,
+        { duty, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings });
+      if (launched && "job" in launched) { record.job = launched.job; if (launched.replaced) record.summary += launched.replaced; }
+      else if (launched) record.summary += `; ${launched.skipped}`;
+    } catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: start the duty job: ${message(error)}`); }
     await this.store.appendRun(chatId, record);
-    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${record.verdict}, ${record.summary}`);
+    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${record.verdict}, ${record.summary}${record.job ? `, started ${record.job.name}` : ""}`);
   }
 
   /** Runs the precheck with the file contract; its state advances only when it exits 0 with a valid output. Throws with the reason otherwise. */

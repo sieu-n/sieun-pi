@@ -1,12 +1,40 @@
 import { parseArtifactTarget, normalizeArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
 import { findItem, walkItems } from "../shared/chat-board.ts";
 import { ARTIFACT_ICON, type IconName } from "./icons.ts";
-import type { AgentLink, AgentState, ArtifactLink, ChatBoard, OwnerTodo, PlanItem, PlanStatus } from "../shared/types.ts";
+import type { AgentLink, AgentState, ArtifactLink, ChatAgent, ChatBoard, OwnerTodo, PlanItem, PlanStatus } from "../shared/types.ts";
 
 export const PLAN_STATUS_LABEL: Record<PlanStatus, string> = { todo: "To do", doing: "In progress", done: "Done", blocked: "Blocked", dropped: "Dropped" };
 /** The Agents card's words for an agent's state and for how it is linked to the chat (its row's title). */
 export const AGENT_STATE_LABEL: Record<AgentState, string> = { working: "Working", waiting: "Waiting for the chat", idle: "Idle", done: "Done", failed: "Failed" };
 export const AGENT_LINK_LABEL: Record<AgentLink, string> = { subagent: "a job of this chat", root: "a thread this chat started", step: "owns a plan step", message: "exchanged messages with this chat today" };
+/** An Agents row's count of the subagents it spawned, "3 sub", how many of them run (a dot in the row) and its title; null when it spawned none. */
+export const agentSubagents = (agent: ChatAgent): { text: string; running: number; title: string } | null => {
+  const running = agent.subagentsRunning ?? 0;
+  const total = Math.max(agent.subagentsTotal ?? 0, running);
+  if (!total) return null;
+  const spawned = `${total} ${total === 1 ? "subagent" : "subagents"}`;
+  return { text: `${total} sub`, running, title: running ? `${spawned}, ${running} running` : `${spawned}, none running` };
+};
+
+/**
+ * The agent chip after a plan step's text: the Agents row that owns the step (`ChatAgent.steps`), else the thread the step stored in `sessionId`
+ * (or a `thread:<id>` owner) with no state known, else the owner the chat wrote in `job`. A bare session id shows as its first 8 characters.
+ * Null for a step with no owner.
+ */
+export interface StepAgent { name: string; state: AgentState | null; sessionId?: string; agent?: ChatAgent; job?: string }
+export function stepAgent(item: PlanItem, agents: readonly ChatAgent[]): StepAgent | null {
+  const agent = agents.find(entry => entry.steps.includes(item.id));
+  if (agent) return { name: agent.name, state: agent.state, ...(agent.sessionId ? { sessionId: agent.sessionId } : {}), agent };
+  const job = item.job?.trim() || undefined;
+  const target = job ? parseArtifactTarget(job) : null;
+  const sessionId = item.sessionId ?? (target?.kind === "thread" ? target.sessionId : undefined);
+  const short = (name: string) => /^[0-9a-f]{8}-/.test(name) ? name.slice(0, 8) : name;
+  if (sessionId) return { name: short(job && target?.kind !== "thread" ? job : sessionId), state: null, sessionId };
+  return job ? { name: short(job), state: null, job } : null;
+}
+/** The chip's tooltip: the agent's name, its state in the Agents card's words, and its session id. */
+export const stepAgentTitle = (chip: StepAgent, name = chip.name): string =>
+  [name, chip.state ? AGENT_STATE_LABEL[chip.state] : "", chip.sessionId ?? ""].filter(Boolean).join(" · ");
 
 export interface PlanProgress { done: number; total: number }
 /** Steps under a goal: every item below it that is not dropped, and how many are done. Null for an item with nothing below it. */
@@ -176,4 +204,14 @@ export function offeredLink(draft: string): { text: string; target: string } | n
     if (target) return { text: [...words.slice(0, index), ...words.slice(index + 1)].join(" "), target };
   }
   return null;
+}
+
+/**
+ * What a plan row shows under its line. A goal (a row with children) is compact unless its fold is open: its note, requirement lines and target
+ * show only when open (owner 10-10 asked why a working card got worse: the Plan card printed every goal's MET/OPEN/UNMET lines and target inline).
+ * A step with no children has no fold, so its note shows as before.
+ */
+export function rowDetails(item: { children: readonly unknown[] }, open: boolean): { note: boolean; requirements: boolean; target: boolean } {
+  const shown = item.children.length === 0 || open;
+  return { note: shown, requirements: shown, target: shown };
 }

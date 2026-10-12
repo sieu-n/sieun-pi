@@ -15,8 +15,6 @@ function run(executable, arguments_, cwd = root) {
 try {
   if (["plan", "apply", "verify", "rollback", "uninstall"].includes(command)) {
     run(process.env.SIEUN_PI_PYTHON || "python3", ["-B", resolve(root, "scripts/manage.py"), command, ...args], process.cwd());
-  } else if (command === "daily-recap-setup") {
-    run(process.env.SIEUN_PI_PYTHON || "python3", ["-B", resolve(root, "components/daily-recap/install.py"), ...args], process.cwd());
   } else if (command === "chat" || command === "open") {
     // `sieun-pi open` is `sieun-pi chat open`: start the chat if needed, then open its app window or the URL.
     run(process.execPath, [resolve(root, "components/user-history/src/chat-service-cli.mjs"), ...(command === "open" ? ["open"] : []), ...args], process.cwd());
@@ -32,9 +30,9 @@ try {
     run("uv", ["sync", "--locked"]);
     run("bun", ["install", "--frozen-lockfile"], resolve(root, "skills/poteto-mode/scripts"));
     run("npm", ["ci", "--ignore-scripts"], resolve(root, "components/user-history"));
-    run("npm", ["ci", "--ignore-scripts"], resolve(root, "components/daily-recap"));
+    run("git", ["config", "core.hooksPath", "scripts/git-hooks"]);
   } else {
-    process.stdout.write(`sieun-pi (Prime Agent ${lockedPrimeVersion(root)})\n\nCommands: open, chat, source, develop, check, build, plan, apply, verify, rollback, uninstall, sync-prime-agent, daily-recap-setup\nRun a profile command with --help for options. Install and update never change HOME automatically.\n`);
+    process.stdout.write(`sieun-pi (Prime Agent ${lockedPrimeVersion(root)})\n\nCommands: open, chat, source, develop, check, build, plan, apply, verify, rollback, uninstall, sync-prime-agent\nRun a profile command with --help for options. Install and update never change HOME automatically.\n`);
     if (command && command !== "--help" && command !== "-h") process.exitCode = 1;
   }
 } catch (error) {

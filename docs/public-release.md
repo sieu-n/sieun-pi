@@ -24,7 +24,6 @@ No blanket reuse license is assigned to owner source. See [provenance](provenanc
 public sieun-pi source
   ├─ extensions and skills -> explicit profile plan and apply
   ├─ utility exports      -> application dependency
-  ├─ daily recap          -> generated external runtime
   └─ pool patch updater   -> two-file external runtime
 
 private settings, accounts and histories -> remain outside public source
@@ -42,7 +41,6 @@ Rollback restores only receipt-owned targets that still match their applied stat
 - The public Git installation passed native loading with 51 skills, four commands and two resource reloads. It made zero provider network calls.
 - Separate public Git installs passed repeat, update, rollback and uninstall. Seven seeded private-state files kept their bytes and modes.
 - Application consumers now use the public dependency. Nine old helper, recap and exporter implementations were removed after caller migration.
-- The daily recap runtime was regenerated outside Documents. Its schedule was restored without triggering a report. A separate launchd help command exited successfully.
 
 See [verification](verification.md) for the distinction between source checks and live activation.
 

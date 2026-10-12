@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chatFeed, chatLines, collapseUpdates, foldReply, unreadCount, REPLY_FOLD_WORDS, senderName, settledPending, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
+import { chatFeed, chatLines, collapseUpdates, foldReply, ownerMessageId, unreadCount, REPLY_FOLD_WORDS, senderName, settledPending, splitReplyTo, turnStarter, updatesLabel, PENDING_SKEW_MS, type ChatItem, type ChatLine, type PendingSend } from "../src/shared/chat-feed.ts";
 import type { AssistantMessage, CustomMessage, ThreadMessage, UserMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): UserMessage => ({ role: "user", content: text, timestamp });
@@ -181,8 +181,8 @@ test("an owner-turn reply over 60 words folds after its 60th word; fences are no
   const long = `${words(50)}\n${diagram}${words(30, 51)}`;
   assert.deepEqual(foldReply(long), { shown: `${words(50)}\n${diagram}${words(10, 51)}…`, folded: true }, "the cut lands after the fence, in prose");
   assert.deepEqual(foldReply(`${words(59)} last, ${words(5, 61)}`), { shown: `${words(59)} last…`, folded: true }, "no trailing comma before the mark");
-  const lines = chatLines([user("status?", 1000), assistant([{ type: "text", text: words(80) }, tell("t9", "Short note.")], 1100)]);
-  assert.deepEqual(lines.slice(1).map(line => line.kind === "agent" ? [line.text.length > 20, line.told ?? false] : []), [[true, false], [false, true]], "the fold applies to the reply, not to tell_owner");
+  const lines = chatLines([user("status?", 1000), assistant([{ type: "text", text: words(80) }], 1100), user("and the rest?", 1200), assistant([tell("t9", "Short note.")], 1300)]);
+  assert.deepEqual(lines.flatMap(line => line.kind === "agent" ? [[line.text.length > 20, line.told ?? false]] : []), [[true, false], [false, true]], "the fold applies to the reply, not to tell_owner");
 });
 
 test("unreadCount: the chat's replies and folded update runs after the read marker count once each; the owner's own messages and older rows do not (owner 10-09)", () => {
@@ -199,4 +199,66 @@ test("a long, structured job report stays folded in the updates line; the feed s
   const long = "## Result\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n" + "Detail line. ".repeat(60);
   const items = chatFeed({ messages: [report("posthog key setup", long, 5)], streaming: null, wait: null } as never);
   assert.deepEqual(items.map(item => item.kind), ["updates"]);
+});
+
+test("reply_to: a text reply's marker line and tell_owner's reply_to quote an earlier owner message, which lists them for See reply; an unknown id is dropped", () => {
+  const first = 1_760_000_000_000, second = first + 60_000;
+  const id = ownerMessageId(first);
+  assert.equal(id, "mgj6k3cw");
+  const messages: ThreadMessage[] = [
+    user("> the chat said this\n\nwhy is CI slow?", first),
+    user("and the deploy?", second),
+    assistant([{ type: "text", text: `reply_to: ${id}\n\nOne runner for all jobs.` }], second + 100),
+    report("child:ci", "Two runners now.", second + 200),
+    assistant([tell("t1", "CI has two runners now."), { type: "toolCall", id: "t2", name: "tell_owner", arguments: { text: "Deploy is green.", reply_to: "zzzz" } }], second + 300, "toolUse"),
+    { role: "toolResult", toolCallId: "t1", toolName: "tell_owner", content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: second + 310 },
+    assistant([{ type: "toolCall", id: "t3", name: "tell_owner", arguments: { text: "Runner count doubled.", reply_to: id } }], second + 400, "toolUse"),
+    assistant([{ type: "text", text: `reply_to: ${ownerMessageId(second)}\nNotes only.` }], second + 500),
+  ];
+  const lines = chatLines(messages);
+  const quote = { id: "m0", text: "> the chat said this\n\nwhy is CI slow?" };
+  assert.deepEqual(lines[2], { kind: "agent", id: "m2", text: "One runner for all jobs.", at: second + 100, replyTo: quote }, "the marker line is gone and the reply quotes the owner");
+  assert.deepEqual(lines.filter(line => line.kind === "agent").map(line => [line.id, line.kind === "agent" ? line.replyTo?.id ?? null : null]),
+    [["m2", "m0"], ["m4-t0", null], ["m4-t1", null], ["m6-t0", "m0"]], "tell_owner's reply_to links; no reply_to or an unknown id, no quote");
+  assert.deepEqual(lines[0]?.kind === "user" ? lines[0].replies : null, ["m2", "m6-t0"], "the owner message lists its answers in order");
+  assert.ok(lines[1]?.kind === "user" && lines[1].replies === undefined, "an unanswered owner message has no replies");
+  assert.deepEqual(lines.at(-1), { kind: "notes", id: "m7", text: "Notes only.", at: second + 500 }, "a wake-up's notes lose the marker and link nothing");
+});
+
+test("reply_to: a streaming reply hides a marker line it is still writing, then quotes the owner message once the line is whole", () => {
+  const at = 1_760_000_000_000;
+  const messages: ThreadMessage[] = [user("why is CI slow?", at), user("ok?", at + 10)];
+  const streamed = (text: string) => chatFeed({ messages, streaming: assistant([{ type: "text", text }], at + 20) }).at(-1);
+  assert.equal(streamed("reply_t")?.kind, "user", "a partial marker shows nothing yet");
+  assert.equal(streamed(`reply_to: ${ownerMessageId(at)}`)?.kind, "user", "a marker with no text yet shows nothing");
+  const line = streamed(`reply_to: ${ownerMessageId(at)}\nOne runner.`);
+  assert.deepEqual(line, { kind: "agent", id: "streaming", text: "One runner.", at: at + 20, streaming: true, replyTo: { id: "m0", text: "why is CI slow?" } });
+  assert.equal(streamed("replying now")?.kind, "agent", "text that only starts like the marker shows");
+  assert.deepEqual(splitReplyTo("reply_to: abc"), { replyTo: "abc", text: "" });
+  assert.deepEqual(splitReplyTo("no marker\nreply_to: abc"), { replyTo: null, text: "no marker\nreply_to: abc" });
+});
+
+test("an owner turn answered with tell_owner shows the told text as the reply and the chat's own text as notes (W59, 04:33 KST 120-word reply)", () => {
+  const told = (id: string, at: number): ThreadMessage => ({ role: "toolResult", toolCallId: id, toolName: "tell_owner", content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: at });
+  const messages: ThreadMessage[] = [
+    user("Duties when are you going to add", 1000),
+    assistant([{ type: "text", text: "Checking the duty runner first." }, call("c1")], 1100, "toolUse"),
+    result("c1", 1150),
+    assistant([tell("t1", "Duties land tonight; I started three jobs.")], 1200, "toolUse"),
+    told("t1", 1210),
+    assistant([{ type: "text", text: "Long notes on what each job does, the files, and the plan for the rest of the evening." }], 1300),
+    user("ok", 2000),
+    assistant([{ type: "text", text: "Thanks." }], 2100),
+  ];
+  const lines = chatLines(messages);
+  assert.deepEqual(lines.map(line => `${line.kind} ${line.id}`), ["user m0", "notes m1", "agent m3-t0", "notes m5", "user m6", "agent m7"],
+    "the turn with an accepted tell_owner: every text line in it is notes; the next owner turn with text only keeps its text as the reply");
+  const refused: ThreadMessage[] = [user("status?", 1), assistant([tell("t2", "x")], 2, "toolUse"),
+    { role: "toolResult", toolCallId: "t2", toolName: "tell_owner", content: [{ type: "text", text: "Refused" }], isError: true, timestamp: 3 },
+    assistant([{ type: "text", text: "All green." }], 4)];
+  assert.deepEqual(chatLines(refused).map(line => line.kind), ["user", "agent"], "a refused tell_owner does not count: the text stays the reply, so the owner never gets silence");
+  const streaming = assistant([{ type: "text", text: "More detail while it streams" }], 1400);
+  assert.deepEqual(kinds(chatFeed({ messages: messages.slice(0, 5), streaming })), ["user", "updates", "agent"],
+    "text streaming after an accepted tell_owner on the same turn is not shown as a reply bubble");
+  assert.deepEqual(kinds(chatFeed({ messages: messages.slice(0, 1), streaming })), ["user", "agent"], "an owner turn with no tell_owner yet still streams its reply");
 });

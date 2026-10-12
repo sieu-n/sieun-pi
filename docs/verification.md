@@ -14,7 +14,6 @@ The non-global proof fix is `a4f0093e0b679e8918b124fa40c7ad50bb2c42f7`.
 | Public installed native proof | Prime Agent 0.9.4, Node 25.9.0, 51 skills, four unique commands and two reloads. No `context` handler or status command. Zero provider network calls. |
 | Public installed lifecycle | Separate Git-installed revisions passed repeat, update, rollback and uninstall. All seven seeded private-state files retained bytes and modes. The native proof profile was also rolled back through its receipt. |
 | Application consumers | Public dependency installed through the repository wrapper. Reader and rendered Prime context view worked after nine old implementations were removed. |
-| Daily recap runtime | Regenerated outside Documents. Existing private files and six protected files matched at the write boundary. The schedule was restored without a report run. A separate launchd help command exited 0 with no stderr. |
 | Application Actions | Run `34589013666` passed installation, monorepo guards and earlier JS checks. It failed in search history continuation and crawler lint/type checks. Triage is in progress. |
 
 The native proof expects `/account`, `/agent-chat`, `/what-did-i-say` and `/virev-reload`.
