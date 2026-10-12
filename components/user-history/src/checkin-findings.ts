@@ -369,12 +369,20 @@ export const STALL_MS = 2 * 60 * 60_000;
  * waits on a thread or on CI, a land, a release or a pin; `rows` and `self` find a thread its waitFor names (`waitTarget`).
  */
 export interface StalledStep { view: StepView; why: string }
+/**
+ * A step whose waitFor names a CI run id and whose note says another thread holds, orders or cancelled that run (api portal vp 10-13, p4:
+ * "Fable's land-33 hold keeps runs outside land 33 off CI", "Fable's land-34 order reruns ... this run second"). Its waitUntil moves when that
+ * thread's plan moves, so `blockedOnOthers` counts it and `stalledSteps` does not; a step that pushes its own waitUntil with no hold named still stalls.
+ */
+const RUN_ID = /\b\d{9,}\b/;
+const HOLD = /\b(?:hold|holds|held|holding|queued\s+behind|cancell?ed\s+by)\b|(?<!\bin\s)\border\b/i;
+const heldRun = (item: PlanItem): boolean => RUN_ID.test(item.waitFor ?? "") && HOLD.test(item.note ?? "");
 export function stalledSteps(views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
   self: ReadonlySet<string>, now: number): StalledStep[] {
   return views.flatMap(view => {
     const { item } = view;
     const waits = item.waitFor !== undefined || item.waitUntil !== undefined || view.owner?.key.startsWith("thread:") === true;
-    if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked") return [];
+    if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked" || heldRun(item)) return [];
     const memo = memos[item.id];
     const untils = memo?.untils ?? [];
     const pushes = untils.filter((until, index) => index > 0 && Date.parse(until) > Date.parse(untils[index - 1]!)).length;
@@ -414,7 +422,7 @@ export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
       now - view.changedAt <= BLOCKED_MS) return [];
     const thread = waitTarget(item.waitFor, rows, self) ?? (owner?.key.startsWith("thread:") ? { name: owner.name } : undefined);
-    const word = othersWord(item.waitFor) ?? othersWord(item.note);
+    const word = othersWord(item.waitFor) ?? othersWord(item.note) ?? (heldRun(item) ? "a CI run another thread holds" : undefined);
     const on = thread ? `the ${clip(thread.name, 40)} thread` : word;
     return on ? [{ view, on }] : [];
   });
