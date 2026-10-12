@@ -43,6 +43,13 @@ A refused call raises `SendRefused` with the same text as the tool_call guard.
 A call passes when a cell on the stack carries an approved `OWNER_OK=<chat id>/<todo id>`, or, in a child process, when `OWNER_OK` is in its environment.
 Calls made inside the aside_browser skill are left to that skill's page check.
 
+`send-log.ts` keeps the record of outside sends (c37), so "did an agent send anything" has one answer.
+Each layer above writes one JSON line per send it judges to `~/.prime/agent/browser-chat/sends.jsonl`: the tool_call guard, `send-check.ts` for the kernel, the cua-driver proxy and the aside-browser skill.
+A line holds the time, the decision (`allowed` or `refused`), the layer, the chat and session, the target, the guard's reason and the OWNER_OK token.
+The tool_call guard logs an allowed ipython cell only when it runs, through the kernel check, so one send makes one allowed line.
+`components/user-history/src/send-log.ts backfill` adds the sends that older transcripts show as `ran` lines, up to the first live line, and the same file reads the log (`--match`, `--since`, `--chat`). Chats read it with `board.sends(...)`.
+`GLOBAL_RULES_SEND_LOG` moves the file; without it, `AGENT_CHAT_DATA_DIR` or the folder of `GLOBAL_RULES_LOG` does, so a suite that moves the guard log moves this one too.
+
 `merge-guard.ts` refuses a pull request merge, and a push or ref update that moves `main` or `master`, unless the owner said go on a For you todo that names that PR, or that repo and push (correction c49).
 Staging lands never need the owner's ok (c50), so a push, ref update or branch merge into `staging` passes with no token. A `gh pr merge` names no base branch, so it stays refused even when the PR targets staging.
 It covers `gh pr merge` with any flag (`--auto`, `--squash`, `--merge`, `--rebase`, `--admin`), a `gh api` or `curl` write to `repos/<o>/<r>/pulls/<n>/merge` or `repos/<o>/<r>/merges`, and the GitHub GraphQL mutations `enablePullRequestAutoMerge`, `mergePullRequest`, `enqueuePullRequest` and `mergeBranch`, sent by `gh api graphql`, `curl` or a Python HTTP call.

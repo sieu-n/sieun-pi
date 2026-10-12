@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { judgeShellText, type Verdict } from "./guard.ts";
-import { applyOwnerOk, httpSend, mcpSend, refusal } from "./send-guard.ts";
+import { applyOwnerOk, httpSend, mcpSend, ownerOkToken, refusal } from "./send-guard.ts";
+import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 
 /*
  * The runtime half of the send guard (c37). kernel-guard.py runs this for a send it sees at run time in the Python kernel:
@@ -14,7 +15,7 @@ export type Check =
 	| { kind: "http"; method: string; url: string; body?: string; approval?: string }
 	| { kind: "mcp"; server: string; tool: string; args: string; approval?: string };
 
-export function judgeCheck(check: Check): { block: false } | { block: true; reason: string } {
+export function judgeCheck(check: Check, record = false): { block: false } | { block: true; reason: string } {
 	const push = (what: string | null, command: string): Verdict[] =>
 		what ? [{ rule: "send", command, reason: refusal(what) }] : [];
 	const verdicts =
@@ -22,12 +23,21 @@ export function judgeCheck(check: Check): { block: false } | { block: true; reas
 			? judgeShellText(check.text, check.cwd).filter((v) => v.rule === "send")
 			: check.kind === "http"
 				? push(httpSend(check.method, check.url, check.body ?? ""), `${check.method} ${check.url}`)
-				: push(mcpSend(check.server, check.tool, check.args), `mcp ${check.server} ${check.tool}`);
-	const left = applyOwnerOk(verdicts, `${check.approval ?? ""}\n${check.kind === "shell" ? check.text : ""}`);
+				: push(mcpSend(check.server, check.tool, check.args), `mcp ${check.server} ${check.tool} ${check.args.slice(0, 300)}`);
+	const approval = `${check.approval ?? ""}\n${check.kind === "shell" ? check.text : ""}`;
+	const left = applyOwnerOk(verdicts, approval);
+	if (record) {
+		// The kernel's send-log line (c37): this process runs once per checked call, with the kernel's RLM_SESSION_DIR.
+		const token = ownerOkToken(approval);
+		for (const v of verdicts) {
+			const refused = left.some((l) => l.command === v.command);
+			recordSend({ decision: refused ? "refused" : "allowed", layer: "kernel", ...sessionOf(process.env.RLM_SESSION_DIR), target: v.command, reason: sendReason(v.reason), ownerOk: token });
+		}
+	}
 	return left.length ? { block: true, reason: left[0].reason } : { block: false };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-	const result = judgeCheck(JSON.parse(readFileSync(0, "utf8")) as Check);
+	const result = judgeCheck(JSON.parse(readFileSync(0, "utf8")) as Check, true);
 	process.stdout.write(`${JSON.stringify(result)}\n`);
 }

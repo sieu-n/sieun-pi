@@ -39,9 +39,16 @@ class FakeMcp:
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = patch.dict(os.environ, {"RLM_SESSION_DIR": self.tmp.name})
+        self.env = patch.dict(os.environ, {"RLM_SESSION_DIR": self.tmp.name, "GLOBAL_RULES_SEND_LOG": os.path.join(self.tmp.name, "sends.jsonl")})
         self.env.start()
         ab._owned.clear()
+
+    def sends(self) -> list[dict]:
+        try:
+            with open(os.environ["GLOBAL_RULES_SEND_LOG"], encoding="utf-8") as handle:
+                return [json.loads(line) for line in handle if line.strip()]
+        except FileNotFoundError:
+            return []
 
     def tearDown(self):
         self.env.stop()
@@ -277,6 +284,56 @@ class OutsideSendTests(BoardBase):
         self.assertIn("presses Send on a webmail page", str(caught.exception))
         self.assertEqual(len(mcp.calls), 1)
         self.assertNotIn("getByRole", mcp.calls[0]["code"])
+
+    def test_both_iwebfusion_send_clicks_leave_a_refused_line_in_the_send_log(self):
+        # c37 reopened 10-12: VP of CI told the owner "no agent sent iWebFusion anything" because no record of these two clicks existed.
+        thread = '{"u": "https://mail.google.com/mail/u/0/#search/iWF-457924/FMfcgzQhWnwcNVGhDhWXfbKkcGbTxJfj", "t": "Re: [Ticket ID: iWF-457924] - Gmail", "to": ["sieunpark77@gmail.com", "support@iwebfusion.net"]}'
+        session = os.path.join(self.tmp.name, ".prime", "agent", "session-artifacts", "01a1245e-d97d-73c4-9eff-977bd5e1c827", "sub-5bbdac13")
+        with patch.dict(os.environ, {"RLM_SESSION_DIR": session}):
+            for code in (INCIDENT, INCIDENT_2):
+                self.fake(thread)
+                with self.assertRaises(ab.AsideError):
+                    self.call(ab.run(code))
+        lines = self.sends()
+        self.assertEqual([line["decision"] for line in lines], ["refused", "refused"])
+        for line in lines:
+            self.assertEqual(line["layer"], "aside-browser")
+            self.assertEqual(line["chat"], "01a1245e-d97d-73c4-9eff-977bd5e1c827")
+            self.assertEqual(line["session"], "01a1245e-d97d-73c4-9eff-977bd5e1c827/sub-5bbdac13")
+            self.assertIn("support@iwebfusion.net", line["target"])
+            self.assertIn("mail.google.com", line["target"])
+            self.assertIn("presses Send on a webmail page", line["reason"])
+            self.assertIsNone(line["ownerOk"])
+
+    def test_an_approved_send_leaves_an_allowed_line_with_its_owner_ok(self):
+        self.fake(GMAIL, "sent")
+        self.call(ab.run(INCIDENT, owner_ok=f"{CHAT}/t1"))
+        self.assertEqual([(line["decision"], line["ownerOk"]) for line in self.sends()], [("allowed", f"{CHAT}/t1")])
+
+    def test_a_token_that_does_not_count_is_logged_as_refused_with_the_token(self):
+        self.fake(GMAIL)
+        with self.assertRaises(ab.AsideError):
+            self.call(ab.run(INCIDENT, owner_ok=f"{CHAT}/t2"))
+        self.assertEqual([(line["decision"], line["ownerOk"]) for line in self.sends()], [("refused", f"{CHAT}/t2")])
+
+    def test_a_call_with_owner_ok_that_the_page_check_cannot_read_still_gets_an_allowed_line(self):
+        # 10-12 06:41Z, GeoNode support chat: the owner-approved note went out by page.mouse.click(1378,775) in the Intercom frame.
+        self.fake('{"u": "https://app.geonode.com/dashboard", "t": "Geonode", "to": []}', "sent")
+        self.call(ab.run("await page.mouse.click(1378,775); await sleep(4000); return 'sent'", owner_ok=f"{CHAT}/t1"))
+        lines = self.sends()
+        self.assertEqual([(line["decision"], line["ownerOk"]) for line in lines], [("allowed", f"{CHAT}/t1")])
+        self.assertIn("app.geonode.com", lines[0]["target"])
+
+    def test_cell_sends_finds_the_send_in_the_code_a_cell_passes_to_aside_browser(self):
+        gmail = "https://mail.google.com/mail/u/0/#inbox"
+        self.assertIn("presses Send", ab.cell_sends(f'r=await aside_browser("""{INCIDENT}""")\nprint(r)', gmail))
+        self.assertIn("presses Send", ab.cell_sends(f'code = """{INCIDENT_2}"""\nawait aside_browser.run(code)', gmail))
+        self.assertIn("asks the Aside agent to send", ab.cell_sends('await aside_browser.agent("Reply to the vendor email and send it.")'))
+        self.assertIsNone(ab.cell_sends(f'test_src = """{INCIDENT}"""\nprint(ab.outside_send(test_src, "{gmail}"))', gmail), "quoted send code is no send")
+        self.assertIsNone(ab.cell_sends('await aside_browser("await page.getByRole(\'button\', {name: \'Reply\'}).click()")', gmail))
+        self.assertIn("passed owner_ok", ab.cell_sends('await aside_browser.run("await page.mouse.click(1378,775)", owner_ok=tok)'))
+        self.assertIsNone(ab.cell_sends('await aside_browser.run("await page.mouse.click(1,2)", owner_ok=None)'))
+        self.assertIsNone(ab.cell_sends('note = "pass owner_ok=tok to aside_browser.run"\nprint(note)'), "a cell that only names owner_ok is no send")
 
     def test_keyboard_send_shortcut_on_gmail_is_refused(self):
         self.fake(GMAIL)

@@ -12,7 +12,7 @@ import os
 import re
 from pathlib import Path
 
-__all__ = ["open", "get", "notes", "done", "todos", "corrections"]
+__all__ = ["open", "get", "notes", "done", "todos", "corrections", "sends"]
 
 _OPEN = {"todo", "doing", "blocked"}
 _MARKS = {"todo": "[ ]", "doing": "[~]", "done": "[x]", "blocked": "[!]", "dropped": "[-]"}
@@ -211,6 +211,49 @@ def todos(all: bool = False, chat: str | None = None) -> str:  # noqa: A002
     _, board = _load(chat)
     picked = [todo for todo in board["todos"] if all or not todo.get("done")]
     return _Text("\n".join([f"Owner todos ({'all' if all else 'open'}):"] + ([_todo_line(todo) for todo in picked] or ["  (none)"])))
+
+
+def _send_log() -> Path:
+    """components/global-rules/send-log.ts sendLogPath, the same order."""
+    if os.environ.get("GLOBAL_RULES_SEND_LOG"):
+        return Path(os.environ["GLOBAL_RULES_SEND_LOG"])
+    if os.environ.get("AGENT_CHAT_DATA_DIR"):
+        return Path(os.environ["AGENT_CHAT_DATA_DIR"]) / "sends.jsonl"
+    return _agent_dir() / "browser-chat" / "sends.jsonl"
+
+
+def sends(match: str | None = None, since: str | None = None, chat: str | None = None) -> str:
+    """Every outside send an agent made or tried (c37), one line each: when, allowed, refused or ran, which chat and session, the target and the OWNER_OK.
+
+    match is a case-insensitive part of the target, such as "iwebfusion" or an email; since is an ISO time such as "2026-10-08".
+    The send guards write each send they allow or refuse; older sends come from a backfill of the session transcripts.
+    """
+    path = _send_log()
+    try:
+        raw = path.read_text().splitlines()
+    except FileNotFoundError:
+        return _Text(f"No send log at {path}, so no guard has judged a send there yet.")
+    entries = []
+    for line in raw:
+        try:
+            entries.append(json.loads(line))
+        except ValueError:
+            continue
+    needle = (match or "").lower()
+    hits = sorted(
+        (e for e in entries
+         if (not since or str(e.get("at", "")) >= since)
+         and (not chat or e.get("chat") == chat or chat in str(e.get("session") or ""))
+         and needle in f"{e.get('target', '')}\n{e.get('reason', '')}\n{e.get('ownerOk') or ''}".lower()),
+        key=lambda e: str(e.get("at", "")),
+    )
+    scope = " ".join(part for part in (f'matching "{match}"' if match else "", f"since {since}" if since else "", f"in chat {chat}" if chat else "") if part)
+    counts: dict[str, int] = {}
+    for e in hits:
+        counts[e.get("decision", "?")] = counts.get(e.get("decision", "?"), 0) + 1
+    head = f"{len(hits)} outside sends in {path}{' ' + scope if scope else ''}: " + (", ".join(f"{n} {d}" for d, n in counts.items()) or "none") + "."
+    lines = [f"  {e.get('at')} {e.get('decision')} {e.get('layer')} chat={e.get('chat') or '?'} session={e.get('session') or '?'} ok={e.get('ownerOk') or 'none'} :: {e.get('target')} ({e.get('reason')})" for e in hits]
+    return _Text("\n".join([head, *lines]))
 
 
 def corrections(id: str | None = None) -> str:  # noqa: A002

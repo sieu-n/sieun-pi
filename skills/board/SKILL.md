@@ -1,6 +1,6 @@
 ---
 name: board
-description: Read a browser chat's board and corrections from Python, plus the chat_board op rules and a VP chat's rules for jobs, check-ins and git.
+description: Read a browser chat's board, corrections and the log of outside sends from Python, plus the chat_board op rules and a VP chat's rules for jobs, check-ins and git.
 ---
 
 # Board
@@ -21,7 +21,10 @@ board.done(since="p250")   # done and dropped steps from p250 on, with their not
 board.todos(all=True)      # every todo with its answer
 board.corrections()        # every owner correction in force, in full
 board.corrections("c12")   # one correction with the owner's words and what enforces it
+board.sends("iwebfusion")  # every email, ticket reply or message an agent sent or tried to send there (c37)
 ```
+
+Answer "did an agent send X anything" from `board.sends(...)`, never from the wiki or Aside memory. The send guards write one line per send they allow or refuse, with the session, time, target and OWNER_OK token, and a backfill holds the sends from 10-08 on. A `ran` line is a send that went out before the guard stopped it. The same log reads from a shell with `node --import tsx components/user-history/src/send-log.ts --match <text>` in the sieun-pi checkout.
 
 A chat and every job under it find the chat from `RLM_SESSION_DIR`. A root job that a chat started with `rlm.create_session` has its own id, so it passes `chat="<chat session id>"`.
 

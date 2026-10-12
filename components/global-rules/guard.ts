@@ -2,7 +2,8 @@ import type { ExtensionContext, ToolCallEvent, ToolCallEventResult } from "prime
 import { judgeGrep } from "./grep-guard.ts";
 import { enabled, log } from "./log.ts";
 import { judgeCuaShell } from "./cua-guard.ts";
-import { applyOwnerOk, judgeSendPython, judgeSendShell } from "./send-guard.ts";
+import { applyOwnerOk, judgeSendPython, judgeSendShell, ownerOkToken } from "./send-guard.ts";
+import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 import { PY_STRING, balancedSlice } from "./shell.ts";
 import { judgeMergePython, judgeMergeShell } from "./merge-guard.ts";
 import { judgeSieunPi } from "./sieun-pi.ts";
@@ -108,8 +109,22 @@ export function judgeCell(code: string, cwd: string): Verdict[] {
 	];
 }
 
+/**
+ * One send-log line per send verdict (c37): refused when it is still in `left`, allowed when an OWNER_OK lifted it. An allowed ipython cell
+ * is left to the kernel's run-time check (send-check.ts), which logs each send as it runs, so one send makes one allowed line.
+ */
+function recordSends(judged: Verdict[], left: Verdict[], tool: string, text: string, sessionPath: string | undefined): void {
+	const token = ownerOkToken(text);
+	for (const v of judged) {
+		if (v.rule !== "send") continue;
+		const refused = left.some((l) => l.rule === "send" && l.command === v.command);
+		if (!refused && tool !== "bash") continue;
+		recordSend({ decision: refused ? "refused" : "allowed", layer: "tool_call", ...sessionOf(sessionPath), target: v.command, reason: sendReason(v.reason), ownerOk: token });
+	}
+}
+
 /** A handler error fails open: a bug here must not stop every bash and ipython call on the machine. */
-export function onToolCall(event: ToolCallEvent, ctx: Partial<Pick<ExtensionContext, "cwd">> | undefined): ToolCallEventResult | undefined {
+export function onToolCall(event: ToolCallEvent, ctx: Partial<Pick<ExtensionContext, "cwd" | "sessionManager">> | undefined): ToolCallEventResult | undefined {
 	let cwd = "?";
 	try {
 		if (!enabled("GLOBAL_RULES_GUARD")) return undefined;
@@ -118,8 +133,10 @@ export function onToolCall(event: ToolCallEvent, ctx: Partial<Pick<ExtensionCont
 		const input = event.input as Record<string, unknown>;
 		const text = event.toolName === "bash" ? input.command : input.code;
 		if (typeof text !== "string") return undefined;
-		const verdicts = applyOwnerOk(event.toolName === "bash" ? judgeShellText(text, cwd) : judgeCell(text, cwd), text);
+		const judged = event.toolName === "bash" ? judgeShellText(text, cwd) : judgeCell(text, cwd);
+		const verdicts = applyOwnerOk(judged, text);
 		for (const v of verdicts) log("guard", `block rule=${v.rule} cwd=${cwd} :: ${v.command}`);
+		recordSends(judged, verdicts, event.toolName, text, ctx?.sessionManager?.getSessionFile?.() ?? process.env.RLM_SESSION_DIR);
 		return verdicts.length ? { block: true, reason: verdicts[0].reason } : undefined;
 	} catch (err) {
 		log("guard", `handler error, failing open cwd=${cwd} :: ${err instanceof Error ? err.stack : String(err)}`);

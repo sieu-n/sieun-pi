@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import type { Verdict } from "./guard.ts";
 import { enabled } from "./log.ts";
 import { checkOwnerOk } from "./send-guard.ts";
+import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 import { effective, expandVars, lex, stripHeredocs } from "./shell.ts";
 
 /*
@@ -371,8 +372,19 @@ async function main(): Promise<void> {
 				refusal = isAction(tool) ? `cua-driver send guard could not judge this call (${error instanceof Error ? error.message : String(error)}); it is refused to be safe.` : null;
 			}
 			if (refusal) {
+				recordSend({ decision: "refused", layer: "cua-driver", ...sessionOf(process.env.RLM_SESSION_DIR), target: `${tool} ${JSON.stringify(args).slice(0, 300)}`, reason: sendReason(refusal), ownerOk: typeof args.owner_ok === "string" ? args.owner_ok : null });
 				write({ jsonrpc: "2.0", id: message.id, result: { isError: true, content: [{ type: "text", text: refusal }] } });
 				return;
+			}
+			if (typeof args.owner_ok === "string") {
+				// An approved owner_ok on a call that sends: judged again with no token, which refuses only a send.
+				let send: string | null = null;
+				try {
+					send = decideCall(seen, tool, { ...args, owner_ok: undefined }, bundleOf, () => "no", () => desktopOf(command));
+				} catch {
+					send = null;
+				}
+				if (send) recordSend({ decision: "allowed", layer: "cua-driver", ...sessionOf(process.env.RLM_SESSION_DIR), target: `${tool} ${JSON.stringify(args).slice(0, 300)}`, reason: sendReason(send), ownerOk: args.owner_ok });
 			}
 			if ("owner_ok" in args) {
 				const { owner_ok: _, ...clean } = args;

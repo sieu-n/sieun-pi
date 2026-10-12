@@ -21,8 +21,10 @@ loses state between calls; the returned text then starts with a
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
+import datetime
 import json
 import os
 import re
@@ -405,6 +407,60 @@ def outside_send_prompt(prompt: str) -> str | None:
     return None
 
 
+_CALLS = {"run", "repl", "_repl", "agent"}
+
+
+def _literal(node: "ast.AST") -> str | None:
+    """A string argument as written: a literal, an f-string with its holes as {...}, or a % template's left side."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else "{...}" for part in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        return _literal(node.left)
+    if isinstance(node, ast.Name):
+        return None
+    return None
+
+
+def cell_sends(cell: str, page_url: str = "") -> str | None:
+    """Why an ipython cell's aside_browser calls send, judged as run() and agent() judge them, or None. The send log backfill reads old cells with it.
+
+    Only the code passed to aside_browser(...), .run, .repl, ._repl or .agent counts, so a cell that only quotes send code in a test or a note is no send.
+    A call that passes owner_ok counts too, the way run() logs it.
+    A string held in a variable is looked up when the cell assigns it a literal.
+    """
+    try:
+        tree = compile(cell, "<cell>", "exec", flags=ast.PyCF_ONLY_AST | ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    except (SyntaxError, ValueError):
+        return None
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            text = _literal(node.value)
+            if text is not None:
+                names[node.targets[0].id] = text
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "aside_browser":
+            kind = "run"
+        elif isinstance(func, ast.Attribute) and func.attr in _CALLS and isinstance(func.value, ast.Name) and func.value.id == "aside_browser":
+            kind = func.attr
+        else:
+            continue
+        arg = node.args[0]
+        code = names.get(arg.id) if isinstance(arg, ast.Name) else _literal(arg)
+        reason = None if code is None else outside_send_prompt(code) if kind == "agent" else outside_send(code, page_url)
+        if reason:
+            return reason
+        if any(k.arg == "owner_ok" and not (isinstance(k.value, ast.Constant) and k.value.value is None) for k in node.keywords):
+            # The caller says it sends, though the page check cannot tell (a coordinate click in an Intercom frame).
+            return "the call passed owner_ok, so its caller counted it as a send"
+    return None
+
+
 def check_owner_ok(token: str) -> str | None:
     """None when `<chat id>/<todo id>` is an approved For you todo, else the reason it is not (components/user-history/src/owner-ok.ts)."""
     script = os.path.join(_REPO, "components", "user-history", "src", "owner-ok.ts")
@@ -422,27 +478,74 @@ def check_owner_ok(token: str) -> str | None:
     return None if result.get("ok") is True else str(result.get("reason") or "not approved")
 
 
-def _refuse_send(reason: str, owner_ok: str | None) -> None:
+def send_log_path() -> str:
+    """The send log that every send guard layer writes (components/global-rules/send-log.ts sendLogPath, same order)."""
+    if os.environ.get("GLOBAL_RULES_SEND_LOG"):
+        return os.environ["GLOBAL_RULES_SEND_LOG"]
+    if os.environ.get("AGENT_CHAT_DATA_DIR"):
+        return os.path.join(os.environ["AGENT_CHAT_DATA_DIR"], "sends.jsonl")
+    if os.environ.get("GLOBAL_RULES_LOG"):
+        return os.path.join(os.path.dirname(os.environ["GLOBAL_RULES_LOG"]), "sends.jsonl")
+    return os.path.join(os.path.expanduser("~"), ".prime", "agent", "browser-chat", "sends.jsonl")
+
+
+def _record_send(decision: str, reason: str, target: str, owner_ok: str | None) -> None:
+    """One line in the send log (c37) for a send this skill allowed or refused. A log that cannot be written never stops the call."""
+    parts = os.path.normpath(os.environ.get("RLM_SESSION_DIR", "")).split(os.sep)
+    rest = parts[parts.index("session-artifacts") + 1:] if "session-artifacts" in parts else []
+    line = {
+        "decision": decision, "layer": "aside-browser", "chat": rest[0] if rest else None,
+        "session": "/".join(rest) if rest else (os.environ.get("RLM_SESSION_DIR") or None),
+        "target": target[:600], "reason": reason[:300], "ownerOk": owner_ok,
+        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    }
+    try:
+        path = send_log_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line) + "\n")
+    except OSError:
+        pass
+
+
+def _refuse_send(reason: str, owner_ok: str | None, target: str = "") -> None:
     if owner_ok:
         why = check_owner_ok(owner_ok)
         if why is None:
+            _record_send("allowed", reason, target, owner_ok)
             return
+        _record_send("refused", reason, target, owner_ok)
         raise AsideError(f"Refused: {reason}, and owner_ok={owner_ok!r} is not an approved For you todo: {why}", _OWNER_OK_HELP)
+    _record_send("refused", reason, target, owner_ok)
     raise AsideError(f"Refused: {reason}.", _OWNER_OK_HELP)
 
 
-async def _page_url() -> str:
+_PAGE_JS = (
+    "const p = (typeof page !== 'undefined' && page) ? page : null;"
+    "const info = p ? await p.evaluate(() => ({t: document.title, to: [...new Set([...document.querySelectorAll('[email]')].map(e => e.getAttribute('email')))]})).catch(() => ({})) : {};"
+    "console.log(JSON.stringify({u: p ? p.url() : '', t: info.t || '', to: info.to || []}))"
+)
+
+
+async def _page() -> dict[str, Any]:
+    """The current tab's URL, title and the email addresses it shows (a Gmail thread's recipients), for the send check and the send log."""
     try:
-        text = await _repl(_scoped("console.log(JSON.stringify({u: (typeof page !== 'undefined' && page) ? page.url() : ''}))"), "send check")
+        text = await _repl(_scoped(_PAGE_JS), "send check")
     except AsideError:
-        return ""
+        return {}
     for line in reversed(text.splitlines()):
         if line.startswith("{"):
             try:
-                return str(json.loads(line).get("u") or "")
+                found = json.loads(line)
             except ValueError:
-                return ""
-    return ""
+                return {}
+            return found if isinstance(found, dict) else {}
+    return {}
+
+
+def _page_target(info: dict[str, Any]) -> str:
+    to = [str(e) for e in info.get("to") or [] if e]
+    return " | ".join(part for part in (str(info.get("u") or ""), str(info.get("t") or ""), f"to {', '.join(to)}" if to else "") if part)
 
 
 # ---------------------------------------------------------------- transport
@@ -490,10 +593,15 @@ async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str |
 
     Every REPL call passes the outside send check here; `plain` is the caller's code before wrapping.
     """
-    if _sends(plain or code):
-        reason = outside_send(plain or code, await _page_url())
+    reason = None
+    if _sends(plain or code) or owner_ok:
+        info = await _page()
+        reason = outside_send(plain or code, str(info.get("u") or "")) if _sends(plain or code) else None
         if reason:
-            _refuse_send(reason, owner_ok)
+            _refuse_send(reason, owner_ok, _page_target(info) or (plain or code)[:300])
+        elif owner_ok:
+            # The caller says this call sends, though the page check cannot tell (a coordinate click in an Intercom frame); it still gets a line.
+            _record_send("allowed", "the call passed owner_ok, so its caller counted it as a send", _page_target(info) or (plain or code)[:300], owner_ok)
     try:
         text = await _call("repl", {"title": title, "code": code})
     except AsideError as exc:
@@ -665,7 +773,7 @@ async def agent(prompt: str, session_id: str | None = None, owner_ok: str | None
     """
     reason = outside_send_prompt(prompt)
     if reason:
-        _refuse_send(reason, owner_ok)
+        _refuse_send(reason, owner_ok, f"aside agent: {prompt[:400]}")
     args: dict[str, Any] = {"prompt": prompt}
     if session_id:
         args["session_id"] = session_id
