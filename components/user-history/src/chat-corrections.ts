@@ -37,8 +37,8 @@ export interface Ledger { corrections: Correction[] }
 
 /** A new correction from the owner. */
 export interface CorrectionInput { words: string; rule: string; theme: string[]; enforcedBy: Enforcement; ref: string; handoff?: Handoff }
-/** A fix that landed (or a retired rule): the entry's enforcement, ref, status or handoff change; an absent field stays as it is. */
-export interface CorrectionFix { id: string; enforcedBy?: Enforcement; ref?: string; status?: CorrectionStatus; handoff?: Handoff }
+/** A fix that landed, a retired rule or a reworded rule: the entry's rule, enforcement, ref, status or handoff change; an absent field stays as it is. */
+export interface CorrectionFix { id: string; rule?: string; enforcedBy?: Enforcement; ref?: string; status?: CorrectionStatus; handoff?: Handoff }
 export type CorrectionCall = { kind: "add"; input: CorrectionInput } | { kind: "fix"; fix: CorrectionFix };
 export type CorrectionOutcome =
   | { kind: "added"; entry: Correction }
@@ -90,6 +90,7 @@ export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: Chat
   if (call.kind === "fix") {
     const entry = ledger.corrections.find(item => item.id === call.fix.id);
     if (!entry) throw new Error(`No correction ${call.fix.id}`);
+    if (call.fix.rule) entry.rule = call.fix.rule;
     if (call.fix.enforcedBy) entry.enforcedBy = call.fix.enforcedBy;
     if (call.fix.ref) entry.ref = call.fix.ref;
     if (call.fix.status) entry.status = call.fix.status;
@@ -136,7 +137,7 @@ export function parseHandoff(value: unknown): Handoff {
 }
 
 /**
- * The tool's arguments: `id` marks a fix (enforcedBy, ref, status, handoff), else a new correction (words, rule, theme, enforcedBy, ref, and an
+ * The tool's arguments: `id` marks a fix (rule, enforcedBy, ref, status, handoff), else a new correction (words, rule, theme, enforcedBy, ref, and an
  * optional handoff). A fix that names enforcedBy or ref and no status sets the entry active: the fix landed.
  */
 export function parseCorrectionCall(value: unknown): CorrectionCall {
@@ -147,8 +148,8 @@ export function parseCorrectionCall(value: unknown): CorrectionCall {
     if (!/^c\d+$/.test(id)) throw new Error(`id is a correction id like c3, not ${id}`);
     const landed = input.enforcedBy !== undefined || input.ref !== undefined;
     const status = input.status !== undefined ? oneOf(input.status, CORRECTION_STATUSES, "status") : landed ? "active" : undefined;
-    if (!status && !landed && input.handoff === undefined) throw new Error("a fix gives enforcedBy, ref, status or handoff");
-    return { kind: "fix", fix: { id, ...(status ? { status } : {}),
+    if (!status && !landed && input.handoff === undefined && input.rule === undefined) throw new Error("a fix gives rule, enforcedBy, ref, status or handoff");
+    return { kind: "fix", fix: { id, ...(status ? { status } : {}), ...(input.rule === undefined ? {} : { rule: text(input.rule, "rule").replace(/\s+/g, " ") }),
       ...(input.enforcedBy === undefined ? {} : { enforcedBy: oneOf(input.enforcedBy, ENFORCEMENTS, "enforcedBy") }),
       ...(input.ref === undefined ? {} : { ref: text(input.ref, "ref") }), ...handoff } };
   }

@@ -39,6 +39,10 @@ test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad 
   assert.equal(parseCorrectionCall({ id: "c1", ref: "abc1234" }).kind === "fix" && (parseCorrectionCall({ id: "c1", ref: "abc1234" }) as { fix: { status?: string } }).fix.status, "active",
     "a ref alone means the fix landed");
   assert.throws(() => parseCorrectionCall({ id: "c1" }), /a fix gives/);
+  const words = ledger.corrections[1]!.words;
+  const reworded = applyCorrection(ledger, parseCorrectionCall({ id: "c2", rule: "  Explanations get  an article todo. " }), VP, "");
+  assert.equal(reworded.entry.rule, "Explanations get an article todo.", "an id with a new rule rewrites the rule (c58)");
+  assert.equal(reworded.entry.words, words, "the owner's words stay as recorded");
   assert.throws(() => parseCorrectionCall({ id: "c1", handoff: { to: OPS, topics: [] } }), /handoff.topics/);
 
   const dir = await mkdtemp(join(tmpdir(), "scope-ledger-"));
