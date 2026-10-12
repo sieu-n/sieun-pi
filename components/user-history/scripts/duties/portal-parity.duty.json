@@ -1,0 +1,59 @@
+{
+  "name": "Portal matches crawler",
+  "ownerWords": "is all apis working that work in crawler api work for api portal?\n\nall working in prod? can you make a spec that calls the api for local-staging-prod?",
+  "goal": "Every customer crawler route has a /v1 route on api.virev.ai, and every documented /v1 route works on staging with its own docs example, page 2 included. A board decision (s5, s7) is the only reason a route stays out. DM routes are left out while p12 builds reader sends.",
+  "metrics": [
+    {
+      "key": "routes_working_pct",
+      "label": "Customer crawler routes whose /v1 route works on staging",
+      "op": ">=",
+      "target": 100,
+      "unit": "%"
+    },
+    {
+      "key": "routes_missing_v1",
+      "label": "Customer crawler routes with no /v1 route on api.virev.ai",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "routes_broken_portal",
+      "label": "Documented /v1 routes that fail on staging for a portal cause",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "routes_broken_crawler",
+      "label": "Documented /v1 routes that fail on staging with an upstream crawler error",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "routes_unprobed",
+      "label": "Documented /v1 routes the precheck could not call or judge",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "source_errors",
+      "label": "Sources the precheck could not read (openapi files, keys, test org seed)",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "09:00"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/portal-parity.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "Read the flagged rows. Match each failing group to its board item: p7 page 2, p8 crawler routes, p9 batch, p10 missing routes, p11 differing bodies. A group with no live job gets one fix job named for it, which fixes on staging (c50) and asks the chat only for the prod promote. A regression row (worked yesterday, fails now) goes to the chat with the route, status and error. broken_crawler rows go to the crawler-v3 owner as a note; do not patch the crawler from the portal side. A new /v1 route for a crawler route goes into sieun-pi scripts/duties/portal-parity.routes.json in the same job. If crawler-staging is down, say so once instead of chasing each route. No outside sends (c37), no merges (c49). All on target: end the turn with no message.",
+  "boardGoal": "p1"
+}
