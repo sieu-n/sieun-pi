@@ -82,7 +82,7 @@ test("ledger prompt: active and reopened rules, reopened first then newest, capp
   applyCorrection(ledger, add("again", "theme2 unique2"), VP, "2026-10-01T00:00:30.000Z");
   applyCorrection(ledger, parseCorrectionCall({ id: "c43", status: "retired" }), VP, "");
   const lines = ledgerPrompt(ledger, new Set())!.split("\n");
-  assert.match(lines[0]!, /^\[corrections\] The owner's corrections, live from the ledger\./);
+  assert.match(lines[0]!, /^\[corrections\] The owner's corrections in force, live from the ledger\./);
   assert.ok(lines[0]!.includes(READ_RULE), "the header says how to read a rule in full");
   assert.equal(lines[1], "- c2 (reopened: the owner repeated it 1x; fix it in code or a test) Rule 2.");
   assert.equal(lines[2], "- c42 Rule 42.");
@@ -91,7 +91,7 @@ test("ledger prompt: active and reopened rules, reopened first then newest, capp
   assert.ok(!lines.some(line => line.startsWith("- c43 ")));
 });
 
-test("ledger prompt: a rule the brief or landed code or a test holds is its id and theme; a pending or brief-only rule and a reopened one stay in full", () => {
+test("ledger prompt: a rule the brief holds is its id and one landed code or a test holds is its id and theme, each group on one line; a pending or brief-only rule and a reopened one stay in full", () => {
   const ledger: Ledger = { corrections: [] };
   const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 0, minute)).toISOString();
   applyCorrection(ledger, add("w1", "outside email send owner ok", "No email without the owner's ok."), VP, at(1));
@@ -104,8 +104,8 @@ test("ledger prompt: a rule the brief or landed code or a test holds is its id a
     "- c5 (reopened: the owner repeated it 1x; fix it in code or a test) Staging needs no ok.",
     "- c4 Frontend work is 70% build.",
     "- c3 A cache fix ships with a test.",
-    "- c2 duty name plain word",
-    "- c1 outside email send ok",
+    "Held by the brief: c1",
+    "Held by code or tests: c2 duty name plain",
   ]);
   assert.deepEqual([...briefCorrections(["a (c47) and c12, not abc12 or c5x"])], ["c47", "c12"]);
 });
@@ -167,7 +167,7 @@ test("extension: correction_add is registered only in a chat; it records a new c
     await chat.run("session_start", {}, true);
     const tool = chat.tools.get(CORRECTION_TOOL)!;
     const schema = JSON.stringify({ name: tool.name, description: (tool as unknown as { description: string }).description, parameters: (tool as unknown as { parameters: unknown }).parameters });
-    assert.ok(schema.length <= 1300, `correction_add schema is ${schema.length} chars; keep tool texts lean`);
+    assert.ok(schema.length <= 700, `correction_add schema is ${schema.length} chars; keep tool texts lean`);
     const first = await tool.execute("t1", { words: "wipe it from our plan", rule: "A handed-off step leaves the plan.", theme: "handoff step plan", enforcedBy: "brief", ref: "9953e20" },
       undefined, undefined, chat.ctx(true));
     assert.equal(first.content[0]!.text, "Recorded c1: A handed-off step leaves the plan. (enforced by brief: 9953e20). Every chat reads it from its next model call.");
@@ -305,7 +305,7 @@ test("a real duty job session: its outside-action rule persists and a new correc
 });
 
 test("brief: one line tells the chat to record each owner correction in the same turn; the board skill's corrections reference holds the rest", async () => {
-  assert.ok(CHAT_BRIEF.includes("When the owner corrects how you work, apply it now and record it with `correction_add` in the same turn, so he never gives it twice."));
+  assert.ok(CHAT_BRIEF.includes("When the owner corrects how you work, apply it now and record it with `correction_add` in the same turn."));
   const reference = await readFile(new URL("../../../skills/board/references/corrections.md", import.meta.url), "utf8");
   assert.match(reference, /In the same turn, call `correction_add` with the owner's exact words/);
   assert.match(reference, /When the tool says repeat, treat it as a sev\. Start a job that fixes it in code or a test/);

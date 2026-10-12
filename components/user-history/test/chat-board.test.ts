@@ -352,8 +352,8 @@ test("extension: the chat tool texts stay lean", () => {
   const pi = { on() {}, registerFlag() {}, registerCommand() {}, registerTool(tool: { name: string }) { tools.set(tool.name, tool as never); }, getFlag: () => undefined };
   historyExtension(pi as never);
   const size = (name: string) => { const tool = tools.get(name)!; return JSON.stringify({ name, description: tool.description, parameters: tool.parameters }).length; };
-  assert.ok(size("chat_board") <= 2600, `chat_board schema is ${size("chat_board")} chars`);
-  assert.ok(size("tell_owner") <= 600, `tell_owner schema is ${size("tell_owner")} chars`);
+  assert.ok(size("chat_board") <= 1400, `chat_board schema is ${size("chat_board")} chars; op rules live in the board skill`);
+  assert.ok(size("tell_owner") <= 420, `tell_owner schema is ${size("tell_owner")} chars`);
 });
 
 import { planCounts as countPlan } from "../src/shared/chat-board.ts";

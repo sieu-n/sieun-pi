@@ -169,6 +169,25 @@ test("native compaction with retained messages puts a fresh snapshot after the s
   assert.deepEqual(call(), messages);
 });
 
+test("a rule the brief or code holds sits on a shared line; an update names a retired one and resends only the new held rules", () => {
+  const branch: SessionEntry[] = [];
+  const append = (data: unknown) => branch.push({ type: "custom", id: `checkpoint-${branch.length}`, parentId: branch.at(-1)?.id ?? null,
+    timestamp: "2026-10-09T10:00:00Z", customType: CORRECTION_CHECKPOINT, data });
+  const first = user("Owner prompt");
+  branch.push(entry("first", first));
+  const call = (ledger: Ledger) => deliverCorrections({ messages: [first], branch, ledger, job: false, brief: new Set(["c1"]), append });
+  const ledger: Ledger = { corrections: [] };
+  const landed = (id: number) => applyCorrection(ledger, parseCorrectionCall({ words: `words ${id}`, theme: `unique${id} theme${id}`, rule: `Rule ${id}.`,
+    enforcedBy: "code", ref: "abc1234" }), owner, `2026-10-09T10:0${id}:00Z`);
+  add(ledger, 1);
+  landed(2);
+  assert.match(text(call(ledger)[1]!), /\nHeld by the brief: c1\nHeld by code or tests: c2 unique2 theme2$/);
+  landed(3);
+  applyCorrection(ledger, parseCorrectionCall({ id: "c1", status: "retired" }), owner, "");
+  assert.equal(text(call(ledger)[2]!), "[corrections] Update to the owner's rules. This update replaces earlier lines for the named ids.\n" +
+    "Remove c1 from the active rules.\nHeld by code or tests: c3 unique3 theme3");
+});
+
 test("the update reports when the forty-rule snapshot omits another older rule, and does not call that rule removed", () => {
   const { branch, call } = session();
   const first = user("Owner prompt");

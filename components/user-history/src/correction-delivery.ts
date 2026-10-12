@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "prime-agent";
-import { jobLedgerPrompt, ledgerPrompt, type Ledger } from "./chat-corrections.ts";
+import { jobLedgerPrompt, ledgerPrompt, type Ledger, ruleId, ruleLines, snapshotRules, type SnapshotRule } from "./chat-corrections.ts";
 
 export const CORRECTION_CHECKPOINT = "chat_correction_checkpoint";
 
@@ -37,13 +37,15 @@ export function deliverCorrections(input: {
     const old = previous?.lines ?? [];
     // Removed means retired: a rule that changed its line or left a job's short list still holds, so it is not named.
     const inForce = new Set(ledger?.corrections.filter(entry => entry.status !== "retired").map(entry => entry.id));
-    const removed = old.filter(line => line.startsWith("- ") && !lines.includes(line) && !inForce.has(line.match(/^- (c\d+)/)?.[1] ?? ""));
-    const added = lines.filter(line => line.startsWith("- ") && !old.includes(line));
+    const oldRules = snapshotRules(old), newRules = snapshotRules(lines);
+    const has = (rules: SnapshotRule[], rule: SnapshotRule) => rules.some(other => other.held === rule.held && other.text === rule.text);
+    const removed = oldRules.filter(rule => !has(newRules, rule) && !inForce.has(ruleId(rule)));
+    const added = newRules.filter(rule => !has(oldRules, rule));
     const kind = previous ? "update" : "snapshot";
     const oldMore = old.find(line => line.startsWith("and "));
     const newMore = lines.find(line => line.startsWith("and "));
     const text = kind === "snapshot" ? current! : ["[corrections] Update to the owner's rules. This update replaces earlier lines for the named ids.",
-      ...removed.map(line => `Remove ${line.match(/^- (c\d+)/)?.[1] ?? line} from the active rules.`), ...added,
+      ...removed.map(rule => `Remove ${ruleId(rule) || rule.text} from the active rules.`), ...ruleLines(added),
       ...(oldMore === newMore ? [] : [newMore ?? "No older rules are omitted."])].join("\n");
     const after = active.findLast(visible)?.id ?? (compact >= 0 ? branch[compact]!.id : null);
     const data: Checkpoint = { kind, lines, text, after };

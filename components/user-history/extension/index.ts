@@ -29,41 +29,24 @@ export default function historyExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: CHAT_BOARD_TOOL,
     label: "Chat board",
-    description: "Read or change this chat's board: the plan of goals and steps, the owner's todos and the scratchpad. No ops returns the open checklist " +
-      "with item ids; a call with ops returns the op summaries. Read notes, done items and the scratchpad with the board Python skill.",
+    description: "Read or change this chat's board: plan, owner todos, scratchpad. No ops returns the open checklist with ids; ops return their " +
+      "summaries. The board skill's SKILL.md explains each op and field.",
     promptGuidelines: [...CHAT_BRIEF],
     parameters: {
       type: "object",
       properties: {
         ops: {
           type: "array",
-          description: "Ops, applied in order, all or none. Links target job:<name>, thread:<id>, wiki:<path>, file:<path> or a URL. The board skill's " +
-            "SKILL.md explains each op, go, kind, requirements, target and waits.",
+          description: `Applied in order, all or none. Fields: id, parent, text, status (${PLAN_STATUSES.join("|")}), job, sessionId, note, waitUntil, ` +
+            `waitFor, done, step, choices, items, go ("needed"), kind ("build"), requirements [{text,status (${REQUIREMENT_STATUSES.join("|")}),evidence,` +
+            "note}], target {metric,target,unit,current,measuredAt,source,cadence}, links [{label,target}]; null clears a field.",
           items: {
             type: "object",
-            properties: {
-              op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratch_add", "scratch_update", "scratch_remove", "todo_add", "todo_update", "todo_remove"] },
-              id: { type: "string" }, parent: { type: ["string", "null"] }, text: { type: "string" },
-              status: { type: "string", enum: [...PLAN_STATUSES] }, job: { type: ["string", "null"] }, sessionId: { type: ["string", "null"] }, note: { type: ["string", "null"] },
-              waitUntil: { type: ["string", "null"] }, waitFor: { type: ["string", "null"] },
-              done: { type: "boolean" }, step: { type: "string" },
-              go: { type: "string", enum: ["needed"] }, kind: { type: ["string", "null"], enum: ["build", null] },
-              requirements: { type: ["array", "null"], items: { type: "object", properties: { text: { type: "string" }, status: { type: "string", enum: [...REQUIREMENT_STATUSES] },
-                evidence: { type: "string" }, note: { type: "string" } }, required: ["text", "status"] } },
-              target: { type: ["object", "null"], properties: { metric: { type: "string" }, target: { type: "number" }, unit: { type: "string" }, current: { type: "number" },
-                measuredAt: { type: "string" }, source: { type: "string" }, cadence: { type: "string", enum: ["daily"] } }, required: ["metric", "target", "unit"] },
-              links: { type: "array", items: { type: "object", properties: { label: { type: "string" }, target: { type: "string" } }, required: ["target"] } },
-              choices: { type: "array", items: { type: "string" } },
-              items: { type: "array", items: { type: "object" } },
-            },
+            properties: { op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratch_add", "scratch_update", "scratch_remove", "todo_add", "todo_update", "todo_remove"] } },
             required: ["op"],
           },
         },
-        check_in: {
-          type: "object",
-          description: "Pause this chat's check-in (\"1h\", \"tomorrow\", null resumes) or set every_minutes (1 to 240).",
-          properties: { pause: { type: ["string", "null"], enum: ["1h", "tomorrow", null] }, every_minutes: { type: "integer", minimum: 1, maximum: 240 } },
-        },
+        check_in: { type: "object", description: "pause (\"1h\", \"tomorrow\", null resumes) and/or every_minutes (1 to 240)." },
       },
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -86,13 +69,13 @@ export default function historyExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: TELL_OWNER_TOOL,
     label: "Tell the owner",
-    description: `Send the owner a message; it is the only text the owner reads. Text over ${TELL_OWNER_LIMIT} characters, or with dashes, labels, ` +
-      "headings or jargon, is refused with the fixes.",
+    description: `The only text the owner reads: one or two plain sentences. Over ${TELL_OWNER_LIMIT} characters, dashes, labels, ` +
+      "headings or jargon are refused with fixes.",
     parameters: {
       type: "object",
       properties: {
-        text: { type: "string", description: `One or two plain spoken sentences, up to ${TELL_OWNER_LIMIT} characters.` },
-        reply_to: { type: "string", description: "Id of the owner message this answers, when it is not the last one." },
+        text: { type: "string" },
+        reply_to: { type: "string", description: "[message id] of an older owner message it answers." },
       },
       required: ["text"],
     },
@@ -142,22 +125,14 @@ export default function historyExtension(pi: ExtensionAPI): void {
     pi.registerTool({
       name: CORRECTION_TOOL,
       label: "Record an owner correction",
-      description: "Record the owner's correction of how chats work, in the turn the owner gives it. With id, record its fix or retire it.",
+      description: "Record an owner correction of how chats work in the turn he gives it; with id, record its fix or retire it. Fields: the " +
+        "board skill's references/corrections.md.",
       parameters: {
         type: "object",
         properties: {
-          words: { type: "string", description: "The owner's message, verbatim." },
-          rule: { type: "string", description: "The rule as one plain English line every chat follows." },
-          theme: { type: "string", description: "3 to 6 key words; reuse an earlier entry's words for the same thing." },
-          enforcedBy: { type: "string", enum: [...ENFORCEMENTS], description: "What holds the rule now." },
-          ref: { type: "string", description: "The brief bullet, file, commit or test that enforces it, or 'pending <job>'." },
-          id: { type: "string", description: "A correction id to update instead of adding." },
-          status: { type: "string", enum: ["active", "retired"] },
-          handoff: {
-            type: "object", description: "The thread this work belongs to and the words its steps name; a check-in flags matching steps in other chats.",
-            properties: { to: { type: "string" }, topics: { type: "array", items: { type: "string" } }, with: { type: "array", items: { type: "string" } } },
-            required: ["to", "topics"],
-          },
+          words: { type: "string", description: "His words, verbatim." }, rule: { type: "string" }, theme: { type: "string" },
+          enforcedBy: { type: "string", enum: [...ENFORCEMENTS] }, ref: { type: "string" }, id: { type: "string" },
+          status: { type: "string", enum: ["active", "retired"] }, handoff: { type: "object" },
         },
       },
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

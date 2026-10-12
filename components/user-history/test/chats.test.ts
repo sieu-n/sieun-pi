@@ -83,8 +83,8 @@ const BLOCKED: [string, RegExp][] = [
   ["await bash('prime-agentx')", /quick look-ups/],
   ["%%bash\nprime-agent stop x", /a shell cell/],
   ["!npm install", /a ! line/],
-  ["await rlm.spawn(brief, name='readme-check')", /Name every job and thread you start like the owner names threads/],
-  ["await rlm.create_session(brief, name='crawler_ops', cwd='/r')", /No kebab-case, no ids, no numbered suffixes like -2\./],
+  ["await rlm.spawn(brief, name='readme-check')", /Name every job and thread like the owner names threads/],
+  ["await rlm.create_session(brief, name='crawler_ops', cwd='/r')", /with no kebab-case, ids or numbered suffixes like -2\./],
   ["await rlm(brief, name='readme check 2')", /numbered suffixes/],
   ["await rlm.spawn(brief, name='readme check-2')", /numbered suffixes/],
   ["await rlm.spawn(brief, name='worker2')", /numbered suffixes/],
@@ -149,9 +149,9 @@ test("the reply cap follows every message the owner typed, and no server note, w
   assert.match(REPLY_CAP_NOTE, /at most 60 words, bullets included/);
 });
 
-test("brief: a reply that answers an older owner message sets reply_to; one to the last message does not", () => {
-  assert.ok(CHAT_BRIEF.includes("Each owner message carries `[message id: <id>]`; when you answer an older message, pass `reply_to: \"<id>\"` to tell_owner."),
-    "the reply_to line, verbatim");
+test("brief: a reply that answers an older owner message sets reply_to; one to the last message does not", async () => {
+  const extension = await readFile(new URL("../extension/index.ts", import.meta.url), "utf8");
+  assert.ok(extension.includes('reply_to: { type: "string", description: "[message id] of an older owner message it answers." }'), "tell_owner's reply_to says when to set it");
 });
 
 test("tell_owner takes up to the limit and refuses longer or empty text", () => {
@@ -170,20 +170,21 @@ const SKILL_FILES = ["SKILL.md", "references/jobs.md", "references/check-ins.md"
 
 test("brief: the core rules stay in the prompt in one short line each, and the brief points to every board skill file", async () => {
   const brief = CHAT_BRIEF.join("\n");
-  assert.equal(CHAT_BRIEF[1], "Call a feature live only for what you saw on the real screen, and say what you checked.", "live means seen, the item after the first");
-  assert.ok(CHAT_BRIEF.includes("Name every job and thread you start like the owner names threads: a few plain lowercase words with spaces naming the topic (stripe and payments, " +
-    "crawler ops). No kebab-case, no ids, no numbered suffixes like -2."), "the naming line, verbatim");
-  assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or a thread as `thread:<id>`\) and its next action, or is blocked with the exact thing that unblocks it\. A step that waits on someone else is still yours to chase\./);
+  assert.equal(CHAT_BRIEF[1], "Mark a step done or a feature live only from the real state you checked (a feature on the real screen), and say what you checked.",
+    "live means seen, the item after the first");
+  assert.ok(CHAT_BRIEF.includes("Name every job and thread like the owner names threads: a few plain lowercase words naming the topic (stripe and payments), with no " +
+    "kebab-case, ids or numbered suffixes like -2."), "the naming line, verbatim");
+  assert.match(brief, /Your one goal is to drive every board item to done\. Every open step names its owner \(a job, or a thread as `thread:<id>`\) and its next action, or is blocked with the exact thing that unblocks it\. A step waiting on someone else is still yours: chase a stuck owner once, then replace it with a job\./);
   assert.match(brief, /Reach the owner only through tell_owner, on every kind of turn, within the \[reply cap\]\./);
-  assert.match(brief, /on a wake-up the owner did not start, your text is only folded notes\. Call tell_owner once when a goal finished, something is blocked or you need a decision\. Never write 'nothing needs you', 'already handled' or a relay line\./);
-  assert.match(brief, /A brief opens with `Owner's words \(verbatim\):` and the 1 or 2 owner messages that started the job, each numbered with its time and exact text in straight double quotes, or `Owner's words: none, started by <who>`\. Then come `My read:`, a `Split:` line/);
+  assert.match(brief, /On a wake-up the owner did not start, call it once when a goal finished, something is blocked or you need a decision, with several updates in one call; never write 'nothing needs you', 'already handled' or a relay line\./);
+  assert.match(brief, /A brief, in English, opens with `Owner's words \(verbatim\):` and the 1 or 2 owner messages that started it, numbered, timed and exact \(or `Owner's words: none, started by <who>`\), then `My read:`, a `Split:` line/);
   assert.match(brief, /End state: every open step is done, moved by a live owner \(a job at work, or a thread active in the last 2 h\), or blocked only by an open For you todo\./);
-  assert.match(brief, /Chase a stuck owner once, then replace it with a job\. Never ask the owner to relay a message to another thread\./);
+  assert.match(brief, /Never ask the owner to relay a message to another thread\./);
   assert.match(brief, /Delete heartbeats and watcher loops the check-in already covers\./);
-  assert.match(brief, /anthropic\/claude-opus-5-5", thinking=\\?"high\\?"\)`; this chat and every job run on that model unless the owner says otherwise \(c31\)/);
+  assert.match(brief, /anthropic\/claude-opus-5-5", thinking=\\?"high\\?"\)`, the model of this chat and every job unless the owner says otherwise \(c31\)/);
   assert.match(brief, /Act directly and ship; invent no waiting rules, review rounds or safety gates unless the owner asks for caution \(c47\)\./);
   assert.match(brief, /Nothing goes outside \(an email, a ticket or support reply, a customer message, a post\) until the owner approves the draft on a For you todo \(c37\)\./);
-  assert.match(brief, /record it with `correction_add` in the same turn, so he never gives it twice/);
+  assert.match(brief, /record it with `correction_add` in the same turn\./);
   assert.doesNotMatch(brief, /—/, "no em dashes");
   assert.ok(!/board convergence/i.test(brief), "no separate Board convergence duty: the check-in owns board convergence (correction c15)");
   for (const file of SKILL_FILES) {
@@ -231,6 +232,9 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["references/owner.md", "mermaid diagrams", "images and diagrams"],
     ["references/corrections.md", "receiver_role=\"sibling\", receiver_name=\"realtime layer\"", "corrections change the brief"],
     ["references/corrections.md", "await refine.run()", "corrections change a skill"],
+    ["references/corrections.md", "pass `handoff: {to, topics, with?}`", "correction handoff"],
+    ["references/jobs.md", "sends `[brief check]` when one breaks these rules; fix it in the job with a message", "brief check"],
+    ["SKILL.md", "Give 2 to 4 short choices, your recommendation first.", "todo choices"],
   ];
   const texts = new Map(await Promise.all(SKILL_FILES.map(async file => [file, await boardSkill(file)] as const)));
   for (const [file, phrase, why] of homes) {
@@ -1566,7 +1570,7 @@ test("brief: a reply to the owner always goes through tell_owner, and every exam
   assert.match(REPLY_CAP_NOTE, /Send the reply with tell_owner\./);
   const extension = await readFile(new URL("../extension/index.ts", import.meta.url), "utf8");
   assert.ok(!extension.includes("reply with text instead"), "tell_owner no longer tells the model to skip it on an owner turn");
-  assert.match(extension, /Send the owner a message; it is the only text the owner reads/);
+  assert.match(extension, /The only text the owner reads/);
   const owner = await readFile(new URL("../../../skills/board/references/owner.md", import.meta.url), "utf8");
   const examples = [...`${brief}\n${owner}`.matchAll(/\blike "([^"]+)"/g)].map(match => match[1]!);
   assert.ok(examples.length >= 1, "the plural example is found");

@@ -225,9 +225,25 @@ const liveRules = (ledger: Ledger): Correction[] => ledger.corrections.filter(en
 const fullLine = (entry: Correction): string =>
   `- ${entry.id}${entry.status === "reopened" ? ` (reopened: the owner repeated it ${entry.repeats.length}x; fix it in code or a test)` : ""} ${entry.rule}` +
   (entry.handoff ? ` Steps on ${entry.handoff.topics.join(", ")} belong to ${entry.handoff.to}.` : "");
-/** How many theme words a title line shows. */
-export const TITLE_WORDS = 4;
-const titleLine = (entry: Correction): string => `- ${entry.id} ${entry.theme.slice(0, TITLE_WORDS).join(" ")}`;
+/** How many theme words a rule held by code or a test shows. */
+export const TITLE_WORDS = 3;
+/** A rule in a chat's snapshot: in full on its own `- ` line, or held elsewhere and listed on one shared line, by id (brief) or id and theme (code). */
+export interface SnapshotRule { held: "full" | "brief" | "code"; text: string }
+const HELD_BRIEF = "Held by the brief: ";
+const HELD_CODE = "Held by code or tests: ";
+/** The snapshot lines of some rules: the full ones first, then one line of brief ids and one of code-held ids with their themes. */
+export function ruleLines(rules: readonly SnapshotRule[]): string[] {
+  const of = (held: SnapshotRule["held"]) => rules.filter(rule => rule.held === held).map(rule => rule.text);
+  const brief = of("brief"), code = of("code");
+  return [...of("full"), ...(brief.length ? [HELD_BRIEF + brief.join(", ")] : []), ...(code.length ? [HELD_CODE + code.join("; ")] : [])];
+}
+/** The rules a snapshot's lines name, so an update compares and resends them one by one. */
+export function snapshotRules(lines: readonly string[]): SnapshotRule[] {
+  return lines.flatMap((line): SnapshotRule[] => line.startsWith("- ") ? [{ held: "full", text: line }]
+    : line.startsWith(HELD_BRIEF) ? line.slice(HELD_BRIEF.length).split(", ").map(text => ({ held: "brief", text }))
+    : line.startsWith(HELD_CODE) ? line.slice(HELD_CODE.length).split("; ").map(text => ({ held: "code", text })) : []);
+}
+export const ruleId = (rule: SnapshotRule): string => /^(?:- )?(c\d+)/.exec(rule.text)?.[1] ?? "";
 /** Code or a test holds the rule: it names one and no fix is pending. */
 const landed = (entry: Correction): boolean => entry.enforcedBy !== "brief" && !/^pending\b/i.test(entry.ref);
 
@@ -236,17 +252,18 @@ export const briefCorrections = (lines: readonly string[]): ReadonlySet<string> 
 export const READ_RULE = "Read one in full with board.corrections(\"c12\") in Python, or all with board.corrections().";
 
 /**
- * A chat's rules, at most LEDGER_PROMPT_LINES and a line counting the rest. A rule the brief or landed code or a test holds shows as its id and
- * theme; the rest, and every reopened rule, in full, because a rule the model never reads in full is a rule it does not follow. Null with no rule.
+ * A chat's rules, at most LEDGER_PROMPT_LINES and a line counting the rest. A rule the brief holds shows as its id, and one landed code or a test
+ * holds as its id and theme, each group on one line; the rest, and every reopened rule, in full, because a rule the model never reads in full is
+ * a rule it does not follow. Null with no rule.
  */
 export function ledgerPrompt(ledger: Ledger, brief: ReadonlySet<string>): string | null {
   const live = liveRules(ledger);
   if (!live.length) return null;
-  const lines = live.slice(0, LEDGER_PROMPT_LINES).map(entry => entry.status !== "reopened" && (brief.has(entry.id) || landed(entry)) ? titleLine(entry) : fullLine(entry));
-  const more = live.length - lines.length;
-  return [`[corrections] The owner's corrections, live from the ledger. Each holds in this chat now; record a new one with ${CORRECTION_TOOL} ` +
-    `in the same turn. A theme-only line is held by the brief, code or a test. ${READ_RULE}`,
-  ...lines, ...(more > 0 ? [`and ${more} older ones`] : [])].join("\n");
+  const shown = live.slice(0, LEDGER_PROMPT_LINES);
+  const rules = shown.map((entry): SnapshotRule => entry.status === "reopened" || !(brief.has(entry.id) || landed(entry)) ? { held: "full", text: fullLine(entry) }
+    : brief.has(entry.id) ? { held: "brief", text: entry.id } : { held: "code", text: `${entry.id} ${entry.theme.slice(0, TITLE_WORDS).join(" ")}` });
+  const more = live.length - shown.length;
+  return [`[corrections] The owner's corrections in force, live from the ledger. ${READ_RULE}`, ...ruleLines(rules), ...(more > 0 ? [`and ${more} older ones`] : [])].join("\n");
 }
 
 export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticket or support reply, a customer message, a post) check these rules; " +
