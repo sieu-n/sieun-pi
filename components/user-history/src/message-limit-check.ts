@@ -7,20 +7,23 @@ import { messageLimitRefusal } from "./shared/reply-lint.ts";
 /*
  * The c43 limit check for agent messages a chat or a job of a chat sends. agent_message.send runs in the session's Python kernel and reaches the
  * host through rlm.host_request, which no extension event sees, so the session's ipython cells get one prelude line that runs
- * message-limit-check.py once per kernel. That file wraps host_request: an "agent_message.send" whose text states a limit with no evidence
- * raises LimitRefused and nothing is sent. It runs this file with {message, dataDir} on stdin, which prints {"refusal": string | null}, so the
- * rule stays the one reply-lint.ts holds. Job names are read only when the text has a claim.
+ * message-limit-check.py once per kernel and file version. That file wraps host_request: an "agent_message.send" whose text states a limit
+ * with no evidence raises LimitRefused and nothing is sent, and a send the daemon timed out on returns an "unconfirmed" receipt (p334). It runs
+ * this file with {message, dataDir} on stdin, which prints {"refusal": string | null}, so the rule stays the one reply-lint.ts holds. Job
+ * names are read only when the text has a claim.
  */
 const FILE = join(dirname(realpathSync(fileURLToPath(import.meta.url))), "message-limit-check.py");
+/** The file's VERSION: a kernel that installed an older one runs the new file at its next cell. */
+const VERSION = Number(/^VERSION = (\d+)$/m.exec(readFileSync(FILE, "utf8"))?.[1] ?? 0);
 
 const preludeSource = (dataDir: string): string => `
 import sys
-if not getattr(sys, "user_history_message_check", False):
+if getattr(sys, "user_history_message_check", None) != ${VERSION}:
     try:
         exec(compile(open(${JSON.stringify(FILE)}).read(), ${JSON.stringify(FILE)}, "exec"), {"__name__": "user_history_message_check", "__file__": ${JSON.stringify(FILE)}, "DATA_DIR": ${JSON.stringify(dataDir)}})
     except Exception as error:
-        sys.user_history_message_check = "failed"
-        print(f"user-history: the agent message limit check did not load: {error}", file=sys.stderr)
+        sys.user_history_message_check = ${VERSION}
+        print(f"user-history: the agent message check did not load: {error}", file=sys.stderr)
 `;
 
 /** One line, so the cell's own line numbers in a traceback move by one. `dataDir` is the chat server's directory, where the job names live. */

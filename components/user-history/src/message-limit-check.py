@@ -1,9 +1,16 @@
-"""The c43 limit check for agent messages a chat or a job of a chat sends, installed in its Python kernel by message-limit-check.ts.
+"""The wrapper around agent_message.send in the Python kernel of a chat or a job of a chat, installed by message-limit-check.ts.
 
 agent_message.send reaches the host through rlm.host_request. This wraps host_request in rlm and in the agent_message module, which imported
-its own reference. Before an "agent_message.send" request goes out, message-limit-check.ts lints the text with reply-lint.ts's limit rule; a
-limit with a rate or size and no measurement, vendor limit or incident in its own sentence raises LimitRefused, and nothing is sent.
-A failure to run the check lets the message through, like the send guard, so a broken check never cuts a chat off from its jobs.
+its own reference. It does two things.
+
+1. The c43 limit check. Before an "agent_message.send" request goes out, message-limit-check.ts lints the text with reply-lint.ts's limit rule;
+   a limit with a rate or size and no measurement, vendor limit or incident in its own sentence raises LimitRefused, and nothing is sent. A
+   failure to run the check lets the message through, like the send guard, so a broken check never cuts a chat off from its jobs.
+2. A daemon timeout on a send is no failure (p334). The supervisor gives the target's worker 30 s to confirm (WORKER_REQUEST_TIMEOUT_MS in
+   prime-agent 0.9.8) and raises when a busy worker answers later, but the worker still queues the message. On 10-12 the two sends that timed
+   out at 17:08Z reached Crawler VP at 17:16:20Z and frontend bro at 17:10:13Z, when their running ipython calls (758 s and 459 s) ended. The
+   senders read the error as a failure and sent again, so frontend bro got one ask 7 times. The wrapper returns an "unconfirmed" receipt
+   instead and prints that a resend arrives as a second copy.
 """
 
 import json
@@ -12,6 +19,13 @@ import subprocess
 import sys
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
+VERSION = 2
+SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
+UNCONFIRMED_NOTE = (
+    "agent_message: Prime Agent did not confirm this send within 30 s because {target} is busy. The daemon still holds it and delivers it "
+    "when {target}'s running tool call ends (on 10-12 two such sends landed 2 and 8 minutes later). Do not send it again: a resend arrives "
+    "as a second copy. To check, read {target}'s transcript after its current tool call."
+)
 
 
 class LimitRefused(Exception):
@@ -26,34 +40,49 @@ def refusal(text: str):
         return None
 
 
-def checked(host_request):
-    if getattr(host_request, "limit_checked", False):
-        return host_request
+def unconfirmed(payload: dict, error: Exception) -> dict:
+    target = payload.get("receiver_name") or payload.get("receiver_role") or "the target"
+    note = UNCONFIRMED_NOTE.format(target=target)
+    print(note)
+    return {
+        "deliveryStatus": "unconfirmed",
+        "message": payload.get("message"),
+        "receiverRole": payload.get("receiver_role"),
+        "receiverName": payload.get("receiver_name"),
+        "error": str(error),
+        "note": note,
+    }
 
-    async def request(request_type, payload=None, *args, **kwargs):
-        if request_type == "agent_message.send" and isinstance(payload, dict):
-            text = payload.get("message")
-            reason = refusal(text) if isinstance(text, str) else None
-            if reason:
-                raise LimitRefused(reason)
-        # Look the real function up in the live rlm module at call time. A kernel revive restores this closure with a copy of
-        # host_request whose globals lost __package__, so its `from . import repl` fails (launch VP, 2026-10-13).
-        rlm = sys.modules.get("rlm")
-        real = getattr(rlm, "unchecked_host_request", None) or host_request
+
+async def request(request_type, payload=None, *args, **kwargs):
+    send = request_type == "agent_message.send" and isinstance(payload, dict)
+    if send:
+        text = payload.get("message")
+        reason = refusal(text) if isinstance(text, str) else None
+        if reason:
+            raise LimitRefused(reason)
+    # Look the real function up in the live rlm module at call time. A kernel revive restores this function with a copy of host_request
+    # whose globals lost __package__, so its `from . import repl` fails (launch VP, 2026-10-13).
+    real = getattr(sys.modules.get("rlm"), "unchecked_host_request", None)
+    try:
         return await real(request_type, payload, *args, **kwargs)
+    except Exception as error:
+        if send and payload.get("target") != "all" and SEND_TIMEOUT in str(error):
+            return unconfirmed(payload, error)
+        raise
 
-    request.limit_checked = True
-    request.__doc__ = host_request.__doc__
-    return request
+
+request.limit_checked = True
 
 
 def install() -> None:
     try:
         import rlm
     except ImportError:
-        rlm = None
-    if rlm is not None and not getattr(rlm.host_request, "limit_checked", False):
+        return
+    if not getattr(rlm.host_request, "limit_checked", False):
         rlm.unchecked_host_request = rlm.host_request
+    request.__doc__ = rlm.unchecked_host_request.__doc__
     for name in ("rlm", "agent_message"):
         module = sys.modules.get(name)
         if module is None:
@@ -62,9 +91,9 @@ def install() -> None:
             except ImportError:
                 continue
         if getattr(module, "host_request", None) is not None:
-            module.host_request = checked(module.host_request)
+            module.host_request = request
 
 
-if not getattr(sys, "user_history_message_check", False):
+if getattr(sys, "user_history_message_check", None) != VERSION:
     install()
-    sys.user_history_message_check = True
+    sys.user_history_message_check = VERSION
