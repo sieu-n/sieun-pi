@@ -261,7 +261,7 @@ test("job reply: a direct subagent of a chat and a root the chat started get the
   assert.equal(jobOf({ depth: 0, marked: false, registered: undefined }), null);
   assert.equal(jobReplyGuideline({ chat: "chat-ab12", root: false }), 'You are a job of the chat chat-ab12. When you finish, fail or get blocked, send your report ' +
     `first with \`await agent_message.send(report, receiver_role="parent")\`, and lead it with the answer. ${MERGE_RULE_SHORT} No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.`);
-  assert.ok(CHAT_BRIEF.join(" ").includes("Add no cap, throttle, timeout, rate or 'caution line' unless a measurement, a vendor limit or an incident backs it"), "no unbacked limits (owner 10-12, c43)");
+  assert.ok(CHAT_BRIEF.join(" ").includes("Base limits (c43)"), "the brief names c43; tell_owner, the board and agent messages refuse an unbacked limit in code, and a job gets the full line above");
   assert.match(jobReplyGuideline({ chat: "Feature X", root: true }), /receiver_role="sibling", receiver_name="Feature X"/);
   assert.match(jobReplyGuideline({ chat: "", root: false }), /^You are a job of the chat\. /);
 
