@@ -256,7 +256,8 @@ export function rosterChildren(children: readonly SessionSummary[]): Map<string,
       if (!row.rlmChildId) return [];
       const name = row.sessionName?.replace(/\s+/g, " ").trim();
       const status = nativeStatus(row) === "running" ? "running" : row.statusLabel === "failed" || row.workerState === "failed" || settledOnFailure(row) ? "error" : "done";
-      const at = Date.parse(row.lastActivityAt ?? row.modified ?? "");
+      // The session file's change counts as activity: a job between turns still gets its workers' reports (`liveJobs`).
+      const at = Math.max(...[row.lastActivityAt, row.modified].map(value => Date.parse(value ?? "")).filter(Number.isFinite));
       return [{ id: row.rlmChildId, label: name || row.rlmChildId, ...(name ? { sessionName: name } : {}), sessionId: row.sessionId, status,
         ...(row.repliedSinceTask === undefined ? {} : { repliedSinceTask: row.repliedSinceTask }), ...(Number.isFinite(at) ? { lastActivityAt: at } : {}) }];
     });

@@ -6,7 +6,7 @@ import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, readHeartbeats } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, jobFacts } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, jobFacts, liveJobs } from "./checkin-steps.ts";
 import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   lastJobMessages, noReportNotice, retryDue } from "./chat-checkin.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
@@ -734,7 +734,9 @@ export class Chats {
     // one of its duty jobs (10-13 02:39: busy chat inbox ran under the 01:54 check-in job, and p334 read "(busy chat inbox not found)").
     const dutyJobs = await this.source.dutyJobs?.(id).catch(() => []) ?? [];
     const nested = dutyJobs.flatMap(job => (this.subagents.get(job) ?? []).map(child => ({ ...child, parentId: job })));
-    const facts = jobFacts(this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []), board, rows, id, nested).map(fact => {
+    const children = this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []);
+    const live = liveJobs([...children, ...nested], this.subagents, this.now(), (await this.source.settings.get(id)).everyMs);
+    const facts = jobFacts(children, board, rows, id, nested, live).map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
     });

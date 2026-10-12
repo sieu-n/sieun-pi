@@ -92,17 +92,17 @@ export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | un
  * The chat's jobs now: every subagent directly under it (one whose parent is not another listed subagent), plus every thread an open plan step
  * names as its owner (`stepOwner`) that is not one of them. An owner that names nothing known, or the chat itself (`self`, its session id), is
  * left out. A cancelled subagent ended; only an error is a failure. `nested` holds the subagents of the chat's duty jobs (a check-in job's
- * helpers): one joins only when an open step names it, by session id or name, a working one first.
+ * helpers): one joins only when an open step names it, by session id or name, a working one first. A subagent in `live` (`liveJobs`) works.
  */
 export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | null, rows: readonly SessionRow[], self?: string,
-  nested: readonly ChildAgent[] = []): JobFact[] {
+  nested: readonly ChildAgent[] = [], live: ReadonlySet<string> = new Set()): JobFact[] {
   const ids = new Set(children.map(child => child.id));
   const facts = new Map<string, JobFact>();
   // A job that waits on its own subagent is at work (frontend bro 10-12: watchlist table rework waited on its working helper, and p78 was
   // flagged orphan and p14 idle).
   const busy = new Set<string>();
   for (const child of children) {
-    if (!childWorking(child)) continue;
+    if (!childWorking(child) && !live.has(child.id)) continue;
     for (let at: ChildAgent | undefined = child; at; at = at.parentId !== undefined ? children.find(other => other.id === at!.parentId) : undefined) {
       if (busy.has(at.id)) break;
       busy.add(at.id);
@@ -125,7 +125,7 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
     const named = (child: ChildAgent) => (item.sessionId !== undefined && child.sessionId === item.sessionId) || child.id === owner || childName(child) === owner;
     const sub = nested.find(child => named(child) && childWorking(child)) ?? nested.find(named);
     if (sub) {
-      facts.set(sub.id, { key: sub.id, name: childName(sub), state: childWorking(sub) ? "working" : sub.status === "error" ? "failed" : "ended",
+      facts.set(sub.id, { key: sub.id, name: childName(sub), state: childWorking(sub) || live.has(sub.id) ? "working" : sub.status === "error" ? "failed" : "ended",
         ...(sub.sessionId ? { sessionId: sub.sessionId } : {}), ...(sub.lastActivityAt !== undefined ? { activityAt: sub.lastActivityAt } : {}),
         ...(sub.error ? { error: sub.error } : {}), item: link });
       return;
@@ -137,6 +137,23 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
       ...(Number.isFinite(at) ? { activityAt: at } : {}), ...(row.failure ? { error: row.failure } : {}), messages: row.messageCount, item: link });
   });
   return [...facts.values()];
+}
+
+/**
+ * The subagents that work although their own turn ended: one with a running subagent at any depth below it, or one whose session changed
+ * within `windowMs` (the check-in interval). `subagents` holds the daemon's subagents by parent session id (`rosterChildren`), which gives a
+ * hub child its session id and last activity too. frontend bro 10-13: its 5 jobs end each turn while their browser checkers and fix jobs run,
+ * and the 02:39 and 02:57 check-ins flagged p92 to p97 as orphans with each job "idle".
+ */
+export function liveJobs(children: readonly ChildAgent[], subagents: ReadonlyMap<string, readonly ChildAgent[]>, now: number, windowMs: number): Set<string> {
+  const listed = new Map([...subagents.values()].flat().map(child => [child.id, child] as const));
+  const runningBelow = (session: string, seen: Set<string>): boolean => (subagents.get(session) ?? []).some(child => childWorking(child) ||
+    (child.sessionId !== undefined && !seen.has(child.sessionId) && runningBelow(child.sessionId, seen.add(child.sessionId))));
+  return new Set(children.filter(child => {
+    const session = child.sessionId ?? listed.get(child.id)?.sessionId;
+    const at = Math.max(child.lastActivityAt ?? 0, listed.get(child.id)?.lastActivityAt ?? 0);
+    return (session !== undefined && runningBelow(session, new Set([session]))) || now - at < windowMs;
+  }).map(child => child.id));
 }
 
 /** The agent's todos the owner has not answered yet; the board refuses a new one past BOARD_LIMITS.openAsks, but older ones stay. */
