@@ -1,5 +1,6 @@
 import { BOARD_PREFIX } from "./chat-board.ts";
 import { BRIEF_CHECK_PREFIX, OWNER_RETRY_MARK, serverNote, turnAt } from "./chat-feed.ts";
+import { INVENTED_GATE_FIX, inventedGates, type InventedGate } from "./invented-gates.ts";
 import { ownerMessage } from "./reply-lint.ts";
 import { messageText } from "./turns.ts";
 import type { ThreadMessage } from "./types.ts";
@@ -8,7 +9,8 @@ import type { ThreadMessage } from "./types.ts";
  * The brief check: whether a job brief a chat wrote follows the Jobs rule of the chat brief (CHAT_BRIEF in src/chats.ts). It opens with the
  * owner messages that started the job, quoted exactly, or `Owner's words: none, started by <who>`, and it carries a `Split:` line. The job
  * brief audit (10-12) found 34 of 88 briefs reusing an old goal quote, 5 calling ledger text the owner's words, and only 25% of jobs whose
- * brief did not mention subagents spawning one. The chat server steers a `[brief check]` after a spawn whose brief fails.
+ * brief did not mention subagents spawning one. The chat server steers a `[brief check]` after a spawn whose brief fails. A brief that, from its
+ * Split line on, sets a gate with no cause and no owner rule behind it fails too (`inventedGates`, c47).
  */
 
 /** A message the owner typed in the chat: its text and its time (ms). */
@@ -18,7 +20,8 @@ export type BriefFinding =
   | { kind: "not-verbatim"; piece: string }
   | { kind: "old-message"; quoted: OwnerMessage }
   | { kind: "none-but-owner-turn"; owner: OwnerMessage }
-  | { kind: "no-split" };
+  | { kind: "no-split" }
+  | { kind: "invented-gate"; gates: InventedGate[] };
 /**
  * `turnOwner` is the owner message that started the turn the chat spawned the job on, null when a check-in, a job notice, another agent or a
  * board action started it. `previousSpawnAt` is when the chat last spawned a job before this one, null for its first.
@@ -80,7 +83,11 @@ export function briefCheck(input: BriefInput): BriefFinding[] {
     if (newest && turnOwner === null && previousSpawnAt !== null && newest.at < previousSpawnAt)
       findings.push({ kind: "old-message", quoted: newest });
   }
-  if (!SPLIT.test(input.brief)) findings.push({ kind: "no-split" });
+  const split = SPLIT.exec(input.brief);
+  if (!split) findings.push({ kind: "no-split" });
+  const task = split ? input.brief.slice(split.index) : input.brief;
+  const gates = inventedGates(task);
+  if (gates.length) findings.push({ kind: "invented-gate", gates });
   return findings;
 }
 
@@ -92,6 +99,7 @@ export function briefFindingLine(finding: BriefFinding): string {
     case "old-message": return `- The newest owner message you quoted ("${opening(finding.quoted.text)}") is older than your previous job, and no owner message started this turn. Quote the message that started this job, or say none did and who did.`;
     case "none-but-owner-turn": return `- It says no owner message started the job, but the owner's message "${opening(finding.owner.text)}" started this turn. Send the job that message word for word.`;
     case "no-split": return "- No `Split:` line. Send the job which subagents it spawns, one per unit of output, or why it stays inline (1 to 3 tool calls).";
+    case "invented-gate": return `- It sets a gate nobody asked for: ${finding.gates.map(gate => `"${gate.phrase}"`).join(", ")}. ${INVENTED_GATE_FIX}`;
   }
 }
 
