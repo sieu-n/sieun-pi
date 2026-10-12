@@ -7,7 +7,7 @@ import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json
 import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, parkedBy, quote, readySteps,
-  STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepOwner, stepView, type StepView, todoForStep, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
+  noteFacts, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepOwner, stepView, type StepView, todoForStep, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, type GoalGap, goalGapLine, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
@@ -125,7 +125,10 @@ export function stepMemo(item: PlanItem, before: StepMemo | undefined, now: numb
   const untils = item.waitUntil && seen.at(-1) !== item.waitUntil ? [...seen, item.waitUntil].slice(-STALL_UNTILS) : seen;
   const turnedDone = item.status === "done" && before !== undefined && !before.sig.startsWith('["done"');
   const doneAt = turnedDone ? now : item.status === "done" ? before?.doneAt : undefined;
+  const facts = OPEN.has(item.status) ? noteFacts(item.note) : [];
+  const factsAt = before?.facts && facts.some(fact => !before.facts!.includes(fact)) ? now : before?.factsAt;
   return { sig, at: before ? before.sig === sig ? before.at : now : firstSeen, wait, ...(doneAt !== undefined ? { doneAt } : {}),
+    ...(facts.length ? { facts } : {}), ...(factsAt !== undefined && facts.length ? { factsAt } : {}),
     // A memo from before `wait` existed counts its last change (its sig holds the waits) as the wait's start.
     waitAt: !before ? firstSeen : before.wait === undefined ? before.at : before.wait === wait ? before.waitAt ?? before.at : now, ...(untils.length ? { untils } : {}) };
 }
@@ -225,7 +228,7 @@ export const stepSig = (item: PlanItem): string =>
  * `extra_goals` the open goals over BOARD_LIMITS.openGoals (`extraGoals`), `open_under_closed` an open item right under a closed one
  * (`openUnderClosed`), the plan's shape (c44). `held_elsewhere` is a goal whose every open step another thread holds (`heldElsewhere`) and
  * `wait_met` a step whose named wait is over (`waitsMet`), finished work left open behind a wait (c45). `no_progress` is 1 when no plan
- * item was done in the last hour and some open step is not blocked (`noProgress`). `stale_steps` is an open item with a waitUntil over 24 h
+ * item was done in the last hour and some open step is not blocked under a goal that did not move (`noProgress`). `stale_steps` is an open item with a waitUntil over 24 h
  * past or a job that ended with no update (`staleSteps`, c44); an item counted in `finished_open` or `wait_met` is not counted again. A step's
  * record is counted once, by the first that applies: `job_end_silent`, `job_end_unrecorded`, `stale_steps`, `due_late`. `goals_to_fold` is an
  * open goal whose work runs as a duty or rides other goals' jobs (`goalsToFold`, c46); that goal is not counted again in `finished_open`,
@@ -448,6 +451,8 @@ const isStepMemo = (value: unknown): value is StepMemo => isRecord(value) && typ
 const stepMemoOf = (memo: StepMemo): StepMemo => ({ sig: memo.sig, at: memo.at, ...(typeof memo.wait === "string" ? { wait: memo.wait } : {}),
   ...(typeof memo.waitAt === "number" ? { waitAt: memo.waitAt } : {}),
   ...(typeof memo.doneAt === "number" ? { doneAt: memo.doneAt } : {}),
+  ...(Array.isArray(memo.facts) && memo.facts.every(fact => typeof fact === "string") ? { facts: memo.facts } : {}),
+  ...(typeof memo.factsAt === "number" ? { factsAt: memo.factsAt } : {}),
   ...(Array.isArray(memo.untils) && memo.untils.every(until => typeof until === "string") ? { untils: memo.untils.slice(-STALL_UNTILS) } : {}) });
 function parseMemory(value: unknown): CheckInMemory | undefined {
   if (!isRecord(value) || typeof value.at !== "number") return undefined;

@@ -218,7 +218,10 @@ export const PROGRESS_MS = 60 * 60_000;
  * done or every open task is blocked, since work should keep moving). It passes when a plan item turned done
  * in the last PROGRESS_MS (its memo changed then and it is done now), or when every open step is held: blocked, waiting on an open For you todo,
  * waiting on purpose for a waitUntil still ahead, or waiting on another thread (its owner, or a thread its waitFor names). A waitUntil that
- * passed is not held. No verdict (null) until the chat's memory spans PROGRESS_MS. `moving` are the open steps that are not held.
+ * passed is not held. A goal moved when, in the last PROGRESS_MS, an open step's note under it gained a fact (`noteFacts`) or a step's job
+ * reported to the chat; its steps are not counted (launch main bro 10-12: p56's copy and p57's lane reads reported every 30 min with new page
+ * and run counts, and three check-ins in a row flagged them). No verdict (null) until the chat's memory spans PROGRESS_MS. `moving` are the open
+ * steps that are not held and whose goal did not move.
  */
 export interface NoProgress { moving: StepView[] }
 export function noProgress(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, since: number,
@@ -229,7 +232,10 @@ export function noProgress(board: ChatBoard | null, views: readonly StepView[], 
   if (done) return null;
   const held = (view: StepView): boolean => view.item.status === "blocked" || view.cls === "foryou" || Date.parse(view.item.waitUntil ?? "") > now ||
     (!view.mine && view.owner?.key.startsWith("thread:") === true) || waitTarget(view.item.waitFor, rows, self) !== undefined;
-  const moving = views.filter(view => !held(view));
+  const recent = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
+  const goalOf = (view: StepView): string => view.goal?.id ?? view.item.id;
+  const moved = new Set(views.filter(view => recent(memos[view.item.id]?.factsAt) || recent(view.owner?.lastMessage?.at)).map(goalOf));
+  const moving = views.filter(view => !held(view) && !moved.has(goalOf(view)));
   return moving.length ? { moving } : null;
 }
 export const noProgressLine = ({ moving }: NoProgress): string => `No plan item was done in the last hour and ${plural(moving.length, "open step")} ` +

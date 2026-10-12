@@ -42,7 +42,16 @@ export interface JobMessage { at: number; text: string }
  */
 export interface StepMemo { sig: string; at: number; wait?: string; waitAt?: number; untils?: string[];
   /** When the item last turned done from another status; an edit to an item already done does not move it. */
-  doneAt?: number }
+  doneAt?: number;
+  /** An open item's note facts (`noteFacts`), and when its note last gained one. */
+  facts?: string[]; factsAt?: number }
+/**
+ * The words of a note that carry a number, clock times left out: "3,141", "38305551761", "r8", "64a696e59b". A note that gains one reports
+ * something new; a chase note that only restamps a time ("chased again 22:10Z") does not.
+ */
+export const noteFacts = (note: string | undefined): string[] =>
+  [...new Set((note ?? "").replace(/\b\d{1,2}:[0-5x][0-9x](?::\d\d)?Z?/gi, " ").split(/\s+/).map(word => word.replace(/^[("'[]+|[)"',.;:\]]+$/g, ""))
+    .filter(word => /\d/.test(word)))];
 
 /** The words of a text that can tell one step from another: five letters or more, not a common word. */
 const distinctiveWords = (text: string): Set<string> => new Set(text.toLowerCase().match(/[a-z][a-z0-9-]{4,}/g)?.filter(word => !STOP_WORDS.has(word)) ?? []);
