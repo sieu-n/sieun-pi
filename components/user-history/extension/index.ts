@@ -16,6 +16,7 @@ import { boardLimitRefusal, lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
 import { jobNames } from "../src/limit-names.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
+import { loadWaitGuard } from "../src/load-wait.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -226,6 +227,10 @@ export default function historyExtension(pi: ExtensionAPI): void {
     try {
       const blocked = chatGuard({ toolName: event.toolName, input: event.input, depth: depthOf(ctx.sessionManager.getHeader()), marked });
       if (blocked) return blocked;
+      if (marked || job || underChat) {
+        const loadWait = loadWaitGuard(event.toolName, event.input);
+        if (loadWait) return loadWait;
+      }
       if (marked && event.toolName === "ipython" && typeof event.input.code === "string") {
         const names = createSessionNames(event.input.code);
         if (names.length) await jobs().add(names, ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId());
