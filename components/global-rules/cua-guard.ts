@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import type { Verdict } from "./guard.ts";
 import { enabled } from "./log.ts";
 import { checkOwnerOk } from "./send-guard.ts";
-import { effective, lex, stripHeredocs } from "./shell.ts";
+import { effective, expandVars, lex, stripHeredocs } from "./shell.ts";
 
 /*
  * The cua-driver MCP guard (owner correction c37): a desktop click or key press that sends mail or a message goes through only with the owner's
@@ -36,13 +36,13 @@ export interface Desktop { scale: number; windows: ScreenWindow[] }
 
 const MAIL_APPS = /^(?:com\.apple\.mail|com\.microsoft\.Outlook|com\.readdle\.smartemail-Mac|it\.bloop\.airmail2|org\.mozilla\.thunderbird|com\.mimestream\.Mimestream|com\.superhuman\.electron|com\.hey\.app\.desktop|io\.canarymail\.mac|com\.postbox-inc\.postbox)$/i;
 const MESSAGE_APPS = /^(?:com\.apple\.MobileSMS|com\.tinyspeck\.slackmacgap|com\.kakao\.KakaoTalkMac|ru\.keepcoder\.Telegram|org\.telegram\.desktop|net\.whatsapp\.WhatsApp|desktop\.WhatsApp|com\.hnc\.Discord|com\.microsoft\.teams2?|jp\.naver\.line\.mac|org\.whispersystems\.signal-desktop|com\.facebook\.archon(?:\.developerID)?)$/i;
-const MAIL_TITLE = /\bGmail\b|\bOutlook\b|\bInbox\b|\bCompose\b|\bNew Message\b|\bTickets?\b|\bSupport\b|Zendesk|Freshdesk|Help ?desk|viewticket|Client Area|Intercom|Help Scout/i;
-const SEND_LABEL = /^(?:send(?!\s+(?:to|backward|backwards|feedback|to back)\b)\b|submit\b|post reply|add reply|update ticket|reply and submit|보내기|전송|送信)/i;
+const MAIL_TITLE = /\bGmail\b|\bOutlook\b|\bInbox\b|\bCompose\b|\bNew Message\b|\bTickets?\b|\bSupport\b|Zendesk|Freshdesk|Help ?desk|viewticket|Client Area|Intercom|Help Scout|\bContact\b|Submit a request|Help Center|\/ X\b|\bTwitter\b|\bLinkedIn\b|\bMessenger\b|\bDiscord\b|\bWhatsApp\b|\bTelegram\b/i;
+const SEND_LABEL = /^(?:send(?!\s+(?:to|backward|backwards|feedback|to back)\b)\b|submit\b|post(?: reply| all)?$|tweet(?: all)?$|add reply|update ticket|reply and submit|보내기|전송|送信|게시)/i;
 const STRICT_SEND_LABEL = /^(?:send(?!\s+(?:to|backward|backwards|feedback|to back)\b)\b|보내기|전송|送信)/i;
 const MOD = /^(?:cmd|command|meta|super|ctrl|control)$/i;
 const RETURN = /^(?:return|enter|kp_?enter|\n)$/i;
 
-const ACTIONS = new Set(["click", "double_click", "press_key", "hotkey", "invoke_menu", "set_value"]);
+const ACTIONS = new Set(["click", "double_click", "press_key", "hotkey", "invoke_menu", "set_value", "type_text"]);
 export const isAction = (tool: string): boolean => ACTIONS.has(tool) || tool === "replay_trajectory";
 
 function kind(ctx: CuaContext): "mail" | "message" | "marked" | "unknown" | "other" {
@@ -84,6 +84,9 @@ export function judgeCua(tool: string, args: Record<string, unknown>, ctx: CuaCo
 		const path = Array.isArray(args.path) ? args.path.map(String) : [];
 		const last = path.at(-1) ?? "";
 		return /^send\b|^보내기|^전송/i.test(last.trim()) ? `it runs the menu item ${path.join(" > ")} in ${app}` : null;
+	}
+	if (tool === "type_text") {
+		return where === "message" && /[\r\n]/.test(String(args.text ?? "")) ? `typing a line break sends the message in ${app}` : null;
 	}
 	if (tool === "hotkey" || tool === "press_key") {
 		const keys = tool === "hotkey" ? (Array.isArray(args.keys) ? args.keys.map(String) : []) : [String(args.key ?? ""), ...(Array.isArray(args.modifiers) ? args.modifiers.map(String) : [])];
@@ -293,10 +296,11 @@ function cliTitles(cli: string, pid: unknown): string[] {
 export function judgeCuaShell(text: string, bundle = bundleOf, titles = cliTitles, desktop = desktopOf): Verdict[] {
 	const out: Verdict[] = [];
 	if (!enabled("GLOBAL_RULES_GUARD")) return out;
+	const vars = new Map<string, string>();
 	const walk = (command: string, depth: number) => {
 		if (depth > 4) return;
 		const { commands, nested } = lex(command);
-		for (const argv of commands) {
+		for (const argv of expandVars(commands, vars)) {
 			const eff = effective(argv);
 			if (!/(?:^|\/)cua-driver$/.test(eff[0] ?? "") || eff[1] !== "call" || !isAction(eff[2] ?? "")) continue;
 			let args: Record<string, unknown> = {};

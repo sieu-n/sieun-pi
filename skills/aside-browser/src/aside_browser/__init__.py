@@ -318,16 +318,30 @@ _MAIL_HOSTS = re.compile(
     re.I,
 )
 _TICKET_HOST = re.compile(r"(?:^|[.-])(?:support|helpdesk|help|desk|tickets?|clients?)\.|zendesk\.com$|freshdesk\.com$|intercom\.|helpscout\.|kayako\.com$|zohodesk\.|gorgias\.|atlassian\.net$", re.I)
-_TICKET_PATH = re.compile(r"(?:submitticket|viewticket|supporttickets|clientarea)\.php|/tickets?(?:/|$|\?)|/requests?/\d|/support(?:/|$)|/servicedesk/", re.I)
+_TICKET_PATH = re.compile(r"(?:submitticket|viewticket|supporttickets|clientarea)\.php|/tickets?(?:/|$|\?)|/requests?/\d|/support(?:/|$)|/servicedesk/|/contact(?:-us)?(?:/|$|\?)", re.I)
+_SOCIAL_HOSTS = re.compile(
+    r"(?:^|\.)(?:x\.com|twitter\.com|linkedin\.com|discord\.com|facebook\.com|messenger\.com|instagram\.com|reddit\.com|threads\.net"
+    r"|web\.whatsapp\.com|web\.telegram\.org)$",
+    re.I,
+)
+_OWN_GITHUB_PATH = re.compile(r"^/(?:sieu-n|virev-ai)(?:/|$)", re.I)
 _URL = re.compile(r"https?://[^\s'\"`)<>]+", re.I)
 _LOCAL_HOST = re.compile(r"^(?:localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)$", re.I)
 _MAIL_GLOBAL = re.compile(r"\b(?:gmail|outlook)\s*\.\s*(?:openComposer|openReplyComposer|openThreadDetailsPage|send\w*|reply\w*)\b")
+_SITE_SEND = re.compile(r"\b(?:linkedin|imessage|whatsapp|discord|twitter|telegram)\s*\.\s*(?:send\w*|reply\w*|post\w*|tweet\w*|comment\w*|message\w*)\s*\(", re.I)
+_WIDGET = re.compile(r"intercom|drift-widget|\bcrisp\b|tawk|hubspot-messages|zendesk.*(?:widget|launcher)|\bzE\b|olark|livechat|freshchat|beacon-container", re.I)
+_WIDGET_ACTION = re.compile(r"\.\s*(?:click|tap|fill|type|press|pressSequentially|dispatchEvent|submit)\s*\(")
+_ENTER = re.compile(r"""\.\s*press\s*\(\s*(?:[^)]*,\s*)?['"`]Enter['"`]""")
 _ACTION = re.compile(r"\.\s*(?:click|tap|dblclick|press|dispatchEvent|requestSubmit|submit)\s*\(|\bkeyboard\s*\.\s*(?:press|down|type)\s*\(")
 _SEND_NAME = re.compile(r"""\bSend\b|['"`/^]\s*\^?send\b|aria-label[*^$|~]?=\\?['"]?send|data-tooltip[*^$|~]?=\\?['"]?send|\.T-I\.aoO|보내기|送信""", re.I)
 _SEND_KEYS = re.compile(r"(?:Meta|Control|ControlOrMeta|Mod|Cmd|Command)\s*\+\s*Enter", re.I)
-_SUBMIT = re.compile(r"""\brequestSubmit\s*\(|\.submit\s*\(|\b(?:Submit|Reply|Post|Add Reply|Update Ticket|Comment)\b|type=\\?['"]?submit|답변|답장|제출""", re.I)
-_SEND_INTENT = re.compile(r"\b(?:send|sends|sent|reply|replies|respond|answer|submit|forward|post)\b|보내|답장|회신|제출", re.I)
-_MAIL_WORDS = re.compile(r"\b(?:e-?mails?|mail|gmail|outlook|inbox|tickets?|support|vendor|helpdesk)\b|메일|티켓", re.I)
+_SUBMIT = re.compile(r"""\brequestSubmit\s*\(|\.submit\s*\(|\b(?:Submit|Reply|Post|Add Reply|Update Ticket|Comment|Tweet)\b|btn-?(?:Reply|Submit|Send|Post)|tweetButton|type=\\?['"]?submit|답변|답장|제출""", re.I)
+_SEND_INTENT = re.compile(r"\b(?:send|sends|sent|reply|replies|respond|answer|submit|forward|post|tweet|dm)\b|^\s*message\b|보내|답장|회신|제출", re.I)
+_MAIL_WORDS = re.compile(
+    r"\b(?:e-?mails?|mail|gmail|outlook|inbox|tickets?|support|vendor|helpdesk|linkedin|twitter|tweet|discord|telegram|whatsapp|imessage|sms|text message|kakao\w*|contact form)\b"
+    r"|메일|티켓|카톡",
+    re.I,
+)
 _DRAFTING = re.compile(r"\bdraft\s+(?:a|an|the|my|our|your|reply|email|message|response)\b|\bas\s+a\s+draft\b|\bunsent\b", re.I)
 _NEGATED = re.compile(r"\b(?:do not|don't|dont|never|without|no)\b|하지\s*마|말고", re.I)
 _OWNER_OK_HELP = (
@@ -339,7 +353,7 @@ _REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)
 
 
 def _host_kind(url: str) -> str | None:
-    """'mail' for a webmail page, 'ticket' for a support portal, else None."""
+    """'mail' for a webmail page, 'ticket' for a support portal or contact form, 'social' for a social or chat site, else None."""
     m = re.match(r"https?://([^/:?#]+)(?::\d+)?([^?#]*)", url or "", re.I)
     if not m or _LOCAL_HOST.match(m.group(1)):
         return None
@@ -348,20 +362,26 @@ def _host_kind(url: str) -> str | None:
         return "mail"
     if _TICKET_HOST.search(host) or _TICKET_PATH.search(path):
         return "ticket"
+    if _SOCIAL_HOSTS.search(host) or (host.lower() == "github.com" and path.count("/") >= 3 and not _OWN_GITHUB_PATH.match(path)):
+        return "social"
     return None
 
 
 def _sends(code: str) -> bool:
-    """Code that could press a send control: a click or key press near a Send name or a send shortcut, or a form submit."""
-    if _SEND_KEYS.search(code):
+    """Code that could send: a send shortcut, a site skill's send call, an action in a support chat widget, or a click or key press near a Send or Submit name or Enter."""
+    if _SEND_KEYS.search(code) or _SITE_SEND.search(code) or (_WIDGET.search(code) and _WIDGET_ACTION.search(code)):
         return True
-    return bool(_ACTION.search(code) and (_SEND_NAME.search(code) or _SUBMIT.search(code)))
+    return bool(_ACTION.search(code) and (_SEND_NAME.search(code) or _SUBMIT.search(code) or _ENTER.search(code)))
 
 
 def outside_send(code: str, page_url: str = "") -> str | None:
-    """Why this REPL code sends an email or a ticket reply from page_url (the current tab), or None."""
+    """Why this REPL code sends an email, a ticket reply or a message from page_url (the current tab), or None."""
     if not _sends(code):
         return None
+    if _SITE_SEND.search(code):
+        return "it sends through an Aside site skill (LinkedIn, iMessage, WhatsApp, Discord, X or Telegram)"
+    if _WIDGET.search(code) and _WIDGET_ACTION.search(code):
+        return "it types or clicks in a support chat widget"
     kinds = {_host_kind(u) for u in [page_url, *_URL.findall(code)]}
     if _MAIL_GLOBAL.search(code):
         kinds.add("mail")
@@ -369,7 +389,9 @@ def outside_send(code: str, page_url: str = "") -> str | None:
     if "mail" in kinds and send_click:
         return f"it presses Send on a webmail page ({page_url or 'mail tab'})"
     if "ticket" in kinds:
-        return f"it submits or sends on a support ticket page ({page_url or 'ticket page'})"
+        return f"it submits or sends on a support ticket page or contact form ({page_url or 'ticket page'})"
+    if "social" in kinds:
+        return f"it posts or sends on a social or chat site ({page_url or 'social tab'})"
     return None
 
 
@@ -463,8 +485,15 @@ async def _cli_fallback(tool: str, arguments: dict[str, Any]) -> str:
     return "[aside-browser fallback] host has no `aside` MCP server yet; ran one-shot `aside repl` (state does not persist). Run /reload in the TUI.\n" + text
 
 
-async def _repl(code: str, title: str) -> str:
-    """Send code as is. Records tabs reported by the open-tab marker and adds hints to known errors."""
+async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str | None = None) -> str:
+    """Send code as is. Records tabs reported by the open-tab marker and adds hints to known errors.
+
+    Every REPL call passes the outside send check here; `plain` is the caller's code before wrapping.
+    """
+    if _sends(plain or code):
+        reason = outside_send(plain or code, await _page_url())
+        if reason:
+            _refuse_send(reason, owner_ok)
     try:
         text = await _call("repl", {"title": title, "code": code})
     except AsideError as exc:
@@ -500,11 +529,7 @@ async def run(code: str, title: str = "aside repl", wrap: bool = True, force: bo
             "Close your own tabs with `await aside_browser.close_own_tabs()`, or one tab with "
             "`await aside_browser.close_tab(target_id)`. Pass force=True only if the user asked for it.",
         )
-    if _sends(code):
-        reason = outside_send(code, await _page_url())
-        if reason:
-            _refuse_send(reason, owner_ok)
-    return await _repl(wrap_code(code) if wrap else code, title)
+    return await _repl(wrap_code(code) if wrap else code, title, owner_ok=owner_ok, plain=code)
 
 
 repl = run

@@ -72,7 +72,7 @@ test("Prime's own loader discovers the global link, reloads edited modules, and 
 
   writeFileSync(grepGuard, "invalid javascript !!!");
   extension = await load();
-  assert.equal(extension.handlers.get("tool_call").length, 1, "only rlm-delete.ts stays registered");
+  assert.equal(extension.handlers.get("tool_call").length, 2, "only kernel-guard.ts and rlm-delete.ts stay registered");
   assert.equal(await toolCall(), undefined);
   const notes = [];
   await extension.handlers.get("session_start")[0]({ type: "session_start", reason: "reload" }, { hasUI: true, ui: { notify: (text) => notes.push(text) } });

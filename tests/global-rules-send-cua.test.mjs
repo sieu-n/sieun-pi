@@ -147,6 +147,38 @@ test("a click aimed at the desktop is judged against the window under its point,
   assert.equal(cua.judgeCuaShell(`cua-driver call click '${JSON.stringify({ scope: "desktop", x: 460, y: 240 })}'`, bundle, () => [], desktop).length, 1);
 });
 
+const DISCORD = { bundle: "com.hnc.Discord", titles: ["#general - Discord"] };
+const TELEGRAM = { bundle: "ru.keepcoder.Telegram", titles: ["Telegram"] };
+const WHATSAPP = { bundle: "net.whatsapp.WhatsApp", titles: ["WhatsApp"] };
+const SLACK = { bundle: "com.tinyspeck.slackmacgap", titles: ["Slack"] };
+const CHROME = (title) => ({ bundle: "com.google.Chrome", titles: [title] });
+
+test("cua-7: type_text that ends in a newline in a chat app, Slack desktop included, sends and is refused; a multi-line mail draft passes", () => {
+  for (const ctx of [MESSAGES, DISCORD, TELEGRAM, WHATSAPP, SLACK]) {
+    assert.match(decide("type_text", { pid: 4, text: "hi\n" }, ctx) ?? "", /cua-driver send guard: refused/, ctx.bundle);
+    assert.match(decide("type_text", { pid: 4, text: "line one\rline two" }, ctx) ?? "", /cua-driver send guard: refused/, ctx.bundle);
+    assert.equal(decide("type_text", { pid: 4, text: "hi" }, ctx), null, ctx.bundle);
+  }
+  assert.equal(decide("type_text", { pid: 1, text: "Hi Thomas,\n\nThanks for the fix.\n" }, MAIL), null);
+  assert.equal(decide("type_text", { pid: 4, text: "hi\n", owner_ok: `${CHAT}/t1` }, DISCORD), null);
+});
+
+test("cua-9: Submit or Send in a browser window titled like a contact or support form is refused", () => {
+  for (const title of ["Contact us - Vendor", "Contact Support | Acme - Google Chrome", "Submit a request – Acme Help Center"]) {
+    assert.match(decide("click", { pid: 2, element_token: "s:3" }, { ...CHROME(title), element: el("Submit") }) ?? "", /cua-driver send guard: refused/, title);
+  }
+  assert.equal(decide("click", { pid: 2, element_token: "s:3" }, { ...CHROME("Search results - Google Search"), element: el("Submit") }), null);
+  assert.equal(decide("click", { pid: 2, element_token: "s:3", owner_ok: `${CHAT}/t1` }, { ...CHROME("Contact us - Vendor"), element: el("Submit") }), null);
+});
+
+test("cua-13: Post or Tweet in a browser window on X / Twitter or LinkedIn is refused", () => {
+  for (const [title, label] of [["Home / X", "Post"], ["(3) Home / X - Google Chrome", "Post"], ["Home / Twitter", "Tweet"], ["Feed | LinkedIn", "Post"], ["Messaging | LinkedIn", "Send"]]) {
+    assert.match(decide("click", { pid: 2, element_token: "s:4" }, { ...CHROME(title), element: el(label) }) ?? "", /cua-driver send guard: refused/, `${title} ${label}`);
+  }
+  assert.equal(decide("click", { pid: 2, element_token: "s:4" }, { ...CHROME("Home / X"), element: el("Bookmarks") }), null);
+  assert.equal(decide("click", { pid: 2, element_token: "s:4" }, { ...CHROME("Blog post draft - Notion"), element: el("Post") }), null);
+});
+
 // The MCP proxy in front of a fake cua-driver: refused calls never reach the driver; allowed calls reach it without owner_ok.
 async function proxy() {
   const log = join(root, `fake-${Math.random().toString(36).slice(2)}.log`);

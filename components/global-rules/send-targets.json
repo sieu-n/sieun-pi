@@ -1,0 +1,109 @@
+[
+	{
+		"label": "the Gmail send API",
+		"host": "^(?:gmail|www)\\.googleapis\\.com$",
+		"path": "^(?=.*/gmail/|/upload/gmail)(?=.*/send\\b)"
+	},
+	{
+		"label": "the Microsoft Graph mail API",
+		"host": "^graph\\.microsoft\\.com$",
+		"path": "/(?:sendMail|reply|replyAll|forward|send)\\b",
+		"flags": "i"
+	},
+	{
+		"label": "the mail API {host}",
+		"host": "(?:^|\\.)(?:api\\.sendgrid\\.com|api\\.(?:eu\\.)?mailgun\\.net|api\\.postmarkapp\\.com|api\\.resend\\.com|api\\.mailjet\\.com|api\\.brevo\\.com|api\\.sendinblue\\.com|api\\.sparkpost\\.com|mandrillapp\\.com|api\\.smtp2go\\.com|send\\.api\\.mailtrap\\.io)$"
+	},
+	{
+		"label": "Amazon SES",
+		"host": "^email(?:-smtp)?\\.[\\w-]+\\.amazonaws\\.com$"
+	},
+	{
+		"label": "the ticket API {host}",
+		"host": "\\.zendesk\\.com$|\\.freshdesk\\.com$|^api\\.intercom\\.io$|^api\\.helpscout\\.net$|^api2\\.frontapp\\.com$|\\.kayako\\.com$|\\.gorgias\\.com$|^desk\\.zoho\\.[a-z.]+$|\\.zohodesk\\.[a-z.]+$"
+	},
+	{
+		"label": "Jira Service Management",
+		"host": "\\.atlassian\\.net$",
+		"path": "/rest/servicedeskapi/"
+	},
+	{
+		"label": "the support portal {host}",
+		"path": "(?:submitticket|viewticket|supporttickets)\\.php$",
+		"flags": "i"
+	},
+	{
+		"label": "the WHMCS ticket API {host}",
+		"path": "/includes/api\\.php$",
+		"flags": "i",
+		"body": "\\b(?:AddTicketReply|OpenTicket)\\b"
+	},
+	{
+		"label": "the support desk {host}",
+		"host": "^(?:support|helpdesk|tickets?)\\."
+	},
+	{
+		"label": "a Discord message API",
+		"host": "^(?:discord|discordapp)\\.com$",
+		"path": "^/api/(?:v\\d+/)?(?:webhooks/|channels/\\d+/messages)"
+	},
+	{
+		"label": "the Telegram bot send API",
+		"host": "^api\\.telegram\\.org$",
+		"path": "^/bot[^/]+/(?:send|forward|copy)\\w*",
+		"flags": "i"
+	},
+	{
+		"label": "the Twilio message API",
+		"host": "^api\\.twilio\\.com$",
+		"path": "/(?:Messages|Calls)(?:\\.json)?$"
+	},
+	{
+		"label": "the WhatsApp message API",
+		"host": "^graph\\.facebook\\.com$",
+		"path": "/messages$"
+	},
+	{
+		"label": "a Microsoft Teams webhook",
+		"host": "\\.webhook\\.office\\.com$|^prod-\\d+\\.\\w+\\.logic\\.azure\\.com$"
+	},
+	{
+		"label": "the LinkedIn post or message API",
+		"host": "^api\\.linkedin\\.com$",
+		"path": "/(?:ugcPosts|posts|messages|shares)\\b",
+		"flags": "i"
+	},
+	{
+		"label": "the X post or message API",
+		"host": "^api\\.(?:twitter|x)\\.com$",
+		"path": "^/(?:2/tweets|2/dm_conversations|1\\.1/statuses/update|1\\.1/direct_messages)",
+		"flags": "i"
+	},
+	{
+		"label": "a GitHub issue, comment or review on a repo the owner does not own",
+		"host": "^api\\.github\\.com$",
+		"path": "^/repos/(?!(?:sieu-n|virev-ai)/)[^/]+/[^/]+/(?:issues(?:/\\d+/comments|/comments/\\d+)?|pulls(?:/\\d+/(?:reviews|comments)(?:/\\d+)?)?|commits/[^/]+/comments|discussions(?:/\\d+/comments)?)/?$",
+		"flags": "i"
+	},
+	{
+		"label": "a GitHub GraphQL comment, issue or review",
+		"host": "^api\\.github\\.com$",
+		"path": "^/graphql$",
+		"body": "\\b(?:addComment|createIssue|addPullRequestReview\\w*|submitPullRequestReview|createDiscussion|addDiscussionComment|createPullRequest)\\b"
+	},
+	{
+		"label": "the Stripe invoice send API, which emails the customer",
+		"host": "^api\\.stripe\\.com$",
+		"path": "^/v1/invoices/[^/]+/send$"
+	},
+	{
+		"label": "the Clerk invitation API, which emails the invitee",
+		"host": "^api\\.clerk\\.(?:com|dev)$",
+		"path": "^/v1/(?:organizations/[^/]+/)?invitations(?:/bulk)?$"
+	},
+	{
+		"label": "the email send route {host}",
+		"path": "/(?:e?mails?|outreach)/(?:[^?#]*/)?send/?$",
+		"flags": "i"
+	}
+]

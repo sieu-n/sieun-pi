@@ -64,7 +64,7 @@ test("GETs to mail and ticket hosts and posts to local or unrelated hosts are al
     'httpx.get("https://acme.zendesk.com/api/v2/tickets/42.json", auth=a)',
     'requests.post("http://localhost:5180/api/agent/sessions", json={"title": "support tickets"})',
     'requests.post("http://127.0.0.1:8788/v1/send", json=b)',
-    'httpx.post("https://api.github.com/repos/o/r/issues", json=issue)',
+    'httpx.post("https://api.github.com/repos/sieu-n/r/issues", json=issue)',
   ]);
   assertBlocked(['httpx.post("https://acme.zendesk.com/api/v2/tickets/42.json", auth=a)']);
 });
@@ -161,7 +161,7 @@ test("review findings: positional POST, aiosmtplib, backslash chains, keyword MC
   assertAllowed([
     'r = requests.get("https://acme.zendesk.com/api/v2/tickets.json")\nq.put(r.json())',
     'requests.post("http://localhost:5180/api/notes", json={"note": "vendor said see https://acme.zendesk.com/hc/requests/42"})',
-    'httpx.post("https://api.github.com/repos/o/r/issues", json={"body": "Ref https://acme.freshdesk.com/a/tickets/9"})',
+    'httpx.post("https://api.github.com/repos/sieu-n/r/issues", json={"body": "Ref https://acme.freshdesk.com/a/tickets/9"})',
     'await mcp.call_tool("aside", "exec", {"prompt": "Open Gmail and draft a reply to the vendor ticket email. Do not send it."})',
   ]);
 });

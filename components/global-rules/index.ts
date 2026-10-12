@@ -35,6 +35,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	try {
+		const kernelGuard: typeof import("./kernel-guard.ts") = await import(join(dir, "kernel-guard.ts"));
+		pi.on("tool_call", (event) => kernelGuard.onToolCall(event));
+	} catch (error) {
+		loadFailed("kernel-guard.ts", error);
+	}
+
+	try {
 		const rlmDelete: typeof import("./rlm-delete.ts") = await import(join(dir, "rlm-delete.ts"));
 		pi.on("tool_call", (event, ctx) => rlmDelete.onToolCall(event, ctx));
 	} catch (error) {

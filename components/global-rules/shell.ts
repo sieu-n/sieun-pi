@@ -147,3 +147,21 @@ export function shellScript(eff: string[]): string | null {
 	const ci = eff.findIndex((w, idx) => idx > 0 && /^-[a-z]*c$/.test(w));
 	return ci !== -1 && eff[ci + 1] ? eff[ci + 1] : null;
 }
+
+/**
+ * Applies plain `NAME=value` and `export NAME=value` commands to the later words of the same script, so `URL=...; curl "$URL"`
+ * reads as the literal command. A name the script never set stays as written.
+ */
+export function expandVars(commands: string[][], vars: Map<string, string> = new Map()): string[][] {
+	const sub = (word: string) => word.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (whole, name: string) => vars.get(name) ?? whole);
+	const out: string[][] = [];
+	for (const raw of commands) {
+		const words = /^(?:export|declare|local|readonly)$/.test(raw[0] ?? "") ? raw.slice(1) : raw;
+		if (words.length && words.every((w) => /^[A-Za-z_]\w*=/.test(w))) {
+			for (const w of words) vars.set(w.slice(0, w.indexOf("=")), sub(w.slice(w.indexOf("=") + 1)));
+			continue;
+		}
+		out.push(raw.map(sub));
+	}
+	return out;
+}

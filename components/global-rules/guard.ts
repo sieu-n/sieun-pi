@@ -92,7 +92,7 @@ export function judgeShellText(text: string, cwd: string): Verdict[] {
 	return [
 		...judgeGrep(text, cwd),
 		...judgeSieunPi(text, cwd),
-		...judgeSendShell(text),
+		...judgeSendShell(text, cwd),
 		...judgeMergeShell(text, cwd),
 		...(text.includes("cua-driver") ? judgeCuaShell(text) : []),
 	];

@@ -93,12 +93,16 @@ For a multi-step task on these sites, `agent()` is usually cheaper, because it h
 
 ## Outside sends
 
-An email or a vendor ticket reply goes out only after the owner approves it on a For you todo.
+An email, a vendor ticket reply, or a message or post to someone outside goes out only after the owner approves it on a For you todo.
 
 - Reading mail and filling a reply or compose box are allowed.
-- `run()` refuses code that presses Send, or a send shortcut such as `Meta+Enter`, on a webmail page such as Gmail.
-- `run()` refuses code that submits or replies on a support ticket page.
-- `agent()` refuses a task that asks the Aside agent to send or reply to an email or a ticket.
+- Every REPL call, `run()` and the private `_repl()` alike, passes the send check.
+- It refuses code that presses Send, or a send shortcut such as `Meta+Enter`, on a webmail page such as Gmail.
+- It refuses code that submits, replies or presses Enter on a support ticket page or a contact form.
+- It refuses code that posts, sends or presses Enter on X, LinkedIn, Discord, Facebook, Instagram, Reddit, WhatsApp web, Telegram web, or a GitHub page outside `sieu-n` and `virev-ai`.
+- It refuses the site skills' send calls (`linkedin.sendMessage`, `imessage.send` and the like) and any click or typing inside a support chat widget such as Intercom.
+- `agent()` refuses a task that asks the Aside agent to send or reply to an email, a ticket, or a message on those sites.
+- Slack stays allowed, because both Slack workspaces are the owner's own.
 - To send, draft the message and add a For you todo with the draft, the recipient, and choices such as "Send it" / "Not yet".
 - After the owner approves the todo, pass `owner_ok="<chat id>/<todo id>"` to `run()` or `agent()`.
 - The check reads the chat's board through `components/user-history/src/owner-ok.ts`: the todo must be checked off and answered by the owner with its first choice or another go.

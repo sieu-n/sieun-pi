@@ -236,7 +236,7 @@ GMAIL = '{"u": "https://mail.google.com/mail/u/0/#inbox/FMfcgzQXKWdRxl"}'
 CHAT = "01a00000-0000-7000-8000-000000000001"
 
 
-class OutsideSendTests(Base):
+class BoardBase(Base):
     def setUp(self):
         super().setUp()
         board = {"v": 2, "rev": 1, "plan": [], "scratch": [], "updatedAt": "2026-10-10T00:00:00Z", "todos": [
@@ -253,6 +253,8 @@ class OutsideSendTests(Base):
         data.start()
         self.addCleanup(data.stop)
 
+
+class OutsideSendTests(BoardBase):
     def test_the_iwebfusion_send_click_is_refused_without_reaching_the_browser(self):
         mcp = self.fake(GMAIL)
         with self.assertRaises(ab.AsideError) as caught:
@@ -309,3 +311,108 @@ class OutsideSendTests(Base):
             with self.assertRaises(ab.AsideError) as caught:
                 self.call(ab.run(INCIDENT, owner_ok=token))
             self.assertIn(why, str(caught.exception), token)
+
+
+class PageFakeMcp(FakeMcp):
+    """Answers the send check's page URL probe with the tab URL and every other call with the given reply."""
+
+    def __init__(self, url, reply):
+        super().__init__([])
+        self.url, self.reply = url, reply
+
+    async def call_tool(self, server, tool, arguments):
+        self.calls.append(arguments)
+        if "JSON.stringify({u:" in str(arguments.get("code", "")):
+            return json.dumps({"u": self.url})
+        return self.reply
+
+
+class OutsideSendGapTests(BoardBase):
+    """Gap rows from the c37 gap table: chat, social, contact-form and ticket sends the run-time check must refuse."""
+
+
+    def page(self, url, reply="sent"):
+        mcp = PageFakeMcp(url, reply)
+        module = types.ModuleType("rlm")
+        module.mcp = mcp
+        patcher = patch.dict(sys.modules, {"rlm": module})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return mcp
+
+    def sent_code(self, mcp):
+        return [c["code"] for c in mcp.calls if "code" in c and "JSON.stringify({u:" not in c["code"]]
+
+    def assert_refused(self, code, url, call="run"):
+        mcp = self.page(url)
+        with self.assertRaises(ab.AsideError) as caught:
+            if call == "_repl":
+                self.call(ab._repl(code, "t"))
+            else:
+                self.call(ab.run(code))
+        self.assertIn("For you todo", str(caught.exception), code)
+        self.assertFalse(any(code in sent for sent in self.sent_code(mcp)), f"{code} reached the browser")
+
+    def test_ab9_whmcs_reply_button_on_a_ticket_page(self):
+        self.assert_refused("await page.fill('#inputMessage','hi'); await page.click('#btnReply')", "https://my.geonode.com/viewticket.php?tid=ABC")
+
+    def test_ab11_enter_on_a_zendesk_request_page(self):
+        self.assert_refused("await page.fill('textarea','hi'); await page.keyboard.press('Enter')", "https://acme.zendesk.com/hc/requests/123")
+
+    def test_ab12_intercom_messenger_on_a_vendor_dashboard(self):
+        self.assert_refused(
+            "await page.frameLocator('iframe[name=intercom-messenger-frame]').locator('textarea').fill('hi'); await page.keyboard.press('Enter')",
+            "https://app.geonode.com/dashboard",
+        )
+
+    def test_ab13_contact_form_submit(self):
+        self.assert_refused(
+            "await page.fill('#email','me@x.com'); await page.fill('#msg','hi'); await page.click('button[type=submit]')",
+            "https://www.vendor.com/contact",
+        )
+
+    def test_ab16_discord_web_enter(self):
+        self.assert_refused("await page.keyboard.type('hi'); await page.keyboard.press('Enter')", "https://discord.com/channels/1/2")
+
+    def test_ab17_linkedin_skill_send_message_and_invitation(self):
+        self.assert_refused("await linkedin.sendMessage({recipients:['johndoe'], text:'Hi'})", "https://www.linkedin.com/feed/")
+        self.assert_refused("await linkedin.sendInvitation({profile:'johndoe', note:'Hi'})", "https://example.com/")
+
+    def test_ab18_x_post_button(self):
+        self.assert_refused("await page.getByTestId('tweetButtonInline').click()", "https://x.com/home")
+        self.assert_refused("await page.getByRole('button', {name: 'Post'}).click()", "https://x.com/compose/post")
+
+    def test_ab19_imessage_skill_send(self):
+        self.assert_refused("await imessage.send({to:'+14155551212', text:'hi'})", "https://example.com/")
+
+    def test_ab21_private_repl_also_refuses_a_send(self):
+        self.assert_refused("await page.getByRole('button',{name:'Send'}).click()", "https://mail.google.com/mail/u/0/#inbox?compose=new", call="_repl")
+
+    def test_agent_task_to_dm_on_linkedin_is_refused(self):
+        mcp = self.fake()
+        with self.assertRaises(ab.AsideError):
+            self.call(ab.agent("DM Jane Doe on LinkedIn and tell her we can start the campaign next week."))
+        self.assertEqual(mcp.calls, [])
+
+    def test_approved_todo_lets_a_discord_send_through(self):
+        mcp = self.page("https://discord.com/channels/1/2")
+        self.assertEqual(self.call(ab.run("await page.keyboard.type('hi'); await page.keyboard.press('Enter')", owner_ok=f"{CHAT}/t1")), "sent")
+        self.assertTrue(any("keyboard.press" in sent for sent in self.sent_code(mcp)))
+
+    def test_ab23_slack_stays_allowed(self):
+        self.page("")
+        self.assertEqual(self.call(ab.agent("Message Alex on Slack that the invoice is paid.")), "sent")
+        self.page("https://app.slack.com/client/T05/C0")
+        self.assertEqual(self.call(ab.run("await page.locator('.ql-editor').fill('hi'); await page.keyboard.press('Enter')")), "sent")
+        self.page("")
+        self.assertEqual(self.call(ab.run("const c = await slack.getClient('T05'); await c.chat.postMessage({channel:'C0', text:'hi'})")), "sent")
+
+    def test_typing_on_chat_and_social_pages_without_a_send_passes(self):
+        for url, code in (
+            ("https://discord.com/channels/1/2", "await page.keyboard.type('draft')"),
+            ("https://x.com/home", "return await page.evaluate(() => document.title)"),
+            ("https://www.linkedin.com/feed/", "await page.getByRole('link', {name: 'Messaging'}).click()"),
+            ("https://www.vendor.com/contact", "await page.fill('#msg','draft')"),
+        ):
+            self.page(url, "ok")
+            self.assertEqual(self.call(ab.run(code)), "ok", url)
