@@ -5,14 +5,15 @@ import { agentLines } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { BRIEF_CORRECTIONS, CHAT_BOARD_TOOL, CHAT_BRIEF, CHAT_BRIEF_ENTRY, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, type ChatJobOf, createSessionNames, hasChatMarker, JOB_REPLY_TOOL, jobOf,
-  jobPersonaGuideline, jobRegistry, jobReplyGuideline, pinnedBrief, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, tellOwner, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
+  jobPersonaGuideline, jobRegistry, jobReplyGuideline, pinnedBrief, TELL_OWNER_LIMIT, TELL_OWNER_TOOL, topSession, withChatTool, withReplyCap } from "../src/chats.ts";
 import { boardRevLine, parseBoardOps, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/chat-checkin.ts";
 import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
-import { lastOwnerText } from "../src/shared/reply-lint.ts";
+import { lastOwnerText, todoLimitRefusal } from "../src/shared/reply-lint.ts";
+import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -54,6 +55,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const input = params as { ops?: unknown; check_in?: unknown };
       const ops = parseBoardOps(input.ops ?? []);
+      const refusal = todoLimitRefusal(ops);
+      if (refusal) throw new Error(refusal);
       const change = input.check_in === undefined ? undefined : parseChatCheckIn(input.check_in);
       const sessionId = ctx.sessionManager.getSessionId();
       const settings = checkInSettings(join(dataDir(), "check-in-settings.json"));
@@ -88,7 +91,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       let owner = "";
       try { owner = lastOwnerText(ctx.sessionManager.getBranch().flatMap(entry => entry.type === "message" ? [entry.message as ThreadMessage] : [])); } catch { /* no owner words */ }
-      const result = tellOwner((params as { text?: unknown }).text, owner);
+      const jobsOf = async () => linkableJobs(await chatAgentsOf(ctx.sessionManager.getSessionId()));
+      const result = await tellOwnerChecked((params as { text?: unknown }).text, owner, jobsOf);
       if (!result.ok) throw new Error(result.text);
       return { content: [{ type: "text", text: result.text }], details: undefined };
     },

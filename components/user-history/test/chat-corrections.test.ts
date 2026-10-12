@@ -9,7 +9,7 @@ import { applyCorrection, briefCorrections, type ChatRef, CORRECTION_TOOL, Corre
   matchCorrection, OUTSIDE_ACTION_RULE, parseCorrectionCall, parseLedger, READ_RULE, repeatsBetween, themeOverlap, themeTokens } from "../src/chat-corrections.ts";
 import { CHAT_BRIEF, CHAT_MODE_ENTRY, jobRegistry, REPLY_CAP_NOTE } from "../src/chats.ts";
 import type { PrecheckOutput } from "../src/shared/chat-duties.ts";
-import { unlinkedJobSentence } from "../scripts/duties/job-mentions.ts";
+import { unlinkedJobSentence } from "../src/shared/job-mentions.ts";
 
 const VP: ChatRef = { id: "vp", name: "dev VP" };
 const CI: ChatRef = { id: "ci", name: "VP of CI" };

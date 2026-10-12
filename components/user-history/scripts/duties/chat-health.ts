@@ -15,7 +15,7 @@ import type { ThreadMessage } from "../../src/shared/types.ts";
 import { boardClasses, daemonSessions } from "./board-classes.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 import { noProgressHours, ownerBoardAsk, unfixedFlags } from "./checkin-quality.ts";
-import { unlinkedJobSentence } from "./job-mentions.ts";
+import { unlinkedJobSentence } from "../../src/shared/job-mentions.ts";
 
 const HOUR = 60 * 60_000;
 const WINDOW_MS = 24 * HOUR;
