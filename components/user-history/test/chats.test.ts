@@ -339,7 +339,7 @@ function fakeThreads(calls: string[], pinLimit = 8) {
     /** Job threads whose daemon state shows work (a turn, a background bash, queued input), and the jobs `reloadIdle` reloaded. */
     sessionBusy: new Set<string>(),
     reloaded: [] as string[],
-    async reloadIdle(id: string) { if (this.sessionBusy.has(id)) return "busy" as const; this.reloaded.push(id); return "reloaded" as const; },
+    async reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved"> { if (this.sessionBusy.has(id)) return "busy"; this.reloaded.push(id); return "reloaded"; },
     async create(input: { cwd: string; name: string; kind: "chat"; thinkingLevel?: string }) { calls.push(`create ${input.kind} ${input.name} ${input.cwd}`); return { id: `s${next++}` }; },
     pin(id: string) { if (!pinned.has(id) && pinned.size >= pinLimit) return false; calls.push(`pin ${id}`); pinned.add(id); return true; },
     unpin(id: string) { calls.push(`unpin ${id}`); pinned.delete(id); },
