@@ -1,4 +1,4 @@
-"""The c43 limit check for agent messages a chat sends, installed in the chat's Python kernel by message-limit-check.ts.
+"""The c43 limit check for agent messages a chat or a job of a chat sends, installed in its Python kernel by message-limit-check.ts.
 
 agent_message.send reaches the host through rlm.host_request. This wraps host_request in rlm and in the agent_message module, which imported
 its own reference. Before an "agent_message.send" request goes out, message-limit-check.ts lints the text with reply-lint.ts's limit rule; a
@@ -20,7 +20,7 @@ class LimitRefused(Exception):
 
 def refusal(text: str):
     try:
-        proc = subprocess.run(["node", CHECK], input=json.dumps({"message": text}), capture_output=True, text=True)
+        proc = subprocess.run(["node", CHECK], input=json.dumps({"message": text, "dataDir": globals().get("DATA_DIR")}), capture_output=True, text=True)
         return json.loads(proc.stdout.strip().splitlines()[-1]).get("refusal")
     except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError):
         return None
@@ -36,7 +36,11 @@ def checked(host_request):
             reason = refusal(text) if isinstance(text, str) else None
             if reason:
                 raise LimitRefused(reason)
-        return await host_request(request_type, payload, *args, **kwargs)
+        # Look the real function up in the live rlm module at call time. A kernel revive restores this closure with a copy of
+        # host_request whose globals lost __package__, so its `from . import repl` fails (launch VP, 2026-10-13).
+        rlm = sys.modules.get("rlm")
+        real = getattr(rlm, "unchecked_host_request", None) or host_request
+        return await real(request_type, payload, *args, **kwargs)
 
     request.limit_checked = True
     request.__doc__ = host_request.__doc__
@@ -44,6 +48,12 @@ def checked(host_request):
 
 
 def install() -> None:
+    try:
+        import rlm
+    except ImportError:
+        rlm = None
+    if rlm is not None and not getattr(rlm.host_request, "limit_checked", False):
+        rlm.unchecked_host_request = rlm.host_request
     for name in ("rlm", "agent_message"):
         module = sys.modules.get(name)
         if module is None:

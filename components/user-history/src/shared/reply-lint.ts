@@ -122,28 +122,77 @@ const SENTENCE = /(?<=[.!?\u3002])\s+/;
 
 /**
  * A threshold on a rate or size (c43): a comparator right before it, at most two words between ("under metal's 75 MB/s", "<75 MB/s", "above 150
- * MB/s"). A symbol is always a threshold; a word comparator counts only when the sentence names a line, gate, stop, budget or the like, so
- * "NVMe sat under 20 MB/s all day" stays a reading. Metal box owner sent "My +15 lines for the canary: IO avg300 under 5%, NVMe 15-min mean
- * under 75 MB/s" to the Crawler VP on 10-12 04:40Z, and the Crawler VP gated census on it (board step p118 says "under metal's 75 MB/s step line").
+ * MB/s"). A symbol is always a threshold. A word comparator counts when the sentence names a line, gate, stop, budget or the like, or gives an
+ * order or condition (DIRECTIVE), so "NVMe sat under 20 MB/s all day" stays a reading. Metal box owner sent "My +15 lines for the canary: IO
+ * avg300 under 5%, NVMe 15-min mean under 75 MB/s" to the Crawler VP on 10-12 04:40Z, and the Crawler VP gated census on it (board step p118
+ * says "under metal's 75 MB/s step line").
  */
 const CMP_WORD = "under|below|over|above|beyond|within|at most|at or below|no more than|not more than|less than|more than|exceed(?:s|ing)?";
 const CMP_GAP = "(?:\\s*(?:[\\p{L}'\\u2019-]+\\s+){0,2}(?:about\\s+|~)?)";
 const THRESHOLD = new RegExp(`(?:(?<sym>(?<![-=<>])[<>]=?|[\\u2264\\u2265])|\\b(?:${CMP_WORD})\\b)${CMP_GAP}(?=\\d)`, "giu");
 const RATE_AT = new RegExp(`^(?:${RATE.source})`, "u");
-const LINE_WORD = /\b(?:lines?|gates?|gating|gated|thresholds?|stops?|stopping|budgets?|guards?|holds?|ceilings?|tripwires?|alarms?|alerts?)\b/iu;
+const LINE_NOUNS = "lines?|gates?|gating|gated|thresholds?|stops?|stopping|budgets?|guards?|holds?|ceilings?|tripwires?|alarms?|alerts?";
+const LINE_WORD = new RegExp(`\\b(?:${LINE_NOUNS})\\b`, "iu");
+/** An order or a condition: "Add the NVMe write 15-min mean under 75 MB/s to the +15 read" (Crawler VP to the posts lane, 10-10 03:40Z). */
+const DIRECTIVE = new RegExp("^[\\s\\-*+\\d.)]*(?:(?:then|so|please|and|also|now)\\s+)?(?:add|keep|hold|set|put|cap|limit|gate|stop|pause|throttle|" +
+  "require|ramp|make sure|ensure|treat|watch)\\b|\\b(?:must|needs? to|has to|have to|should|unless)\\b", "iu");
+/** A condition, case kept so SQL's "IF NOT EXISTS" is none: "Pause the lane if writes go over 150 MB/s". */
+const CONDITION = /\b(?:[Ii]f|only if)\b/u;
 /** The same threshold with any number, percents too ("IO avg300 under 5%"): a threshold is no reading, so it is cut before MEASURED looks. */
 const THRESHOLD_SPAN = new RegExp(`(?:(?<![-=<>])[<>]=?|[\\u2264\\u2265]|\\b(?:${CMP_WORD})\\b)${CMP_GAP}\\d[\\d,.]*\\s*%?`, "giu");
 /** A vendor limit or an incident behind the number, the other two kinds of evidence c43 names besides a measurement, or the word measured. */
 const VENDOR = /\b(?:vendor|rated|datasheet|spec\s+sheet|specs?\b(?!-)|documented|docs?|quota|plan (?:limit|cap|allows|includes)|api limit|sla)\b/iu;
 const INCIDENT = /\b(?:incidents?|outages?|post-?mortem|fell over|crash(?:ed|es)?|oom(?:-killed)?|went down|stalled|froze|measured)\b|장애/iu;
-/** A sentence that disowns the limit it names or asks about it: "an invented 75 MB/s 'caution line'", "are the 10 MB/s ... rates measured?". */
-const DISOWNED = /\b(?:invented|unbacked|arbitrary|made-up|bogus)\b|\?\s*$/iu;
+/**
+ * A sentence that disowns the limit it names or asks about it: "an invented 75 MB/s 'caution line'", "every unmeasured limit stripped", "are the
+ * 10 MB/s ... rates measured?".
+ */
+const DISOWNED = /\b(?:invented|unbacked|unmeasured|arbitrary|made-up|bogus|overruled|no longer|(?:is|are|was|were) gone)\b|\?\s*$/iu;
+const CAP_WORDS = new RegExp(CAP_WORD.source, "giu");
+/**
+ * A cap named as what a reading is compared with: "1438 MB (cap 4096)", "4457 MB against the 4096 cap", "21.4 of 22.5 GB used, over ops guy's 16
+ * GiB cap". It states no new limit, so with a number before it, it is no claim.
+ */
+const CAP_REF = /(?:\b(?:against|under|over|below|above|within|vs\.?|versus|past|fits?)\s+(?:[\p{L}\p{N}.,'\u2019-]+\s+){0,4}|\(\s*)$/iu;
+
+/**
+ * A limit named by its number ("the 75 MB/s line", "metal's 75 MB/s step line") in a sentence that says what it carries: "the 75 MB/s line
+ * carries about 2,100 new/min" and "That puts the 75 MB/s line near 2,200 new/min" (census write cuts to the Crawler VP, 10-12).
+ */
+const NAMED = new RegExp(`(?:${RATE.source})\\s+(?:[\\p{L}'-]+\\s+){0,2}?(?:lines?|gates?|thresholds?|stops?|budgets?|ceilings?)\\b`, "giu");
+const CAPACITY = /\b(?:carr(?:y|ies|ied)|allows?|holds|lets?|fits?|supports?|puts?)\b/iu;
+
+/** Where a named limit with a capacity verb starts, or -1. */
+function namedAt(sentence: string): number {
+  if (!CAPACITY.test(sentence)) return -1;
+  for (const named of sentence.matchAll(NAMED)) {
+    const before = sentence.slice(0, named.index);
+    const ref = CAP_REF.exec(before);
+    if (NOT_CAP.test(before) || (ref && /\d/.test(before.slice(0, ref.index)))) continue;
+    return Math.max(...[",", ";", ":", "("].map(mark => sentence.lastIndexOf(mark, named.index - 1) + 1));
+  }
+  return -1;
+}
+
+/** Where the first claimed cap word is in a sentence with a rate or size, or -1. */
+function capAt(sentence: string): number {
+  if (!RATE.test(sentence)) return -1;
+  for (const cap of sentence.matchAll(CAP_WORDS)) {
+    const before = sentence.slice(0, cap.index);
+    if (NOT_CAP.test(before)) continue;
+    const ref = CAP_REF.exec(before);
+    if (ref && /\d/.test(before.slice(0, ref.index))) continue;
+    return cap.index;
+  }
+  return -1;
+}
 
 /** Where the quote of a threshold on a rate or size starts: at most 4 words before the comparator, inside its clause. -1 when there is none. */
 function thresholdAt(sentence: string): number {
   for (const match of sentence.matchAll(THRESHOLD)) {
     const after = sentence.slice(match.index + match[0].length);
-    if (!RATE_AT.test(after) || (!match.groups?.sym && !LINE_WORD.test(sentence)) || NOT_CAP.test(sentence.slice(0, match.index))) continue;
+    if (!RATE_AT.test(after) || NOT_CAP.test(sentence.slice(0, match.index))) continue;
+    if (!match.groups?.sym && !LINE_WORD.test(sentence) && !DIRECTIVE.test(sentence) && !CONDITION.test(sentence) && !/\bcarr(?:y|ies|ied)\b/iu.test(sentence)) continue;
     const clause = Math.max(...[",", ";", ":", "("].map(mark => sentence.lastIndexOf(mark, match.index - 1) + 1));
     const words = /(?:\S+\s+){0,4}$/u.exec(sentence.slice(clause, match.index))!;
     return clause + words.index;
@@ -158,9 +207,9 @@ function thresholdAt(sentence: string): number {
 function unmeasuredLimits(lines: readonly { words: string }[]): string[] {
   return lines.flatMap(line => line.words.split(SENTENCE)).flatMap(sentence => {
     if (DISOWNED.test(sentence)) return [];
-    const cap = CAP_WORD.exec(sentence);
-    const capAt = cap && !NOT_CAP.test(sentence.slice(0, cap.index)) && RATE.test(sentence) ? cap.index : -1;
-    const at = capAt >= 0 ? capAt : thresholdAt(sentence);
+    const cap = capAt(sentence);
+    const threshold = cap >= 0 ? cap : thresholdAt(sentence);
+    const at = threshold >= 0 ? threshold : namedAt(sentence);
     if (at < 0) return [];
     const evidence = MEASURED.test(sentence.replace(THRESHOLD_SPAN, " ")) || VENDOR.test(sentence) || INCIDENT.test(sentence);
     if (evidence && !CAUTION.test(sentence)) return [];
@@ -169,10 +218,21 @@ function unmeasuredLimits(lines: readonly { words: string }[]): string[] {
 }
 
 /**
+ * The text with each job name that holds a cap word cut out: the Crawler VP's job "instagram 401 ceiling" is a name, not a ceiling. `names` are
+ * the job names the chats know (src/limit-names.ts).
+ */
+function withoutNames(text: string, names: readonly string[]): string {
+  const capped = names.filter(name => CAP_WORD.test(name)).sort((a, b) => b.length - a.length);
+  if (!capped.length) return text;
+  const escaped = capped.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"));
+  return text.replace(new RegExp(`(?<![\\p{L}\\p{N}])(?:${escaped.join("|")})(?![\\p{L}\\p{N}])`, "giu"), "the job");
+}
+
+/**
  * The limit claims in board text the chat writes: For you todos, which the owner reads and answers, and plan steps (text, note, waitFor), which
  * the chat and its jobs act on. Step text is where the Crawler VP put metal's 75 MB/s line that gated census (c43).
  */
-export function boardLimitClaims(ops: readonly BoardOp[]): string[] {
+export function boardLimitClaims(ops: readonly BoardOp[], names: readonly string[] = []): string[] {
   const texts = (op: BoardOp): unknown[] => {
     if (op.op === "todo_add" || op.op === "todo_update") return [op.text];
     if (op.op === "plan_add") return [op.text, op.waitFor];
@@ -180,23 +240,23 @@ export function boardLimitClaims(ops: readonly BoardOp[]): string[] {
     if (op.op === "plan_set") return op.items.flatMap(function items(item): unknown[] { return [item.text, item.note, item.waitFor, ...(item.children ?? []).flatMap(items)]; });
     return [];
   };
-  return ops.flatMap(texts).flatMap(text => typeof text === "string" ? unmeasuredLimits(proseLines(text)) : []).map(claim => `"${claim}"`);
+  return ops.flatMap(texts).flatMap(text => typeof text === "string" ? unmeasuredLimits(proseLines(withoutNames(text, names))) : []).map(claim => `"${claim}"`);
 }
 
 /** The chat_board refusal for board text with limit claims, or null: the claims and the unmeasured hint. */
-export function boardLimitRefusal(ops: readonly BoardOp[]): string | null {
-  const claims = boardLimitClaims(ops);
+export function boardLimitRefusal(ops: readonly BoardOp[], names: readonly string[] = []): string | null {
+  const claims = boardLimitClaims(ops, names);
   return claims.length ? `Refused, nothing changed: a todo or plan step states a limit with no evidence ${claims.join(", ")}. Fix: ${HINTS.unmeasured}.` : null;
 }
 
 /**
- * The refusal for an agent message a chat sends with a limit claim, or null. A limit that one chat passes to another gets the same check as a
- * reply to the owner, because the receiving chat acts on it (c43, owner 10-12 22:37 KST, "r u fucking kidding?").
+ * The refusal for an agent message a chat or a job sends with a limit claim, or null. A limit that one session passes to another gets the same
+ * check as a reply to the owner, because the receiver acts on it (c43, owner 10-12 22:37 KST, "r u fucking kidding?").
  */
-export function messageLimitRefusal(text: string): string | null {
-  const claims = unmeasuredLimits(proseLines(text)).map(claim => `"${claim}"`);
+export function messageLimitRefusal(text: string, names: readonly string[] = []): string | null {
+  const claims = unmeasuredLimits(proseLines(withoutNames(text, names))).map(claim => `"${claim}"`);
   return claims.length ? `Refused, not sent: this agent message states a limit with no evidence ${claims.join(", ")}. Fix: ${HINTS.unmeasured}. ` +
-    "If you only report the other chat's line, drop the number and ask what it rests on." : null;
+    "If you only report another session's line, drop the number and ask what it rests on." : null;
 }
 
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;

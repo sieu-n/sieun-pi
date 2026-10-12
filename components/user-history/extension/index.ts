@@ -14,6 +14,7 @@ import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
 import { boardLimitRefusal, lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
+import { jobNames } from "../src/limit-names.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
@@ -56,7 +57,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const input = params as { ops?: unknown; check_in?: unknown };
       const ops = parseBoardOps(input.ops ?? []);
-      const refusal = boardLimitRefusal(ops);
+      const refusal = boardLimitRefusal(ops) && boardLimitRefusal(ops, await jobNames(dataDir()));
       if (refusal) throw new Error(refusal);
       const change = input.check_in === undefined ? undefined : parseChatCheckIn(input.check_in);
       const sessionId = ctx.sessionManager.getSessionId();
@@ -228,8 +229,10 @@ export default function historyExtension(pi: ExtensionAPI): void {
       if (marked && event.toolName === "ipython" && typeof event.input.code === "string") {
         const names = createSessionNames(event.input.code);
         if (names.length) await jobs().add(names, ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId());
-        // A limit one chat sends another gets the reply rule's evidence check before it leaves the kernel (c43).
-        const code = withMessageCheck(event.input.code);
+      }
+      // A limit a chat or a job of a chat sends another session gets the reply rule's evidence check before it leaves the kernel (c43).
+      if ((marked || job || underChat) && event.toolName === "ipython" && typeof event.input.code === "string") {
+        const code = withMessageCheck(event.input.code, dataDir());
         if (code !== undefined) event.input.code = code;
       }
       return undefined;
