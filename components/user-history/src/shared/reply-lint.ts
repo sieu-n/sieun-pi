@@ -6,8 +6,8 @@ import type { BoardOp, ThreadMessage } from "./types.ts";
  * The reply lint: what in a reply to the owner breaks the reply rules (correction c1/c18, owner 10-08 and 10-09: "unslop, you are talking so
  * much slop", "두번째 단계가 뭐고 pi server가 뭘계산한다는거야"). tell_owner refuses text with findings; the chat server sends a `[reply check]`
  * after an owner turn whose last reply had findings; the model's view carries the findings of the reply before each owner message; Chat
- * health counts replies with findings other than length (slop_replies). A limit with a rate or size and no measured saturation in its own sentence
- * is a finding too, in a reply or a For you todo (c43, owner 10-12: "what is the bottleneck actual IOPS? CPU? RAM??????", "r u fucking kidding?").
+ * health counts replies with findings other than length (slop_replies). A limit with a rate or size and no evidence in its own sentence is a
+ * finding too, in a reply, a todo, a plan step or an agent message a chat sends (c43, owner 10-12: "what is the bottleneck actual IOPS? CPU? RAM??????", "r u fucking kidding?").
  */
 export type FindingKind = "long" | "bullets" | "heading" | "label" | "dash" | "bold" | "abstract" | "jargon" | "unmeasured";
 export interface Finding { kind: FindingKind; what: string; hint: string }
@@ -76,7 +76,7 @@ const HINTS: Record<FindingKind, string> = {
   abstract: "name the real thing instead: what runs, what it reads or counts, the number",
   jargon: "these are our internal names the owner did not use; say what it does for the owner in plain words",
   unmeasured: "in the same sentence, name the resource you measured and how full it was (disk 95% busy, CPU 400%, p99 latency 40 ms, 429s on " +
-    "40% of calls); a caution line nobody measured is no limit, so drop it and say you dropped it (c43)",
+    "40% of calls), the vendor limit or the incident behind the number; a caution line nobody measured is no limit, so drop it and say you dropped it (c43)",
 };
 
 /**
@@ -86,10 +86,14 @@ const HINTS: Record<FindingKind, string> = {
 const CAP_WORD = new RegExp([
   "(?<!all[- ])\\bcap(?:s|ped|ping)?\\b", "\\bceilings?\\b", "\\blimit(?:s|ed|ing)?\\b", "(?<!\\p{Lu}\\p{L}*\\s)\\bmax(?:imum|es|ed)?\\b",
   "\\bbottleneck(?:s|ed)?\\b", "\\btops? out\\b", "\\bonly fits?\\b", "\\b(?:can't|cannot|can not|won't) (?:carry|handle|fit|keep up|go past|exceed)\\b",
-  "\\b(?:can|could) only\\b", "\\bup to\\s+(?:about\\s+|~)?\\d", "\\bban risk\\b", "\\bbefore\\b(?:\\s+\\S+){0,4}\\s+bans?\\b",
+  "\\b(?:can|could) only\\b", "(?<!\\bback\\s)\\bup to\\s+(?:about\\s+|~)?\\d", "\\bban risk\\b", "\\bbefore\\b(?:\\s+\\S+){0,4}\\s+bans?\\b",
   "\\bbanned (?:after|past|above|over|beyond)\\b", "최대", "한계", "상한", "병목",
 ].join("|"), "iu");
-const NOT_CAP = /(?:\bnot|n't|\bno)\s+(?:the\s+|a\s+|an\s+|our\s+)?(?:[\p{L}-]+\s+)?$/iu;
+/**
+ * A cap word that is denied or removed, not claimed: "not a real limit", "no 'metal 80/s cap'", "remove the daily wire cap", "dropped the 75 MB/s
+ * line" (Crawler VP agent messages, 10-12).
+ */
+const NOT_CAP = /(?:\bnot|n't|\bno)\s+(?:(?:the|a|an|our|any|every|this|that|its|their|your)\s+)?(?:[\p{L}'-]+\s+){0,2}$|\b(?:drop|remov|strip|lift|wip|delet)\p{L}*\b[^,;:]*$/iu;
 const PER = "second|sec|minute|min|hour|hr|day|account|profile|proxy|ip|worker|core|request|call|session";
 const RATE = new RegExp([
   `\\d[\\d,.]*\\s*[kKmM]?\\s*(?:[\\p{L}]+\\s+){0,2}(?:a|an|per|each|every)\\s+(?:${PER})s?\\b`,
@@ -116,26 +120,83 @@ const CAUTION = new RegExp([
 ].join("|"), "iu");
 const SENTENCE = /(?<=[.!?\u3002])\s+/;
 
-/** Each sentence that states a limit with a rate or size and does not carry the measured saturation itself, or calls the limit a caution line. */
+/**
+ * A threshold on a rate or size (c43): a comparator right before it, at most two words between ("under metal's 75 MB/s", "<75 MB/s", "above 150
+ * MB/s"). A symbol is always a threshold; a word comparator counts only when the sentence names a line, gate, stop, budget or the like, so
+ * "NVMe sat under 20 MB/s all day" stays a reading. Metal box owner sent "My +15 lines for the canary: IO avg300 under 5%, NVMe 15-min mean
+ * under 75 MB/s" to the Crawler VP on 10-12 04:40Z, and the Crawler VP gated census on it (board step p118 says "under metal's 75 MB/s step line").
+ */
+const CMP_WORD = "under|below|over|above|beyond|within|at most|at or below|no more than|not more than|less than|more than|exceed(?:s|ing)?";
+const CMP_GAP = "(?:\\s*(?:[\\p{L}'\\u2019-]+\\s+){0,2}(?:about\\s+|~)?)";
+const THRESHOLD = new RegExp(`(?:(?<sym>(?<![-=<>])[<>]=?|[\\u2264\\u2265])|\\b(?:${CMP_WORD})\\b)${CMP_GAP}(?=\\d)`, "giu");
+const RATE_AT = new RegExp(`^(?:${RATE.source})`, "u");
+const LINE_WORD = /\b(?:lines?|gates?|gating|gated|thresholds?|stops?|stopping|budgets?|guards?|holds?|ceilings?|tripwires?|alarms?|alerts?)\b/iu;
+/** The same threshold with any number, percents too ("IO avg300 under 5%"): a threshold is no reading, so it is cut before MEASURED looks. */
+const THRESHOLD_SPAN = new RegExp(`(?:(?<![-=<>])[<>]=?|[\\u2264\\u2265]|\\b(?:${CMP_WORD})\\b)${CMP_GAP}\\d[\\d,.]*\\s*%?`, "giu");
+/** A vendor limit or an incident behind the number, the other two kinds of evidence c43 names besides a measurement, or the word measured. */
+const VENDOR = /\b(?:vendor|rated|datasheet|spec\s+sheet|specs?\b(?!-)|documented|docs?|quota|plan (?:limit|cap|allows|includes)|api limit|sla)\b/iu;
+const INCIDENT = /\b(?:incidents?|outages?|post-?mortem|fell over|crash(?:ed|es)?|oom(?:-killed)?|went down|stalled|froze|measured)\b|장애/iu;
+/** A sentence that disowns the limit it names or asks about it: "an invented 75 MB/s 'caution line'", "are the 10 MB/s ... rates measured?". */
+const DISOWNED = /\b(?:invented|unbacked|arbitrary|made-up|bogus)\b|\?\s*$/iu;
+
+/** Where the quote of a threshold on a rate or size starts: at most 4 words before the comparator, inside its clause. -1 when there is none. */
+function thresholdAt(sentence: string): number {
+  for (const match of sentence.matchAll(THRESHOLD)) {
+    const after = sentence.slice(match.index + match[0].length);
+    if (!RATE_AT.test(after) || (!match.groups?.sym && !LINE_WORD.test(sentence)) || NOT_CAP.test(sentence.slice(0, match.index))) continue;
+    const clause = Math.max(...[",", ";", ":", "("].map(mark => sentence.lastIndexOf(mark, match.index - 1) + 1));
+    const words = /(?:\S+\s+){0,4}$/u.exec(sentence.slice(clause, match.index))!;
+    return clause + words.index;
+  }
+  return -1;
+}
+
+/**
+ * Each sentence that states a limit with a rate or size, as a cap or as a threshold, and does not carry its evidence itself (measured saturation,
+ * a vendor limit or an incident), or calls the limit a caution line.
+ */
 function unmeasuredLimits(lines: readonly { words: string }[]): string[] {
   return lines.flatMap(line => line.words.split(SENTENCE)).flatMap(sentence => {
+    if (DISOWNED.test(sentence)) return [];
     const cap = CAP_WORD.exec(sentence);
-    if (!cap || NOT_CAP.test(sentence.slice(0, cap.index)) || !RATE.test(sentence)) return [];
-    if (MEASURED.test(sentence) && !CAUTION.test(sentence)) return [];
-    return [clipQuote(sentence.slice(cap.index).replace(/\s*\u00a7\s*/g, " ").trim(), 60)];
+    const capAt = cap && !NOT_CAP.test(sentence.slice(0, cap.index)) && RATE.test(sentence) ? cap.index : -1;
+    const at = capAt >= 0 ? capAt : thresholdAt(sentence);
+    if (at < 0) return [];
+    const evidence = MEASURED.test(sentence.replace(THRESHOLD_SPAN, " ")) || VENDOR.test(sentence) || INCIDENT.test(sentence);
+    if (evidence && !CAUTION.test(sentence)) return [];
+    return [clipQuote(sentence.slice(at).replace(/\s*\u00a7\s*/g, " ").trim(), 60)];
   });
 }
 
-/** The limit claims in the text of For you todos (todo_add, todo_update): the owner reads and answers these, so they follow the tell_owner rule (c43). */
-export function todoLimitClaims(ops: readonly BoardOp[]): string[] {
-  return ops.flatMap(op => (op.op === "todo_add" || op.op === "todo_update") && typeof op.text === "string" ? unmeasuredLimits(proseLines(op.text)) : [])
-    .map(claim => `"${claim}"`);
+/**
+ * The limit claims in board text the chat writes: For you todos, which the owner reads and answers, and plan steps (text, note, waitFor), which
+ * the chat and its jobs act on. Step text is where the Crawler VP put metal's 75 MB/s line that gated census (c43).
+ */
+export function boardLimitClaims(ops: readonly BoardOp[]): string[] {
+  const texts = (op: BoardOp): unknown[] => {
+    if (op.op === "todo_add" || op.op === "todo_update") return [op.text];
+    if (op.op === "plan_add") return [op.text, op.waitFor];
+    if (op.op === "plan_update") return [op.text, op.note, op.waitFor];
+    if (op.op === "plan_set") return op.items.flatMap(function items(item): unknown[] { return [item.text, item.note, item.waitFor, ...(item.children ?? []).flatMap(items)]; });
+    return [];
+  };
+  return ops.flatMap(texts).flatMap(text => typeof text === "string" ? unmeasuredLimits(proseLines(text)) : []).map(claim => `"${claim}"`);
 }
 
-/** The chat_board refusal for todos with limit claims, or null: the claims and the unmeasured hint. */
-export function todoLimitRefusal(ops: readonly BoardOp[]): string | null {
-  const claims = todoLimitClaims(ops);
-  return claims.length ? `Refused, nothing changed: a For you todo states a limit with no measurement ${claims.join(", ")}. Fix: ${HINTS.unmeasured}.` : null;
+/** The chat_board refusal for board text with limit claims, or null: the claims and the unmeasured hint. */
+export function boardLimitRefusal(ops: readonly BoardOp[]): string | null {
+  const claims = boardLimitClaims(ops);
+  return claims.length ? `Refused, nothing changed: a todo or plan step states a limit with no evidence ${claims.join(", ")}. Fix: ${HINTS.unmeasured}.` : null;
+}
+
+/**
+ * The refusal for an agent message a chat sends with a limit claim, or null. A limit that one chat passes to another gets the same check as a
+ * reply to the owner, because the receiving chat acts on it (c43, owner 10-12 22:37 KST, "r u fucking kidding?").
+ */
+export function messageLimitRefusal(text: string): string | null {
+  const claims = unmeasuredLimits(proseLines(text)).map(claim => `"${claim}"`);
+  return claims.length ? `Refused, not sent: this agent message states a limit with no evidence ${claims.join(", ")}. Fix: ${HINTS.unmeasured}. ` +
+    "If you only report the other chat's line, drop the number and ask what it rests on." : null;
 }
 
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;

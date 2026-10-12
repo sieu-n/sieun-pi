@@ -12,8 +12,9 @@ import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/chat-checkin.ts";
 import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
-import { lastOwnerText, todoLimitRefusal } from "../src/shared/reply-lint.ts";
+import { boardLimitRefusal, lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
+import { withMessageCheck } from "../src/message-limit-check.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -55,7 +56,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const input = params as { ops?: unknown; check_in?: unknown };
       const ops = parseBoardOps(input.ops ?? []);
-      const refusal = todoLimitRefusal(ops);
+      const refusal = boardLimitRefusal(ops);
       if (refusal) throw new Error(refusal);
       const change = input.check_in === undefined ? undefined : parseChatCheckIn(input.check_in);
       const sessionId = ctx.sessionManager.getSessionId();
@@ -227,6 +228,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
       if (marked && event.toolName === "ipython" && typeof event.input.code === "string") {
         const names = createSessionNames(event.input.code);
         if (names.length) await jobs().add(names, ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId());
+        // A limit one chat sends another gets the reply rule's evidence check before it leaves the kernel (c43).
+        const code = withMessageCheck(event.input.code);
+        if (code !== undefined) event.input.code = code;
       }
       return undefined;
     } catch { return undefined; }

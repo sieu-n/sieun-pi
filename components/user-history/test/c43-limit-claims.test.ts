@@ -6,7 +6,7 @@ import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { tellOwner } from "../src/chats.ts";
-import { lintOwnerReply, todoLimitClaims } from "../src/shared/reply-lint.ts";
+import { lintOwnerReply, boardLimitClaims } from "../src/shared/reply-lint.ts";
 
 // The exact owner-facing lines the Crawler VP chat (01a115e2) sent on 10-12 before the owner repeated c43. Each one carried a limit no
 // measurement backed. 129f66c refused only (2): (1) went out as a For you todo, which no lint read, and (3) passed because the reply said
@@ -47,10 +47,10 @@ test("c43: a measurement counts only in the sentence that states the limit, and 
 });
 
 test("c43: a For you todo that states an unmeasured limit is refused; t28 is the 10-12 text the owner answered", () => {
-  assert.deepEqual(todoLimitClaims([{ op: "todo_add", text: TODO_T28 }]), ['"caps new profiles near 2,200 a minute."']);
-  assert.deepEqual(todoLimitClaims([{ op: "todo_update", id: "t28", text: TODO_T28 }]).length, 1);
-  assert.deepEqual(todoLimitClaims([{ op: "todo_add", text: "OK to switch census to us-08 now?" }, { op: "scratch_add", text: TODO_T28 },
-    { op: "plan_add", text: TODO_T28 }]), [], "plan and scratch notes are not For you text");
+  assert.deepEqual(boardLimitClaims([{ op: "todo_add", text: TODO_T28 }]), ['"caps new profiles near 2,200 a minute."']);
+  assert.deepEqual(boardLimitClaims([{ op: "todo_update", id: "t28", text: TODO_T28 }]).length, 1);
+  assert.deepEqual(boardLimitClaims([{ op: "todo_add", text: "OK to switch census to us-08 now?" }, { op: "scratch_add", text: TODO_T28 }]), [],
+    "scratch notes record what others said");
 });
 
 test("c43: the chat_board tool refuses todo_add t28 and writes nothing; a plain todo goes on the board", async () => {
@@ -62,7 +62,7 @@ test("c43: the chat_board tool refuses todo_add t28 and writes nothing; a plain 
   const board = tools.get("chat_board")!;
   const ctx = { sessionManager: { getSessionId: () => "s-c43" } };
   await assert.rejects(board.execute("c1", { ops: [{ op: "todo_add", text: TODO_T28, choices: ["Cut it", "Keep it"] }] }, undefined, undefined, ctx),
-    /For you todo states a limit with no measurement "caps new profiles near 2,200 a minute\."/);
+    /a todo or plan step states a limit with no evidence "caps new profiles near 2,200 a minute\."/);
   assert.equal(await new BoardStore(dataDir).read("s-c43"), null);
   const added = await board.execute("c2", { ops: [{ op: "todo_add", text: "OK to switch census to us-08 now?" }] }, undefined, undefined, ctx);
   assert.match(added.content[0]!.text, /^Added a todo t1/);
