@@ -101,6 +101,8 @@ An email, a vendor ticket reply, or a message or post to someone outside goes ou
 - It refuses code that submits, replies or presses Enter on a support ticket page or a contact form.
 - It refuses code that posts, sends or presses Enter on X, LinkedIn, Discord, Facebook, Instagram, Reddit, WhatsApp web, Telegram web, or a GitHub page outside `sieu-n` and `virev-ai`.
 - It refuses the site skills' send calls (`linkedin.sendMessage`, `imessage.send` and the like) and any click or typing inside a support chat widget such as Intercom.
+- It checks a click by coordinates, such as `page.mouse.click(x, y)`, when it runs: it reads the element under the point and refuses Send on a webmail page, Send or Submit on a ticket or social page, and a click into a support chat widget's frame.
+- Each send it allows or refuses writes one line to the send log, which `board.sends()` reads.
 - `agent()` refuses a task that asks the Aside agent to send or reply to an email, a ticket, or a message on those sites.
 - Slack stays allowed, because both Slack workspaces are the owner's own.
 - To send, draft the message and add a For you todo with the draft, the recipient, and choices such as "Send it" / "Not yet".

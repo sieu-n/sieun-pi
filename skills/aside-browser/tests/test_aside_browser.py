@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import types
@@ -487,3 +489,84 @@ class OutsideSendGapTests(BoardBase):
         ):
             self.page(url, "ok")
             self.assertEqual(self.call(ab.run(code)), "ok", url)
+
+
+CLICK_PAGE = """
+class Mouse {
+  constructor(p) { this.p = p; }
+  async move(x, y) { this.p.log.push(["move", x, y]); }
+  async down() { this.p.log.push(["down"]); }
+  async up() { this.p.log.push(["up"]); }
+  async click(x, y) { await this.move(x, y); await this.down(); await this.up(); }
+}
+const spec = JSON.parse(process.argv[process.argv.length - 1]);
+const p = {log: [], url: () => spec.url, evaluate: async (fn, arg) => ({title: "T", frame: spec.frame || "", label: spec.label || ""})};
+p.mouse = new Mouse(p);
+globalThis.page = p;
+globalThis.tabs = [p];
+(async () => {
+  const out = {};
+  try { await eval("(async () => { " + spec.code + " })()"); } catch (e) { out.error = String(e); }
+  out.log = p.log.map((e) => e[0]);
+  console.log(JSON.stringify(out));
+})();
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "the click guard runs in a JS REPL")
+class CoordinateClickTests(BoardBase):
+    """p345: page.mouse.click(x, y) on a Send button with no owner_ok left no send log line, because the page check reads only the code."""
+
+    def click(self, url, label="", frame="", code="await page.mouse.click(5, 6);"):
+        spec = json.dumps({"url": url, "label": label, "frame": frame, "code": ab.guard_clicks(code)})
+        proc = subprocess.run(["node", "-e", CLICK_PAGE, spec], capture_output=True, text=True, timeout=60)
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    def assert_click_refused(self, out, why):
+        self.assertIn(ab._CLICK_MARK, out.get("error", ""), out)
+        self.assertIn(why, out["error"])
+        self.assertEqual(out["log"], [])
+
+    def test_send_on_gmail_by_coordinates_is_refused_before_the_mouse_goes_down(self):
+        self.assert_click_refused(self.click("https://mail.google.com/mail/u/0/#inbox?compose=new", "Send \u202a(\u2318Enter)\u202c"), "clicks Send by coordinates on a webmail page")
+
+    def test_submit_on_a_ticket_page_and_a_click_into_an_intercom_frame_are_refused(self):
+        self.assert_click_refused(self.click("https://my.geonode.com/viewticket.php?tid=ABC", "Submit"), "support ticket page")
+        self.assert_click_refused(self.click("https://app.geonode.com/dashboard", frame="intercom-messenger-frame  https://js.intercomcdn.com/x"), "support chat widget")
+
+    def test_a_mouse_down_at_the_point_of_a_mouse_move_is_checked_on_any_tab(self):
+        out = self.click("https://mail.google.com/mail/u/0/#inbox", "Send", code="const t = tabs[0]; await tabs[0].mouse.move(5, 6); await t.mouse.down();")
+        self.assertIn("clicks Send by coordinates", out.get("error", ""), out)
+        self.assertEqual(out["log"], ["move"])
+
+    def test_other_clicks_pass(self):
+        for url, label in (("https://mail.google.com/mail/u/0/#inbox", "Inbox"), ("http://localhost:5182/", "Send"), ("https://app.example.com/", "Send")):
+            self.assertEqual(self.click(url, label), {"log": ["move", "down", "up"]}, url)
+        self.assertEqual(ab.guard_clicks("return page.url()"), "return page.url()")
+
+    def test_run_sends_the_guard_and_logs_a_refused_click(self):
+        line = ab._CLICK_MARK + json.dumps({"reason": "it clicks Send by coordinates on a webmail page (https://mail.google.com/mail/u/0/)", "target": "https://mail.google.com/mail/u/0/ | Gmail | clicked \"Send\" at (1378, 775)"})
+        mcp = self.fake(RuntimeError(f"Error: Error: {line}\n    at <anonymous> (repl.js:1:82)\n{line}"))
+        with self.assertRaises(ab.AsideError) as caught:
+            self.call(ab.run("await page.mouse.click(1378, 775)"))
+        self.assertIn("Refused: it clicks Send by coordinates", str(caught.exception))
+        self.assertIn("globalThis.__asideSendClick.mouse(page).click(1378, 775)", mcp.calls[0]["code"])
+        lines = self.sends()
+        self.assertEqual([(l["decision"], l["layer"], l["ownerOk"]) for l in lines], [("refused", "aside-browser", None)])
+        self.assertIn("at (1378, 775)", lines[0]["target"])
+
+    def test_an_approved_owner_ok_leaves_the_click_unchecked(self):
+        mcp = self.fake('{"u": "https://app.geonode.com/dashboard", "t": "Geonode", "to": []}', "sent")
+        self.call(ab.run("await page.mouse.click(1378,775)", owner_ok=f"{CHAT}/t1"))
+        self.assertNotIn("__asideSendClick", mcp.calls[1]["code"])
+
+    def test_a_token_that_does_not_count_keeps_the_click_check_and_logs_no_allowed_line(self):
+        mcp = self.fake('{"u": "https://app.geonode.com/dashboard", "t": "Geonode", "to": []}', "ok")
+        self.call(ab.run("await page.mouse.click(1378,775)", owner_ok=f"{CHAT}/t2"))
+        self.assertIn("__asideSendClick.mouse(page).click(", mcp.calls[1]["code"])
+        self.assertEqual(self.sends(), [])
+
+    def test_code_without_a_mouse_call_gets_no_guard(self):
+        mcp = self.fake("ok")
+        self.call(ab.run("return page.url()"))
+        self.assertNotIn("__asideSendClick", mcp.calls[0]["code"])

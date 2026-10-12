@@ -369,6 +369,67 @@ def _host_kind(url: str) -> str | None:
     return None
 
 
+_CLICK_MARK = "__ASIDE_SEND_CLICK__:"
+# A mouse call on a tab: page.mouse.click(, tabs[1].mouse.down(. The Aside REPL's mouse methods cannot be wrapped in place (a
+# replaced method is called back through the replacement, live probe 2026-10-13), so _repl rewrites these calls instead.
+_MOUSE_CALL = re.compile(r"([A-Za-z_$][\w$]*(?:\s*\??\.\s*[A-Za-z_$][\w$]*|\s*\[[^\[\]]*\])*?)\s*\.\s*mouse\s*\.\s*(move|click|dblclick|down)\s*\(")
+_CLICK_LABEL = {
+    "mail": r"^\s*(?:send|보내기|送信)(?![a-z])",
+    "other": r"^\s*(?:send|submit|reply|post|comment|tweet|add reply|update ticket|보내기|送信|답장|답변|제출|게시)(?![a-z])",
+}
+# One line run before the rewritten code. A click by coordinates (page.mouse.click(x, y), the 10-12 GeoNode Intercom send) first
+# reads the element under the point and throws when it is Send on a webmail page, Send or Submit on a ticket or social page,
+# or a support chat widget's frame. mouse.down checks the point of the last mouse.move.
+_CLICK_GUARD = (
+    "globalThis.__asideSendClick = (() => { const re = (s) => new RegExp(s, 'i'), R = __PATTERNS__, at = new Map();"
+    r"const kind = (u) => { const m = /^https?:\/\/([^\/:?#]+)(?::\d+)?([^?#]*)/i.exec(u || ''); if (!m || re(R.local).test(m[1])) return null;"
+    " if (re(R.mail).test(m[1])) return 'mail'; if (re(R.ticketHost).test(m[1]) || re(R.ticketPath).test(m[2])) return 'ticket';"
+    " if (re(R.social).test(m[1]) || (m[1].toLowerCase() === 'github.com' && m[2].split('/').length > 3 && !re(R.ownGithub).test(m[2]))) return 'social'; return null; };"
+    "const check = async (p, x, y) => { const url = p.url(), k = kind(url);"
+    " const e = await p.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); if (!el) return null;"
+    "  const b = el.closest('button,[role=button],a,input,[role=menuitem]') || el, a = (n) => b.getAttribute(n) || '';"
+    "  return {title: document.title, frame: el.tagName === 'IFRAME' ? [el.id, el.name, el.className, el.src, el.title].join(' ') : '',"
+    "   label: String(a('aria-label') || a('data-tooltip') || b.value || b.innerText || b.textContent || '').trim().slice(0, 80)}; }, [x, y]).catch(() => null);"
+    " if (!e) return; let why = null;"
+    " if (e.frame && re(R.widget).test(e.frame)) why = 'it clicks by coordinates in a support chat widget';"
+    " else if (k === 'mail' && re(R.mailLabel).test(e.label)) why = 'it clicks Send by coordinates on a webmail page';"
+    " else if ((k === 'ticket' || k === 'social') && re(R.label).test(e.label)) why = 'it clicks ' + JSON.stringify(e.label) + ' by coordinates on a ' + (k === 'ticket' ? 'support ticket page or contact form' : 'social or chat site');"
+    " if (!why) return; const line = __MARK__ + JSON.stringify({reason: why + ' (' + url + ')', target: [url, e.title, 'clicked ' + JSON.stringify(e.label || e.frame) + ' at (' + x + ', ' + y + ')'].filter(Boolean).join(' | ')});"
+    " console.log(line); throw new Error(line); };"
+    "return {mouse: (p) => ({"
+    " move: async (x, y, o) => { at.set(p, [x, y]); return p.mouse.move(x, y, o); },"
+    " click: async (x, y, o) => { await check(p, x, y); return p.mouse.click(x, y, o); },"
+    " dblclick: async (x, y, o) => { await check(p, x, y); return p.mouse.dblclick(x, y, o); },"
+    " down: async (o) => { const xy = at.get(p); if (xy) await check(p, xy[0], xy[1]); return p.mouse.down(o); }})}; })();"
+)
+
+
+def guard_clicks(code: str) -> str:
+    """The code with each tab.mouse call routed through the click check, and the one-line check before it. Code with no mouse call comes back as is."""
+    rewritten = _MOUSE_CALL.sub(r"globalThis.__asideSendClick.mouse(\1).\2(", code)
+    if rewritten == code:
+        return code
+    patterns = {
+        "local": _LOCAL_HOST.pattern, "mail": _MAIL_HOSTS.pattern, "ticketHost": _TICKET_HOST.pattern, "ticketPath": _TICKET_PATH.pattern,
+        "social": _SOCIAL_HOSTS.pattern, "ownGithub": _OWN_GITHUB_PATH.pattern, "widget": _WIDGET.pattern,
+        "mailLabel": _CLICK_LABEL["mail"], "label": _CLICK_LABEL["other"],
+    }
+    return _CLICK_GUARD.replace("__PATTERNS__", json.dumps(patterns, ensure_ascii=False)).replace("__MARK__", json.dumps(_CLICK_MARK)) + " " + rewritten
+
+
+def _click_refusals(text: str) -> list[dict[str, str]]:
+    """The coordinate clicks the REPL prelude refused, read from the call's output or error text."""
+    found, at = {}, text.find(_CLICK_MARK)
+    while at != -1:
+        try:
+            line, _ = json.JSONDecoder().raw_decode(text, at + len(_CLICK_MARK))
+            found[json.dumps(line, sort_keys=True)] = line
+        except ValueError:
+            pass
+        at = text.find(_CLICK_MARK, at + 1)
+    return [line for line in found.values() if isinstance(line, dict)]
+
+
 def _sends(code: str) -> bool:
     """Code that could send: a send shortcut, a site skill's send call, an action in a support chat widget, or a click or key press near a Send or Submit name or Enter."""
     if _SEND_KEYS.search(code) or _SITE_SEND.search(code) or (_WIDGET.search(code) and _WIDGET_ACTION.search(code)):
@@ -593,23 +654,34 @@ async def _repl(code: str, title: str, owner_ok: str | None = None, plain: str |
 
     Every REPL call passes the outside send check here; `plain` is the caller's code before wrapping.
     """
-    reason = None
+    approved = False
     if _sends(plain or code) or owner_ok:
         info = await _page()
         reason = outside_send(plain or code, str(info.get("u") or "")) if _sends(plain or code) else None
         if reason:
             _refuse_send(reason, owner_ok, _page_target(info) or (plain or code)[:300])
-        elif owner_ok:
+            approved = True
+        elif owner_ok and check_owner_ok(owner_ok) is None:
             # The caller says this call sends, though the page check cannot tell (a coordinate click in an Intercom frame); it still gets a line.
             _record_send("allowed", "the call passed owner_ok, so its caller counted it as a send", _page_target(info) or (plain or code)[:300], owner_ok)
+            approved = True
+    if not approved:
+        code = guard_clicks(code)
     try:
         text = await _call("repl", {"title": title, "code": code})
     except AsideError as exc:
         message, opened = _strip_opened(str(exc))
         _remember(opened)
+        refused = _click_refusals(message)
+        for click in refused:
+            _record_send("refused", click.get("reason", ""), click.get("target", ""), owner_ok)
+        if refused:
+            raise AsideError(f"Refused: {refused[0].get('reason')}.", _OWNER_OK_HELP) from exc.__cause__
         raise AsideError(message, explain(message, code)) from exc.__cause__
     text, opened = _strip_opened(text)
     _remember(opened)
+    for click in _click_refusals(text):
+        _record_send("refused", click.get("reason", ""), click.get("target", ""), owner_ok)
     return text
 
 
