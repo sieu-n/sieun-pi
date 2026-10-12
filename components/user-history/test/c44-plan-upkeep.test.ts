@@ -51,7 +51,7 @@ test("stale_steps: a due step under 24 h is due_late only; one over 24 h is stal
 });
 
 test("stale_steps: an item that looks finished is counted once, in finished_open, and listed under Look done only", () => {
-  const shipped = { ...P86, note: "hop fix def5678 deployed and live on prod; jobs end done again" };
+  const shipped = { ...P86, note: "exit labels abc1234 and hop fix def5678 deployed and live on prod; jobs end done again" };
   const { output, text } = check(boardOf(NOW - 50 * 60 * MIN, goal(shipped)));
   assert.deepEqual([output.metrics.stale_steps, output.metrics.finished_open], [0, 1]);
   assert.equal(sectionOf(text, "Stale steps"), undefined);
