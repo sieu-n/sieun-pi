@@ -26,6 +26,13 @@ export interface DutyJobHost {
    * (src/chat-archive-queue.ts): a slow daemon never holds up the next start.
    */
   retire(job: DutyJobRef): Promise<void>;
+  /**
+   * The jobs among `jobs` whose turn has ended: listed, not archived, not working, past their brief (2 or more messages) and not settled on a
+   * failed model call (the chat's revive restarts those). One catalog read for all of them. A host without it (test fakes) stops no job early.
+   */
+  ended?(jobs: readonly DutyJobRef[]): Promise<DutyJobRef[]>;
+  /** Queues the archive of an ended duty job, so its worker and Python kernel stop; it stays registered until the next run retires it. */
+  stop?(job: DutyJobRef): Promise<void>;
 }
 
 /**
@@ -213,5 +220,14 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       await input.registry.remove([job.id]);
       await input.archives.add(job);
     },
+    async ended(jobs) {
+      if (!jobs.length) return [];
+      const byId = new Map((await input.rows()).map(candidate => [candidate.id, candidate]));
+      return jobs.filter(job => {
+        const found = byId.get(job.id);
+        return found !== undefined && !found.archived && !found.working && found.messageCount >= 2 && found.failure === undefined;
+      });
+    },
+    stop: job => input.archives.add(job),
   };
 }

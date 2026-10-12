@@ -129,6 +129,8 @@ export class Duties {
   private readonly running = new Map<string, Promise<CheckInStart | void>>();
   /** What each standing duty run going now does, with its start time, for the record of a slot it holds up. */
   private readonly steps = new Map<string, { at: number; step: "measuring" | "starting its job" }>();
+  /** Duty jobs whose archive `stopEnded` queued, so each is queued once. */
+  private readonly stopped = new Set<string>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -151,13 +153,40 @@ export class Duties {
   }
 
   private async scan(): Promise<void> {
+    const chats: string[] = [];
     for (const chatId of await this.store.chats()) {
       if (!(await this.host.isChat(chatId))) continue;
+      chats.push(chatId);
       for (const duty of await this.store.list(chatId)) {
         const due = dutyDue(duty, this.now());
         if (due.kind === "skip") await this.skip(chatId, duty, due.slot);
         else if (due.kind === "run" && !this.start(chatId, duty.id, due.trigger, due.slot)) await this.skipBusy(chatId, duty, due.slot);
       }
+    }
+    await this.stopEnded(chats);
+  }
+
+  /**
+   * Archives each duty's last job once its turn has ended, instead of at the next run: an ended job kept its worker and Python kernel until then
+   * (10-13 00:10 KST: 6 ended duty jobs held 1.9 GB on a 32 GB Mac with 30.4 of 30.7 GB swap used, and a daemon gate pause kept the 22:15 to
+   * 22:33 check-in jobs 88 to 102 min). A duty with a run going is left to that run. Each job is queued once; an agent message resumes it.
+   */
+  private async stopEnded(chats: readonly string[]): Promise<void> {
+    const jobs = this.host.jobs;
+    if (!jobs.ended || !jobs.stop) return;
+    const last: DutyJobRef[] = [];
+    for (const chatId of chats) {
+      const seen = new Set<string>();
+      for (const run of await this.store.runs(chatId)) {
+        if (!run.job || seen.has(run.duty)) continue;
+        seen.add(run.duty);
+        if (!this.stopped.has(run.job.id) && !this.running.has(`${chatId}/${run.duty}`)) last.push(run.job);
+      }
+    }
+    for (const job of await jobs.ended(last)) {
+      this.stopped.add(job.id);
+      await jobs.stop(job);
+      this.log(`duty job ${job.name}: its turn ended; queued its archive`);
     }
   }
 
