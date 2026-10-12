@@ -306,6 +306,20 @@ export function chatAgents(input: AgentSources): ChatAgent[] {
 }
 
 /**
+ * The chat's subagents on its row (`agents`, from the daemon's sessions under it) as hub child snapshots, for a chat the hub has not attached
+ * on this serve: the hub sends child snapshots only after an attach (frontend bro 10-13: every pin timed out on its 64 MB transcript after the
+ * 14:00Z restart, and the check-in flagged p92 to p99 "(<job> not found)" while the daemon listed each job under the chat, 5 of them at work).
+ */
+export function agentChildren(agents: readonly ChatAgent[]): ChildAgent[] {
+  return agents.flatMap((agent): ChildAgent[] => {
+    if (agent.link !== "subagent" || agent.childId === undefined) return [];
+    const at = Date.parse(agent.lastActivityAt ?? "");
+    return [{ id: agent.childId, label: agent.name, sessionName: agent.job, status: agent.state === "working" ? "running" : agent.state === "failed" ? "error" : "done",
+      ...(Number.isFinite(at) ? { lastActivityAt: at } : {}) }];
+  });
+}
+
+/**
  * The session ids the board should keep (`BoardStore.linkSessions`): each step with a job and no session id yet whose owner agent has a session,
  * by step id, with the job it names.
  */

@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { IdIndex } from "./id-index.ts";
+import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, readHeartbeats } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
@@ -687,7 +688,8 @@ export class Chats {
     catch (error) { boardError = error instanceof Error ? error.message : String(error); this.log(`chat ${id.slice(0, 8)}: check-in board: ${boardError}`); }
     const rows = await this.source.rows();
     const said = lastJobMessages(this.messages(id) ?? []);
-    const facts = jobFacts(this.children.get(id) ?? [], board, rows, id).map(fact => {
+    // A chat not attached on this serve has no hub children; its row lists the daemon's sessions under it.
+    const facts = jobFacts(this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []), board, rows, id).map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
     });
