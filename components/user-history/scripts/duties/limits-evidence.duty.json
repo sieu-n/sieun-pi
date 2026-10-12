@@ -1,0 +1,70 @@
+{
+  "name": "Limits rest on evidence",
+  "ownerWords": "i want daily duty to hunt for these and ferociously remove them aggressively",
+  "goal": "No limit in auto-sns-agent rests on a guess. Every cap, ceiling, budget, throttle, timeout, backoff, retry count, batch size and concurrency setting cites a measurement, a vendor doc or an incident in the ledger, or it is gone with the code that served it. Each run removes every unbacked limit it finds.",
+  "metrics": [
+    {
+      "key": "unjudged",
+      "label": "Limit candidates with no verdict in the ledger",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "unbacked_left",
+      "label": "Unbacked limits found but still in the code",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "removed_back",
+      "label": "Removed limits that came back",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "kept_no_evidence",
+      "label": "Kept limits with no evidence written",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "owner_calls",
+      "label": "Unbacked money, send or ban limits waiting for the owner",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "unbacked_found",
+      "label": "Unbacked limits the last run found",
+      "op": ">=",
+      "target": 0
+    },
+    {
+      "key": "unbacked_removed",
+      "label": "Unbacked limits the last run removed",
+      "op": ">=",
+      "target": 0
+    },
+    {
+      "key": "ledger_errors",
+      "label": "Ledger file that could not be read",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "03:30"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/limits-evidence.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Follow the playbook limits-evidence.md next to this precheck, in sieun-pi components/user-history/scripts/duties/. The ledger is apps/llm-wiki/content/domains/devops/limits-ledger.json in auto-sns-agent: read it first, write it last. The precheck output file holds every candidate, new ones first. Start one subagent per app with unjudged, new or unbacked candidates. A limit stays only with evidence: a measurement in the wiki or code, a vendor doc link, or an incident it prevents. Without evidence the subagent deletes it and the code that only served it. A limit on money, an outside send or account ban risk with no evidence is the owner's call, never removed. Each app ships one stack of commit objects built in a private GIT_INDEX_FILE on local sieun/dev, one commit per limit, \"chore(<app>): drop unbacked limit <name>\". Send each stack to this chat for Fable's probe slot and a fresh ci/ ref, never a force push. Send this chat the found, removed and kept counts as chat_board ops."
+}
