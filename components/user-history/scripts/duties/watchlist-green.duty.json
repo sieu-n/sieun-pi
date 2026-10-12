@@ -1,0 +1,77 @@
+{
+  "name": "Watchlist shows green",
+  "ownerWords": "your no.1 goal is to make this screen functional all green, including collabs. do whatever it takes, grind.\n\nanyhow, conclusion should be a stable pipeline capable of 100k pages/day or 10k pages/hour, use Convex efficiently (you know the proposal and implementation of the async jobs and sidecar api thing right cost shouldn't balloon), and most importantly staging and prod watchlist all green.",
+  "goal": "Every account in the owner's prod Watchlist (org_3IrtoOAEP0nk1aCQHGVME02Dy6E) shows green for posts and collabs: each watch has an unpaused prod monitor row read ok in the last 24 h. Prod watch reads end without errors, the watch scheduler keeps ticking, and staging's monitor rows stay fresh, collabs included.",
+  "metrics": [
+    {
+      "key": "owner_green_pct",
+      "label": "Owner org Watchlist accounts green on prod, every watch read ok in 24 h",
+      "op": ">=",
+      "target": 100,
+      "unit": "%"
+    },
+    {
+      "key": "collab_pushed_pct",
+      "label": "Owner org collab watches with an unpaused prod tagged monitor row",
+      "op": ">=",
+      "target": 100,
+      "unit": "%"
+    },
+    {
+      "key": "prod_posts_fresh_pct",
+      "label": "Prod posts monitor rows read ok in the last 24 h",
+      "op": ">=",
+      "target": 100,
+      "unit": "%"
+    },
+    {
+      "key": "prod_read_error_pct",
+      "label": "Prod watch reads in the last hour that ended in error",
+      "op": "<=",
+      "target": 0,
+      "unit": "%"
+    },
+    {
+      "key": "prod_loop_age_s",
+      "label": "Seconds since the prod watch scheduler last ticked",
+      "op": "<=",
+      "target": 300,
+      "unit": " s"
+    },
+    {
+      "key": "staging_tagged_overdue",
+      "label": "Staging collab monitor rows overdue past 24 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "staging_posts_fresh_pct",
+      "label": "Staging posts monitor rows read ok in the last 24 h",
+      "op": ">=",
+      "target": 100,
+      "unit": "%"
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources this check could not read",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "every",
+    "minutes": 120
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/watchlist-green.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Read the flagged items and name the cause first: a pause key on, collab watches not pushed, watches that never ran, error reads, or a stalled scheduler loop. Steer the live watchlist all green job, or Instagram Main for the census, by message; start a fix job only when no live job owns the cause. Run the next collab wave yourself when its gate holds (the owner's go covers it). Ship staging changes directly (c50), ask only for prod promotes, merge nothing without his go on that PR (c49), and send nothing to an outside party (c37). Once a day open /app/analytics/monitor on staging and prod in Aside and post the screenshot with the number on the board, and never touch a support or chat widget. source_error: fix the read. All on target: end the turn with no message.",
+  "boardGoal": "p35"
+}

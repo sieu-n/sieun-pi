@@ -1,0 +1,82 @@
+{
+  "name": "Engage reads scale safely",
+  "ownerWords": "you know the goal is pretty clear right? \nachive staging & prod that can \n- reliable logged-in apis including pagination api for up to years reliable\n- read 100k pages/day, \n- without accounts dieing\n\nsend me a slack dm if i need to buy more accounts. 하지만 계정당 몇장 긁을 수 있는지 벤당하는거 이런건 evidence기반이 아니면 고정관념 제발좀 가지지좀 마 &^^^^^&^^^^ 예전에 그 일 처리했던 에이전트들은 완전 바보멍청이들이라\n\nPUSH HARD I WILLFEED ACCOUNT LATER ARE YOU FUCKING READY OTHERWISE????????? THEN WORK ON THAT\n\nALSO IT IS YOUR DUTY TO STUDY HOW INSTAGRAM APIS WORKS ALWAYS RUN ~10% account as CANARY TO TEST THE LIMITS, BEETTER ACCESS PATTERNS, ...",
+  "goal": "Prod reads logged-in Instagram pages at the 100k a day pace, every active account reads, about 10% of active accounts always run as the canary, no account outside the canary dies by Instagram's hand, and the canary stops before more than 3 of its accounts die in an hour. Staging keeps reading so it stays a working test bed.",
+  "metrics": [
+    {
+      "key": "prod_pages_24h",
+      "label": "Prod logged-in pages read in the last 24 h",
+      "op": ">=",
+      "target": 100000,
+      "unit": " pages"
+    },
+    {
+      "key": "prod_pages_1h",
+      "label": "Prod logged-in pages read in the last hour, the 100k a day pace",
+      "op": ">=",
+      "target": 4167,
+      "unit": " pages"
+    },
+    {
+      "key": "prod_last_read_min",
+      "label": "Minutes since the last prod page read",
+      "op": "<=",
+      "target": 60,
+      "unit": " min"
+    },
+    {
+      "key": "prod_reading_pct",
+      "label": "Active prod accounts that read a page in the last 24 h",
+      "op": ">=",
+      "target": 90,
+      "unit": "%"
+    },
+    {
+      "key": "staging_last_read_min",
+      "label": "Minutes since the last staging page read",
+      "op": "<=",
+      "target": 60,
+      "unit": " min"
+    },
+    {
+      "key": "fleet_ig_deaths_24h",
+      "label": "Prod accounts outside the canary that Instagram killed in 24 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "canary_ig_deaths_1h",
+      "label": "Canary accounts that Instagram killed in the last 60 min",
+      "op": "<=",
+      "target": 3
+    },
+    {
+      "key": "canary_accounts_short",
+      "label": "Accounts the canary lacks to reach ~10% of active prod accounts",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources this check could not read",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "every",
+    "minutes": 60
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/engage-reads.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Read the flagged items first. prod_stopped or pause: find what stops prod reads (pause keys, supply holds and unbound accounts on crawler.virev.ai/ops/status) and steer the live engage job that owns it by message; start a job only when none owns it. idle_accounts: steer the bind or route-renew work for those ids. canary: fill the roster to ~10% through the instagram access canary job (p75). An instagram death: drop that arm's cap to the best proven rate and write the death codes on the board. If the accounts on hand cannot reach 100k at the measured pages per account a day, send the owner the Slack DM he asked for with that number, and never buy accounts. Ship staging changes directly (c50), ask only for prod promotes, merge nothing without his go on that PR (c49), and send nothing to an outside party (c37). source_error: fix the read. All on target: end the turn with no message.",
+  "boardGoal": "p1"
+}
