@@ -86,7 +86,7 @@ const HINTS: Record<FindingKind, string> = {
 const CAP_WORD = new RegExp([
   "(?<!all[- ])\\bcap(?:s|ped|ping)?\\b", "\\bceilings?\\b", "\\blimit(?:s|ed|ing)?\\b", "(?<!\\p{Lu}\\p{L}*\\s)\\bmax(?:imum|es|ed)?\\b",
   "\\bbottleneck(?:s|ed)?\\b", "\\btops? out\\b", "\\bonly fits?\\b", "\\b(?:can't|cannot|can not|won't) (?:carry|handle|fit|keep up|go past|exceed)\\b",
-  "\\b(?:can|could) only\\b", "(?<!\\bback\\s)\\bup to\\s+(?:about\\s+|~)?\\d", "\\bban risk\\b", "\\bbefore\\b(?:\\s+\\S+){0,4}\\s+bans?\\b",
+  "\\b(?:can|could) only\\b", "\\b(?:go|goes|handles?|takes?|carry|carries|reach(?:es)?|serves?|supports?)\\s+up to\\s+(?:about\\s+|~)?\\d", "\\bban risk\\b", "\\bbefore\\b(?:\\s+\\S+){0,4}\\s+bans?\\b",
   "\\bbanned (?:after|past|above|over|beyond)\\b", "최대", "한계", "상한", "병목",
 ].join("|"), "iu");
 /**
@@ -142,18 +142,20 @@ const CONDITION = /\b(?:[Ii]f|only if)\b/u;
 const THRESHOLD_SPAN = new RegExp(`(?:(?<![-=<>])[<>]=?|[\\u2264\\u2265]|\\b(?:${CMP_WORD})\\b)${CMP_GAP}\\d[\\d,.]*\\s*%?`, "giu");
 /** A vendor limit or an incident behind the number, the other two kinds of evidence c43 names besides a measurement, or the word measured. */
 const VENDOR = /\b(?:vendor|rated|datasheet|spec\s+sheet|specs?\b(?!-)|documented|docs?|quota|plan (?:limit|cap|allows|includes)|api limit|sla)\b/iu;
-const INCIDENT = /\b(?:incidents?|outages?|post-?mortem|fell over|crash(?:ed|es)?|oom(?:-killed)?|went down|stalled|froze|measured)\b|장애/iu;
+const INCIDENT = /\b(?:incidents?|outages?|post-?mortem|fell over|crash(?:ed|es)?|oom(?:-killed)?|went down|stalled|froze|failed with|measured|tested)\b|장애/iu;
+/** The owner set the number: a business rule he chose ("The 2/day cap is the owner's number"), not a capacity claim. */
+const OWNER_SET = /\b(?:the owner'?s (?:number|cap|rule|limit)|owner caps|(?:the )?owner (?:approved|chose|set|asked for))\b/iu;
 /**
  * A sentence that disowns the limit it names or asks about it: "an invented 75 MB/s 'caution line'", "every unmeasured limit stripped", "are the
  * 10 MB/s ... rates measured?".
  */
-const DISOWNED = /\b(?:invented|unbacked|unmeasured|arbitrary|made-up|bogus|overruled|no longer|(?:is|are|was|were) gone)\b|\?\s*$/iu;
+const DISOWNED = /\b(?:invented|unbacked|unmeasured|arbitrary|made-up|bogus|overruled|no longer|(?:is|are|was|were)(?: already)? gone)\b|\?\s*$/iu;
 const CAP_WORDS = new RegExp(CAP_WORD.source, "giu");
 /**
  * A cap named as what a reading is compared with: "1438 MB (cap 4096)", "4457 MB against the 4096 cap", "21.4 of 22.5 GB used, over ops guy's 16
  * GiB cap". It states no new limit, so with a number before it, it is no claim.
  */
-const CAP_REF = /(?:\b(?:against|under|over|below|above|within|vs\.?|versus|past|fits?)\s+(?:[\p{L}\p{N}.,'\u2019-]+\s+){0,4}|\(\s*)$/iu;
+const CAP_REF = /(?:\b(?:against|under|over|below|above|within|vs\.?|versus|past|fits?|of)\s+(?:[\p{L}\p{N}.'\u2019-]+\s+){0,4}|\(\s*)$/iu;
 
 /**
  * A limit named by its number ("the 75 MB/s line", "metal's 75 MB/s step line") in a sentence that says what it carries: "the 75 MB/s line
@@ -211,7 +213,7 @@ function unmeasuredLimits(lines: readonly { words: string }[]): string[] {
     const threshold = cap >= 0 ? cap : thresholdAt(sentence);
     const at = threshold >= 0 ? threshold : namedAt(sentence);
     if (at < 0) return [];
-    const evidence = MEASURED.test(sentence.replace(THRESHOLD_SPAN, " ")) || VENDOR.test(sentence) || INCIDENT.test(sentence);
+    const evidence = MEASURED.test(sentence.replace(THRESHOLD_SPAN, " ")) || VENDOR.test(sentence) || INCIDENT.test(sentence) || OWNER_SET.test(sentence);
     if (evidence && !CAUTION.test(sentence)) return [];
     return [clipQuote(sentence.slice(at).replace(/\s*\u00a7\s*/g, " ").trim(), 60)];
   });

@@ -82,6 +82,15 @@ test("c43: a job name with a cap word in it is a name: the board's jobs and chat
   assert.match(await checkMessage(METAL_0440, dataDir) ?? "", /under 75 MB\/s/);
 });
 
+test("c43: a named line with what it carries is a claim; a reading of a cap, the owner's own number and a line that is gone are not", () => {
+  // census write cuts to the Crawler VP, 10-12: the job's capacity claims that rested on the 75 MB/s line.
+  for (const text of ["Done, and the final number holds: a new census read writes 1.69 MB and a history read about 0.35 MB, so the 75 MB/s line carries about 2,100 new/min and 20k/min needs an 8x cut to 0.22 MB.",
+    "That puts the 75 MB/s line near 2,200 new/min, and 20k/min would need about 580 MB/s, so we need an 8x cut to reach 0.22 MB."]) assert.notEqual(messageLimitRefusal(text), null, text);
+  for (const text of ["| Wiki memory | 1062 MB of the 4096 MB cap | | pm2 restarts | 0 for the wiki, 0 for search |",
+    "- The 2/day cap is the owner's number, not a measurement.", "Update from the VP: the owner overruled the 75 MB/s line (NVMe does 3,500-14,000 MB/s), so it no longer gates census.",
+    "From Crawler ops: thanks, 1.69 MB holds."]) assert.equal(messageLimitRefusal(text), null, text);
+});
+
 const fakePi = (dataDir: string) => {
   const tools = new Map<string, { execute: (...args: unknown[]) => Promise<{ content: { text: string }[] }> }>();
   const handlers = new Map<string, ((event: unknown, ctx: unknown) => unknown)[]>();
