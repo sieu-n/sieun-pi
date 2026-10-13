@@ -15,10 +15,11 @@ export const pathLike = (token: string): boolean => token.includes("/") || /^\d{
  * "until landed", "to be released", "nothing deployed"), or the word right before it makes it a name or an adjective ("the shipped app",
  * "built from Shipped": frontend bro 10-12, p84, p92 and p96). A word joined to it by a hyphen, a slash or a dot is part of a path or a
  * name ("2030-email-from-shipped/assets"). Parts merged into one version are one build, not a merged PR (frontend bro 10-13, p92). A released
- * queue, hold or lock frees other work and ships nothing ("Fable released the queue": AI harness 10-13, p319).
+ * queue, hold or lock frees other work and ships nothing ("Fable released the queue": AI harness 10-13, p319). A quoted ship word, or one
+ * after "after" and another actor's name, is someone else's act ("After Fable's 'released' at 09:43Z": AI harness 10-13, p357).
  */
-const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on|nothing|no|never|without|yet|pending)\s+(?:\w+\s+){0,3})` +
-  String.raw`(?<![-/.])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)` +
+const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on|nothing|no|never|without|yet|pending)\s+(?:[\w'’]+\s+){0,3})` +
+  String.raw`(?<![-/.'"‘“])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)` +
   String.raw`(?!(?<=merged)\s+into\s+(?:one|a|a\s+single)\b)(?!(?<=released)\s+(?:the\s+|its\s+|their\s+|a\s+)?(?:\w+\s+)?(?:queue|hold|lock)s?\b)|` +
   String.raw`(?:is|are|now|went|already)\s+live|live\s+on\s+(?:prod|production|staging|main))\b`, "i");
 /** A waitFor on the owner: a For you todo id (t41) or the owner's go, answer or pick. */
@@ -36,8 +37,9 @@ const SUBJECT_SKIP = new Set(["the", "and", "then", "with", "for", "from", "afte
   "already", "live", "shipped", "merged", "deployed", "landed", "released", "staging", "prod", "production", "main", "run", "until", "once", "when"]);
 const subjectWords = (text: string): Set<string> =>
   new Set((text.toLowerCase().match(/[\p{L}][\p{L}\p{N}]{2,}/gu) ?? []).filter(word => !SUBJECT_SKIP.has(word)));
-/** A note that reports a run or a check as green, passed or succeeded, and not "not green". */
-const GREEN = /(?<!\bnot\s+(?:yet\s+)?)\b(?:green|passed|succeeded)\b/i;
+/** A note that reports a run or a check as green, passed or succeeded, and not "not green", "on green" or "once it goes green" (AI harness
+ * 10-13: p357 "The job CAS-lands the 7 files on green" while its run was queued). */
+const GREEN = /(?<!\bnot\s+(?:yet\s+)?|\bon\s+|\b(?:until|once|when|if|unless|awaiting|pending)\s+(?:[\w'’-]+\s+){0,3})\b(?:green|passed|succeeded)\b/i;
 /** The names a wait or a sentence gives its parts: items (C8, r6, land 33, promote 8) and runs (CI run ids, ci/ refs, commit shas). A name
  * joined to a word by a hyphen, a slash or a dot is part of that word ("32b-on-staging", "ci/c4-cast-fix"), and clock times name nothing. */
 type PartNames = { items: Set<string>; runs: Set<string> };

@@ -43,3 +43,25 @@ test("looks done: a ship claim about one part of a wait that names several, or a
   assert.equal(looksDone(p118("Runs 38286370276 and 38290806019 are green. Land 33 deployed C3, C4, C8 and C2's recreate to prod at 21:10Z.")),
     'its note says "deployed"', "a claim on every part still counts");
 });
+
+/*
+ * AI harness 10-13: the 18:45 KST check-in found p357 flagged "looks done: its note says "released"". Fable freed the CI runners, and
+ * run 38378517237 was still queued at 09:46Z. The note and waitFor below are p357's from the chat's plan_update before the 18:45 run.
+ */
+const p357 = (note: string): PlanItem => ({ id: "p357", status: "doing", children: [], job: "stale tree sync", note,
+  text: "commit.mjs also catches a real edit made on an old base (35 such files in the shared tree now), so committing it cannot silently revert " +
+    "lines a newer commit added",
+  waitFor: "verify-dev run 38378517237 (ci/stale-tree-guard-9) goes green; stale tree sync lands it by CAS" });
+
+test("looks done: a quoted ship word or one another actor did, and a note that acts on green, is not done (AI harness 10-13, p357)", () => {
+  assert.equal(looksDone(p357("After Fable's 'released' at 09:43Z, stale tree sync pushed the guard fresh: ci/stale-tree-guard-9, object 2cfe601a35 " +
+    "on tip 436aa18957, verify-dev run 38378517237, with the same 7 blobs. The id went to Fable. Earlier probes 6 to 8 were cancelled in promote " +
+    "9's runner clears. The job CAS-lands the 7 files on green.")), null, "the note before the 18:45 run");
+  assert.equal(looksDone(p357("Fable 'released' the runners, so ci/stale-tree-guard-9 run 38378517237 went green.")), null, "a quoted ship word");
+  assert.equal(looksDone(p357("After Fable's runner clear released, ci/stale-tree-guard-9 run 38378517237 went green.")), null,
+    "a ship word after another actor's name");
+  assert.equal(looksDone(p357("ci/stale-tree-guard-9 run 38378517237 deployed, and the job lands the 7 files on green.")), null,
+    "a note that acts on green reports no green");
+  assert.equal(looksDone(p357("Run 38378517237 went green, and stale tree sync landed ci/stale-tree-guard-9 by CAS at 10:20Z.")),
+    'its note says "landed"', "a real green and land still count");
+});
