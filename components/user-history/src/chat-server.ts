@@ -23,6 +23,8 @@ import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
 import { machineView } from "./chat-machine.ts";
+import { toolChecks } from "./chat-tools.ts";
+import { skillsView } from "./chat-skills.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
@@ -343,6 +345,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
   /** The serving process builds the page bundle after it listens; a feed names the build once it exists (a failed build was logged there). */
   const sendBuild = (send: (version: string) => void) => { void Promise.resolve(bundle).then(built => send(built.version), () => {}); };
   const sends = new Bounded<{ fingerprint: string; result: Promise<void> }>(500);
+  const tools = toolChecks({ dutyStore: backend.duties?.store });
   const creations = new Bounded<{ fingerprint: string; result: Promise<{ id: string; notice?: string }> }>(200);
   const streams = new Set<EventStream>();
   let host = "";
@@ -507,6 +510,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         }
         if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
         if (route === "api/machine") { json(res, 200, await machineView()); return; }
+        if (route === "api/tools") { json(res, 200, await tools.view(false)); return; }
+        if (route === "api/skills") { json(res, 200, await skillsView()); return; }
         if (route.startsWith("api/usage/")) {
           const analytics = backend.usage;
           if (!analytics) throw new RequestError(503, "Usage analytics is off in this chat.");
@@ -712,6 +717,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         else await slack.check();
         json(res, 200, slack.view(true)); return;
       }
+      if (route === "api/tools/check") { json(res, 200, await tools.view(true)); return; }
       if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }
       if (route === "api/warm") { await backend.threads.warm(threadId(text(body.id, "id", 256))); json(res, 200, { ok: true }); return; }
       if (route === "api/accounts") {

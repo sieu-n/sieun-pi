@@ -12,12 +12,13 @@
   import RemoteSettings from "./RemoteSettings.svelte";
   import SlackSettings from "./SlackSettings.svelte";
   import MachineSettings from "./MachineSettings.svelte";
+  import ToolsSettings from "./ToolsSettings.svelte";
   import UpdatesSettings from "./UpdatesSettings.svelte";
   import HowItWorksSettings from "./HowItWorksSettings.svelte";
 
   let { section }: { section: SettingsSection } = $props();
   const PANES: Record<SettingsSection, Component> = { accounts: AccountsSettings, usage: UsageSettings, "new-chats": NewChatsSettings, appearance: AppearanceSettings,
-    remote: RemoteSettings, slack: SlackSettings, machine: MachineSettings, updates: UpdatesSettings, how: HowItWorksSettings };
+    remote: RemoteSettings, slack: SlackSettings, machine: MachineSettings, tools: ToolsSettings, updates: UpdatesSettings, how: HowItWorksSettings };
   const Pane = $derived(PANES[section]);
 </script>
 

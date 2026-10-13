@@ -480,6 +480,26 @@ export interface MachineView {
   memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; pressure: MemoryPressure | null };
 }
 
+/**
+ * Settings > Tools and skills: live checks of the tools agents use (the Aside browser, web search, computer use), run on the chat server with
+ * the Skills and tools duty's own checks (scripts/duties/skills-and-tools.ts). `id` is that duty's check id; `off` is installed but closed on purpose.
+ */
+export type ToolKind = "browser" | "web search" | "computer use";
+export interface ToolCheck { id: string; kind: ToolKind; tool: string; status: "pass" | "fail" | "off"; detail: string; fix?: string; ms: number }
+/** The daily Skills and tools duty's newest run: its chat, when, the verdict, and each check it flagged as failing or off, by check id. */
+export interface ToolsDailyRun {
+  chatId: string; dutyId: string; name: string; at: number; verdict: "met" | "missed" | "error" | "skipped"; summary: string;
+  checksRun: number | null; problems: { id: string; status: "fail" | "off"; text: string }[];
+}
+/** `checkedAt` is when the live checks ran; the server keeps one result for a few minutes so opening the tab does not pay for a search each time. */
+export interface ToolsView { checkedAt: number; checks: ToolCheck[]; daily: ToolsDailyRun | null }
+
+/** Where an installed skill comes from: the global folder, the running Prime release's built-in skills, or a repo's skill folder. */
+export type SkillSource = "global" | "built-in" | "repo";
+/** One installed skill: its front matter name and one-line description, its source, a short label of the folder (`from`), and its SKILL.md path after links. */
+export interface SkillInfo { name: string; description: string; source: SkillSource; from: string; path: string; enabled: boolean }
+export interface SkillsView { skills: SkillInfo[] }
+
 /** A chat-client SDK update. `failed` comes back after a restart until the daemon version changes or Retry succeeds. */
 export interface SdkUpdateState { state: "idle" | "running" | "failed" | "restarting"; target?: string; message: string; log: string[]; at?: string }
 /** Settings > Updates: the Prime Agent daemon, the prime-agent package this chat loaded, and the chat build. */
