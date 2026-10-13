@@ -445,6 +445,7 @@ class Login(PoolFixture):
         self.assertEqual(run.event()["event"], "url")
         run.send("good\n")
         self.assertEqual(run.event(), {"event": "done", "ok": True, "message": "reauthed b@x (max 20x)"})
+        self.assertEqual(run.exit_code(), 0)
         self.assertEqual(self.ran(), ["add"])
         with open(self.keychain) as f:
             self.assertEqual(json.load(f), {store_service(self.tm, B): "secret-org-b"})
