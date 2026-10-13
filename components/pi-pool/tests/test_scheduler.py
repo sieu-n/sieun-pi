@@ -1,9 +1,10 @@
-"""The admission scheduler (vend.decide, rules R1-R7 in vend.py and the README).
+"""The admission scheduler (sched.decide, rules R1-R7 in pool/sched.py and the README).
 Each test names the rule it guards; it fails when that rule is taken out."""
-import collections, contextlib, dataclasses, io, json, math, os, tempfile, unittest, unittest.mock
+import collections, contextlib, dataclasses, io, json, math, os, tempfile, time, unittest, unittest.mock
 
 from fixture_isolation import isolate_test_module
 from test_core import CFG, KEY, NOW, account, vend, vend_record
+from vend.pool import base, limit_resets, registry, sched, session_cmds, status_view, vending
 
 
 def setUpModule():
@@ -26,11 +27,11 @@ def acct(id, five=0, five_reset_in=4 * 3600, week=10, week_reset_in=3 * 86400, t
 
 
 def empty_state():
-    return {"version": 2, "providers": {p: vend.empty_provider_state() for p in vend.PROVIDERS}, "sessions": {}}
+    return {"version": 2, "providers": {p: registry.empty_provider_state() for p in base.PROVIDERS}, "sessions": {}}
 
 
 def tree_key(name):
-    return vend.SessionKey(name, name, None)
+    return registry.SessionKey(name, name, None)
 
 
 def put(state, key, on=None, at=NOW - 60, priority=None, moves=()):
@@ -47,24 +48,24 @@ def put(state, key, on=None, at=NOW - 60, priority=None, moves=()):
 
 def request(state, key, accounts, now, cfg=CFG):
     """One hook call: decide, write the admission or wait, record the vend."""
-    vend.HookWriter(state).prune(cfg, now)
-    d, tree, _ = vend.schedule(state, key, P, accounts, cfg, now)
-    if isinstance(d, (vend.Admit, vend.Stay)):
-        vend.HookWriter(state).record_vend(key, P, d.account, "store", d.reason, d.shadowed, now, (1, "s"),
-                                           moved=tree.current is not None and d.account.id != tree.current)
+    vending.HookWriter(state).prune(cfg, now)
+    d, tree, _ = vending.schedule(state, key, P, accounts, cfg, now)
+    if isinstance(d, (sched.Admit, sched.Stay)):
+        vending.HookWriter(state).record_vend(key, P, d.account, "store", d.reason, d.shadowed, now, (1, "s"),
+                                              moved=tree.current is not None and d.account.id != tree.current)
     return d
 
 
 def limited(state, key, accounts, now, until, cfg=CFG):
     """What `pi-pool limited` does after a 429 on the tree's account."""
     last = state["sessions"][key.key]["vends"][P]["account_id"]
-    vend.HookWriter(state).set_limit(P, last, until, key, now)
-    return vend.plan_next(state, key, P, accounts, cfg, now)
+    vending.HookWriter(state).set_limit(P, last, until, key, now)
+    return session_cmds.plan_next(state, key, P, accounts, cfg, now)
 
 
 def decide(state, key, accounts, now=NOW, cooldowns=None, cfg=CFG):
-    return vend.decide(vend.tree_for(state, key, P), vend.with_pool_state(accounts, state, P),
-                       vend.book_for(state, P, key, cfg, now), cooldowns or {}, cfg, now)
+    return sched.decide(sched.tree_for(state, key, P), registry.with_pool_state(accounts, state, P),
+                        sched.book_for(state, P, key, cfg, now), cooldowns or {}, cfg, now)
 
 
 def run_until_admitted(state, keys, accounts_at, start, horizon=6 * 3600):
@@ -77,7 +78,7 @@ def run_until_admitted(state, keys, accounts_at, start, horizon=6 * 3600):
         name, at = min(due.items(), key=lambda kv: (kv[1], kv[0]))
         assert at < start + horizon, (name, at)
         d = request(state, by_key[name], accounts_at(at), at)
-        if isinstance(d, vend.Wait):
+        if isinstance(d, sched.Wait):
             assert d.slot_at >= at, (name, d.slot_at, at)
             due[name] = d.slot_at if d.slot_at > at else at + 1
         else:
@@ -98,14 +99,14 @@ class R1Stay(unittest.TestCase):
         for idle in (60, 2 * 3600):
             put(state, KEY, on="hot", at=NOW - idle)
             d = decide(state, KEY, [hot, cool])
-            self.assertIsInstance(d, vend.Stay, idle)
+            self.assertIsInstance(d, sched.Stay, idle)
             self.assertEqual(d.account.id, "hot")
 
     def test_a_tree_already_on_an_85_percent_account_stays(self):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 2 * 3600)
         d = decide(state, KEY, [acct("a", five=85), acct("b", five=5)])
-        self.assertEqual((type(d), d.account.id), (vend.Stay, "a"))
+        self.assertEqual((type(d), d.account.id), (sched.Stay, "a"))
 
     def test_a_tree_never_moves_because_another_tree_moved(self):
         state = empty_state()
@@ -115,10 +116,10 @@ class R1Stay(unittest.TestCase):
         for i, k in enumerate(others):
             state["sessions"][k.key]["leave"] = {P: {"account_id": "x", "at": NOW}}
             d = request(state, k, accounts, NOW + i * 200)
-            self.assertIsInstance(d, vend.Admit)
+            self.assertIsInstance(d, sched.Admit)
             self.assertNotEqual(d.account.id, "x")
         d = request(state, mine, accounts, NOW + 2000)
-        self.assertEqual((type(d), d.account.id), (vend.Stay, "x"))
+        self.assertEqual((type(d), d.account.id), (sched.Stay, "x"))
 
     def test_a_child_session_uses_its_root_record(self):
         state = empty_state()
@@ -127,11 +128,11 @@ class R1Stay(unittest.TestCase):
         with tempfile.TemporaryDirectory() as workers:
             with open(os.path.join(workers, "w1.json"), "w") as f:
                 json.dump({"rootSessionId": KEY.key}, f)
-            env = {vend.SESSION_ENV: "ffffffffffff", vend.JOURNAL_ENV: os.path.join(workers, "w1.journal")}
+            env = {base.SESSION_ENV: "ffffffffffff", base.JOURNAL_ENV: os.path.join(workers, "w1.journal")}
             with unittest.mock.patch.dict(os.environ, env):
-                child = vend.session_key()
+                child = registry.session_key()
         self.assertEqual((child.key, child.active_id), (KEY.key, "ffffffffffff"))
-        self.assertEqual(vend.tree_for(state, child, P), vend.tree_for(state, KEY, P))
+        self.assertEqual(sched.tree_for(state, child, P), sched.tree_for(state, KEY, P))
 
 
 class R2AdmitCap(unittest.TestCase):
@@ -140,7 +141,7 @@ class R2AdmitCap(unittest.TestCase):
         put(state, KEY, on="x", at=NOW - 60)
         accounts = [acct("x", five=100), acct("hot", five=CFG["admit_5h_max_pct"], five_reset_in=1800)]
         d = request(state, KEY, accounts, NOW)
-        self.assertIsInstance(d, vend.Wait)
+        self.assertIsInstance(d, sched.Wait)
         self.assertEqual(d.slot_account.id, "hot")
         self.assertGreaterEqual(d.slot_at, NOW + 1800)
 
@@ -148,14 +149,14 @@ class R2AdmitCap(unittest.TestCase):
         state = empty_state()
         new = tree_key("new")
         d = decide(state, new, [acct("hot", five=75)])
-        self.assertIsInstance(d, vend.Wait)
+        self.assertIsInstance(d, sched.Wait)
 
     def test_a_pin_into_an_account_at_70_percent_yields(self):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 60)
         state["sessions"][KEY.key]["pins"] = {P: {"account_id": "hot", "at": NOW, "by": "cli"}}
         d = decide(state, KEY, [acct("a", five=20), acct("hot", five=72)])
-        self.assertEqual((type(d), d.account.id, d.shadowed), (vend.Stay, "a", ("hot", "depleted")))
+        self.assertEqual((type(d), d.account.id, d.shadowed), (sched.Stay, "a", ("hot", "depleted")))
 
 
 class R3Score(unittest.TestCase):
@@ -164,7 +165,7 @@ class R3Score(unittest.TestCase):
         late = acct("late", five=10, week=50, week_reset_in=6 * 86400)
         for order in ([soon, late], [late, soon]):
             d = decide(empty_state(), tree_key("t"), order)
-            self.assertEqual((type(d), d.account.id), (vend.Admit, "soon"))
+            self.assertEqual((type(d), d.account.id), (sched.Admit, "soon"))
 
     def test_little_weekly_left_far_from_its_reset_loses(self):
         tired = acct("tired", five=10, week=90, week_reset_in=5 * 86400)
@@ -192,9 +193,9 @@ class R4Slots(unittest.TestCase):
         state = empty_state()
         keys = [put(state, tree_key(f"t{i:02d}"), on="x", at=NOW - 30) for i in range(20)]
         first = [request(state, k, self.accounts(), NOW + i * 0.05) for i, k in enumerate(keys)]
-        admitted_now = collections.Counter(d.account.id for d in first if isinstance(d, vend.Admit))
+        admitted_now = collections.Counter(d.account.id for d in first if isinstance(d, sched.Admit))
         self.assertEqual(admitted_now, {"p": 1, "q": 1, "r": 1})
-        waits = [(d.slot_account.id, d.slot_at) for d in first if isinstance(d, vend.Wait)]
+        waits = [(d.slot_account.id, d.slot_at) for d in first if isinstance(d, sched.Wait)]
         self.assertEqual(len(waits), 17)
         self.assertEqual(len(set(waits)), 17, "every waiter has its own slot")
         admitted = run_until_admitted(state, keys, lambda at: self.accounts(), NOW)
@@ -218,7 +219,7 @@ class R4Slots(unittest.TestCase):
             k = put(state, tree_key(f"w{i:02d}"), on="x", at=NOW - 60, priority=prio)
             keys.append(k)
             d = limited(state, k, accounts_at(NOW + i), NOW + i, reset)
-            self.assertIsInstance(d, vend.Wait)
+            self.assertIsInstance(d, sched.Wait)
             self.assertGreaterEqual(d.slot_at, reset)
         admitted = run_until_admitted(state, keys, accounts_at, NOW + 20)
         self.assertEqual(len(admitted), 15)
@@ -236,16 +237,16 @@ class R5Wait(unittest.TestCase):
         accounts = [acct("x", five=100, five_reset_in=3000), acct("y", five=85, five_reset_in=1200),
                     acct("z", five=99, five_reset_in=7000)]
         d = limited(state, KEY, accounts, NOW, NOW + 3000)
-        self.assertIsInstance(d, vend.Wait)
-        self.assertEqual(vend.next_fields(d), {"next": None, "retry_at": math.ceil(d.slot_at)})
+        self.assertIsInstance(d, sched.Wait)
+        self.assertEqual(session_cmds.next_fields(d), {"next": None, "retry_at": math.ceil(d.slot_at)})
         self.assertEqual((d.slot_account.id, d.slot_at), ("y", NOW + 1200))
         self.assertEqual(state["sessions"][KEY.key]["wait"][P]["slot_at"], NOW + 1200)
-        again = request(state, KEY, vend.with_pool_state(accounts, state, P), NOW + 5)
-        self.assertEqual((type(again), again.vend.id), (vend.Wait, "x"))
+        again = request(state, KEY, registry.with_pool_state(accounts, state, P), NOW + 5)
+        self.assertEqual((type(again), again.vend.id), (sched.Wait, "x"))
         later = [acct("x", five=100, five_reset_in=1800), acct("y", five=0, five_reset_in=FIVE),
                  acct("z", five=99, five_reset_in=5800)]
-        d = request(state, KEY, vend.with_pool_state(later, state, P), NOW + 1200)
-        self.assertEqual((type(d), d.account.id, d.reason), (vend.Admit, "y", "switch"))
+        d = request(state, KEY, registry.with_pool_state(later, state, P), NOW + 1200)
+        self.assertEqual((type(d), d.account.id, d.reason), (sched.Admit, "y", "switch"))
         self.assertNotIn(P, state["sessions"][KEY.key].get("wait", {}))
 
     def test_a_tree_that_waits_for_its_own_account_comes_back_at_its_slot(self):
@@ -254,7 +255,7 @@ class R5Wait(unittest.TestCase):
         d = limited(state, KEY, [acct("x", five=100, five_reset_in=600)], NOW, NOW + 600)
         self.assertEqual((d.slot_account.id, d.slot_at), ("x", NOW + 600))
         back = request(state, KEY, [acct("x", five=0, five_reset_in=FIVE)], NOW + 600)
-        self.assertEqual((type(back), back.account.id, back.reason), (vend.Admit, "x", "back"))
+        self.assertEqual((type(back), back.account.id, back.reason), (sched.Admit, "x", "back"))
 
     def test_a_waiter_whose_account_serves_before_its_slot_gets_no_token(self):
         state = empty_state()
@@ -263,7 +264,7 @@ class R5Wait(unittest.TestCase):
         busy = put(state, tree_key("busy"), on="z")
         state["providers"][P]["admissions"] = {"x": [[NOW, busy.key]]}
         d = decide(state, KEY, [acct("x", five=60, tier="max 5x"), acct("y", five=80, five_reset_in=900)])
-        self.assertIsInstance(d, vend.Wait)
+        self.assertIsInstance(d, sched.Wait)
         self.assertIsNone(d.vend)
 
 
@@ -274,17 +275,17 @@ class R6MoveBudget(unittest.TestCase):
         state = empty_state()
         put(state, KEY, on="x", moves=[NOW - 3600 * h for h in (1, 2, 3)])
         d = decide(state, KEY, self.ACCOUNTS)
-        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (vend.Wait, "x", NOW + 1800))
+        self.assertEqual((type(d), d.slot_account.id, d.slot_at), (sched.Wait, "x", NOW + 1800))
 
     def test_a_tree_out_of_moves_whose_account_is_out_past_the_wait_cap_moves_anyway(self):
         state = empty_state()
         put(state, KEY, on="x", moves=[NOW - 3600 * h for h in (20, 5, 1)])
         out = acct("x", five=10, week=100, week_reset_in=5 * 86400)
         d = decide(state, KEY, [out, acct("y", five=5)])
-        self.assertEqual((type(d), d.account.id, d.left), (vend.Admit, "y", ("x", "budget_overrun")))
-        self.assertEqual(vend.switch_why(d, d.account), "budget_overrun")
+        self.assertEqual((type(d), d.account.id, d.left), (sched.Admit, "y", ("x", "budget_overrun")))
+        self.assertEqual(vending.switch_why(d, d.account), "budget_overrun")
         soon = acct("x", five=100, five_reset_in=CFG["budget_wait_max_sec"] - 60)
-        self.assertEqual(type(decide(state, KEY, [soon, acct("y", five=5)])), vend.Wait)
+        self.assertEqual(type(decide(state, KEY, [soon, acct("y", five=5)])), sched.Wait)
 
     def test_moves_older_than_a_day_do_not_count(self):
         state = empty_state()
@@ -294,20 +295,20 @@ class R6MoveBudget(unittest.TestCase):
     def test_a_low_tree_has_one_move(self):
         state = empty_state()
         put(state, KEY, on="x", priority="low", moves=[NOW - 60])
-        self.assertIsInstance(decide(state, KEY, self.ACCOUNTS), vend.Wait)
+        self.assertIsInstance(decide(state, KEY, self.ACCOUNTS), sched.Wait)
 
     def test_a_high_tree_is_never_refused_a_move_it_needs(self):
         state = empty_state()
         put(state, KEY, on="x", priority="high", moves=[NOW - 60 * i for i in range(1, 9)])
         d = decide(state, KEY, self.ACCOUNTS)
-        self.assertEqual((type(d), d.account.id), (vend.Admit, "y"))
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "y"))
 
     def test_a_high_tree_out_of_moves_is_refused_an_optional_move(self):
         state = empty_state()
         put(state, KEY, on="x", priority="high", moves=[NOW - 60 * i for i in range(1, 7)])
         state["sessions"][KEY.key]["leave"] = {P: {"account_id": "x", "at": NOW}}
         d = decide(state, KEY, [acct("x", five=30), acct("y", five=5)])
-        self.assertEqual((type(d), d.account.id), (vend.Stay, "x"))
+        self.assertEqual((type(d), d.account.id), (sched.Stay, "x"))
 
     def test_a_move_is_counted(self):
         state = empty_state()
@@ -319,10 +320,10 @@ class R6MoveBudget(unittest.TestCase):
 class R7PriorityShare(unittest.TestCase):
     def test_a_low_tree_enters_only_under_the_low_cap(self):
         mid = acct("mid", five=55)
-        self.assertIsInstance(decide(empty_state(), tree_key("n"), [mid]), vend.Admit)
+        self.assertIsInstance(decide(empty_state(), tree_key("n"), [mid]), sched.Admit)
         state = empty_state()
         put(state, tree_key("l"), priority="low", at=NOW)
-        self.assertIsInstance(decide(state, tree_key("l"), [mid]), vend.Wait)
+        self.assertIsInstance(decide(state, tree_key("l"), [mid]), sched.Wait)
 
     def test_the_last_cell_of_the_last_account_is_for_high_trees(self):
         state = empty_state()
@@ -331,9 +332,9 @@ class R7PriorityShare(unittest.TestCase):
         bucket = (NOW // CFG["admit_slot_sec"] + 1) * CFG["admit_slot_sec"]
         normals = [put(state, tree_key(f"n{i}"), at=NOW) for i in range(4)]
         got = [request(state, k, only, bucket + i * sp) for i, k in enumerate(normals)]
-        self.assertEqual([type(d) for d in got], [vend.Admit] * 3 + [vend.Wait])
+        self.assertEqual([type(d) for d in got], [sched.Admit] * 3 + [sched.Wait])
         high = put(state, tree_key("h"), at=NOW, priority="high")
-        self.assertIsInstance(request(state, high, only, bucket + 3 * sp), vend.Admit)
+        self.assertIsInstance(request(state, high, only, bucket + 3 * sp), sched.Admit)
 
     def test_a_high_waiter_goes_ahead_of_an_earlier_normal_one(self):
         state = empty_state()
@@ -343,7 +344,7 @@ class R7PriorityShare(unittest.TestCase):
         dn = limited(state, n, accounts, NOW, NOW + 600)
         dh = limited(state, h, accounts, NOW + 5, NOW + 600)
         self.assertEqual(dh.slot_at, dn.slot_at)
-        self.assertIsInstance(decide(state, n, [acct("x", five=0, tier="max 5x")], now=dn.slot_at), vend.Wait)
+        self.assertIsInstance(decide(state, n, [acct("x", five=0, tier="max 5x")], now=dn.slot_at), sched.Wait)
 
 
 class Pins(unittest.TestCase):
@@ -361,14 +362,14 @@ class Pins(unittest.TestCase):
         d = request(state, KEY, [acct("a", five=20), acct("b", five=80)], NOW)
         self.assertEqual((d.account.id, d.shadowed), ("a", ("b", "depleted")))
         d = request(state, KEY, [acct("a", five=20), acct("b", five=0)], NOW + 600)
-        self.assertEqual((type(d), d.account.id), (vend.Stay, "a"))
+        self.assertEqual((type(d), d.account.id), (sched.Stay, "a"))
 
     def test_a_pin_steers_a_cold_tree(self):
         state = empty_state()
         put(state, KEY, on="a", at=NOW - 2 * 3600)
         state["sessions"][KEY.key]["pins"] = {P: {"account_id": "b", "at": NOW - 3 * 3600, "by": "cli"}}
         d = decide(state, KEY, [acct("a", five=20), acct("b", five=10)])
-        self.assertEqual((type(d), d.account.id, d.reason), (vend.Admit, "b", "session_pin"))
+        self.assertEqual((type(d), d.account.id, d.reason), (sched.Admit, "b", "session_pin"))
 
     def test_a_pin_steers_a_tree_that_must_move(self):
         state = empty_state()
@@ -386,42 +387,42 @@ class StateCleanup(unittest.TestCase):
             "r": {"pins": {P: {"account_id": "a", "at": NOW, "by": "recovery:b3:2"}}, "last_seen": NOW},
             "o": {"pins": {P: {"account_id": "a", "at": NOW - 8 * 86400, "by": "cli"}}, "last_seen": NOW},
             "k": {"pins": {P: {"account_id": "a", "at": NOW - 3600, "by": "cli", "force": True}}, "last_seen": NOW}}
-        out = vend.migrate(raw, {}, NOW, CFG["pin_ttl_sec"])
+        out = registry.migrate(raw, {}, NOW, CFG["pin_ttl_sec"])
         self.assertNotIn("recovery_batches", out["providers"][P])
         self.assertEqual(out["sessions"]["r"]["pins"], {})
         self.assertEqual(out["sessions"]["o"]["pins"], {})
         self.assertEqual(out["sessions"]["k"]["pins"][P], {"account_id": "a", "at": NOW - 3600, "by": "cli"})
-        self.assertEqual(vend.migrate(json.loads(json.dumps(out)), {}, NOW, CFG["pin_ttl_sec"]), out)
+        self.assertEqual(registry.migrate(json.loads(json.dumps(out)), {}, NOW, CFG["pin_ttl_sec"]), out)
 
     def test_prune_drops_old_admissions_moves_and_stale_waits(self):
         state = empty_state()
         put(state, KEY, on="a", moves=[NOW - 2 * 86400, NOW - 60])
-        state["sessions"][KEY.key]["wait"] = {P: {"account": "a", "slot_at": NOW - 2 * vend.WAIT_STALE_SEC, "since": NOW}}
-        state["providers"][P]["admissions"] = {"a": [[NOW - 2 * vend.ADMISSION_KEEP_SEC, "x"], [NOW - 5, "y"]]}
-        self.assertTrue(vend.HookWriter(state).prune(CFG, NOW))
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "a", "slot_at": NOW - 2 * sched.WAIT_STALE_SEC, "since": NOW}}
+        state["providers"][P]["admissions"] = {"a": [[NOW - 2 * sched.ADMISSION_KEEP_SEC, "x"], [NOW - 5, "y"]]}
+        self.assertTrue(vending.HookWriter(state).prune(CFG, NOW))
         rec = state["sessions"][KEY.key]
         self.assertEqual((rec["moves"][P], rec["wait"]), ([NOW - 60], {}))
         self.assertEqual(state["providers"][P]["admissions"], {"a": [[NOW - 5, "y"]]})
-        self.assertFalse(vend.HookWriter(state).prune(CFG, NOW))
+        self.assertFalse(vending.HookWriter(state).prune(CFG, NOW))
 
 
 class Cli(unittest.TestCase):
     def run_cli(self, state, accounts, args, key=KEY):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "state.json")
-            vend.save_json(path, state)
+            base.save_json(path, state)
             out = io.StringIO()
             with contextlib.ExitStack() as stack:
                 for name, value in (("STATE", path), ("LOCK", path + ".lock"), ("LOG", os.path.join(tmp, "log"))):
-                    stack.enter_context(unittest.mock.patch.object(vend, name, value))
-                stack.enter_context(unittest.mock.patch.object(vend, "session_key", lambda: key))
-                stack.enter_context(unittest.mock.patch.object(vend, "load_index", lambda p: accounts))
-                stack.enter_context(unittest.mock.patch.object(vend, "config", lambda: dict(CFG)))
-                stack.enter_context(unittest.mock.patch.object(vend, "reset_rows", lambda a: {}))
-                stack.enter_context(unittest.mock.patch.object(vend.time, "time", lambda: NOW))
+                    stack.enter_context(unittest.mock.patch.object(base, name, value))
+                stack.enter_context(unittest.mock.patch.object(registry, "session_key", lambda: key))
+                stack.enter_context(unittest.mock.patch.object(registry, "load_index", lambda p: accounts))
+                stack.enter_context(unittest.mock.patch.object(base, "config", lambda: dict(CFG)))
+                stack.enter_context(unittest.mock.patch.object(limit_resets, "reset_rows", lambda a: {}))
+                stack.enter_context(unittest.mock.patch.object(time, "time", lambda: NOW))
                 stack.enter_context(contextlib.redirect_stdout(out))
                 rc = vend.cli(args)
-            return rc, out.getvalue(), vend.load_json(path)
+            return rc, out.getvalue(), base.load_json(path)
 
     def test_limited_prints_the_tree_slot_as_retry_at(self):
         state = empty_state()
@@ -479,18 +480,19 @@ class SwitchLog(unittest.TestCase):
     def run_vend(self, state, accounts):
         logged = []
         with contextlib.ExitStack() as stack:
-            for name, value in {"config": CFG, "load_index": accounts, "session_key": KEY,
-                                "load_state": state, "credential_for": ("fixture-token", "store"),
-                                "proc_info": {"start": "s"}}.items():
-                stack.enter_context(unittest.mock.patch.object(vend, name, return_value=value))
-            stack.enter_context(unittest.mock.patch.object(vend, "Flock", lambda *a, **kw: contextlib.nullcontext()))
-            stack.enter_context(unittest.mock.patch.object(vend.time, "time", return_value=NOW))
-            stack.enter_context(unittest.mock.patch.object(vend, "save_json"))
-            stack.enter_context(unittest.mock.patch.object(vend, "anthropic_refusal", return_value=None))
-            stack.enter_context(unittest.mock.patch.object(vend, "log", side_effect=lambda e, **kw: logged.append((e, kw))))
+            for module, name, value in ((base, "config", CFG), (registry, "load_index", accounts),
+                                        (registry, "session_key", KEY), (registry, "load_state", state),
+                                        (vending, "credential_for", ("fixture-token", "store")),
+                                        (base, "proc_info", {"start": "s"})):
+                stack.enter_context(unittest.mock.patch.object(module, name, return_value=value))
+            stack.enter_context(unittest.mock.patch.object(base, "Flock", lambda *a, **kw: contextlib.nullcontext()))
+            stack.enter_context(unittest.mock.patch.object(time, "time", return_value=NOW))
+            stack.enter_context(unittest.mock.patch.object(base, "save_json"))
+            stack.enter_context(unittest.mock.patch.object(base, "anthropic_refusal", return_value=None))
+            stack.enter_context(unittest.mock.patch.object(base, "log", side_effect=lambda e, **kw: logged.append((e, kw))))
             out = io.StringIO()
             stack.enter_context(contextlib.redirect_stdout(out))
-            vend.vend(P)
+            vending.vend(P)
         return logged, out.getvalue()
 
     def test_a_move_logs_why_and_the_scores(self):
@@ -525,8 +527,8 @@ class SwitchLog(unittest.TestCase):
             self.run_vend(state, [acct("a", five=90, five_reset_in=600), acct("b", five=30, tier="max 5x")])
 
     def test_switches_today_counts_switch_lines_per_provider(self):
-        day = vend.time.strftime("%Y-%m-%d", vend.time.localtime(NOW))
-        before = vend.time.strftime("%Y-%m-%d", vend.time.localtime(NOW - 86400))
+        day = time.strftime("%Y-%m-%d", time.localtime(NOW))
+        before = time.strftime("%Y-%m-%d", time.localtime(NOW - 86400))
         lines = [{"ts": f"{before}T23:00:00", "event": "switch", "provider": P, "session": "s0"},
                  {"ts": f"{day}T01:00:00", "event": "switch", "provider": P, "session": "s1"},
                  {"ts": f"{day}T02:00:00", "event": "vend", "provider": P, "session": "s1"},
@@ -537,9 +539,9 @@ class SwitchLog(unittest.TestCase):
             path = os.path.join(tmp, "pi-pool.log")
             with open(path, "w") as f:
                 f.writelines(json.dumps(e) + "\n" for e in lines)
-            with unittest.mock.patch.object(vend, "LOG", path):
-                self.assertEqual(vend.switches_today(P, NOW), (3, 2))
-                self.assertEqual(vend.switches_today("openai-codex", NOW), (1, 1))
+            with unittest.mock.patch.object(base, "LOG", path):
+                self.assertEqual(status_view.switches_today(P, NOW), (3, 2))
+                self.assertEqual(status_view.switches_today("openai-codex", NOW), (1, 1))
 
 
 if __name__ == "__main__":

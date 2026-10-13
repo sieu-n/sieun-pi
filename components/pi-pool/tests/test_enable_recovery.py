@@ -46,16 +46,16 @@ class EnableRecovery(unittest.TestCase):
         modules.start()
         self.addCleanup(modules.stop)
         spec.loader.exec_module(self.vend)
-        logging = patch.object(self.vend, "log")
+        logging = patch.object(self.vend.pool.base, "log")
         logging.start()
         self.addCleanup(logging.stop)
 
     def enable(self, provider="openai-codex"):
         output = io.StringIO()
         with contextlib.redirect_stdout(output), \
-             patch.object(self.vend, "load_json", wraps=self.vend.load_json) as reads, \
-             patch.object(self.vend, "save_json", wraps=self.vend.save_json) as writes:
-            result = self.vend.cmd_enable([provider])
+             patch.object(self.vend.pool.base, "load_json", wraps=self.vend.pool.base.load_json) as reads, \
+             patch.object(self.vend.pool.base, "save_json", wraps=self.vend.pool.base.save_json) as writes:
+            result = self.vend.pool.session_cmds.cmd_enable([provider])
         self.assertEqual(result, 0)
         return output.getvalue(), [call.args[0] for call in reads.call_args_list], [
             call.args[0] for call in writes.call_args_list

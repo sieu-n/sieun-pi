@@ -14,7 +14,8 @@ No account store or credential is included here.
 ```text
 checkout/components/pi-pool/
   install.py               copies a commit into ~/.local/share/pi-pool (next section)
-  vend.py                  code root from realpath(__file__)
+  vend.py                  entry point and command table; code root from realpath(__file__)
+  pool/                    the code vend.py loads from its own real folder, one module per part
   app/extension/           /account command, account line, login adoption
   bin/                     executable, relocatable Python wrappers
 
@@ -25,7 +26,9 @@ PI_POOL_DIR or ~/.config/pi-pool/
 ```
 
 `PI_POOL_DIR` selects state only. It never selects Python modules or executables.
-The wrappers resolve symlinks before they locate source files.
+The wrappers resolve symlinks before they locate source files. `vend.py` loads `pool/`
+from the folder of its own real path, fresh for each load, so the current directory and
+`sys.path` never select a module and two loads never share module state.
 Both wrappers use `-B`, so normal commands do not write Python bytecode into source.
 
 ## Install, update and roll back
@@ -223,7 +226,7 @@ release (found through the `tokenmaxxing` wrapper), reads four accounts at a tim
 each result under tokenmaxxing's pool lock. It still waits out a rate limit the usage
 endpoint set, and reports it with the time of the next read. If an auto-update renames a
 function it calls, it fails with the missing name, and the contract test in
-`tests/test_core.py` fails too. It writes only tokenmaxxing's usage figures and moves no
+`tests/test_commands.py` fails too. It writes only tokenmaxxing's usage figures and moves no
 session or pin. tokenmaxxing may refresh an expiring store under its own lock while it reads.
 
 A team seat's usage has a 5h window and no weekly one, and tokenmaxxing's read rejects that
@@ -272,7 +275,7 @@ comes from the CLIProxyAPI Management Center (`src/services/api/claudeResetGrant
 
 The pool keys by session tree (next sections), and the hook asks the scheduler on every
 request. Its answer is one of three: stay on the tree's account, admit the tree to an
-account, or wait for a slot. `decide` in `vend.py` holds the rules, first match wins.
+account, or wait for a slot. `decide` in `pool/sched.py` holds the rules, first match wins.
 
 ```mermaid
 flowchart TD
@@ -489,7 +492,7 @@ request then carries the current token, at the cost of the WebSocket's cached co
 
 ## Config
 
-`~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (vend.py): `refresh_skew_sec`,
+`~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (pool/base.py): `refresh_skew_sec`,
 `admit_5h_max_pct`, `low_admit_5h_max_pct`, `seven_day_max_pct`, `admit_slot_sec`,
 `admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`, `allow_active_account`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,

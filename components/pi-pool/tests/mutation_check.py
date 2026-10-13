@@ -32,6 +32,8 @@ MUTATIONS = {
     "stale pins dropped": ("                if (not pin or str(pin.get(\"by\") or \"\").startswith(\"recovery:\")\n                        or now - (pin.get(\"at\") or 0) > pin_ttl):",
                            "                if not pin:"),
 }
+# The file each rule lives in; every other rule is in pool/sched.py.
+RULE_FILES = {"jobs: a child session keys by its root": "pool/registry.py", "stale pins dropped": "pool/registry.py"}
 
 
 def main():
@@ -41,10 +43,11 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             copy = Path(tmp) / "pi-pool"
             shutil.copytree(component, copy, ignore=shutil.ignore_patterns("__pycache__"))
-            source = (copy / "vend.py").read_text()
+            target = copy / RULE_FILES.get(rule, "pool/sched.py")
+            source = target.read_text()
             if old:
                 assert source.count(old) == 1, rule
-                (copy / "vend.py").write_text(source.replace(old, new))
+                target.write_text(source.replace(old, new))
             run = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "test_scheduler"], cwd=copy / "tests",
                                  capture_output=True, text=True, timeout=300)
             failed = sorted(set(re.findall(r"^(?:FAIL|ERROR): (\w+) \(test_scheduler\.(\w+)\)", run.stderr, re.M)))

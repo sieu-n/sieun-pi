@@ -23,8 +23,8 @@ def save(data):
         json.dump(data, f)
 
 
-vend.kc_read = lambda service: items().get(service)
-vend.kc_write = lambda service, secret: save({**items(), service: secret})
-vend.kc_delete = lambda service: save({k: v for k, v in items().items() if k != service})
+vend.pool.base.kc_read = lambda service: items().get(service)
+vend.pool.base.kc_write = lambda service, secret: save({**items(), service: secret})
+vend.pool.base.kc_delete = lambda service: save({k: v for k, v in items().items() if k != service})
 sys.argv = [SOURCE, "--cli", *sys.argv[1:]]
 sys.exit(vend.main() or 0)

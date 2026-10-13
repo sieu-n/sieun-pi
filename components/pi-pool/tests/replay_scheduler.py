@@ -25,7 +25,7 @@ The model:
   warm when the previous request was under 3600 s before; a warm move costs the
   day's measured cache write per root move (--move-tokens).
 """
-import argparse, collections, heapq, importlib.util, json, os, random, statistics, sys
+import argparse, collections, heapq, importlib.util, json, os, random, statistics, sys, types
 
 FIVE_H, WEEK = 18000, 604800
 WEEK_POINTS_PER_5H_POINT = 0.2
@@ -38,11 +38,16 @@ P = "anthropic"
 
 
 def load(path, name):
+    """The names replay() reads. An old vend.py defines them all; a newer one keeps
+    them in the pool/ package it loads, one module per part."""
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-    return module
+    if not hasattr(module, "pool"):
+        return module
+    parts = (module.pool.base, module.pool.registry, module.pool.sched, module.pool.vending, module.pool.session_cmds)
+    return types.SimpleNamespace(**{k: v for part in parts for k, v in vars(part).items()})
 
 
 def start_state(data, day, start):

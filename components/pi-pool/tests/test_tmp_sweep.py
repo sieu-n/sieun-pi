@@ -40,7 +40,7 @@ class SweepDeadWriters(unittest.TestCase):
         for name in names:
             with open(os.path.join(folder, name), "w") as f:
                 f.write("{")
-        vend.save_json(os.path.join(folder, "state.json"), {"version": 2})
+        vend.pool.base.save_json(os.path.join(folder, "state.json"), {"version": 2})
         left = set(os.listdir(folder))
         self.assertEqual(left, {"state.json", *(name for name, kept in names.items() if kept)})
         with open(os.path.join(folder, "state.json")) as f:
