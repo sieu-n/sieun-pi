@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type CheckInMemory, checkInPrecheck, convergenceMisses } from "../src/chat-checkin.ts";
-import type { JobFact } from "../src/checkin-steps.ts";
+import { type JobFact, noteFacts } from "../src/checkin-steps.ts";
 import { applyBoardOp, nextIds } from "../src/shared/chat-board.ts";
 import type { BoardOp, ChatBoard } from "../src/shared/types.ts";
 
@@ -20,8 +20,10 @@ const boardAt = (at: number): ChatBoard => FIXTURE.ops.filter(entry => Date.pars
   .reduce((board, entry) => applyBoardOp(board, entry.op, "agent", entry.at, nextIds(board)).board, structuredClone(FIXTURE.board));
 /** The job facts at `at`, each with its last report to the chat up to then. */
 const factsAt = (at: number, reports: readonly Report[] = FIXTURE.reports): JobFact[] => FIXTURE.facts.map(fact => {
-  const said = reports.filter(report => report.job === fact.name && Date.parse(report.at) <= at).at(-1);
-  return said ? { ...fact, lastMessage: { at: Date.parse(said.at), text: said.text } } : fact;
+  const sent = reports.filter(report => report.job === fact.name && Date.parse(report.at) <= at);
+  const said = sent.at(-1);
+  const factual = sent.filter(report => noteFacts(report.text).length).at(-1);
+  return said ? { ...fact, lastMessage: { at: Date.parse(said.at), text: said.text, ...(factual ? { factsAt: Date.parse(factual.at) } : {}) } } : fact;
 });
 /** The chat's check-in every 15 min from 20:33:50Z, as it ran that night; `no_progress` at the three runs that flagged it. */
 function noProgressRuns(board: (at: number) => ChatBoard, facts: (at: number) => JobFact[]): number[] {

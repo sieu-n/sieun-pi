@@ -34,8 +34,11 @@ export interface JobFact {
   /** A duty job's subagent's session id, which a step's stored `sessionId` names. */
   sessionId?: string;
 }
-/** One agent message a job sent the chat: when, and its first line. */
-export interface JobMessage { at: number; text: string }
+/**
+ * One agent message a job sent the chat: when, and its first line; `factsAt` is when the job last sent one carrying a fact (`noteFacts`), such as a
+ * commit, a run id or a count. A status answer with none ("still on it") does not move its goal.
+ */
+export interface JobMessage { at: number; text: string; factsAt?: number }
 /**
  * One plan item as last seen: what it said (`sig`: status, text, owner, waits) and when that last changed; its wait (`wait`: waitFor, waitUntil
  * and owner) and when that last changed (`waitAt`); and the waitUntil values it has had, oldest first (`untils`, the last STALL_UNTILS kept).

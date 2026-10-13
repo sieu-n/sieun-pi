@@ -263,7 +263,7 @@ export const PROGRESS_MS = 60 * 60_000;
  * moves: a run its waitFor names is queued or running in the CI cache (`train`), or the release train it waits on moves (`trainMoves`). A
  * waitUntil that passed is not held. Launch main bro 10-13: from 10:50Z to 13:31Z every step the check-in listed as moving waited on its own
  * verify-dev run while the M1 Air runners slept (10:30Z to 13:35Z), such as p84 on 38378436903 and p75 on 38378422183. A goal moved when, in the last PROGRESS_MS, an open step's note under it gained a fact (`noteFacts`) or a step's job
- * reported to the chat; its steps are not counted (launch main bro 10-12: p56's copy and p57's lane reads reported every 30 min with new page
+ * sent the chat a message with a fact (`factsAt`, so an answer to a status ask with no fact is no move); its steps are not counted (launch main bro 10-12: p56's copy and p57's lane reads reported every 30 min with new page
  * and run counts, and three check-ins in a row flagged them). No verdict (null) until the chat's memory spans PROGRESS_MS. `moving` are the open
  * steps that are not held and whose goal did not move.
  */
@@ -279,7 +279,7 @@ export function noProgress(board: ChatBoard | null, views: readonly StepView[], 
     namedRuns(view.item, train).some(run => run.running) || (train !== undefined && trainMoves(view.item, train, now));
   const recent = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
   const goalOf = (view: StepView): string => view.goal?.id ?? view.item.id;
-  const moved = new Set(views.filter(view => recent(memos[view.item.id]?.factsAt) || recent(view.owner?.lastMessage?.at)).map(goalOf));
+  const moved = new Set(views.filter(view => recent(memos[view.item.id]?.factsAt) || recent(view.owner?.lastMessage?.factsAt)).map(goalOf));
   const moving = views.filter(view => !held(view) && !moved.has(goalOf(view)));
   return moving.length ? { moving } : null;
 }

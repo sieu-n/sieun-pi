@@ -386,7 +386,10 @@ export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard |
   });
 }
 
-/** Each job's last agent message to the chat, by the name its header gives (`[agent-message from child:<name>]`, the `child:` cut). */
+/**
+ * Each job's last agent message to the chat, by the name its header gives (`[agent-message from child:<name>]`, the `child:` cut), with when the
+ * job last sent one that carries a fact (`noteFacts` over the whole message).
+ */
 export function lastJobMessages(messages: readonly { role: string; customType?: string; content?: unknown; timestamp?: number }[]): Map<string, JobMessage> {
   const last = new Map<string, JobMessage>();
   for (const message of messages) {
@@ -396,7 +399,10 @@ export function lastJobMessages(messages: readonly { role: string; customType?: 
     const header = /^\s*\[agent-message from\s+(?:child:)?([^\]]+)\]/.exec(text);
     if (!header) continue;
     const body = text.slice(header[0].length);
-    last.set(header[1]!.trim(), { at: message.timestamp ?? 0, text: body.split("\n").map(line => line.trim()).find(Boolean) ?? "" });
+    const name = header[1]!.trim();
+    const at = message.timestamp ?? 0;
+    const factsAt = noteFacts(body).length ? at : last.get(name)?.factsAt;
+    last.set(name, { at, text: body.split("\n").map(line => line.trim()).find(Boolean) ?? "", ...(factsAt !== undefined ? { factsAt } : {}) });
   }
   return last;
 }

@@ -10,6 +10,7 @@ import { checkInDue, childName, childWorking, jobFacts, liveJobs } from "./check
 import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   lastJobMessages, noReportNotice, retryDue } from "./chat-checkin.ts";
 import { noticeStands } from "./no-report.ts";
+import { statusAsks } from "./status-ask.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
@@ -716,6 +717,11 @@ export class Chats {
       const previous = await this.source.memory.get(id);
       const precheck = checkInPrecheck(previous, facts, board, at,
         { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}) });
+      // A job at work an hour with no report gets one status ask through the chat; the check-in job cannot message the chat's subagents.
+      const said = this.stall(id) ? undefined : this.messages(id);
+      for (const ask of said ? statusAsks(said, facts, key => this.workingSince.get(key), at) : []) {
+        await this.threads.prompt(id, { message: ask, images: [], mode: "steer" }).catch(error => this.log(`chat ${id.slice(0, 8)}: status ask: ${error instanceof Error ? error.message : String(error)}`));
+      }
       const output = convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at);
       const flags = flagStreaks(previous?.flags, output.flagged);
       await this.source.memory.set(id, { ...precheck.memory, flags });
