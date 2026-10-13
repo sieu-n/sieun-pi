@@ -14,6 +14,8 @@ MUTATIONS = {
                      "    if False:\n        return \"depleted\"\n    if registry.usage_unsampled"),
     "R2 projection": ("        if why is None and projected_pct(a, book, cfg, now) >= admit_cap(cfg, p):",
                       "        if False:"),
+    "R2 own rate": ("    rate = book.rates.get(a.id) or by_tier(a, cfg[\"tree_5h_pct_per_min\"], 0)",
+                    "    rate = by_tier(a, cfg[\"tree_5h_pct_per_min\"], 0)"),
     "R3 score": ("    return pace * headroom * tier_units(a, cfg) / trees", "    return 1.0"),
     "R4 slots": ("        if not cell_taken(a, c, tree, rank, book, cfg):\n            return max(t0, c * sp)",
                  "        return max(t0, c * sp)"),

@@ -15,7 +15,8 @@ from . import base, registry
 #      admit_5h_max_pct (low trees: low_admit_5h_max_pct) of its 5h window and under
 #      seven_day_max_pct of its week and its Fable cap. The 5h figure is projected
 #      to the account's next read: the trees spending on it and the new one each
-#      add tree_5h_pct_per_min for every minute from the read to the next one.
+#      add the account's own rate (observed_rate) for every minute from the read
+#      to the next one, or tree_5h_pct_per_min of its tier before it has one.
 #   R3 score: among admissible accounts the highest weekly pace x 5h headroom / load.
 #   R4 admission slots: an account admits one tree per admit_slot_sec / slot_cap(a).
 #   R5 wait: nothing passes R2-R4, so the tree gets its own slot_at on the account
@@ -63,11 +64,13 @@ class Book:
     `waiting`: {account id: ((slot_at, tree key, rank), ...)} of the other trees.
     `load`: {account id: trees vended within active_session_sec}.
     `spending`: {account id: other trees that sent a request there within
-    spending_tree_sec}."""
+    spending_tree_sec}.
+    `rates`: {account id: its own 5h % per spending tree-minute, observed_rate}."""
     admitted: dict = dataclasses.field(default_factory=dict)
     waiting: dict = dataclasses.field(default_factory=dict)
     load: dict = dataclasses.field(default_factory=dict)
     spending: dict = dataclasses.field(default_factory=dict)
+    rates: dict = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -210,6 +213,29 @@ def tier_units(a, cfg):
     return by_tier(a, cfg["tier_units"], 1) if a.provider == "anthropic" else 1
 
 
+def rate_reference(reads):
+    """The index of the read the last one is measured against: the newest at least
+    STALE_USAGE_SEC older, so a 1% step between reads minutes apart is not read as
+    a rate. None while the window has no such read."""
+    last = reads[-1][0]
+    old = [i for i, r in enumerate(reads[:-1]) if r[0] <= last - registry.STALE_USAGE_SEC]
+    return old[-1] if old else None
+
+
+def observed_rate(rec):
+    """R2: the account's own 5h % per spending tree-minute between its last read
+    and the reference read in the same window; None when there is no reference or
+    no tree spent between them. A read is a whole percent, so the change counts one
+    more point: the most the trees can have spent."""
+    reads = (rec or {}).get("reads") or []
+    ref = rate_reference(reads) if reads else None
+    if ref is None:
+        return None
+    (_, pct0, _, sec0), (_, pct1, _, sec1) = reads[ref], reads[-1]
+    tree_min = (sec1 - sec0) / 60
+    return (pct1 - pct0 + 1) / tree_min if tree_min >= 1 else None
+
+
 def projected_pct(a, book, cfg, now):
     """R2: the 5h percentage the account will read at its next read, due
     STALE_USAGE_SEC after the last one: the last read, plus the trees spending on it
@@ -217,8 +243,10 @@ def projected_pct(a, book, cfg, now):
     0% at 22:40 and took 9 trees at slot pace before a read could show them; it hit
     100% at 23:04."""
     window = registry.session_window({"windows": a.windows})
-    rate = by_tier(a, cfg["tree_5h_pct_per_min"], 0) if a.provider == "anthropic" else 0
-    if window is None or not rate:
+    if a.provider != "anthropic" or window is None:
+        return a.session_pct
+    rate = book.rates.get(a.id) or by_tier(a, cfg["tree_5h_pct_per_min"], 0)
+    if not rate:
         return a.session_pct
     read_at = (window.get("sampledAt") or 0) / 1000
     trees = book.spending.get(a.id, 0)
@@ -463,5 +491,7 @@ def book_for(state, provider, key, cfg, now):
         waiting.setdefault(wait["account"], []).append((wait["slot_at"], k, rank))
     spending = in_use_counts({"sessions": {k: rec for k, rec in state["sessions"].items() if not (key and k == key.key)}},
                              provider, now, cfg["spending_tree_sec"])
+    rates = {a: observed_rate(rec) for a, rec in (prov.get("read_history") or {}).items()}
     return Book(admitted, {a: tuple(v) for a, v in waiting.items()},
-                in_use_counts(state, provider, now, cfg["active_session_sec"]), spending)
+                in_use_counts(state, provider, now, cfg["active_session_sec"]), spending,
+                {a: r for a, r in rates.items() if r is not None})

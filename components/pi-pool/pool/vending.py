@@ -75,6 +75,31 @@ class HookWriter:
         limits[account_id] = {"until": max(until, prev.get("until", 0)), "at": now,
                               "session": key.key if key else None}
 
+    def track_reads(self, provider, accounts, spending, now):
+        """Keep each account's 5h reads in its current window and the spending
+        tree-seconds up to each one, which `sched.observed_rate` turns into the
+        account's own rate. `spending`: {account id: trees spending there now}.
+        A read whose reset moved or whose percentage fell starts a new window."""
+        history = self._state["providers"][provider].setdefault("read_history", {})
+        for a in accounts:
+            window = registry.session_window({"windows": a.windows})
+            if not window or not window.get("sampledAt"):
+                continue
+            rec = history.setdefault(a.id, {"tick": now, "tree_sec": 0.0, "reads": []})
+            trees = spending.get(a.id, 0)
+            rec["tree_sec"] += trees * max(0.0, now - rec["tick"])
+            rec["tick"] = now
+            at, pct, reset = window["sampledAt"] / 1000, window.get("usedPercentage") or 0, window.get("resetsAt")
+            reads = rec["reads"]
+            if reads and at <= reads[-1][0]:
+                continue
+            if reads and (pct < reads[-1][1] or abs((reset or 0) - (reads[-1][2] or 0)) > 60_000):
+                reads.clear()
+            reads.append([at, pct, reset, rec["tree_sec"] - trees * max(0.0, now - at)])
+            ref = sched.rate_reference(reads)
+            if ref:
+                del reads[:ref]
+
     def prune(self, cfg, now):
         """Drop expired cooldowns and limits, admissions older than
         ADMISSION_KEEP_SEC, moves older than a day, waits whose slot passed
@@ -502,8 +527,9 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     accounts = registry.with_models(accounts, registry.session_models(state, key, provider, cfg, now), cfg)
     tree = sched.tree_for(state, key, provider)
     cooldowns = dict(state["providers"][provider]["cooldowns"])
-    d = sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now)
     writer = HookWriter(state)
+    writer.track_reads(provider, accounts, sched.in_use_counts(state, provider, now, cfg["spending_tree_sec"]), now)
+    d = sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now)
     if key is None or d is None:
         return d, tree, False
     if isinstance(d, sched.Admit) and admit_now:

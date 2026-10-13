@@ -58,8 +58,9 @@ DEFAULTS = {
     # about $7.5 of API-equivalent spend per 5h point, a max 5x or team seat $1.9.
     "tier_units": {"max 20x": 4, "max 5x": 1, "team": 1, "pro": 0.5},
     # R2 projection: the 5h percentage one busy tree spends per minute, by
-    # tokenmaxxing's tier name or its first word; a tier not listed is not
-    # projected. Measured from 23 windows on 10-12 and 10-13 that pi-pool.log shows
+    # tokenmaxxing's tier name or its first word, for an account with no rate of
+    # its own yet (sched.observed_rate: none in a window's first 20 min); a tier
+    # not listed is not projected. Measured from 23 windows on 10-12 and 10-13 that pi-pool.log shows
     # going from their start (429 `until` - 5 h) to the 429, with each request's
     # API-equivalent cost from the trees' transcripts: 100% cost a team seat $250,
     # a max 5x $186 and a max 20x $601 (medians). A busy tree spent $1.71 a minute

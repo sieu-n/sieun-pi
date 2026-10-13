@@ -708,5 +708,55 @@ class ProjectedUsage(unittest.TestCase):
         self.assertEqual(d.slot_at, read + registry.STALE_USAGE_SEC + registry.REFRESH_TIMEOUT_SEC)
 
 
+LIVE_1014 = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_1014_reads.json")))
+
+
+class OwnRate(unittest.TestCase):
+    """R2: an account's projection uses its own rate from its last two reads."""
+
+    def replay_live(self, name, tier, track=True):
+        """The live hour of 10-14 04:21 to 05:20 for one account: its reads and the
+        trees spending on it each minute, as pi-pool saw them. Returns, per minute
+        the account passed every other R2 check, (read %, own rate or None, whether
+        a new tree was held by the projection)."""
+        start = 1791925263.0
+        state, keys, out = empty_state(), [tree_key(f"s{i:02d}") for i in range(20)], []
+        for sec, pct, sampled, spending in LIVE_1014[name]:
+            now = start + sec
+            for i, key in enumerate(keys):
+                put(state, key, on=name, at=now - 30 if i < spending else now - 7200)
+            five = fresh_window(pct, FIVE, start + 4 * 3600, start + sampled)
+            seat = dataclasses.replace(acct(name, tier=tier), session_pct=pct, windows=(five, window(20, WEEK, 3 * 86400, now)))
+            if track:
+                vending.HookWriter(state).track_reads(P, [seat], sched.in_use_counts(state, P, now, CFG["spending_tree_sec"]), now)
+            if sched.admit_reason(seat, {}, CFG, now) is not None:
+                continue
+            book = sched.book_for(state, P, tree_key("probe"), CFG, now)
+            d = decide(state, tree_key("probe"), [seat], now)
+            out.append((pct, book.rates.get(name), isinstance(d, sched.Wait)))
+        return out
+
+    def test_the_live_hour_holds_neither_the_seat_nor_claude10_once_each_has_its_own_rate(self):
+        for name, tier, kind in (("virev_team", "team 5x", "team"), ("claude10_max5x", "max 5x", "max 5x")):
+            minutes = self.replay_live(name, tier)
+            own = [(pct, rate, held) for pct, rate, held in minutes if rate is not None]
+            self.assertGreater(len(own), 20, name)
+            self.assertEqual([m for m in own if m[2]], [], name)
+            self.assertTrue(any(25 <= pct <= 35 for pct, _, _ in own), name)
+            self.assertLess(max(rate for _, rate, _ in own), CFG["tree_5h_pct_per_min"][kind] / 2, name)
+            kind_only = self.replay_live(name, tier, track=False)
+            self.assertGreater(sum(held for pct, _, held in kind_only if 25 <= pct <= 35), 0, name)
+
+    def test_a_window_reset_drops_the_reads_before_it(self):
+        state, now = empty_state(), VIREV_BACK
+        writer = vending.HookWriter(state)
+        for at, pct, reset in ((now, 10, now + 3600), (now + 1200, 40, now + 3600), (now + 4000, 2, now + 4000 + FIVE)):
+            seat = dataclasses.replace(acct("seat", tier="team 5x"), windows=(fresh_window(pct, FIVE, reset, at),))
+            writer.track_reads(P, [seat], {"seat": 2}, at)
+            if pct == 40:
+                self.assertAlmostEqual(sched.book_for(state, P, None, CFG, at).rates["seat"], 31 / 40)
+        self.assertNotIn("seat", sched.book_for(state, P, None, CFG, now + 4000).rates)
+
+
 if __name__ == "__main__":
     unittest.main()
