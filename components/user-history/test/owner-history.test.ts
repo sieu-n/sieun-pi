@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { briefCheckWithHistory, fileOwnerMessages } from "../src/owner-history.ts";
+import { briefCheckWithHistory, fileOwnerMessages, fileOwnerTexts } from "../src/owner-history.ts";
 import type { ThreadMessage } from "../src/shared/types.ts";
 
 const user = (text: string, timestamp: number): ThreadMessage => ({ role: "user", content: [{ type: "text", text }], timestamp } as ThreadMessage);
@@ -25,5 +25,10 @@ test("brief check (c59): a quote of an owner message that left the thread's tail
     const made = { ...input, brief: input.brief.replace(MAC, "keep the mac usable at all times") };
     assert.deepEqual(await briefCheckWithHistory(made, tail, file), [{ kind: "not-verbatim", piece: "keep the mac usable at all times" }], "words the owner never wrote are still refused");
     assert.deepEqual(await fileOwnerMessages(join(dir, "gone.jsonl")), [], "a missing file has no owner messages");
+    const board = join(dir, "ci.jsonl");
+    await writeFile(board, [user("[board] Owner checked \"OK to send iWebFusion a short follow-up?\" and answered: i said NEVER EVER SEND WITHOUT MY PERMISSION", 1_000),
+      user("[board] Owner checked \"Deploy done?\"", 2_000), user("is ci blocked?", 3_000)].map(line).join("\n") + "\n");
+    assert.deepEqual(await fileOwnerTexts(board), ["i said NEVER EVER SEND WITHOUT MY PERMISSION", "is ci blocked?"],
+      "a board answer the owner typed is his words (c37's repeat, 10-12); a bare check and the todo text are not");
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

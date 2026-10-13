@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
-import { fileOwnerMessages } from "../../src/owner-history.ts";
+import { fileOwnerTexts } from "../../src/owner-history.ts";
 import { missing } from "../../src/locked-json.ts";
 import { measureCache, readSessions, WINDOWS, type CacheMetric, type SessionCalls } from "./cache-ratio.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -185,7 +185,7 @@ async function main(): Promise<void> {
   const duty = JSON.parse(await readFile(join(import.meta.dirname, "harness-health.duty.json"), "utf8")) as { metrics: { key: string; target: number }[] };
   const cacheTargets = Object.fromEntries(Object.keys(WINDOWS).map(key => [key, duty.metrics.find(metric => metric.key === key)!.target])) as Record<CacheMetric, number>;
   const { skills, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), sessions: since => readSessions(homedir(), since), cacheTargets,
-    ownerTexts: async chat => (await fileOwnerMessages(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`))).map(message => message.text) });
+    ownerTexts: chat => fileOwnerTexts(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`)) });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify(skills.map(({ description: _, ...skill }) => skill), null, 2) + "\n");
 }

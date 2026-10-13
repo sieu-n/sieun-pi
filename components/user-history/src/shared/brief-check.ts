@@ -123,6 +123,21 @@ export function ownerMessages(messages: readonly ThreadMessage[]): OwnerMessage[
   });
 }
 
+const BOARD_ANSWER = " and answered: ";
+/**
+ * The words the owner wrote in a chat, oldest first: his messages, and each answer he typed on a board todo, the part after "and answered: " of
+ * "[board] Owner checked "<todo>" and answered: <words>". On 10-12 he answered "i said NEVER EVER SEND WITHOUT MY PERMISSION" on a VP of CI todo.
+ */
+export function ownerTexts(messages: readonly ThreadMessage[]): string[] {
+  return messages.flatMap(message => {
+    const text = ownerMessage(message);
+    if (text === undefined) return [];
+    if (!text.startsWith(BOARD_PREFIX)) return [text];
+    const at = text.indexOf(BOARD_ANSWER);
+    return at < 0 ? [] : [text.slice(at + BOARD_ANSWER.length).trim()];
+  });
+}
+
 /**
  * The owner message that started the turn the chat was on at `at`, null when something else started it. A server restart of a failed owner
  * turn (`OWNER_RETRY_MARK`) keeps the turn the owner's: the message is the owner's last one before it.

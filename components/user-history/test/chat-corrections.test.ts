@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import historyExtension from "../extension/index.ts";
 import { applyCorrection, briefCorrections, type ChatRef, CORRECTION_TOOL, CorrectionLedger, correctionResult, JOB_RULES, jobLedgerPrompt, type Ledger, LEDGER_PROMPT_LINES, ledgerPrompt,
-  matchCorrection, OUTSIDE_ACTION_RULE, parseCorrectionCall, parseLedger, READ_RULE, repeatsBetween, themeOverlap, themeTokens } from "../src/chat-corrections.ts";
+  matchCorrection, OUTSIDE_ACTION_RULE, ownerSaid, parseCorrectionCall, parseLedger, READ_RULE, repeatsBetween, themeOverlap, themeTokens } from "../src/chat-corrections.ts";
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
 import { CHAT_MODE_ENTRY, REPLY_CAP_NOTE } from "../src/chat-guard.ts";
 import { jobRegistry } from "../src/chat-sources.ts";
@@ -95,6 +95,9 @@ test("repeatsBetween counts a repeat only when the owner wrote its words in that
   const repeats = await repeatsBetween(ledger, Date.parse("2026-10-12T14:07:00Z"), Date.parse("2026-10-13T14:07:00Z"), async chat => { asked.push(chat); return said[chat] ?? []; });
   assert.deepEqual(repeats.map(({ entry, repeat }) => [entry.id, repeat.chat.id]), [["c3", "ci"]], "only the owner's own words in that chat count, with case and spaces folded");
   assert.deepEqual(asked.sort(), ["ci", "ops"], "each chat's owner messages are read once");
+  const c32 = "이름 이딴식으로 짓지 말고, \n\ngit rules are enforced, \nci works and isn't annoying\n\n이런식으로";
+  assert.ok(ownerSaid(`${c32} [screenshot of the duties panel: CI guarantees, Repo rules, CI design review]`, [c32]), "a note in brackets is the chat's, not a word the owner must have written");
+  assert.ok(!ownerSaid("[screenshot of the duties panel]", [c32]) && !ownerSaid("ci works [x] and stop asking", [c32]), "the words around the note must be the owner's");
 });
 
 test("ledger prompt: active and reopened rules, reopened first then newest, capped; retired ones and an empty ledger give nothing", () => {

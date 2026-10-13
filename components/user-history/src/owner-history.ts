@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { missing } from "./locked-json.ts";
-import { briefCheck, type BriefFinding, type BriefInput, type OwnerMessage, ownerMessages } from "./shared/brief-check.ts";
+import { briefCheck, type BriefFinding, type BriefInput, type OwnerMessage, ownerMessages, ownerTexts } from "./shared/brief-check.ts";
 import type { ThreadMessage } from "./shared/types.ts";
 
 /**
@@ -9,6 +9,15 @@ import type { ThreadMessage } from "./shared/types.ts";
  * tail (session-tail.ts, TAIL_MESSAGES), so an owner message from days back is only in the file.
  */
 export async function fileOwnerMessages(file: string): Promise<OwnerMessage[]> {
+  return ownerMessages(await userMessages(file));
+}
+
+/** Every word the owner wrote in a session file (`ownerTexts`): his messages and his board answers. */
+export async function fileOwnerTexts(file: string): Promise<string[]> {
+  return ownerTexts(await userMessages(file));
+}
+
+async function userMessages(file: string): Promise<ThreadMessage[]> {
   const messages: ThreadMessage[] = [];
   try {
     for await (const line of createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity })) {
@@ -18,7 +27,7 @@ export async function fileOwnerMessages(file: string): Promise<OwnerMessage[]> {
       if (entry.type === "message" && entry.message?.role === "user" && typeof entry.message.timestamp === "number") messages.push(entry.message as ThreadMessage);
     }
   } catch (error) { if (missing(error)) return []; throw error; }
-  return ownerMessages(messages);
+  return messages;
 }
 
 /**

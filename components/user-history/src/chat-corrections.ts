@@ -82,12 +82,13 @@ export function matchCorrection(ledger: Ledger, theme: readonly string[]): Corre
 
 const quoteForm = (text: string): string => normal(text).toLowerCase();
 /**
- * Whether `words` is part of one owner message of the chat (`owner`, from `ownerMessages`), compared with straight quotes, one space per
- * whitespace run and no case.
+ * Whether `words` is part of one owner message of the chat (`owner`, from `ownerTexts`), compared with straight quotes, one space per
+ * whitespace run and no case. A note in square brackets is the chat's, such as "[screenshot of the duties panel: ...]" for an image the owner
+ * sent with c32's repeat: the words around it must each be in that one message.
  */
 export function ownerSaid(words: string, owner: readonly string[]): boolean {
-  const form = quoteForm(words).replace(/^["'\s]+|["'\s]+$/g, "");
-  return !!form && owner.some(text => quoteForm(text).includes(form));
+  const pieces = words.split(/\[[^\]]*\]/).map(piece => quoteForm(piece).replace(/^["'\s]+|["'\s]+$/g, "")).filter(Boolean);
+  return pieces.length > 0 && owner.some(text => { const form = quoteForm(text); return pieces.every(piece => form.includes(piece)); });
 }
 /**
  * Null when the owner said `words` in the chat (`ownerSaid`); else the refusal. On 10-12 the Crawler VP recorded Fable's "Never re-push a land-33
