@@ -238,7 +238,7 @@ export class Chats {
     await this.source.owned?.add(id);
     await this.index.add(id);
     this.chatIds.add(id);
-    if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
+    this.threads.pin(id);
     await this.threads.setSteeringMode(id, "all");
     await this.loads.set(id, this.build, this.brief);
     return { id, name };
@@ -271,8 +271,8 @@ export class Chats {
           this.log(`chat ${id.slice(0, 8)}: unarchived: the daemon archived it, the chat list did not`);
         } catch (error) { this.log(`chat ${id.slice(0, 8)}: unarchive: ${error instanceof Error ? error.message : String(error)}`); }
       }
-      if (this.threads.pin(id)) pinned.push(id);
-      else this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
+      this.threads.pin(id);
+      pinned.push(id);
     }
     return { pinned, forgotten, adopted: await this.rescan() };
   }
@@ -333,7 +333,7 @@ export class Chats {
     if (!sessionFile || !(await fileHasChatMarker(sessionFile))) return false;
     await this.index.add(id);
     this.chatIds.add(id);
-    if (!this.threads.pin(id)) this.log(`chat ${id.slice(0, 8)}: live limit reached, not pinned`);
+    this.threads.pin(id);
     try { await this.threads.setSteeringMode(id, "all"); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }
     return true;

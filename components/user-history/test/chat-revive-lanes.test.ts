@@ -48,7 +48,9 @@ async function setup(duty: CheckInSource["duty"], hung?: { start: number; runnin
   await index.add("c1");
   let now = hung?.start ?? 1_000_000_000;
   const settingsFile = join(dir, "check-in-settings.json");
-  const source: CheckInSource = { board: async () => board, rows: async () => [{ id: "c1", name: "c1" } as SessionRow], memory: checkInRecord(join(dir, "check-ins.json")),
+  // `home: dir`: the check-in reads heartbeats and the release train under the home folder; the owner's real ~/.cache/virev/ci-runs.json made
+  // the check-in slower than the ticks of the test below, so it failed at random (0 check-ins started).
+  const source: CheckInSource = { board: async () => board, rows: async () => [{ id: "c1", name: "c1" } as SessionRow], home: dir, memory: checkInRecord(join(dir, "check-ins.json")),
     replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(settingsFile), tickMs: 0, now: () => now, noReportGraceMs: 0,
     ...(duty ? { duty } : {}) };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
@@ -75,9 +77,12 @@ async function setup(duty: CheckInSource["duty"], hung?: { start: number; runnin
 
 test("chat revive: a check-in whose duty job start never ends does not hold the chat's failed-turn restart", async () => {
   const runs: string[] = [];
-  const hung = { checkIn: (id: string, _run: CheckInRun) => { runs.push(id); return new Promise<never>(() => {}); } };
+  let started: () => void = () => {};
+  const startedOnce = new Promise<void>(resolve => { started = resolve; });
+  const hung = { checkIn: (id: string, _run: CheckInRun) => { runs.push(id); started(); return new Promise<never>(() => {}); } };
   const { chats, run, calls } = await setup(hung);
   assert.deepEqual(await run(6, false), [5], "the restart comes 5 min after the abort, beside the check-in that still waits on its job start");
+  await startedOnce;
   assert.equal(runs.length, 1, "the check-in started once and still waits");
   assert.equal(calls.find(call => call.startsWith("restart")), "restart c1 [check-in] Your last turn failed at 22:46 (Request was aborted). Re-check the board and continue.");
   chats.close();

@@ -136,6 +136,7 @@ class Thread {
   }
 }
 
+/** How many unpinned threads with no tab open stay attached (`MAX_LIVE`) or stay read from their saved file (`MAX_SAVED`); pinned chats do not count. */
 const MAX_LIVE = 8;
 const MAX_SAVED = 16;
 const IDLE_MS = 3 * 60 * 1000;
@@ -187,10 +188,11 @@ export class ThreadHub {
     }
   }
 
+  /** Closes the oldest unpinned threads of `kind` with no tab open over MAX_LIVE or MAX_SAVED; pinned threads do not count, so pins never push other threads out. */
   private evict(kind: "live" | "saved"): void {
     const candidates = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && thread.listeners.size === 0 && !this.pinned.has(thread.id))
       .sort((left, right) => left.touched - right.touched);
-    const total = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live")).length;
+    const total = [...this.threads.values()].filter(thread => (thread.live !== null) === (kind === "live") && !this.pinned.has(thread.id)).length;
     const limit = kind === "live" ? MAX_LIVE : MAX_SAVED;
     for (const thread of candidates) {
       if (total - (candidates.indexOf(thread)) <= limit) break;
@@ -198,12 +200,14 @@ export class ThreadHub {
     }
   }
 
-  /** Pins up to MAX_LIVE threads; false when the limit is reached, so pins never push every other live thread out. */
-  pin(id: string): boolean {
-    if (!this.pinned.has(id) && this.pinned.size >= MAX_LIVE) return false;
+  /**
+   * Keeps the thread attached while the service runs and resumes it after each daemon restart. Every chat is pinned, with no count limit:
+   * the old cap of MAX_LIVE (8) left the 9th chat, Crawler VP, unpinned from 10-08 on, so after the 10-13 10:06Z daemon restart nothing
+   * resumed it, its failed turn got no restart (`revive` reads only an attached thread), and it sat 1.8 h until an agent message woke it.
+   */
+  pin(id: string): void {
     this.pinned.add(id);
     this.unwatchCatalog ??= this.catalog.subscribe(event => { if (event.daemon === "up") this.keepPinnedLive(); });
-    return true;
   }
 
   unpin(id: string): void {

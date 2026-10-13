@@ -311,7 +311,7 @@ function source(dir: string, boards: Record<string, ChatBoard> = {}, now = () =>
   return { board: async id => boards[id] ?? null, rows: async () => rows(), memory: checkInRecord(join(dir, "check-ins.json")),
     replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now, noReportGraceMs: 0 };
 }
-function fakeThreads(calls: string[], pinLimit = 8) {
+function fakeThreads(calls: string[]) {
   let observer: Observer | undefined;
   let next = 1;
   const pinned = new Set<string>();
@@ -351,7 +351,7 @@ function fakeThreads(calls: string[], pinLimit = 8) {
     reloaded: [] as string[],
     async reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved"> { if (this.sessionBusy.has(id)) return "busy"; this.reloaded.push(id); return "reloaded"; },
     async create(input: { cwd: string; name: string; kind: "chat"; thinkingLevel?: string }) { calls.push(`create ${input.kind} ${input.name} ${input.cwd}`); return { id: `s${next++}` }; },
-    pin(id: string) { if (!pinned.has(id) && pinned.size >= pinLimit) return false; calls.push(`pin ${id}`); pinned.add(id); return true; },
+    pin(id: string) { calls.push(`pin ${id}`); pinned.add(id); },
     unpin(id: string) { calls.push(`unpin ${id}`); pinned.delete(id); },
     async setSteeringMode(id: string, mode: string) { calls.push(`steering ${id} ${mode}`); },
     heartbeats: new Map<string, string>(),
@@ -682,11 +682,7 @@ test("chats: adopt pins what the daemon still lists, unarchives what the daemon 
   assert.deepEqual(await chats.adopt(), { pinned: ["live", "down", "archived"], forgotten: ["gone"], adopted: [] }, "newest first, as the index lists them");
   assert.deepEqual(calls, ["pin live", "pin down", "unarchive archived", "pin archived", "unpin gone"]);
   assert.deepEqual(await index.ids(), ["live", "down", "archived"]);
-  const lines: string[] = [];
-  const full = new Chats(index, fakeThreads([], 0), async () => ({ lifecycle: "live" }), "b1", loads, source(dir), line => lines.push(line));
-  assert.deepEqual(await full.adopt(), { pinned: [], forgotten: [], adopted: [] });
-  assert.equal(lines.length, 3, "the live limit is logged, not thrown");
-  chats.close(); full.close();
+  chats.close();
 });
 
 test("chats: a forced daemon shutdown archives every live session; the next serve start keeps every chat in the index and the next create adds to it", async () => {
@@ -1238,7 +1234,7 @@ test("thread hub: after a restart the pinned chats attach two at a time in pin o
   internals.liveSnapshot = async () => ({ kind: "live", info: {}, messages: [], streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null });
   const flush = () => new Promise(resolve => setTimeout(resolve, 5));
   const chats = ["c1", "c2", "c3", "c4", "c5", "c6"];
-  for (const id of chats) assert.ok(hub.pin(id));
+  for (const id of chats) hub.pin(id);
   fire({ daemon: "up" });
   await flush();
   assert.deepEqual(started, ["c1", "c2"], "two pins at a time, in pin order");

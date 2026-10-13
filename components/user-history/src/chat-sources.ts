@@ -91,8 +91,8 @@ export const BRIEF_CHECK_MAX_AGE_MS = 30 * 60_000;
 /** What chats need from the thread hub. ThreadHub satisfies it; tests pass a fake. */
 export interface ChatThreads {
   create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name: string; kind: "chat" }): Promise<{ id: string }>;
-  /** False when the live limit is reached; the chat then lives like any thread until one is archived. */
-  pin(id: string): boolean;
+  /** Keeps the chat attached and resumes it after each daemon restart; every chat is pinned. */
+  pin(id: string): void;
   unpin(id: string): void;
   setSteeringMode(id: string, mode: "all" | "one-at-a-time"): Promise<void>;
   /** The attached session's heartbeat prompt, undefined when it has none. */
