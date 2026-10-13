@@ -108,7 +108,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const since = previous?.since ?? previous?.at ?? now;
   return { memory: { at: now, steps, since }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now), goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now),
-    blocked: context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now), done: context.boardError ? [] : finishedOpen(board),
+    blocked: context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch), done: context.boardError ? [] : finishedOpen(board),
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now), waitsMet: context.boardError ? [] : waitsMet(goaled, board, context.rows ?? [], self),

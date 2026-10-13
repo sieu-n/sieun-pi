@@ -3,7 +3,7 @@ import { looksDone, pathLike } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty } from "./shared/chat-duties.ts";
 import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
   type TargetState, targetText, walkItems } from "./shared/chat-board.ts";
-import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
+import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, ScratchItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, owns, parkedBy, plural, quote, STATE_WORD, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import { localTime } from "./checkin-settings.ts";
@@ -426,13 +426,16 @@ const othersWord = (text: string | undefined): string | undefined =>
  * a step, work out how to fix it and get involved): it waits (a waitFor, or blocked), its waitFor or note names such a blocker or
  * its waitFor or owner is another thread, it has not changed for BLOCKED_MS, and no job of it is working. A step an open For you todo covers
  * waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
- * schedule, whose `plannedEnd` plus PLANNED_END_GRACE_MS is still ahead, is not blocked yet. `on` names the blocker.
+ * schedule, whose `plannedEnd` (with the board's `scratch` notes it names) plus PLANNED_END_GRACE_MS is still ahead, is not blocked yet. `on` names the blocker.
  */
 export interface BlockedStep { view: StepView; on: string }
 /** How long past its planned end a parked-on-schedule wait may sit before it counts as blocked (owner's brief 10-13 for frontend bro p100). */
 export const PLANNED_END_GRACE_MS = 30 * 60_000;
 const CLOCK_Z = /\b([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?Z\b/g;
-const UNTIL_CLOCK = /\buntil\s+(?:about\s+|around\s+|roughly\s+)?(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\b/gi;
+/** A clock a note names as an end: "until about 00:15Z" or "03:15Z at the latest". */
+const END_CLOCK = /\buntil\s+(?:about\s+|around\s+|roughly\s+)?(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\b|\b(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\s+at\s+the\s+latest\b/gi;
+/** A scratch note id a step names, like "after Hold11 (s123)". */
+const SCRATCH_ID = /\bs\d+\b/g;
 /** Each HH:MMZ in `text` as the instant nearest `at` (within 12 h either side). */
 const clocksNear = (text: string, at: number): number[] => [...text.matchAll(CLOCK_Z)].map(([, hours, minutes]) => {
   const day = new Date(at);
@@ -441,20 +444,27 @@ const clocksNear = (text: string, at: number): number[] => [...text.matchAll(CLO
 });
 /**
  * When a step's wait is planned to end (frontend bro 10-13, p100: "Fable's land-33 hold until about 00:15Z, then reruns of r12 and r13"): the
- * latest HH:MMZ its waitFor names, or an "until HH:MMZ" in its note, read near the step's last change; else its waitUntil. A note's other clock
- * times are when something was seen ("At 23:00Z, 7 of 10 jobs ... were green"), not an end. Undefined when the step names no end.
+ * latest HH:MMZ its waitFor names, or an "until HH:MMZ" or "HH:MMZ at the latest" in its note or in a `scratch` note its waitFor or note names
+ * (launch main bro 10-13, p87: "after Hold11 (s123)", where s123 says "01:18Z Fable's hold11: until the land 33 set ... has started every job,
+ * 03:15Z at the latest"), read near the step's last change; else its waitUntil. A note's other clock times are when it was written or something
+ * was seen ("At 23:00Z, 7 of 10 jobs ... were green"), not an end. Undefined when the step names no end.
  */
-export function plannedEnd(item: PlanItem, changedAt: number): number | undefined {
-  const named = [...clocksNear(item.waitFor ?? "", changedAt), ...[...(item.note ?? "").matchAll(UNTIL_CLOCK)].flatMap(([until]) => clocksNear(until, changedAt))];
+export function plannedEnd(item: PlanItem, changedAt: number, scratch: readonly ScratchItem[] = []): number | undefined {
+  const ids = new Set([...`${item.waitFor ?? ""} ${item.note ?? ""}`.matchAll(SCRATCH_ID)].map(([id]) => id));
+  const notes = [item.note ?? ""];
+  if (ids.size) walkItems(scratch, note => { if (ids.has(note.id)) notes.push(note.text); });
+  const ends = notes.flatMap(text => [...text.matchAll(END_CLOCK)].flatMap(([end]) => clocksNear(end, changedAt)));
+  const named = [...clocksNear(item.waitFor ?? "", changedAt), ...ends];
   if (named.length) return Math.max(...named);
   const until = Date.parse(item.waitUntil ?? "");
   return Number.isFinite(until) ? until : undefined;
 }
-export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number): BlockedStep[] {
+export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number,
+  scratch: readonly ScratchItem[] = []): BlockedStep[] {
   return views.flatMap(view => {
     const { item, owner } = view;
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
-      now - view.changedAt <= BLOCKED_MS || now <= (plannedEnd(item, view.changedAt) ?? -Infinity) + PLANNED_END_GRACE_MS) return [];
+      now - view.changedAt <= BLOCKED_MS || now <= (plannedEnd(item, view.changedAt, scratch) ?? -Infinity) + PLANNED_END_GRACE_MS) return [];
     const thread = waitTarget(item.waitFor, rows, self) ?? (owner?.key.startsWith("thread:") ? { name: owner.name } : undefined);
     const word = othersWord(item.waitFor) ?? othersWord(item.note) ?? (heldRun(item) ? "a CI run another thread holds" : undefined);
     const on = thread ? `the ${clip(thread.name, 40)} thread` : word;
