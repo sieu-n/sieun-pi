@@ -1,4 +1,4 @@
-import type { AccountAction, AccountLogin, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, MachineView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
+import type { AccountAction, AccountLogin, AgentQueueInput, AgentQueueView, AccountsView, BoardOp, ChatBoard, ChatDefaults, ChatDefaultsInput, MachineView, RemoteAccessInput, RemoteAccessView, SdkView, SlackChannelOption, SlackChannelSetup, SlackChatInput, SlackInput, SlackView, ChildUsage, Command, ImageInput, LabelAction, SkillsView, ToolsView, ModelCatalog, NewChatAccount, SendMode, SessionsEvent, ThreadEvent, ThreadNote, ThreadStats, UsageRefresh, Workspace } from "../shared/types.ts";
 
 import type { NewChatSettings } from "../shared/start-skill.ts";
 import type { Bookmark, BookmarkAction } from "../shared/bookmarks.ts";
@@ -76,6 +76,8 @@ export const api = {
   slackChannels: () => get<{ channels: SlackChannelOption[] | null }>("api/slack/channels", 30000).then(body => body.channels),
   slackChat: (id: string, input: SlackChatInput) => post<SlackView>("api/threads/" + encodeURIComponent(id) + "/slack", input, 60000),
   machine: () => get<MachineView>("api/machine"),
+  agentQueue: () => get<AgentQueueView>("api/agent-queue"),
+  setAgentQueue: (input: AgentQueueInput) => post<AgentQueueView>("api/agent-queue", input),
   tools: () => get<ToolsView>("api/tools", 120000),
   checkTools: () => post<ToolsView>("api/tools/check", {}, 120000),
   skills: () => get<SkillsView>("api/skills"),

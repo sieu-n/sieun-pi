@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
-import { POOL_PRIORITIES, type AccountAction, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider,
+import { POOL_PRIORITIES, type AccountAction, type AgentQueueSession, type AgentQueuedSession, type AgentQueueView, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider,
   type PoolResolution, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
@@ -186,7 +186,47 @@ export const poolCommand = {
   refresh: (provider: string, account: string | null) => ["refresh", ...(account ? [account] : []), "--provider", provider, "--stream"],
   login: (provider: string, account: string | null, seconds: number) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds)],
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
+  queue: () => ["queue", "--json"],
+  set: (key: string, value: number | string) => ["set", key, String(value)],
 };
+
+/** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
+export type AgentQueueReading = Omit<Extract<AgentQueueView, { state: "read" }>, "state" | "restoreMax" | "nextTitle">;
+
+const count = (value: unknown): number | null => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+
+function queueSession(value: unknown): AgentQueueSession {
+  const priority = isRecord(value) ? parsePoolPriority(value.class) : null;
+  const since = isRecord(value) ? epochMs(value.since) : null;
+  if (!isRecord(value) || !text(value.session) || !text(value.tree) || !priority || since === null) throw new Error("pi-pool returned an invalid queue entry");
+  return { session: value.session as string, tree: value.tree as string, parent: text(value.parent), priority, since };
+}
+
+export function parseAgentQueue(value: unknown): AgentQueueReading {
+  if (!isRecord(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.working) || !Array.isArray(value.queued)) throw new Error("pi-pool returned an invalid queue");
+  const macWorkingMax = value.mac_working_max === "off" ? null : count(value.mac_working_max);
+  const treeWorkingMax = count(value.tree_working_max);
+  if ((macWorkingMax === null && value.mac_working_max !== "off") || treeWorkingMax === null) throw new Error("pi-pool returned invalid queue limits");
+  const queued = value.queued.map((entry: unknown): AgentQueuedSession => {
+    const session = queueSession(entry);
+    const row = entry as Record<string, unknown>;
+    const basePriority = parsePoolPriority(row.base_class) ?? session.priority;
+    const position = count(row.position), total = count(row.total);
+    const wait = typeof row.wait_s === "number" && Number.isFinite(row.wait_s) && row.wait_s >= 0 ? row.wait_s : null;
+    if (position === null || total === null || wait === null) throw new Error("pi-pool returned an invalid queue entry");
+    return { ...session, basePriority, position, total, waitMs: wait * 1000 };
+  }).sort((a, b) => a.position - b.position);
+  return { enabled: value.enabled, macWorkingMax, treeWorkingMax, working: value.working.map(queueSession), queued };
+}
+
+export async function readAgentQueue(): Promise<AgentQueueReading> {
+  return parseAgentQueue(JSON.parse(await run(poolCommand.queue())));
+}
+
+/** One `pi-pool set`; the value goes over as text, the way the CLI takes it. */
+export async function setPoolKey(key: "mac_working_max" | "tree_working_max", value: number | "off"): Promise<void> {
+  await run(poolCommand.set(key, value));
+}
 
 /** Sets a root session's pool class; the pool keeps it on the tree record, so every subagent of the root shares it. */
 export async function setPoolPriority(sessionId: string, priority: PoolPriority): Promise<void> {

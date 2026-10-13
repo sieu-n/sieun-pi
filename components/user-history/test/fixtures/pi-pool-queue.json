@@ -1,0 +1,47 @@
+{
+  "enabled": true,
+  "mac_working_max": 16,
+  "tree_working_max": 8,
+  "working": [
+    {
+      "session": "s-work-1",
+      "tree": "t-root-1",
+      "parent": null,
+      "class": "high",
+      "kind": "owner",
+      "since": 1792000000
+    },
+    {
+      "session": "s-work-2",
+      "tree": "t-root-1",
+      "parent": "t-root-1",
+      "class": "normal",
+      "kind": "slot",
+      "since": 1792000030
+    }
+  ],
+  "queued": [
+    {
+      "session": "s-q-2",
+      "tree": "t-root-2",
+      "parent": "t-root-2",
+      "class": "normal",
+      "base_class": "normal",
+      "position": 2,
+      "total": 2,
+      "since": 1792000100,
+      "wait_s": 60
+    },
+    {
+      "session": "s-q-1",
+      "tree": "t-root-3",
+      "parent": null,
+      "class": "normal",
+      "base_class": "low",
+      "position": 1,
+      "total": 2,
+      "since": 1792000000,
+      "wait_s": 245
+    }
+  ]
+}

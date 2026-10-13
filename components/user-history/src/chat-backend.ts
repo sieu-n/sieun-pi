@@ -13,6 +13,7 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, setPoolPriority } from "./chat-pool.ts";
 import { dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
+import { agentQueue, type AgentQueue } from "./chat-agent-queue.ts";
 import { briefCheckRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { Chats } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
@@ -56,6 +57,8 @@ export interface ChatBackend {
   duties?: Duties;
   /** Each live root's pool class (`pi-pool priority`), synced every 30 s and after a priority label change. Absent in tests that fake a backend. */
   poolPriorities?: PoolPriorities;
+  /** Settings > This Mac > Agent queue: `pi-pool queue --json` and the two limits, with the limit to restore in `<dataDir>/agent-queue.json`. Absent in tests that fake a backend. */
+  agentQueue?: AgentQueue;
   close(): Promise<void>;
 }
 
@@ -153,6 +156,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   let closed = false;
   return {
     catalog, threads, readState, labels, notes, bookmarks, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
+    agentQueue: agentQueue(join(dataDir, "agent-queue.json"), id => catalog.title(id)),
     async close() {
       if (closed) return;
       closed = true;

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { api } from "./api.ts";
+  import AgentQueueSettings from "./AgentQueueSettings.svelte";
   import type { MachineView, MemoryPressure } from "../shared/types.ts";
 
   const POLL_MS = 2000;
@@ -72,6 +73,7 @@
     </div>
     {#if error}<p class="note problem">The last reading failed. {error}</p>{/if}
   {/if}
+  <AgentQueueSettings />
 </section>
 
 <style>

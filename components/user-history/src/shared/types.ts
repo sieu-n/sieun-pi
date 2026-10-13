@@ -480,6 +480,22 @@ export interface MachineView {
   memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; pressure: MemoryPressure | null };
 }
 
+/** One session in `pi-pool queue --json`. Times leave the server in epoch ms. */
+export interface AgentQueueSession { session: string; tree: string; parent: string | null; priority: PoolPriority; since: number }
+export interface AgentQueuedSession extends AgentQueueSession { basePriority: PoolPriority; position: number; total: number; waitMs: number }
+
+/**
+ * Settings > This Mac > Agent queue. `read` is `pi-pool queue --json` as parsed; `restoreMax` is the Mac limit the switch writes back when the
+ * queue turns on again, and `nextTitle` names the first queued session. `unread` means the pool did not answer, so every turn runs unqueued.
+ */
+export type AgentQueueView =
+  | { state: "read"; enabled: boolean; macWorkingMax: number | null; treeWorkingMax: number; restoreMax: number;
+    working: AgentQueueSession[]; queued: AgentQueuedSession[]; nextTitle: string | null }
+  | { state: "unread"; error: string; restoreMax: number };
+
+/** One Agent queue write; each one is a single `pi-pool set`. */
+export type AgentQueueInput = { action: "mac"; value: number } | { action: "tree"; value: number } | { action: "off" } | { action: "on" };
+
 /**
  * Settings > Tools and skills: live checks of the tools agents use (the Aside browser, web search, computer use), run on the chat server with
  * the Skills and tools duty's own checks (scripts/duties/skills-and-tools.ts). `id` is that duty's check id; `off` is installed but closed on purpose.

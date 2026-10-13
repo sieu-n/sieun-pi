@@ -23,9 +23,10 @@ import type { RemoteControl } from "./chat-remote.ts";
 import type { SlackControl } from "./chat-slack.ts";
 import type { SdkSync } from "./chat-sdk.ts";
 import { machineView } from "./chat-machine.ts";
+import { parseAgentQueueInput } from "./chat-agent-queue.ts";
 import { toolChecks } from "./chat-tools.ts";
 import { skillsView } from "./chat-skills.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, CHECK_IN_PAUSES, isThinkingLevel, type AccountAction, type AgentQueueInput, type ChatDefaultsInput, type LabelAction, type ModelCatalog, type RemoteAccessInput, type SendMode, type SlackChannelSetup, type SlackChatInput, type SlackInput, type ThinkingLevel } from "./shared/types.ts";
 import { channelNameError } from "./shared/slack-channel.ts";
 import { parseStartSkill } from "./shared/start-skill.ts";
 
@@ -510,6 +511,10 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         }
         if (route === "api/sdk") { json(res, 200, sdk ? await sdk.view() : null); return; }
         if (route === "api/machine") { json(res, 200, await machineView()); return; }
+        if (route === "api/agent-queue") {
+          if (!backend.agentQueue) throw new RequestError(409, "This chat instance runs no agent queue.");
+          json(res, 200, await backend.agentQueue.view()); return;
+        }
         if (route === "api/tools") { json(res, 200, await tools.view(false)); return; }
         if (route === "api/skills") { json(res, 200, await skillsView()); return; }
         if (route.startsWith("api/usage/")) {
@@ -716,6 +721,12 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         if (route === "api/slack") await slack.set(parseSlackInput(body)).catch(error => { throw new RequestError(400, error instanceof Error ? error.message : String(error)); });
         else await slack.check();
         json(res, 200, slack.view(true)); return;
+      }
+      if (route === "api/agent-queue") {
+        if (!backend.agentQueue) throw new RequestError(409, "This chat instance runs no agent queue.");
+        let input: AgentQueueInput;
+        try { input = parseAgentQueueInput(body); } catch (error) { throw new RequestError(400, error instanceof Error ? error.message : String(error)); }
+        json(res, 200, await backend.agentQueue.apply(input).catch(error => { throw new RequestError(502, error instanceof Error ? error.message : String(error)); })); return;
       }
       if (route === "api/tools/check") { json(res, 200, await tools.view(true)); return; }
       if (route === "api/remote/check") { await remote.check(); json(res, 200, remote.view(origin === `http://${host}`)); return; }

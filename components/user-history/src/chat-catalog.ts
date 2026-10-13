@@ -713,6 +713,12 @@ export class Catalog {
     return this.find(sessionId);
   }
 
+  /** A session's title from what the catalog holds now, with no refresh; null when it is not listed. */
+  title(sessionId: string): string | null {
+    const row = this.find(sessionId);
+    return row ? sessionTitle(row) : null;
+  }
+
   private find(sessionId: string): SessionSummary | undefined {
     const top = this.summaries.get(sessionId);
     if (top) return top;
