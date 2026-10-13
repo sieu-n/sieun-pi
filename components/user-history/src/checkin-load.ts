@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { StepView } from "./checkin-steps.ts";
@@ -57,6 +58,34 @@ export function readHeartbeats(file: string): ScheduledJob[] {
     return Array.isArray(jobs) ? jobs.filter((job): job is ScheduledJob => typeof job === "object" && job !== null && typeof (job as ScheduledJob).id === "string") : [];
   } catch {
     return [];
+  }
+}
+/** One land or promote run of the release train as the CI cache last read it: `key` is the land it carries ("33", "32b") or "promote". */
+export interface TrainRun { id: string; key: string; running: boolean; conclusion: string | null; createdAt: number; updatedAt: number }
+/** The release train's runs in the CI cache, and when the cache last read GitHub (`fetchedAt`). */
+export interface Train { runs: TrainRun[]; readAt: number }
+/** `<home>/.cache/virev/ci-runs.json`, which launchd ai.virev.ci-cache rewrites from GitHub every 30 s for sieu-n/auto-sns-agent. */
+export const trainFile = (home: string = homedir()): string => join(home, ".cache", "virev", "ci-runs.json");
+const LAND_RUN = /^land:\s*land[\s-]+(\d+[a-z]?)\b/i;
+/** The land.yml and promote.yml runs of a ci-runs.json; undefined when it has no `runs` or no `fetchedAt`. */
+export function parseTrain(cache: unknown): Train | undefined {
+  const { runs, fetchedAt } = (cache ?? {}) as { runs?: Record<string, { run?: Record<string, unknown> }>; fetchedAt?: string };
+  const readAt = Date.parse(fetchedAt ?? "");
+  if (!runs || !Number.isFinite(readAt)) return undefined;
+  return { readAt, runs: Object.values(runs).flatMap(({ run }) => {
+    const path = String(run?.path ?? "");
+    const key = path.endsWith("/promote.yml") ? "promote" : path.endsWith("/land.yml") ? LAND_RUN.exec(String(run?.name ?? ""))?.[1]?.toLowerCase() : undefined;
+    if (!run || !key) return [];
+    return [{ id: String(run.id), key, running: run.status !== "completed", conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
+      createdAt: Date.parse(String(run.created_at)), updatedAt: Date.parse(String(run.updated_at)) }];
+  }) };
+}
+/** The release train in `file` (`trainFile`); undefined when the file is missing or unreadable. */
+export async function readTrain(file: string): Promise<Train | undefined> {
+  try {
+    return parseTrain(JSON.parse(await readFile(file, "utf8")));
+  } catch {
+    return undefined;
   }
 }
 /** Words in a heartbeat's label or prompt that name work the check-in already does: a check-in, the board, watching, monitoring, status, nudging. */

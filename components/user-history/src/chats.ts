@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import type { IdIndex } from "./id-index.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
-import { heartbeatsFile, readHeartbeats } from "./checkin-load.ts";
+import { heartbeatsFile, readHeartbeats, readTrain, trainFile } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, jobFacts, liveJobs } from "./checkin-steps.ts";
@@ -708,9 +708,10 @@ export class Chats {
       const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
       const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
       const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
+      const train = await readTrain(trainFile(this.source.home));
       const previous = await this.source.memory.get(id);
       const precheck = checkInPrecheck(previous, facts, board, at,
-        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, ...(boardError !== undefined ? { boardError } : {}) });
+        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}) });
       const output = convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at);
       const flags = flagStreaks(previous?.flags, output.flagged);
       await this.source.memory.set(id, { ...precheck.memory, flags });

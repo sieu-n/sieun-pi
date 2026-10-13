@@ -6,6 +6,7 @@ import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergeStep,
 import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, ScratchItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, owns, parkedBy, plural, quote, STATE_WORD, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
+import type { Train, TrainRun } from "./checkin-load.ts";
 import { localTime } from "./checkin-settings.ts";
 
 /** The check-in's board findings: the plan's shape, goals to fold, held and stalled steps, scope misses, owner gates and goal gaps, each with the line the duty job reads. */
@@ -426,7 +427,8 @@ const othersWord = (text: string | undefined): string | undefined =>
  * a step, work out how to fix it and get involved): it waits (a waitFor, or blocked), its waitFor or note names such a blocker or
  * its waitFor or owner is another thread, it has not changed for BLOCKED_MS, and no job of it is working. A step an open For you todo covers
  * waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
- * schedule, whose `plannedEnd` (with the board's `scratch` notes it names) plus PLANNED_END_GRACE_MS is still ahead, is not blocked yet. `on` names the blocker.
+ * schedule, whose `plannedEnd` (with the board's `scratch` notes it names) plus PLANNED_END_GRACE_MS is still ahead, is not blocked yet, nor is
+ * one that waits on a release `train` that moves (`trainMoves`). `on` names the blocker.
  */
 export interface BlockedStep { view: StepView; on: string }
 /** How long past its planned end a parked-on-schedule wait may sit before it counts as blocked (owner's brief 10-13 for frontend bro p100). */
@@ -459,13 +461,41 @@ export function plannedEnd(item: PlanItem, changedAt: number, scratch: readonly 
   const until = Date.parse(item.waitUntil ?? "");
   return Number.isFinite(until) ? until : undefined;
 }
+/**
+ * How long the release train may show no land or promote run in progress and none ending before a step that waits on it counts as blocked:
+ * the longest gap between two runs of one land in the CI cache, land 33's cancelled run 38333450774 (ended 10-13 02:10:04Z) to its next run
+ * 38344244507 (03:58:53Z), 1 h 49 min, rounded up.
+ */
+export const TRAIN_IDLE_MS = 110 * 60_000;
+const LAND_REF = /\bland[\s-]+(\d+[a-z]?)\b/gi;
+const RUN_IDS = /\b\d{9,}\b/g;
+const FAILED = new Set(["failure", "timed_out", "startup_failure"]);
+/**
+ * Whether a step waits on a release train that moves (Crawler VP 10-13, p40, p46, p47 and p85 wait for "... then land 34" while land 33's run
+ * 38348869500 runs and the release owner holds every push until its go push): its waitFor (its note when it has none) names a land ("land
+ * 34", "land-33 hold") or a land or promote run the cache has, the newest run of each land (or of promote) its waitFor or note names has not
+ * failed, and a train run is in progress or one ended within TRAIN_IDLE_MS. A running run counts as moving when the cache last read it. A
+ * note that only mentions a land (VP of CI's p120: "checks moved into checks.yml in land 33") does not put a waitFor on the train.
+ */
+export function trainMoves(item: PlanItem, train: Train, now: number): boolean {
+  const keysIn = (text: string): Set<string> => new Set([...[...text.matchAll(LAND_REF)].map(([, land]) => land!.toLowerCase()),
+    ...[...text.matchAll(RUN_IDS)].flatMap(([id]) => train.runs.filter(run => run.id === id).map(run => run.key))]);
+  if (!keysIn(item.waitFor ?? item.note ?? "").size) return false;
+  for (const key of keysIn(`${item.waitFor ?? ""} ${item.note ?? ""}`)) {
+    const newest = train.runs.filter(run => run.key === key).reduce<TrainRun | undefined>((best, run) => !best || run.createdAt > best.createdAt ? run : best, undefined);
+    if (newest && !newest.running && FAILED.has(newest.conclusion ?? "")) return false;
+  }
+  const moved = Math.max(...train.runs.map(run => run.running ? train.readAt : run.updatedAt));
+  return now - moved <= TRAIN_IDLE_MS;
+}
 export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number,
-  scratch: readonly ScratchItem[] = []): BlockedStep[] {
+  scratch: readonly ScratchItem[] = [], train?: Train): BlockedStep[] {
   return views.flatMap(view => {
     const { item, owner } = view;
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
       now - view.changedAt <= BLOCKED_MS || now <= (plannedEnd(item, view.changedAt, scratch) ?? -Infinity) + PLANNED_END_GRACE_MS) return [];
     const thread = waitTarget(item.waitFor, rows, self) ?? (owner?.key.startsWith("thread:") ? { name: owner.name } : undefined);
+    if (!thread && train && trainMoves(item, train, now)) return [];
     const word = othersWord(item.waitFor) ?? othersWord(item.note) ?? (heldRun(item) ? "a CI run another thread holds" : undefined);
     const on = thread ? `the ${clip(thread.name, 40)} thread` : word;
     return on ? [{ view, on }] : [];

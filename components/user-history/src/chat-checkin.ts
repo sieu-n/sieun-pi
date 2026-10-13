@@ -1,6 +1,6 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { finishedOpen, looksDone } from "./checkin-done.ts";
-import { heartbeatLine, oneSessionLoad, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad } from "./checkin-load.ts";
+import { heartbeatLine, oneSessionLoad, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad, type Train } from "./checkin-load.ts";
 import { REPEAT_HEAD, repeatLines } from "./checkin-repeats.ts";
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
@@ -51,7 +51,9 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   /** The roots the chat started (the job registry's names or ids): its own jobs, never another session's load (`oneSessionLoad`). */
   jobs?: readonly string[];
   /** The chat's own schedules (`readHeartbeats`), for the heartbeats the check-in covers (`redundantHeartbeats`); none when not given. */
-  heartbeats?: readonly ScheduledJob[] }
+  heartbeats?: readonly ScheduledJob[];
+  /** The release train in the CI cache (`readTrain`), for steps that wait on it (`trainMoves`); not given: no step counts as on a moving train. */
+  train?: Train }
 
 /** What one check-in precheck found: the memory to keep, every open leaf step with its class, the steps on another thread's work, the open items that look done, and other facts. */
 export interface CheckInPrecheck {
@@ -108,7 +110,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const since = previous?.since ?? previous?.at ?? now;
   return { memory: { at: now, steps, since }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now), goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now),
-    blocked: context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch), done: context.boardError ? [] : finishedOpen(board),
+    blocked: context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch, context.train), done: context.boardError ? [] : finishedOpen(board),
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now), waitsMet: context.boardError ? [] : waitsMet(goaled, board, context.rows ?? [], self),
