@@ -258,7 +258,8 @@ export const noProgressLine = ({ moving }: NoProgress): string => `No plan item 
 export const STALE_STEP_MS = 24 * 60 * 60_000;
 /**
  * An open plan item whose record is stale (c44): its waitUntil passed more than STALE_STEP_MS ago, or the job its `job` names (a subagent, not a
- * thread) ended more than one check-in interval (`everyMs`) ago and the item has not changed since. A waitUntil still ahead is a planned wait, so
+ * thread) ended more than one check-in interval (`everyMs`) ago and the item has not changed since (`changedAt`, which the precheck takes from
+ * `recordedAt`: a note that gained a fact is a change, a restamped clock is not). A waitUntil still ahead is a planned wait, so
  * a job that idles under one is not stale. Any open item counts, a goal or a step with open steps under it too. Board order.
  */
 export interface StaleStep { item: PlanItem; why: string }

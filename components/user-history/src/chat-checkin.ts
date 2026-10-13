@@ -7,7 +7,7 @@ import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json
 import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, parkedBy, quote, readySteps,
-  noteFacts, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepOwner, stepView, type StepView, todoForStep, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
+  noteFacts, recordedAt, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepOwner, stepView, type StepView, todoForStep, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, type GoalGap, goalGapLine, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
@@ -112,7 +112,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now), waitsMet: context.boardError ? [] : waitsMet(goaled, board, context.rows ?? [], self),
-    stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id]?.at ?? now, self, context.everyMs ?? CHECK_IN_MS, now),
+    stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now),
     fold: context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []), load: oneSessionLoad(goaled, context.jobs),
     heartbeats: redundantHeartbeats(context.heartbeats ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes };
 }
@@ -252,16 +252,19 @@ export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stal
 export interface BoardFindings { scope: readonly ScopeMiss[]; gates: readonly GateFinding[]; stalled: readonly StalledStep[]; goals: readonly GoalGap[]; blocked: readonly BlockedStep[];
   done: readonly { item: PlanItem; reason: string }[]; loose: readonly PlanItem[]; extra: readonly PlanItem[]; underClosed: readonly { item: PlanItem; parent: PlanItem }[];
   held: readonly HeldGoal[]; waitsMet: readonly WaitMet[]; noProgress: NoProgress | null; stale: readonly StaleStep[]; fold: readonly FoldGoal[];
-  load?: readonly SessionLoad[]; heartbeats?: readonly ScheduledJob[]; noDuty?: readonly PlanItem[] }
+  load?: readonly SessionLoad[]; heartbeats?: readonly ScheduledJob[]; noDuty?: readonly PlanItem[];
+  /** The step memos of this run (`checkInPrecheck`), for when a step's record last moved (`recordedAt`). */
+  memory?: Pick<CheckInMemory, "steps"> }
 
 /**
  * The misses of one chat's classified steps: orphan steps; due steps whose waitUntil passed more than one tick (`everyMs`) ago; stale chases of
  * 24 h or more (a step with an open For you todo is `foryou`, never a chase); steps whose job ended more than one tick ago, after the step last
- * changed (`job_end_silent` when the server told that end as a bad one, else `job_end_unrecorded`); open steps on another thread's work; stalled
- * waits; and broken hard gates (a go still waiting is a fact, not a miss). Each flagged slice names its step (`item`).
+ * changed (`job_end_silent` when the server told that end as a bad one, else `job_end_unrecorded`, where a note that gained a fact since the end
+ * is a change too, `recordedAt`); open steps on another thread's work; stalled waits; and broken hard gates (a go still waiting is a fact, not a
+ * miss). Each flagged slice names its step (`item`).
  */
 export function convergenceMisses(chat: string, steps: readonly StepView[], { scope, gates, stalled, goals, blocked, done, loose, extra, underClosed, held, waitsMet: over,
-  noProgress: still, stale, fold, load = [], heartbeats = [], noDuty = [] }: BoardFindings, told: Readonly<Record<string, ToldEnd>>, everyMs: number, now: number): PrecheckOutput & { metrics: ConvergenceMisses; flagged: FlaggedSlice[] } {
+  noProgress: still, stale, fold, load = [], heartbeats = [], noDuty = [], memory }: BoardFindings, told: Readonly<Record<string, ToldEnd>>, everyMs: number, now: number): PrecheckOutput & { metrics: ConvergenceMisses; flagged: FlaggedSlice[] } {
   const misses: ConvergenceMisses = { ...NO_MISSES };
   const flagged: FlaggedSlice[] = [];
   const flag = (kind: keyof ConvergenceMisses, item: string, excerpt: string) => { misses[kind]++; flagged.push({ chat, at: now, kind, excerpt, item }); };
@@ -277,12 +280,14 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
     const end = owner && !owner.key.startsWith("thread:") && owner.state !== "working" && !owner.cancelled && !holdsOnWait(view.item, now) ? owner.activityAt : undefined;
     const staleStep = staleById.get(id);
     staleById.delete(id);
+    const memo = memory?.steps[id];
+    const recorded = memo ? recordedAt(memo) : view.changedAt;
     if (silent && silent.at > view.changedAt) {
       if (now - silent.at > everyMs) {
         flag("job_end_silent", id, `${id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ${jobEndWords(silent)} ${Math.round((now - silent.at) / 60_000)} min ago with no report and the step has not changed since`);
         continue;
       }
-    } else if (end !== undefined && end > view.changedAt && now - end > everyMs) {
+    } else if (end !== undefined && end > recorded && now - end > everyMs) {
       flag("job_end_unrecorded", id, `${id} "${view.item.text.slice(0, 60)}": job ${owner!.name} ended ${Math.round((now - end) / 60_000)} min ago and the step has not changed since`);
       continue;
     }

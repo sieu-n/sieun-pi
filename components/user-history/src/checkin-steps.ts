@@ -46,6 +46,12 @@ export interface StepMemo { sig: string; at: number; wait?: string; waitAt?: num
   /** An open item's note facts (`noteFacts`), and when its note last gained one. */
   facts?: string[]; factsAt?: number }
 /**
+ * When a step's record last moved: its sig changed (`at`) or its note gained a fact (`factsAt`). A job that ended before then has its end on the
+ * board; a note edit with no new fact, such as a restamped clock, does not move it (launch main bro 10-13: p87's 02:37Z note named tip run
+ * 38331878463 after its job ended at 02:11Z).
+ */
+export const recordedAt = (memo: StepMemo): number => Math.max(memo.at, memo.factsAt ?? memo.at);
+/**
  * The words of a note that carry a number, clock times left out: "3,141", "38305551761", "r8", "64a696e59b". A note that gains one reports
  * something new; a chase note that only restamps a time ("chased again 22:10Z") does not.
  */

@@ -1,0 +1,292 @@
+{
+ "board": {
+  "v": 2,
+  "rev": 1628,
+  "updatedAt": "2026-10-13T00:43:23.467Z",
+  "scratch": [],
+  "todos": [],
+  "plan": [
+   {
+    "id": "p80",
+    "text": "Engage fleet move to prod: bind, renew proxy routes and admit bought logins",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p85",
+      "text": "Build: a read waits for its session-opening slot while its deadline allows, instead of refusing, so prod uses all 24 openings per 10 min (land 33)",
+      "status": "blocked",
+      "job": "instagram access canary",
+      "waitFor": "openings r4 38302123793, job-retry r3 38299548558, in-session r3 38299556739 rerun after Hold10 (fallback 01:20Z); land 34",
+      "children": [],
+      "note": "00:4xZ check-in: none of the 3 commits is in land 33's r11 head, so this reaches prod with land 34.",
+      "sessionId": "01a13051-bf3d-752b-adb2-3de0eb638b73"
+     }
+    ]
+   },
+   {
+    "id": "p81",
+    "text": "Instagram limits found by evidence: canary arm and no unproven caps (5-arm test dropped 15:25Z, s91)",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p75",
+      "text": "Standing duty: about 10% of engage accounts always run as a canary arm testing the next limit or a better access pattern; the other 90% run at the best proven rate; Instagram API study in the wiki",
+      "status": "blocked",
+      "job": "instagram access canary",
+      "children": [],
+      "sessionId": "01a13051-bf3d-752b-adb2-3de0eb638b73",
+      "note": "00:4xZ check-in: 38305798496 was cancelled at 00:37:16Z with probe family green. r4 isn't in land 33, so the arm stays at 1000 (audit 12411) until land 34 reaches prod.",
+      "waitFor": "canary arm r4 38305798496 reruns after Hold10 (until r11's lint gets a runner, fallback 01:20Z); CAS; arm back to 2000 once r4 is on prod (land 34)"
+     },
+     {
+      "id": "p77",
+      "text": "Build: remove every per-account page limit or ban-risk claim that no measurement backs from the engage code, config, skills and wiki, and add a CI check that fails on a new unbacked limit",
+      "status": "blocked",
+      "job": "unproven limit hunt",
+      "children": [],
+      "sessionId": "01a13057-f227-7560-b651-fbc492bda484",
+      "waitFor": "verify-dev 38298277894 (afb6524104) reruns after Hold10 (fallback 01:20Z); the job CASes it, then proposes the daily hunt duty",
+      "note": "00:4xZ check-in: probe family, scope and scripts/seo are green; secrets, light, grafana and the 3 python legs wait for a runner."
+     }
+    ]
+   },
+   {
+    "id": "p82",
+    "text": "Crawler queue and year-deep walks: fair claims, walk handoffs, capacity dashboard",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p87",
+      "text": "Build: a clogged crawler writer behaves on purpose: interactive and probe writes go first, bulk callers get told to wait, and the lag shows on a gauge and an alert",
+      "status": "blocked",
+      "job": "writer clog behaviour",
+      "children": [],
+      "sessionId": "01a130f2-ea66-7395-9a5d-cb84824cbde3",
+      "note": "00:4xZ check-in: the run has had no jobs since 21:07Z, the same shape as Fable's ghost runs.",
+      "waitFor": "writer stack run 38301991347 reruns after Hold10 (fallback 01:20Z); if it still has no jobs, re-push on a fresh ref; land 34"
+     }
+    ]
+   },
+   {
+    "id": "p83",
+    "text": "Watchlist rollout: land 33 tonight, then watches on in waves, and new adds work",
+    "status": "doing",
+    "children": [
+     {
+      "id": "p89",
+      "text": "Build: a new collab watch goes green after a short first read (30 days), then deepens to its full depth in the background, so heavily tagged brands don't take days to turn green; plus an honest progress chip",
+      "status": "blocked",
+      "job": "watchlist add account",
+      "children": [],
+      "sessionId": "01a13068-6538-730c-b3ea-89711ef2f7ae",
+      "note": "00:20Z: the hold was released, and the run reruns under its id.",
+      "waitFor": "staged collab walk r3 38303584877 and the 4 add-account r3 runs rerun after Hold10 (fallback 01:20Z); the job lands them as one stack"
+     }
+    ]
+   }
+  ]
+ },
+ "ops": [
+  {
+   "at": "2026-10-13T01:22:53.049Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p85",
+    "waitFor": "openings r4 38302123793, job-retry r3 38299548558, in-session r3 38299556739 rerun after Hold11 (s123, 03:15Z at the latest); land 34"
+   }
+  },
+  {
+   "at": "2026-10-13T01:22:53.049Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p75",
+    "waitFor": "canary arm r4 38305798496 reruns after Hold11 (s123, 03:15Z at the latest); CAS; arm back to 2000 once r4 is on prod (land 34)",
+    "note": "01:2xZ check-in: 38305798496 is queued at attempt 6 with probe family green, held by Hold11."
+   }
+  },
+  {
+   "at": "2026-10-13T01:22:53.049Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p77",
+    "waitFor": "verify-dev 38298277894 (afb6524104) reruns after Hold11 (s123, 03:15Z at the latest); the job CASes it, then proposes the daily hunt duty"
+   }
+  },
+  {
+   "at": "2026-10-13T01:22:53.049Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p87",
+    "waitFor": "the writer stack re-pushed on a fresh ref now (38301991347 is a ghost), running after Hold11 (s123, 03:15Z at the latest); land 34",
+    "note": "01:2xZ check-in: 38301991347 has been queued with zero jobs since 21:07Z, so it won't rerun under its id. The job re-pushes on a fresh ref now, and the VP of CI was told the old id is dead."
+   }
+  },
+  {
+   "at": "2026-10-13T01:22:53.049Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p89",
+    "waitFor": "staged collab walk r3 re-pushed on a fresh ref (38303584877 is a ghost) plus the 4 add-account r3 runs, after Hold11 (s123); landed as one stack",
+    "note": "01:2xZ check-in: 38303584877 is a ghost (cancelled 00:55:59Z, GitHub still shows queued), so the job re-pushes it on a fresh ref now."
+   }
+  },
+  {
+   "at": "2026-10-13T01:24:28.379Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p87",
+    "waitFor": "writer stack r3 tip run 38331878463 (0eff75929e) after Hold11 (s123); Fable's ruling; CAS; land 34"
+   }
+  },
+  {
+   "at": "2026-10-13T01:53:54.452Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p89",
+    "waitFor": "staged collab walk r4 run 38331984622 (945bfc2bd5) plus the 4 add-account r3 runs rerun after Hold11 (s123); landed as one stack",
+    "note": "01:25Z: r4 was pushed on a fresh ref because r3 38303584877 was a ghost. Hold11 cancelled r4 at attempt 1, and it reruns under its id after the hold."
+   }
+  },
+  {
+   "at": "2026-10-13T02:06:59.442Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p85",
+    "note": "02:0xZ check-in: the job built openings r5 fc6b15ac35 on writer r3 (unpushed until Hold11 lifts). All 4 runs sit cancelled under Hold11, and its waits died, so it was told to re-arm. Reaches prod with land 34."
+   }
+  },
+  {
+   "at": "2026-10-13T02:06:59.442Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p75",
+    "note": "02:0xZ check-in: canary r4 38305798496 sits cancelled at attempt 6 under Hold11 (s123), and the job re-arms its wait. The arm goes back to 2000 once r4 is on prod with land 34."
+   }
+  },
+  {
+   "at": "2026-10-13T02:37:57.902Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p85",
+    "note": "02:4xZ check-in: parked on purpose under Hold11 (s123), with no waits on the 4 cancelled runs. Hold11 lifts once the land 33 set starts every job, by about 03:15-03:30Z. Then the job pushes openings r5 fc6b15ac35 and arms waits. CAS waits for the tip freeze to lift at land 33's metal step."
+   }
+  },
+  {
+   "at": "2026-10-13T02:37:57.902Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p75",
+    "note": "02:4xZ check-in: canary r4 38305798496 sits cancelled under Hold11, and the job holds no wait. I wake it when the hold lifts. The arm goes back to 2000 once r4 is on prod with land 34."
+   }
+  },
+  {
+   "at": "2026-10-13T02:37:57.902Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p77",
+    "note": "02:4xZ check-in: verify-dev 38298277894 has no result yet. After Hold11 the job re-waits on the same id, CASes with the daily_send_limit EXPERIMENT tag after the tip freeze, and sends the daily hunt duty spec."
+   }
+  },
+  {
+   "at": "2026-10-13T02:37:57.902Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p87",
+    "note": "02:4xZ check-in: the tip run 38331878463 (0eff75929e, a real run) was cancelled by Hold11 at 01:26Z with no failed job; probe family, scope and runner-pool passed. After Hold11 the job re-waits on the same id, then Fable rules and the job CASes after the tip freeze."
+   }
+  },
+  {
+   "at": "2026-10-13T02:37:57.902Z",
+   "op": {
+    "op": "plan_update",
+    "id": "p89",
+    "note": "02:4xZ check-in: never-in-line r3 38300657206 passed every job and lands last with the staged walk. Staged walk r4 38331984622 and the other r3 runs sit cancelled under Hold11 and rerun under their ids."
+   }
+  }
+ ],
+ "jobs": [
+  {
+   "key": "job:instagram-access-canary",
+   "name": "instagram access canary",
+   "sessionId": "01a13051-bf3d-752b-adb2-3de0eb638b73",
+   "endedAt": "2026-10-13T02:11:08.682Z"
+  },
+  {
+   "key": "job:unproven-limit-hunt",
+   "name": "unproven limit hunt",
+   "sessionId": "01a13057-f227-7560-b651-fbc492bda484",
+   "endedAt": "2026-10-13T02:11:06.439Z"
+  },
+  {
+   "key": "job:writer-clog-behaviour",
+   "name": "writer clog behaviour",
+   "sessionId": "01a130f2-ea66-7395-9a5d-cb84824cbde3",
+   "endedAt": "2026-10-13T02:11:04.149Z"
+  },
+  {
+   "key": "job:watchlist-add-account",
+   "name": "watchlist add account",
+   "sessionId": "01a13068-6538-730c-b3ea-89711ef2f7ae",
+   "endedAt": "2026-10-13T02:11:10.512Z"
+  }
+ ],
+ "memo": {
+  "p85": {
+   "sig": "[\"blocked\",\"Build: a read waits for its session-opening slot while its deadline allows, instead of refusing, so prod uses all 24 openings per 10 min (land 33)\",\"instagram access canary\",\"\",\"openings r4 38302123793, job-retry r3 38299548558, in-session r3 38299556739 rerun after Hold11 (s123, 03:15Z at the latest); land 34\"]",
+   "at": 1791855324946,
+   "facts": [
+    "Hold11",
+    "s123",
+    "4",
+    "33",
+    "r5",
+    "fc6b15ac35",
+    "33's"
+   ],
+   "factsAt": 1791859840064
+  },
+  "p75": {
+   "sig": "[\"blocked\",\"Standing duty: about 10% of engage accounts always run as a canary arm testing the next limit or a better access pattern; the other 90% run at the best proven rate; Instagram API study in the wiki\",\"instagram access canary\",\"\",\"canary arm r4 38305798496 reruns after Hold11 (s123, 03:15Z at the latest); CAS; arm back to 2000 once r4 is on prod (land 34)\"]",
+   "at": 1791855324946,
+   "facts": [
+    "r4",
+    "38305798496",
+    "Hold11",
+    "2000",
+    "34"
+   ],
+   "factsAt": 1791858039973
+  },
+  "p77": {
+   "sig": "[\"blocked\",\"Build: remove every per-account page limit or ban-risk claim that no measurement backs from the engage code, config, skills and wiki, and add a CI check that fails on a new unbacked limit\",\"unproven limit hunt\",\"\",\"verify-dev 38298277894 (afb6524104) reruns after Hold11 (s123, 03:15Z at the latest); the job CASes it, then proposes the daily hunt duty\"]",
+   "at": 1791855324946,
+   "facts": [
+    "38298277894",
+    "Hold11"
+   ],
+   "factsAt": 1791859840064
+  },
+  "p87": {
+   "sig": "[\"blocked\",\"Build: a clogged crawler writer behaves on purpose: interactive and probe writes go first, bulk callers get told to wait, and the lag shows on a gauge and an alert\",\"writer clog behaviour\",\"\",\"writer stack r3 tip run 38331878463 (0eff75929e) after Hold11 (s123); Fable's ruling; CAS; land 34\"]",
+   "at": 1791855324946,
+   "facts": [
+    "38331878463",
+    "0eff75929e",
+    "Hold11"
+   ],
+   "factsAt": 1791859840064
+  },
+  "p89": {
+   "sig": "[\"blocked\",\"Build: a new collab watch goes green after a short first read (30 days), then deepens to its full depth in the background, so heavily tagged brands don't take days to turn green; plus an honest progress chip\",\"watchlist add account\",\"\",\"staged collab walk r4 run 38331984622 (945bfc2bd5) plus the 4 add-account r3 runs rerun after Hold11 (s123); landed as one stack\"]",
+   "at": 1791857124906,
+   "facts": [
+    "r3",
+    "38300657206",
+    "r4",
+    "38331984622",
+    "Hold11"
+   ],
+   "factsAt": 1791859840064
+  }
+ }
+}
