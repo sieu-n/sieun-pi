@@ -51,27 +51,28 @@ test("VP of CI p25, p26, p30, p110 and p134: a wait on Fable's 'released' is not
   }
 });
 
-test("VP of CI controls: no CI cache, a hold idle past 110 min and a promote wait with no hold still flag both", () => {
+test("VP of CI controls: no CI cache and a hold idle past 110 min still flag both; a promote wait with no hold is parked the same way", () => {
   const all = { blocked: HOLD, stale: HOLD };
   for (const [slot, now] of Object.entries(SLOTS)) {
     assert.deepEqual(flagsAt(now), all, `${slot}, no CI cache: no step names s250, so nothing names an end`);
     assert.deepEqual(flagsAt(now, { train: trainAt(now, 3 * 60 * MIN) }), all, `${slot}: a hold whose runs last moved over TRAIN_IDLE_MS before does not move`);
-    assert.deepEqual(flagsAt(now, { train: trainAt(now), waitFor: "promote 10; then promote gates rework pushes the promote gates stack fresh and lands it" }), all,
-      `${slot}: a promote wait that names no hold rides only land and promote runs`);
+    assert.deepEqual(flagsAt(now, { train: trainAt(now), waitFor: "promote 10; then promote gates rework pushes the promote gates stack fresh and lands it" }),
+      { blocked: [], stale: [] }, `${slot}: a promote wait that names no hold is on the same release path, which the critical set's ci/ runs move`);
   }
 });
 
-test("a released wait that names s250 is parked until its \"ETA about 22:00Z\" plus the grace, and flags once it passes with the hold idle", () => {
+test("a released wait that names s250 is not blocked until its \"ETA about 22:00Z\" plus the grace, and flags once it passes with the hold idle", () => {
   const waitFor = "Fable's 'released' (s250); then promote gates rework pushes the promote gates stack fresh and lands it";
   const item = { id: "p25", text: "", status: "doing", children: [], waitFor } as unknown as PlanItem;
   assert.equal(new Date(plannedEnd(item, Date.parse("2026-10-13T19:12:03.536Z"), FIXTURE.board.scratch)!).toISOString(), "2026-10-13T22:00:00.000Z");
-  assert.deepEqual(flagsAt(SLOTS["21:12"], { waitFor }), { blocked: [], stale: [] }, "21:12Z, no CI cache: 22:00Z plus the grace is ahead");
+  assert.deepEqual(flagsAt(SLOTS["21:12"], { waitFor }), { blocked: [], stale: HOLD },
+    "21:12Z, no CI cache: 22:00Z plus the grace is ahead, which parks the blocker; the idle job still owes a record unless the path moves");
   const late = Date.parse("2026-10-13T22:31:00Z");
   assert.deepEqual(flagsAt(late, { waitFor }), { blocked: HOLD, stale: HOLD }, "22:31Z, no CI cache: the ETA passed");
   assert.deepEqual(flagsAt(late, { waitFor, train: trainAt(late, 4 * 60 * MIN) }), { blocked: HOLD, stale: HOLD }, "22:31Z: the ETA passed and the hold is idle");
 });
 
-test("the release owner's release word puts a wait with no land number on the train; a plain \"released\" does not", () => {
+test("the release owner's release word and a promote number put a wait on the release path; a plain \"released\" does not", () => {
   const now = SLOTS["21:12"];
   const train = trainAt(now);
   const moves = (waitFor: string) => trainMoves({ id: "p1", text: "", status: "doing", children: [], waitFor } as unknown as PlanItem, train, now);
@@ -79,5 +80,6 @@ test("the release owner's release word puts a wait with no land number on the tr
   assert.equal(moves("Fable's \u2018released\u2019, then r15 lands"), true);
   assert.equal(moves("Fable's release of the critical set; then one fresh push"), true);
   assert.equal(moves("the fix released to staging, then a recheck"), false);
-  assert.equal(moves("promote 10, then one fresh push"), false);
+  assert.equal(moves("promote 10, then one fresh push"), true, "a promote by number is on the release path too");
+  assert.equal(moves("the copy review, then one fresh push"), false);
 });

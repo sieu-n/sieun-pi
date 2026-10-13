@@ -83,8 +83,10 @@ const runLive = (train: Train): Train => ({ ...train, all: new Map([...train.all
 test("Crawler VP p147 control: a dead owner thread and a wait on no moving train still flag", () => {
   const now = SLOTS["09:09"];
   const dead = { heartbeats: heartbeatsAt(now, "cancelled"), activityAt: now - 3 * 60 * MIN };
-  assert.equal(p147At(now, { ...dead, train: runLive(trainAt(now)), waitFor: "ci/meta-ads-l34-r2 ee5b6b4974 (38357752199) green, then the release owner's go push" }).length, 1,
-    "a waitFor that names no land and no train run is not on the train");
+  assert.equal(p147At(now, { ...dead, train: runLive(trainAt(now)), waitFor: "the Meta Ads split check on the release owner's CI pass" }).length, 1,
+    "a waitFor that names nothing on the release path is not parked by it");
+  assert.equal(p147At(now, { ...dead, train: runLive(trainAt(now)), waitFor: "ci/meta-ads-l34-r2 ee5b6b4974 (38357752199) green, then the release owner's go push" }).length, 0,
+    "a ci/ ref, a run id and the go push are on the release path, which moves");
   assert.equal(p147At(now, { ...dead, train: runLive(trainAt(now, 2 * 60 * MIN)) }).length, 1, "a train with no run in progress and none ended within 110 min does not move");
   const quiet = heartbeatsAt(now).map(job => ({ ...job, lastRunAt: new Date(now - 61 * MIN).toISOString() }));
   assert.equal(p147At(now, { heartbeats: quiet, activityAt: now - 61 * MIN }).length, 1,

@@ -73,15 +73,15 @@ test("frontend bro p86 and p101: an \"ETA HH:MMZ to HH:MMZ\" in the note is a pl
   assert.equal(plannedEnd({ ...item, note: "At 23:00Z, 7 of 10 jobs were green." }, SLOTS["19:21"]), undefined, "a clock with no ETA is still no end");
 });
 
-test("frontend bro p86 and p101 controls: a stalled hold, a passed ETA and a land wait with no hold still flag", () => {
+test("frontend bro p86 and p101 controls: a stalled hold and a passed ETA still flag; a land wait with no hold rides the same release path", () => {
   const both = ["p101", "p86"];
   assert.deepEqual(blockedAt(SLOTS["18:51"]), both, "18:51Z, no CI cache: the 17:41Z and 17:45Z notes name no end");
   assert.deepEqual(blockedAt(SLOTS["18:51"], { train: trainAt(SLOTS["18:51"], 3 * 60 * MIN) }), both,
     "a hold whose runs last moved over TRAIN_IDLE_MS before does not move");
   const late = Date.parse("2026-10-14T01:01:00Z");
   assert.deepEqual(blockedAt(late, { train: trainAt(late, 6 * 60 * MIN) }), both, "past the ETA 00:30Z plus the grace, with the hold idle, both flag again");
-  assert.deepEqual(blockedAt(SLOTS["18:51"], { train: trainAt(SLOTS["18:51"]), waitFor: "land 34, then one fresh push" }), both,
-    "a wait on land 34 that names no hold rides only land and promote runs, and none ran since 10:16:45Z");
+  assert.deepEqual(blockedAt(SLOTS["18:51"], { train: trainAt(SLOTS["18:51"]), waitFor: "land 34, then one fresh push" }), [],
+    "a wait on land 34 that names no hold is on the same release path, which the critical set's ci/ runs move");
 });
 
 test("a run in progress on a land branch moves the train for a wait on that land", () => {

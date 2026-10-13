@@ -295,12 +295,12 @@ export const STALE_STEP_MS = 24 * 60 * 60_000;
  * An open plan item whose record is stale (c44): its waitUntil passed more than STALE_STEP_MS ago, or the job its `job` names (a subagent, not a
  * thread) ended more than one check-in interval (`everyMs`) ago and the item has not changed since (`changedAt`, which the precheck takes from
  * `recordedAt`: a note that gained a fact is a change, a restamped clock is not). A waitUntil still ahead is a planned wait, so
- * a job that idles under one is not stale. Nor is a job that ended under the release owner's hold: a waitFor that names the release word
- * (`RELEASE_WORD`) and is parked (`parkedWait`, with the board's scratch, `rows` and the release `train`). VP of CI 10-14, p25, p26, p30, p110
- * and p134 wait for "Fable's 'released'; then promote gates rework pushes ... fresh and lands it", and their job went idle at 20:07Z on purpose
- * while Fable held every runner for the land 34 critical set. A job that ended under its own planned clock still owes the step a record (c44,
- * p51's "promote 7 rerun at 04:50Z, read-back about 05:35Z"). Nor is a job whose next turn waits in the Mac-wide turn queue (`JobFact.queued`):
- * it runs once a slot frees. Any open item counts, a goal or a step with open steps under it too. Board order.
+ * a job that idles under one is not stale. Nor is a job that ended under a wait on a release path that moves (`movesOnPath`, with `rows`
+ * and the release `train`). VP of CI 10-14, p25, p26, p30, p110 and p134 wait for "Fable's 'released'; then promote gates rework pushes ...
+ * fresh and lands it", and their job went idle at 20:07Z on purpose while Fable held every runner for the land 34 critical set. A job that
+ * ended under its own planned clock still owes the step a record (c44, p51's "promote 7 rerun at 04:50Z, read-back about 05:35Z"). Nor is a
+ * job whose next turn waits in the Mac-wide turn queue (`JobFact.queued`): it runs once a slot frees. Any open item counts, a goal or a step
+ * with open steps under it too. Board order.
  */
 export interface StaleStep { item: PlanItem; why: string }
 export function staleSteps(board: ChatBoard | null, facts: readonly JobFact[], changedAt: (item: PlanItem) => number, self: ReadonlySet<string>,
@@ -316,7 +316,7 @@ export function staleSteps(board: ChatBoard | null, facts: readonly JobFact[], c
     const job = planJob(item.job);
     const owner = job === undefined || self.has(job) ? undefined : facts.find(fact => owns(fact, job));
     if (!owner || owner.key.startsWith("thread:") || owner.state === "working" || owner.activityAt === undefined || until > now || owner.queued) return;
-    if (RELEASE_WORD.test(item.waitFor ?? "") && parkedWait(item, changedAt(item), now, board?.scratch ?? [], train, rows, self)) return;
+    if (movesOnPath(item, train, rows, self, now)) return;
     const end = owner.activityAt;
     if (end > changedAt(item) && now - end > everyMs) {
       stale.push({ item, why: `job ${owner.name} ${owner.cancelled ? "was cancelled" : owner.state === "failed" ? "failed" : "ended"} ${ago(now - end)} ago and the step has not changed since` });
@@ -462,7 +462,7 @@ export function stalledSteps(views: readonly StepView[], memos: Readonly<Record<
     const { item } = view;
     const waits = item.waitFor !== undefined || item.waitUntil !== undefined || view.owner?.key.startsWith("thread:") === true;
     if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked" || heldRun(item)) return [];
-    if (train && waitTarget(item.waitFor, rows, self) === undefined && trainMoves(item, train, now)) return [];
+    if (movesOnPath(item, train, rows, self, now)) return [];
     const memo = memos[item.id];
     const untils = memo?.untils ?? [];
     const pushes = untils.filter((until, index) => index > 0 && Date.parse(until) > Date.parse(untils[index - 1]!)).length;
@@ -533,7 +533,7 @@ export function plannedEnd(item: PlanItem, changedAt: number, scratch: readonly 
   return Number.isFinite(until) ? until : undefined;
 }
 /**
- * How long the release train may show no land or promote run in progress and none ending before a step that waits on it counts as blocked:
+ * How long the release path may show no run in progress and none ending before a step that waits on it counts as blocked (`trainMoves`):
  * the longest gap between two runs of one land in the CI cache, land 33's cancelled run 38333450774 (ended 10-13 02:10:04Z) to its next run
  * 38344244507 (03:58:53Z), 1 h 49 min, rounded up.
  */
@@ -542,56 +542,63 @@ const LAND_REF = /\bland[\s-]+(\d+[a-z]?)\b/gi;
 const RUN_IDS = /\b\d{9,}\b/g;
 const FAILED = new Set(["failure", "timed_out", "startup_failure"]);
 /**
- * Words that name the release owner's hold on a land: "Fable's 'released' for the land-34 critical loop", "Fable's release of the land 34
- * loop", "land 34's hold B".
+ * What a wait names on the release path: a CI run id, a ci/ ref, a probe, a land or promote by number, the go push, or the release owner's hold
+ * or release word ("Hold11", "land 34's hold B", "the land-34 critical loop", "the critical set", "Fable's 'released'", "Fable's release of the
+ * land 34 loop"). Crawler VP 10-14, p18: "PROBE B r14 green and in land 35 (p82), then the native host checks, a new R0 manifest and a lane
+ * window" names a probe and a land with no run yet.
  */
-const RELEASE_HOLD = /\b(?:hold|loop|critical\s+(?:set|famil(?:y|ies))|released|release\s+of)\b/i;
+const RELEASE_PATH = new RegExp([/\b\d{9,}\b/, /\bci\/[\w.-]/, /\bprobes?\b/, /\b(?:land|promote)[\s-]+\d+[a-z]?\b/, /\bgo\s+push\b/, /\bhold\s*\d*\b/,
+  /\bloop\b/, /\bcritical\s+(?:set|famil(?:y|ies))\b/, /['"\u2018\u2019\u201c\u201d]released['"\u2018\u2019\u201c\u201d]/,
+  /\brelease\s+of\s+the\b[^.;]{0,40}?\b(?:loop|hold|critical\s+set)\b/].map(part => part.source).join("|"), "i");
+/** Whether a step's waitFor (its note when it has none) names the release path (`RELEASE_PATH`). */
+const onReleasePath = (item: Pick<PlanItem, "waitFor" | "note">): boolean => RELEASE_PATH.test(item.waitFor ?? item.note ?? "");
 /**
- * The release owner's word that ends a hold, which names the hold with no land number: "Fable's 'released'", "the release owner's 'released'",
- * "Fable's release of the land 34 loop" (VP of CI 10-14, p25, p26, p30, p110 and p134 wait for "Fable's 'released'; then promote gates rework
- * pushes ... fresh and lands it").
+ * Whether a release-path run the step names failed: the newest run of a land (or of promote) its waitFor or note names (by "land 33" or by a
+ * land run id), or a run its waitFor names that the CI cache has, while none of the runs it names is queued or running.
  */
-const RELEASE_WORD = /['"\u2018\u2019\u201c\u201d]released['"\u2018\u2019\u201c\u201d]|\brelease\s+of\s+the\b[^.;]{0,40}?\b(?:loop|hold|critical\s+set)\b/i;
-/**
- * Whether a step waits on a release train that moves (Crawler VP 10-13, p40, p46, p47 and p85 wait for "... then land 34" while land 33's run
- * 38348869500 runs and the release owner holds every push until its go push): its waitFor (its note when it has none) names a land ("land
- * 34", "land-33 hold") or a land or promote run the cache has, the newest run of each land (or of promote) its waitFor or note names has not
- * failed, and a train run (`parseTrain`: land, promote, or any run on a land branch) is in progress or one ended within TRAIN_IDLE_MS. A
- * running train run counts as moving when the cache last read it. A note that only mentions a land (VP of CI's p120: "checks moved into
- * checks.yml in land 33") does not put a waitFor on the train.
- *
- * A wait that names the release owner's release word (`RELEASE_WORD`) is on the train with no land named too.
- *
- * A wait that also names the release owner's hold (`RELEASE_HOLD`) rides the hold's critical set, which runs as verify-dev probes on ci/
- * branches while no land or promote run is in progress (frontend bro 10-13, p86 and p101 wait for "Fable's 'released' for the land-34
- * critical loop, then one fresh push": at the 18:51Z, 19:06Z and 19:21Z check-ins the last train run, promote 38375389358, had ended at
- * 10:16:45Z, while the critical set's runs such as ci/queue-cuts-t10 and ci/metal-deploy-poll-r9 ran). The loop cancels every other run that
- * wants a runner, so a run on a ci/ branch that GitHub updated within TRAIN_IDLE_MS, and that was not cancelled, moves the hold. Such a run
- * counts by its own update time, so a run the cache still lists as queued from hours before does not keep a stalled hold moving.
- */
-export function trainMoves(item: PlanItem, train: Train, now: number): boolean {
-  const keysIn = (text: string): Set<string> => new Set([...[...text.matchAll(LAND_REF)].map(([, land]) => land!.toLowerCase()),
+function namedRunFailed(item: PlanItem, train: Train): boolean {
+  const text = `${item.waitFor ?? ""} ${item.note ?? ""}`;
+  const keys = new Set([...[...text.matchAll(LAND_REF)].map(([, land]) => land!.toLowerCase()),
     ...[...text.matchAll(RUN_IDS)].flatMap(([id]) => train.runs.filter(run => run.id === id).map(run => run.key))]);
-  const wait = item.waitFor ?? item.note ?? "";
-  const released = RELEASE_WORD.test(wait);
-  if (!released && !keysIn(wait).size) return false;
-  for (const key of keysIn(`${item.waitFor ?? ""} ${item.note ?? ""}`)) {
+  for (const key of keys) {
     const newest = train.runs.filter(run => run.key === key).reduce<TrainRun | undefined>((best, run) => !best || run.createdAt > best.createdAt ? run : best, undefined);
-    if (newest && !newest.running && FAILED.has(newest.conclusion ?? "")) return false;
+    if (newest && !newest.running && FAILED.has(newest.conclusion ?? "")) return true;
   }
-  const held = released || RELEASE_HOLD.test(wait) ? [...train.all?.values() ?? []].filter(run => run.ref?.startsWith("ci/") && run.conclusion !== "cancelled") : [];
-  const moved = Math.max(...train.runs.map(run => run.running ? train.readAt : run.updatedAt), ...held.map(run => run.updatedAt));
-  return now - moved <= TRAIN_IDLE_MS;
+  const runs = namedRuns(item, train);
+  return runs.length > 0 && !runs.some(run => run.running) && runs.some(run => FAILED.has(run.conclusion ?? ""));
 }
 /**
- * Whether a step's wait is parked, so it is neither blocked_on_others nor a stale step: its `plannedEnd` (with the board's `scratch` notes it
- * names) plus PLANNED_END_GRACE_MS is still ahead, or it names no thread and waits on a release `train` that moves (`trainMoves`).
+ * Whether a step waits on a release path that moves. One rule since 10-14, in place of eight special cases from 10-13 and 10-14 (a land wait
+ * rode only land and promote runs, a hold wait also the critical set's ci/ runs, a 'released' wait had no land number, and so on): the step's
+ * waitFor (its note when it has none) names the release path (`onReleasePath`), no run it names failed (`namedRunFailed`), and a release run
+ * is in progress or ended within TRAIN_IDLE_MS. A release run is a land or promote run, a run on a land branch (`parseTrain`), or a run on any
+ * ci/ branch, where the release owner's loop runs the next land's critical set as verify-dev probes and cancels every other run that wants a
+ * runner. A running land or promote run counts as moving when the cache last read it; a ci/ run counts by its own update time and only when
+ * it was not cancelled, so a run the cache still lists as queued from hours before does not keep a stalled path moving. A move after `now`
+ * (a cache read later than the check-in, as in a replay) is no move yet.
+ *
+ * Crawler VP 10-14, p18 waits for "PROBE B r14 green and in land 35 (p82), ...": land 35 had no run, the last land or promote run had ended
+ * at 10:16:45Z, and the check-ins at 22:21Z, 22:36Z and 22:51Z flagged it blocked_on_others while the land-34 critical loop's ci/ runs went
+ * green (ci/queue-cuts-t10 at 21:54Z, ci/census-nullroot-20261013-r6 at 21:44Z). A note that only mentions a land (VP of CI's p120: "checks
+ * moved into checks.yml in land 33") does not put a waitFor on the path.
+ */
+export function trainMoves(item: PlanItem, train: Train, now: number): boolean {
+  if (!onReleasePath(item) || namedRunFailed(item, train)) return false;
+  const probes = [...train.all?.values() ?? []].filter(run => run.ref?.startsWith("ci/") && run.conclusion !== "cancelled");
+  const moves = [...train.runs.map(run => run.running ? train.readAt : run.updatedAt), ...probes.map(run => run.updatedAt)];
+  return moves.some(at => at <= now && now - at <= TRAIN_IDLE_MS);
+}
+/**
+ * Whether a step's wait is parked, so it is not blocked_on_others: its `plannedEnd` (with the board's `scratch` notes it names) plus
+ * PLANNED_END_GRACE_MS is still ahead, or it names no thread and waits on a release path that moves (`movesOnPath`).
  */
 export function parkedWait(item: PlanItem, changedAt: number, now: number, scratch: readonly ScratchItem[], train: Train | undefined,
   rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>): boolean {
-  return now <= (plannedEnd(item, changedAt, scratch) ?? -Infinity) + PLANNED_END_GRACE_MS ||
-    (train !== undefined && waitTarget(item.waitFor, rows, self) === undefined && trainMoves(item, train, now));
+  return now <= (plannedEnd(item, changedAt, scratch) ?? -Infinity) + PLANNED_END_GRACE_MS || movesOnPath(item, train, rows, self, now);
 }
+/** Whether a step that names no thread waits on a release path that moves (`trainMoves`): not blocked_on_others, stalled or stale. */
+export const movesOnPath = (item: PlanItem, train: Train | undefined, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>,
+  now: number): boolean => train !== undefined && waitTarget(item.waitFor, rows, self) === undefined && trainMoves(item, train, now);
 /** A run id after these words names an older run a newer one replaced ("run 38414020573 (sup 38408618643)"), not the wait. */
 const REPLACED_RUN = /\b(?:sup|supersedes|superseded|replaces|replaced)\s+(?:run\s+)?\d{9,}\b/gi;
 /** The runs a step's waitFor names that the CI cache knows (`Train.all`), in the order it names them. */

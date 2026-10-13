@@ -63,8 +63,10 @@ test("a step whose CI run was cancelled is not blocked on others; after 30 min i
     "or push fresh and put the new run in waitFor, or wait on the hold that cancelled it)");
   const running = Date.parse("2026-10-13T13:54:00Z");
   assert.equal(apiPortalAt(running, cacheAt(running)).precheck.waitsMet.length, 0, "a running run is no dead wait");
-  const live = apiPortalAt(RUN_AT, cacheAt(running));
-  assert.match(blockedLine(live.precheck.blocked[0]!, RUN_AT), /is blocked on CI run 38408618643/, "a step on a running run still counts as before");
+  assert.deepEqual(apiPortalAt(RUN_AT, cacheAt(running)).precheck.blocked, [], "a step on a run that moved 13 min before is parked on the release path");
+  const stuck = running + 111 * MIN;
+  assert.match(blockedLine(apiPortalAt(stuck, cacheAt(running)).precheck.blocked[0]!, stuck), /is blocked on CI run 38408618643/,
+    "a run the cache last saw move over 110 min before no longer parks it");
   const replaced = apiPortalAt(later, cacheAt(later), "run 38414020573 (ci/batch-config-r11, sup 38408618643) fully green, then land-object");
   assert.deepEqual(deadRunWaits(replaced.precheck.steps, cacheAt(later), later), [], "a run named only as the one a newer run replaced is no wait");
 });
