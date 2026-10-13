@@ -51,6 +51,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "source_errors: fix the precheck or the key first. Else read the flagged window and entry_class rows; for weekly rows run `node --import tsx scripts/duties/slack-green-funnel.ts --weeks 4` in sieun-pi components/user-history. Pick the step with the widest gap. If a live job or open PR already targets it, write the new numbers on p48 or p25 and send nothing. If none does, start one build job for one experiment or fix on that step, as a PR behind a PostHog flag at 0%, and put its merge and launch on the owner's For you todo. home_test_people_24h low: build the next home test (p54) or put the ready one on that todo. Never merge, launch a flag, deploy prod or email users.",
+  "onMiss": "source_errors: fix the precheck or the key first. Else read the flagged window and entry_class rows; for weekly rows run `node --import tsx scripts/duties/slack-green-funnel.ts --weeks 4` in sieun-pi components/user-history. Pick the step with the widest gap. If a live job already targets it, write the new numbers on p48 or p25 and send nothing. Open PRs waiting on the owner do not count as work on the gap. If no live job does, even when every open step waits on the owner, start one build job for one experiment or fix on that step, as a PR behind a PostHog flag at 0%, and put its merge and launch on the owner's For you todo. home_test_people_24h low: build the next home test (p54) or put the ready one on that todo. Never merge, launch a flag, deploy prod or email users.",
   "boardGoal": "p48"
 }
