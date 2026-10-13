@@ -350,6 +350,18 @@ const MAC = /\b(?:this|the)\s+Mac\b|\bMacBook|\bMac\s+mini\b/i;
 const machineTopics = (text: string, topics: readonly string[]): readonly string[] =>
   MAC.test(text) || matchTopic(text, topics.filter(topic => MACHINE.test(topic))) !== undefined ? topics : topics.filter(topic => !RESOURCE.test(topic.trim()) ||
     new RegExp(`(?<![\\p{L}\\p{N}])${topic.trim()}[\\s-]+(?:usage|use|used|pressure|average|space|files?|memory|full)(?![\\p{L}\\p{N}])`, "iu").test(text));
+/**
+ * A step that changes code is its chat's own work: its text, note or waitFor names a CI run id, a probe, a land, a migration or a commit, or
+ * its text opens with Fix, Build or Ship and names a code target. Crawler VP's p139 "Fix the crawler API health check stalling on slow internal
+ * queries" (10-13, waits on CI runs and land 34) fixes the code behind /health, and c36's "health check" flagged it. A hand-off topic still takes
+ * such a step when its text is about operating or watching that thing (run, watch, monitor, measure, page, restart, clean up).
+ */
+const CODE_MARK = /\b\d{9,}\b|\bprobes?\b|\bland(?:s|ed|ing)?\b|\bmigrations?\b|\bcommits?\b|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/i;
+const CODE_FIX = /^\s*(?:fix|build|ship)\b/i;
+const CODE_TARGET = /\b(?:handlers?|quer(?:y|ies)|endpoints?|routes?|functions?|code|schema|modules?|workers?)\b/i;
+const OPERATES = /\b(?:runs?|running|restart|reboot|(?:un)?install|clean|free|kill|upgrade|reruns?|watch(?:es|ing)?|monitor(?:s|ing)?|measur(?:e|es|ed|ing)|operat(?:e|es|ing)|ping(?:s|ing)?|pag(?:e|es|ing)|on[\s-]call|keep\s+\S+(?:\s+\S+)?\s+up)\b/i;
+const codeWork = (item: PlanItem): boolean => !OPERATES.test(item.text) &&
+  ((CODE_FIX.test(item.text) && CODE_TARGET.test(item.text)) || CODE_MARK.test(`${item.text}\n${item.note ?? ""}\n${item.waitFor ?? ""}`));
 /** An open plan item whose work belongs to another thread by a ledger handoff: the rule, and the topic its text or note names. */
 export interface ScopeMiss { item: PlanItem; rule: HandoffRule; topic: string }
 /**
@@ -362,7 +374,7 @@ export function scopeMisses(board: ChatBoard | null, rules: readonly HandoffRule
   const misses: ScopeMiss[] = [];
   const visit = (item: PlanItem, underCi: boolean) => {
     const ci = underCi || CI_WORK.test(item.text);
-    if (OPEN.has(item.status)) {
+    if (OPEN.has(item.status) && !codeWork(item)) {
       const text = `${item.text}\n${item.note ?? ""}`;
       for (const rule of mine) {
         // Only the step's own text says what the work is; a note names machines as context (VP of CI 10-09: p56 "CI dashboard" flagged for

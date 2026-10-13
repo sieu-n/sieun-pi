@@ -220,6 +220,26 @@ test("scope: a step that names CI, or sits under a goal that does, is never anot
     step("p90", "Local dev servers stay up", "doing", { children: [step("p91", "Uptime checks for the wiki and Convex: answer 200 every 10 min", "todo")] }),
   ]);
   assert.deepEqual(scopeMisses(plan, [rule], ["ci", "VP of CI"]).map(miss => `${miss.item.id} ${miss.topic}`), ["p91 uptime"]);
-  assert.deepEqual(scopeMisses(plan, [{ ...rule, topics: [...rule.topics, "CI runner"] }], ["ci", "VP of CI"]).map(miss => miss.item.id), ["p37", "p69", "p70", "p91"],
-    "a handoff about CI work still takes CI steps");
+  assert.deepEqual(scopeMisses(plan, [{ ...rule, topics: [...rule.topics, "CI runner"] }], ["ci", "VP of CI"]).map(miss => miss.item.id), ["p69", "p70", "p91"],
+    "a handoff about CI work still takes CI steps; p37 fixes the code that counts failed probes, so it is code work");
+});
+
+test("scope: a step that changes code is its chat's own work; a hand-off topic takes it only when it runs or watches that thing (Crawler VP 10-13, c36 flagged p139)", () => {
+  const c36: HandoffRule = { correction: "c36", to: OPS, topics: ["200 check", "health check", "uptime", "local environment"] };
+  const c7: HandoffRule = { correction: "c7", to: OPS, topics: ["M1 Air", "M2 Air", "Mac load", "load average", "swap", "memory pressure", "alert bot"] };
+  const plan = board([step("p146", "Crawler ops: deploys keep the API up, health and keys stay safe, server tools and Grafana live in the code, and every documented route works", "doing", { children: [
+    step("p139", "Fix the crawler API health check stalling on slow internal queries", "blocked", { job: "api health snapshots",
+      waitFor: "fb parse r5 (38378523498), snapshot reads r5 (38378533253) and 0146 r7 3f95d71305 (38379950942, mgb 38379949827) green, then land 34",
+      note: "0146 r3's live verify-dev is 38353217363 (queued). fb parse r2 38352280715, snapshot reads r2 38352284840 and 0146's mgb 38352592547 are queued." }),
+    step("p2", "Fix the health check handler so the crawler API answers 200 under load", "todo"),
+    step("p3", "Run the 200 checks of the local wiki and the crawler API every 10 min and post a red one", "todo"),
+    step("p4", "Watch the crawler API health check after land 34", "todo", { waitFor: "run 38378523498 green" }),
+    step("p5", "Fix the M1 Air runner: restart it after the macOS update", "todo"),
+    step("p101", "Clean up: delete the 7 npm debug logs on the M1 Air that hold the Vercel token in plain text, and confirm no other file on the Air holds it", "todo"),
+    step("p6", "Find why the M2 Air is slow", "todo"),
+    step("p7", "Read swap usage after the build", "todo"),
+  ] })]);
+  assert.deepEqual(scopeMisses(plan, [c7, c36], ["01a115e2-9544-7204-b8db-8ce4d5319048", "Crawler VP"]).map(miss => `${miss.item.id} ${miss.rule.correction} ${miss.topic}`),
+    ["p3 c36 200 check", "p4 c36 health check", "p5 c7 M1 Air", "p101 c7 M1 Air", "p6 c7 M2 Air", "p7 c7 swap"],
+    "p139 and p2 fix the code behind /health; running or watching the checks, the Air restart and cleanup, a slow Air and swap usage still flag");
 });
