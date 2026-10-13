@@ -7,6 +7,7 @@ import { flagStreaks } from "./checkin-repeats.ts";
 import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, jobFacts, liveJobs } from "./checkin-steps.ts";
+import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   lastJobMessages, noReportNotice, retryDue } from "./chat-checkin.ts";
 import { noticeStands } from "./no-report.ts";
@@ -19,7 +20,7 @@ import { replyCheck } from "./shared/reply-lint.ts";
 import { briefCheckNote, turnOwnerAt } from "./shared/brief-check.ts";
 import { briefCheckWithHistory } from "./owner-history.ts";
 import type { CheckInRun } from "./chat-duty-run.ts";
-import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
@@ -723,7 +724,7 @@ export class Chats {
     await this.load();
     if (!this.chatIds.has(id)) return;
     try {
-      const { board, boardError, rows, facts, name } = await this.gather(id);
+      const { board, boardError, rows, facts, queued, name } = await this.gather(id);
       // With no catalog rows yet and no hub children, every job of the chat reads as missing (frontend bro 10-13 01:09 and 01:24, while the
       // daemon's list timed out after restarts: 7 false orphans each, and the duty runner skipped both runs anyway).
       if (!rows.length && !this.children.has(id)) {
@@ -743,7 +744,7 @@ export class Chats {
       const train = await readTrain(trainFile(this.source.home));
       const previous = await this.source.memory.get(id);
       const precheck = checkInPrecheck(previous, facts, board, at,
-        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}) });
+        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}) });
       // A job at work an hour with no report gets one status ask through the chat; the check-in job cannot message the chat's subagents.
       const said = this.stall(id) ? undefined : this.messages(id);
       for (const ask of said ? statusAsks(said, facts, key => this.workingSince.get(key), at) : []) {
@@ -761,7 +762,8 @@ export class Chats {
   }
 
   /** What a check-in reads: the board (or why it cannot be read), the catalog rows, the chat's name, and its jobs with their last messages. */
-  private async gather(id: string): Promise<{ board: ChatBoard | null; boardError?: string; rows: readonly SessionRow[]; facts: ReturnType<typeof jobFacts>; name?: string }> {
+  private async gather(id: string): Promise<{ board: ChatBoard | null; boardError?: string; rows: readonly SessionRow[]; facts: ReturnType<typeof jobFacts>;
+    queued: ReadonlyMap<string, QueuePlace>; name?: string }> {
     let board: ChatBoard | null = null;
     let boardError: string | undefined;
     try { board = await this.source.board(id); }
@@ -775,12 +777,13 @@ export class Chats {
     const children = this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []);
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), (await this.source.settings.get(id)).everyMs);
     const threads = liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now());
-    const facts = threads.map(fact => {
+    const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
+    const facts = withQueuePlaces(threads.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
-    });
+    }), queued, [...this.subagents.values()].flat().concat(children, nested));
     const name = rows.find(row => row.id === id)?.name;
-    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, ...(name ? { name } : {}) };
+    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, queued, ...(name ? { name } : {}) };
   }
 
   /**

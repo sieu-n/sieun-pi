@@ -654,6 +654,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             // The name is set before the prompt, so the thread never shows the first message as its title. A failed rename still sends the message.
             if (name && kind !== "chat") await backend.threads.rename(thread.id, name).catch(() => {});
             // Every send to a chat is a steer, so the owner's text lands after the current tool batch and the queue stays invisible.
+            await backend.ownerTurn?.(thread.id);
             await backend.threads.prompt(thread.id, { message, images, mode: kind === "chat" ? "steer" : "followUp" });
             // The chat exists either way; a Slack refusal comes back as a notice and the header switch can try again.
             if (syncSlack) {
@@ -761,7 +762,8 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           const fingerprint = createHash("sha256").update(JSON.stringify([id, message, images, mode])).digest("hex");
           let pending = sends.get(rid);
           if (pending && pending.fingerprint !== fingerprint) throw new RequestError(409, "This request ID belongs to a different message.");
-          if (!pending) { pending = { fingerprint, result: backend.threads.prompt(id, { message, images, mode }) }; sends.set(rid, pending); }
+          // The owner's own message never waits in the Mac-wide turn queue: it is marked an owner turn right before it goes.
+          if (!pending) { pending = { fingerprint, result: (async () => { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message, images, mode }); })() }; sends.set(rid, pending); }
           await pending.result;
           json(res, 200, { accepted: true }); return;
         }
@@ -811,7 +813,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           backend.threads.setBoard(id, board);
           let sent = true;
           let error: string | undefined;
-          try { await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer" }); }
+          try { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer" }); }
           catch (failure) { sent = false; error = failure instanceof Error ? failure.message : String(failure); }
           json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
         }

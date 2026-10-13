@@ -1,6 +1,6 @@
 import { childName, childWorking, stepOwner } from "./checkin-steps.ts";
 import { createdSessions } from "./shared/created-sessions.ts";
-import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, ThreadMessage, TokenRate } from "./shared/types.ts";
+import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem, QueuePlace, SessionRow, ThreadMessage, TokenRate } from "./shared/types.ts";
 
 /** A thread the chat exchanged agent messages with this long ago still counts as linked. */
 export const CONTACT_WINDOW_MS = 24 * 60 * 60_000;
@@ -340,12 +340,19 @@ function ago(ms: number): string {
   const hours = Math.round(minutes / 60);
   return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
 }
+/** A queued turn in words: "queued 3 of 7 for a working slot, waiting 4 min". */
+const queuedWords = (place: QueuePlace, now: number): string => `queued ${place.position} of ${place.total} for a working slot, waiting ${ago(now - place.since)}`;
 /** The chat_board tool's "Agents:" section: one line per agent (name, state, age), at most `max` lines with the rest counted. Empty with no agent. */
 export function agentLines(agents: readonly ChatAgent[], now: number, max = 15): string[] {
   if (!agents.length) return [];
-  const lines = agents.map(agent => `- ${agent.name}: ${STATE_WORD[agent.state]}${agent.lastActivityAt ? `, ${ago(now - atOf(agent.lastActivityAt))} ago` : ""}${agent.steps.length ? ` (${agent.steps.join(", ")})` : ""}`);
+  const lines = agents.map(agent => `- ${agent.name}: ${agent.queued ? queuedWords(agent.queued, now) : STATE_WORD[agent.state]}${agent.lastActivityAt ? `, ${ago(now - atOf(agent.lastActivityAt))} ago` : ""}${agent.steps.length ? ` (${agent.steps.join(", ")})` : ""}`);
   const shown = lines.length > max ? [...lines.slice(0, max - 2), `- and ${lines.length - max + 2} more`] : lines;
   return ["Agents:", ...shown];
+}
+
+/** The agents with their place in the Mac-wide turn queue attached, for the sessions `pi-pool queue --json` lists as queued. */
+export function withQueue(agents: readonly ChatAgent[], places: ReadonlyMap<string, QueuePlace>): ChatAgent[] {
+  return agents.map(agent => { const queued = agent.sessionId ? places.get(agent.sessionId) : undefined; return queued ? { ...agent, queued } : agent; });
 }
 
 /** The agents with their output rates attached, for the session ids the usage store answered for. */

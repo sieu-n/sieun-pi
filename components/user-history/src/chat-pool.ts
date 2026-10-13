@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
-import { POOL_PRIORITIES, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueuedSession, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider,
+import { POOL_PRIORITIES, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider,
   type PoolResolution, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
@@ -188,6 +188,9 @@ export const poolCommand = {
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
   queue: () => ["queue", "--json"],
   set: (key: string, value: number) => ["set", key, String(value)],
+  admit: (sessionId: string, tree: string, priority: PoolPriority) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
+  release: (sessionId: string) => ["release", sessionId],
+  ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
 };
 
 /** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
@@ -221,8 +224,42 @@ export async function readAgentQueue(): Promise<AgentQueueReading> {
 }
 
 /** One `pi-pool set`; the value goes over as text, the way the CLI takes it. */
-export async function setPoolKey(key: "agent_queue_on" | "mac_working_max" | "tree_working_max", value: number): Promise<void> {
+/** `queue_aging_s` and `lease_s` from `pi-pool config`, which `queue --json` does not carry. Throws when either is missing. */
+export async function readQueueTimers(): Promise<AgentQueueTimers> {
+  const config = parsePoolConfig(JSON.parse(await run(["config"])));
+  const queueAgingS = count(config?.queue_aging_s), leaseS = count(config?.lease_s);
+  if (queueAgingS === null || leaseS === null) throw new Error("pi-pool config has no queue_aging_s or lease_s");
+  return { queueAgingS, leaseS };
+}
+
+export type AgentQueueKey = "agent_queue_on" | "mac_working_max" | "tree_working_max" | "queue_aging_s" | "lease_s";
+export async function setPoolKey(key: AgentQueueKey, value: number): Promise<void> {
   await run(poolCommand.set(key, value));
+}
+
+/**
+ * Marks the owner's next prompt to a session as an owner turn, so the pool runs it at once and counts it in the total (`pi-pool owner-turn`).
+ * One pi-pool call took 0.16 to 0.20 s at load 20 on 10-14, so it adds no wait the owner sees.
+ */
+export async function markOwnerTurn(sessionId: string): Promise<void> {
+  await run(poolCommand.ownerTurn(sessionId));
+}
+
+/**
+ * Waits until the pool admits a turn of `sessionId` (`pi-pool admit --wait`, with no deadline: the turn keeps its place however long the queue
+ * is) and returns the pool's state: "admitted", or "off" when the queue is off. Rejects when the pool fails, and the caller then runs unqueued.
+ */
+export async function admitTurn(sessionId: string, tree: string, priority: PoolPriority): Promise<"admitted" | "off"> {
+  // The last line is the answer, in case the wait prints its queued place first.
+  const said: unknown = JSON.parse((await run(poolCommand.admit(sessionId, tree, priority), 0)).trim().split("\n").at(-1) ?? "");
+  const state = isRecord(said) ? said.state : undefined;
+  if (state !== "admitted" && state !== "off") throw new Error(`pi-pool admit answered ${JSON.stringify(said).slice(0, 120)}`);
+  return state;
+}
+
+/** Frees a turn's slot or drops its queue entry (`pi-pool release`, idempotent). */
+export async function releaseTurn(sessionId: string): Promise<void> {
+  await run(poolCommand.release(sessionId));
 }
 
 /** Sets a root session's pool class; the pool keeps it on the tree record, so every subagent of the root shares it. */

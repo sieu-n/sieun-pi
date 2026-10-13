@@ -2,7 +2,7 @@
   import { untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, needsGo, nextIds, stepGo } from "../shared/chat-board.ts";
   import type { ArtifactLink, BoardOp, ChatAgent, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../shared/types.ts";
-  import { AGENT_LINK_LABEL, AGENT_STATE_LABEL, agentSubagents, rowDetails } from "./board.ts";
+  import { AGENT_LINK_LABEL, AGENT_STATE_LABEL, agentSubagents, queueText, rowDetails } from "./board.ts";
   import { elapsed } from "./organize.ts";
   import { countItems, groupTodos, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, planProgress, planTotals, planWait, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
@@ -21,7 +21,8 @@
   /**
    * The chat's board as cards, in this order: the plan the chat keeps (read-only here), For you (the chat's asks, each a question with its
    * choices in a row under it, answered by a tap on a choice or a typed reply; owner notes look the same), Duties (DutyList), Agents (every
-   * thread the server links to the chat, `SessionRow.agents`: a status dot, the name, one line of activity, the running subagent count, the output rate and the age; a click opens the job
+   * thread the server links to the chat, `SessionRow.agents`: a status dot, the name, one line of activity (or its place in the Mac-wide turn queue,
+   * "Queued 3 of 7, waiting 4 min"), the running subagent count, the output rate and the age; a click opens the job
    * drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card), and Notes (nested notes with links to
    * jobs, messages, wiki pages, files and web pages; the owner adds and removes notes).
    * Plan steps and notes are trees: everything with children starts folded, done and dropped steps hide behind "Show done" per parent, and
@@ -331,9 +332,10 @@
         {@const subs = agentSubagents(agent)}
         <li>
           <button type="button" class="agent" title={agentTitle(agent)} data-preview-chat={id} data-preview-job={agent.job} onclick={() => onagent(agent)}>
-            <span class="agent-state">{#if agent.state === "working"}<span class="spinner tiny"></span>{:else}<span class="agent-dot {agent.state}"></span>{/if}</span>
+            <span class="agent-state">{#if agent.queued}<span class="agent-dot waiting"></span>{:else if agent.state === "working"}<span class="spinner tiny"></span>{:else}<span class="agent-dot {agent.state}"></span>{/if}</span>
             <span class="agent-name">{agent.name}</span>
-            {#if agent.activity}<span class="agent-activity" class:failed={agent.state === "failed"}>{agent.activity}</span>{/if}
+            {#if agent.queued}<span class="agent-activity">{queueText(agent.queued, now)}</span>
+            {:else if agent.activity}<span class="agent-activity" class:failed={agent.state === "failed"}>{agent.activity}</span>{/if}
             {#if subs}<span class="agent-subs" class:running={subs.running > 0} title={subs.title}>{subs.text}</span>{/if}
             {#if agent.rate}<span class="agent-rate" class:live={agent.rate.live && agent.state === "working"} title={agent.rate.live && agent.state === "working" ? "Output tokens per second now" : "Output tokens per second of its last turn"}>{rateText(agent.rate.tps)}</span>{/if}
             {#if agentAge(agent)}<span class="agent-age">{agentAge(agent)}</span>{/if}

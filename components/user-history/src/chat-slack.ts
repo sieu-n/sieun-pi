@@ -162,7 +162,7 @@ export interface SlackChats {
   /** The thread's committed messages as the browser sees them; undefined while the thread is not open. */
   messages(id: string): readonly ThreadMessage[] | undefined;
   subscribe(id: string, listener: (event: ThreadEvent) => void): Promise<() => void>;
-  /** A steer, the same call as the browser composer. */
+  /** The owner's message as a steer, the same call as the browser composer: an owner turn in the Mac-wide turn queue. */
   prompt(id: string, message: string): Promise<void>;
   /** Fires on every catalog change (a chat created, archived or renamed). */
   watch(listener: () => void): () => void;
@@ -279,7 +279,7 @@ export function slackChats(backend: ChatBackend): SlackChats {
     name: async id => (await backend.catalog.summary(id))?.sessionName,
     messages: id => backend.threads.state(id)?.messages,
     subscribe: (id, listener) => backend.threads.subscribe(id, listener, true),
-    prompt: (id, message) => backend.threads.prompt(id, { message, images: [], mode: "steer" }),
+    prompt: async (id, message) => { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message, images: [], mode: "steer" }); },
     watch: listener => backend.catalog.subscribe(() => listener()),
   };
 }

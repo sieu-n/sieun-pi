@@ -11,7 +11,8 @@ import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, setPoolPriority } from "./chat-pool.ts";
+import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
+import { dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
 import { dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
@@ -59,6 +60,11 @@ export interface ChatBackend {
   poolPriorities?: PoolPriorities;
   /** Settings > This Mac > Agent queue: `pi-pool queue --json`, the queue switch and its two limits, and the daemon's idle unload time. Absent in tests that fake a backend. */
   agentQueue?: AgentQueue;
+  /**
+   * Marks the owner's prompt to a thread as an owner turn in the Mac-wide turn queue (`pi-pool owner-turn`), right before it is sent, so it never
+   * waits behind background work. It never rejects: a pool that fails is logged and the prompt goes as before. Absent in tests that fake a backend.
+   */
+  ownerTurn?: (sessionId: string) => Promise<void>;
   close(): Promise<void>;
 }
 
@@ -132,7 +138,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     } });
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog });
-  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate,
+  // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
+  const turns = dutyAdmitter({ log: dutyLog });
+  const queued = queueReader();
+  const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
     jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
       started: id => poolPriorities.set(id, "low") }),
     checkIn: { view: id => chats.checkInView(id), run: id => chats.runCheckIn(id),
@@ -141,7 +150,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")),
-      settings, claude: claudeReader(),
+      settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"),
@@ -154,6 +163,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const usage = new UsageService({ dataDir, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
   usage.start();
   catalog.ratesSource = ids => usage.rates(ids);
+  catalog.queueSource = queued;
+  void turns.sweep(async id => (await chats.ids()).has(id)).catch(error => dutyLog(`turn queue: sweep: ${error instanceof Error ? error.message : String(error)}`));
   catalog.linkSessions = (id, links) => boards.linkSessions(id, links)
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
@@ -165,6 +176,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   return {
     catalog, threads, readState, labels, notes, bookmarks, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
+    ownerTurn: id => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }),
     async close() {
       if (closed) return;
       closed = true;

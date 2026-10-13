@@ -265,18 +265,19 @@ export const PROGRESS_MS = 60 * 60_000;
  * verify-dev run while the M1 Air runners slept (10:30Z to 13:35Z), such as p84 on 38378436903 and p75 on 38378422183. A goal moved when, in the last PROGRESS_MS, an open step's note under it gained a fact (`noteFacts`) or a step's job
  * sent the chat a message with a fact (`factsAt`, so an answer to a status ask with no fact is no move); its steps are not counted (launch main bro 10-12: p56's copy and p57's lane reads reported every 30 min with new page
  * and run counts, and three check-ins in a row flagged them). No verdict (null) until the chat's memory spans PROGRESS_MS. `moving` are the open
- * steps that are not held and whose goal did not move.
+ * steps that are not held and whose goal did not move. A step whose work waits in the Mac-wide turn queue is held (`queueHolds`).
  */
 export interface NoProgress { moving: StepView[] }
 export function noProgress(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, since: number,
-  rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number, train?: Train): NoProgress | null {
+  rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number, train?: Train,
+  queued: ReadonlyMap<string, unknown> = new Map()): NoProgress | null {
   if (now - since < PROGRESS_MS) return null;
   let done = false;
   walkItems(board?.plan ?? [], item => { if (item.status === "done" && (memos[item.id]?.doneAt ?? 0) >= now - PROGRESS_MS) done = true; });
   if (done) return null;
   const held = (view: StepView): boolean => view.item.status === "blocked" || view.cls === "foryou" || Date.parse(view.item.waitUntil ?? "") > now ||
     (!view.mine && view.owner?.key.startsWith("thread:") === true) || waitTarget(view.item.waitFor, rows, self) !== undefined ||
-    namedRuns(view.item, train).some(run => run.running) || (train !== undefined && trainMoves(view.item, train, now));
+    namedRuns(view.item, train).some(run => run.running) || (train !== undefined && trainMoves(view.item, train, now)) || queueHolds(view, queued, rows, self);
   const recent = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
   const goalOf = (view: StepView): string => view.goal?.id ?? view.item.id;
   const moved = new Set(views.filter(view => recent(memos[view.item.id]?.factsAt) || recent(view.owner?.lastMessage?.factsAt)).map(goalOf));
@@ -298,7 +299,8 @@ export const STALE_STEP_MS = 24 * 60 * 60_000;
  * (`RELEASE_WORD`) and is parked (`parkedWait`, with the board's scratch, `rows` and the release `train`). VP of CI 10-14, p25, p26, p30, p110
  * and p134 wait for "Fable's 'released'; then promote gates rework pushes ... fresh and lands it", and their job went idle at 20:07Z on purpose
  * while Fable held every runner for the land 34 critical set. A job that ended under its own planned clock still owes the step a record (c44,
- * p51's "promote 7 rerun at 04:50Z, read-back about 05:35Z"). Any open item counts, a goal or a step with open steps under it too. Board order.
+ * p51's "promote 7 rerun at 04:50Z, read-back about 05:35Z"). Nor is a job whose next turn waits in the Mac-wide turn queue (`JobFact.queued`):
+ * it runs once a slot frees. Any open item counts, a goal or a step with open steps under it too. Board order.
  */
 export interface StaleStep { item: PlanItem; why: string }
 export function staleSteps(board: ChatBoard | null, facts: readonly JobFact[], changedAt: (item: PlanItem) => number, self: ReadonlySet<string>,
@@ -313,7 +315,7 @@ export function staleSteps(board: ChatBoard | null, facts: readonly JobFact[], c
     }
     const job = planJob(item.job);
     const owner = job === undefined || self.has(job) ? undefined : facts.find(fact => owns(fact, job));
-    if (!owner || owner.key.startsWith("thread:") || owner.state === "working" || owner.activityAt === undefined || until > now) return;
+    if (!owner || owner.key.startsWith("thread:") || owner.state === "working" || owner.activityAt === undefined || until > now || owner.queued) return;
     if (RELEASE_WORD.test(item.waitFor ?? "") && parkedWait(item, changedAt(item), now, board?.scratch ?? [], train, rows, self)) return;
     const end = owner.activityAt;
     if (end > changedAt(item) && now - end > everyMs) {
@@ -605,12 +607,23 @@ export function deadRun(item: Pick<PlanItem, "waitFor">, train: Train | undefine
   const runs = namedRuns(item, train);
   return runs.some(run => run.running) ? undefined : runs.find(run => run.conclusion === "cancelled");
 }
+/**
+ * Whether the Mac-wide turn queue holds a step's work (`pi-pool queue --json`): its owner's turn waits for a working slot, the chat's own turn
+ * does for a step the chat owns, or the turn of the thread its waitFor names does. That work starts once a slot frees, as a turn the pool holds
+ * until its account slot does (`poolHolds` in chat-recovery.ts), so the step is neither blocked_on_others, a stale step nor no progress.
+ */
+export function queueHolds(view: Pick<StepView, "item" | "owner" | "mine">, queued: ReadonlyMap<string, unknown>,
+  rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>): boolean {
+  if (view.owner?.queued !== undefined || (view.mine && [...self].some(id => queued.has(id)))) return true;
+  const target = queued.size ? waitTarget(view.item.waitFor, rows, self) : undefined;
+  return target !== undefined && queued.has(target.id);
+}
 export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number,
-  scratch: readonly ScratchItem[] = [], train?: Train): BlockedStep[] {
+  scratch: readonly ScratchItem[] = [], train?: Train, queued: ReadonlyMap<string, unknown> = new Map()): BlockedStep[] {
   return views.flatMap(view => {
     const { item, owner } = view;
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
-      now - view.changedAt <= BLOCKED_MS || parkedWait(item, view.changedAt, now, scratch, train, rows, self)) return [];
+      now - view.changedAt <= BLOCKED_MS || parkedWait(item, view.changedAt, now, scratch, train, rows, self) || queueHolds(view, queued, rows, self)) return [];
     // The step's own owner thread is never its blocker (Crawler VP 10-13, p147 read "blocked on the meta ads thread", its owner); a thread its
     // waitFor names is.
     const thread = waitTarget(item.waitFor, rows, self);

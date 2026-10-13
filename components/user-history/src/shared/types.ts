@@ -322,7 +322,11 @@ export interface ChatAgent {
   subagentsRunning?: number;
   /** Every subagent it spawned at any depth, finished and deleted ones included; absent at 0. */
   subagentsTotal?: number;
+  /** Its turn waits in the Mac-wide turn queue (`pi-pool queue --json`); absent when it does not. */
+  queued?: QueuePlace;
 }
+/** A session's place in the Mac-wide turn queue: its position, how many wait, and when it began to wait (epoch ms). */
+export interface QueuePlace { position: number; total: number; since: number }
 export interface SessionsEvent { type: "sessions"; sessions: SessionRow[]; tags: Tag[]; daemon: "up" | "down"; error?: string }
 
 export type Priority = 0 | 1 | 2 | 3;
@@ -491,11 +495,13 @@ export type IdleEvictionMinutes = number | "off";
  * Settings > This Mac > Agent queue. `pool` is `unread` when the pool did not answer, so every turn runs unqueued; `nextTitle` names the first
  * queued session. `idleEvictionMinutes` is the daemon's own setting in ~/.prime/agent/settings.json, which it rereads on every sweep.
  */
-export type AgentQueuePool = (AgentQueueReading & { state: "read"; nextTitle: string | null }) | { state: "unread"; error: string };
+export type AgentQueuePool = (AgentQueueReading & AgentQueueTimers & { state: "read"; nextTitle: string | null }) | { state: "unread"; error: string };
+/** The queue's two timers from `pi-pool config`: a waiting turn moves up one class every `queueAgingS`, and a slot with no model call for `leaseS` lapses. */
+export interface AgentQueueTimers { queueAgingS: number; leaseS: number }
 export interface AgentQueueView { pool: AgentQueuePool; idleEvictionMinutes: IdleEvictionMinutes }
 
-/** One Agent queue write: a single `pi-pool set` for the switch and the two limits, or the daemon's idle unload time. */
-export type AgentQueueInput = { action: "queue"; on: boolean } | { action: "mac"; value: number } | { action: "tree"; value: number } | { action: "idle"; value: IdleEvictionMinutes };
+/** One Agent queue write: a single `pi-pool set` for the switch, the two limits and the two timers, or the daemon's idle unload time. */
+export type AgentQueueInput = { action: "queue"; on: boolean } | { action: "mac" | "tree" | "aging" | "lease"; value: number } | { action: "idle"; value: IdleEvictionMinutes };
 
 /**
  * Settings > Tools and skills: live checks of the tools agents use (the Aside browser, web search, computer use), run on the chat server with

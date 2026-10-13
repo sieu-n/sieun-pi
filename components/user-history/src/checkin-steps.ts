@@ -1,5 +1,5 @@
 import { BOARD_LIMITS, coversStep, planJob } from "./shared/chat-board.ts";
-import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, SessionRow } from "./shared/types.ts";
+import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, QueuePlace, SessionRow } from "./shared/types.ts";
 import { clockTime, localTime } from "./checkin-settings.ts";
 
 /** The check-in's step classes: the chat's job facts, the class of each open plan step (`stepClass`), and the line the duty job reads for it. */
@@ -33,6 +33,8 @@ export interface JobFact {
   lastMessage?: JobMessage;
   /** A duty job's subagent's session id, which a step's stored `sessionId` names. */
   sessionId?: string;
+  /** Its turn waits for a working slot in the Mac-wide turn queue (`pi-pool queue --json`). */
+  queued?: QueuePlace;
 }
 /**
  * One agent message a job sent the chat: when, and its first line; `factsAt` is when the job last sent one carrying a fact (`noteFacts`), such as a

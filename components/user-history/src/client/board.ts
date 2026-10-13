@@ -1,7 +1,7 @@
 import { parseArtifactTarget, normalizeArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
 import { findItem, walkItems } from "../shared/chat-board.ts";
 import { ARTIFACT_ICON, type IconName } from "./icons.ts";
-import type { AgentLink, AgentState, ArtifactLink, ChatAgent, ChatBoard, OwnerTodo, PlanItem, PlanStatus } from "../shared/types.ts";
+import type { AgentLink, AgentState, ArtifactLink, ChatAgent, ChatBoard, OwnerTodo, PlanItem, PlanStatus, QueuePlace } from "../shared/types.ts";
 
 export const PLAN_STATUS_LABEL: Record<PlanStatus, string> = { todo: "To do", doing: "In progress", done: "Done", blocked: "Blocked", dropped: "Dropped" };
 /** The Agents card's words for an agent's state and for how it is linked to the chat (its row's title). */
@@ -31,6 +31,12 @@ export function stepAgent(item: PlanItem, agents: readonly ChatAgent[]): StepAge
   const short = (name: string) => /^[0-9a-f]{8}-/.test(name) ? name.slice(0, 8) : name;
   if (sessionId) return { name: short(job && target?.kind !== "thread" ? job : sessionId), state: null, sessionId };
   return job ? { name: short(job), state: null, job } : null;
+}
+/** A queued agent's words, from `pi-pool queue --json`: "Queued 3 of 7, waiting 4 min". */
+export function queueText(place: QueuePlace, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - place.since) / 60_000);
+  const wait = minutes < 1 ? "under 1 min" : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+  return `Queued ${place.position} of ${place.total}, waiting ${wait}`;
 }
 /** The chip's tooltip: the agent's name, its state in the Agents card's words, and its session id. */
 export const stepAgentTitle = (chip: StepAgent, name = chip.name): string =>

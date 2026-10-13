@@ -3,6 +3,7 @@ import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promis
 import { join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
 import type { CheckInActor } from "./checkin-settings.ts";
+import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, repeatMisses, type Duty, type DutyJobRef,
   type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
@@ -36,6 +37,8 @@ export interface DutyHost {
   node?: string;
   /** The daemon health gate (src/chat-daemon-gate.ts): each wake lets it probe the daemon, one probe at a time. */
   daemon?: { tick(): Promise<void> };
+  /** The Mac-wide turn queue's wait before a duty job's session is created (`dutyAdmitter`); absent: every job starts at once. */
+  admit?: DutyAdmitter["admit"];
 }
 
 export const DUTY_TICK_MS = 30_000;
@@ -128,7 +131,7 @@ export class Duties {
   /** The run going per `<chatId>/<dutyId>`; a second start shares it. */
   private readonly running = new Map<string, Promise<CheckInStart | void>>();
   /** What each standing duty run going now does, with its start time, for the record of a slot it holds up. */
-  private readonly steps = new Map<string, { at: number; step: "reading the catalog" | "measuring" | "starting its job" }>();
+  private readonly steps = new Map<string, { at: number; step: "reading the catalog" | "measuring" | "waiting for a working slot" | "starting its job" }>();
   /** Duty jobs whose archive `stopEnded` queued, so each is queued once. */
   private readonly stopped = new Set<string>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
@@ -354,7 +357,8 @@ export class Duties {
    * Starts the duty job of one run: null when the slot already has its job (a re-entrant tick or a restart), skipped while the duty's last job
    * still works, else the last job is retired (its archive queued) and a new one starts with the brief. A chat the daemon's list does not show is
    * skipped too, and a list that fails throws. The chat comes first, so whether the last job works is read from a catalog that lists it. A last
-   * job stuck past `stuckAfterMs` of the duty's schedule is retired and replaced like a finished one.
+   * job stuck past `stuckAfterMs` of the duty's schedule is retired and replaced like a finished one. The job's session is created only once the
+   * Mac-wide turn queue admits the run (`admit`), and the run's queue key is released once the session exists or its start failed.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
     brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus">): Promise<Launched> {
@@ -365,7 +369,15 @@ export class Duties {
     if (!chat) return { skipped: "skipped: the catalog does not list the chat" };
     if (last) await this.host.jobs.retire(last).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: retire ${last.name}: ${message(error)}`));
     const name = dutyJobName(brief.duty.name, chat.name, at);
-    const job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }));
+    // The wait runs here, outside the job host's one start lane, so a queued duty never holds up another chat's start.
+    const key = `${chatId}/${dutyId}`;
+    const step = this.steps.get(key);
+    if (step) this.steps.set(key, { at: step.at, step: "waiting for a working slot" });
+    const release = await this.host.admit?.(chatId, dutyId) ?? null;
+    if (step) this.steps.set(key, step);
+    let job: DutyJobRef;
+    try { job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at })); }
+    finally { await release?.().catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: release its turn queue key: ${message(error)}`)); }
     return replaced ? { job, replaced } : { job };
   }
 

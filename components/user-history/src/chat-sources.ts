@@ -6,7 +6,7 @@ import type { CheckInSettings } from "./checkin-settings.ts";
 import type { DutyRef } from "./checkin-findings.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
-import type { ChatBoard, ChatWait, ChildAgent, ModelInfo, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 /** What the Chats class (src/chats.ts) reads and drives: the thread backend, the check-in sources, and the job, reply-check and brief-check records. */
 
@@ -171,6 +171,8 @@ export interface CheckInSource {
   noReportGraceMs?: number;
   /** The pool's account availability, null when the pool cannot be read. */
   claude?: () => Promise<ClaudeState | null>;
+  /** The sessions the Mac-wide turn queue holds (`queueReader`), which the check-in reads as queued, not stalled; absent or failing: none. */
+  queue?: () => Promise<ReadonlyMap<string, QueuePlace>>;
   /** Told at each wake whether any chat or any of its jobs works now; the service holds the Mac awake while it does (src/chat-awake.ts). */
   awake?: (working: boolean) => void;
   /** The last owner reply each chat's `[reply check]` looked at (`<data dir>/reply-checks.json`). */

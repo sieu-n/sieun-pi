@@ -53,7 +53,12 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   /** The chat's own schedules (`readHeartbeats`), for the heartbeats the check-in covers (`redundantHeartbeats`); none when not given. */
   heartbeats?: readonly ScheduledJob[];
   /** The release train in the CI cache (`readTrain`), for steps that wait on it (`trainMoves`); not given: no step counts as on a moving train. */
-  train?: Train }
+  train?: Train;
+  /**
+   * The sessions the Mac-wide turn queue holds (`pi-pool queue --json`), by session id: a step whose owner, chat or awaited thread waits for a
+   * working slot is queued, not blocked or stalled (`queueHolds`). A job's own place is on its fact (`JobFact.queued`). Not given: none.
+   */
+  queued?: ReadonlyMap<string, unknown> }
 
 /** What one check-in precheck found: the memory to keep, every open leaf step with its class, the steps on another thread's work, the open items that look done, and other facts. */
 export interface CheckInPrecheck {
@@ -108,7 +113,8 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   for (const gate of gates) if (gate.kind === "go_waiting") notes.push(gateLine(gate));
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
-  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch, context.train);
+  const queued = context.queued ?? new Map<string, unknown>();
+  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch, context.train, queued);
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
@@ -117,7 +123,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board),
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
-    noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train),
+    noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
@@ -158,8 +164,9 @@ function jobLine(fact: JobFact, now: number): string {
   const last = fact.activityAt !== undefined ? `, last activity ${ago(now - fact.activityAt)} ago` : "";
   const step = fact.item ? `, on ${fact.item.id} ${quote(fact.item.text)} (${fact.item.status})` : "";
   const error = fact.state === "failed" && fact.error ? `, error: ${clip(fact.error, 120)}` : "";
+  const queued = fact.queued ? `, queued ${fact.queued.position} of ${fact.queued.total} for a working slot for ${ago(now - fact.queued.since)}` : "";
   const said = fact.lastMessage ? `, last message at ${clockTime(fact.lastMessage.at)}: ${quote(fact.lastMessage.text)}` : "";
-  return `${ownerLabel(fact)}: ${state}${quiet || last}${step}${error}${said}`;
+  return `${ownerLabel(fact)}: ${state}${queued}${quiet || last}${step}${error}${said}`;
 }
 
 /**
