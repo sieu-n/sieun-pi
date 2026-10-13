@@ -18,6 +18,7 @@ import { boardClasses, daemonSessions } from "./board-classes.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 import { noProgressHours, ownerBoardAsk, unfixedFlags } from "./checkin-quality.ts";
 import { unlinkedJobSentence } from "../../src/shared/job-mentions.ts";
+import { OpsReader, unapplied } from "../../src/checkin-ops.ts";
 
 const HOUR = 60 * 60_000;
 const WINDOW_MS = 24 * HOUR;
@@ -42,7 +43,7 @@ const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 
-type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number } & ConvergenceMisses;
+type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number; checkin_ops_dropped: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -95,6 +96,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
   let turn: Turn | undefined;
   let settled = true;
   let failure: Failure | undefined;
+  const ops = new OpsReader();
   /** The latest token hook failure the pool queued a retry for. It is a break only if the turn ends on it; a later request that gets past the hook clears it. */
   let hookRetry: Failure | undefined;
 
@@ -144,6 +146,7 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     try { message = entryMessage(JSON.parse(line)); } catch { continue; }
     if (!message || !Number.isFinite(message.timestamp) || message.timestamp > now) continue;
     const at = message.timestamp;
+    ops.read(message);
     if (message.role === "user") {
       settleFailure(at);
       const text = messageText(message).trim();
@@ -197,6 +200,13 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
   closeTurn();
   settleFailure(undefined);
   settleHookRetry();
+  // checkin_ops_dropped: a duty job's board ops the chat left off the board through the turn that read them and the [board] line's turn after it.
+  for (const report of ops.reports.filter(report => report.ended && inWindow(report.at))) {
+    const left = unapplied(report);
+    if (!left.length) continue;
+    tally.metrics.checkin_ops_dropped += left.length;
+    flag("checkin_ops_dropped", report.at, `${left.length} of ${report.ops.size} board ops from ${report.from} not applied${report.asked ? " after the [board] line" : ""}: ${left.join(", ")}`);
+  }
   return true;
 }
 
@@ -251,7 +261,7 @@ async function readWatch(file: string | undefined): Promise<Watch> {
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
   // goals_without_duty, target 0 in chat-health.duty.json: the duty proposals review of 10-12 found 5 chats with open goals and no duty.
-  const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("corrections"),
+  const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("checkin_ops_dropped", FEW), ...newest("corrections"),
     ...newest("owner_board_asks"), ...newest("goals_without_duty")].slice(0, MAX_FLAGGED);
   const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
     newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW), newest("idle_goals", FEW), newest("goal_gaps", FEW), newest("blocked_on_others", FEW),
@@ -273,7 +283,7 @@ async function main(): Promise<void> {
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
   const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0,
-    no_progress_hours: 0, ...NO_MISSES },
+    no_progress_hours: 0, checkin_ops_dropped: 0, ...NO_MISSES },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   await countPlaceholderTodos(new BoardStore(dataDir), ids, now, tally);

@@ -214,6 +214,12 @@
       "label": "Hours a check-in found nothing done and steps not blocked",
       "op": "<=",
       "target": 0
+    },
+    {
+      "key": "checkin_ops_dropped",
+      "label": "Board ops from check-ins that the chat never applied",
+      "op": "<=",
+      "target": 0
     }
   ],
   "schedule": {

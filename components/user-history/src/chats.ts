@@ -1,4 +1,3 @@
-import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { IdIndex } from "./id-index.ts";
 import { agentChildren } from "./chat-agents.ts";
@@ -12,6 +11,8 @@ import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, e
   lastJobMessages, noReportNotice, retryDue } from "./chat-checkin.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
+import { newestReportAt, opsSteer, tailMessages } from "./checkin-ops.ts";
+import { previousSpawn, spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
@@ -43,16 +44,6 @@ export const NO_REPORT_BUSY_TRIES = 6;
  * beside the folder of its session file (prime-agent `getSessionArtifactPathForFile`).
  */
 export const artifactsDir = (sessionFile: string): string => join(dirname(dirname(sessionFile)), "session-artifacts", basename(sessionFile, ".jsonl"));
-/** What the daemon stored at a subagent's spawn (`<child folder>/rlm-subagent.json`): the brief as the parent wrote it, and when. Null when unreadable. */
-async function spawnRecord(childDir: string): Promise<{ prompt: string; createdAt: number } | null> {
-  try {
-    const record: unknown = JSON.parse(await readFile(join(childDir, "rlm-subagent.json"), "utf8"));
-    if (typeof record !== "object" || record === null) return null;
-    const { prompt, createdAt } = record as { prompt?: unknown; createdAt?: unknown };
-    return typeof prompt === "string" && typeof createdAt === "number" && Number.isFinite(createdAt) ? { prompt, createdAt } : null;
-  } catch { return null; }
-}
-
 /**
  * The daemon's rows say only whether a subagent runs. The hub's attach keeps a finished job "done" while a follow-up task runs and shows the work
  * in `activity`, which is what `endedWithoutReport` looks for, so a job seen ended that runs again keeps its status here too.
@@ -167,6 +158,8 @@ export class Chats {
   /** Jobs whose brief was read for the brief check, and the spawn time of each subagent folder read so far (they never change). */
   private readonly briefSeen = new Set<string>();
   private readonly spawnTimes = new Map<string, number>();
+  /** Each chat's newest duty report with board ops that `opsCheck` judged after its turn ended, by its time. */
+  private readonly opsJudged = new Map<string, number>();
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
@@ -187,10 +180,14 @@ export class Chats {
         this.queue(id, () => this.attached(id));
         this.queue(id, () => this.refreshExtension(id));
         // A reply sent just before a restart ended its turn on the old server; an idle chat gets its check when it attaches.
-        if (!this.threads.busy(id)) this.queue(id, () => this.replyCheck(id));
+        if (!this.threads.busy(id)) { this.queue(id, () => this.replyCheck(id)); this.queue(id, () => this.opsCheck(id)); }
       },
       children: (id, attached) => { this.attachedChildren.set(id, attached); this.childrenChanged(id, withRoster(attached, this.subagents.get(id) ?? [])); },
-      idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); this.queue(id, () => this.replyCheck(id)); },
+      idle: id => {
+        if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id));
+        this.queue(id, () => this.replyCheck(id));
+        this.queue(id, () => this.opsCheck(id));
+      },
     });
     const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
     if (tickMs > 0) {
@@ -933,6 +930,25 @@ export class Chats {
   }
 
   /**
+   * At a turn's end, and when an idle chat attaches: once the turn that read the chat's newest duty report with board ops ended, one `[board]`
+   * steer naming the ops it left off the board (`opsSteer`). The hub clips the report and the chat_board arguments, so this reads the session file.
+   */
+  private async opsCheck(id: string): Promise<void> {
+    await this.load();
+    const said = this.chatIds.has(id) ? this.messages(id) : undefined;
+    const at = said && newestReportAt(said);
+    if (at === undefined || this.opsJudged.get(id) === at) return;
+    try {
+      const sessionFile = (await this.summary(id))?.sessionFile;
+      const messages = sessionFile ? await tailMessages(sessionFile) : undefined;
+      const line = messages && opsSteer(messages, await this.source.board(id));
+      if (line === undefined) return;
+      if (line) await this.threads.prompt(id, { message: line, images: [], mode: "steer" });
+      this.opsJudged.set(id, at);
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: board ops check: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /**
    * When a chat's direct subagent first shows up: its brief, the `prompt` the daemon stored at the spawn, is checked against the Jobs rule
    * (`briefCheckWithHistory`) with the chat's owner messages, the owner message that started the spawning turn and the chat's previous spawn. On findings
    * the chat gets one `[brief check]` steer naming the job; the spawn is never held. Once per job across restarts (`briefChecks`); a job
@@ -955,28 +971,11 @@ export class Chats {
       this.spawnTimes.set(join(dir, child.id), spawn.createdAt);
       if (this.now() - spawn.createdAt > BRIEF_CHECK_MAX_AGE_MS) return;
       const findings = await briefCheckWithHistory({ brief: spawn.prompt, turnOwner: turnOwnerAt(messages, spawn.createdAt),
-        previousSpawnAt: await this.previousSpawn(dir, spawn.createdAt) }, messages, sessionFile);
+        previousSpawnAt: await previousSpawn(dir, spawn.createdAt, this.spawnTimes) }, messages, sessionFile);
       if (!findings.length || !await record.claim(child.id, spawn.createdAt)) return;
       await this.threads.prompt(chat, { message: briefCheckNote(childName(child), findings), images: [], mode: "steer" });
       this.log(`chat ${chat.slice(0, 8)}: brief check for job ${childName(child)}: ${findings.map(finding => finding.kind).join(", ")}`);
     } catch (error) { this.log(`chat ${chat.slice(0, 8)}: brief check: ${error instanceof Error ? error.message : String(error)}`); }
-  }
-
-  /** The latest spawn of the chat before `at`, from the subagent folders in its artifacts folder; null when there is none. */
-  private async previousSpawn(dir: string, at: number): Promise<number | null> {
-    let previous: number | null = null;
-    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-      if (!entry.isDirectory()) continue;
-      const childDir = join(dir, entry.name);
-      let created = this.spawnTimes.get(childDir);
-      if (created === undefined) {
-        created = (await spawnRecord(childDir))?.createdAt;
-        if (created === undefined) continue;
-        this.spawnTimes.set(childDir, created);
-      }
-      if (created < at && (previous === null || created > previous)) previous = created;
-    }
-    return previous;
   }
 
   /** The owner's Update all chats: every chat reloads onto the current extension and brief, an idle one now, a busy one at the end of its turn. */

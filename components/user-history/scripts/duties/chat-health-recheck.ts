@@ -13,6 +13,7 @@ const TARGETS: readonly (readonly [string, RegExp])[] = [
   ["corrections", /\bcorrections?\b/i],
   ["unretried_errors", /\b(?:retr(?:y|ies)|failed turns?|restarts?)\b/i],
   ["sieun_pi_breaks", /\b(?:pi-pool|token hook|sieun-pi breaks?)\b/i],
+  ["checkin_ops_dropped", /\b(?:board ops|check-in ops|ops dropped)\b/i],
 ];
 
 /** The metrics a fix targets, in TARGETS order. */
