@@ -103,6 +103,24 @@ test("a replayed trajectory with a Send turn is refused", () => {
   assert.equal(cua.decideCall(seen, "replay_trajectory", { dir }, () => "com.apple.finder", () => "not a go"), null);
 });
 
+test("cua-driver 0.35: a run_steps batch with a Send step is refused, and run_script needs an approved owner_ok", () => {
+  const seen = new cua.Seen();
+  seen.record("get_window_state", { pid: 4242, window_id: 7 }, { structuredContent: { pid: 4242, window_id: 7, window_title: "New Message", elements: [el("Send")] } });
+  const bundle = (pid) => (pid === 4242 ? "com.apple.mail" : "com.apple.finder");
+  const go = (token) => (token === `${CHAT}/t1` ? null : "not a go");
+  const steps = [{ tool: "type_text", args: { text: "hi" } }, { tool: "hotkey", args: { keys: ["cmd", "shift", "d"] } }];
+  assert.match(cua.decideCall(seen, "run_steps", { pid: 4242, window_id: 7, steps }, bundle, go) ?? "", /a run_steps step: Cmd\+Shift\+D/);
+  assert.match(cua.decideCall(seen, "run_steps", { steps: [{ tool: "click", args: { pid: 4242, window_id: 7, x: 30, y: 20 } }] }, bundle, go) ?? "", /lands on "Send"/);
+  assert.equal(cua.decideCall(seen, "run_steps", { pid: 1, steps }, bundle, go), null);
+  assert.equal(cua.decideCall(seen, "run_steps", { pid: 4242, window_id: 7, steps, owner_ok: `${CHAT}/t1` }, bundle, go), null);
+  assert.match(cua.decideCall(seen, "run_script", { script: "return 1" }, bundle, go) ?? "", /run_script drives apps/);
+  assert.equal(cua.decideCall(seen, "run_script", { script: "return 1", owner_ok: `${CHAT}/t1` }, bundle, go), null);
+  assert.match(cua.decideCall(seen, "run_steps", { pid: 1, steps: [{ tool: "run_script", args: { script: "return 1" } }] }, bundle, go) ?? "", /a run_steps step: run_script drives apps/);
+  assert.match(cua.decideCall(seen, "run_steps", { steps: [{ tool: "run_steps", args: { pid: 4242, window_id: 7, steps } }] }, bundle, go) ?? "", /Cmd\+Shift\+D/);
+  assert.equal(cua.judgeCuaShell(`cua-driver call run_steps '${JSON.stringify({ pid: 4242, steps })}'`, bundle, () => ["New Message"]).length, 1);
+  assert.equal(cua.judgeCuaShell(`cua-driver call run_script '{"script": "return 1"}'`, bundle, () => []).length, 1);
+});
+
 test("`cua-driver call` in bash is refused unless OWNER_OK names an approved todo", () => {
   const send = `cua-driver call hotkey '{"pid": 4242, "keys": ["cmd", "shift", "d"]}'`;
   assert.equal(cua.judgeCuaShell(send, () => "com.apple.mail", () => []).length, 1);

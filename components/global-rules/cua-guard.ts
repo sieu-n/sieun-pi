@@ -44,7 +44,8 @@ const MOD = /^(?:cmd|command|meta|super|ctrl|control)$/i;
 const RETURN = /^(?:return|enter|kp_?enter|\n)$/i;
 
 const ACTIONS = new Set(["click", "double_click", "press_key", "hotkey", "invoke_menu", "set_value", "type_text"]);
-export const isAction = (tool: string): boolean => ACTIONS.has(tool) || tool === "replay_trajectory";
+const BATCHES = new Set(["replay_trajectory", "run_steps", "run_script"]);
+export const isAction = (tool: string): boolean => ACTIONS.has(tool) || BATCHES.has(tool);
 
 function kind(ctx: CuaContext): "mail" | "message" | "marked" | "unknown" | "other" {
 	if (ctx.unknown) return "unknown";
@@ -277,6 +278,29 @@ export function decideCall(seen: Seen, tool: string, args: Record<string, unknow
 		}
 		return null;
 	}
+	if (tool === "run_steps") {
+		const window = Object.fromEntries(["pid", "window_id", "app", "window"].filter((key) => args[key] !== undefined).map((key) => [key, args[key]]));
+		for (const step of Array.isArray(args.steps) ? (args.steps as { tool?: unknown; args?: Record<string, unknown> }[]) : []) {
+			const inner = String(step?.tool ?? "");
+			if (BATCHES.has(inner)) {
+				const why = decideCall(seen, inner, { ...window, ...(step.args ?? {}), owner_ok: args.owner_ok }, bundle, approve, desktop);
+				if (why) return why.replace("because ", "because a run_steps step: ");
+				continue;
+			}
+			if (!ACTIONS.has(inner)) continue;
+			const aimed = seen.resolve({ ...window, ...(step.args ?? {}) }, bundle, desktop);
+			const why = decide(inner, { ...aimed.args, owner_ok: args.owner_ok }, aimed.ctx, approve);
+			if (why) return why.replace("because ", "because a run_steps step: ");
+		}
+		return null;
+	}
+	if (tool === "run_script") {
+		if (!enabled("GLOBAL_RULES_GUARD")) return null;
+		const reason = "run_script drives apps from JavaScript this guard cannot read step by step; use run_steps or the single action tools";
+		const token = typeof args.owner_ok === "string" ? args.owner_ok : null;
+		const why = token ? approve(token) : "no owner_ok";
+		return why === null ? null : `cua-driver send guard: refused, because ${reason}. ${OWNER_OK_HELP}`;
+	}
 	if (!ACTIONS.has(tool)) return null;
 	const aimed = seen.resolve(args, bundle, desktop);
 	return decide(tool, aimed.args, aimed.ctx, approve);
@@ -314,7 +338,7 @@ export function judgeCuaShell(text: string, bundle = bundleOf, titles = cliTitle
 			const cli = eff[0];
 			const { pid } = aim(args);
 			const aimed = onDesktop(args) ? seen.resolve(args, bundle, () => desktop(cli)) : { args, ctx: { bundle: bundle(pid), titles: titles(cli, pid) } };
-			const reason = eff[2] === "replay_trajectory" ? decideCall(seen, eff[2], { ...args, owner_ok: undefined }, bundle, () => "no", () => desktop(cli)) : judgeCua(eff[2], aimed.args, aimed.ctx);
+			const reason = BATCHES.has(eff[2] ?? "") ? decideCall(seen, eff[2], { ...args, owner_ok: undefined }, bundle, () => "no", () => desktop(cli)) : judgeCua(eff[2], aimed.args, aimed.ctx);
 			if (reason) out.push({ rule: "send", command: eff.join(" "), reason: `cua-driver send guard: refused, because ${reason.replace(/^cua-driver send guard: refused, because /, "")}. ${OWNER_OK_HELP.replace('owner_ok: "<chat id>/<todo id>" in the tool arguments', "OWNER_OK=<chat id>/<todo id> before the command")}` });
 		}
 		for (const inner of nested) walk(inner, depth + 1);
