@@ -345,6 +345,7 @@ INFER_TIMEOUT = 15.0
 OAUTH_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude."
 OAUTH_OFF = "oauth not allowed for organization"
 NEEDS_TERMS = "needs terms"
+TOKEN_REJECTED = "token rejected (401)"
 
 
 def account_refusal(text):
@@ -381,7 +382,7 @@ def anthropic_refusal(access_token, infer=False):
             return None
     except urllib.error.HTTPError as e:
         if e.code == 401:
-            return "token rejected (401)"
+            return TOKEN_REJECTED
         refusal = account_refusal(e.read().decode(errors="replace"))
         return refusal or ("forbidden (403)" if e.code == 403 else None)
     except Exception:

@@ -468,7 +468,7 @@ the tray line. Prime 0.9.5 ships as one compiled binary, so that patch is gone.
 | login adoption | at session start it runs `pi-pool adopt-logins` (next section) and tells you if it moved a login |
 | 429 swap | on a 429 it runs `pi-pool limited`; when another account takes the session it drops the reset from the message so Prime retries in about a second on that account, else it sets the reset to the session's slot (see "A 429 moves the session in the same turn") |
 | hook retry | a turn that failed with "Failed to resolve API key ... pi-pool-token" loses Prime's lifecycle-failure tag, so Prime retries it like any unclassified error; when `pi-pool who` shows the session waiting, the failure becomes a rate limit that waits until its slot |
-| refusal probe | at session start it runs `pi-pool probe`, which sends one free `count_tokens` request per account with a valid token, at most every 6 hours. A refused account gets a 24h cooldown in the pool and `enforcedUntil` in tokenmaxxing's index, so supervised `claude` sessions avoid it too |
+| refusal probe | at session start it runs `pi-pool probe`, which sends one free `count_tokens` request per account with a valid token, at most every 6 hours. `pi-pool refresh` sends the same probe right away to each Claude account whose usage read failed, since a revoked token fails the read with no reason and trees wait for an account with no fresh read. A refused account gets a 24h cooldown in the pool and `enforcedUntil` in tokenmaxxing's index, so supervised `claude` sessions avoid it too. A successful `pi-pool login` drops a `needs terms` or `token rejected (401)` cooldown |
 
 Prime 0.9.5 keeps `setStatus` text but its footer never draws it, which is why the account
 line is a widget.

@@ -452,9 +452,29 @@ def cmd_probe(rest=()):
             return 0
         prov["last_probe"] = now
         base.save_json(base.STATE, state)
-    reasons = prov.get("cooldown_reasons") or {}
+    lines = probe_accounts(registry.load_index("anthropic"), prov.get("cooldown_reasons") or {}, cfg, now)
+    if lines:
+        print("; ".join(lines))
+    return 0
+
+
+def probe_failed_reads(ids):
+    """Probe the anthropic accounts whose usage read just failed. A revoked token
+    fails the read with nothing in its reason, and an account with no fresh read
+    is the one waiting trees are held for, so without this they waited until the
+    next 6 h probe (2026-10-14: claude11@slack.green's token was revoked at 02:53,
+    91 of 114 waits in 30 min were for it, and the 05:57 probe freed them)."""
+    cfg, now = base.config(), time.time()
+    prov = registry.load_state()["providers"]["anthropic"]
+    accounts = [a for a in registry.load_index("anthropic") if a.id in ids]
+    probe_accounts(accounts, prov.get("cooldown_reasons") or {}, cfg, now)
+
+
+def probe_accounts(accounts, reasons, cfg, now):
+    """Probe each account, cool a refused one down and free one accepted again.
+    Logs one probe event and returns its lines."""
     lines = []
-    for a in registry.load_index("anthropic"):
+    for a in accounts:
         if a.needs_reauth:
             continue
         try:
@@ -477,9 +497,7 @@ def cmd_probe(rest=()):
                 base.save_json(base.STATE, state)
             lines.append(f"{a.label}: accepted again")
     base.log("probe", results=lines)
-    if lines:
-        print("; ".join(lines))
-    return 0
+    return lines
 
 
 # ---------------------------------------------------------------------- vend

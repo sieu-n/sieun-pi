@@ -364,6 +364,9 @@ def cmd_refresh(rest):
         return fail(str(e))
     failed = [r["label"] or r["id"] for provider_rows in rows.values() for r in provider_rows if not r["ok"]]
     base.log("usage_refresh", providers=list(selection), accounts=sum(len(r) for r in rows.values()), failed=failed, errors=errors)
+    failed_claude = {r["id"] for r in rows.get("anthropic", []) if not r["ok"]}
+    if failed_claude:
+        vending.probe_failed_reads(failed_claude)
     if stream:
         print(json.dumps({"event": "end"}), flush=True)
     elif as_json:

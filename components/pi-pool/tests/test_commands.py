@@ -20,6 +20,10 @@ class RefreshUsage(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.probed = []
+        probe = unittest.mock.patch.object(vending, "probe_failed_reads", self.probed.append)
+        probe.start()
+        self.addCleanup(probe.stop)
 
     def fake(self, body):
         path = os.path.join(self.tmp, "bun")
@@ -62,6 +66,12 @@ class RefreshUsage(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual([r["ok"] for r in report["anthropic"]], [True, False])
         self.assertEqual(report["openai-codex"], [{"id": "c", "email": "c@x", "label": "c@x", "ok": True, "reason": None, "retry_at": None, "usage_at": 1790000001}])
+
+    def test_an_anthropic_account_whose_read_failed_is_probed(self):
+        with self.fake(self.READS):
+            code, _ = self.run_refresh("--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.probed, [{"b"}])
 
     def test_named_accounts_need_a_provider(self):
         code, out = self.run_refresh("--json", "a@x")

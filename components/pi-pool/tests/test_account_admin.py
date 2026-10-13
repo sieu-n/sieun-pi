@@ -479,6 +479,20 @@ class Login(PoolFixture):
         prov = self.state()["providers"]["anthropic"]
         self.assertEqual((list(prov["cooldowns"]), list(prov["cooldown_reasons"])), ([A], [A]))
 
+    def test_a_new_sign_in_drops_that_accounts_revoked_token_cooldown_only(self):
+        until = time.time() + 3600
+        self.write_state({"version": 2, "providers": {
+            "anthropic": {"pin": None, "disabled": {}, "limits": {}, "cooldowns": {A: until, B: until},
+                          "cooldown_reasons": {A: "oauth not allowed for organization", B: "token rejected (401)"}},
+            "openai-codex": {"pin": None, "cooldowns": {}, "disabled": {}}}, "sessions": {}})
+        run = LoginRun(self, ["b@x"], "claude", harvest(B, "org-b", "b@x"))
+        self.assertEqual(run.event()["event"], "url")
+        run.send("good\n")
+        self.assertTrue(run.event()["ok"])
+        self.assertEqual(run.exit_code(), 0)
+        prov = self.state()["providers"]["anthropic"]
+        self.assertEqual((list(prov["cooldowns"]), list(prov["cooldown_reasons"])), ([A], [A]))
+
     def test_an_unknown_account_fails_without_running_tokenmaxxing(self):
         run = LoginRun(self, ["z@x"], "claude")
         self.assertEqual(run.event(), {"event": "done", "ok": False, "message": "z@x is not in the anthropic pool"})

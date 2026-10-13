@@ -420,23 +420,27 @@ def run_login(provider, argv, home, account, timeout, emit):
 def drop_login_blocks(provider, account):
     """A new sign-in replaces the credential the provider answered 429 for, so
     its `pi-pool limited` record no longer applies (2026-10-08: sieun@virev.ai
-    signed in again on a fresh plan at 0% and stayed limited for 2 h). It also
-    passes claude.ai, where updated terms are accepted, so a NEEDS_TERMS
-    cooldown goes too (2026-10-08: claude7@slack.green served again right
-    after it signed in again). If the terms are still pending, the next request
-    puts the cooldown back and moves the turn to another account."""
+    signed in again on a fresh plan at 0% and stayed limited for 2 h). The same
+    goes for a cooldown on a revoked token (2026-10-14: claude11@slack.green
+    stayed cooled down 24 h after it signed in again). It also passes claude.ai,
+    where updated terms are accepted, so a NEEDS_TERMS cooldown goes too
+    (2026-10-08: claude7@slack.green served again right after it signed in
+    again). If the terms are still pending, the next request puts the cooldown
+    back and moves the turn to another account."""
     with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
         state = registry.load_state()
         prov = state["providers"][provider]
         limit = prov["limits"].pop(account.id, None)
-        terms = (prov.get("cooldown_reasons") or {}).get(account.id) == base.NEEDS_TERMS
-        if terms:
+        refusal = (prov.get("cooldown_reasons") or {}).get(account.id)
+        if refusal not in (base.NEEDS_TERMS, base.TOKEN_REJECTED):
+            refusal = None
+        if refusal:
             prov["cooldowns"].pop(account.id, None)
             prov["cooldown_reasons"].pop(account.id, None)
-        if limit is None and not terms:
+        if limit is None and not refusal:
             return
         base.save_json(base.STATE, state)
     if limit is not None:
         base.log("limit_dropped", provider=provider, account=account.label, reason="login")
-    if terms:
-        base.log("refusal_dropped", provider=provider, account=account.label, reason="login", refusal=base.NEEDS_TERMS)
+    if refusal:
+        base.log("refusal_dropped", provider=provider, account=account.label, reason="login", refusal=refusal)
