@@ -58,8 +58,9 @@ USAGE = """usage: pi-pool [command]
   switch [--provider <p>] [--session <id>]  this session's next request moves to another account
   use <email|id> [--follow] [--provider <p>] [--session <id>] [--new-session]
                                   pin (or, with --follow, unpin) this session tree
-  priority high|normal|low [--session <id>]
-                                  the tree's class: who gets slots first, and its daily move budget
+  priority high|normal|low [--label] [--session <id>]
+                                  the tree's class: who gets slots first, and its daily move budget;
+                                  --label: the owner's sidebar label, which the tree's children get too
   ls [--json] [--provider <p>] [--session <id>] [--model <id>]
                                   the rows /account renders; --model judges per-model caps
                                   for that model instead of the session's recorded ones
@@ -99,11 +100,13 @@ USAGE = """usage: pi-pool [command]
                                   the extension runs it at session start, at most every 6h
   adopt-logins                   move a stored /login that would bypass the pool into
                                   fallback.json (the /account extension runs this per session)
-  admit <session> [--tree <root>] [--parent <session>] [--class high|normal|low] [--pid <n>] [--wait]
-                                  ask for a working slot for one session turn; prints
-                                  {"state","kind","position","total"}. --wait blocks until admitted.
-                                  --tree defaults to this process's session tree, --class to the
-                                  tree's priority, --pid to the caller, whose exit ends the turn
+  admit <session> [--tree <root>] [--parent <session>] [--class high|normal|low] [--pid <n>] [--wait | --renew]
+                                  ask for a working slot for one session run; prints
+                                  {"state","kind","position","total"}. --wait blocks until admitted;
+                                  --renew renews a running session's lease and never queues it.
+                                  --tree defaults to this process's session tree, --class to normal
+                                  for a child (high when the tree's label is High) and to the tree's
+                                  priority for a root, --pid to the caller, whose exit ends the run
   release <session>              free the turn's slot or drop its queue entry
   owner-turn <session>           the session's next admit is the owner's and runs at once
   queue [--json]                 working and queued turns

@@ -23,6 +23,7 @@ FIXTURE_FAILURE=terms node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_FAILURE=terms FIXTURE_EXPECT=baseline node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_FAILURE=all node tests/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+node tests/native/queue.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_HOOK=fail node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_EXPECT=baseline node tests/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 ```
@@ -48,3 +49,6 @@ A second Prime process then must go straight to the other account. `FIXTURE_EXPE
 The turn must fail once, retry, run the hook again and finish. `FIXTURE_HOOK=fail` makes every hook run exit 1; the turn must stop after `retry.maxRetries` retries.
 `FIXTURE_EXPECT=baseline` runs without the extension and checks that Prime ends the turn with no retry.
 Those boundary tests complement RPC tests. They do not replace end-to-end provider requests.
+`queue.mjs` runs the turn queue in a real Prime run with `mac_working_max` 1 and the one slot taken.
+The run must wait in the extension's `context` handler with no model request, and Stop must drop its queue entry.
+A second run must send its request within 3 s of a release, and agent_end must give the slot back.

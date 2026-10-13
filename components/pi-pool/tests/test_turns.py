@@ -130,6 +130,63 @@ class Sweep(unittest.TestCase):
         self.assertEqual(list(t["owner"]), ["new"])
 
 
+def ask_args(session, tree="t", parent=None, klass=None, renew=False):
+    return {"session": session, "tree": tree, "parent": parent, "class": klass, "pid": ME, "wait": False, "renew": renew}
+
+
+class Lease(unittest.TestCase):
+    CFG = dict(base.DEFAULTS, mac_working_max=1)
+
+    def test_a_3000_s_run_that_renews_keeps_its_slot(self):
+        """A run whose one tool call lasts 3,000 s, longer than lease_s, with the
+        extension renewing every 300 s; another session waits the whole time."""
+        t = turns.empty()
+        self.assertEqual(turns.ask(t, {}, ask_args("long"), 0, self.CFG)[1]["state"], "admitted")
+        self.assertEqual(turns.ask(t, {}, ask_args("other", tree="o"), 1, self.CFG)[1]["state"], "queued")
+        for now in range(300, 3001, 300):
+            turns.sweep(t, now)
+            self.assertEqual(list(t["working"]), ["long"], now)
+            self.assertEqual(turns.ask(t, {}, ask_args("long", renew=True), now, self.CFG)[1]["kind"], "slot")
+        self.assertEqual(list(t["queued"]), ["other"])
+
+    def test_a_renewal_after_a_lapse_runs_at_once_and_never_queues(self):
+        t = turns.empty()
+        turns.ask(t, {}, ask_args("asleep"), 0, self.CFG)
+        later = base.DEFAULTS["lease_s"] + 60
+        turns.sweep(t, later)
+        self.assertEqual(turns.ask(t, {}, ask_args("other", tree="o"), later, self.CFG)[1]["state"], "admitted")
+        changed, answer, events = turns.ask(t, {}, ask_args("asleep", renew=True), later + 1, self.CFG)
+        self.assertEqual(answer, {"state": "admitted", "kind": "slot", "position": None, "total": None})
+        self.assertEqual(sorted(t["working"]), ["asleep", "other"], "the Mac runs one over its limit rather than stop a run")
+        self.assertIn("turn_renewed_after_lapse", [e for e, _ in events])
+
+    def test_without_renew_a_lapsed_session_queues_like_a_new_run(self):
+        t = turns.empty()
+        turns.ask(t, {}, ask_args("other", tree="o"), 0, self.CFG)
+        self.assertEqual(turns.ask(t, {}, ask_args("next"), 1, self.CFG)[1]["state"], "queued")
+
+
+class Class(unittest.TestCase):
+    def cls(self, sessions, **kw):
+        t = turns.empty()
+        fill(t, 16)
+        turns.ask(t, sessions, ask_args("s", tree="T", **kw), 0, base.DEFAULTS)
+        return t["queued"]["s"]["class"]
+
+    def test_a_child_of_a_high_chat_queues_as_normal(self):
+        self.assertEqual(self.cls({"T": {"priority": "high"}}, parent="chat"), "normal")
+
+    def test_a_child_of_a_tree_the_owner_labeled_high_queues_as_high(self):
+        self.assertEqual(self.cls({"T": {"priority": "high", "priority_label": "high"}}, parent="chat"), "high")
+
+    def test_a_root_takes_its_trees_priority(self):
+        self.assertEqual(self.cls({"T": {"priority": "low"}}), "low")
+        self.assertEqual(self.cls({}), "normal")
+
+    def test_an_explicit_class_wins(self):
+        self.assertEqual(self.cls({"T": {"priority_label": "high"}}, parent="chat", klass="low"), "low")
+
+
 class Cli(unittest.TestCase):
     """The commands through bin/pi-pool, each in its own pool folder."""
 
@@ -171,6 +228,20 @@ class Cli(unittest.TestCase):
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": True})
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": False}, "release is idempotent")
         self.assertEqual([w["session"] for w in self.queue()["working"]], ["b", "c"], "the release admitted c")
+
+    def test_priority_label_marks_the_tree_and_a_plain_priority_clears_it(self):
+        self.run_cli("priority", "high", "--label", "--session", "01a00000-0000-0000-0000-000000000001")
+        rec = read(os.path.join(self.dir, "state.json"))["sessions"]["01a00000-0000-0000-0000-000000000001"]
+        self.assertEqual((rec["priority"], rec["priority_label"]), ("high", "high"))
+        self.run_cli("priority", "high", "--session", "01a00000-0000-0000-0000-000000000001")
+        rec = read(os.path.join(self.dir, "state.json"))["sessions"]["01a00000-0000-0000-0000-000000000001"]
+        self.assertNotIn("priority_label", rec)
+
+    def test_renew_never_queues(self):
+        self.admit("a", "--tree", "A")
+        self.admit("b", "--tree", "B")
+        self.assertEqual(self.admit("c", "--tree", "C", "--renew")["state"], "admitted")
+        self.assertEqual(self.run_cli("admit", "c", "--wait", "--renew", check=False).returncode != 0, True)
 
     def test_the_class_defaults_to_the_trees_pool_priority(self):
         with open(os.path.join(self.dir, "state.json"), "w") as f:

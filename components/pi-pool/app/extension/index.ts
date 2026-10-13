@@ -25,9 +25,9 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { closeSync, openSync, readSync, realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // The root installer links this directory into <agent dir>/extensions, so the
@@ -344,6 +344,109 @@ async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | u
 	};
 }
 
+/**
+ * The Mac-wide turn queue (pool/turns.py). A run takes a working slot at its first
+ * model call: the `context` handler awaits `admit --wait`, which Prime awaits with no
+ * timeout before every model call from every turn source, agent-message wakes and
+ * retries included. The run keeps the slot until agent_end, renewing its lease every
+ * QUEUE_RENEW_MS while it is live, and gives it back when it finds the session idle,
+ * because agent_end does not fire on some aborts. A failed admit lets the run go.
+ */
+const QUEUE_RENEW_MS = 5 * 60_000;
+const QUEUE_ENTRY = "pi-pool-queue";
+
+interface AdmitReply { state: "admitted" | "queued" | "off" | "released"; kind: string | null; position: number | null; total: number | null }
+
+function ordinal(n: number): string {
+	const tens = n % 100;
+	const suffix = tens >= 11 && tens <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th";
+	return `${n}${suffix}`;
+}
+
+/** The parent's session id from its file's header line; the file name is not always the id. */
+function parentSessionId(ctx: ExtensionContext): string | undefined {
+	const header = ctx.sessionManager?.getHeader?.();
+	const path = header?.parentSession;
+	if (!path) return undefined;
+	try {
+		const fd = openSync(path, "r");
+		try {
+			const buf = Buffer.alloc(4096);
+			const n = readSync(fd, buf, 0, buf.length, 0);
+			const id = (JSON.parse(buf.subarray(0, n).toString("utf8").split("\n")[0]) as { id?: unknown }).id;
+			if (typeof id === "string" && id) return id;
+		} finally {
+			closeSync(fd);
+		}
+	} catch {
+		// Fall back to the file name below.
+	}
+	return basename(path).replace(/\.jsonl$/, "");
+}
+
+function sessionDepth(ctx: ExtensionContext): number {
+	const header = ctx.sessionManager?.getHeader?.();
+	return header?.rlmDepth ?? (header?.parentSession ? 1 : 0);
+}
+
+/**
+ * `admit --wait` for one run. Resolves when the run may call the model: admitted,
+ * the queue off, an error (fail open), or Stop, which kills the wait and drops the
+ * queue entry. `onQueued` gets each queued line.
+ */
+interface AdmitWait { result: Promise<AdmitReply | "stopped" | "failed">; cancel: () => void }
+
+function admitWait(sid: string, parent: string | undefined, signal: AbortSignal | undefined, onQueued: (reply: AdmitReply) => void): AdmitWait {
+	let cancel = () => {};
+	const result = new Promise<AdmitReply | "stopped" | "failed">((resolve) => {
+		const args = ["--cli", "admit", sid, "--wait", ...(parent ? ["--parent", parent] : [])];
+		let child: ReturnType<typeof spawn>;
+		try {
+			child = spawn(POOL_BIN, args, { stdio: ["ignore", "pipe", "ignore"] });
+		} catch {
+			resolve("failed");
+			return;
+		}
+		let last: AdmitReply | undefined;
+		let pending = "";
+		let done = false;
+		const finish = (result: AdmitReply | "stopped" | "failed") => {
+			if (done) return;
+			done = true;
+			clearInterval(poll);
+			signal?.removeEventListener("abort", stop);
+			resolve(result);
+		};
+		const stop = () => {
+			if (done) return;
+			child.kill("SIGTERM");
+			void pool(["release", sid]).finally(() => finish("stopped"));
+		};
+		cancel = stop;
+		// Stop reaches a waiting run through ctx.signal; the poll also covers a signal that aborted before the listener was added.
+		const poll = setInterval(() => {
+			if (signal?.aborted) stop();
+		}, 1000);
+		signal?.addEventListener("abort", stop, { once: true });
+		child.stdout?.on("data", (chunk: Buffer) => {
+			pending += chunk.toString("utf8");
+			for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
+				const line = pending.slice(0, end);
+				pending = pending.slice(end + 1);
+				try {
+					last = JSON.parse(line) as AdmitReply;
+				} catch {
+					continue;
+				}
+				if (last.state === "queued") onQueued(last);
+			}
+		});
+		child.on("error", () => finish("failed"));
+		child.on("close", (code) => finish(code === 0 && last && (last.state === "admitted" || last.state === "off") ? last : "failed"));
+	});
+	return { result, cancel: () => cancel() };
+}
+
 /** Moves a stored /login for a pooled provider into the pool's fallback, so it cannot shadow the pool. */
 async function adoptLogins(ctx: ExtensionContext): Promise<void> {
 	const res = await pool(["adopt-logins"]);
@@ -372,9 +475,73 @@ export default function (pi: ExtensionAPI): void {
 		timers.push(setTimeout(() => void refreshStatus(ctx), 3000));
 		timers.push(setInterval(() => void refreshStatus(ctx), STATUS_REFRESH_MS));
 	});
+	// This session's place in the turn queue: no run yet, a run waiting for its slot, a
+	// run that holds one, or a run that goes without (queue off or pool error).
+	let slot: "none" | "held" | "free" | Promise<void> = "none";
+	let cancelWait = () => {};
+	let renewTimer: ReturnType<typeof setInterval> | undefined;
+	const dropSlot = async (sid: string | undefined): Promise<void> => {
+		const held = slot === "held";
+		if (typeof slot === "object") cancelWait();
+		slot = "none";
+		if (renewTimer) clearInterval(renewTimer);
+		renewTimer = undefined;
+		if (held && sid) await pool(["release", sid]);
+	};
+	const holdSlot = async (ctx: ExtensionContext): Promise<void> => {
+		if (slot === "held" || slot === "free") return;
+		if (slot !== "none") return slot;
+		const sid = sessionId(ctx);
+		if (!sid) return;
+		let told = false;
+		const parent = parentSessionId(ctx);
+		const wait = admitWait(sid, parent, ctx.signal, (reply) => {
+			if (told || reply.position === null || reply.total === null) return;
+			told = true;
+			const text = `Queued for a working slot, ${ordinal(reply.position)} of ${reply.total}`;
+			pi.appendEntry(QUEUE_ENTRY, { text, position: reply.position, total: reply.total, at: Date.now() });
+			if (showsStatus(ctx)) ctx.ui.notify(`pi-pool: ${text}`, "info");
+		});
+		cancelWait = wait.cancel;
+		const waiting: Promise<void> = wait.result.then((result) => {
+			if (slot !== waiting) return;
+			if (result === "stopped") {
+				slot = "none";
+				return;
+			}
+			slot = result !== "failed" && result.state === "admitted" ? "held" : "free";
+			if (slot !== "held") return;
+			renewTimer = setInterval(() => {
+				try {
+					if (ctx.isIdle()) {
+						void dropSlot(sid);
+						return;
+					}
+				} catch {
+					void dropSlot(sid);
+					return;
+				}
+				void pool(["admit", sid, "--renew", ...(parent ? ["--parent", parent] : [])]);
+			}, QUEUE_RENEW_MS);
+		});
+		slot = waiting;
+		return waiting;
+	};
+	pi.on("input", async (event, ctx) => {
+		// A prompt typed into a depth-0 session is the owner's, so its run never queues.
+		const sid = sessionId(ctx);
+		if (event.source === "interactive" && sid && sessionDepth(ctx) === 0) await pool(["owner-turn", sid]);
+		return undefined;
+	});
+	pi.on("context", async (_event, ctx) => {
+		await holdSlot(ctx);
+		return undefined;
+	});
+	pi.on("agent_end", async (_event, ctx) => dropSlot(sessionId(ctx)));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		clearTimers();
 		const sid = sessionId(ctx);
+		await dropSlot(sid);
 		if (sid) await pool(["model", "--clear", "--source", sid]);
 	});
 	pi.on("model_select", async (event, ctx) => {

@@ -1,7 +1,7 @@
 """The Mac-wide turn queue: `admit`, `release`, `owner-turn` and `queue`.
 
-One session turn, from Prime's before_agent_start to agent_end, holds one working
-slot. state.json keeps the queue under the pool flock in state["turns"]:
+One run of one session holds one working slot, from the run's first model call to its
+agent_end. state.json keeps the queue under the pool flock in state["turns"]:
 
     working  {session: {tree, parent, class, kind, since, pid, lease_until}}
     queued   {session: {tree, parent, class, since, pid, waiter}}
@@ -15,8 +15,9 @@ parent's turn is in flight and that finds no slot borrows the parent's slot: a p
 lends at most one slot at a time, so the borrow pushes the total over the limit by at
 most one per parent in flight. Every working turn counts toward both limits.
 
-The pi-pool extension asks at a run's first model call and again every few minutes
-of model calls, which renews the slot's lease, and releases at agent_end. A slot whose
+The pi-pool extension asks at a run's first model call (`admit --wait`), renews the
+slot's lease every few minutes while the run is live (`admit --renew`), and releases
+at agent_end or when it finds the session idle. A slot whose
 lease ran out, or whose process (`pid`, the Prime worker that asked) is gone, is
 dropped, and so is a queue entry whose `admit --wait` process (`waiter`) is gone, so
 an abort with no agent_end or a crash cannot hold a slot.
@@ -162,13 +163,13 @@ def view(turns, now, cfg):
 # --------------------------------------------------------------------- the CLI
 def parse(rest):
     usage = ("usage: pi-pool admit <session> [--tree <root session>] [--parent <session>] "
-             "[--class high|normal|low] [--pid <n>] [--wait]")
-    out = {"session": None, "tree": None, "parent": None, "class": None, "pid": None, "wait": False}
+             "[--class high|normal|low] [--pid <n>] [--wait | --renew]")
+    out = {"session": None, "tree": None, "parent": None, "class": None, "pid": None, "wait": False, "renew": False}
     i = 0
     while i < len(rest):
         tok = rest[i]
-        if tok == "--wait":
-            out["wait"] = True
+        if tok in ("--wait", "--renew"):
+            out[tok[2:]] = True
         elif tok in ("--tree", "--parent", "--class", "--pid"):
             if i + 1 >= len(rest):
                 raise SystemExit(usage)
@@ -179,10 +180,62 @@ def parse(rest):
         else:
             raise SystemExit(usage)
         i += 1
-    if not out["session"] or (out["class"] is not None and out["class"] not in CLASSES):
+    if (not out["session"] or (out["class"] is not None and out["class"] not in CLASSES)
+            or (out["wait"] and out["renew"])):
         raise SystemExit(usage)
     out["pid"] = int(out["pid"]) if out["pid"] is not None else os.getppid()
     return out
+
+
+def class_for(a, sessions):
+    """--class, else: a child (with --parent) is normal unless the owner labeled its
+    tree High in the sidebar, and a root takes its tree's pool priority."""
+    if a["class"]:
+        return a["class"]
+    rec = sessions.get(a["tree"]) or {}
+    if a["parent"]:
+        return "high" if rec.get("priority_label") == "high" else "normal"
+    return rec.get("priority") or "normal"
+
+
+def ask(turns, sessions, a, now, cfg, waiter=None):
+    """One admit, under the flock. Returns (changed, answer, events to log).
+
+    A session already working renews its lease. --renew comes from a run in flight:
+    a session whose slot lapsed (a Mac asleep past the lease) works again at once and
+    never queues, because the queue never stops a running turn."""
+    session, lease = a["session"], int(cfg["lease_s"])
+    mac, tree_max, aging = limits(cfg)
+    if mac is None:
+        dropped = turns["queued"].pop(session, None) is not None
+        return dropped, reply(turns, session, now, aging, enabled=False), []
+    gone = sweep(turns, now)
+    admitted = admit_pass(turns, now, mac, tree_max, aging, lease)
+    events = [("turn_swept", dict(session=g["session"], part=g["part"], why=g["why"])) for g in gone]
+    changed = True
+    entry = {"tree": a["tree"], "parent": a["parent"], "class": class_for(a, sessions), "since": now, "pid": a["pid"]}
+    if session in turns["working"]:
+        turns["working"][session].update(pid=a["pid"], lease_until=now + lease)
+    elif session in turns["queued"] and not a["renew"]:
+        turns["queued"][session].update(pid=a["pid"], waiter=waiter)
+    elif turns["owner"].pop(session, None) is not None:
+        turns["queued"].pop(session, None)
+        turns["working"][session] = dict(entry, kind="owner", queued_since=now, lease_until=now + lease)
+        admitted.append((session, "owner"))
+    elif a["renew"]:
+        was = turns["queued"].pop(session, None)
+        turns["working"][session] = dict(entry, kind="slot", queued_since=(was or entry)["since"], lease_until=now + lease)
+        events.append(("turn_renewed_after_lapse", dict(session=session, tree=a["tree"])))
+    else:
+        turns["queued"][session] = dict(entry, waiter=waiter)
+        admitted += admit_pass(turns, now, mac, tree_max, aging, lease)
+        if session in turns["queued"]:
+            events.append(("turn_queued", {"session": session, "tree": a["tree"], "parent": a["parent"], "class": entry["class"],
+                                           "working": len(turns["working"]), "queued": len(turns["queued"])}))
+    for s, kind in admitted:
+        e = turns["working"][s]
+        events.append(("turn_admitted", dict(session=s, tree=e["tree"], kind=kind, waited_s=round(now - e["queued_since"], 1))))
+    return changed, reply(turns, session, now, aging), events
 
 
 def emit(answer):
@@ -220,49 +273,22 @@ def step(turns, now, cfg):
 
 def cmd_admit(rest):
     a = parse(rest)
-    session = a["session"]
     if a["tree"] is None:
         key = registry.session_key()
-        a["tree"] = key.key if key else session
+        a["tree"] = key.key if key else a["session"]
     waiter = os.getpid() if a["wait"] else None
 
     def enter(state, turns, now):
-        cfg = base.config()
-        mac, tree_max, aging = limits(cfg)
-        if mac is None:
-            dropped = turns["queued"].pop(session, None) is not None
-            return dropped, reply(turns, session, now, aging, enabled=False)
-        changed, gone, admitted = step(turns, now, cfg)
-        if session in turns["working"]:
-            turns["working"][session].update(pid=a["pid"], lease_until=now + int(cfg["lease_s"]))
-            changed = True
-        elif session in turns["queued"]:
-            entry = turns["queued"][session]
-            if (entry.get("pid"), entry.get("waiter")) != (a["pid"], waiter):
-                entry.update(pid=a["pid"], waiter=waiter)
-                changed = True
-        else:
-            klass = a["class"] or (state["sessions"].get(a["tree"]) or {}).get("priority") or "normal"
-            entry = {"tree": a["tree"], "parent": a["parent"], "class": klass, "since": now, "pid": a["pid"], "waiter": waiter}
-            changed = True
-            if turns["owner"].pop(session, None) is not None:
-                turns["working"][session] = dict(entry, kind="owner", queued_since=now, lease_until=now + int(cfg["lease_s"]))
-                turns["working"][session].pop("waiter")
-                admitted.append((session, "owner"))
-            else:
-                turns["queued"][session] = entry
-                admitted += admit_pass(turns, now, mac, tree_max, aging, int(cfg["lease_s"]))
-                if session in turns["queued"]:
-                    base.log("turn_queued", session=session, tree=a["tree"], parent=a["parent"], **{"class": klass},
-                             working=len(turns["working"]), queued=len(turns["queued"]))
-        log_changes(gone, admitted, turns, now)
-        return changed, reply(turns, session, now, aging)
+        changed, answer, events = ask(turns, state["sessions"], a, now, base.config(), waiter)
+        for event, fields in events:
+            base.log(event, **fields)
+        return changed, answer
 
     answer = locked(enter)
     emit(answer)
     if not a["wait"] or answer["state"] != "queued":
         return 0
-    return wait(session, a["pid"], answer)
+    return wait(a["session"], a["pid"], answer)
 
 
 def wait(session, pid, last):

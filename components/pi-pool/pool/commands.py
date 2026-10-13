@@ -182,19 +182,21 @@ def cmd_use(rest):
 
 
 def cmd_priority(rest):
-    """R7: `pi-pool priority high|normal|low [--session id]` sets the tree's class.
-    One class per tree, whatever the provider."""
-    f = status_view.parse_flags(rest)
+    """R7: `pi-pool priority high|normal|low [--label] [--session id]` sets the tree's class.
+    One class per tree, whatever the provider. --label says the class is the owner's
+    sidebar label, which the turn queue gives the tree's child sessions too."""
+    labeled = "--label" in rest
+    f = status_view.parse_flags([tok for tok in rest if tok != "--label"])
     positional = f["positional"]
     if len(positional) != 1 or positional[0] not in sched.PRIORITIES:
-        raise SystemExit("usage: pi-pool priority high|normal|low [--session <id>] [--provider <p>]")
+        raise SystemExit("usage: pi-pool priority high|normal|low [--label] [--session <id>] [--provider <p>]")
     with base.Flock(base.LOCK, timeout=base.STATE_LOCK_TIMEOUT):
         state = registry.load_state()
         key = write_key(f, state)
         if key is None:
             return 2
         prev = (state["sessions"].get(key.key) or {}).get("priority") or "normal"
-        vending.IntentWriter(state).set_priority(key, positional[0], time.time())
+        vending.IntentWriter(state).set_priority(key, positional[0], time.time(), labeled)
         base.save_json(base.STATE, state)
     if prev != positional[0]:
         base.log("priority", session=key.key, priority=positional[0], previous=prev)

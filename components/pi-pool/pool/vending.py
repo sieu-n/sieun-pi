@@ -176,10 +176,16 @@ class IntentWriter:
     def set_pin(self, key, provider, account_id, by, now):
         self._rec(key, now).setdefault("pins", {})[provider] = {"account_id": account_id, "at": now, "by": by}
 
-    def set_priority(self, key, priority, now):
+    def set_priority(self, key, priority, now, labeled=False):
         """R7: the tree's class. A tree with no record yet (a thread made a moment
-        ago) gets one, so its first request already counts as this class."""
-        self._rec(key, now)["priority"] = priority
+        ago) gets one, so its first request already counts as this class. `labeled`:
+        the class is the owner's sidebar label (turns.class_for reads it)."""
+        rec = self._rec(key, now)
+        rec["priority"] = priority
+        if labeled:
+            rec["priority_label"] = priority
+        else:
+            rec.pop("priority_label", None)
 
 
     def clear_pin(self, key, provider):
