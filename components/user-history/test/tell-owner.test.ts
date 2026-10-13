@@ -96,6 +96,35 @@ const POINTERS = [
   "I was wrong about the stray \"connect me with human\" line: neither job sent it, so it likely came from your own GeoNode tab.",
 ];
 
+/**
+ * The tell_owner texts chat health counted on 10-13 (window from 10-12 14:07Z). All six ran on chat service release 6723093, before the guard
+ * (d2faf44) went live in release 461b190 at 15:00Z. The five that point at an agent job are refused now; the sixth is about CI runner jobs.
+ */
+const SENT_BEFORE_GUARD = [
+  "The one-command intake for your bought accounts stalled: the job refused twice, so I stopped it.",
+  "I started a job just now that ranks every step slowing a test run and cuts the biggest ones in parallel: the 8-minute crawler Python job, the 11-minute light job, and the queue waits.",
+  "The new speed job pushes each fix as soon as it's built and fixes forward if anything breaks.",
+  "A job is also building a check that flags any non-production step left waiting on someone else's go.",
+  "5180 stopped answering for about 25 minutes with the Mac overloaded, so a job is restarting it now.",
+];
+/** Sentences tell_owner refused on 10-12 and 10-13 that talk about CI jobs, not an agent job. */
+const CI_JOBS = [
+  "One fix is live, package installs went from 21 minutes to 14 seconds, and in the last hour no job waited over 8 minutes.",
+  "Land 33 is 7 of 10 jobs green and on track for the 00:15Z cutoff.",
+  "The prod metal deploy hit its 30 minute job limit during the database backup, so Convex and Vercel prod were not updated.",
+  "Our runs waited because the two heavy runners finish about one job every 7 minutes each, and that lane is the real bottleneck.",
+];
+
+test("tell_owner: the 10-13 unlinked job mentions sent before the guard went live are refused now; CI job counts, limits and rates pass", async () => {
+  for (const text of SENT_BEFORE_GUARD) {
+    const result = await tellOwnerChecked(text, "", async () => ["bought account intake", "ci speed next"]);
+    assert.equal(result.ok, false, text);
+    assert.match(result.text, /points at a job with no link|names a job with no link/, text);
+  }
+  for (const sentence of CI_JOBS) assert.equal(unlinkedJobSentence(sentence), null, sentence);
+  assert.equal(unlinkedJobSentence("One of my jobs caused a slowdown on the metal box tonight."), "One of my jobs caused a slowdown on the metal box tonight.");
+});
+
 test("job mentions: counts of CI runs or crawler jobs and jobs in general are not job pointers; the 10-12 sentences that name an agent job still are", () => {
   for (const sentence of NOT_POINTERS) assert.equal(unlinkedJobSentence(sentence), null, sentence);
   for (const sentence of POINTERS) assert.equal(unlinkedJobSentence(sentence), sentence, sentence);
