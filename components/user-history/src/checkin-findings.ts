@@ -77,11 +77,18 @@ export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quo
  * met. A named step is closed, a named todo answered, and a named PR (`prNumbers`) merged by a done merge step whose text names it. A step id in
  * a "see" reference is a pointer, not the wait (slack green guy 10-13: "#226 and #234 merged (see p74)" read as met when p74 merged only #226
  * and #234's merge, p124, was open). A PR the waiting step's own text names is its own merge, not its wait. The board cannot show a run or a
- * check ("then a green re-run of #229 on the Air"), so the step ids, todos and PRs are what is checked. A waitFor that names another thread is
- * left out, since its ids may be that thread's. The step is due now, whatever its waitUntil.
+ * check ("then a green re-run of #229 on the Air"), so the step ids, todos and PRs are what is checked. A clause that names a hold or a land
+ * ("hold11", "land 34"), or a lift, green run, land or deploy with no step id or PR of its own, is a wait the board cannot check, so the wait is
+ * not over (Crawler VP 10-13: p144 waited for "hold11 lifts, then the ... runs rerun green for land 34"). A step id after another board's
+ * possessive ("the API portal's own p8", "VP of CI's p134", "its p128") is that board's step: p144's "the API portal's own p8" read as this
+ * board's done p8. A waitFor that names another thread is left out, since its ids may be that thread's. The step is due now, whatever its
+ * waitUntil.
  */
 export interface WaitMet { view: StepView; over: string[] }
 const SEE_IDS = /\bsee\s+(?:also\s+)?[pt]\d+(?:\s*(?:,|and)\s*[pt]\d+)*\b/gi;
+const OTHER_BOARD_IDS = /(?<!\b(?:this(?:\s+(?:board|chat|thread))?|owner))(?:'s|\bits|\btheir)\s+(?:(?:own|board|plan|step|steps)\s+)*[pt]\d+(?:\s*(?:,|and)\s*[pt]\d+)*\b/gi;
+const UNCHECKED_NAME = /\b(?:hold|land)\s*\d+\b/i;
+const UNCHECKED_EVENT = /\b(?:lifts?|lifted|green|re-?runs?|lands?|landed|deploy(?:s|ed)?|promote[sd]?)\b/i;
 export function waitsMet(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>): WaitMet[] {
   const items = new Map<string, PlanItem>();
   walkItems(board?.plan ?? [], item => { items.set(item.id, item); });
@@ -91,8 +98,12 @@ export function waitsMet(views: readonly StepView[], board: ChatBoard | null, ro
   return views.flatMap(view => {
     const { waitFor } = view.item;
     if (!ids(waitFor ?? "").some(id => id !== view.item.id) || /\bthreads?\b/i.test(waitFor!) || waitTarget(waitFor, rows, self)) return [];
-    const named = ids(waitFor!.replace(SEE_IDS, "")).filter(id => id !== view.item.id);
-    const prs = prNumbers(waitFor!).filter(pr => !namesPr(view.item.text, pr));
+    const scoped = waitFor!.replace(SEE_IDS, "").replace(OTHER_BOARD_IDS, "");
+    const named = ids(scoped).filter(id => id !== view.item.id);
+    const prs = prNumbers(scoped).filter(pr => !namesPr(view.item.text, pr));
+    const unchecked = scoped.split(/[,;]|\bthen\b/).some(clause => UNCHECKED_NAME.test(clause) || UNCHECKED_EVENT.test(clause) &&
+      !ids(clause).some(id => id !== view.item.id) && !prNumbers(clause).length);
+    if (unchecked) return [];
     const over = named.flatMap(id => {
       const item = items.get(id);
       if (item) return CLOSED.has(item.status) ? [`${id} is ${item.status}`] : [];
