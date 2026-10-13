@@ -6,7 +6,7 @@ import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergeStep,
 import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, ScratchItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, owns, parkedBy, plural, quote, STATE_WORD, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
-import type { Train, TrainRun } from "./checkin-load.ts";
+import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
 import { localTime } from "./checkin-settings.ts";
 
 /** The check-in's board findings: the plan's shape, goals to fold, held and stalled steps, scope misses, owner gates and goal gaps, each with the line the duty job reads. */
@@ -88,7 +88,7 @@ export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quo
  * id and an awaited "green" stays open whatever ids it also names ("is green (run 38289995168)" is a run already seen). A waitFor that names
  * another thread is left out, since its ids may be that thread's. The step is due now, whatever its waitUntil.
  */
-export interface WaitMet { view: StepView; over: string[] }
+export interface WaitMet { view: StepView; over: string[]; run?: CiRun }
 const SEE_IDS = /\bsee\s+(?:also\s+)?[pt]\d+(?:\s*(?:,|and)\s*[pt]\d+)*\b/gi;
 const OTHER_BOARD_IDS = /(?<!\b(?:this(?:\s+(?:board|chat|thread))?|owner))(?:'s|\bits|\btheir)\s+(?:(?:own|board|plan|step|steps)\s+)*[pt]\d+(?:\s*(?:,|and)\s*[pt]\d+)*\b/gi;
 const UNCHECKED_NAME = /\b(?:hold|land)\s*\d+\b/i;
@@ -127,9 +127,27 @@ export function waitsMet(views: readonly StepView[], board: ChatBoard | null, ro
     return over.length + merged.length > 0 && over.length === named.length && merged.length === prs.length ? [{ view, over: [...over, ...merged] }] : [];
   });
 }
-export const waitMetLine = ({ view, over }: WaitMet): string =>
-  `${view.item.id} ${quote(view.item.text)} waits for ${quote(view.item.waitFor ?? "")}, and ${over.join(" and ")}: the wait is over, act on it ` +
-  "now (start it, or close it if the wait made it moot)";
+export const waitMetLine = ({ view, over, run }: WaitMet): string =>
+  `${view.item.id} ${quote(view.item.text)} waits for ${quote(view.item.waitFor ?? "")}, and ${over.join(" and ")}: the wait is over, act on it now ` +
+  (run ? "(a cancelled run never turns green: rerun it, or push fresh and put the new run in waitFor, or wait on the hold that cancelled it)"
+    : "(start it, or close it if the wait made it moot)");
+/**
+ * How long a step may still name a cancelled run before the check-in flags it: the chat repoints the wait when the job reports the cancel (api
+ * portal vp 10-13: Fable's land-34 loop cancelled p9's run 38408618643 at 13:55:56Z, the job reported it at 13:57Z, and the chat set p9 to wait
+ * on the release at 14:10Z).
+ */
+export const DEAD_RUN_MS = 30 * 60_000;
+/**
+ * The steps whose wait ended with no green, as `wait_met`: the waitFor names a run the CI cache (`train`) shows cancelled over DEAD_RUN_MS ago
+ * and no run it names is queued or running (`deadRun`). 10-13 23:07 KST counted five such steps as blocked_on_others: api portal vp p9, p12 and
+ * p14 and launch main bro p75 and p84, whose runs Fable's land-34 loop and 14:05Z stop had cancelled.
+ */
+export function deadRunWaits(views: readonly StepView[], train: Train | undefined, now: number): WaitMet[] {
+  return views.flatMap(view => {
+    const run = deadRun(view.item, train);
+    return run && now - run.updatedAt > DEAD_RUN_MS ? [{ view, run, over: [`run ${run.id} was cancelled ${ago(now - run.updatedAt)} ago and nothing reruns it`] }] : [];
+  });
+}
 
 /** The fields of a chat duty (`<data dir>/duties/<chat>.json`) the fold reads. */
 export type DutyRef = Pick<Duty, "id" | "name" | "goal" | "status" | "boardGoal">;
@@ -241,21 +259,24 @@ export const PROGRESS_MS = 60 * 60_000;
  * No progress (owner 10-12: the check-in needs a code check that in the last hour either a checklist item turned
  * done or every open task is blocked, since work should keep moving). It passes when a plan item turned done
  * in the last PROGRESS_MS (its memo changed then and it is done now), or when every open step is held: blocked, waiting on an open For you todo,
- * waiting on purpose for a waitUntil still ahead, or waiting on another thread (its owner, or a thread its waitFor names). A waitUntil that
- * passed is not held. A goal moved when, in the last PROGRESS_MS, an open step's note under it gained a fact (`noteFacts`) or a step's job
+ * waiting on purpose for a waitUntil still ahead, waiting on another thread (its owner, or a thread its waitFor names), or waiting on CI that
+ * moves: a run its waitFor names is queued or running in the CI cache (`train`), or the release train it waits on moves (`trainMoves`). A
+ * waitUntil that passed is not held. Launch main bro 10-13: from 10:50Z to 13:31Z every step the check-in listed as moving waited on its own
+ * verify-dev run while the M1 Air runners slept (10:30Z to 13:35Z), such as p84 on 38378436903 and p75 on 38378422183. A goal moved when, in the last PROGRESS_MS, an open step's note under it gained a fact (`noteFacts`) or a step's job
  * reported to the chat; its steps are not counted (launch main bro 10-12: p56's copy and p57's lane reads reported every 30 min with new page
  * and run counts, and three check-ins in a row flagged them). No verdict (null) until the chat's memory spans PROGRESS_MS. `moving` are the open
  * steps that are not held and whose goal did not move.
  */
 export interface NoProgress { moving: StepView[] }
 export function noProgress(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, since: number,
-  rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number): NoProgress | null {
+  rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number, train?: Train): NoProgress | null {
   if (now - since < PROGRESS_MS) return null;
   let done = false;
   walkItems(board?.plan ?? [], item => { if (item.status === "done" && (memos[item.id]?.doneAt ?? 0) >= now - PROGRESS_MS) done = true; });
   if (done) return null;
   const held = (view: StepView): boolean => view.item.status === "blocked" || view.cls === "foryou" || Date.parse(view.item.waitUntil ?? "") > now ||
-    (!view.mine && view.owner?.key.startsWith("thread:") === true) || waitTarget(view.item.waitFor, rows, self) !== undefined;
+    (!view.mine && view.owner?.key.startsWith("thread:") === true) || waitTarget(view.item.waitFor, rows, self) !== undefined ||
+    namedRuns(view.item, train).some(run => run.running) || (train !== undefined && trainMoves(view.item, train, now));
   const recent = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
   const goalOf = (view: StepView): string => view.goal?.id ?? view.item.id;
   const moved = new Set(views.filter(view => recent(memos[view.item.id]?.factsAt) || recent(view.owner?.lastMessage?.at)).map(goalOf));
@@ -528,6 +549,21 @@ export function trainMoves(item: PlanItem, train: Train, now: number): boolean {
   const moved = Math.max(...train.runs.map(run => run.running ? train.readAt : run.updatedAt));
   return now - moved <= TRAIN_IDLE_MS;
 }
+/** A run id after these words names an older run a newer one replaced ("run 38414020573 (sup 38408618643)"), not the wait. */
+const REPLACED_RUN = /\b(?:sup|supersedes|superseded|replaces|replaced)\s+(?:run\s+)?\d{9,}\b/gi;
+/** The runs a step's waitFor names that the CI cache knows (`Train.all`), in the order it names them. */
+export function namedRuns(item: Pick<PlanItem, "waitFor">, train: Train | undefined): CiRun[] {
+  const text = (item.waitFor ?? "").replace(REPLACED_RUN, " ");
+  return [...text.matchAll(RUN_IDS)].flatMap(([id]) => { const run = train?.all?.get(id!); return run ? [run] : []; });
+}
+/**
+ * The cancelled run a step waits on, when no run its waitFor names is queued or running. A cancelled run never turns green, so nothing outside
+ * the chat moves the step: it must rerun the run, push fresh and name the new run, or wait on the hold that cancelled it.
+ */
+export function deadRun(item: Pick<PlanItem, "waitFor">, train: Train | undefined): CiRun | undefined {
+  const runs = namedRuns(item, train);
+  return runs.some(run => run.running) ? undefined : runs.find(run => run.conclusion === "cancelled");
+}
 export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number,
   scratch: readonly ScratchItem[] = [], train?: Train): BlockedStep[] {
   return views.flatMap(view => {
@@ -538,6 +574,9 @@ export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<
     // waitFor names is.
     const thread = waitTarget(item.waitFor, rows, self);
     if (!thread && train && trainMoves(item, train, now)) return [];
+    // A step on a cancelled run waits on nobody (api portal vp 10-13, p9, p12 and p14 read "blocked on CI run ..." at 23:07 KST for runs Fable's
+    // land-34 loop cancelled at 13:55Z); `deadRunWaits` flags it.
+    if (!thread && deadRun(item, train)) return [];
     const run = RUN_ID.exec(item.waitFor ?? "")?.[0];
     const word = othersWord(item.waitFor) ?? othersWord(item.note) ?? (heldRun(item) ? "a CI run another thread holds" : undefined);
     const on = thread ? `the ${clip(thread.name, 40)} thread` : word && run ? `CI run ${run}${heldRun(item) ? ", which another thread holds" : ""}` : word;

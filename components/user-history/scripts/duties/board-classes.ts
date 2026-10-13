@@ -8,10 +8,10 @@ import { DutyStore } from "../../src/chat-duty-store.ts";
 import { ACT_CLASSES, classifyBoard, classLine, jobFacts, STEP_CLASSES, type StepClass, type StepView } from "../../src/checkin-steps.ts";
 import { checkInRecord, classCounts, convergenceMisses, type ConvergenceMisses, finishedOpen } from "../../src/chat-checkin.ts";
 import { checkInSettings } from "../../src/checkin-settings.ts";
-import { blockedOnOthers, extraGoals, gateFindings, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, noProgress, openUnderClosed, scopeMisses,
+import { blockedOnOthers, deadRunWaits, extraGoals, gateFindings, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, noProgress, openUnderClosed, scopeMisses,
   staleSteps, stalledSteps, waitsMet } from "../../src/checkin-findings.ts";
 import { activeCorrections, CorrectionLedger, handoffRules } from "../../src/chat-corrections.ts";
-import { heartbeatsFile, oneSessionLoad, readHeartbeats, redundantHeartbeats } from "../../src/checkin-load.ts";
+import { heartbeatsFile, oneSessionLoad, readHeartbeats, readTrain, redundantHeartbeats, trainFile } from "../../src/checkin-load.ts";
 import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";
 import type { ChildAgent, SessionRow } from "../../src/shared/types.ts";
 
@@ -110,6 +110,8 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
   const handoffs = handoffRules(ledger);
   const active = new Set(activeCorrections(ledger));
   let sessions: DaemonSession[] | undefined;
+  // The release train and every CI run, as the check-in reads them (`trainMoves`, `deadRun`, live runs in `noProgress`).
+  const train = await readTrain(trainFile(options.home));
   const result: ChatClasses[] = [];
   for (const id of ids) {
     const board = await boards.read(id).catch(() => null);
@@ -124,12 +126,13 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
     const facts = jobFacts(chatChildren(sessions ?? [], id), board, rows, id);
     const steps = classifyBoard(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), rows, now, active);
     const chatDuties = await duties.list(id).catch(() => undefined);
-    const findings = { scope: scopeMisses(board, handoffs, [id, name]), gates: gateFindings(board, facts, active), stalled: stalledSteps(steps, memo?.steps ?? {}, rows, new Set([id, name]), now),
-      goals: goalGaps(board, steps, everyMs, now), blocked: blockedOnOthers(steps, rows, new Set([id, name]), now), done: finishedOpen(board), loose: looseGoals(board),
-      extra: extraGoals(board), underClosed: openUnderClosed(board), held: heldElsewhere(steps, board, rows, new Set([id, name])), noProgress: noProgress(board, steps, memo?.steps ?? {}, memo?.since ?? now, rows, new Set([id, name]), now), waitsMet: waitsMet(steps, board, rows, new Set([id, name])),
+    const findings = { scope: scopeMisses(board, handoffs, [id, name]), gates: gateFindings(board, facts, active), stalled: stalledSteps(steps, memo?.steps ?? {}, rows, new Set([id, name]), now, train),
+      goals: goalGaps(board, steps, everyMs, now), blocked: blockedOnOthers(steps, rows, new Set([id, name]), now, board?.scratch, train), done: finishedOpen(board), loose: looseGoals(board),
+      extra: extraGoals(board), underClosed: openUnderClosed(board), held: heldElsewhere(steps, board, rows, new Set([id, name])), noProgress: noProgress(board, steps, memo?.steps ?? {}, memo?.since ?? now, rows, new Set([id, name]), now, train),
+      waitsMet: [...waitsMet(steps, board, rows, new Set([id, name])), ...deadRunWaits(steps, train, now)],
       stale: staleSteps(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), everyMs, now),
       fold: goalsToFold(board, facts, new Set([id, name]), chatDuties ?? []), load: oneSessionLoad(steps, rootsOf([id, name])),
-      heartbeats: redundantHeartbeats(readHeartbeats(heartbeatsFile(id, options.home))), noDuty: chatDuties ? goalsWithoutDuty(board, chatDuties) : [] };
+      heartbeats: redundantHeartbeats(readHeartbeats(heartbeatsFile(id, options.home)), chatDuties ?? []), noDuty: chatDuties ? goalsWithoutDuty(board, chatDuties) : [] };
     const { metrics: misses, flagged } = convergenceMisses(id, steps, findings, told, everyMs, now);
     result.push({ id, name, everyMs, open: steps.length, counts: classCounts(steps), misses, steps, flagged });
   }

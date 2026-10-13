@@ -72,12 +72,12 @@ test("redundant heartbeats: the chat's active rlm heartbeats that watch, check i
   ], dispatches: [] }));
   const jobs = readHeartbeats(file);
   assert.equal(jobs.length, 5);
-  assert.deepEqual(redundantHeartbeats(jobs).map(entry => entry.id), ["h1", "h2"]);
+  assert.deepEqual(redundantHeartbeats(jobs).map(entry => entry.job.id), ["h1", "h2"]);
   const precheck = checkInPrecheck(undefined, [], launchMain(), NOW, { heartbeats: jobs });
   const output = convergenceMisses("c1", precheck.steps, precheck, {}, 15 * 60_000, NOW);
   assert.equal(output.metrics.redundant_heartbeats, 2);
   const text = checkInPrecheckText(precheck, [], output.flagged, NOW);
-  assert.match(text, /### Heartbeats the check-in covers \(have the chat delete each\)\n- heartbeat "pipeline-guide" \(every 30m\), "HEARTBEAT[^"]*": the check-in covers this\. Ask the chat to delete it in its own REPL with `await rlm_heartbeat\.delete\("h1"\)`/);
+  assert.match(text, /### Heartbeats the check-in or a duty covers \(have the chat delete each\)\n- heartbeat "pipeline-guide" \(every 30m\), "HEARTBEAT[^"]*": the check-in covers this\. Ask the chat to delete it in its own REPL with `await rlm_heartbeat\.delete\("h1"\)`/);
   assert.equal(convergenceMisses("c1", precheck.steps, { ...precheck, heartbeats: [] }, {}, 15 * 60_000, NOW).metrics.redundant_heartbeats, 0);
   assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "redundant_heartbeats" && metric.target === 0));
 });

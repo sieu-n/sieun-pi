@@ -1,6 +1,6 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { finishedOpen, looksDone } from "./checkin-done.ts";
-import { heartbeatLine, oneSessionLoad, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad, type Train } from "./checkin-load.ts";
+import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad, type Train } from "./checkin-load.ts";
 import { REPEAT_HEAD, repeatLines } from "./checkin-repeats.ts";
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
@@ -8,7 +8,7 @@ import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-boa
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, parkedBy, quote, readySteps,
   noteFacts, recordedAt, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepOwner, stepView, type StepView, todoForStep, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
-import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
+import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, type GoalGap, goalGapLine, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
   staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet } from "./checkin-findings.ts";
@@ -59,7 +59,7 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
 export interface CheckInPrecheck {
   memory: CheckInMemory; steps: StepView[]; scope: ScopeMiss[]; gates: GateFinding[]; stalled: StalledStep[]; goals: GoalGap[]; blocked: BlockedStep[];
   done: { item: PlanItem; reason: string }[]; loose: PlanItem[]; extra: PlanItem[]; underClosed: { item: PlanItem; parent: PlanItem }[];
-  held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: ScheduledJob[];
+  held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: RedundantHeartbeat[];
   /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties. */
   noDuty: PlanItem[];
   /** A board read error, an ask overflow, steps that can start, and steps that wait on the owner with no question in For you. */
@@ -117,10 +117,11 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board),
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
-    noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now), waitsMet: context.boardError ? [] : waitsMet(goaled, board, context.rows ?? [], self),
+    noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train),
+    waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now),
     fold: context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []), load: oneSessionLoad(goaled, context.jobs),
-    heartbeats: redundantHeartbeats(context.heartbeats ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes };
+    heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes };
 }
 
 /**
@@ -208,7 +209,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Blocked on CI, a release or another thread with no job on it (start a job that fixes each blocker in this run, or send its owner a " +
       "concrete patch; marking the step waiting is not an answer)", precheck.blocked.map(blocked => blockedLine(blocked, now))),
     ...section("One session carries too much (split these into your own jobs per part)", flagged.filter(slice => slice.kind === "one_session_load").map(slice => slice.excerpt)),
-    ...section("Heartbeats the check-in covers (have the chat delete each)", flagged.filter(slice => slice.kind === "redundant_heartbeats").map(slice => slice.excerpt)),
+    ...section("Heartbeats the check-in or a duty covers (have the chat delete each)", flagged.filter(slice => slice.kind === "redundant_heartbeats").map(slice => slice.excerpt)),
     ...section("Open goals and no duty", flagged.filter(slice => slice.kind === "goals_without_duty").map(slice => slice.excerpt)),
     ...section("Goals nobody works on (start parallel jobs for their independent work)", idle),
     ...section("Stalled waits (take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; \"still waiting\" and a later waitUntil are not answers)",
@@ -244,7 +245,7 @@ export const stepSig = (item: PlanItem): string =>
  * record is counted once, by the first that applies: `job_end_silent`, `job_end_unrecorded`, `stale_steps`, `due_late`. `goals_to_fold` is an
  * open goal whose work runs as a duty or rides other goals' jobs (`goalsToFold`, c46); that goal is not counted again in `finished_open`,
  * `loose_goals` or `held_elsewhere`. `one_session_load` is a goal and another session that owns too many of its open steps (`oneSessionLoad`, c51),
- * `redundant_heartbeats` an active heartbeat of the chat whose work the check-in already does (`redundantHeartbeats`, c51).
+ * `redundant_heartbeats` an active heartbeat of the chat whose work the check-in or one of its duties already does (`redundantHeartbeats`, c51).
  * `goals_without_duty` is 1 for a chat with an open goal and no active duty (`goalsWithoutDuty`).
  */
 export type ConvergenceMisses = { orphan_steps: number; due_late: number; stale_chase_24h: number; job_end_unrecorded: number; job_end_silent: number; scope_misses: number;
@@ -258,7 +259,7 @@ export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stal
 export interface BoardFindings { scope: readonly ScopeMiss[]; gates: readonly GateFinding[]; stalled: readonly StalledStep[]; goals: readonly GoalGap[]; blocked: readonly BlockedStep[];
   done: readonly { item: PlanItem; reason: string }[]; loose: readonly PlanItem[]; extra: readonly PlanItem[]; underClosed: readonly { item: PlanItem; parent: PlanItem }[];
   held: readonly HeldGoal[]; waitsMet: readonly WaitMet[]; noProgress: NoProgress | null; stale: readonly StaleStep[]; fold: readonly FoldGoal[];
-  load?: readonly SessionLoad[]; heartbeats?: readonly ScheduledJob[]; noDuty?: readonly PlanItem[];
+  load?: readonly SessionLoad[]; heartbeats?: readonly RedundantHeartbeat[]; noDuty?: readonly PlanItem[];
   /** The step memos of this run (`checkInPrecheck`), for when a step's record last moved (`recordedAt`). */
   memory?: Pick<CheckInMemory, "steps"> }
 
@@ -279,7 +280,9 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   for (const view of steps) {
     const id = view.item.id;
     const line = classLine(view, now) ?? `${id} ${view.cls}`;
-    if (view.cls === "orphan") flag("orphan_steps", id, line);
+    // An item that looks done or whose wait is over gets that finding's "close it" or "act on it"; "start a job" on it too was a second, wrong ask
+    // (AI harness 10-13 23:07 KST: p1 had every step closed and read both finished_open and orphan_steps).
+    if (view.cls === "orphan" && !counted.has(id)) flag("orphan_steps", id, line);
     if (view.cls === "stale-chase" && now - view.changedAt >= CHASE_ESCALATE_MS) flag("stale_chase_24h", id, line);
     const owner = view.owner;
     const silent = owner && owner.state !== "working" ? told[owner.key] : undefined;
@@ -322,7 +325,7 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   if (still) { misses.no_progress = 1; flagged.push({ chat, at: now, kind: "no_progress", excerpt: noProgressLine(still) }); }
   for (const met of over) { misses.wait_met++; flagged.push({ chat, at: now, kind: "wait_met", excerpt: waitMetLine(met), item: met.view.item.id }); }
   for (const entry of load) flag("one_session_load", entry.goal.id, sessionLoadLine(entry));
-  for (const job of heartbeats) { misses.redundant_heartbeats++; flagged.push({ chat, at: now, kind: "redundant_heartbeats", excerpt: heartbeatLine(job) }); }
+  for (const entry of heartbeats) { misses.redundant_heartbeats++; flagged.push({ chat, at: now, kind: "redundant_heartbeats", excerpt: heartbeatLine(entry) }); }
   if (noDuty.length) flag("goals_without_duty", noDuty[0]!.id, noDutyLine(noDuty));
   return { metrics: misses, flagged };
 }

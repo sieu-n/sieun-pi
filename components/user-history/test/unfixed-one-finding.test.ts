@@ -51,8 +51,10 @@ test("unfixed_flags 10-13: a step blocked on CI, a land or a thread gets the blo
     "with no train read, each step waits on land 34 or a CI run past an hour and gets one line that names the blocker");
 });
 
+/** The cache with p147's run 38357752199 still in progress: it was cancelled at 08:55:22Z, and a step on a cancelled run waits on nobody (`deadRun`). */
+const runLive = (train: Train): Train => ({ ...train, all: new Map([...train.all!].map(([id, run]) => [id, id === "38357752199" ? { ...run, running: true, conclusion: null } : run])) });
 test("unfixed_flags 10-13: a step on a moving release train is neither stalled nor blocked, as blocked_on_others already parks it (b1ea3ca)", () => {
   assert.deepEqual(kinds(trainAt()), [], "land 33 and promote 9 ran within 110 min of 09:09Z, so land 34's waits are on schedule");
-  assert.deepEqual(kinds(trainAt(4 * 60 * MIN)), ["p147 blocked_on_others", "p18 blocked_on_others", "p32 blocked_on_others"],
+  assert.deepEqual(kinds(runLive(trainAt(4 * 60 * MIN))), ["p147 blocked_on_others", "p18 blocked_on_others", "p32 blocked_on_others"],
     "control: with the train's last run 4 h old, the train does not move and each step is blocked on it, still once");
 });

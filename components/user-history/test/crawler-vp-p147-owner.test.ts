@@ -78,12 +78,14 @@ test("Crawler VP p147: the step's own owner thread is never its blocker, so a mo
   assert.doesNotMatch(line!, /blocked on the meta ads thread/);
 });
 
+/** The cache with p147's run 38357752199 still in progress: it was cancelled at 08:55:22Z, and a step on a cancelled run waits on nobody (`deadRun`). */
+const runLive = (train: Train): Train => ({ ...train, all: new Map([...train.all!].map(([id, run]) => [id, id === "38357752199" ? { ...run, running: true, conclusion: null } : run])) });
 test("Crawler VP p147 control: a dead owner thread and a wait on no moving train still flag", () => {
   const now = SLOTS["09:09"];
   const dead = { heartbeats: heartbeatsAt(now, "cancelled"), activityAt: now - 3 * 60 * MIN };
-  assert.equal(p147At(now, { ...dead, train: trainAt(now), waitFor: "ci/meta-ads-l34-r2 ee5b6b4974 (38357752199) green, then the release owner's go push" }).length, 1,
+  assert.equal(p147At(now, { ...dead, train: runLive(trainAt(now)), waitFor: "ci/meta-ads-l34-r2 ee5b6b4974 (38357752199) green, then the release owner's go push" }).length, 1,
     "a waitFor that names no land and no train run is not on the train");
-  assert.equal(p147At(now, { ...dead, train: trainAt(now, 2 * 60 * MIN) }).length, 1, "a train with no run in progress and none ended within 110 min does not move");
+  assert.equal(p147At(now, { ...dead, train: runLive(trainAt(now, 2 * 60 * MIN)) }).length, 1, "a train with no run in progress and none ended within 110 min does not move");
   const quiet = heartbeatsAt(now).map(job => ({ ...job, lastRunAt: new Date(now - 61 * MIN).toISOString() }));
   assert.equal(p147At(now, { heartbeats: quiet, activityAt: now - 61 * MIN }).length, 1,
     "active beats that last ran 61 min ago, past the 60-min CI watch, and a thread quiet as long are not live");

@@ -65,8 +65,13 @@ export function readHeartbeats(file: string): ScheduledJob[] {
 }
 /** One land or promote run of the release train as the CI cache last read it: `key` is the land it carries ("33", "32b") or "promote". */
 export interface TrainRun { id: string; key: string; running: boolean; conclusion: string | null; createdAt: number; updatedAt: number }
-/** The release train's runs in the CI cache, and when the cache last read GitHub (`fetchedAt`). */
-export interface Train { runs: TrainRun[]; readAt: number }
+/** One run of any workflow as the CI cache last read it. */
+export interface CiRun { id: string; running: boolean; conclusion: string | null; updatedAt: number }
+/**
+ * The release train's runs in the CI cache, and when the cache last read GitHub (`fetchedAt`). `all` is every run the cache has by id, the
+ * verify-dev runs of ci/ branches too, for the steps that wait on one (`namedRuns`).
+ */
+export interface Train { runs: TrainRun[]; readAt: number; all?: ReadonlyMap<string, CiRun> }
 /** `<home>/.cache/virev/ci-runs.json`, which launchd ai.virev.ci-cache rewrites from GitHub every 30 s for sieu-n/auto-sns-agent. */
 export const trainFile = (home: string = homedir()): string => join(home, ".cache", "virev", "ci-runs.json");
 const LAND_RUN = /^land:\s*land[\s-]+(\d+[a-z]?)\b/i;
@@ -75,7 +80,9 @@ export function parseTrain(cache: unknown): Train | undefined {
   const { runs, fetchedAt } = (cache ?? {}) as { runs?: Record<string, { run?: Record<string, unknown> }>; fetchedAt?: string };
   const readAt = Date.parse(fetchedAt ?? "");
   if (!runs || !Number.isFinite(readAt)) return undefined;
-  return { readAt, runs: Object.values(runs).flatMap(({ run }) => {
+  const all = new Map(Object.values(runs).flatMap(({ run }) => run?.id === undefined ? [] : [[String(run.id), { id: String(run.id), running: run.status !== "completed",
+    conclusion: typeof run.conclusion === "string" ? run.conclusion : null, updatedAt: Date.parse(String(run.updated_at)) }] as const]));
+  return { readAt, all, runs: Object.values(runs).flatMap(({ run }) => {
     const path = String(run?.path ?? "");
     const key = path.endsWith("/promote.yml") ? "promote" : path.endsWith("/land.yml") ? LAND_RUN.exec(String(run?.name ?? ""))?.[1]?.toLowerCase() : undefined;
     if (!run || !key) return [];
@@ -115,9 +122,40 @@ export const liveThreads = (facts: readonly JobFact[], heartbeatsOf: (sessionId:
     ? { ...fact, state: "working" } : fact);
 /** Words in a heartbeat's label or prompt that name work the check-in already does: a check-in, the board, watching, monitoring, status, nudging. */
 const CHECK_IN_WORK = /\bcheck[- ]?ins?\b|\bboard\b|\bwatch(?:er|ers|es|ing)?\b|\bmonitor(?:s|ing)?\b|\bstatus\b|\bnudge[sd]?\b|\bguides?\b|\bstall(?:s|ed)?\b|\bprogress\b/i;
-/** The chat's own active rlm heartbeats whose label or prompt names check-in work: the check-in covers them. */
-export const redundantHeartbeats = (jobs: readonly ScheduledJob[]): ScheduledJob[] =>
-  jobs.filter(job => job.source === "rlm_heartbeat" && job.status === "active" && CHECK_IN_WORK.test(`${job.label ?? ""}\n${job.prompt ?? ""}`));
-export const heartbeatLine = (job: ScheduledJob): string =>
+/** A heartbeat prompt that starts a job: its work is that job's, and its "update the board" or "send the owner the status" is the job's report. */
+const SPAWNS_JOB = /\brlm\.spawn\b|\bspawn\s+(?:one|a)\s+job\b/i;
+/** The daily time of a cron heartbeat ("0 9 * * *" is 09:00), undefined for any other schedule. */
+const cronDaily = (expression: string | undefined): string | undefined => {
+  const match = /^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/.exec((expression ?? "").trim());
+  return match ? `${match[2]!.padStart(2, "0")}:${match[1]!.padStart(2, "0")}` : undefined;
+};
+/** The last two parts of each file path a text names ("program/brief.md", "seo-recrawl/README.md"). */
+const pathTails = (text: string): Set<string> =>
+  new Set([...text.matchAll(/[\w.-]+(?:\/[\w.-]+)+\.\w+/g)].map(([path]) => path!.split("/").slice(-2).join("/").toLowerCase()));
+/** The duty fields that tell whether a duty runs a heartbeat's work. */
+export type HeartbeatDuty = { id: string; name: string; status: string; schedule?: { kind: string; at?: string }; onMiss?: string };
+/** A heartbeat of the chat that repeats work the check-in does, or that an active duty (`duty`) runs. */
+export interface RedundantHeartbeat { job: ScheduledJob; duty?: HeartbeatDuty }
+/**
+ * The chat's own active rlm heartbeats whose work the check-in or a duty already does. The check-in covers one whose label names check-in work,
+ * or whose prompt does when it starts no job. A duty covers a daily cron heartbeat when it is active, runs daily at the same time and its onMiss
+ * names a file the prompt names. SEO guy 10-13: "virev-seo-daily" (0 9 * * *) and "virev-seo-recrawl" (20 10 * * *) spawn the daily SEO jobs and
+ * were flagged as check-in work only for "put the job on the board" and "send the owner ... the status" in their prompts; the real cover was
+ * the duties d1 (09:00, onMiss "program/brief.md ... the work the 09:00 heartbeat did") and d2 (10:20, "workers/seo-recrawl/README.md").
+ */
+export function redundantHeartbeats(jobs: readonly ScheduledJob[], duties: readonly HeartbeatDuty[] = []): RedundantHeartbeat[] {
+  return jobs.flatMap(job => {
+    if (job.source !== "rlm_heartbeat" || job.status !== "active") return [];
+    const prompt = job.prompt ?? "";
+    if (CHECK_IN_WORK.test(job.label ?? "") || (!SPAWNS_JOB.test(prompt) && CHECK_IN_WORK.test(prompt))) return [{ job }];
+    const at = cronDaily(job.schedule?.expression);
+    const files = pathTails(prompt);
+    const duty = at === undefined ? undefined : duties.find(duty => duty.status === "active" && duty.schedule?.kind === "daily" && duty.schedule.at === at &&
+      [...pathTails(duty.onMiss ?? "")].some(tail => files.has(tail)));
+    return duty ? [{ job, duty }] : [];
+  });
+}
+export const heartbeatLine = ({ job, duty }: RedundantHeartbeat): string =>
   `heartbeat ${quote(job.label ?? job.id)}${job.schedule?.expression ? ` (${job.schedule.expression})` : ""}, ${quote((job.prompt ?? "").replace(/\s+/g, " "))}: ` +
-  `the check-in covers this. Ask the chat to delete it in its own REPL with \`await rlm_heartbeat.delete("${job.id}")\``;
+  `${duty ? `the duty ${duty.id} ${quote(duty.name)} runs this work at ${duty.schedule?.at}` : "the check-in covers this"}. Ask the chat to delete it in its own ` +
+  `REPL with \`await rlm_heartbeat.delete("${job.id}")\``;
