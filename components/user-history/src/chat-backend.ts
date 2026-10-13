@@ -114,6 +114,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // answers again. It writes only the service log; it posts nothing into a chat.
   const keep = options.daemonGateChat ?? undefined;
   const gate = new DaemonGate({ settings, chats: () => chats.ids(), keep: new Set(keep ? [keep] : []), log: dutyLog, changed: () => catalog.notify(),
+    lastCheckIn: async id => (await chats.checkInView(id))?.lastAt ?? null,
     list: async () => {
       await catalog.connect();
       await rosterList((command, timeoutMs, options) => catalog.client.request(command, timeoutMs, options));

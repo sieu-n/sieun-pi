@@ -53,7 +53,8 @@ async function setup(duty: CheckInSource["duty"], hung?: { start: number; runnin
   const source: CheckInSource = { board: async () => board, rows: async () => [{ id: "c1", name: "c1" } as SessionRow], home: dir, memory: checkInRecord(join(dir, "check-ins.json")),
     replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(settingsFile), tickMs: 0, now: () => now, noReportGraceMs: 0,
     ...(duty ? { duty } : {}) };
-  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
+  const logs: string[] = [];
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source, line => { logs.push(line); });
   await chats.adopt();
   transcripts.set("c1", hung ? [{ role: "user", content: "continue", timestamp: now }] : aborted(now));
   const start = now;
@@ -72,7 +73,7 @@ async function setup(duty: CheckInSource["duty"], hung?: { start: number; runnin
   };
   /** The Mac sleeps: the clock moves with no wake. */
   const sleep = (ms: number) => { now += ms; };
-  return { chats, run, sleep, settingsFile, calls };
+  return { chats, run, sleep, settingsFile, calls, logs };
 }
 
 test("chat revive: a check-in whose duty job start never ends does not hold the chat's failed-turn restart", async () => {
@@ -106,6 +107,23 @@ test("chat revive: a daemon gate pause or the chat's own pause stops the check-i
   await owner.chats.setCheckIn("c1", { pause: "forever" }, OWNER_UI);
   assert.deepEqual(await owner.run(30), [], "the owner paused the chat");
   owner.chats.close();
+});
+
+test("chat check-in: a check-in that falls due while the daemon gate pauses it gets one held line, then runs at the resume with a line that says how late (VP of CI 10-12: no line for 13:15Z to 17:52Z)", async () => {
+  const runs: string[] = [];
+  const sink = { async checkIn(id: string, _run: CheckInRun) { runs.push(id); } };
+  const gated = await setup(sink);
+  await writeFile(gated.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" } }));
+  await gated.run(20);
+  const held = gated.logs.filter(line => line.includes("check-in due since"));
+  assert.equal(held.length, 1, "one line for the whole hold, not one per wake");
+  assert.match(held[0]!, /^\S+Z chat c1: check-in due since \S+Z is held while the daemon gate pauses check-ins; it runs when the gate resumes, longest wait first$/);
+  assert.deepEqual(runs, []);
+  await writeFile(gated.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, startAt: 0 } }));
+  await gated.run(1);
+  assert.deepEqual(runs, ["c1"], "the resume runs the held check-in at the next wake");
+  assert.match(gated.logs.filter(line => line.includes("check-in due since")).at(-1)!, /chat c1: check-in due since \S+Z runs now, 20 min late after the daemon gate held it$/);
+  gated.chats.close();
 });
 
 const at = (iso: string): number => Date.parse(iso);

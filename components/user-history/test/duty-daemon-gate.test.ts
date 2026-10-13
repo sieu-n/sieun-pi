@@ -21,7 +21,7 @@ async function setup(initial: Record<string, unknown>) {
   const log: string[] = [];
   // The old gate took a `tell` chat and a `steer` path and posted each pause and resume into that chat; both stay here so a gate that posts
   // into a chat again fails these tests.
-  const input = { settings, chats: async () => ["vp", "c1", "c2", "c3", "c4"], keep: new Set(["vp"]), tell: "vp", now: () => clock.at,
+  const input = { settings, chats: async () => ["vp", "c1", "c2", "c3", "c4"], keep: new Set(["vp"]), tell: "vp", now: () => clock.at, lastCheckIn: async () => null,
     log: (line: string) => { log.push(line); }, steer: async (id: string, message: string) => { told.push(`${id}: ${message}`); },
     list: async () => { daemon.lists++; clock.at += daemon.ms; if (daemon.fail) throw new Error("Timed out after 30000ms waiting for the Prime Agent daemon response to \"list\""); } };
   const gate = new DaemonGate(input as DaemonGateInput);
@@ -59,7 +59,7 @@ test("daemon gate: the first list the daemon did not answer pauses the check-in 
   assert.equal(resumed.c4?.pausedBy, "agent");
   assert.equal(nextCheckIn(resumed.c3!, now - 3 * 60 * MIN, now), now + 30 * MIN, "the first check-in after the resume waits for its turn");
   assert.equal(nextCheckIn(resumed.c3!, now + 30 * MIN, now + 30 * MIN), now + 90 * MIN, "then it runs at its interval");
-  assert.match(log.at(-1)!, /daemon gate: healthy \(a list answered\); resumed the check-in of 2 chats, staggered over their interval: c1, c3/);
+  assert.match(log.at(-1)!, /daemon gate: healthy \(a list answered\); resumed the check-in of 2 chats, longest wait first, staggered over their interval: c1, c3/);
   assert.deepEqual(told, [], "daemon health is server state: the gate posts no pause or resume line into any chat (off_brief, 10-12: 33 such lines)");
 });
 
@@ -107,11 +107,63 @@ test("daemon gate: a restart during an outage starts unhealthy and the first ans
   assert.equal(daemon.lists, lists + 2, "each wake probes: no interval of ours on top of the duty runner's");
   let finish!: () => void;
   let calls = 0;
-  const slow = new DaemonGate({ settings, chats: async () => [], keep: new Set(), list: () => { calls++; return new Promise<void>(resolve => { finish = resolve; }); } });
+  const slow = new DaemonGate({ settings, chats: async () => [], keep: new Set(), lastCheckIn: async () => null, list: () => { calls++; return new Promise<void>(resolve => { finish = resolve; }); } });
   const first = slow.tick();
   await slow.tick();
   assert.equal(calls, 1, "a wake while a probe still waits on the daemon sends no second list");
   finish();
   await first;
   duties.close();
+});
+
+// The daemon gate's pauses and resumes of 10-12 from 13:15Z to 17:55Z, from service.log ("-" unhealthy, "+" healthy). From 15:11Z it flapped:
+// 44 resumes by 17:35Z, every healthy spell but the last under 17 minutes.
+const FLIPS_1012 =
+  "13:19:29- 13:22:07+ 13:35:14- 15:11:01+ 15:15:03- 15:19:08+ 15:22:29- 15:22:31+ 15:24:31- 15:24:59+ 15:37:10- 15:37:33+ " +
+  "15:37:58- 15:38:04+ 15:38:28- 15:38:29+ 15:44:59- 15:45:04+ 15:45:33- 15:45:37+ 15:46:05- 15:46:28+ 15:48:29- 15:49:09+ " +
+  "15:49:50- 15:50:05+ 15:50:20- 15:50:30+ 15:50:51- 15:51:03+ 15:51:24- 15:51:28+ 15:51:58- 15:52:00+ 15:52:28- 15:52:28+ " +
+  "15:54:02- 15:54:35+ 15:55:06- 15:55:48+ 15:57:13- 15:57:37+ 15:59:59- 16:00:32+ 16:01:01- 16:01:41+ 16:02:03- 16:02:08+ " +
+  "16:03:07- 16:03:36+ 16:03:39- 16:03:58+ 16:04:53- 16:04:59+ 16:09:57- 16:11:52+ 16:13:29- 16:13:59+ 16:28:15- 16:28:27+ " +
+  "16:34:29- 16:35:12+ 16:51:48- 16:52:02+ 17:03:27- 17:03:58+ 17:04:26- 17:05:07+ 17:05:25- 17:05:27+ 17:06:26- 17:06:47+ " +
+  "17:08:42- 17:09:16+ 17:09:39- 17:09:57+ 17:10:41- 17:10:57+ 17:17:42- 17:18:12+ 17:20:31- 17:21:15+ 17:32:15- 17:32:37+ " +
+  "17:33:11- 17:33:13+ 17:33:43- 17:33:55+ 17:34:16- 17:34:54+ 17:53:05- 17:53:28+ ";
+
+test("daemon gate: a flapping gate resumes the longest wait first, so no chat starves; replay of 10-12, where VP of CI had no check-in from 13:15Z to 17:52Z", async () => {
+  const day = (time: string): number => Date.parse(`2026-10-12T${time}Z`);
+  // The 7 chats the gate paused, in check-in-settings.json order, with their interval in minutes and their last check-in before 13:19:29Z.
+  const chats: [string, number, string][] = [["slack green", 60, "13:04:42"], ["launch main bro", 15, "13:17:11"], ["frontend bro", 15, "13:04:11"],
+    ["ops guy", 120, "05:46:59"], ["VP of CI", 30, "13:15:07"], ["Crawler VP", 15, "13:07:42"], ["api portal", 15, "13:18:22"]];
+  const last = new Map(chats.map(([id, , time]) => [id, day(time)]));
+  // Each gap counts from VP of CI's 13:15:07Z check-in at the earliest, so ops guy's wait from 05:46Z, before the window, does not count.
+  const gaps = new Map(chats.map(([id]) => [id, 0]));
+  const dir = await mkdtemp(join(tmpdir(), "daemon-gate-replay-"));
+  const path = join(dir, "check-in-settings.json");
+  await writeFile(path, JSON.stringify(Object.fromEntries(chats.map(([id, minutes]) => [id, { everyMs: minutes * MIN }]))));
+  const settings = checkInSettings(path);
+  const clock = { at: day("13:15:30") };
+  const gate = new DaemonGate({ settings, chats: async () => chats.map(([id]) => id), keep: new Set(), now: () => clock.at, list: async () => {},
+    lastCheckIn: async id => last.get(id) ?? null });
+  const flips = FLIPS_1012.trim().split(/\s+/).map(flip => ({ at: day(flip.slice(0, -1)), healthy: flip.endsWith("+") }));
+  // Chats.tick every CHECK_IN_TICK_MS (30 s): a chat runs when its pause has ended and nextCheckIn is due.
+  for (let tick = day("13:15:30"); tick <= day("17:55:00"); tick += 30_000) {
+    while (flips.length && flips[0]!.at <= tick) {
+      const flip = flips.shift()!;
+      clock.at = flip.at;
+      if (flip.healthy) await gate.probe();
+      else await gate.kill(30_000, false);
+    }
+    clock.at = tick;
+    const all = await settings.all();
+    for (const [id] of chats) {
+      const next = nextCheckIn(all[id]!, last.get(id)!, tick);
+      if (next === null || next > tick) continue;
+      gaps.set(id, Math.max(gaps.get(id)!, tick - Math.max(last.get(id)!, day("13:15:07"))));
+      last.set(id, tick);
+    }
+  }
+  for (const [id] of chats) gaps.set(id, Math.max(gaps.get(id)!, day("17:55:00") - Math.max(last.get(id)!, day("13:15:07"))));
+  const minutes = Object.fromEntries([...gaps].map(([id, ms]) => [id, Math.round(ms / MIN)]));
+  // The fixed resume order gave VP of CI 277 min and the 7 chats up to 280 min. VP of CI's 124 min now is the 96-minute full pause from 13:35Z
+  // to 15:11Z, from the old 5 s bar that 540af42 removed, and the first resume after it runs VP of CI's check-in at its next wake.
+  assert.deepEqual(minutes, { "slack green": 130, "launch main bro": 109, "frontend bro": 109, "ops guy": 143, "VP of CI": 124, "Crawler VP": 109, "api portal": 110 });
 });

@@ -6,7 +6,10 @@ import { type CheckInSettings, daemonPause, daemonResume } from "./checkin-setti
  * `kill`). A sample is bad when the daemon did not answer: a list that failed or ran past prime-agent's own request timeout, or a failed
  * archive. The first bad sample makes the daemon unhealthy and the first answered list makes it healthy again; no count or interval of ours
  * sits on top of the 30 s timeout (c43). Going unhealthy pauses the check-in of every chat outside `keep` that is not paused already, as
- * `pausedBy: "daemon"`; going healthy resumes only those, chat i of n at now + i * interval / n. Each change writes one log line. The gate
+ * `pausedBy: "daemon"`; going healthy resumes only those, chat i of n at now + i * interval / n, ordered by when each check-in fell due so the
+ * chat that waited longest runs first. Each resume restarts the stagger, so a fixed order starved the late chats while the gate flapped: on 10-12
+ * from 15:11Z to 17:35Z it resumed 44 times, every healthy spell but the last shorter than VP of CI's 17-minute slot (4 of 7, 30 min), and VP
+ * of CI had no check-in from 13:15Z to 17:52Z. Each change writes one log line. The gate
  * posts nothing into a chat: daemon health is server state, no chat can act on it, and each chat's check-in card already shows "paused while the daemon is slow" (10-12 KST: 33 such lines in the AI
  * harness VP chat, each a steer that woke it for a turn). After a restart, a chat still paused by the daemon starts the gate as unhealthy, so
  * it resumes on its own.
@@ -39,6 +42,8 @@ export interface DaemonGateInput {
   chats(): Promise<Iterable<string>>;
   /** Chats whose check-in the gate never pauses: the `daemonGateChat` in configuration.json. */
   keep: ReadonlySet<string>;
+  /** When a chat's check-in last ran (Chats' record), null when none ran: the resume puts the chat that waited longest first. */
+  lastCheckIn(id: string): Promise<number | null>;
   /** Told after the gate changed settings, so open pages show it. */
   changed?(): Promise<void>;
   now?: () => number;
@@ -116,7 +121,11 @@ export class DaemonGate {
   private async resume(): Promise<void> {
     const now = this.now();
     const settings = await this.input.settings.all();
-    const ids = Object.keys(settings).filter(id => settings[id]!.pausedBy === "daemon");
+    const due = new Map<string, number>();
+    for (const id of Object.keys(settings)) {
+      if (settings[id]!.pausedBy === "daemon") due.set(id, ((await this.input.lastCheckIn(id)) ?? 0) + settings[id]!.everyMs);
+    }
+    const ids = [...due.keys()].sort((a, b) => due.get(a)! - due.get(b)!);
     const resumed: string[] = [];
     for (const [index, id] of ids.entries()) {
       let changed = false;
@@ -128,7 +137,35 @@ export class DaemonGate {
       if (changed) resumed.push(id);
     }
     await this.input.changed?.().catch(() => {});
-    this.input.log?.(`daemon gate: healthy (a list answered); resumed the check-in of ${resumed.length} chats, ` +
+    this.input.log?.(`daemon gate: healthy (a list answered); resumed the check-in of ${resumed.length} chats, longest wait first, ` +
       `staggered over their interval: ${resumed.join(", ") || "none"}`);
+  }
+}
+
+/**
+ * The check-ins the gate holds, for the service log: one line when a chat's check-in falls due while the gate pauses it and one when it runs,
+ * with how late. VP of CI 10-12 had no check-in from 13:15Z to 17:52Z and no line said why.
+ */
+export class GateHolds {
+  /** When each held check-in fell due. */
+  private readonly held = new Map<string, number>();
+
+  constructor(private readonly log: (line: string) => void) {}
+
+  /** A wake found the chat's check-in paused by the gate; `dueAt` is when it fell due or falls due. */
+  hold(id: string, dueAt: number, now: number): void {
+    if (dueAt > now || this.held.has(id)) return;
+    this.held.set(id, dueAt);
+    this.log(`${new Date(now).toISOString()} chat ${id.slice(0, 8)}: check-in due since ${new Date(dueAt).toISOString()} is held while the daemon ` +
+      "gate pauses check-ins; it runs when the gate resumes, longest wait first");
+  }
+
+  /** The chat's check-in runs now. */
+  ran(id: string, now: number): void {
+    const dueAt = this.held.get(id);
+    if (dueAt === undefined) return;
+    this.held.delete(id);
+    this.log(`${new Date(now).toISOString()} chat ${id.slice(0, 8)}: check-in due since ${new Date(dueAt).toISOString()} runs now, ` +
+      `${Math.round((now - dueAt) / 60_000)} min late after the daemon gate held it`);
   }
 }

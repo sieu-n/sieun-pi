@@ -5,6 +5,7 @@ import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
+import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, jobFacts, liveJobs } from "./checkin-steps.ts";
 import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
@@ -130,6 +131,8 @@ export class Chats {
   private readonly now: () => number;
   /** When each chat's check-in last ran: the check-in memory's time after a restart, the service start for a chat with none. */
   private readonly lastCheckIn = new Map<string, number>();
+  /** Check-ins the daemon gate held, logged when each falls due and when it runs. */
+  private readonly holds = new GateHolds(line => this.log(line));
   private readonly started: number;
   /** Restarts sent per chat since its last turn that ended well: how many, and when the last one went. */
   private readonly revivals = new Map<string, { attempts: number; at: number }>();
@@ -410,13 +413,18 @@ export class Chats {
       if (paused && ownerPause(setting)) continue;
       active.add(id);
       if (!this.reviving.has(id)) { this.reviving.add(id); this.queue(id, () => this.revive(id, woke).finally(() => this.reviving.delete(id))); }
-      if (paused) continue;
+      const lastAt = this.lastCheckIn.get(id) ?? now - setting.everyMs;
+      if (paused) {
+        if (setting.pausedBy === "daemon") this.holds.hold(id, lastAt + setting.everyMs, now);
+        continue;
+      }
       // A chat with no check-in on record is due now, not one interval after this service started: every release restart pushed ops guy's
       // 2 h check-in back again (10-12: none from 10-10 11:33Z on, with its owner pause lifted at 05:28Z).
-      const next = nextCheckIn(setting, this.lastCheckIn.get(id) ?? now - setting.everyMs, now);
+      const next = nextCheckIn(setting, lastAt, now);
       if (next === null || next > now) continue;
       due.push(id);
       this.lastCheckIn.set(id, now);
+      this.holds.ran(id, now);
       this.queue(checkInLane(id), async () => { await this.checkIn(id); });
     }
     this.queue("#jobs", () => this.jobs(active, woke));
