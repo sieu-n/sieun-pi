@@ -773,8 +773,12 @@ export class ThreadHub {
     if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
   }
 
-  /** Deletes a finished subagent of the thread the way `rlm.delete_subagent` does, so its worker and Python kernel stop holding memory. */
+  /**
+   * Deletes a finished subagent of the thread the way `rlm.delete_subagent` does, so its worker and Python kernel stop holding memory. A dormant
+   * chat refuses: on 10-14 the job cleanup after a service start woke slack green guy 7 s after it was left detached, 236 min idle.
+   */
   async deleteSubagent(id: string, childId: string): Promise<void> {
+    if (this.dormant.has(id)) throw new ThreadError(409, "The chat is dormant; its finished jobs go with its worker, or at the next service start after it wakes.");
     const { live } = await this.requireLive(id, "delete_subagent");
     await this.catalog.connect();
     const response = await this.catalog.client.request({ type: "delete_rlm_subagent", activeSessionId: live.activeSessionId, childId }, 30000, { recoverable: false });

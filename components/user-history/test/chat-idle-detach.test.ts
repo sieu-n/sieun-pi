@@ -180,6 +180,18 @@ test("thread hub: a turn that ran and ended between two catalog updates still wa
   await fake.threads.close();
 });
 
+test("thread hub: the finished-job cleanup does not attach a dormant chat (10-14 23:19Z: it woke slack green guy 7 s after the service start left it detached)", async () => {
+  const fake = await attached(hub());
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isDormant("c1"), true);
+  await assert.rejects(fake.threads.deleteSubagent("c1", "job1"), /dormant/);
+  assert.equal(fake.connections.length, 1, "the delete did not attach the chat");
+  assert.equal(fake.threads.isDormant("c1"), true);
+  assert.equal(fake.requests.includes("delete_rlm_subagent"), false);
+  await fake.threads.close();
+});
+
 test("thread hub and chats: reads and ticks do not attach a dormant chat, and a daemon restart skips it", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-idle-"));
   const fake = await attached(hub());
