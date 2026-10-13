@@ -265,6 +265,40 @@ export const placeholderTodo = (todo: Pick<OwnerTodo, "text" | "choices">): bool
 export const PLACEHOLDER_TODO_ERROR = "This todo holds a place for something not ready. For you holds only what the owner must decide or do now: track it as a plan step, " +
   "and when the article exists, send its link in a chat message (tell_owner on a wake-up).";
 
+/**
+ * The internal detail in a plan title, or null (c61, owner 10-13: "the titles should be human-readable (like fix bug in X, instead of the internal
+ * file name , /...)"). It finds a file name with a code or doc extension, a path, a git sha, a CI run id or a ci/ ref; they go in the step's note.
+ * A slash word counts as a path when it starts at ~/, ./, ../ or /, carries a scheme, has three or more parts, names a repo folder first
+ * (src/x, apps/web), or has a dot or underscore in a part. So "and/or", "UI/UX", "A/B", "24/7" and "10/13" stay plain.
+ */
+const FILE_EXT = "ts|tsx|mts|cts|js|jsx|mjs|cjs|json|jsonl|md|mdx|py|sh|bash|zsh|svelte|vue|css|scss|html|yml|yaml|toml|ini|cfg|conf|env|lock|txt|log|csv|tsv|sql|db|" +
+  "sqlite|go|rs|rb|php|java|kt|swift|c|h|cpp|hpp|plist|xml|png|jpe?g|gif|webp|svg|pdf|zip|tgz|gz|tar|patch|diff|wasm|ipynb";
+const FILE_NAME = new RegExp(`(?<![\\w.-])[\\w-]+(?:\\.[\\w-]+)*\\.(?:${FILE_EXT})(?![\\w-])`, "i");
+const PRODUCT_JS = /^(?:node|next|nuxt|vue|react|three|chart|express|deno|ember|backbone|d3|p5|alpine|solid)\.js$/i;
+const REPO_DIRS = new Set(["src", "lib", "test", "tests", "app", "apps", "components", "packages", "scripts", "docs", "config", "bin", "dist", "build",
+  "extension", "extensions", "skills", "node_modules", ".github", ".agents", "public", "static", "server", "client", "shared"]);
+const GIT_SHA = /(?<![\w])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w])/;
+const RUN_ID = /(?<![\w])\d{8,}(?![\w])/;
+function slashPath(word: string): boolean {
+  if (/^(?:~|\.{1,2})?\/[\w.~-]/.test(word) || word.includes("://")) return true;
+  const parts = word.split("/").filter(Boolean);
+  if (parts.length < 2) return false;
+  if (parts.length >= 3) return parts.some(part => /\p{L}/u.test(part));
+  return REPO_DIRS.has(parts[0]!.toLowerCase()) || parts.some(part => /[._]/.test(part) && /\p{L}/u.test(part));
+}
+export function titleDetail(text: string): string | null {
+  const words = text.split(/\s+/).map(word => word.replace(/^[(["'`\u201c\u2018]+|[)\]"'`\u201d\u2019.,;:!?]+$/g, "")).filter(Boolean);
+  for (const word of words) if (/^ci\/\S/i.test(word) || (word.includes("/") && slashPath(word))) return word;
+  for (const word of words) { const file = word.match(FILE_NAME)?.[0]; if (file && !PRODUCT_JS.test(file)) return file; }
+  return text.match(GIT_SHA)?.[0] ?? text.match(RUN_ID)?.[0] ?? null;
+}
+export const titleDetailError = (detail: string) => `Refused, nothing changed. Keep the title a plain outcome, like "Fix a bug in the chat board", and move ` +
+  `"${detail}" to the note with plan_update note (c61). File names, paths, git shas, CI run ids and ci/ refs belong in the note.`;
+function plainTitle(text: string): void {
+  const detail = titleDetail(text);
+  if (detail) invalid(titleDetailError(detail));
+}
+
 /** Parses one untrusted op (an HTTP body or a tool call). The reducer trusts its input after this. */
 export function parseBoardOp(value: unknown): BoardOp {
   if (!isRecord(value)) invalid("Each op must be an object with an op field.");
@@ -381,6 +415,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       return done({ plan }, `Set the plan: ${count(plan)} items`);
     }
     case "plan_add": {
+      if (actor === "agent") plainTitle(op.text);
       if (count(board.plan) >= BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
       const job = planJob(op.job);
       const session = op.sessionId ?? jobSession(op.job);
@@ -401,6 +436,8 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     }
     case "plan_update": {
       const { item, ancestors } = find(board.plan, op.id) ?? unknown("plan item", op.id);
+      // Only a new title is checked: a step saved before c61 keeps its title through a status or note change.
+      if (actor === "agent" && op.text !== undefined && op.text !== item.text) plainTitle(op.text);
       const from = ancestors.at(-1)?.id ?? null;
       const to = op.parent === undefined || op.parent === from ? undefined : op.parent === null ? null : find(board.plan, op.parent) ?? unknown("plan item", op.parent);
       if (to && (to.item.id === item.id || to.ancestors.some(above => above.id === item.id))) invalid(`${item.id} cannot move under itself or under one of its own steps.`);

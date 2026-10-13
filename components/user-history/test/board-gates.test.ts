@@ -27,7 +27,7 @@ const MET: Requirement[] = [{ text: '"separate designs in separate implementatio
 function gated(): ChatBoard {
   return run(emptyBoard(T0), [
     { op: "plan_add", text: "Ship the demo design" },
-    { op: "plan_add", parent: "p1", text: "Port the picked design to apps/search", go: "needed" },
+    { op: "plan_add", parent: "p1", text: "Port the picked design to the search app", go: "needed" },
     { op: "plan_add", parent: "p1", text: "Build the variant system" },
     { op: "todo_add", text: "Port the 5180 design to 5174 now?", choices: ["Go: port it", "Not yet"], step: "p2" },
   ]);
@@ -53,9 +53,9 @@ test("owner go: the agent cannot move a go-needed step or a step under it to doi
   const board = gated();
   assert.equal(board.plan[0]!.children[0]!.go, "needed");
   assert.equal(board.todos[0]!.step, "p2");
-  refused(board, [{ op: "plan_update", id: "p2", status: "doing" }], /p2 "Port the picked design to apps\/search" cannot move to doing: it needs the owner's go\. Add one For you todo with step "p2"/);
+  refused(board, [{ op: "plan_update", id: "p2", status: "doing" }], /p2 "Port the picked design to the search app" cannot move to doing: it needs the owner's go\. Add one For you todo with step "p2"/);
   refused(board, [{ op: "plan_update", id: "p2", status: "done" }], /cannot move to done/);
-  refused(board, [{ op: "plan_add", parent: "p2", text: "Copy the CSS", status: "doing" }], /p4 "Copy the CSS" cannot move to doing: p2 "Port the picked design to apps\/search" above it needs/);
+  refused(board, [{ op: "plan_add", parent: "p2", text: "Copy the CSS", status: "doing" }], /p4 "Copy the CSS" cannot move to doing: p2 "Port the picked design to the search app" above it needs/);
   refused(board, [{ op: "plan_add", text: "Deploy", go: "needed", status: "doing" }], /needs the owner's go/);
   assert.equal(run(board, [{ op: "plan_add", parent: "p2", text: "Draft the port plan" }]).plan[0]!.children[0]!.children[0]!.status, "todo", "a todo step under it is fine");
 
@@ -67,7 +67,7 @@ test("owner go: the agent cannot move a go-needed step or a step under it to doi
   assert.equal(ownerGo(go, "p2")?.id, "t1");
   const started = run(go, [{ op: "plan_update", id: "p2", status: "doing" }, { op: "plan_add", parent: "p2", text: "Copy the CSS", status: "doing" }]);
   assert.equal(started.plan[0]!.children[0]!.status, "doing");
-  assert.match(renderOpenPlan(started), /\[~\] p2 Port the picked design to apps\/search \(owner's go on t1\)/);
+  assert.match(renderOpenPlan(started), /\[~\] p2 Port the picked design to the search app \(owner's go on t1\)/);
 
   const takenBack = run(go, [{ op: "todo_add", text: "p2: still port today?", choices: ["Go", "Not yet"] }]);
   const later = run(takenBack, [{ op: "todo_update", id: "t2", reply: "Not yet" }], "owner");
