@@ -21,7 +21,9 @@ export const GOAL_LIMIT_ERROR = `The plan holds at most ${BOARD_LIMITS.openGoals
 
 export type BoardErrorKind = "invalid" | "forbidden" | "unknown";
 export class BoardError extends Error {
-  constructor(readonly kind: BoardErrorKind, message: string) { super(message); }
+  // No parameter property: message-limit-check.ts loads this file through steer-wait.ts under plain node, which only strips types.
+  readonly kind: BoardErrorKind;
+  constructor(kind: BoardErrorKind, message: string) { super(message); this.kind = kind; }
 }
 
 export function emptyBoard(now: string): ChatBoard { return { v: 2, rev: 0, plan: [], scratch: [], todos: [], updatedAt: now }; }
@@ -734,13 +736,13 @@ const OWNER_GO = new RegExp([
   String.raw`\bask(?:s|ing)?\s+(?:the\s+owner|sieun|him)\s+(?:for|to|before|whether|if)\b`,
 ].join("|"), "i");
 const THREAD_GO = new RegExp([
-  String.raw`\b(?!(?:owner|sieun|today|tomorrow|tonight)['\u2019]s)[\w-]+['\u2019]s\s+(?:[^\s.;,()]+\s+){0,5}?(?:go(?![-\w])|go\s+line|word|ok(?:ay)?\b|ack|nod|green\s+light|say-?so|sign-?off|approval|slots?\b)`,
+  String.raw`\b(?!(?:owner|sieun|today|tomorrow|tonight|it|that|there|here|what|who|he|she|let)['\u2019]s)[\w-]+['\u2019]s\s+(?:[^\s.;,()]+\s+){0,5}?(?:go(?![-\w])|go\s+line|word\b|ok(?:ay)?\b|ack\b|nod\b|green\s+light|say-?so\b|sign-?off\b|approval\b|slots?\b)`,
   String.raw`\bin\s+[\w-]+['\u2019]s\s+order\b|\b(?:our|its|their|the\s+next)\s+slot\b|\bslot\s+\d+\b`,
   String.raw`\b(?:next|first|second|third|fourth|fifth|sixth|\d+(?:st|nd|rd|th))\s+in\s+line\b`,
   String.raw`\bon\s+staging['"\u2019]?\s+(?:word|call|signal|line)\b`,
 ].join("|"), "i");
-/** "metal GO about 14:00Z", "g-jev2 OKs": capitals only, so the verb "go" and a plain "ok" stay out. */
-const CAPS_GO = /\bGO\b|\bOKs?\b(?!['\u2019]d)/;
+/** "metal GO about 14:00Z", "g-jev2 OKs": capitals only, so the verb "go" and a plain "ok" stay out, and so does an "OK," that opens a sentence or follows a colon as a reply. */
+const CAPS_GO = /\bGO\b|(?<!(?:^|:)\s*)\bOKs?\b(?!['\u2019]d)/;
 const GIT_MOVE = /\bpush|\bland(?:s|ed|ing)?\b|\bmerg|\bstaging\b|\bci\/|\bgithub\b|\bsieun\/dev\b|\bdeploy/i;
 /** A step whose own action is a push, land, merge or deploy, so an owner's go in its waitFor is a go on that move. */
 const GIT_STEP = /\b(?:push|land|merg|deploy)\w*\b/i;

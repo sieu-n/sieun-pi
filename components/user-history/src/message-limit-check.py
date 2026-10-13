@@ -5,7 +5,8 @@ its own reference. It does two things.
 
 1. The c43 limit check. Before an "agent_message.send" request goes out, message-limit-check.ts lints the text with reply-lint.ts's limit rule;
    a limit with a rate or size and no measurement, vendor limit or incident in its own sentence raises LimitRefused, and nothing is sent. A
-   failure to run the check lets the message through, like the send guard, so a broken check never cuts a chat off from its jobs.
+   message to a job (receiver_role "child") that holds it for another thread's go or word raises it too (c47, steer-wait.ts). A failure to
+   run the check lets the message through, like the send guard, so a broken check never cuts a chat off from its jobs.
 2. A daemon timeout on a send is no failure (p334). The supervisor gives the target's worker 30 s to confirm (WORKER_REQUEST_TIMEOUT_MS in
    prime-agent 0.9.8) and raises when a busy worker answers later, but the worker still queues the message. On 10-12 the two sends that timed
    out at 17:08Z reached Crawler VP at 17:16:20Z and frontend bro at 17:10:13Z, when their running ipython calls (758 s and 459 s) ended. The
@@ -19,7 +20,7 @@ import subprocess
 import sys
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
-VERSION = 2
+VERSION = 3
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
 UNCONFIRMED_NOTE = (
     "agent_message: Prime Agent did not confirm this send within 30 s because {target} is busy. The daemon still holds it and delivers it "
@@ -29,12 +30,12 @@ UNCONFIRMED_NOTE = (
 
 
 class LimitRefused(Exception):
-    """An agent message that states a limit with no evidence behind it (c43)."""
+    """An agent message that states a limit with no evidence behind it (c43), or one that holds a job for another thread's go (c47)."""
 
 
-def refusal(text: str):
+def refusal(text: str, role=None):
     try:
-        proc = subprocess.run(["node", CHECK], input=json.dumps({"message": text, "dataDir": globals().get("DATA_DIR")}), capture_output=True, text=True)
+        proc = subprocess.run(["node", CHECK], input=json.dumps({"message": text, "dataDir": globals().get("DATA_DIR"), "role": role}), capture_output=True, text=True)
         return json.loads(proc.stdout.strip().splitlines()[-1]).get("refusal")
     except (OSError, subprocess.SubprocessError, ValueError, IndexError, AttributeError):
         return None
@@ -58,7 +59,7 @@ async def request(request_type, payload=None, *args, **kwargs):
     send = request_type == "agent_message.send" and isinstance(payload, dict)
     if send:
         text = payload.get("message")
-        reason = refusal(text) if isinstance(text, str) else None
+        reason = refusal(text, payload.get("receiver_role")) if isinstance(text, str) else None
         if reason:
             raise LimitRefused(reason)
     # Look the real function up in the live rlm module at call time. A kernel revive restores this function with a copy of host_request
