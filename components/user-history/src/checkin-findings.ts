@@ -425,7 +425,8 @@ const othersWord = (text: string | undefined): string | undefined =>
 /**
  * An open step blocked on CI, the release queue or another thread with nobody fixing it (W56, owner 10-10: when CI or the like blocks
  * a step, work out how to fix it and get involved): it waits (a waitFor, or blocked), its waitFor or note names such a blocker or
- * its waitFor or owner is another thread, it has not changed for BLOCKED_MS, and no job of it is working. A step an open For you todo covers
+ * its waitFor names another thread, it has not changed for BLOCKED_MS, and no job of it is working (an owner thread whose heartbeats keep it
+ * live works, `liveThreads`). The step's own owner thread is never its blocker; a CI run id its waitFor names is named as the blocker. A step an open For you todo covers
  * waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
  * schedule, whose `plannedEnd` (with the board's `scratch` notes it names) plus PLANNED_END_GRACE_MS is still ahead, is not blocked yet, nor is
  * one that waits on a release `train` that moves (`trainMoves`). `on` names the blocker.
@@ -494,10 +495,13 @@ export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<
     const { item, owner } = view;
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
       now - view.changedAt <= BLOCKED_MS || now <= (plannedEnd(item, view.changedAt, scratch) ?? -Infinity) + PLANNED_END_GRACE_MS) return [];
-    const thread = waitTarget(item.waitFor, rows, self) ?? (owner?.key.startsWith("thread:") ? { name: owner.name } : undefined);
+    // The step's own owner thread is never its blocker (Crawler VP 10-13, p147 read "blocked on the meta ads thread", its owner); a thread its
+    // waitFor names is.
+    const thread = waitTarget(item.waitFor, rows, self);
     if (!thread && train && trainMoves(item, train, now)) return [];
+    const run = RUN_ID.exec(item.waitFor ?? "")?.[0];
     const word = othersWord(item.waitFor) ?? othersWord(item.note) ?? (heldRun(item) ? "a CI run another thread holds" : undefined);
-    const on = thread ? `the ${clip(thread.name, 40)} thread` : word;
+    const on = thread ? `the ${clip(thread.name, 40)} thread` : word && run ? `CI run ${run}${heldRun(item) ? ", which another thread holds" : ""}` : word;
     return on ? [{ view, on }] : [];
   });
 }

@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import type { IdIndex } from "./id-index.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
-import { heartbeatsFile, readHeartbeats, readTrain, trainFile } from "./checkin-load.ts";
+import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, jobFacts, liveJobs } from "./checkin-steps.ts";
@@ -737,7 +737,8 @@ export class Chats {
     const nested = dutyJobs.flatMap(job => (this.subagents.get(job) ?? []).map(child => ({ ...child, parentId: job })));
     const children = this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []);
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), (await this.source.settings.get(id)).everyMs);
-    const facts = jobFacts(children, board, rows, id, nested, live).map(fact => {
+    const threads = liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now());
+    const facts = threads.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
     });

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { StepView } from "./checkin-steps.ts";
+import type { JobFact, StepView } from "./checkin-steps.ts";
 import type { PlanItem } from "./shared/types.ts";
 
 /*
@@ -48,7 +48,10 @@ export const sessionLoadLine = ({ goal, thread, steps, open }: SessionLoad): str
   "per part with rlm.spawn, set each step's job to it, and tell that thread it no longer owns them";
 
 /** One entry of a session's `scheduled-jobs.json` (Prime Agent's schedules), as far as the check-in reads it. */
-export interface ScheduledJob { id: string; source?: string; status?: string; label?: string; prompt?: string; schedule?: { expression?: string } }
+export interface ScheduledJob {
+  id: string; source?: string; status?: string; label?: string; prompt?: string; schedule?: { expression?: string; intervalMs?: number };
+  lastRunAt?: string; lastSkippedAt?: string; nextRunAt?: string;
+}
 /** `<home>/.prime/agent/session-artifacts/<chat id>/scheduled-jobs.json`, where Prime Agent keeps a session's heartbeats. */
 export const heartbeatsFile = (chatId: string, home: string = homedir()): string => join(home, ".prime", "agent", "session-artifacts", chatId, "scheduled-jobs.json");
 /** The schedules in a `scheduled-jobs.json`; none when the file is missing or unreadable. */
@@ -88,6 +91,28 @@ export async function readTrain(file: string): Promise<Train | undefined> {
     return undefined;
   }
 }
+/**
+ * Whether a thread with these heartbeats is live between its turns: one of its active heartbeats is due ahead, ran or was skipped within its
+ * interval, or the thread acted (`activityAt`) within that interval. Crawler VP 10-13, p147: the meta ads thread runs a 30-min status beat
+ * and a CI watch and reads idle between beats; at the 08:39Z check-in its beats had last run 41 to 67 min before, but it had acted 45 s before.
+ */
+export function heartbeatLive(jobs: readonly ScheduledJob[], activityAt: number | undefined, now: number): boolean {
+  return jobs.some(job => {
+    if (job.status !== "active") return false;
+    if (Date.parse(job.nextRunAt ?? "") >= now) return true;
+    const every = job.schedule?.intervalMs;
+    if (every === undefined) return false;
+    const ran = Math.max(...[job.lastRunAt, job.lastSkippedAt].map(at => Date.parse(at ?? "")).filter(Number.isFinite), activityAt ?? -Infinity);
+    return now - ran <= every;
+  });
+}
+/**
+ * The facts with each step-owner thread that the daemon lists as idle but whose heartbeats keep it live (`heartbeatLive`) marked working, as
+ * `liveJobs` does for a subagent with a running worker. `heartbeatsOf` reads a thread's schedules by its session id (`readHeartbeats`).
+ */
+export const liveThreads = (facts: readonly JobFact[], heartbeatsOf: (sessionId: string) => readonly ScheduledJob[], now: number): JobFact[] =>
+  facts.map(fact => fact.key.startsWith("thread:") && fact.state === "ended" && heartbeatLive(heartbeatsOf(fact.key.slice("thread:".length)), fact.activityAt, now)
+    ? { ...fact, state: "working" } : fact);
 /** Words in a heartbeat's label or prompt that name work the check-in already does: a check-in, the board, watching, monitoring, status, nudging. */
 const CHECK_IN_WORK = /\bcheck[- ]?ins?\b|\bboard\b|\bwatch(?:er|ers|es|ing)?\b|\bmonitor(?:s|ing)?\b|\bstatus\b|\bnudge[sd]?\b|\bguides?\b|\bstall(?:s|ed)?\b|\bprogress\b/i;
 /** The chat's own active rlm heartbeats whose label or prompt names check-in work: the check-in covers them. */
