@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { checkInPrecheck } from "../src/chat-checkin.ts";
 import { plannedEnd } from "../src/checkin-findings.ts";
-import { parseTrain, type Train } from "../src/checkin-load.ts";
+import type { Train } from "../src/checkin-load.ts";
 import type { StepMemo } from "../src/checkin-steps.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
+import { trainAt as cacheAt } from "./train-at.ts";
 
 /**
  * frontend bro's real board (chat 01a11ba8, rev 1448) with p86 and p101 as its 18:51Z, 19:06Z and 19:21Z check-ins on 10-13 read them: blocked,
@@ -36,19 +37,7 @@ const NOTES: [string, Record<"p86" | "p101", string>][] = [
 const SLOTS = { "18:51": Date.parse("2026-10-13T18:51:09.397Z"), "19:06": Date.parse("2026-10-13T19:06:03.800Z"), "19:21": Date.parse("2026-10-13T19:21:13.476Z") } as const;
 
 /** The CI cache as it read at `now`, its runs shifted `shiftMs` earlier, plus `extra` runs. */
-function trainAt(now: number, shiftMs = 0, extra: Record<string, unknown>[] = []): Train {
-  const all = [...Object.values(FIXTURE.ciCache.runs).map(({ run }) => run), ...extra];
-  const runs = Object.fromEntries(all.flatMap(run => {
-    const at = (field: string) => Date.parse(String(run[field])) - shiftMs;
-    const created = at("created_at");
-    if (created > now) return [];
-    const ended = run.status === "completed" && at("updated_at") <= now;
-    const started = Number.isFinite(at("run_started_at")) && at("run_started_at") <= now ? at("run_started_at") : created;
-    return [[String(run.id), { run: { ...run, created_at: new Date(created).toISOString(), updated_at: new Date(ended ? at("updated_at") : started).toISOString(),
-      status: ended ? "completed" : "in_progress", conclusion: ended ? run.conclusion : null } }]];
-  }));
-  return parseTrain({ fetchedAt: new Date(now).toISOString(), runs })!;
-}
+const trainAt = (now: number, shiftMs = 0, extra: Record<string, unknown>[] = []): Train => cacheAt(FIXTURE.ciCache.runs, now, shiftMs, extra);
 
 /** The blocked_on_others steps among p86 and p101 at `now`, with `waitFor` in place of the real one when given. */
 function blockedAt(now: number, { train, waitFor = WAIT }: { train?: Train; waitFor?: string } = {}): string[] {

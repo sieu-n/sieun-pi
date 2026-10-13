@@ -119,7 +119,8 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
-    stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now),
+    stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
+      context.rows ?? [], context.train),
     fold: context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []), load: oneSessionLoad(goaled, context.jobs),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes };
 }
