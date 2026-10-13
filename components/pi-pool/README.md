@@ -494,13 +494,36 @@ was authorized as the old account, until the socket closes (idle timeout or an e
 If that matters, set `"transport": "sse"` in `~/.prime/agent/settings.json`: every
 request then carries the current token, at the cost of the WebSocket's cached context.
 
+## The Mac-wide turn queue
+
+The queue caps how many session turns work at once on this Mac, whatever their tree or account.
+One turn of one session holds one working slot, and `pool/turns.py` keeps the slots and the queue in `state.json` under the pool flock, in `state["turns"]`.
+
+- `pi-pool admit <session> [--tree <root>] [--parent <session>] [--class high|normal|low] [--pid <n>] [--wait]` prints `{"state","kind","position","total"}`, where the state is admitted, queued or off.
+- `--tree` defaults to the calling process's session tree, `--class` to that tree's pool priority (`pi-pool priority`), and `--pid` to the calling process, whose exit drops the entry.
+- With `--wait` the command prints one line each time its place changes and blocks until it prints the admitted or off line.
+- `pi-pool release <session>` frees the slot or drops the queue entry, and a second release does nothing.
+- `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and a session already queued starts at once.
+- `pi-pool queue --json` prints the working and queued turns with their classes, positions and waits.
+
+An owner turn never waits and still counts toward the limit, so background work waits behind it.
+Queued turns take free slots by class, high before normal before low, and the longest wait goes first inside a class.
+A queued turn moves up one class for every `queue_aging_s` it waits.
+A slot is free while the Mac has fewer than `mac_working_max` working turns and the turn's tree has fewer than `tree_working_max`, and every working turn counts toward both.
+A child whose parent's turn is in flight and that finds no free slot runs on the parent's lent slot, and a parent lends one slot at a time, so a parent that spawns six children in one cell runs one of them over the limit, not six.
+An entry whose Prime worker or waiting `admit --wait` process is gone is dropped, and so is a slot whose lease (`lease_s`) runs out because its session made no model call for that long.
+`pi-pool set agent_queue_on 0` turns the queue off and keeps the limits, and every admit then answers off.
+
+A replay of the 852 turns that started 10-14 02:00-03:00 KST, when load reached 208, runs every turn, gives at most 16 slots at once, and puts at most 9 children on lent slots at once (`tests/test_turns.py`).
+
 ## Config
 
 `~/.config/pi-pool/config.json`, defaults in `DEFAULTS` (pool/base.py): `refresh_skew_sec`,
 `admit_5h_max_pct`, `low_admit_5h_max_pct`, `seven_day_max_pct`, `admit_slot_sec`,
 `admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`, `allow_active_account`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,
-`refused_cooldown_sec`, `probe_interval_sec`. `pi-pool set` takes a JSON object for
+`refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
+`mac_working_max`, `tree_working_max`, `queue_aging_s` and `lease_s`. `pi-pool set` takes a JSON object for
 `tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
 (`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
 `min_runway_hours`) and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`

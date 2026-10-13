@@ -99,6 +99,14 @@ USAGE = """usage: pi-pool [command]
                                   the extension runs it at session start, at most every 6h
   adopt-logins                   move a stored /login that would bypass the pool into
                                   fallback.json (the /account extension runs this per session)
+  admit <session> [--tree <root>] [--parent <session>] [--class high|normal|low] [--pid <n>] [--wait]
+                                  ask for a working slot for one session turn; prints
+                                  {"state","kind","position","total"}. --wait blocks until admitted.
+                                  --tree defaults to this process's session tree, --class to the
+                                  tree's priority, --pid to the caller, whose exit ends the turn
+  release <session>              free the turn's slot or drop its queue entry
+  owner-turn <session>           the session's next admit is the owner's and runs at once
+  queue [--json]                 working and queued turns
   config                         print the merged config
   set <key> <value>              persist a config override
   log [n]                        last n pool events (default 20)
@@ -120,6 +128,8 @@ def cli(args):
         "rm": pool.session_cmds.cmd_rm, "login": pool.signin.cmd_login, "model": pool.session_cmds.cmd_model,
         "limited": pool.session_cmds.cmd_limited, "refused": pool.session_cmds.cmd_refused,
         "unlimited": pool.session_cmds.cmd_unlimited, "priority": pool.commands.cmd_priority,
+        "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
+        "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue,
     }
     if cmd in handlers:
         return handlers[cmd](rest)
