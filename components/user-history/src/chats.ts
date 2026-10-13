@@ -64,6 +64,22 @@ export function followUps(before: readonly ChildAgent[] | undefined, roster: rea
   });
 }
 
+/**
+ * An attached chat's children with what the daemon's rows add: the later of the two last activities, and a running turn the attach missed,
+ * kept as `followUps` keeps it. The parent's record of a finished job can freeze (VP of CI 10-13: the attach kept "repo rules check fix" at
+ * 09:20:49Z and stopped it mid-tool while its session file shows work until 09:47:48Z), and the row reads the job's own session.
+ */
+export function withRoster(attached: readonly ChildAgent[], roster: readonly ChildAgent[]): ChildAgent[] {
+  return attached.map(child => {
+    const row = roster.find(candidate => candidate.id === child.id);
+    if (!row) return child;
+    const at = Math.max(child.lastActivityAt ?? -Infinity, row.lastActivityAt ?? -Infinity);
+    const running = row.status === "running" && !childWorking(child);
+    if (at === (child.lastActivityAt ?? -Infinity) && !running) return child;
+    return { ...child, ...(Number.isFinite(at) ? { lastActivityAt: at } : {}), ...(running ? { activity: { kind: "executing" as const } } : {}) };
+  });
+}
+
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
 export const CHECK_IN_TICK_MS = 30_000;
 /** A check-in whose job could not start runs again after this long, not a whole interval later (`CheckInStart`). */
@@ -89,6 +105,8 @@ export class Chats {
   private readonly chatIds = new Set<string>();
   /** The children last seen per thread: the tick reads them, and each change is compared with them to find a job that ended with no report. */
   private readonly children = new Map<string, readonly ChildAgent[]>();
+  /** An attached chat's children as its attach last gave them, before `withRoster`. */
+  private readonly attachedChildren = new Map<string, readonly ChildAgent[]>();
   /** The daemon's subagents by parent session at the last catalog refresh (`roster`), for the subagents of a chat's duty jobs. */
   private subagents: ReadonlyMap<string, readonly ChildAgent[]> = new Map();
   /**
@@ -158,7 +176,9 @@ export class Chats {
     this.lastScan = this.started;
     this.wokeAt = this.started;
     this.unobserve = threads.observe({
-      live: (id, children) => {
+      live: (id, attached) => {
+        this.attachedChildren.set(id, attached);
+        const children = withRoster(attached, this.subagents.get(id) ?? []);
         this.children.set(id, children);
         for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
         this.queue(id, () => this.attached(id));
@@ -166,7 +186,7 @@ export class Chats {
         // A reply sent just before a restart ended its turn on the old server; an idle chat gets its check when it attaches.
         if (!this.threads.busy(id)) this.queue(id, () => this.replyCheck(id));
       },
-      children: (id, children) => { this.childrenChanged(id, children); },
+      children: (id, attached) => { this.attachedChildren.set(id, attached); this.childrenChanged(id, withRoster(attached, this.subagents.get(id) ?? [])); },
       idle: id => { if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id)); this.queue(id, () => this.replyCheck(id)); },
     });
     const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
@@ -188,15 +208,17 @@ export class Chats {
    * Each catalog refresh: the subagents the daemon lists under each chat (`rosterChildren`) become the chat's children while the hub holds no
    * attach of it, so the no-report notice and the check-in read them even when every attach fails (frontend bro 10-13: its worker answered
    * no root-session request, while the daemon's list answered in 540 ms). The brief check still needs the transcript the hub holds. An attached
-   * chat keeps the hub's children.
+   * chat keeps the hub's children, with each one's clock and running turn from its row (`withRoster`).
    */
   async roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> {
     this.subagents = byChat;
     await this.load();
     for (const id of this.chatIds) {
-      if (this.threads.isLive?.(id)) continue;
       const before = this.children.get(id);
-      const children = followUps(before, byChat.get(id) ?? []);
+      const live = this.threads.isLive?.(id) ?? false;
+      const attached = live ? this.attachedChildren.get(id) : undefined;
+      if (live && !attached) continue;
+      const children = attached ? withRoster(attached, byChat.get(id) ?? []) : followUps(before, byChat.get(id) ?? []);
       if (before && JSON.stringify(before) === JSON.stringify(children)) continue;
       this.childrenChanged(id, children);
     }
