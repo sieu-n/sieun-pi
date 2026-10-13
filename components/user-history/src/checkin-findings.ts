@@ -82,28 +82,40 @@ export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quo
  * ("hold11", "land 34"), or a lift, green run, land or deploy with no step id or PR of its own, is a wait the board cannot check, so the wait is
  * not over (Crawler VP 10-13: p144 waited for "hold11 lifts, then the ... runs rerun green for land 34"). A step id after another board's
  * possessive ("the API portal's own p8", "VP of CI's p134", "its p128") is that board's step: p144's "the API portal's own p8" read as this
- * board's done p8. A waitFor that names another thread is left out, since its ids may be that thread's. The step is due now, whatever its
- * waitUntil.
+ * board's done p8. A `t9` or `p9` right after a name word or inside a ref ("queue cuts t9", "ci/queue-cuts-t9") is a push or version name,
+ * not a board id; an id counts standalone or after a small word ("todo t9", "For you t9", "on t18", "p8 and p9"). VP of CI 10-14: p135 waited
+ * for "run 38414179195 (queue cuts t9 on f0a8ed462f) green", and four check-ins read that t9 as answered todo t9. A clause that names a CI run
+ * id and an awaited "green" stays open whatever ids it also names ("is green (run 38289995168)" is a run already seen). A waitFor that names
+ * another thread is left out, since its ids may be that thread's. The step is due now, whatever its waitUntil.
  */
 export interface WaitMet { view: StepView; over: string[] }
 const SEE_IDS = /\bsee\s+(?:also\s+)?[pt]\d+(?:\s*(?:,|and)\s*[pt]\d+)*\b/gi;
 const OTHER_BOARD_IDS = /(?<!\b(?:this(?:\s+(?:board|chat|thread))?|owner))(?:'s|\bits|\btheir)\s+(?:(?:own|board|plan|step|steps)\s+)*[pt]\d+(?:\s*(?:,|and)\s*[pt]\d+)*\b/gi;
 const UNCHECKED_NAME = /\b(?:hold|land)\s*\d+\b/i;
 const UNCHECKED_EVENT = /\b(?:lifts?|lifted|green|re-?runs?|lands?|landed|deploy(?:s|ed)?|promote[sd]?)\b/i;
+const CI_RUN_ID = /\b\d{9,}\b/;
+const AWAITED_GREEN = /(?<!\b(?:is|was|are|were|went|turned|stayed)\s+)\bgreen\b/i;
+const ID_WORDS = new Set(["a", "the", "on", "of", "for", "to", "at", "in", "by", "from", "after", "before", "until", "till", "with", "and", "or", "nor",
+  "plus", "then", "see", "also", "via", "once", "when", "while", "both", "is", "are", "was", "were", "answer", "answers", "answered", "await", "awaits",
+  "wait", "waits", "you", "todo", "todos", "step", "steps", "plan", "goal"]);
+const boardIds = (text: string): string[] => [...new Set([...text.matchAll(/\b[pt]\d+\b/g)].filter(({ 0: id, index }) => {
+  const word = /(\S+)\s+$/.exec(text.slice(0, index))?.[1] ?? "";
+  return !/[-/_.]$/.test(text.slice(0, index)) && !/^(?:[-/_]|\.\w)/.test(text.slice(index + id.length)) &&
+    !(/^[a-z]+$/i.test(word) && !ID_WORDS.has(word.toLowerCase()));
+}).map(([id]) => id))];
 export function waitsMet(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>): WaitMet[] {
   const items = new Map<string, PlanItem>();
   walkItems(board?.plan ?? [], item => { items.set(item.id, item); });
   const merges = [...items.values()].filter(item => item.status === "done" && mergeStep(item.text));
   const todos = new Map((board?.todos ?? []).map(todo => [todo.id, todo]));
-  const ids = (text: string): string[] => [...new Set(text.match(/\b[pt]\d+\b/g) ?? [])];
   return views.flatMap(view => {
     const { waitFor } = view.item;
-    if (!ids(waitFor ?? "").some(id => id !== view.item.id) || /\bthreads?\b/i.test(waitFor!) || waitTarget(waitFor, rows, self)) return [];
+    if (!boardIds(waitFor ?? "").some(id => id !== view.item.id) || /\bthreads?\b/i.test(waitFor!) || waitTarget(waitFor, rows, self)) return [];
     const scoped = waitFor!.replace(SEE_IDS, "").replace(OTHER_BOARD_IDS, "");
-    const named = ids(scoped).filter(id => id !== view.item.id);
+    const named = boardIds(scoped).filter(id => id !== view.item.id);
     const prs = prNumbers(scoped).filter(pr => !namesPr(view.item.text, pr));
-    const unchecked = scoped.split(/[,;]|\bthen\b/).some(clause => UNCHECKED_NAME.test(clause) || UNCHECKED_EVENT.test(clause) &&
-      !ids(clause).some(id => id !== view.item.id) && !prNumbers(clause).length);
+    const unchecked = scoped.split(/[,;]|\bthen\b/).some(clause => UNCHECKED_NAME.test(clause) || CI_RUN_ID.test(clause) && AWAITED_GREEN.test(clause) ||
+      UNCHECKED_EVENT.test(clause) && !boardIds(clause).some(id => id !== view.item.id) && !prNumbers(clause).length);
     if (unchecked) return [];
     const over = named.flatMap(id => {
       const item = items.get(id);
