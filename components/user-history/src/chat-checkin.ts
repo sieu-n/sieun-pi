@@ -205,7 +205,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Waits that are over (act on each in this run)", precheck.waitsMet.map(waitMetLine)),
     ...section("No progress in the last hour (work should be moving)", precheck.noProgress ? [noProgressLine(precheck.noProgress)] : []),
     ...section("Goal gaps, largest first (for the largest gaps, push the next concrete step that closes the gap in this run: start or steer a job, " +
-      "pull a slot forward; confirming that steps are waiting is not an answer)", precheck.goals.map(goalGapLine)),
+      "pull a slot forward; confirming that steps are waiting is not an answer)", precheck.goals.filter(gap => !folded.has(gap.goal.id)).map(goalGapLine)),
     ...section("Blocked on CI, a release or another thread with no job on it (start a job that fixes each blocker in this run, or send its owner a " +
       "concrete patch; marking the step waiting is not an answer)", precheck.blocked.map(blocked => blockedLine(blocked, now))),
     ...section("One session carries too much (split these into your own jobs per part)", flagged.filter(slice => slice.kind === "one_session_load").map(slice => slice.excerpt)),
@@ -244,7 +244,7 @@ export const stepSig = (item: PlanItem): string =>
  * past or a job that ended with no update (`staleSteps`, c44); an item counted in `finished_open` or `wait_met` is not counted again. A step's
  * record is counted once, by the first that applies: `job_end_silent`, `job_end_unrecorded`, `stale_steps`, `due_late`. `goals_to_fold` is an
  * open goal whose work runs as a duty or rides other goals' jobs (`goalsToFold`, c46); that goal is not counted again in `finished_open`,
- * `loose_goals` or `held_elsewhere`. `one_session_load` is a goal and another session that owns too many of its open steps (`oneSessionLoad`, c51),
+ * `loose_goals`, `held_elsewhere` or `goal_gaps`. `one_session_load` is a goal and another session that owns too many of its open steps (`oneSessionLoad`, c51),
  * `redundant_heartbeats` an active heartbeat of the chat whose work the check-in or one of its duties already does (`redundantHeartbeats`, c51).
  * `goals_without_duty` is 1 for a chat with an open goal and no active duty (`goalsWithoutDuty`).
  */
@@ -313,9 +313,11 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
     misses[gate.kind]++;
     flagged.push({ chat, at: now, kind: gate.kind, excerpt: gateLine(gate), item: gate.item.id });
   }
-  for (const gap of goals.filter(countedGap)) { misses.goal_gaps++; flagged.push({ chat, at: now, kind: "goal_gaps", excerpt: goalGapLine(gap), item: gap.goal.id }); }
-  for (const block of blocked) { misses.blocked_on_others++; flagged.push({ chat, at: now, kind: "blocked_on_others", excerpt: blockedLine(block, now), item: block.view.item.id }); }
+  // A goal the check-in folds into a duty gets the fold alone: the duty carries its target. goal_gaps' "push the next step" on it was a second
+  // ask (slack green guy p48 at 10-13 00:11 KST, the duty d1 made at 23:58).
   const folded = new Set(fold.map(entry => entry.goal.id));
+  for (const gap of goals.filter(gap => countedGap(gap) && !folded.has(gap.goal.id))) { misses.goal_gaps++; flagged.push({ chat, at: now, kind: "goal_gaps", excerpt: goalGapLine(gap), item: gap.goal.id }); }
+  for (const block of blocked) { misses.blocked_on_others++; flagged.push({ chat, at: now, kind: "blocked_on_others", excerpt: blockedLine(block, now), item: block.view.item.id }); }
   for (const entry of fold) flag("goals_to_fold", entry.goal.id, foldLine(entry));
   for (const found of done.filter(found => !folded.has(found.item.id))) { misses.finished_open++; flagged.push({ chat, at: now, kind: "finished_open", excerpt: lookDoneLine(found), item: found.item.id }); }
   for (const goal of loose.filter(goal => !folded.has(goal.id))) { misses.loose_goals++; flagged.push({ chat, at: now, kind: "loose_goals", excerpt: looseGoalLine(goal), item: goal.id }); }
