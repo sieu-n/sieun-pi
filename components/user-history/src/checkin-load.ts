@@ -65,8 +65,8 @@ export function readHeartbeats(file: string): ScheduledJob[] {
 }
 /** One land or promote run of the release train as the CI cache last read it: `key` is the land it carries ("33", "32b") or "promote". */
 export interface TrainRun { id: string; key: string; running: boolean; conclusion: string | null; createdAt: number; updatedAt: number }
-/** One run of any workflow as the CI cache last read it. */
-export interface CiRun { id: string; running: boolean; conclusion: string | null; updatedAt: number }
+/** One run of any workflow as the CI cache last read it, with the branch it ran on (`ref`). */
+export interface CiRun { id: string; running: boolean; conclusion: string | null; updatedAt: number; ref?: string }
 /**
  * The release train's runs in the CI cache, and when the cache last read GitHub (`fetchedAt`). `all` is every run the cache has by id, the
  * verify-dev runs of ci/ branches too, for the steps that wait on one (`namedRuns`).
@@ -75,16 +75,23 @@ export interface Train { runs: TrainRun[]; readAt: number; all?: ReadonlyMap<str
 /** `<home>/.cache/virev/ci-runs.json`, which launchd ai.virev.ci-cache rewrites from GitHub every 30 s for sieu-n/auto-sns-agent. */
 export const trainFile = (home: string = homedir()): string => join(home, ".cache", "virev", "ci-runs.json");
 const LAND_RUN = /^land:\s*land[\s-]+(\d+[a-z]?)\b/i;
-/** The land.yml and promote.yml runs of a ci-runs.json; undefined when it has no `runs` or no `fetchedAt`. */
+/** A branch a land runs on, `land/34` or `ci/land-34-r2`, with the land it carries when the name has one. */
+const LAND_BRANCH = /^(?:ci\/)?land(?:[-/_](\d+[a-z]?))?(?=$|[-/_])/i;
+/**
+ * The release train's runs of a ci-runs.json: land.yml and promote.yml runs, and a run of any workflow on a land branch (`LAND_BRANCH`), keyed
+ * by the land its branch names (else "land"). Undefined when it has no `runs` or no `fetchedAt`.
+ */
 export function parseTrain(cache: unknown): Train | undefined {
   const { runs, fetchedAt } = (cache ?? {}) as { runs?: Record<string, { run?: Record<string, unknown> }>; fetchedAt?: string };
   const readAt = Date.parse(fetchedAt ?? "");
   if (!runs || !Number.isFinite(readAt)) return undefined;
   const all = new Map(Object.values(runs).flatMap(({ run }) => run?.id === undefined ? [] : [[String(run.id), { id: String(run.id), running: run.status !== "completed",
-    conclusion: typeof run.conclusion === "string" ? run.conclusion : null, updatedAt: Date.parse(String(run.updated_at)) }] as const]));
+    conclusion: typeof run.conclusion === "string" ? run.conclusion : null, updatedAt: Date.parse(String(run.updated_at)), ref: String(run.head_branch ?? "") }] as const]));
   return { readAt, all, runs: Object.values(runs).flatMap(({ run }) => {
     const path = String(run?.path ?? "");
-    const key = path.endsWith("/promote.yml") ? "promote" : path.endsWith("/land.yml") ? LAND_RUN.exec(String(run?.name ?? ""))?.[1]?.toLowerCase() : undefined;
+    const branch = LAND_BRANCH.exec(String(run?.head_branch ?? ""));
+    const key = path.endsWith("/promote.yml") ? "promote" : path.endsWith("/land.yml") ? LAND_RUN.exec(String(run?.name ?? ""))?.[1]?.toLowerCase() :
+      branch ? branch[1]?.toLowerCase() ?? "land" : undefined;
     if (!run || !key) return [];
     return [{ id: String(run.id), key, running: run.status !== "completed", conclusion: typeof run.conclusion === "string" ? run.conclusion : null,
       createdAt: Date.parse(String(run.created_at)), updatedAt: Date.parse(String(run.updated_at)) }];

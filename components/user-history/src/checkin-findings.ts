@@ -495,8 +495,11 @@ export interface BlockedStep { view: StepView; on: string }
 /** How long past its planned end a parked-on-schedule wait may sit before it counts as blocked (owner's brief 10-13 for frontend bro p100). */
 export const PLANNED_END_GRACE_MS = 30 * 60_000;
 const CLOCK_Z = /\b([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?Z\b/g;
-/** A clock a note names as an end: "until about 00:15Z" or "03:15Z at the latest". */
-const END_CLOCK = /\buntil\s+(?:about\s+|around\s+|roughly\s+)?(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\b|\b(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\s+at\s+the\s+latest\b/gi;
+/**
+ * A clock a note names as an end: "until about 00:15Z", "03:15Z at the latest", or an ETA, "ETA 23:30Z to 00:30Z" or "ETA ~22:00Z", whose
+ * later clock counts.
+ */
+const END_CLOCK = /\buntil\s+(?:about\s+|around\s+|roughly\s+)?(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\b|\b(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\b\s+at\s+the\s+latest\b|\bETA\b[^.\d]{0,24}(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\b(?:\s*(?:to|-)\s*~?\s*(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z\b)?/gi;
 /** A scratch note id a step names, like "after Hold11 (s123)". */
 const SCRATCH_ID = /\bs\d+\b/g;
 /** Each HH:MMZ in `text` as the instant nearest `at` (within 12 h either side). */
@@ -507,7 +510,8 @@ const clocksNear = (text: string, at: number): number[] => [...text.matchAll(CLO
 });
 /**
  * When a step's wait is planned to end (frontend bro 10-13, p100: "Fable's land-33 hold until about 00:15Z, then reruns of r12 and r13"): the
- * latest HH:MMZ its waitFor names, or an "until HH:MMZ" or "HH:MMZ at the latest" in its note or in a `scratch` note its waitFor or note names
+ * latest HH:MMZ its waitFor names, or an "until HH:MMZ", "HH:MMZ at the latest" or "ETA HH:MMZ to HH:MMZ" (frontend bro 10-13, p86 and p101:
+ * "After Fable's 'released' (ETA 23:30Z to 00:30Z)") in its note or in a `scratch` note its waitFor or note names
  * (launch main bro 10-13, p87: "after Hold11 (s123)", where s123 says "01:18Z Fable's hold11: until the land 33 set ... has started every job,
  * 03:15Z at the latest"), read near the step's last change; else its waitUntil. A note's other clock times are when it was written or something
  * was seen ("At 23:00Z, 7 of 10 jobs ... were green"), not an end. Undefined when the step names no end.
@@ -532,21 +536,36 @@ const LAND_REF = /\bland[\s-]+(\d+[a-z]?)\b/gi;
 const RUN_IDS = /\b\d{9,}\b/g;
 const FAILED = new Set(["failure", "timed_out", "startup_failure"]);
 /**
+ * Words that name the release owner's hold on a land: "Fable's 'released' for the land-34 critical loop", "Fable's release of the land 34
+ * loop", "land 34's hold B".
+ */
+const RELEASE_HOLD = /\b(?:hold|loop|critical\s+(?:set|famil(?:y|ies))|released|release\s+of)\b/i;
+/**
  * Whether a step waits on a release train that moves (Crawler VP 10-13, p40, p46, p47 and p85 wait for "... then land 34" while land 33's run
  * 38348869500 runs and the release owner holds every push until its go push): its waitFor (its note when it has none) names a land ("land
  * 34", "land-33 hold") or a land or promote run the cache has, the newest run of each land (or of promote) its waitFor or note names has not
- * failed, and a train run is in progress or one ended within TRAIN_IDLE_MS. A running run counts as moving when the cache last read it. A
- * note that only mentions a land (VP of CI's p120: "checks moved into checks.yml in land 33") does not put a waitFor on the train.
+ * failed, and a train run (`parseTrain`: land, promote, or any run on a land branch) is in progress or one ended within TRAIN_IDLE_MS. A
+ * running train run counts as moving when the cache last read it. A note that only mentions a land (VP of CI's p120: "checks moved into
+ * checks.yml in land 33") does not put a waitFor on the train.
+ *
+ * A wait that also names the release owner's hold (`RELEASE_HOLD`) rides the hold's critical set, which runs as verify-dev probes on ci/
+ * branches while no land or promote run is in progress (frontend bro 10-13, p86 and p101 wait for "Fable's 'released' for the land-34
+ * critical loop, then one fresh push": at the 18:51Z, 19:06Z and 19:21Z check-ins the last train run, promote 38375389358, had ended at
+ * 10:16:45Z, while the critical set's runs such as ci/queue-cuts-t10 and ci/metal-deploy-poll-r9 ran). The loop cancels every other run that
+ * wants a runner, so a run on a ci/ branch that GitHub updated within TRAIN_IDLE_MS, and that was not cancelled, moves the hold. Such a run
+ * counts by its own update time, so a run the cache still lists as queued from hours before does not keep a stalled hold moving.
  */
 export function trainMoves(item: PlanItem, train: Train, now: number): boolean {
   const keysIn = (text: string): Set<string> => new Set([...[...text.matchAll(LAND_REF)].map(([, land]) => land!.toLowerCase()),
     ...[...text.matchAll(RUN_IDS)].flatMap(([id]) => train.runs.filter(run => run.id === id).map(run => run.key))]);
-  if (!keysIn(item.waitFor ?? item.note ?? "").size) return false;
+  const wait = item.waitFor ?? item.note ?? "";
+  if (!keysIn(wait).size) return false;
   for (const key of keysIn(`${item.waitFor ?? ""} ${item.note ?? ""}`)) {
     const newest = train.runs.filter(run => run.key === key).reduce<TrainRun | undefined>((best, run) => !best || run.createdAt > best.createdAt ? run : best, undefined);
     if (newest && !newest.running && FAILED.has(newest.conclusion ?? "")) return false;
   }
-  const moved = Math.max(...train.runs.map(run => run.running ? train.readAt : run.updatedAt));
+  const held = RELEASE_HOLD.test(wait) ? [...train.all?.values() ?? []].filter(run => run.ref?.startsWith("ci/") && run.conclusion !== "cancelled") : [];
+  const moved = Math.max(...train.runs.map(run => run.running ? train.readAt : run.updatedAt), ...held.map(run => run.updatedAt));
   return now - moved <= TRAIN_IDLE_MS;
 }
 /** A run id after these words names an older run a newer one replaced ("run 38414020573 (sup 38408618643)"), not the wait. */
