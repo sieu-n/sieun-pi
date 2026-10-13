@@ -7,6 +7,7 @@ import { BoardStore } from "../../src/chat-board-store.ts";
 import { type ConvergenceMisses, NO_MISSES } from "../../src/chat-checkin.ts";
 import { localTime } from "../../src/checkin-settings.ts";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
+import { fileOwnerMessages } from "../../src/owner-history.ts";
 import { placeholderTodo } from "../../src/shared/chat-board.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { foldReply, serverNote, TELL_OWNER_TOOL, type TurnStarter } from "../../src/shared/chat-feed.ts";
@@ -280,7 +281,8 @@ async function main(): Promise<void> {
   tally.flagged.set("no_progress_hours", stuck.filter(chat => chat.hours.length).map(chat => ({ chat: chat.id, at: chat.hours.at(-1)!, kind: "no_progress_hours",
     excerpt: `${chat.hours.length} hours with no plan item done while open steps were not blocked, last at ${localTime(chat.hours.at(-1)!)}` })));
   tally.metrics.dead_hours = tenth(tally.deadMs / HOUR);
-  const repeats = repeatsBetween(await new CorrectionLedger(dataDir).read(), now - WINDOW_MS, now);
+  const repeats = await repeatsBetween(await new CorrectionLedger(dataDir).read(), now - WINDOW_MS, now,
+    async chat => (await fileOwnerMessages(join(sessionsDir, `${chat}.jsonl`))).map(message => message.text));
   tally.metrics.repeat_corrections = repeats.length;
   tally.flagged.set("repeat_corrections", repeats.map(({ entry, repeat }) => ({ chat: repeat.chat.id, at: Date.parse(repeat.at), kind: "repeat_corrections",
     excerpt: clip(`${entry.id} "${entry.rule}" repeated in ${repeat.chat.name || repeat.chat.id} (first ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}): ${repeat.words}`) })));

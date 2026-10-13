@@ -63,7 +63,7 @@ test("ledger: a new correction is c1 and active; the same words again change not
   assert.deepEqual(parseLedger({ corrections: [{ id: "c1" }, ...ledger.corrections] }), ledger, "a broken entry is dropped, the rest read back");
 });
 
-test("ledger: one owner message that repeats two corrections records a repeat on each; the same call again records nothing", () => {
+test("ledger: one owner message that repeats two corrections records a repeat on each; the same call again records nothing", async () => {
   const ledger: Ledger = { corrections: [] };
   applyCorrection(ledger, add("talk plain, no slop", "reply plain text slop"), VP, "2026-10-09T08:00:00.000Z");
   const words = "unslop, you are talking so much slop. where the hell is the link?";
@@ -72,7 +72,29 @@ test("ledger: one owner message that repeats two corrections records a repeat on
   assert.equal(slop.kind, "repeat", "the same words repeat c1 too");
   assert.equal(slop.entry.id, "c1");
   assert.equal(applyCorrection(ledger, add(words, "reply plain text slop"), CI, "2026-10-09T10:01:00.000Z").kind, "known", "a retried call records nothing");
-  assert.equal(repeatsBetween(ledger, Date.parse("2026-10-09T00:00:00Z"), Date.parse("2026-10-10T00:00:00Z")).length, 1);
+  assert.equal((await repeatsBetween(ledger, Date.parse("2026-10-09T00:00:00Z"), Date.parse("2026-10-10T00:00:00Z"), async () => [words])).length, 1);
+});
+
+test("repeatsBetween counts a repeat only when the owner wrote its words in that chat: ops guy's own notes on c59 and c4 (10-12) are no repeats", async () => {
+  const OPS: ChatRef = { id: "ops", name: "ops guy (+observability)" };
+  const ledger: Ledger = { corrections: [] };
+  applyCorrection(ledger, add("Your brief for blog batches live check breaks the Jobs rule", "job brief word verbatim"), VP, "2026-10-12T14:27:59.460Z");
+  applyCorrection(ledger, add("ran vercel login, next time for these can you consult Aside and login auth yourself?", "cli login aside oauth browser"), OPS, "2026-10-09T10:12:31.466Z");
+  applyCorrection(ledger, add("stop making up these bullshit rules on waiting", "invented waiting rule overly careful gate"), CI, "2026-10-12T06:01:43.213Z");
+  const note59 = "(brief check, twice on 10-12) \"have it your duty to have usable mac.\" is not in any owner message.";
+  const note4 = "(owner rule recalled by the release owner and the global harness note: agents never do a GitHub sign-in in Aside)";
+  const owner47 = "look, be fucking aggressive. it's ok to break things. just make it work. NEVER wait for something, or ask for my permission to push to Github etc.";
+  assert.equal(applyCorrection(ledger, add(note59, "brief owner words duty alert"), OPS, "2026-10-12T20:38:04.615Z").kind, "repeat");
+  assert.equal(applyCorrection(ledger, add(note4, "github sign in aside login"), OPS, "2026-10-12T17:53:56.511Z").kind, "repeat");
+  assert.equal(applyCorrection(ledger, add(owner47, "invented waiting rule overly"), CI, "2026-10-12T14:12:31.885Z").kind, "repeat");
+  const said: Record<string, string[]> = {
+    ops: ["have it your duty to have usable mac.", "[brief check] Your brief for [wiki down at five](job:wiki down at five) breaks the Jobs rule"],
+    ci: ["then are you working actively on it?", `${owner47.replace("fucking", "Fucking")}\n`],
+  };
+  const asked: string[] = [];
+  const repeats = await repeatsBetween(ledger, Date.parse("2026-10-12T14:07:00Z"), Date.parse("2026-10-13T14:07:00Z"), async chat => { asked.push(chat); return said[chat] ?? []; });
+  assert.deepEqual(repeats.map(({ entry, repeat }) => [entry.id, repeat.chat.id]), [["c3", "ci"]], "only the owner's own words in that chat count, with case and spaces folded");
+  assert.deepEqual(asked.sort(), ["ci", "ops"], "each chat's owner messages are read once");
 });
 
 test("ledger prompt: active and reopened rules, reopened first then newest, capped; retired ones and an empty ledger give nothing", () => {
@@ -131,8 +153,8 @@ test("ledger file: apply writes corrections.json under the lock and reads back; 
     await store.apply(add("third", "mac load ops"), CI, "2026-10-07T12:00:00.000Z");
     const ledger = await store.read();
     assert.deepEqual(JSON.parse(await readFile(join(dir, "corrections.json"), "utf8")), ledger);
-    assert.deepEqual(repeatsBetween(ledger, Date.parse("2026-10-08T12:00:00Z"), Date.parse("2026-10-09T12:00:00Z")).map(({ entry, repeat }) => [entry.id, repeat.words]),
-      [["c1", "second"]]);
+    assert.deepEqual((await repeatsBetween(ledger, Date.parse("2026-10-08T12:00:00Z"), Date.parse("2026-10-09T12:00:00Z"), async () => ["second"]))
+      .map(({ entry, repeat }) => [entry.id, repeat.words]), [["c1", "second"]]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -411,11 +433,13 @@ test("chat health: repeat_corrections counts ledger repeats in the last 24 h and
       JSON.stringify({ type: "custom_message", customType: "agent_message", content: "[agent-message from w]\n\nDone.", display: true, timestamp: new Date(NOW - 3_200_000).toISOString() }),
       line({ role: "assistant", content: [{ type: "text", text: "Wake-up note: the job is done." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 3_100_000 }),
       line({ role: "assistant", content: [{ type: "text", text: "Old job note." }], provider: "p", model: "m", stopReason: "stop", timestamp: NOW - 30 * 3_600_000 }),
+      line({ role: "user", content: [{ type: "text", text: "didn't i tell you" }], timestamp: NOW - 3_000_000 }),
     ].join("\n") + "\n");
     const store = new CorrectionLedger(dir);
     await store.apply(add("ops guy owns it", "mac load ops guy", "Mac load goes to ops guy."), VP, "2026-10-07T10:00:00.000Z");
     await store.apply(add("didn't i tell you", "mac load delegate"), VP, "2026-10-09T13:06:51.000Z");
     await store.apply(add("long ago", "mac load ops"), CI, "2026-10-07T11:00:00.000Z");
+    await store.apply(add("(my own note) the owner said this before", "mac load ops guy"), VP, "2026-10-09T13:30:00.000Z");
     const output = join(dir, "health.json");
     const result = spawnSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "..", "scripts", "duties", "chat-health.ts")], { cwd: join(import.meta.dirname, ".."),
       encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", CHAT_HEALTH_GIT_DIR: "/nonexistent", OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW),

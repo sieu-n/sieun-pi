@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
+import { fileOwnerMessages } from "../../src/owner-history.ts";
 import { missing } from "../../src/locked-json.ts";
 import { measureCache, readSessions, WINDOWS, type CacheMetric, type SessionCalls } from "./cache-ratio.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -41,6 +42,8 @@ export interface HarnessDeps {
   roots: readonly SkillRoot[]; views: (since: string) => Promise<View[]>; dataDir: string; now: number;
   /** Prime Agent transcripts with calls since the given time, and the duty's targets for the cache shares. */
   sessions: (since: number) => Promise<SessionCalls[]>; cacheTargets: Record<CacheMetric, number>;
+  /** A chat's owner messages, for the repeats the owner gave (`repeatsBetween`). */
+  ownerTexts: (chat: string) => Promise<readonly string[]>;
 }
 
 /** The `description` in a SKILL.md's frontmatter: one line, quoted or not, or a folded `>` / `|` block. */
@@ -138,7 +141,7 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   const listed = overlaps(skills, OVERLAP_LIST);
   const pairs = listed.filter(pair => pair.score >= OVERLAP_MIN);
   const unread = skills.filter(skill => skill.lastRead === null);
-  const repeats = repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now);
+  const repeats = await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.ownerTexts);
   const smoke = await readSkillSmoke(deps.dataDir);
   const failures = smoke?.filter(result => !result.pass) ?? [];
   const flagged: FlaggedSlice[] = [
@@ -181,7 +184,8 @@ async function main(): Promise<void> {
   const dataDir = process.env.HARNESS_DATA_DIR || join(homedir(), ".prime/agent/browser-chat");
   const duty = JSON.parse(await readFile(join(import.meta.dirname, "harness-health.duty.json"), "utf8")) as { metrics: { key: string; target: number }[] };
   const cacheTargets = Object.fromEntries(Object.keys(WINDOWS).map(key => [key, duty.metrics.find(metric => metric.key === key)!.target])) as Record<CacheMetric, number>;
-  const { skills, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), sessions: since => readSessions(homedir(), since), cacheTargets });
+  const { skills, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), sessions: since => readSessions(homedir(), since), cacheTargets,
+    ownerTexts: async chat => (await fileOwnerMessages(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`))).map(message => message.text) });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify(skills.map(({ description: _, ...skill }) => skill), null, 2) + "\n");
 }

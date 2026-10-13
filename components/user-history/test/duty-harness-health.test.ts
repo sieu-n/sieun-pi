@@ -13,7 +13,8 @@ const iso = (ago: number) => new Date(NOW - ago).toISOString();
 const skillMd = (name: string, about: string) => `---\nname: ${name}\ndescription: "${about}"\n---\n\n# ${name}\n`;
 const chat = (id: string) => ({ id, name: `chat ${id}` });
 const TARGETS = { cache_read_ratio_1h: 90, cache_read_ratio_24h: 94 };
-const noCache = { sessions: async () => [], cacheTargets: TARGETS };
+/** No transcripts with model calls; in chat c the owner wrote the words of c1's repeat, and nothing else. */
+const stubs = { sessions: async () => [], cacheTargets: TARGETS, ownerTexts: async (id: string) => id === "c" ? ["ok, again, the same thing. fix it"] : [] };
 
 async function tree(): Promise<{ dir: string; roots: SkillRoot[]; dataDir: string }> {
   const dir = await mkdtemp(join(tmpdir(), "harness-health-"));
@@ -30,7 +31,7 @@ async function tree(): Promise<{ dir: string; roots: SkillRoot[]; dataDir: strin
     rule: `rule ${id}`, enforcedBy: "brief", ref: "brief bullet", status: "active", theme: ["x"], repeats });
   await write(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [
     entry("c1", iso(20 * DAY), [{ at: iso(10 * DAY), chat: chat("b"), words: "too old" }, { at: iso(2 * DAY), chat: chat("c"), words: "again, the same thing" }]),
-    entry("c2", iso(3 * DAY), []),
+    entry("c2", iso(3 * DAY), [{ at: iso(DAY), chat: chat("c"), words: "(my own note, no owner words) the same thing again" }]),
   ] }));
   return { dir, dataDir, roots: [{ name: "repo", dir: repo, views: "@code/.agents/skills/" }, { name: "prime", dir: prime }] };
 }
@@ -51,7 +52,7 @@ test("harness health: outcomes only; repeat corrections in 7 days, skills read i
       { path: "@code/.agents/skills/apps/search-chat/SKILL.md", ts: iso(3 * DAY) },
     ];
     let askedSince = "";
-    const result = await measureHarness({ roots, dataDir, now: NOW, views: async since => { askedSince = since; return views; }, ...noCache });
+    const result = await measureHarness({ roots, dataDir, now: NOW, views: async since => { askedSince = since; return views; }, ...stubs });
     assert.equal(askedSince, iso(14 * DAY));
     const byId = new Map(result.skills.map(skill => [skill.id, skill]));
     assert.deepEqual(result.skills.map(skill => skill.id), ["prime:why", "repo:apps/search", "repo:apps/search-chat", "repo:stack/stale"], "the symlinked repo skill counts once");
@@ -79,12 +80,12 @@ test("harness health: skill smoke results count each failing skill; a file that 
   try {
     await writeFile(join(dataDir, SKILL_SMOKE_FILE), JSON.stringify({ results: [{ skill: "websearch", pass: true }, { skill: "aside-browser", pass: false, detail: "screenshot timed out" },
       { skill: "why", pass: false }] }));
-    const result = await measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...noCache });
+    const result = await measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...stubs });
     assert.equal(result.metrics.skill_smoke_failures, 2);
     assert.deepEqual(result.flagged!.filter(slice => slice.kind === "skill_smoke_failures").map(slice => slice.excerpt),
       ["aside-browser failed its smoke check: screenshot timed out", "why failed its smoke check"]);
     await writeFile(join(dataDir, SKILL_SMOKE_FILE), JSON.stringify({ results: [{ skill: "why", pass: "yes" }] }));
-    await assert.rejects(measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...noCache }), /skill-smoke\.json: expected \{ results: \[\{ skill, pass, detail\? \}\] \}/);
+    await assert.rejects(measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...stubs }), /skill-smoke\.json: expected \{ results: \[\{ skill, pass, detail\? \}\] \}/);
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 
@@ -101,7 +102,7 @@ test("Skills and harness duty file parses, measures outcomes, and every metric i
   assert.equal(duty.boardGoal, "p215");
   const dataDir = await mkdtemp(join(tmpdir(), "harness-keys-"));
   try {
-    const written = Object.keys((await measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...noCache })).metrics);
+    const written = Object.keys((await measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...stubs })).metrics);
     assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), [...written].sort());
   } finally { await rm(dataDir, { recursive: true, force: true }); }
   assert.doesNotMatch(duty.goal + duty.onMiss, /\b\d+ (?:words|lines)\b|words and lines/, "no word or line targets (owner 10-10, c39)");

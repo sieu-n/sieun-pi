@@ -1,0 +1,29 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { briefCheckWithHistory, fileOwnerMessages } from "../src/owner-history.ts";
+import type { ThreadMessage } from "../src/shared/types.ts";
+
+const user = (text: string, timestamp: number): ThreadMessage => ({ role: "user", content: [{ type: "text", text }], timestamp } as ThreadMessage);
+const line = (message: ThreadMessage) => JSON.stringify({ type: "message", id: String(message.timestamp), timestamp: new Date(message.timestamp).toISOString(), message });
+const MAC = "have it your duty to have usable mac.";
+
+test("brief check (c59): a quote of an owner message that left the thread's tail is checked against the whole session file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "owner-history-"));
+  try {
+    const file = join(dir, "ops.jsonl");
+    const early = user(MAC, 1_000);
+    const tail = [user("[brief check] Your brief for [mac load at five](job:mac load at five) breaks the Jobs rule", 5_000), user("how is the wiki?", 6_000)];
+    await writeFile(file, [JSON.stringify({ type: "session", id: "ops" }), line(early), "not json",
+      JSON.stringify({ type: "custom_message", customType: "agent_message", content: "[agent-message from w] user", timestamp: "1970-01-01T00:00:03.000Z" }),
+      ...tail.map(line)].join("\n") + "\n");
+    assert.deepEqual(await fileOwnerMessages(file), [{ text: MAC, at: 1_000 }, { text: "how is the wiki?", at: 6_000 }], "server notes, agent messages and bad lines are no owner messages");
+    const input = { brief: `Owner's words (verbatim):\n1. "${MAC}"\nSplit: inline, one quick pass.\nTask: get :5176 answering.`, turnOwner: null, previousSpawnAt: null };
+    assert.deepEqual(await briefCheckWithHistory(input, tail, file), [], "the 10-09 owner message is in the file, so the quote passes");
+    const made = { ...input, brief: input.brief.replace(MAC, "keep the mac usable at all times") };
+    assert.deepEqual(await briefCheckWithHistory(made, tail, file), [{ kind: "not-verbatim", piece: "keep the mac usable at all times" }], "words the owner never wrote are still refused");
+    assert.deepEqual(await fileOwnerMessages(join(dir, "gone.jsonl")), [], "a missing file has no owner messages");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

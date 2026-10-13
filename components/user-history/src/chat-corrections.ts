@@ -82,14 +82,19 @@ export function matchCorrection(ledger: Ledger, theme: readonly string[]): Corre
 
 const quoteForm = (text: string): string => normal(text).toLowerCase();
 /**
- * Null when `words` is part of one owner message of the chat (`owner`, from `ownerMessages`), compared with straight quotes, one space per
- * whitespace run and no case; else the refusal. On 10-12 the Crawler VP recorded Fable's "Never re-push a land-33 branch name tonight." and the
- * ledger reopened c53 as an owner repeat. A fix call names no words and passes.
+ * Whether `words` is part of one owner message of the chat (`owner`, from `ownerMessages`), compared with straight quotes, one space per
+ * whitespace run and no case.
+ */
+export function ownerSaid(words: string, owner: readonly string[]): boolean {
+  const form = quoteForm(words).replace(/^["'\s]+|["'\s]+$/g, "");
+  return !!form && owner.some(text => quoteForm(text).includes(form));
+}
+/**
+ * Null when the owner said `words` in the chat (`ownerSaid`); else the refusal. On 10-12 the Crawler VP recorded Fable's "Never re-push a land-33
+ * branch name tonight." and the ledger reopened c53 as an owner repeat. A fix call names no words and passes.
  */
 export function ownerWordsRefusal(call: CorrectionCall, owner: readonly string[]): string | null {
-  if (call.kind === "fix") return null;
-  const words = quoteForm(call.input.words).replace(/^["'\s]+|["'\s]+$/g, "");
-  if (words && owner.some(text => quoteForm(text).includes(words))) return null;
+  if (call.kind === "fix" || ownerSaid(call.input.words, owner)) return null;
   return `"${call.input.words}" is not in any owner message of this chat. Quote the owner exactly, or do not record it: words from another agent, ` +
     "a job or a check-in are no owner correction.";
 }
@@ -291,10 +296,18 @@ export function jobLedgerPrompt(ledger: Ledger | null): string {
     ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(fullLine) : [])].join("\n");
 }
 
-/** Every repeat in [since, until], oldest first, with its entry: the Chat health repeat_corrections count. */
-export function repeatsBetween(ledger: Ledger, since: number, until: number): { entry: Correction; repeat: CorrectionRepeat }[] {
-  return ledger.corrections.flatMap(entry => entry.repeats.map(repeat => ({ entry, repeat })))
-    .filter(({ repeat }) => { const at = Date.parse(repeat.at); return at >= since && at <= until; })
+/**
+ * Every repeat in [since, until] whose words the owner wrote in the repeat's chat (`owner` gives a chat's owner messages, `ownerSaid`), oldest
+ * first, with its entry: the Chat health repeat_corrections count. Before correction_add checked the words (0da3d4a, 10-12 21:59Z), ops guy
+ * recorded its own notes as repeats: "(brief check, twice on 10-12) ..." on c59 and "(owner rule recalled by the release owner ...)" on c4. The
+ * owner gave neither again, so neither counts.
+ */
+export async function repeatsBetween(ledger: Ledger, since: number, until: number, owner: (chat: string) => Promise<readonly string[]>): Promise<{ entry: Correction; repeat: CorrectionRepeat }[]> {
+  const inWindow = ledger.corrections.flatMap(entry => entry.repeats.map(repeat => ({ entry, repeat })))
+    .filter(({ repeat }) => { const at = Date.parse(repeat.at); return at >= since && at <= until; });
+  const said = new Map<string, readonly string[]>();
+  for (const chat of new Set(inWindow.map(({ repeat }) => repeat.chat.id))) said.set(chat, await owner(chat));
+  return inWindow.filter(({ repeat }) => ownerSaid(repeat.words, said.get(repeat.chat.id) ?? []))
     .sort((a, b) => a.repeat.at.localeCompare(b.repeat.at));
 }
 

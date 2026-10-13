@@ -12,7 +12,8 @@ import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, e
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
-import { briefCheck, briefCheckNote, ownerMessages, turnOwnerAt } from "./shared/brief-check.ts";
+import { briefCheckNote, turnOwnerAt } from "./shared/brief-check.ts";
+import { briefCheckWithHistory } from "./owner-history.ts";
 import type { CheckInRun } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
@@ -889,7 +890,7 @@ export class Chats {
 
   /**
    * When a chat's direct subagent first shows up: its brief, the `prompt` the daemon stored at the spawn, is checked against the Jobs rule
-   * (`briefCheck`) with the chat's owner messages, the owner message that started the spawning turn and the chat's previous spawn. On findings
+   * (`briefCheckWithHistory`) with the chat's owner messages, the owner message that started the spawning turn and the chat's previous spawn. On findings
    * the chat gets one `[brief check]` steer naming the job; the spawn is never held. Once per job across restarts (`briefChecks`); a job
    * spawned more than BRIEF_CHECK_MAX_AGE_MS before the server first reads it is left alone. A spawn record not written yet is read again
    * at the next children change.
@@ -909,8 +910,8 @@ export class Chats {
       this.briefSeen.add(child.id);
       this.spawnTimes.set(join(dir, child.id), spawn.createdAt);
       if (this.now() - spawn.createdAt > BRIEF_CHECK_MAX_AGE_MS) return;
-      const findings = briefCheck({ brief: spawn.prompt, owner: ownerMessages(messages), turnOwner: turnOwnerAt(messages, spawn.createdAt),
-        previousSpawnAt: await this.previousSpawn(dir, spawn.createdAt) });
+      const findings = await briefCheckWithHistory({ brief: spawn.prompt, turnOwner: turnOwnerAt(messages, spawn.createdAt),
+        previousSpawnAt: await this.previousSpawn(dir, spawn.createdAt) }, messages, sessionFile);
       if (!findings.length || !await record.claim(child.id, spawn.createdAt)) return;
       await this.threads.prompt(chat, { message: briefCheckNote(childName(child), findings), images: [], mode: "steer" });
       this.log(`chat ${chat.slice(0, 8)}: brief check for job ${childName(child)}: ${findings.map(finding => finding.kind).join(", ")}`);
