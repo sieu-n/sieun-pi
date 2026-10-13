@@ -33,10 +33,9 @@ export class ArchiveQueue {
   private draining: Promise<void> | undefined;
 
   /**
-   * `archive` ends the session (it resolves when the session is archived or gone). `tried` hears each try's time and result, for the daemon
-   * health gate. `tickMs` 0 starts no timer (tests call `drain`).
+   * `archive` ends the session (it resolves when the session is archived or gone). `tickMs` 0 starts no timer (tests call `drain`).
    */
-  constructor(private readonly options: { path: string; archive: (id: string) => Promise<void>; tried?: (ms: number, ok: boolean) => void; log?: (line: string) => void;
+  constructor(private readonly options: { path: string; archive: (id: string) => Promise<void>; log?: (line: string) => void;
     now?: () => number; tickMs?: number; tryTimeoutMs?: number }) {
     this.file = { path: options.path, label: "Duty archive queue", initial: () => [],
       parse: value => (Array.isArray(value) ? value : []).flatMap(entry => { const parsed = parseEntry(entry); return parsed ? [parsed] : []; }) };
@@ -67,11 +66,9 @@ export class ArchiveQueue {
   private async run(): Promise<void> {
     for (const entry of await this.pending()) {
       if (entry.nextAt > this.now()) continue;
-      const started = this.now();
       let error: string | undefined;
       try { await this.attempt(entry.id); }
       catch (failure) { error = message(failure).slice(0, 300); }
-      this.options.tried?.(this.now() - started, error === undefined);
       await this.settle(entry, error);
     }
   }

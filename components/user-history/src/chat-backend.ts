@@ -120,8 +120,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       await rosterList((command, timeoutMs, options) => catalog.client.request(command, timeoutMs, options));
     } });
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
-  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog,
-    tried: (ms, ok) => { void gate.kill(ms, ok); } });
+  const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate,
     jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
       started: id => poolPriorities.set(id, "low") }),

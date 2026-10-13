@@ -19,10 +19,9 @@ test("duty archive queue: a hung archive does not delay the next duty job's star
   const path = join(dir, "duty-archive-queue.json");
   const clock = { at: new Date(2026, 9, 9, 18, 0).getTime() };
   const calls: string[] = [];
-  const tried: boolean[] = [];
   let release: (() => void) | undefined;
   let outcome: "hang" | "fail" | "ok" = "hang";
-  const queue = new ArchiveQueue({ path, tickMs: 0, now: () => clock.at, tried: (_ms, ok) => { tried.push(ok); }, archive: async id => {
+  const queue = new ArchiveQueue({ path, tickMs: 0, now: () => clock.at, archive: async id => {
     calls.push(`archive ${id}`);
     if (outcome === "hang") await new Promise<void>(resolve => { release = resolve; });
     if (outcome === "fail" || outcome === "hang") throw new Error('Timed out after 30000ms waiting for the Prime Agent daemon response to "kill".');
@@ -55,7 +54,6 @@ test("duty archive queue: a hung archive does not delay the next duty job's star
   await after.drain();
   assert.deepEqual(restarted, ["s1"], "a new queue on the same file (a restart) archives it");
   assert.deepEqual(await after.pending(), []);
-  assert.deepEqual(tried, [false, false], "each failed try is reported to the daemon gate");
   duties.close();
 });
 

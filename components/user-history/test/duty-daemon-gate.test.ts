@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -63,12 +63,10 @@ test("daemon gate: the first list the daemon did not answer pauses the check-in 
   assert.deepEqual(told, [], "daemon health is server state: the gate posts no pause or resume line into any chat (off_brief, 10-12: 33 such lines)");
 });
 
-test("daemon gate: a list that answers late is not an outage, so 10-12's slow lists and slow archives pause nothing and post nothing (off_brief, c43)", async () => {
+test("daemon gate: a list that answers late is not an outage, so 10-12's slow lists pause nothing and post nothing (off_brief, c43)", async () => {
   const { settings, told, gate, probe } = await setup({ vp: { everyMs: 15 * MIN }, c1: { everyMs: 15 * MIN } });
-  // The answer times of 10-12's pauses, in the order the old gate logged them, then a slow archive that worked.
+  // The answer times of 10-12's pauses, in the order the old gate logged them.
   for (const ms of [5_100, 7_200, 9_300, 6_000, 10_400, 11_600, 9_000, 6_600, 10_600, 5_700, 29_000]) await probe(ms);
-  await gate.kill(17_700, true);
-  await gate.kill(44_700, true);
   assert.equal(gate.state, "healthy");
   assert.deepEqual((await settings.all()).c1, { everyMs: 15 * MIN }, "no chat's check-in was paused");
   assert.deepEqual(told, []);
@@ -82,20 +80,12 @@ test("daemon gate: the probe lists the daemon's roster only, with prime-agent's 
   await assert.rejects(rosterList(async () => ({ success: false, error: "daemon closed" })), /daemon closed/);
 });
 
-test("daemon gate: a restart during an outage starts unhealthy and the first answered list resumes the chats the daemon paused; a failed archive pauses; every duty wake probes, one probe at a time", async () => {
+test("daemon gate: a restart during an outage starts unhealthy and the first answered list resumes the chats the daemon paused; every duty wake probes, one probe at a time", async () => {
   const { settings, clock, daemon, told, gate, probe, dir } = await setup({ c1: { everyMs: 15 * MIN, pausedUntil: "forever", pausedBy: "daemon" }, c2: { everyMs: 15 * MIN } });
-  await gate.kill(100, true);
-  assert.equal(gate.state, undefined, "an archive that worked is no sample");
+  assert.equal(gate.state, undefined);
   await probe(100);
   assert.equal(gate.state, "healthy", "adopted as unhealthy from the settings file, then the first answered list resumes");
   assert.deepEqual((await settings.all()).c1, { everyMs: 15 * MIN, startAt: clock.at });
-  await gate.kill(30_800, false);
-  assert.equal(gate.state, "unhealthy", "a failed archive is the daemon not answering");
-  assert.equal((await settings.all()).c2?.pausedBy, "daemon");
-  await gate.kill(2_000, true);
-  assert.equal(gate.state, "unhealthy", "an archive that worked does not end the outage; a list does");
-  await probe(10);
-  assert.equal(gate.state, "healthy");
   assert.deepEqual(told, []);
   const lists = daemon.lists;
   const duties = new Duties(new DutyStore(dir), { isChat: async () => false, jobs: { chat: async () => null, working: async () => false,
@@ -141,16 +131,17 @@ test("daemon gate: a flapping gate resumes the longest wait first, so no chat st
   await writeFile(path, JSON.stringify(Object.fromEntries(chats.map(([id, minutes]) => [id, { everyMs: minutes * MIN }]))));
   const settings = checkInSettings(path);
   const clock = { at: day("13:15:30") };
-  const gate = new DaemonGate({ settings, chats: async () => chats.map(([id]) => id), keep: new Set(), now: () => clock.at, list: async () => {},
-    lastCheckIn: async id => last.get(id) ?? null });
+  let answers = true;
+  const gate = new DaemonGate({ settings, chats: async () => chats.map(([id]) => id), keep: new Set(), now: () => clock.at,
+    list: async () => { if (!answers) throw new Error("no answer"); }, lastCheckIn: async id => last.get(id) ?? null });
   const flips = FLIPS_1012.trim().split(/\s+/).map(flip => ({ at: day(flip.slice(0, -1)), healthy: flip.endsWith("+") }));
   // Chats.tick every CHECK_IN_TICK_MS (30 s): a chat runs when its pause has ended and nextCheckIn is due.
   for (let tick = day("13:15:30"); tick <= day("17:55:00"); tick += 30_000) {
     while (flips.length && flips[0]!.at <= tick) {
       const flip = flips.shift()!;
       clock.at = flip.at;
-      if (flip.healthy) await gate.probe();
-      else await gate.kill(30_000, false);
+      answers = flip.healthy;
+      await gate.probe();
     }
     clock.at = tick;
     const all = await settings.all();
@@ -166,4 +157,29 @@ test("daemon gate: a flapping gate resumes the longest wait first, so no chat st
   // The fixed resume order gave VP of CI 277 min and the 7 chats up to 280 min. VP of CI's 124 min now is the 96-minute full pause from 13:35Z
   // to 15:11Z, from the old 5 s bar that 540af42 removed, and the first resume after it runs VP of CI's check-in at its next wake.
   assert.deepEqual(minutes, { "slack green": 130, "launch main bro": 109, "frontend bro": 109, "ops guy": 143, "VP of CI": 124, "Crawler VP": 109, "api portal": 110 });
+});
+
+test("daemon gate: replay of 10-12 15:22Z to 10-13 17:51Z from service.log; only a roster list the daemon did not answer pauses check-ins, a failed duty archive does not", async () => {
+  const fixture = JSON.parse(await readFile(new URL("fixtures/daemon-gate-1012-1013.json", import.meta.url), "utf8")) as { events: [string, string, string?][] };
+  const dir = await mkdtemp(join(tmpdir(), "daemon-gate-1013-"));
+  const path = join(dir, "check-in-settings.json");
+  const ids = ["c1", "c2", "c3", "c4", "c5", "c6", "c7"];
+  await writeFile(path, JSON.stringify(Object.fromEntries(ids.map(id => [id, { everyMs: 15 * MIN }]))));
+  const clock = { at: 0 };
+  let answers = true;
+  const log: string[] = [];
+  const gate = new DaemonGate({ settings: checkInSettings(path), chats: async () => ids, keep: new Set(), now: () => clock.at, lastCheckIn: async () => null,
+    log: line => { log.push(line); }, list: async () => { if (!answers) throw new Error("Timed out after 30000ms waiting for the Prime Agent daemon response to \"list\""); } });
+  assert.equal("kill" in gate, false, "the gate takes no archive sample");
+  for (const [at, kind] of fixture.events) {
+    if (kind === "archive-failed") continue;
+    clock.at = Date.parse(at);
+    answers = kind === "list-answered";
+    await gate.probe();
+  }
+  const pauses = log.filter(line => line.startsWith("daemon gate: unhealthy")).length;
+  // service.log has 94 pauses in this window: 16 on a roster list that timed out at 30 s and 78 on a duty archive that failed (36 kill timeouts,
+  // 47 timeouts of the full list after a kill that worked, 1 dropped frame). After each archive pause the next roster list answered, in a
+  // median 18 s on 10-12 and 1.3 s on 10-13, so the daemon was answering.
+  assert.equal(pauses, 16, "only the 16 roster lists the daemon did not answer pause check-ins");
 });
