@@ -79,7 +79,7 @@
     },
     {
       "key": "off_brief",
-      "label": "Times a chat did not behave as briefed",
+      "label": "Server lines a chat got twice, such as one job end told twice",
       "op": "<=",
       "target": 0
     },

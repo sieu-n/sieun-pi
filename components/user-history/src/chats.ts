@@ -9,6 +9,7 @@ import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, Chec
 import { checkInDue, childName, childWorking, jobFacts, liveJobs } from "./checkin-steps.ts";
 import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   lastJobMessages, noReportNotice, retryDue } from "./chat-checkin.ts";
+import { noticeStands } from "./no-report.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
@@ -33,6 +34,8 @@ export const OLD_CHECK_IN = "Check-in. Read the board";
 export const NO_REPORT_GRACE_MS = 90_000;
 /** Two ends of one job whose last activity is this close are one end: told once. */
 export const NO_REPORT_SAME_END_MS = 60_000;
+/** How many graces a no-report check waits while the chat is mid-turn before it tells the chat anyway. */
+export const NO_REPORT_BUSY_TRIES = 6;
 /**
  * A root session's artifacts folder, where the daemon keeps each direct subagent's folder by child id: `session-artifacts/<session id>`
  * beside the folder of its session file (prime-agent `getSessionArtifactPathForFile`).
@@ -768,18 +771,21 @@ export class Chats {
 
   /**
    * A job that stopped working without a report is checked again after a grace period: a job between two tool calls, resumed by a reply, or
-   * deleted in the meantime is not reported. Each end is reported once.
+   * deleted in the meantime is not reported. Each end is reported once. While the chat is mid-turn, the daemon holds a job's report to it
+   * until the chat's tool call ends, so the check waits for that, up to NO_REPORT_BUSY_TRIES graces (VP of CI 10-13: a report queued at 09:47:30Z
+   * landed at 09:52:15Z, 3 s after a notice that said the job sent none).
    */
-  private laterNoReport(id: string, childId: string): void {
-    const timer = setTimeout(() => this.queue(id, () => this.noReport(id, childId)), this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
+  private laterNoReport(id: string, childId: string, tries = 0): void {
+    const timer = setTimeout(() => this.queue(id, () => this.noReport(id, childId, tries)), this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
     timer.unref?.();
   }
 
-  private async noReport(id: string, childId: string): Promise<void> {
+  private async noReport(id: string, childId: string, tries: number): Promise<void> {
     await this.load();
     if (!this.chatIds.has(id)) return;
     const child = this.children.get(id)?.find(candidate => candidate.id === childId);
     if (!child || childWorking(child) || child.status === "cancelled" || child.repliedSinceTask !== false) return;
+    if (this.threads.busy(id) && tries < NO_REPORT_BUSY_TRIES && !this.stall(id)) { this.laterNoReport(id, childId, tries + 1); return; }
     const lastMessage = lastJobMessages(this.messages(id) ?? []).get(childName(child));
     const wokeAt = this.workingSince.get(child.id) ?? 0;
     const waited = lastMessage !== undefined && lastMessage.at >= wokeAt ? lastMessage.at : undefined;
@@ -788,8 +794,10 @@ export class Chats {
     if (told !== undefined && Math.abs(end - told.end) < NO_REPORT_SAME_END_MS && told.waited === waited) return;
     this.noticedEnd.set(child.id, { end, ...(waited !== undefined ? { waited } : {}) });
     if (this.stall(id)) { this.log(`chat ${id.slice(0, 8)}: no notice for ${childName(child)}: the chat's last turn failed; the next check-in job sees it`); return; }
+    const line = `${JOB_NOTICE_PREFIX}${noReportNotice(childName(child), lastMessage, wokeAt, end)}`;
+    if (noticeStands(this.messages(id) ?? [], childName(child), line)) return;
     try {
-      await this.threads.prompt(id, { message: `${JOB_NOTICE_PREFIX}${noReportNotice(childName(child), lastMessage, wokeAt, end)}`, images: [], mode: "steer" });
+      await this.threads.prompt(id, { message: line, images: [], mode: "steer" });
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
