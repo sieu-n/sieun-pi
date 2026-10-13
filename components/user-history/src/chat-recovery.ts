@@ -70,7 +70,20 @@ export interface TurnView { messages: readonly ThreadMessage[]; running: boolean
  * A turn that ended in a failure, or one a provider retry holds after a failure. `owner` is the owner's unanswered message when the owner
  * started the turn and it did not end on a Stop; `aborted` is a Stop.
  */
-export interface Stall { error: string; at: number; owner: string | null; aborted: boolean; retrying: boolean; queued: number }
+export interface Stall { error: string; at: number; owner: string | null; aborted: boolean; retrying: boolean; queued: number; slotAt?: number }
+
+/** The pool's note on a failure it turned into a wait for the session's own slot (pi-pool's extension, `waitFailure`). */
+const POOL_SLOT = / pi-pool: [\s\S]*?this session waits for its slot at (\d{4}-\d\d-\d\dT[\d:.]+Z)/;
+/** The slot (epoch ms) the pool gave the session in a failure's text, or null when the text carries none. */
+export function poolSlot(error: string): number | null {
+  const at = Date.parse(POOL_SLOT.exec(error)?.[1] ?? "");
+  return Number.isFinite(at) ? at : null;
+}
+/**
+ * Whether the pool holds the stall until its slot: Prime sleeps until then (at most 15 min at a time) and the slot's request goes to an account that
+ * takes it, so a restart before then only aborts that wait and meets the same refusal. 10-13: 54 check-in restarts of pool waits, each a new 429.
+ */
+const poolHolds = (stall: Pick<Stall, "slotAt">, now: number): boolean => stall.slotAt !== undefined && now < stall.slotAt;
 
 const clip = (text: string, max: number): string => text.length > max ? text.slice(0, max - 1) + "…" : text;
 
@@ -98,10 +111,12 @@ export function turnStall(view: TurnView, now: number): Stall | null {
   }
   if (!failed && !view.retrying) return null;
   const error = clip(view.retryError?.replace(/\s+/g, " ") || failed?.error || "retrying", 160);
+  // The slot note sits after the provider's own text, past the clip.
+  const slotAt = poolSlot(view.retryError || failed?.error || "");
   const owner = failed && !failed.aborted && turnStarter(view.messages) === "owner" && asked !== null
     ? clip(asked.includes(OWNER_RETRY_MARK) ? asked.slice(asked.indexOf(OWNER_RETRY_MARK) + OWNER_RETRY_MARK.length).replace(/^"|"\. Answer it first\.$/g, "") : asked, 200)
     : null;
-  return { error, at: failed?.at ?? now, owner, aborted: failed?.aborted ?? false, retrying: view.retrying, queued: view.queued };
+  return { error, at: failed?.at ?? now, owner, aborted: failed?.aborted ?? false, retrying: view.retrying, queued: view.queued, ...(slotAt === null ? {} : { slotAt }) };
 }
 
 /** The new turn the server starts for a stall, with the failure's local time; an owner turn quotes the owner's message so the chat answers it first. */
@@ -120,6 +135,7 @@ export function stallAction(input: { stall: Stall; down: boolean; claude: Claude
   const { stall, attempts, since, now } = input;
   const transient = !stall.aborted && failureCause(stall.error) === "transient";
   const restart = { kind: "restart" as const, message: revivalMessage(stall), abort: stall.retrying };
+  if (poolHolds(stall, now)) return { kind: "wait", wait: stall.owner === null ? null : { kind: "account", until: stall.slotAt! } };
   if (input.woke && transient) return restart;
   if (stall.retrying && stall.queued === 0 && !input.down) return { kind: "none" };
   const schedule = transient ? TRANSIENT_RETRY_BACKOFF_MS : stall.owner !== null ? OWNER_RETRY_BACKOFF_MS : RETRY_BACKOFF_MS;
@@ -139,7 +155,7 @@ export interface JobWake { failureAt: number; attempts: number; at: number }
 export function jobWake(input: { stall: Stall | null; last: JobWake | undefined; woke: boolean; now: number }): "wake" | "wait" | "none" {
   const { stall, last } = input;
   if (!stall || stall.aborted || failureCause(stall.error) !== "transient") return "none";
-  if (last?.failureAt === stall.at) return "wait";
+  if (last?.failureAt === stall.at || poolHolds(stall, input.now)) return "wait";
   if (input.woke) return "wake";
   if (stall.retrying && stall.queued === 0) return "wait";
   return input.now - (last?.at ?? stall.at) >= waitOf(TRANSIENT_RETRY_BACKOFF_MS, last?.attempts ?? 0) ? "wake" : "wait";

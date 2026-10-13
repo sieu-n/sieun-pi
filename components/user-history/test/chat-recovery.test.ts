@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claudeDown, failureCause, jobWake, type JobWake, OWNER_RETRY_BACKOFF_MS, revivalMessage, stallAction, strandedInput,
+import { claudeDown, failureCause, jobWake, type JobWake, OWNER_RETRY_BACKOFF_MS, poolSlot, revivalMessage, stallAction, strandedInput,
   TRANSIENT_RETRY_BACKOFF_MS, turnStall, turnViewOf, wokeFromSleep, type Stall } from "../src/chat-recovery.ts";
 import { claudeReader, claudeStateOf } from "../src/chat-pool.ts";
 import { chatFeed, turnStarter, waitText } from "../src/shared/chat-feed.ts";
@@ -59,6 +59,29 @@ test("transient stalls: 30 s, 1 min, 2 min, then 5, 10, 20 min; an owner turn st
     "a provider retry left over from before the sleep is stopped");
   assert.equal(act(stall(null, { error: "429" }), 0, 0, 1, true).kind, "wait", "a wake does not hurry a 429");
   assert.equal(act(stall(null, { error: "aborted", aborted: true }), 0, 0, 1, true).kind, "wait", "a Stop is not transient");
+});
+
+test("pool slot: a stall the pool turned into a wait for the session's slot is not restarted or woken before that slot, queued input, sleep or not", () => {
+  // 10-13 11:57Z to 13:42Z: the pool gave 6 chats slots on claude11 and the Virev seat. The check-in restarted each chat's pool wait 54 times
+  // (abort, "[check-in] Your last turn failed", a new request), and every restart met the same 429 until the slot.
+  const slot = Date.parse("2026-10-13T13:42:00.000Z");
+  const waited = `${RATE_LIMIT} [request_id: req_1] pi-pool: claude11@x is limited until 2026-10-13T13:40:00.000Z; this session waits for its slot at 2026-10-13T13:42:00.000Z. Try again in 15 minutes.`;
+  const hookWait = `${TOKEN_ERROR} pi-pool: this session waits for its slot at 2026-10-13T13:42:00.000Z. Try again in 2 minutes.`;
+  assert.equal(poolSlot(waited), slot);
+  assert.equal(poolSlot(hookWait), slot);
+  assert.equal(poolSlot(`${RATE_LIMIT} pi-pool: a@x is limited until 2026-10-13T13:40:00.000Z; the retry uses b@x.`), null, "a move to another account is no wait");
+  assert.equal(poolSlot(RATE_LIMIT), null);
+  const owner = user("go", slot - 120 * MIN);
+  const stalled = turnStall(view([owner, reply("error", slot - 105 * MIN, waited)], { running: true, retrying: true, queued: 2, retryError: waited }), slot - 100 * MIN);
+  assert.equal(stalled?.slotAt, slot, "the slot is read past the 160-character clip");
+  const act = (s: Stall, now: number, woke = false, down = true) => stallAction({ stall: s, down, claude: { serves: false, freeAt: null }, attempts: 3, since: slot - 105 * MIN, now, woke });
+  assert.deepEqual(act(stalled!, slot - 1), { kind: "wait", wait: { kind: "account", until: slot } }, "queued input and no usable account: the owner sees the slot");
+  assert.deepEqual(act({ ...stalled!, owner: null }, slot - 1), { kind: "wait", wait: null });
+  assert.equal(act({ ...stalled!, error: hookWait }, slot - 1, true).kind, "wait", "a hook slot wait after a sleep still waits");
+  assert.equal(act(stalled!, slot).kind, "restart", "at the slot the usual schedule applies");
+  const job = { ...stalled!, error: hookWait, owner: null, at: slot - 3 * MIN };
+  assert.equal(jobWake({ stall: job, last: undefined, woke: true, now: slot - MIN }), "wait");
+  assert.equal(jobWake({ stall: job, last: undefined, woke: false, now: slot }), "wake");
 });
 
 test("sleep: a gap of more than 90 s between two scheduler wakes means the Mac slept", () => {

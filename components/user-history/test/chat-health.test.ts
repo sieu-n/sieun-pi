@@ -329,6 +329,36 @@ test("chat health: a token hook failure the pool retried is a sieun-pi break onl
   }
 });
 
+test("chat health: a 429 or a hook failure the pool turned into a wait for the session's slot is not a sieun-pi break unless the turn ends on the hook", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    // 10-13: 87 breaks, all pool slot waits. 78 were 429s on accounts the pool knew were limited (Prime slept until the slot, or a check-in restart
+    // woke it early), 9 were hook runs that gave no token to a session whose slot was ahead. Every one of those turns ran again by itself.
+    const waited = "Provider rate limit exceeded (rate_limit_error, 429): This request would exceed your account's rate limit. Please try again later. [request_id: req_1] pi-pool: v@x (Virev) is limited until 2026-10-08T18:40:00.000Z; this session waits for its slot at 2026-10-08T10:08:00.000Z. Try again in 2 minutes.";
+    const refused = "Provider error (400): accept the updated Consumer Terms pi-pool: t@x is out of the pool (needs terms); this session waits for its slot at 2026-10-08T10:20:00.000Z. Try again in 5 minutes.";
+    const hookWait = `${API_KEY_ERROR} pi-pool: this session waits for its slot at 2026-10-08T10:06:00.000Z. Try again in 12 minutes.`;
+    const note = "[check-in] Your last turn failed at 18:05 (Provider rate limit exceeded (rate_limit_error, 429)). Re-check the board and continue.";
+    const failed = (at: number, errorMessage: string) => reply(at, "", "error", { errorMessage });
+    const lines: Line[] = [
+      user(ago(3 * HOUR), "go"), failed(ago(3 * HOUR) + 10_000, waited), user(ago(3 * HOUR) + 10 * MIN, note), failed(ago(3 * HOUR) + 10 * MIN + 1_000, waited),
+      failed(ago(3 * HOUR) + 25 * MIN, refused), failed(ago(3 * HOUR) + 30 * MIN, hookWait), reply(ago(3 * HOUR) + 32 * MIN, "done"),
+      user(ago(2 * HOUR), "next"), failed(ago(2 * HOUR) + 10_000, hookWait), user(ago(2 * HOUR) + 20 * MIN, "hello?"), reply(ago(2 * HOUR) + 21 * MIN, "back"),
+      user(ago(HOUR), "last"), failed(ago(HOUR) + 10_000, waited), user(ago(HOUR) + 5 * MIN, "still there?"), reply(ago(HOUR) + 6 * MIN, "yes"),
+    ];
+    await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-w"] }));
+    await writeFile(join(dir, "chat-w.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+    const output = join(dir, "health.json");
+    const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+    assert.equal(result.status, 0, result.stderr);
+    const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
+    // Only the hook wait the owner had to ask past is a break; the provider waits are the provider's, wherever the turn ended.
+    assert.deepEqual((health.flagged ?? []).filter(slice => slice.kind === "sieun_pi_breaks").map(slice => slice.at), [ago(2 * HOUR) + 10_000]);
+    assert.equal(health.metrics.sieun_pi_breaks, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("check-in quality: a flag left for 4 check-ins in a row counts once in unfixed_flags", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
   try {

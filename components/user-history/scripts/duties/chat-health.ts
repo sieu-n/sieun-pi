@@ -29,8 +29,12 @@ const FEW = 5;
 const CORRECTION = /\b(?:i told you|i (?:already )?(?:said|asked)|didn['\u2019]?t i (?:say|ask|request|tell)|not what i|you didn['\u2019]?t|you did not|you (?:were|are) wrong|(?:that|this|it) (?:is|was) wrong|why did you|why (?:is|are) (?:nothing|you)|stop (?:doing|saying|writing|asking)|never (?:says?|does|do|writes?|uses?|asks?)|don['\u2019]?t (?:do|say|write|use|ask|force)|(?:dont|don['\u2019]?t|do not) (?:get it|understand)|explain (?:it |this )?(?:more|again)|are you sure|what the fuck|wtf|you should have|(?:it|this) doesn['\u2019]?t happen again|always (?:message|reply|write|answer|talk|speak))\b|^again\b/i;
 /** Quoted text is someone else's words, such as an agent quoting the owner's earlier question. */
 const QUOTED = /[\u201c"][^\u201d"]*[\u201d"]/g;
-/** The note the pool's extension appends to an error it retries: on a provider error the provider failed, not sieun-pi; on a token hook failure it is a break only if the retry also fails. */
-const POOL_RETRY_NOTE = / pi-pool: [\s\S]*; the retry uses [\s\S]*$/;
+/**
+ * The note the pool's extension appends to an error it retries, on another account ("; the retry uses") or on the session's own slot ("this session
+ * waits for its slot at", Prime sleeps until then): on a provider error the provider failed, not sieun-pi; on a token hook failure it is a break only
+ * if the retry also fails. 10-13: all 87 breaks were such waits (78 provider 429s, 9 hook slot waits), each counted because the slot note was not read.
+ */
+const POOL_RETRY_NOTE = / pi-pool: [\s\S]*(?:; the retry uses |this session waits for its slot at )[\s\S]*$/;
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'\u2019._/-]*/gu;
 const BOARD_PREFIX = "[board] ";
 const BOARD_ANSWER = " and answered: ";
