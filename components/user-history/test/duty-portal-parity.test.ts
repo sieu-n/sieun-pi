@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { judge, parseDutyInput } from "../src/shared/chat-duties.ts";
-import { baseOp, buildRequest, jobRequest, chainIds, classify, isDm, nextPage, type OpenApi, type Operation, operations, parityMetrics, type ProbeResult, type Route, UNMEASURED } from "../scripts/duties/portal-parity.ts";
+import { baseOp, buildRequest, jobRequest, chainIds, classify, isDm, nextPage, type OpenApi, type Operation, operations, parityMetrics, parseState, type ProbeResult, type Route, UNMEASURED } from "../scripts/duties/portal-parity.ts";
 
 const AT = Date.parse("2026-10-13T00:00:00Z");
 const op = (parameters: NonNullable<Operation["parameters"]>, extra: Omit<Operation, "parameters"> = {}): Operation => ({ parameters, ...extra });
@@ -92,6 +92,11 @@ test("portal parity: a route that worked last run and fails now is a regression"
   const { output } = parityMetrics({ routes: ROUTES, crawler, prod, staging: prod, sourceErrors: [], at: AT, previous: { verdicts: { "GET /v1/a": "ok" } },
     probes: [probe("GET /v1/a", "portal", 400, "invalid_request")] });
   assert.ok(output.flagged?.some(item => item.kind === "regression" && item.excerpt.startsWith("GET /v1/a")));
+});
+
+test("portal parity: the runner's first-run state {} reads as no previous state", () => {
+  assert.equal(parseState("{}"), undefined);
+  assert.deepEqual(parseState('{"verdicts":{"GET /v1/a":"ok"}}'), { verdicts: { "GET /v1/a": "ok" } });
 });
 
 test("portal parity: unread sources give 999999 and source_errors, never a good value", () => {

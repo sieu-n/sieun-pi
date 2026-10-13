@@ -58,6 +58,11 @@ export interface ProbeRequest { method: string; path: string; query: Record<stri
 export type Verdict = "ok" | "crawler" | "portal" | "unprobed";
 export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string }
 export interface ParityState { verdicts: Record<string, Verdict> }
+/** The saved state, or undefined for none. The duty runner seeds STATE_FILE with "{}" before the first run, which has no verdicts. */
+export function parseState(text: string): ParityState | undefined {
+  const state = JSON.parse(text) as Partial<ParityState> | null;
+  return state && typeof state.verdicts === "object" && state.verdicts !== null ? { verdicts: state.verdicts } : undefined;
+}
 
 /** Every operation in an openapi document as "METHOD /path". */
 export function operations(doc: OpenApi): Map<string, Operation> {
@@ -281,7 +286,7 @@ async function main(): Promise<void> {
   if (!output) { process.stderr.write("portal-parity: OUTPUT_FILE is not set\n"); process.exit(2); }
   const start = Date.now();
   const stateFile = process.env.STATE_FILE;
-  const previous = stateFile ? await readFile(stateFile, "utf8").then(text => JSON.parse(text) as ParityState, () => undefined) : undefined;
+  const previous = stateFile ? await readFile(stateFile, "utf8").then(parseState).catch(() => undefined) : undefined;
   const routes = (JSON.parse(await readFile(join(HERE, "portal-parity.routes.json"), "utf8")) as { routes: Route[] }).routes;
   const sourceErrors: string[] = [];
   const attempt = async <T>(what: string, run: () => Promise<T>): Promise<T | null> => {
