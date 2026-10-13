@@ -6,12 +6,12 @@
   import { queueLine } from "./agent-queue.ts";
 
   const POLL_MS = 5000;
+  type Field = "mac" | "tree" | "idle";
 
   let view = $state<AgentQueueView | null>(null);
   let error = $state<string | null>(null);
   let saving = $state<AgentQueueInput["action"] | null>(null);
-  let macDraft = $state<number | null>(null);
-  let treeDraft = $state<number | null>(null);
+  let drafts = $state<Record<Field, number | null>>({ mac: null, tree: null, idle: null });
   let timer: ReturnType<typeof setInterval> | undefined;
 
   async function load(): Promise<void> {
@@ -26,62 +26,68 @@
     try {
       view = await api.setAgentQueue(input);
       error = null;
-      if (input.action === "mac") macDraft = null;
-      if (input.action === "tree") treeDraft = null;
+      if (input.action !== "queue") drafts[input.action] = null;
     } catch (reason) { error = reason instanceof Error ? reason.message : String(reason); }
     finally { saving = null; }
   }
 
-  const read = $derived(view?.state === "read" ? view : null);
-  const enabled = $derived(read?.enabled ?? false);
-  const macValue = $derived(macDraft ?? view?.restoreMax ?? null);
-  const treeValue = $derived(treeDraft ?? read?.treeWorkingMax ?? null);
-  const whole = (value: number | null): value is number => value !== null && Number.isInteger(value) && value >= 1 && value <= 999;
-  const line = $derived(view ? queueLine(view) : null);
+  const pool = $derived(view?.pool.state === "read" ? view.pool : null);
+  const idleSaved = $derived(typeof view?.idleEvictionMinutes === "number" ? view.idleEvictionMinutes : null);
+  const saved = $derived<Record<Field, number | null>>({ mac: pool?.macWorkingMax ?? null, tree: pool?.treeWorkingMax ?? null, idle: idleSaved });
+  const shown = (field: Field) => drafts[field] ?? saved[field];
+  const changed = (field: Field) => {
+    const value = drafts[field];
+    return value !== null && Number.isInteger(value) && value >= 1 && value !== saved[field];
+  };
 
-  function submit(event: SubmitEvent, action: "mac" | "tree"): void {
+  function submit(event: SubmitEvent, field: Field): void {
     event.preventDefault();
-    const value = action === "mac" ? macValue : treeValue;
-    if (whole(value)) void apply({ action, value });
+    const value = drafts[field];
+    if (changed(field) && value !== null) void apply({ action: field, value });
   }
 </script>
+
+{#snippet limit(field: Field, label: string, unit: string, max: number, enabled: boolean, notes: string[])}
+  <form class="limit" onsubmit={event => submit(event, field)}>
+    <label class="label" for="queue-{field}">{label}</label>
+    <div class="field-row">
+      <input id="queue-{field}" class="field" type="number" inputmode="numeric" min="1" {max} step="1" disabled={!enabled || saving !== null}
+        placeholder={field === "idle" && view?.idleEvictionMinutes === "off" ? "Off" : ""}
+        value={shown(field)} oninput={event => { drafts[field] = Number.isNaN(event.currentTarget.valueAsNumber) ? null : event.currentTarget.valueAsNumber; }} />
+      {#if unit}<span class="unit">{unit}</span>{/if}
+      <button type="submit" class="button small" disabled={!enabled || saving !== null || !changed(field)}>
+        {#if saving === field}<span class="spinner tiny"></span>{:else}Set{/if}
+      </button>
+    </div>
+    {#each notes as note (note)}<p class="note">{note}</p>{/each}
+  </form>
+{/snippet}
 
 <section class="queue" aria-label="Agent queue">
   <h3>Agent queue</h3>
   {#if !view}
     <p class="note">{error ? `The agent queue is unavailable. ${error}` : "Reading the agent queue"}</p>
   {:else}
-    <p class="live" class:problem={view.state === "unread"} aria-live="polite">{line}</p>
-    {#if view.state === "unread"}<p class="note">{view.error}</p>{/if}
+    <p class="live" class:problem={view.pool.state === "unread"} aria-live="polite">{queueLine(view.pool)}</p>
+    {#if view.pool.state === "unread"}<p class="note">{view.pool.error}</p>{/if}
 
-    <button type="button" class="toggle" role="switch" aria-checked={enabled} aria-busy={saving === "off" || saving === "on"} disabled={!read || saving !== null}
-      onclick={() => void apply({ action: enabled ? "off" : "on" })}>
-      {#if saving === "off" || saving === "on"}<span class="spinner tiny"></span>{:else}<Checkbox visual checked={enabled} />{/if}
+    <button type="button" class="toggle" role="switch" aria-checked={pool?.enabled ?? false} aria-busy={saving === "queue"} disabled={!pool || saving !== null}
+      onclick={() => { if (pool) void apply({ action: "queue", on: !pool.enabled }); }}>
+      {#if saving === "queue"}<span class="spinner tiny"></span>{:else}<Checkbox visual checked={pool?.enabled ?? false} />{/if}
       <span class="text">
         <span class="label">Queue agent turns</span>
-        <span class="note">On, a job or subagent turn waits for a working slot when the limits below are full; your own messages never wait. Off writes mac_working_max "off", and on writes {view.restoreMax} back.</span>
+        <span class="note">A job or subagent turn waits for a working slot while the limits below are full. Your own messages never wait. Off lets every turn start at once and keeps both numbers.</span>
       </span>
     </button>
 
-    <form class="limit" onsubmit={event => submit(event, "mac")}>
-      <label class="label" for="mac-working-max">Working sessions on this Mac</label>
-      <div class="field-row">
-        <input id="mac-working-max" class="field" type="number" inputmode="numeric" min="1" max="999" step="1" disabled={!enabled || saving !== null}
-          value={macValue} oninput={event => { macDraft = event.currentTarget.valueAsNumber; }} />
-        <button type="submit" class="button small" disabled={!enabled || saving !== null || macDraft === null || !whole(macValue) || macValue === view.restoreMax}>Set</button>
-      </div>
-      <p class="note">A p90 working session uses 426 MB; 16 fit in the 6.9 GB free (measured 10-14 07:38 KST).</p>
-    </form>
-
-    <form class="limit" onsubmit={event => submit(event, "tree")}>
-      <label class="label" for="tree-working-max">Working sessions per chat</label>
-      <div class="field-row">
-        <input id="tree-working-max" class="field" type="number" inputmode="numeric" min="1" max="999" step="1" disabled={!read || saving !== null}
-          value={treeValue} oninput={event => { treeDraft = event.currentTarget.valueAsNumber; }} />
-        <button type="submit" class="button small" disabled={!read || saving !== null || treeDraft === null || !whole(treeValue) || treeValue === read?.treeWorkingMax}>Set</button>
-      </div>
-      <p class="note">Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14.</p>
-    </form>
+    {@render limit("mac", "Working sessions on this Mac", "", 999, pool !== null,
+      ["A p90 working session uses 426 MB; 16 fit in the 6.9 GB free (measured 10-14 07:38 KST)."])}
+    {@render limit("tree", "Working sessions per chat", "", 999, pool !== null,
+      ["Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14."])}
+    {@render limit("idle", "Unload idle sessions after", "min", 1440, true, [
+      "90 min is the daemon's own default, kept until reload gaps are measured; 10 timed reloads on 10-13 took 1.1 to 6.2 s. The daemon rereads it within 5 minutes, with no restart.",
+      "Pinned chats stay loaded until the harness VP's detach fix lands, so for now this unloads idle jobs and threads only.",
+    ])}
     {#if error}<p class="note problem">The last change failed. {error}</p>{/if}
   {/if}
 </section>
@@ -102,5 +108,6 @@
   .limit .note { grid-column: 1 / -1; }
   .field-row { display: flex; align-items: center; gap: 8px; }
   .field-row .field { width: 88px; font-variant-numeric: tabular-nums; }
+  .unit { color: var(--text-muted); }
   .field:disabled { opacity: 0.6; }
 </style>

@@ -16,9 +16,9 @@ test("vm_stat counts app, wired and compressed pages as used memory", () => {
 });
 
 test("sysctl gives the pressure level and swap in use", () => {
-  assert.deepEqual(parseSysctl("2\ntotal = 39936.00M  used = 39051.81M  free = 884.19M  (encrypted)\n"), { pressure: "warn", swapUsedBytes: Math.round(39051.81 * 1024 * 1024) });
-  assert.deepEqual(parseSysctl("1\ntotal = 0.00M  used = 0.00M  free = 0.00M\n"), { pressure: "normal", swapUsedBytes: 0 });
-  assert.deepEqual(parseSysctl(""), { pressure: null, swapUsedBytes: null });
+  assert.deepEqual(parseSysctl("2\ntotal = 39936.00M  used = 39051.81M  free = 884.19M  (encrypted)\n"), { pressure: "warn", swapUsedBytes: Math.round(39051.81 * 1024 * 1024), swapTotalBytes: 39936 * 1024 * 1024 });
+  assert.deepEqual(parseSysctl("1\ntotal = 0.00M  used = 0.00M  free = 0.00M\n"), { pressure: "normal", swapUsedBytes: 0, swapTotalBytes: 0 });
+  assert.deepEqual(parseSysctl(""), { pressure: null, swapUsedBytes: null, swapTotalBytes: null });
 });
 
 test("machineView reads this machine", async () => {

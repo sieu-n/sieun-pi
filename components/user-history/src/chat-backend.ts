@@ -13,7 +13,7 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, setPoolPriority } from "./chat-pool.ts";
 import { dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
-import { agentQueue, type AgentQueue } from "./chat-agent-queue.ts";
+import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { Chats } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
@@ -30,7 +30,7 @@ import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
-export interface ChatDefaultsStore {
+export interface ChatDefaultsStore extends IdleEviction {
   read(): ChatDefaults;
   write(next: ChatDefaultsInput): Promise<void>;
 }
@@ -57,7 +57,7 @@ export interface ChatBackend {
   duties?: Duties;
   /** Each live root's pool class (`pi-pool priority`), synced every 30 s and after a priority label change. Absent in tests that fake a backend. */
   poolPriorities?: PoolPriorities;
-  /** Settings > This Mac > Agent queue: `pi-pool queue --json` and the two limits, with the limit to restore in `<dataDir>/agent-queue.json`. Absent in tests that fake a backend. */
+  /** Settings > This Mac > Agent queue: `pi-pool queue --json`, the queue switch and its two limits, and the daemon's idle unload time. Absent in tests that fake a backend. */
   agentQueue?: AgentQueue;
   close(): Promise<void>;
 }
@@ -78,6 +78,14 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
       const settings = manager();
       settings.setDefaultModelAndProvider(next.provider, next.modelId);
       if (next.thinkingLevel) settings.setDefaultThinkingLevel(next.thinkingLevel);
+      await settings.flush();
+      const failure = settings.drainErrors("global")[0];
+      if (failure) throw failure.error;
+    },
+    idleEviction: () => manager().getIdleEvictionMinutes(),
+    async setIdleEviction(value) {
+      const settings = manager();
+      settings.setIdleEvictionMinutes(value);
       await settings.flush();
       const failure = settings.drainErrors("global")[0];
       if (failure) throw failure.error;
@@ -156,7 +164,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   let closed = false;
   return {
     catalog, threads, readState, labels, notes, bookmarks, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
-    agentQueue: agentQueue(join(dataDir, "agent-queue.json"), id => catalog.title(id)),
+    agentQueue: agentQueue(id => catalog.title(id), defaults),
     async close() {
       if (closed) return;
       closed = true;

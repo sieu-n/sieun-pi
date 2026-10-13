@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
-import { POOL_PRIORITIES, type AccountAction, type AgentQueueSession, type AgentQueuedSession, type AgentQueueView, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider,
+import { POOL_PRIORITIES, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueuedSession, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider,
   type PoolResolution, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
@@ -187,12 +187,10 @@ export const poolCommand = {
   login: (provider: string, account: string | null, seconds: number) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds)],
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
   queue: () => ["queue", "--json"],
-  set: (key: string, value: number | string) => ["set", key, String(value)],
+  set: (key: string, value: number) => ["set", key, String(value)],
 };
 
 /** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
-export type AgentQueueReading = Omit<Extract<AgentQueueView, { state: "read" }>, "state" | "restoreMax" | "nextTitle">;
-
 const count = (value: unknown): number | null => typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 
 function queueSession(value: unknown): AgentQueueSession {
@@ -204,9 +202,8 @@ function queueSession(value: unknown): AgentQueueSession {
 
 export function parseAgentQueue(value: unknown): AgentQueueReading {
   if (!isRecord(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.working) || !Array.isArray(value.queued)) throw new Error("pi-pool returned an invalid queue");
-  const macWorkingMax = value.mac_working_max === "off" ? null : count(value.mac_working_max);
-  const treeWorkingMax = count(value.tree_working_max);
-  if ((macWorkingMax === null && value.mac_working_max !== "off") || treeWorkingMax === null) throw new Error("pi-pool returned invalid queue limits");
+  const macWorkingMax = count(value.mac_working_max), treeWorkingMax = count(value.tree_working_max);
+  if (macWorkingMax === null || treeWorkingMax === null) throw new Error("pi-pool returned invalid queue limits");
   const queued = value.queued.map((entry: unknown): AgentQueuedSession => {
     const session = queueSession(entry);
     const row = entry as Record<string, unknown>;
@@ -224,7 +221,7 @@ export async function readAgentQueue(): Promise<AgentQueueReading> {
 }
 
 /** One `pi-pool set`; the value goes over as text, the way the CLI takes it. */
-export async function setPoolKey(key: "mac_working_max" | "tree_working_max", value: number | "off"): Promise<void> {
+export async function setPoolKey(key: "agent_queue_on" | "mac_working_max" | "tree_working_max", value: number): Promise<void> {
   await run(poolCommand.set(key, value));
 }
 

@@ -12,6 +12,12 @@ export const POOL_DEFAULTS = {
   refused_cooldown_sec: 24 * 3600,
   probe_interval_sec: 6 * 3600,
   active_session_sec: 3600,
+  /** The Mac-wide turn queue's switch, on by default (agent queue plan, change 5). */
+  agent_queue_on: 1,
+  /** A p90 working session used 426 MB, and 6.9 GB was free for agents on 10-14 07:38 KST, so 16 fit (agent-queue-measure.md). */
+  mac_working_max: 16,
+  /** Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14. */
+  tree_working_max: 8,
 } as const;
 export type PoolKey = keyof typeof POOL_DEFAULTS;
 

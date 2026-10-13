@@ -39,19 +39,22 @@ export function parseVmStat(text: string): number | null {
 const PRESSURE_LEVELS: Record<string, MemoryPressure> = { "1": "normal", "2": "warn", "4": "critical" };
 
 /** `sysctl -n kern.memorystatus_vm_pressure_level vm.swapusage`: the kernel's pressure level (1, 2 or 4) on the first line, swap use on the second. */
-export function parseSysctl(text: string): { pressure: MemoryPressure | null; swapUsedBytes: number | null } {
+export function parseSysctl(text: string): { pressure: MemoryPressure | null; swapUsedBytes: number | null; swapTotalBytes: number | null } {
   const [level, swap = ""] = text.split("\n");
   const pressure = PRESSURE_LEVELS[level?.trim() ?? ""] ?? null;
-  const used = /used = ([\d.]+)M/.exec(swap)?.[1];
-  return { pressure, swapUsedBytes: used === undefined ? null : Math.round(Number(used) * 1024 * 1024) };
+  const megabytes = (name: string) => {
+    const value = new RegExp(`${name} = ([\\d.]+)M`).exec(swap)?.[1];
+    return value === undefined ? null : Math.round(Number(value) * 1024 * 1024);
+  };
+  return { pressure, swapUsedBytes: megabytes("used"), swapTotalBytes: megabytes("total") };
 }
 
 async function memory(): Promise<MachineView["memory"]> {
   const totalBytes = totalmem();
-  if (process.platform !== "darwin") return { usedBytes: totalBytes - freemem(), totalBytes, swapUsedBytes: null, pressure: null };
+  if (process.platform !== "darwin") return { usedBytes: totalBytes - freemem(), totalBytes, swapUsedBytes: null, swapTotalBytes: null, pressure: null };
   const [vm, sysctl] = await Promise.all([
     run("vm_stat").then(out => parseVmStat(out.stdout), () => null),
-    run("sysctl", ["-n", "kern.memorystatus_vm_pressure_level", "vm.swapusage"]).then(out => parseSysctl(out.stdout), () => ({ pressure: null, swapUsedBytes: null })),
+    run("sysctl", ["-n", "kern.memorystatus_vm_pressure_level", "vm.swapusage"]).then(out => parseSysctl(out.stdout), () => ({ pressure: null, swapUsedBytes: null, swapTotalBytes: null })),
   ]);
   return { usedBytes: vm ?? totalBytes - freemem(), totalBytes, ...sysctl };
 }

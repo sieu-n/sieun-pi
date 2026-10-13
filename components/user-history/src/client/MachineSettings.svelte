@@ -64,7 +64,7 @@
         <span class="value">{gb(view.memory.usedBytes)}<small>{" of "}{gb(view.memory.totalBytes)} GB</small></span>
         <span class="note">
           {#if view.memory.pressure}<span class="pressure {view.memory.pressure}">{PRESSURE_TEXT[view.memory.pressure]}</span>{/if}
-          {#if view.memory.swapUsedBytes !== null} Swap holds {gb(view.memory.swapUsedBytes)} GB.{/if}
+          {#if view.memory.swapUsedBytes !== null} Swap holds {gb(view.memory.swapUsedBytes)}{view.memory.swapTotalBytes ? ` of ${gb(view.memory.swapTotalBytes)}` : ""} GB.{/if}
         </span>
       </div>
       <div class="bar {view.memory.pressure ?? 'normal'}" role="meter" aria-label="Memory used" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(memPercent)}>

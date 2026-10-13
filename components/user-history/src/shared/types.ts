@@ -477,24 +477,25 @@ export interface MachineView {
   /** Busy share of all cores since the previous reading, 0 to 100. */
   cpu: { percent: number; cores: number; load: [number, number, number] };
   /** usedBytes counts app, wired and compressed memory, as Activity Monitor's "Memory Used" does on macOS. Swap and pressure are null off macOS. */
-  memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; pressure: MemoryPressure | null };
+  memory: { usedBytes: number; totalBytes: number; swapUsedBytes: number | null; swapTotalBytes: number | null; pressure: MemoryPressure | null };
 }
 
 /** One session in `pi-pool queue --json`. Times leave the server in epoch ms. */
 export interface AgentQueueSession { session: string; tree: string; parent: string | null; priority: PoolPriority; since: number }
 export interface AgentQueuedSession extends AgentQueueSession { basePriority: PoolPriority; position: number; total: number; waitMs: number }
+/** `pi-pool queue --json` as parsed. `enabled` is the `agent_queue_on` switch; the two limits keep their numbers while it is off. */
+export interface AgentQueueReading { enabled: boolean; macWorkingMax: number; treeWorkingMax: number; working: AgentQueueSession[]; queued: AgentQueuedSession[] }
+export type IdleEvictionMinutes = number | "off";
 
 /**
- * Settings > This Mac > Agent queue. `read` is `pi-pool queue --json` as parsed; `restoreMax` is the Mac limit the switch writes back when the
- * queue turns on again, and `nextTitle` names the first queued session. `unread` means the pool did not answer, so every turn runs unqueued.
+ * Settings > This Mac > Agent queue. `pool` is `unread` when the pool did not answer, so every turn runs unqueued; `nextTitle` names the first
+ * queued session. `idleEvictionMinutes` is the daemon's own setting in ~/.prime/agent/settings.json, which it rereads on every sweep.
  */
-export type AgentQueueView =
-  | { state: "read"; enabled: boolean; macWorkingMax: number | null; treeWorkingMax: number; restoreMax: number;
-    working: AgentQueueSession[]; queued: AgentQueuedSession[]; nextTitle: string | null }
-  | { state: "unread"; error: string; restoreMax: number };
+export type AgentQueuePool = (AgentQueueReading & { state: "read"; nextTitle: string | null }) | { state: "unread"; error: string };
+export interface AgentQueueView { pool: AgentQueuePool; idleEvictionMinutes: IdleEvictionMinutes }
 
-/** One Agent queue write; each one is a single `pi-pool set`. */
-export type AgentQueueInput = { action: "mac"; value: number } | { action: "tree"; value: number } | { action: "off" } | { action: "on" };
+/** One Agent queue write: a single `pi-pool set` for the switch and the two limits, or the daemon's idle unload time. */
+export type AgentQueueInput = { action: "queue"; on: boolean } | { action: "mac"; value: number } | { action: "tree"; value: number } | { action: "idle"; value: IdleEvictionMinutes };
 
 /**
  * Settings > Tools and skills: live checks of the tools agents use (the Aside browser, web search, computer use), run on the chat server with
