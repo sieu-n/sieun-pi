@@ -490,6 +490,18 @@ class OutsideSendGapTests(BoardBase):
             self.page(url, "ok")
             self.assertEqual(self.call(ab.run(code)), "ok", url)
 
+    def test_github_sign_in_pages_pass_and_other_github_pages_stay_checked(self):
+        """Owner 10-14 (c4): agents start and finish GitHub sign-ins in Aside themselves, `gh auth login --web` included."""
+        for url, code in (
+            ("https://github.com/login", "await page.fill('#login_field','x'); await page.keyboard.press('Enter')"),
+            ("https://github.com/login/device", "await page.fill('#user-code-0','ABCD'); await page.getByRole('button', {name: 'Continue'}).click()"),
+            ("https://github.com/login/device/confirmation", "await page.keyboard.press('Enter')"),
+            ("https://github.com/login/oauth/authorize?client_id=x", "await page.click('button[type=submit]')"),
+            ("https://github.com/sessions/two-factor/app", "await page.fill('#app_totp','123456'); await page.keyboard.press('Enter')"),
+        ):
+            self.assertIsNone(ab.outside_send(code, url), url)
+        self.assertIsNotNone(ab.outside_send("await page.keyboard.press('Enter')", "https://github.com/other/repo/issues/1"))
+
 
 CLICK_PAGE = """
 class Mouse {
@@ -540,9 +552,11 @@ class CoordinateClickTests(BoardBase):
         self.assertEqual(out["log"], ["move"])
 
     def test_other_clicks_pass(self):
-        for url, label in (("https://mail.google.com/mail/u/0/#inbox", "Inbox"), ("http://localhost:5182/", "Send"), ("https://app.example.com/", "Send")):
+        for url, label in (("https://mail.google.com/mail/u/0/#inbox", "Inbox"), ("http://localhost:5182/", "Send"), ("https://app.example.com/", "Send"),
+                           ("https://github.com/login/oauth/authorize?client_id=x", "Submit")):
             self.assertEqual(self.click(url, label), {"log": ["move", "down", "up"]}, url)
         self.assertEqual(ab.guard_clicks("return page.url()"), "return page.url()")
+        self.assertIn("social or chat site", self.click("https://github.com/other/repo/pull/1", "Submit").get("error", ""))
 
     def test_run_sends_the_guard_and_logs_a_refused_click(self):
         line = ab._CLICK_MARK + json.dumps({"reason": "it clicks Send by coordinates on a webmail page (https://mail.google.com/mail/u/0/)", "target": "https://mail.google.com/mail/u/0/ | Gmail | clicked \"Send\" at (1378, 775)"})

@@ -13,9 +13,11 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 ## Review asks and logins
 
 1. When you ask the owner to review or pick a UI variant, put the clickable link and one screenshot per variant inline in the chat message itself (`![variant A](path)` and its URL), never only in a todo or a board note (c3).
-2. A CLI or service login (vercel login, gh auth, a device code or browser flow) is yours or the job's to finish (c4).
+2. A CLI or service login (vercel login, `gh auth login --web`, a GitHub web sign-in, a device code or browser flow) is yours or the job's to start and finish (c4).
 3. Open the login in the owner's Aside browser through the aside-browser skill and complete the Google or GitHub sign-in there.
-4. Ask the owner only when no OAuth path works, such as a password, a 2FA code or a hardware key.
+4. A GitHub web sign-in or `gh auth login --web` mints a `gho_` token with repo scope on this machine, and that is expected.
+5. Ask the owner only for the one step no OAuth path covers, such as a password, a 2FA push or code on his phone, or a hardware key.
+6. Admin GitHub work such as creating tokens, revoking tokens or billing is no login, and this rule does not cover it.
 
 ## Links, images and names in a reply
 

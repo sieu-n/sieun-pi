@@ -327,6 +327,8 @@ _SOCIAL_HOSTS = re.compile(
     re.I,
 )
 _OWN_GITHUB_PATH = re.compile(r"^/(?:sieu-n|virev-ai)(?:/|$)", re.I)
+# GitHub sign-in pages (web login, OAuth authorize, the gh device flow, 2FA): agents finish these themselves (c4, owner 10-14), so they are no social page.
+_GITHUB_SIGN_IN_PATH = re.compile(r"^/(?:login|session|sessions)(?:/|$)", re.I)
 _URL = re.compile(r"https?://[^\s'\"`)<>]+", re.I)
 _LOCAL_HOST = re.compile(r"^(?:localhost|127\.\d+\.\d+\.\d+|\[::1\]|0\.0\.0\.0)$", re.I)
 _MAIL_GLOBAL = re.compile(r"\b(?:gmail|outlook)\s*\.\s*(?:openComposer|openReplyComposer|openThreadDetailsPage|send\w*|reply\w*)\b")
@@ -364,7 +366,7 @@ def _host_kind(url: str) -> str | None:
         return "mail"
     if _TICKET_HOST.search(host) or _TICKET_PATH.search(path):
         return "ticket"
-    if _SOCIAL_HOSTS.search(host) or (host.lower() == "github.com" and path.count("/") >= 3 and not _OWN_GITHUB_PATH.match(path)):
+    if _SOCIAL_HOSTS.search(host) or (host.lower() == "github.com" and path.count("/") >= 3 and not _OWN_GITHUB_PATH.match(path) and not _GITHUB_SIGN_IN_PATH.match(path)):
         return "social"
     return None
 
@@ -384,7 +386,7 @@ _CLICK_GUARD = (
     "globalThis.__asideSendClick = (() => { const re = (s) => new RegExp(s, 'i'), R = __PATTERNS__, at = new Map();"
     r"const kind = (u) => { const m = /^https?:\/\/([^\/:?#]+)(?::\d+)?([^?#]*)/i.exec(u || ''); if (!m || re(R.local).test(m[1])) return null;"
     " if (re(R.mail).test(m[1])) return 'mail'; if (re(R.ticketHost).test(m[1]) || re(R.ticketPath).test(m[2])) return 'ticket';"
-    " if (re(R.social).test(m[1]) || (m[1].toLowerCase() === 'github.com' && m[2].split('/').length > 3 && !re(R.ownGithub).test(m[2]))) return 'social'; return null; };"
+    " if (re(R.social).test(m[1]) || (m[1].toLowerCase() === 'github.com' && m[2].split('/').length > 3 && !re(R.ownGithub).test(m[2]) && !re(R.githubSignIn).test(m[2]))) return 'social'; return null; };"
     "const check = async (p, x, y) => { const url = p.url(), k = kind(url);"
     " const e = await p.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); if (!el) return null;"
     "  const b = el.closest('button,[role=button],a,input,[role=menuitem]') || el, a = (n) => b.getAttribute(n) || '';"
@@ -411,7 +413,7 @@ def guard_clicks(code: str) -> str:
         return code
     patterns = {
         "local": _LOCAL_HOST.pattern, "mail": _MAIL_HOSTS.pattern, "ticketHost": _TICKET_HOST.pattern, "ticketPath": _TICKET_PATH.pattern,
-        "social": _SOCIAL_HOSTS.pattern, "ownGithub": _OWN_GITHUB_PATH.pattern, "widget": _WIDGET.pattern,
+        "social": _SOCIAL_HOSTS.pattern, "ownGithub": _OWN_GITHUB_PATH.pattern, "githubSignIn": _GITHUB_SIGN_IN_PATH.pattern, "widget": _WIDGET.pattern,
         "mailLabel": _CLICK_LABEL["mail"], "label": _CLICK_LABEL["other"],
     }
     return _CLICK_GUARD.replace("__PATTERNS__", json.dumps(patterns, ensure_ascii=False)).replace("__MARK__", json.dumps(_CLICK_MARK)) + " " + rewritten

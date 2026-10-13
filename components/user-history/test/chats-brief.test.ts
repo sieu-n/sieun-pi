@@ -75,6 +75,7 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["references/owner.md", "ask yourself whether the CTO would be annoyed to be asked", "few asks"],
     ["references/owner.md", "one screenshot per variant inline in the chat message itself", "UI picks inline (c3)"],
     ["references/owner.md", "complete the Google or GitHub sign-in there", "logins through Aside (c4)"],
+    ["references/owner.md", "`gh auth login --web`, a GitHub web sign-in, a device code or browser flow) is yours or the job's to start and finish (c4)", "GitHub sign-ins are the agent's too (c4, owner 10-14)"],
     ["references/owner.md", "If the owner says talk first, reply with your proposal and the default you start at your next wake-up", "talk first"],
     ["references/owner.md", "like [secrets walkthrough](job:secrets walkthrough)", "job links"],
     ["references/owner.md", "mermaid diagrams", "images and diagrams"],

@@ -100,6 +100,7 @@ An email, a vendor ticket reply, or a message or post to someone outside goes ou
 - It refuses code that presses Send, or a send shortcut such as `Meta+Enter`, on a webmail page such as Gmail.
 - It refuses code that submits, replies or presses Enter on a support ticket page or a contact form.
 - It refuses code that posts, sends or presses Enter on X, LinkedIn, Discord, Facebook, Instagram, Reddit, WhatsApp web, Telegram web, or a GitHub page outside `sieu-n` and `virev-ai`.
+- GitHub sign-in pages (`github.com/login`, `/login/oauth`, `/login/device` and `/sessions`) are no post, so an agent finishes a GitHub sign-in there itself (c4).
 - It refuses the site skills' send calls (`linkedin.sendMessage`, `imessage.send` and the like) and any click or typing inside a support chat widget such as Intercom.
 - It checks a click by coordinates, such as `page.mouse.click(x, y)`, when it runs: it reads the element under the point and refuses Send on a webmail page, Send or Submit on a ticket or social page, and a click into a support chat widget's frame.
 - Each send it allows or refuses writes one line to the send log, which `board.sends()` reads.
