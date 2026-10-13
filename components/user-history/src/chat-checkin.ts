@@ -108,9 +108,13 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   for (const gate of gates) if (gate.kind === "go_waiting") notes.push(gateLine(gate));
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
+  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch, context.train);
+  // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
+  // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
+  const onOthers = new Set(blocked.map(block => block.view.item.id));
   return { memory: { at: now, steps, since }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
-    stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now), goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now),
-    blocked: context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch, context.train), done: context.boardError ? [] : finishedOpen(board),
+    stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train).filter(stall => !onOthers.has(stall.view.item.id)),
+    goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board),
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now), waitsMet: context.boardError ? [] : waitsMet(goaled, board, context.rows ?? [], self),

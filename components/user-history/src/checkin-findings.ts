@@ -402,7 +402,10 @@ export const STALL_MS = 2 * 60 * 60_000;
  * An open step that sits on a passive wait (c23 reopened, owner 10-09 via stripe and payments: duties should push these): it waits
  * (a waitFor, a waitUntil, or a thread owner), nobody is on it now (not live, not For you), and its wait has stayed the same for STALL_MS, or its
  * waitUntil was pushed later more than once. `why` says which. A waitUntil still ahead and never moved is a planned wait unless the step also
- * waits on a thread or on CI, a land, a release or a pin; `rows` and `self` find a thread its waitFor names (`waitTarget`).
+ * waits on a thread or on CI, a land, a release or a pin; `rows` and `self` find a thread its waitFor names (`waitTarget`). A step that waits on a
+ * release `train` that moves (`trainMoves`, no thread named) is not stalled, as it is not blocked_on_others (Crawler VP 10-13, p47 "land 34 on
+ * staging ..." read "act on it in this run" at 19:38, 20:12 and 20:59 while land 33 and promote 9 ran). The check-in precheck also drops each
+ * step `blockedOnOthers` flags: that line names the blocker and the action, and one step gets one finding.
  */
 export interface StalledStep { view: StepView; why: string }
 /**
@@ -414,11 +417,12 @@ const RUN_ID = /\b\d{9,}\b/;
 const HOLD = /\b(?:hold|holds|held|holding|queued\s+behind|cancell?ed\s+by)\b|(?<!\bin\s)\border\b/i;
 const heldRun = (item: PlanItem): boolean => RUN_ID.test(item.waitFor ?? "") && HOLD.test(item.note ?? "");
 export function stalledSteps(views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
-  self: ReadonlySet<string>, now: number): StalledStep[] {
+  self: ReadonlySet<string>, now: number, train?: Train): StalledStep[] {
   return views.flatMap(view => {
     const { item } = view;
     const waits = item.waitFor !== undefined || item.waitUntil !== undefined || view.owner?.key.startsWith("thread:") === true;
     if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked" || heldRun(item)) return [];
+    if (train && waitTarget(item.waitFor, rows, self) === undefined && trainMoves(item, train, now)) return [];
     const memo = memos[item.id];
     const untils = memo?.untils ?? [];
     const pushes = untils.filter((until, index) => index > 0 && Date.parse(until) > Date.parse(untils[index - 1]!)).length;
