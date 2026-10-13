@@ -13,6 +13,9 @@ def setUpModule():
 
 P = "anthropic"
 FIVE, WEEK = 18000, 604800
+# The slot tests read their accounts once and admit many trees; R2's projection
+# would stop them first.
+NO_PROJECTION = dict(CFG, tree_5h_pct_per_min={})
 
 
 def window(pct, secs, reset_in, now=NOW):
@@ -68,7 +71,7 @@ def decide(state, key, accounts, now=NOW, cooldowns=None, cfg=CFG):
                         sched.book_for(state, P, key, cfg, now), cooldowns or {}, cfg, now)
 
 
-def run_until_admitted(state, keys, accounts_at, start, horizon=6 * 3600):
+def run_until_admitted(state, keys, accounts_at, start, horizon=6 * 3600, cfg=CFG):
     """Drive each waiting tree at its own slot, as Prime's wait-for-usage does,
     until every tree is admitted. Returns [(at, key, account id)] in order."""
     due = {k.key: start for k in keys}
@@ -77,7 +80,7 @@ def run_until_admitted(state, keys, accounts_at, start, horizon=6 * 3600):
     while due:
         name, at = min(due.items(), key=lambda kv: (kv[1], kv[0]))
         assert at < start + horizon, (name, at)
-        d = request(state, by_key[name], accounts_at(at), at)
+        d = request(state, by_key[name], accounts_at(at), at, cfg)
         if isinstance(d, sched.Wait):
             assert d.slot_at >= at, (name, d.slot_at, at)
             due[name] = d.slot_at if d.slot_at > at else at + 1
@@ -198,7 +201,7 @@ class R4Slots(unittest.TestCase):
         waits = [(d.slot_account.id, d.slot_at) for d in first if isinstance(d, sched.Wait)]
         self.assertEqual(len(waits), 17)
         self.assertEqual(len(set(waits)), 17, "every waiter has its own slot")
-        admitted = run_until_admitted(state, keys, lambda at: self.accounts(), NOW)
+        admitted = run_until_admitted(state, keys, lambda at: self.accounts(), NOW, cfg=NO_PROJECTION)
         self.assertEqual(len(admitted), 20)
         for id, cap in (("p", 4), ("q", 1), ("r", 1)):
             self.assertLessEqual(max(per_bucket(admitted, id).values()), cap, id)
@@ -221,7 +224,7 @@ class R4Slots(unittest.TestCase):
             d = limited(state, k, accounts_at(NOW + i), NOW + i, reset)
             self.assertIsInstance(d, sched.Wait)
             self.assertGreaterEqual(d.slot_at, reset)
-        admitted = run_until_admitted(state, keys, accounts_at, NOW + 20)
+        admitted = run_until_admitted(state, keys, accounts_at, NOW + 20, cfg=NO_PROJECTION)
         self.assertEqual(len(admitted), 15)
         self.assertLessEqual(max(per_bucket(admitted, "x").values()), 4)
         self.assertGreater(admitted[-1][0] - admitted[0][0], 3 * CFG["admit_slot_sec"])
@@ -639,6 +642,70 @@ class StaleUsage(unittest.TestCase):
         self.assertEqual(again, [])
         later, _ = self.run_vend(state, [virev_seat(), b], VIREV_BACK + registry.REFRESH_TIMEOUT_SEC + 1)
         self.assertEqual(len(later), 1)
+
+
+# What one Virev tree spent per minute on 10-13 22:40-23:04: 100% over 144 tree-minutes
+# (9 trees, each counted while it sent a request within 15 min; pi-pool.log vends and
+# the trees' transcripts).
+VIREV_1013_PCT_PER_TREE_MIN = 100 / 144
+
+
+class ProjectedUsage(unittest.TestCase):
+    """R2: the 5h figure an account is admitted on is projected to its next read."""
+
+    def replay_1013(self, cfg):
+        """The nine trees ask for the seat at their 10-13 slots, a tree on it sends a
+        request every minute, and the seat is read every STALE_USAGE_SEC. Returns the
+        trees admitted and the seat's true 5h % at each read."""
+        state = empty_state()
+        keys = [put(state, tree_key(name), on=VIREV, at=VIREV_BACK - 3 * 3600) for name in VIREV_TREES]
+        for i, key in enumerate(keys):
+            state["sessions"][key.key]["wait"] = {P: {"account": VIREV, "slot_at": VIREV_BACK + 120 * i, "since": VIREV_BACK - 3600}}
+        other = acct("claude10", five=100, five_reset_in=1200, week=80, tier="max 5x")
+        admitted, reads = {}, []
+
+        def truth(t):
+            return VIREV_1013_PCT_PER_TREE_MIN * sum(t - at for at in admitted.values()) / 60
+
+        due = {k.key: VIREV_BACK + 120 * i for i, k in enumerate(keys)}
+        by_key = {k.key: k for k in keys}
+        read_every = registry.STALE_USAGE_SEC
+        end = VIREV_BACK + 2 * read_every
+        read_at = None
+        while True:
+            name, now = min(due.items(), key=lambda kv: (kv[1], kv[0]))
+            if now >= end:
+                break
+            last = VIREV_BACK + (now - VIREV_BACK) // read_every * read_every
+            if last != read_at:
+                read_at = last
+                reads.append(truth(read_at))
+            seat = virev_seat((fresh_window(reads[-1], FIVE, VIREV_BACK + FIVE, read_at), VIREV_WINDOWS[1]))
+            d = request(state, by_key[name], [seat, dataclasses.replace(other, limited_until=now + 1200)], now, cfg)
+            if isinstance(d, (sched.Admit, sched.Stay)) and d.account.id == VIREV:
+                admitted.setdefault(name, now)
+                due[name] = now + 60
+            else:
+                due[name] = max(d.slot_at, now + 1) if isinstance(d, sched.Wait) else now + 60
+        return admitted, reads
+
+    def test_virev_seat_1013_read_every_20_min_stays_under_the_admit_cap(self):
+        admitted, reads = self.replay_1013(CFG)
+        self.assertEqual(len(reads), 2)
+        self.assertLess(max(reads), CFG["admit_5h_max_pct"], reads)
+        self.assertLess(len(admitted), len(VIREV_TREES))
+        unprojected, unprojected_reads = self.replay_1013(NO_PROJECTION)
+        self.assertEqual(len(unprojected), len(VIREV_TREES))
+        self.assertGreaterEqual(unprojected_reads[1], CFG["admit_5h_max_pct"])
+
+    def test_a_tree_waits_for_the_read_after_the_projection_reaches_the_cap(self):
+        read = VIREV_BACK - 60
+        seat = virev_seat((fresh_window(60, FIVE, VIREV_BACK + FIVE, read), VIREV_WINDOWS[1]))
+        state = empty_state()
+        put(state, tree_key("on"), on=VIREV, at=VIREV_BACK - 30)
+        d = request(state, tree_key("new"), [seat], VIREV_BACK)
+        self.assertIsInstance(d, sched.Wait)
+        self.assertEqual(d.slot_at, read + registry.STALE_USAGE_SEC + registry.REFRESH_TIMEOUT_SEC)
 
 
 if __name__ == "__main__":

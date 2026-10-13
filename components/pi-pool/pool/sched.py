@@ -13,7 +13,9 @@ from . import base, registry
 #      a pin set earlier or another tree's move.
 #   R2 admit cap: an account takes a tree that is not on it only under
 #      admit_5h_max_pct (low trees: low_admit_5h_max_pct) of its 5h window and under
-#      seven_day_max_pct of its week and its Fable cap.
+#      seven_day_max_pct of its week and its Fable cap. The 5h figure is projected
+#      to the account's next read: the trees spending on it and the new one each
+#      add tree_5h_pct_per_min for every minute from the read to the next one.
 #   R3 score: among admissible accounts the highest weekly pace x 5h headroom / load.
 #   R4 admission slots: an account admits one tree per admit_slot_sec / slot_cap(a).
 #   R5 wait: nothing passes R2-R4, so the tree gets its own slot_at on the account
@@ -59,10 +61,13 @@ class Book:
     """Who entered or will enter each account, as the slot rule reads it.
     `admitted`: {account id: ((at, tree key), ...)} over ADMISSION_KEEP_SEC.
     `waiting`: {account id: ((slot_at, tree key, rank), ...)} of the other trees.
-    `load`: {account id: trees vended within active_session_sec}."""
+    `load`: {account id: trees vended within active_session_sec}.
+    `spending`: {account id: other trees that sent a request there within
+    spending_tree_sec}."""
     admitted: dict = dataclasses.field(default_factory=dict)
     waiting: dict = dataclasses.field(default_factory=dict)
     load: dict = dataclasses.field(default_factory=dict)
+    spending: dict = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -193,14 +198,42 @@ def admissible_at(a, cooldowns, cfg, now, priority="normal"):
     return max(at, now + registry.REFRESH_TIMEOUT_SEC) if registry.usage_unsampled(a, now) else at
 
 
+def by_tier(a, table, default):
+    """The entry for tokenmaxxing's tier name or its first word."""
+    tier = (a.tier or "").lower()
+    return table.get(tier, table.get(tier.split(" ")[0], default)) if tier else default
+
+
 def tier_units(a, cfg):
     """How many 'max 5x' plans the account is worth: max 20x 4, max 5x and team 1,
     pro 0.5. Codex plans and unknown tiers count 1."""
-    if a.provider != "anthropic":
-        return 1
-    units = cfg["tier_units"]
-    tier = (a.tier or "").lower()
-    return units.get(tier, units.get(tier.split(" ")[0], 1)) if tier else 1
+    return by_tier(a, cfg["tier_units"], 1) if a.provider == "anthropic" else 1
+
+
+def projected_pct(a, book, cfg, now):
+    """R2: the 5h percentage the account will read at its next read, due
+    STALE_USAGE_SEC after the last one: the last read, plus the trees spending on it
+    now counted from the read, plus one more tree from now. The 10-13 Virev seat read
+    0% at 22:40 and took 9 trees at slot pace before a read could show them; it hit
+    100% at 23:04."""
+    window = registry.session_window({"windows": a.windows})
+    rate = by_tier(a, cfg["tree_5h_pct_per_min"], 0) if a.provider == "anthropic" else 0
+    if window is None or not rate:
+        return a.session_pct
+    read_at = (window.get("sampledAt") or 0) / 1000
+    trees = book.spending.get(a.id, 0)
+    ahead = max(0.0, read_at + registry.STALE_USAGE_SEC - now)
+    return a.session_pct + rate * (trees * (now - read_at + ahead) + ahead) / 60
+
+
+def projection_clears_at(a, book, cfg, now, priority):
+    """When R2's projection lets the account take a tree again: now, or once the
+    read after the current one has landed."""
+    cap = admit_cap(cfg, priority)
+    if a.session_pct >= cap or projected_pct(a, book, cfg, now) < cap:
+        return now
+    read_at = (registry.session_window({"windows": a.windows})["sampledAt"] or 0) / 1000
+    return read_at + registry.STALE_USAGE_SEC + registry.REFRESH_TIMEOUT_SEC
 
 
 def slot_cap(a, cfg):
@@ -276,7 +309,12 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
     load = book.load
 
     def why_not(a):
-        return "missing" if a is None else admit_reason(a, cooldowns, cfg, now, p)
+        if a is None:
+            return "missing"
+        why = admit_reason(a, cooldowns, cfg, now, p)
+        if why is None and projected_pct(a, book, cfg, now) >= admit_cap(cfg, p):
+            return "projected"
+        return why
 
     admissible = [a for a in accounts if why_not(a) is None]
     sole = len(admissible) == 1
@@ -361,8 +399,8 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
     if tree.leave and cur is not None and tree.leave == cur.id and cur_why is None and not tree.wait:
         return Stay(cur, "stay", shadowed)
 
-    frees = [(a, admissible_at(a, cooldowns, cfg, now, p)) for a in accounts
-             if allowed(a) and not credential_reason(a, cooldowns, now)]
+    frees = [(a, max(admissible_at(a, cooldowns, cfg, now, p), projection_clears_at(a, book, cfg, now, p)))
+             for a in accounts if allowed(a) and not credential_reason(a, cooldowns, now)]
     frees = [(a, t0) for a, t0 in frees if t0 != float("inf")]
     options = []
     for a, t0 in frees:
@@ -423,5 +461,7 @@ def book_for(state, provider, key, cfg, now):
             continue
         rank = (PRIORITY_RANK.get(rec.get("priority") or "normal", 1), wait["since"], k)
         waiting.setdefault(wait["account"], []).append((wait["slot_at"], k, rank))
+    spending = in_use_counts({"sessions": {k: rec for k, rec in state["sessions"].items() if not (key and k == key.key)}},
+                             provider, now, cfg["spending_tree_sec"])
     return Book(admitted, {a: tuple(v) for a, v in waiting.items()},
-                in_use_counts(state, provider, now, cfg["active_session_sec"]))
+                in_use_counts(state, provider, now, cfg["active_session_sec"]), spending)

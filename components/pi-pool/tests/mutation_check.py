@@ -10,8 +10,10 @@ from pathlib import Path
 MUTATIONS = {
     "R1 stay": ("    if cur_why is None and cur is not None and not tree.wait and tree.leave != cur.id:",
                 "    if cur_why is None and cur is not None and not tree.wait and tree.leave != cur.id and admit_reason(cur, cooldowns, cfg, now, p) is None:"),
-    "R2 admit cap": ("    if a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg[\"seven_day_max_pct\"]:\n        return \"depleted\"\n    if a.is_live",
-                     "    if False:\n        return \"depleted\"\n    if a.is_live"),
+    "R2 admit cap": ("    if a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg[\"seven_day_max_pct\"]:\n        return \"depleted\"\n    if registry.usage_unsampled",
+                     "    if False:\n        return \"depleted\"\n    if registry.usage_unsampled"),
+    "R2 projection": ("        if why is None and projected_pct(a, book, cfg, now) >= admit_cap(cfg, p):",
+                      "        if False:"),
     "R3 score": ("    return pace * headroom * tier_units(a, cfg) / trees", "    return 1.0"),
     "R4 slots": ("        if not cell_taken(a, c, tree, rank, book, cfg):\n            return max(t0, c * sp)",
                  "        return max(t0, c * sp)"),
