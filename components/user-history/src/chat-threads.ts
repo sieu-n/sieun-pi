@@ -8,6 +8,7 @@ import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
 import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { readBranchTail } from "./session-tail.ts";
+import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
@@ -269,7 +270,7 @@ export class ThreadHub {
     if (!state.success) throw new ThreadError(502, state.error);
     const now = state.data as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
     if (now.isSessionActive !== false || now.isStreaming || now.isCompacting || now.isBashRunning) return "busy";
-    const response = await this.catalog.client.request({ type: "reload", activeSessionId }, 60000, { recoverable: false });
+    const response = await timedWorkerStart(`reload ${id.slice(0, 8)}`, () => this.catalog.client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }));
     if (!response.success) throw new ThreadError(502, response.error);
     return "reloaded";
   }
@@ -609,7 +610,8 @@ export class ThreadHub {
       // The session's own folder: without it the daemon starts the worker in the daemon's folder and the thread reports that as its workspace.
       // A folder that is gone resumes in the daemon's folder rather than not at all.
       const config = await stat(summary.cwd).then(found => found.isDirectory() ? { cwd: summary.cwd } : {}, () => ({}));
-      const response = await this.catalog.client.request({ type: "create", lifecycle: "resident", sessionPath: summary.sessionFile, config }, 60000, { recoverable: false });
+      const sessionPath = summary.sessionFile;
+      const response = await timedWorkerStart(`resume ${id.slice(0, 8)}`, () => this.catalog.client.request({ type: "create", lifecycle: "resident", sessionPath, config }, DAEMON_WORKER_START_MS, { recoverable: false }));
       if (!response.success) throw new ThreadError(502, response.error);
     }
     await this.catalog.refresh();
@@ -629,11 +631,11 @@ export class ThreadHub {
   }
 
   /** `kind: "chat"` sets the extension flag the user-history extension turns into the session's chat marker at its first session_start. */
-  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat"; timeoutMs?: number }): Promise<Thread> {
+  async create(input: { cwd: string; provider?: string; modelId?: string; thinkingLevel?: ThinkingLevel; name?: string; kind?: "chat" }): Promise<Thread> {
     await this.catalog.connect();
-    const response = await this.catalog.client.request({ type: "create", lifecycle: "resident", ...(input.name ? { name: input.name } : {}), config: { cwd: input.cwd,
+    const response = await timedWorkerStart(`create ${input.name ?? input.cwd}`, () => this.catalog.client.request({ type: "create", lifecycle: "resident", ...(input.name ? { name: input.name } : {}), config: { cwd: input.cwd,
       ...(input.provider && input.modelId ? { provider: input.provider, model: input.modelId } : {}), ...(input.thinkingLevel ? { thinking: input.thinkingLevel } : {}),
-      ...(input.kind === "chat" ? { extensionFlagValues: { [CHAT_FLAG]: true } } : {}) } }, input.timeoutMs ?? 60000, { recoverable: false });
+      ...(input.kind === "chat" ? { extensionFlagValues: { [CHAT_FLAG]: true } } : {}) } }, DAEMON_WORKER_START_MS, { recoverable: false }));
     if (!response.success) throw new ThreadError(502, response.error);
     const data = response.data;
     if (typeof data !== "object" || data === null || !("sessionId" in data) || typeof data.sessionId !== "string" || !("activeSessionId" in data) || typeof data.activeSessionId !== "string") {

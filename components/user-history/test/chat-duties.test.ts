@@ -581,7 +581,7 @@ test("duty job host: a create that times out after the daemon made the session a
   const { state } = daemon;
   const host = dutyJobHost({ ...daemon.options, threads: {
     async create(input) {
-      state.calls.push(`create ${input.name} ${input.timeoutMs}`);
+      state.calls.push(`create ${input.name}`);
       state.rows = [...state.rows, daemon.row("other", input.name, { cwd: "/elsewhere" }), daemon.row("late", input.name)];
       throw new Error(TIMED_OUT);
     },
@@ -589,7 +589,7 @@ test("duty job host: a create that times out after the daemon made the session a
   } });
   const job = await host.start(daemon.chat, "check-in dev VP 01:55", "brief");
   assert.deepEqual(job, { id: "late", name: "check-in dev VP 01:55" });
-  assert.deepEqual(state.calls, ["create check-in dev VP 01:55 180000", "prompt late brief registered:dev VP"], "no second create; the session in another folder is not taken");
+  assert.deepEqual(state.calls, ["create check-in dev VP 01:55", "prompt late brief registered:dev VP"], "no second create; the session in another folder is not taken");
   assert.deepEqual(await daemon.registry.rootsOf(["chat1", "dev VP"]), ["late"]);
   assert.equal(state.refreshes, 1, "found on the first look, after a fresh session list");
 });

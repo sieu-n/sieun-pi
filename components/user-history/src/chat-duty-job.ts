@@ -124,7 +124,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
 
 /** The parts of the thread hub a duty job host uses. */
 export interface DutyJobThreads {
-  create(input: { cwd: string; name: string; timeoutMs: number }): Promise<{ id: string }>;
+  create(input: { cwd: string; name: string }): Promise<{ id: string }>;
   prompt(id: string, input: { message: string; images: []; mode: "steer" }): Promise<void>;
 }
 
@@ -134,11 +134,6 @@ export const archiveDutyJob = (threads: { archive(id: string): Promise<void> }, 
   if (found && !found.archived) await threads.archive(id);
 };
 
-/**
- * How long a duty job's create waits for the daemon. At a load of 90 to 99 (10-09) creates took over 60 s and the daemon made the session
- * after the caller gave up.
- */
-export const DUTY_CREATE_TIMEOUT_MS = 180_000;
 /** The waits before each look for a session whose create failed (a timeout, a lost client): about 2 min in all. */
 export const DUTY_LOOKUP_WAITS_MS: readonly number[] = [0, 10_000, 20_000, 30_000, 60_000];
 /**
@@ -199,7 +194,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     let name = first;
     const since = (input.now ?? Date.now)();
     for (let tries = 1; tries <= CREATE_TRIES; tries++) {
-      try { return { id: (await input.threads.create({ cwd: chat.cwd, name, timeoutMs: DUTY_CREATE_TIMEOUT_MS })).id, name }; }
+      try { return { id: (await input.threads.create({ cwd: chat.cwd, name })).id, name }; }
       catch (error) { cause = reason(error); }
       const found = await find(chat, name, since);
       if (found) { input.log?.(`duty job ${name}: the create failed (${cause}) but the session exists; adopting it`); return { id: found, name }; }
