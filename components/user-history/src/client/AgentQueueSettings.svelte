@@ -6,12 +6,12 @@
   import { queueLine } from "./agent-queue.ts";
 
   const POLL_MS = 5000;
-  type Field = "mac" | "tree" | "idle";
+  type Field = "mac" | "tree" | "aging" | "lease" | "idle";
 
   let view = $state<AgentQueueView | null>(null);
   let error = $state<string | null>(null);
   let saving = $state<AgentQueueInput["action"] | null>(null);
-  let drafts = $state<Record<Field, number | null>>({ mac: null, tree: null, idle: null });
+  let drafts = $state<Record<Field, number | null>>({ mac: null, tree: null, aging: null, lease: null, idle: null });
   let timer: ReturnType<typeof setInterval> | undefined;
 
   async function load(): Promise<void> {
@@ -33,7 +33,8 @@
 
   const pool = $derived(view?.pool.state === "read" ? view.pool : null);
   const idleSaved = $derived(typeof view?.idleEvictionMinutes === "number" ? view.idleEvictionMinutes : null);
-  const saved = $derived<Record<Field, number | null>>({ mac: pool?.macWorkingMax ?? null, tree: pool?.treeWorkingMax ?? null, idle: idleSaved });
+  const saved = $derived<Record<Field, number | null>>({ mac: pool?.macWorkingMax ?? null, tree: pool?.treeWorkingMax ?? null,
+    aging: pool?.queueAgingS ?? null, lease: pool?.leaseS ?? null, idle: idleSaved });
   const shown = (field: Field) => drafts[field] ?? saved[field];
   const changed = (field: Field) => {
     const value = drafts[field];
@@ -84,6 +85,10 @@
       ["A p90 working session uses 426 MB; 16 fit in the 6.9 GB free (measured 10-14 07:38 KST)."])}
     {@render limit("tree", "Working sessions per chat", "", 999, pool !== null,
       ["Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14."])}
+    {@render limit("aging", "Move a waiting turn up a class every", "s", 86400, pool !== null,
+      ["The median turn ran 18.1 s over 27,578 turns in the 4 days to 10-14 08 KST, so a low turn passes a fresh normal one after about one turn."])}
+    {@render limit("lease", "Free a silent working slot after", "s", 86400, pool !== null,
+      ["Inside one turn, gaps between model calls were 157 s at p99 and 1,508 s at p99.9 over 174,119 gaps in the 3 days to 10-14 08 KST, so a slot this quiet belongs to a turn that ended with no release."])}
     {@render limit("idle", "Unload idle sessions after", "min", 1440, true, [
       "90 min is the daemon's own default, kept until reload gaps are measured; 10 timed reloads on 10-13 took 1.1 to 6.2 s. The daemon rereads it within 5 minutes, with no restart.",
       "Pinned chats stay loaded until the harness VP's detach fix lands, so for now this unloads idle jobs and threads only.",

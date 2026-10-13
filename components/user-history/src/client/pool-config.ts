@@ -18,6 +18,10 @@ export const POOL_DEFAULTS = {
   mac_working_max: 16,
   /** Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14. */
   tree_working_max: 8,
+  /** The median turn ran 18.1 s over 27,578 turns in the 4 days to 10-14 08 KST (0735-agent-queue-design/data/measure_turns.py). */
+  queue_aging_s: 18,
+  /** Inside one turn, gaps between model calls were 157 s at p99 and 1,508 s at p99.9 over 174,119 gaps (data/measure_gaps.py). */
+  lease_s: 1800,
 } as const;
 export type PoolKey = keyof typeof POOL_DEFAULTS;
 
