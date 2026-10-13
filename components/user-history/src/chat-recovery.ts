@@ -161,5 +161,8 @@ export function jobWake(input: { stall: Stall | null; last: JobWake | undefined;
   return input.now - (last?.at ?? stall.at) >= waitOf(TRANSIENT_RETRY_BACKOFF_MS, last?.attempts ?? 0) ? "wake" : "wait";
 }
 
-/** A thread (a step owner, or any thread after a model or account change) whose stalled turn holds queued input gets woken: its input is stranded. */
-export const strandedInput = (stall: Stall | null): boolean => stall !== null && stall.queued > 0;
+/**
+ * A thread (a step owner, or any thread after a model or account change) whose stalled turn holds queued input gets woken: its input is stranded.
+ * Not while the pool holds the turn until its slot: a wake then only aborts the wait and meets the same refusal.
+ */
+export const strandedInput = (stall: Stall | null, now: number): boolean => stall !== null && stall.queued > 0 && !poolHolds(stall, now);

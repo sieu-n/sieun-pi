@@ -1419,6 +1419,13 @@ test("chats: a step-owner thread whose last turn failed with input queued gets a
   threads.views.set("t1", { ...failed, queue: { steering: [], followUp: [] } });
   now += 30 * 60_000;
   assert.deepEqual(await wakes(), [], "nothing queued: the check-in line covers it, nothing is stranded");
+  // 10-13: the pool held step-owner threads until their slots; a wake before the slot only aborts the wait and meets the same 429.
+  const slot = now + 10 * 60_000;
+  const held = `429 pi-pool: c@x is limited until ${new Date(slot).toISOString()}; this session waits for its slot at ${new Date(slot).toISOString()}. Try again in 10 minutes.`;
+  threads.views.set("t1", { messages: [ownerAsks("continue", now - 60_000), reply("error", now - 60_000, held)], queue: { steering: ["owner: status?"], followUp: [] } });
+  assert.deepEqual(await wakes(), [], "the pool holds the turn until its slot");
+  now = slot;
+  assert.deepEqual(await wakes(), ["restart t1 continue (abort)"], "at the slot the queued input is stranded again");
   chats.close();
 });
 

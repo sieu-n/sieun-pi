@@ -587,7 +587,7 @@ export class Chats {
     try {
       const state = await this.threads.view(threadId);
       const stall = state ? turnStall(turnViewOf(state, this.threads.running(threadId)), now) : null;
-      if (!strandedInput(stall)) { this.ownerWakes.delete(threadId); return; }
+      if (!strandedInput(stall, now)) { this.ownerWakes.delete(threadId); return; }
       // A job's transient failure is woken by `wakeJob` on its faster schedule.
       if (this.jobThreads.has(threadId) && failureCause(stall!.error) === "transient") return;
       this.ownerWakes.set(threadId, { attempts: (last?.attempts ?? 0) + 1, at: now });

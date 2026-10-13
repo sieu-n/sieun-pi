@@ -136,10 +136,10 @@ test("turn stall: a provider retry holds the turn; its queued input is stranded"
   const messages = [user("continue", 1), reply("error", 5, RATE_LIMIT)];
   const held = turnStall(view(messages, { running: true, retrying: true, queued: 3, retryError: RATE_LIMIT }), 99);
   assert.deepEqual(held, { error: RATE_LIMIT, at: 5, owner: "continue", aborted: false, retrying: true, queued: 3 });
-  assert.equal(strandedInput(held), true);
+  assert.equal(strandedInput(held, 99), true);
   assert.equal(turnStall(view([user("continue", 1)], { running: true, retrying: true }), 99)?.at, 99, "a retry whose failed reply the hub lost counts from now");
-  assert.equal(strandedInput(turnStall(view(messages), 99)), false, "nothing queued");
-  assert.equal(strandedInput(null), false);
+  assert.equal(strandedInput(turnStall(view(messages), 99), 99), false, "nothing queued");
+  assert.equal(strandedInput(null, 99), false);
   assert.deepEqual(turnViewOf({ messages, info: { retryAttempt: 2, queuedActions: 1 }, queue: { steering: ["a"], followUp: ["b"] }, retry: { error: "429" } }, true),
     { messages, running: true, retrying: true, queued: 3, retryError: "429" });
 });
