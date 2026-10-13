@@ -544,5 +544,102 @@ class SwitchLog(unittest.TestCase):
                 self.assertEqual(status_view.switches_today("openai-codex", NOW), (1, 1))
 
 
+# The Virev team seat on 2026-10-13, as tokenmaxxing's index held it: one 5h sample
+# from 2026-10-12 06:05Z (100%, reset 07:40Z) and its Fable week. tokenmaxxing's minute
+# check skips team seats, so at 22:40 KST the sample was 31.6 h old and read as 0%.
+VIREV = "e128c1aa-bc3a-5286-8733-e64aff2b73ce"
+VIREV_WINDOWS = (
+    {"name": None, "usedPercentage": 100, "resetsAt": 1791790800258, "windowSeconds": FIVE, "sampledAt": 1791785103366},
+    {"name": "Fable", "usedPercentage": 0, "resetsAt": 1792245600258, "windowSeconds": WEEK, "sampledAt": 1791785103366},
+)
+# 2026-10-13 22:40:01 KST, when the seat's 429 limit ended and the trees waiting for it came back.
+VIREV_BACK = 1791898801.0
+# The nine trees that took the seat back at slot pace (pi-pool.log waits and vends,
+# 22:40:01 to 22:56); Anthropic refused the seat at 23:04:46 until 03:40 KST.
+VIREV_TREES = ("01a10dbb", "01a11bd7", "01a115e2", "01a11ba8", "01a1164b", "01a11b0b", "01a1301d", "01a10db0", "01a10db8")
+
+
+def virev_seat(windows=VIREV_WINDOWS):
+    five, _ = registry.usage_pct({"windows": list(windows)}, VIREV_BACK)
+    return dataclasses.replace(account(VIREV, "sieun@virev.ai", session_pct=five, weekly_pct=0),
+                               tier="team 5x", windows=windows)
+
+
+def fresh_window(pct, secs, reset_at, at):
+    return {"name": None, "usedPercentage": pct, "windowSeconds": secs, "resetsAt": reset_at * 1000, "sampledAt": at * 1000}
+
+
+class StaleUsage(unittest.TestCase):
+    """R2: an account takes a new tree only on a 5h usage sample under STALE_USAGE_SEC old."""
+
+    def test_virev_seat_1013_takes_none_of_the_nine_trees_on_a_31h_old_sample(self):
+        state = empty_state()
+        keys = [put(state, tree_key(name), on=VIREV, at=VIREV_BACK - 3 * 3600) for name in VIREV_TREES]
+        for i, key in enumerate(keys):
+            state["sessions"][key.key]["wait"] = {P: {"account": VIREV, "slot_at": VIREV_BACK + 120 * i, "since": VIREV_BACK - 3600}}
+        other = acct("claude10", five=100, five_reset_in=1200, week=80, tier="max 5x")
+        taken = []
+        for i, key in enumerate(keys):
+            now = VIREV_BACK + 120 * i
+            d = request(state, key, [virev_seat(), dataclasses.replace(other, limited_until=now + 1200)], now)
+            taken.append(isinstance(d, sched.Admit) and d.account.id == VIREV)
+        self.assertEqual(sum(taken), 0)
+
+    def test_the_seat_on_a_fresh_read_admits_again(self):
+        state = empty_state()
+        key = put(state, tree_key(VIREV_TREES[0]), on=VIREV, at=VIREV_BACK - 3 * 3600)
+        state["sessions"][key.key]["wait"] = {P: {"account": VIREV, "slot_at": VIREV_BACK, "since": VIREV_BACK - 3600}}
+        read = (fresh_window(0, FIVE, VIREV_BACK + FIVE, VIREV_BACK - 2), VIREV_WINDOWS[1])
+        d = request(state, key, [virev_seat(read)], VIREV_BACK)
+        self.assertIsInstance(d, sched.Admit)
+        self.assertEqual(d.account.id, VIREV)
+
+    def test_a_sample_older_than_stale_usage_sec_stops_admissions_and_a_tree_on_the_account_stays(self):
+        old = VIREV_BACK - registry.STALE_USAGE_SEC - 1
+        read = (fresh_window(10, FIVE, VIREV_BACK + 3600, old),)
+        seat = dataclasses.replace(acct("seat", tier="team 5x"), windows=read, session_pct=10, weekly_pct=0)
+        state = empty_state()
+        self.assertEqual(sched.admit_reason(seat, {}, CFG, VIREV_BACK), "unsampled")
+        new = request(state, tree_key("new"), [seat], VIREV_BACK)
+        self.assertIsInstance(new, sched.Wait)
+        self.assertGreaterEqual(new.slot_at, VIREV_BACK + registry.REFRESH_TIMEOUT_SEC)
+        on = put(state, tree_key("on"), on="seat", at=VIREV_BACK - 60)
+        self.assertIsInstance(request(state, on, [seat], VIREV_BACK), sched.Stay)
+
+    def run_vend(self, state, accounts, now):
+        started, logged = [], []
+        with contextlib.ExitStack() as stack:
+            for module, name, value in ((base, "config", CFG), (registry, "load_index", accounts),
+                                        (registry, "session_key", KEY), (registry, "load_state", state),
+                                        (vending, "credential_for", ("fixture-token", "store")),
+                                        (base, "proc_info", {"start": "s"})):
+                stack.enter_context(unittest.mock.patch.object(module, name, return_value=value))
+            stack.enter_context(unittest.mock.patch.object(base, "Flock", lambda *a, **kw: contextlib.nullcontext()))
+            stack.enter_context(unittest.mock.patch.object(time, "time", return_value=now))
+            stack.enter_context(unittest.mock.patch.object(base, "save_json"))
+            stack.enter_context(unittest.mock.patch.object(base, "anthropic_refusal", return_value=None))
+            stack.enter_context(unittest.mock.patch.object(base, "log", side_effect=lambda e, **kw: logged.append((e, kw))))
+            stack.enter_context(unittest.mock.patch.object(vending.subprocess, "Popen", side_effect=lambda argv, **kw: started.append((argv, kw))))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            vending.vend(P)
+        return started, logged
+
+    def test_the_hook_reads_a_stale_account_once_in_the_background(self):
+        state = empty_state()
+        put(state, KEY, on="b", at=VIREV_BACK - 60)
+        b = dataclasses.replace(acct("b", five=20, tier="max 5x"),
+                                windows=(fresh_window(20, FIVE, VIREV_BACK + 3600, VIREV_BACK - 60),))
+        started, logged = self.run_vend(state, [virev_seat(), b], VIREV_BACK)
+        [(argv, kw)] = started
+        self.assertEqual(argv[-5:], ["refresh", VIREV, "--provider", P, "--json"])
+        self.assertTrue(kw["start_new_session"])
+        self.assertEqual(kw["stdout"], vending.subprocess.DEVNULL)
+        self.assertEqual([kw["accounts"] for e, kw in logged if e == "usage_read"], [["sieun@virev.ai"]])
+        again, _ = self.run_vend(state, [virev_seat(), b], VIREV_BACK + 60)
+        self.assertEqual(again, [])
+        later, _ = self.run_vend(state, [virev_seat(), b], VIREV_BACK + registry.REFRESH_TIMEOUT_SEC + 1)
+        self.assertEqual(len(later), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

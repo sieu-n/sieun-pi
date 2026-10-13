@@ -7,6 +7,12 @@ from . import base
 
 # ------------------------------------------------------------- usage math
 SESSION_WINDOW_MAX_SEC = 6 * 3600
+# tokenmaxxing reads every account its check covers at least every 15 min
+# (SAMPLE_INTERVAL_MAX_MS), so a 5h sample older than this is one nobody reads: a
+# team seat, which the check skips, or any account while the check is down.
+STALE_USAGE_SEC = 20 * 60
+# A `pi-pool refresh` read has landed or failed by then.
+REFRESH_TIMEOUT_SEC = 180
 
 
 def live_pct(window, now):
@@ -37,6 +43,15 @@ def session_window(account):
     """The unnamed session (5h) window, tokenmaxxing's sessionWindow."""
     return next((w for w in account.get("windows") or []
                  if w.get("name") is None and is_session_window(w)), None)
+
+
+def usage_unsampled(a, now):
+    """R2: the account's 5h figure is older than STALE_USAGE_SEC, so it says nothing
+    about the trees that entered since. On 2026-10-13 the Virev team seat's sample was
+    31.6 h old, read as 0%, and the seat took 9 trees from 22:40 to 22:56 KST before
+    Anthropic refused it at 23:04."""
+    window = session_window({"windows": a.windows})
+    return window is not None and now - (window.get("sampledAt") or 0) / 1000 > STALE_USAGE_SEC
 
 
 def weekly_window(account):

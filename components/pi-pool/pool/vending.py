@@ -1,6 +1,6 @@
 """The token hook: state writers, credentials, the fallback login and adopt-logins, the
 refusal probe, and vend()."""
-import os, sys, time
+import os, subprocess, sys, time
 
 from . import base, registry, sched
 
@@ -62,6 +62,11 @@ class HookWriter:
         if reason:
             prov.setdefault("cooldown_reasons", {})[account_id] = reason
 
+    def start_reads(self, provider, ids, now):
+        """A background usage read of these accounts starts now."""
+        reads = self._state["providers"][provider].setdefault("usage_reads", {})
+        reads.update({account_id: now for account_id in ids})
+
     def set_limit(self, provider, account_id, until, key, now):
         """The provider answered 429 for this account until `until`. Several
         sessions can report one limit; the latest reset wins."""
@@ -91,6 +96,10 @@ class HookWriter:
             limits = prov.get("limits") or {}
             for account_id in [u for u, rec in limits.items() if rec["until"] <= now]:
                 del limits[account_id]
+                dropped += 1
+            reads = prov.get("usage_reads") or {}
+            for account_id in [u for u, at in reads.items() if now - at > registry.REFRESH_TIMEOUT_SEC]:
+                del reads[account_id]
                 dropped += 1
             admissions = prov.get("admissions") or {}
             for account_id, entries in list(admissions.items()):
@@ -512,6 +521,26 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     return d, tree, False
 
 
+def reads_due(state, provider, accounts, cfg, now):
+    """The accounts that would take a tree but for an unsampled 5h figure, and that
+    no read started for in the last REFRESH_TIMEOUT_SEC."""
+    prov = state["providers"][provider]
+    reading, cooldowns = prov.get("usage_reads") or {}, prov["cooldowns"]
+    return [a for a in registry.with_pool_state(accounts, state, provider)
+            if sched.admit_reason(a, cooldowns, cfg, now) == "unsampled"
+            and now - reading.get(a.id, 0) > registry.REFRESH_TIMEOUT_SEC]
+
+
+def start_usage_read(provider, accounts):
+    """`pi-pool refresh` these accounts in its own session, detached from the hook's
+    pipes, so the hook returns its token at once and the read outlives it."""
+    subprocess.Popen([sys.executable, "-B", os.path.join(base.CODE_ROOT, "vend.py"), "--cli", "refresh",
+                      *(a.id for a in accounts), "--provider", provider, "--json"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    base.log("usage_read", provider=provider, accounts=[a.label for a in accounts])
+
+
 def vend(provider):
     """Decide one account for this session tree and write its access token to
     stdout. stdout is the token and nothing else; every other byte goes to
@@ -541,7 +570,9 @@ def vend(provider):
             now = time.time()
             pruned = HookWriter(state).prune(cfg, now)
             d, tree, wrote = schedule(state, key, provider, accounts, cfg, now)
-            if pruned or wrote:
+            reads = reads_due(state, provider, accounts, cfg, now)
+            HookWriter(state).start_reads(provider, [a.id for a in reads], now)
+            if pruned or wrote or reads:
                 base.save_json(base.STATE, state)
     except TimeoutError:
         # save_json replaces state.json in one rename, so an unlocked read sees a whole file.
@@ -553,6 +584,11 @@ def vend(provider):
         sys.stdout.write(token)
         return
 
+    if reads:
+        try:
+            start_usage_read(provider, reads)
+        except OSError as e:
+            base.log("usage_read_failed", provider=provider, error=str(e))
     if d is None:
         raise RuntimeError(f"no {provider} account can serve this session")
     if isinstance(d, sched.Wait):

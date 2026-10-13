@@ -233,6 +233,10 @@ A team seat's usage has a 5h window and no weekly one, and tokenmaxxing's read r
 body. When tokenmaxxing's read fails without a rate limit, `usage-read.ts` reads the account
 once more and lands the 5h and per-model windows (`app/usage-seat.ts`). tokenmaxxing's minute
 `check` still skips such an account, so its figures move only on a `refresh`.
+The hook runs that `refresh` itself, detached, when the seat's 5h sample is older than
+20 minutes and it would otherwise take a tree, and logs `usage_read`. On 2026-10-13 nothing
+read the Virev seat for 31.6 h, its old sample read as 0%, and it took 9 trees from 22:40 to
+22:56 KST before Anthropic refused it at 23:04 until 03:40.
 
 `--stream` prints one JSON line per event while the reads run: `accounts` (the list),
 `reading`, `read` with `ok` and `usage_at` or `reason` and `retry_at` (epoch seconds),
@@ -293,7 +297,7 @@ flowchart TD
 | # | rule | effect |
 |---|---|---|
 | R1 stay | the tree's own account still serves: no 429 on file, every counting window under 100%, credential ok | it stays, warm or cold. No move because of a cutoff, a better account, a pin set earlier or another tree's move |
-| R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (70) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap | holds for new trees, moves after a 429, pins and `pi-pool switch` |
+| R2 admit cap | an account takes a tree that is not on it only under `admit_5h_max_pct` (70) of its 5h window and under `seven_day_max_pct` (98) of its week and its Fable cap, and only on a 5h sample under 20 minutes old | holds for new trees, moves after a 429, pins and `pi-pool switch`. An account with an older sample is `unsampled`: the hook starts a background `pi-pool refresh` of it, and a tree that waits for it asks again after 180 s |
 | R3 score | among the accounts that pass R2, the highest weekly pace x 5h headroom / load | weekly pace is `(98 - week%) / hours to the weekly reset`, so a week that resets soon with budget left is spent first. Headroom is `(70 - 5h%) / 70`. Load is `(trees vended in the last hour + 1) / tier units` |
 | R4 slots | an account admits one tree per `admit_slot_sec / slot_cap` seconds, where `slot_cap` is `admit_per_unit` x tier units (max 20x 4, max 5x and team 1, pro 0.5, at least 1) | a full account is skipped. The admission is written under the pool flock in the same decision, so trees that leave together see each other |
 | R5 wait | nothing passes R2 to R4 for this tree | the tree gets its own `slot_at` on the account that frees first (429 end, 5h reset or its next free slot), ordered by priority, then by wait start |

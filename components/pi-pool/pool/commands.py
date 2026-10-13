@@ -202,7 +202,6 @@ def cmd_priority(rest):
     return 0
 
 
-REFRESH_TIMEOUT_SEC = 180
 USAGE_READ = os.path.join(base.CODE_ROOT, "app", "usage-read.ts")
 _WRAPPER_RUN = re.compile(r'exec\s+"([^"]+)"\s.*?\brun\s+"([^"]+)/main\.ts"')
 
@@ -235,7 +234,7 @@ def tokenmaxxing_runtime():
     return match.group(1), match.group(2)
 
 
-def read_usage(selection, emit, timeout=REFRESH_TIMEOUT_SEC):
+def read_usage(selection, emit, timeout=registry.REFRESH_TIMEOUT_SEC):
     """Run usage-read.ts once per provider, all at once, and pass each event to
     `emit` with its provider, email and label. `selection` maps a provider to account
     ids, or to None for every account. An account still unread at the deadline

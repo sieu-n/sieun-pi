@@ -111,7 +111,6 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 CARD_GAP = 3
 NOTE_INDENT = "    "
 BAR_WIDTH = 16
-STALE_USAGE_SEC = 20 * 60
 PROVIDER_TITLES = {"anthropic": "claude", "openai-codex": "codex"}
 
 
@@ -219,7 +218,7 @@ def account_card(p, a, ctx):
         notes.append((p.yellow, f"refused: {why}" if why else "cooling down after a failure"))
     elif reason and reason.startswith("limited"):
         notes.append((p.yellow, "the provider answered 429; skipped until the limit ends"))
-    if a.windows and reason != "needs-reauth" and now - a.usage_at > STALE_USAGE_SEC:
+    if a.windows and reason != "needs-reauth" and now - a.usage_at > registry.STALE_USAGE_SEC:
         notes.append((p.dim, f"usage from {fmt_ago(now - a.usage_at)}"))
     return lines, notes
 

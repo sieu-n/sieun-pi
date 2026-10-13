@@ -143,6 +143,8 @@ def admit_reason(a, cooldowns, cfg, now, priority="normal"):
         return why
     if a.session_pct >= admit_cap(cfg, priority) or week_pct(a) >= cfg["seven_day_max_pct"]:
         return "depleted"
+    if registry.usage_unsampled(a, now):
+        return "unsampled"
     if a.is_live and not cfg["allow_active_account"]:
         return "live-elsewhere"
     return None
@@ -186,7 +188,9 @@ def admissible_at(a, cooldowns, cfg, now, priority="normal"):
         limit = admit_cap(cfg, priority) if short else cfg["seven_day_max_pct"]
         if registry.live_pct(w, now) >= limit:
             at = max(at, window_reset_at(w))
-    return at
+    # The hook starts a read of an unsampled account; by REFRESH_TIMEOUT_SEC it has
+    # landed or failed, and a tree that waits for the account asks again then.
+    return max(at, now + registry.REFRESH_TIMEOUT_SEC) if registry.usage_unsampled(a, now) else at
 
 
 def tier_units(a, cfg):
