@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
+import { Dormancy, type IdleDetach } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
@@ -12,7 +13,7 @@ import { DAEMON_WORKER_START_MS, timedWorkerStart } from "./daemon-worker-start.
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { applyThreadEvent, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
-import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, ModelCatalog, ModelInfo, ProjectedSessionEvent, QueueState, SendMode, SessionRow, ThreadEvent, ThreadInfo, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
@@ -111,6 +112,8 @@ class Thread {
   idleSince: number | null = Date.now();
   /** When the session last sent an event, or the attach; the server's hung-turn check reads it (`quietSince`). */
   lastEventAt = Date.now();
+  /** The hub clock at the thread's last attach, session event, children change or tab close: its idle time for `rest` counts from here. */
+  activeAt = Date.now();
   private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent } | undefined;
   constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread) => void) { this.state = threadStateFromSnapshot(snapshot); }
   broadcast(event: ThreadEvent): void {
@@ -169,6 +172,8 @@ export class ThreadHub {
   /** Pins being resumed now (queued or attaching), and the failed ones with when to try next. */
   private readonly pinning = new Set<string>();
   private readonly pinRetry = new Map<string, { at: number; failures: number }>();
+  /** Pinned chats detached by `rest`. They stay pinned and keep their last state until `resume` wakes them. */
+  private readonly dormant: Dormancy;
   private unwatchCatalog: (() => void) | undefined;
   private readonly attaches = new AttachQueue();
   private readonly observers = new Set<ThreadObserver>();
@@ -176,7 +181,8 @@ export class ThreadHub {
 
   /** `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat. */
   constructor(private readonly socketPath: string, private readonly catalog: Catalog, private readonly defaults: () => ChatDefaults,
-    private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined) {
+    private readonly board: (id: string) => Promise<ChatBoard | null | undefined> = async () => undefined, idle: IdleDetach = {}) {
+    this.dormant = new Dormancy(idle);
     this.sweeper = setInterval(() => this.sweep(), 30000);
     this.sweeper.unref();
   }
@@ -185,6 +191,29 @@ export class ThreadHub {
     const now = Date.now();
     for (const [id, thread] of this.threads) {
       if (!this.pinned.has(id) && thread.listeners.size === 0 && thread.idleSince !== null && now - thread.idleSince > IDLE_MS) void this.dispose(id);
+    }
+    void this.rest().catch(error => { process.stderr.write(`rest: ${error instanceof Error ? error.message : String(error)}\n`); });
+  }
+
+  /** Nothing in the thread's tree runs or waits: no tab, no turn, tool or session action, no queued input, no running or queued child. */
+  private resting(thread: Thread): boolean {
+    const { queue } = thread.state;
+    return thread.listeners.size === 0 && !isThreadBusy(thread.state) && queue.steering.length === 0 && queue.followUp.length === 0 &&
+      !this.resuming.has(thread.id) && !this.opening.has(thread.id);
+  }
+
+  /** Detaches each pinned chat whose whole tree rested for the daemon's idleEvictionMinutes; it keeps its last state for `state` and `revive`. */
+  private async rest(): Promise<void> {
+    for (const id of this.pinned) {
+      const thread = this.threads.get(id);
+      if (!thread?.live || !this.resting(thread) || !await this.dormant.due(id, thread.activeAt)) continue;
+      const live = thread.live;
+      if (!live || !this.resting(thread) || this.threads.get(id) !== thread) continue;
+      this.dormant.sleep(id, this.dormant.now() - thread.activeAt, "detached");
+      thread.flush();
+      thread.live = null;
+      live.unsubscribe();
+      await live.connection.dispose().catch(() => {});
     }
   }
 
@@ -207,13 +236,23 @@ export class ThreadHub {
    */
   pin(id: string): void {
     this.pinned.add(id);
-    this.unwatchCatalog ??= this.catalog.subscribe(event => { if (event.daemon === "up") this.keepPinnedLive(); });
+    this.unwatchCatalog ??= this.catalog.subscribe(event => {
+      if (event.daemon !== "up") return;
+      this.keepPinnedLive();
+      for (const id of this.dormant.woken(event.sessions ?? [])) {
+        void this.resume(id, true, "catalog").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
+      }
+    });
   }
 
   unpin(id: string): void {
     this.pinned.delete(id);
     this.pinRetry.delete(id);
+    this.dormant.forget(id);
   }
+
+  /** Whether `rest` detached the pinned chat and nothing has woken it since. */
+  isDormant(id: string): boolean { return this.dormant.has(id); }
 
   observe(observer: ThreadObserver): () => void {
     this.observers.add(observer);
@@ -225,6 +264,7 @@ export class ThreadHub {
   }
 
   private childrenChanged(thread: Thread): void {
+    thread.activeAt = this.dormant.now();
     for (const observer of [...this.observers]) observer.children(thread.id, thread.state.children);
   }
 
@@ -258,7 +298,7 @@ export class ThreadHub {
 
   /** Re-runs the session's extensions and rebuilds its tools and prompt, so a long-lived chat picks up a newer extension build. */
   async reload(id: string): Promise<void> {
-    const { live } = await this.requireLive(id);
+    const { live } = await this.requireLive(id, "reload");
     await live.connection.reload();
   }
 
@@ -283,18 +323,25 @@ export class ThreadHub {
    * On every catalog update with the daemon up, a pinned thread that lost its attachment (daemon restart, worker exit) is resumed again, as a
    * background attach (`AttachQueue`), so after a restart the pins come back two at a time and an open tab or an owner send goes first. A
    * failed resume waits PIN_RETRY_MS, doubling per failure. One archived outside this server (the terminal agents view) is unpinned instead,
-   * so the pin never brings an archived session back.
+   * so the pin never brings an archived session back. A dormant chat is skipped, and one that rested on disk (`restedOnDisk`) opens saved.
    */
   private keepPinnedLive(): void {
     if (this.closed) return;
     const now = Date.now();
     for (const id of this.pinned) {
-      if (this.threads.get(id)?.live || this.pinning.has(id) || now < (this.pinRetry.get(id)?.at ?? 0)) continue;
+      if (this.threads.get(id)?.live || this.dormant.has(id) || this.pinning.has(id) || now < (this.pinRetry.get(id)?.at ?? 0)) continue;
       this.pinning.add(id);
       void (async () => {
         const summary = await this.catalog.summary(id);
         if (!summary || summary.lifecycle === "archived") { this.unpin(id); return; }
-        await this.resume(id, true);
+        const rested = this.threads.has(id) ? null : await this.dormant.restedOnDisk(summary);
+        if (rested !== null) {
+          await this.open(id, true, false);
+          this.dormant.sleep(id, rested, "left detached");
+          this.pinRetry.delete(id);
+          return;
+        }
+        await this.resume(id, true, "pin");
         this.pinRetry.delete(id);
       })().catch(error => {
         const failures = (this.pinRetry.get(id)?.failures ?? 0) + 1;
@@ -309,6 +356,7 @@ export class ThreadHub {
     const thread = this.threads.get(id);
     if (!thread) return;
     this.threads.delete(id);
+    this.dormant.forget(id);
     thread.flush();
     if (thread.live) {
       thread.live.unsubscribe();
@@ -433,6 +481,7 @@ export class ThreadHub {
   }
 
   private bind(thread: Thread, connection: DaemonAgentConnection, activeSessionId: string): void {
+    thread.activeAt = this.dormant.now();
     const unsubscribe = connection.subscribe(event => { void this.onNativeEvent(thread, event); });
     thread.live = { connection, activeSessionId, unsubscribe };
   }
@@ -467,6 +516,7 @@ export class ThreadHub {
       switch (event.type) {
         case "session_event": {
           thread.lastEventAt = Date.now();
+          thread.activeAt = this.dormant.now();
           const projected = this.projector.event(event.event);
           if (projected) thread.coalesce(projected, UPDATE_COALESCE_MS);
           const native = event.event.type;
@@ -497,8 +547,11 @@ export class ThreadHub {
     }
   }
 
-  /** `background` (a pin coming back, a stall check) waits its turn in the attach queue; a foreground open promotes a waiting one. */
-  async open(id: string, background = false): Promise<Thread> {
+  /**
+   * `background` (a pin coming back, a stall check) waits its turn in the attach queue; a foreground open promotes a waiting one. `attach`
+   * false reads the saved file even when the session is resident. A dormant chat comes back as its cached thread with no attach.
+   */
+  async open(id: string, background = false, attach = true): Promise<Thread> {
     if (this.closed) throw new ThreadError(410, "Chat is stopping.");
     const cached = this.threads.get(id);
     if (cached) { cached.touched = Date.now(); return cached; }
@@ -511,7 +564,7 @@ export class ThreadHub {
       const marks: string[] = [];
       const mark = (label: string, from: number) => { marks.push(`${label} ${Math.round(performance.now() - from)}ms`); return performance.now(); };
       let at = mark("catalog", started);
-      const activeSessionId = liveSessionId(summary);
+      const activeSessionId = attach ? liveSessionId(summary) : undefined;
       const live = activeSessionId === undefined ? null : await this.attaches.run(id, background, async () => {
         at = mark("queue", at);
         const connection = await this.attach(activeSessionId).catch(error => {
@@ -554,9 +607,10 @@ export class ThreadHub {
     const { connection: _connection, error: _error, ...snapshot } = thread.state;
     listener({ type: "snapshot", snapshot });
     if (thread.state.connection !== "connected") listener({ type: "status", connection: thread.state.connection, ...(thread.state.error ? { error: thread.state.error } : {}) });
+    if (this.dormant.has(id)) void this.resume(id, background, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     return () => {
       thread.listeners.delete(listener);
-      if (thread.listeners.size === 0) thread.idleSince = Date.now();
+      if (thread.listeners.size === 0) { thread.idleSince = Date.now(); thread.activeAt = this.dormant.now(); }
     };
   }
 
@@ -577,14 +631,16 @@ export class ThreadHub {
     thread.broadcast({ type: "wait", wait });
   }
 
-  /** The thread's state for a stall check, attaching it first; null for a thread that is not live. */
+  /** The thread's state for a stall check, attaching it first; null for a thread that is not live. A dormant chat stays detached and reads null. */
   async view(id: string): Promise<ThreadState | null> {
+    if (this.dormant.has(id)) return null;
     const thread = await this.open(id, true);
     return thread.live ? thread.state : null;
   }
 
-  private async requireLive(id: string): Promise<{ thread: Thread; live: Live }> {
-    const thread = await this.open(id);
+  /** `trigger` names the call in the wake line when it attaches a dormant chat. */
+  private async requireLive(id: string, trigger: string): Promise<{ thread: Thread; live: Live }> {
+    const thread = this.dormant.has(id) ? await this.resume(id, false, trigger) : await this.open(id);
     if (!thread.live) throw new ThreadError(409, "Reply to resume this thread first.");
     return { thread, live: thread.live };
   }
@@ -592,9 +648,11 @@ export class ThreadHub {
   /**
    * Makes a saved thread live, once per thread at a time: a pinned chat coming back after a daemon restart and the chat's turn restart (or an
    * owner send) can ask together, and two attaches would both subscribe, so every later event reached the thread twice and the feed drew each
-   * message twice. A foreground ask joins a background one and moves it ahead in the attach queue.
+   * message twice. A foreground ask joins a background one and moves it ahead in the attach queue. `trigger` names the caller in the wake
+   * line a dormant chat logs.
    */
-  resume(id: string, background = false): Promise<Thread> {
+  resume(id: string, background = false, trigger = "resume"): Promise<Thread> {
+    this.dormant.wake(id, trigger);
     if (!background) this.attaches.promote(id);
     const running = this.resuming.get(id);
     if (running) { if (!background) running.ask.foreground = true; return running.promise; }
@@ -658,8 +716,8 @@ export class ThreadHub {
     return thread;
   }
 
-  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode }): Promise<void> {
-    const thread = await this.resume(id);
+  async prompt(id: string, input: { message: string; images: ChatImage[]; mode: SendMode }, trigger = "prompt"): Promise<void> {
+    const thread = await this.resume(id, false, trigger);
     const live = thread.live!;
     if (input.images.length) {
       const [state, catalog] = await Promise.all([live.connection.getState(), live.connection.getModelCatalog()]);
@@ -684,19 +742,19 @@ export class ThreadHub {
    * text (and anything queued before it) starts a turn now.
    */
   async restart(id: string, message: string, abort = false): Promise<void> {
-    if (abort) await this.abort(id);
-    await this.prompt(id, { message, images: [], mode: "steer" });
+    if (abort) await this.abort(id, "restart");
+    await this.prompt(id, { message, images: [], mode: "steer" }, "restart");
     await this.resumeQueue(id);
   }
 
   /** A line in the transcript that starts no turn (the feed shows it as a notice). Sent only between turns: in a running turn it would join it as input. */
   async notice(id: string, text: string): Promise<void> {
-    const { live } = await this.requireLive(id);
+    const { live } = await this.requireLive(id, "notice");
     await live.connection.appendCustomMessage({ customType: CHAT_NOTICE, content: text, display: true });
   }
 
-  async abort(id: string): Promise<void> {
-    const { live } = await this.requireLive(id);
+  async abort(id: string, trigger = "abort"): Promise<void> {
+    const { live } = await this.requireLive(id, trigger);
     const state = await live.connection.getState();
     if (state.isCompacting) await live.connection.abortCompaction();
     if (state.isBashRunning) await live.connection.abortBash();
@@ -709,7 +767,7 @@ export class ThreadHub {
    * A chat gets this right after Stop, so job reports keep arriving; "No queued work to resume" means the pump is open with nothing waiting.
    */
   async resumeQueue(id: string): Promise<void> {
-    const { live } = await this.requireLive(id);
+    const { live } = await this.requireLive(id, "resume_queue");
     await this.catalog.connect();
     const response = await this.catalog.client.request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
     if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
@@ -717,7 +775,7 @@ export class ThreadHub {
 
   /** Deletes a finished subagent of the thread the way `rlm.delete_subagent` does, so its worker and Python kernel stop holding memory. */
   async deleteSubagent(id: string, childId: string): Promise<void> {
-    const { live } = await this.requireLive(id);
+    const { live } = await this.requireLive(id, "delete_subagent");
     await this.catalog.connect();
     const response = await this.catalog.client.request({ type: "delete_rlm_subagent", activeSessionId: live.activeSessionId, childId }, 30000, { recoverable: false });
     if (!response.success) throw new ThreadError(502, response.error);
@@ -725,18 +783,18 @@ export class ThreadHub {
 
   /** `all` batches every queued steer into one turn; `one-at-a-time` runs each as its own turn. Runtime state: it resets on every re-create. */
   async setSteeringMode(id: string, mode: "all" | "one-at-a-time"): Promise<void> {
-    const { live } = await this.requireResumed(id);
+    const { live } = await this.requireResumed(id, "steering");
     await live.connection.setSteeringMode(mode);
   }
 
   /** The attached session's heartbeat prompt; undefined when it has none. */
   async heartbeat(id: string): Promise<string | undefined> {
-    const { live } = await this.requireLive(id);
+    const { live } = await this.requireLive(id, "heartbeat");
     return (await live.connection.getHeartbeat())?.prompt;
   }
 
   async clearHeartbeat(id: string): Promise<void> {
-    const { live } = await this.requireLive(id);
+    const { live } = await this.requireLive(id, "heartbeat");
     await live.connection.updateHeartbeat("clear");
   }
 
@@ -795,7 +853,7 @@ export class ThreadHub {
   }
 
   async rename(id: string, name: string): Promise<void> {
-    const thread = await this.open(id);
+    const thread = this.dormant.has(id) ? await this.resume(id, false, "rename") : await this.open(id);
     if (thread.live) { await thread.live.connection.setSessionName(name); await this.refreshInfo(thread); return; }
     if (!thread.sessionFile) throw new ThreadError(409, "This thread has no session file to rename.");
     const owner = [...this.threads.values()].find(candidate => candidate.live) ?? null;
@@ -806,20 +864,20 @@ export class ThreadHub {
   }
 
   /** A saved thread resumes first, so its model and effort can change before the next reply. A running one changes at once and the next request uses it. */
-  private async requireResumed(id: string): Promise<{ thread: Thread; live: Live }> {
-    const thread = await this.resume(id);
+  private async requireResumed(id: string, trigger: string): Promise<{ thread: Thread; live: Live }> {
+    const thread = await this.resume(id, false, trigger);
     if (!thread.live) throw new ThreadError(502, "Prime Agent did not resume this thread.");
     return { thread, live: thread.live };
   }
 
   async setModel(id: string, provider: string, modelId: string): Promise<void> {
-    const { thread, live } = await this.requireResumed(id);
+    const { thread, live } = await this.requireResumed(id, "model");
     await live.connection.setModel(provider, modelId);
     await this.refreshInfo(thread);
   }
 
   async setThinking(id: string, level: string): Promise<void> {
-    const { thread, live } = await this.requireResumed(id);
+    const { thread, live } = await this.requireResumed(id, "thinking");
     const state = await live.connection.getState();
     const nativeLevel = state.availableThinkingLevels.find(value => value === level);
     if (!nativeLevel) throw new ThreadError(400, "Choose an effort level this model supports.");
@@ -828,7 +886,7 @@ export class ThreadHub {
   }
 
   async mutateQueue(id: string, input: { lane: "steering" | "followUp"; index: number; expectedText: string; text?: string }): Promise<string> {
-    const { thread, live } = await this.requireLive(id);
+    const { thread, live } = await this.requireLive(id, "queue_edit");
     const status = await live.connection.mutateQueuedMessage(input.lane, input.index, input.expectedText,
       input.text === undefined ? { type: "delete" } : { type: "replace", text: input.text, lane: input.lane });
     await this.refreshQueue(thread);
@@ -883,7 +941,7 @@ export class ThreadHub {
   }
 
   async stats(id: string): Promise<ThreadStats> {
-    const { live } = await this.requireLive(id);
+    const { live } = await this.requireLive(id, "stats");
     const stats = await live.connection.getSessionStats();
     return { tokens: { ...stats.tokens }, cost: stats.cost };
   }
