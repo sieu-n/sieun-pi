@@ -6,7 +6,7 @@ import { POOL_DEFAULTS, poolValue, type PoolKey } from "./pool-config.ts";
 
 /**
  * Settings > How it works: the rules behind chats and the account pool, each with the value the code uses now. A value the browser bundle can
- * import comes from its module; a value that lives in server code or in pi-pool's vend.py is a literal here, and test/how-it-works.test.ts
+ * import comes from its module; a value that lives in server code or in pi-pool's pool/base.py is a literal here, and test/how-it-works.test.ts
  * fails when it no longer matches its source.
  */
 
@@ -23,7 +23,7 @@ export interface Rank { rank: number; name: string; setBy: string; rule: string 
 export interface Topic { id: "chats" | "pool" | "order"; label: string; intro: string; diagram: string; steps: Step[]; rules: Rule[] }
 
 const USER_HISTORY = "components/user-history/src/";
-const VEND = "components/pi-pool/vend.py";
+const POOL_BASE = "components/pi-pool/pool/base.py";
 const q = (amount: number, unit: Unit): Quantity => ({ amount, unit });
 const pool = (key: PoolKey): Setting => ({ kind: "pool-config", key });
 const CODE: Setting = { kind: "code" };
@@ -34,7 +34,7 @@ export const STEP_STALE_MS = 2 * 60 * 60_000;
 export const NO_REPORT_GRACE_MS = 90_000;
 export const JOB_CLEANUP_IDLE_MS = 60 * 60_000;
 
-/** `DEFAULTS.max_moves_per_day` and `DEFAULTS.tier_units` in vend.py, checked against vend.py by the test. */
+/** `DEFAULTS.max_moves_per_day` and `DEFAULTS.tier_units` in pi-pool's pool/base.py, checked against it by the test. */
 export const MOVES_PER_DAY = { high: 6, normal: 3, low: 1 } as const;
 export const TIER_UNITS = { "max 20x": 4, "max 5x": 1, team: 1, pro: 0.5 } as const;
 
@@ -86,28 +86,28 @@ const CHAT_RULES: Rule[] = [
 
 const POOL_RULES: Rule[] = [
   { id: "admit-5h", title: "Admit cap, 5-hour window", value: q(POOL_DEFAULTS.admit_5h_max_pct, "percent"), setting: pool("admit_5h_max_pct"),
-    text: "An account takes a thread that is not on it only under this share of its 5-hour window. A thread already on it stays.", source: { file: VEND, symbol: "DEFAULTS.admit_5h_max_pct" } },
+    text: "An account takes a thread that is not on it only under this share of its 5-hour window. A thread already on it stays.", source: { file: POOL_BASE, symbol: "DEFAULTS.admit_5h_max_pct" } },
   { id: "low-admit-5h", title: "Admit cap for low threads", value: q(POOL_DEFAULTS.low_admit_5h_max_pct, "percent"), setting: pool("low_admit_5h_max_pct"),
-    text: "The same cap for a low-priority thread, so duties and check-ins leave room for your chats.", source: { file: VEND, symbol: "DEFAULTS.low_admit_5h_max_pct" } },
+    text: "The same cap for a low-priority thread, so duties and check-ins leave room for your chats.", source: { file: POOL_BASE, symbol: "DEFAULTS.low_admit_5h_max_pct" } },
   { id: "admit-week", title: "Admit cap, week", value: q(POOL_DEFAULTS.seven_day_max_pct, "percent"), setting: pool("seven_day_max_pct"),
-    text: "An account takes a thread only under this share of its week, and of its weekly Fable cap when the thread runs Fable.", source: { file: VEND, symbol: "DEFAULTS.seven_day_max_pct" } },
+    text: "An account takes a thread only under this share of its week, and of its weekly Fable cap when the thread runs Fable.", source: { file: POOL_BASE, symbol: "DEFAULTS.seven_day_max_pct" } },
   { id: "admit-slot", title: "Admission slot", value: q(POOL_DEFAULTS.admit_slot_sec, "s"), setting: pool("admit_slot_sec"),
-    text: "In this window an account takes one thread per tier unit, and always at least one.", source: { file: VEND, symbol: "DEFAULTS.admit_slot_sec" } },
+    text: "In this window an account takes one thread per tier unit, and always at least one.", source: { file: POOL_BASE, symbol: "DEFAULTS.admit_slot_sec" } },
   { id: "admit-per-unit", title: "Threads per tier unit", value: q(POOL_DEFAULTS.admit_per_unit, "count"), setting: pool("admit_per_unit"),
-    text: "How many threads one tier unit admits per slot window.", source: { file: VEND, symbol: "DEFAULTS.admit_per_unit" } },
+    text: "How many threads one tier unit admits per slot window.", source: { file: POOL_BASE, symbol: "DEFAULTS.admit_per_unit" } },
   { id: "budget-wait", title: "Longest wait when out of moves", value: q(POOL_DEFAULTS.budget_wait_max_sec, "s"), setting: pool("budget_wait_max_sec"),
-    text: "A thread out of moves waits for its own account only when that account frees within this time. Else it moves anyway.", source: { file: VEND, symbol: "DEFAULTS.budget_wait_max_sec" } },
+    text: "A thread out of moves waits for its own account only when that account frees within this time. Else it moves anyway.", source: { file: POOL_BASE, symbol: "DEFAULTS.budget_wait_max_sec" } },
   { id: "load-window", title: "Load window", value: q(POOL_DEFAULTS.active_session_sec, "s"), setting: pool("active_session_sec"),
-    text: "The score counts the threads an account served in this window as its load.", source: { file: VEND, symbol: "DEFAULTS.active_session_sec" } },
+    text: "The score counts the threads an account served in this window as its load.", source: { file: POOL_BASE, symbol: "DEFAULTS.active_session_sec" } },
   { id: "cold", title: "Cold thread", value: q(POOL_DEFAULTS.cache_ttl_sec, "s"), setting: pool("cache_ttl_sec"),
-    text: "A thread with no request for this long has lost its prompt cache, so its pin may move it back on the next request.", source: { file: VEND, symbol: "DEFAULTS.cache_ttl_sec" } },
+    text: "A thread with no request for this long has lost its prompt cache, so its pin may move it back on the next request.", source: { file: POOL_BASE, symbol: "DEFAULTS.cache_ttl_sec" } },
   { id: "refused", title: "Refusal cooldown", value: q(POOL_DEFAULTS.refused_cooldown_sec, "s"), setting: pool("refused_cooldown_sec"),
-    text: "An account the provider refuses (terms not accepted, sign-in turned off) is skipped for this long.", source: { file: VEND, symbol: "DEFAULTS.refused_cooldown_sec" } },
+    text: "An account the provider refuses (terms not accepted, sign-in turned off) is skipped for this long.", source: { file: POOL_BASE, symbol: "DEFAULTS.refused_cooldown_sec" } },
   { id: "probe", title: "Refusal check", value: q(POOL_DEFAULTS.probe_interval_sec, "s"), setting: pool("probe_interval_sec"),
-    text: "At most this often, a starting session checks every Claude account for a refusal with one free request.", source: { file: VEND, symbol: "DEFAULTS.probe_interval_sec" } },
+    text: "At most this often, a starting session checks every Claude account for a refusal with one free request.", source: { file: POOL_BASE, symbol: "DEFAULTS.probe_interval_sec" } },
 ];
 
-/** The order `decide` in vend.py walks, first match wins, per provider. */
+/** The order `decide` in pi-pool's pool/sched.py walks, first match wins, per provider. */
 export const ACCOUNT_ORDER: Rank[] = [
   { rank: 1, name: "New pin for this thread", setBy: "Use on an account row, or an account picked for a new chat",
     rule: "Applied once: the next request moves there when the account is under the admit cap and has a free slot. A high thread skips the slot." },

@@ -7,28 +7,28 @@ import { ALL_RULES, CHECK_IN_MS, JOB_CLEANUP_IDLE_MS, MOVES_PER_DAY, NO_REPORT_G
 import { POOL_DEFAULTS } from "../src/client/pool-config.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const VEND = readFileSync(join(ROOT, "components/pi-pool/vend.py"), "utf8");
+const POOL_BASE = readFileSync(join(ROOT, "components/pi-pool/pool/base.py"), "utf8");
 
-/** A number literal or a product of them (`24 * 3600`), the only shapes vend.py's DEFAULTS use for numbers. */
+/** A number literal or a product of them (`24 * 3600`), the only shapes pool/base.py's DEFAULTS use for numbers. */
 function pythonNumber(expression: string): number {
   const factors = expression.split("*").map(part => Number(part.trim()));
   assert.ok(factors.every(Number.isFinite), `not a number expression: ${expression}`);
   return factors.reduce((product, factor) => product * factor, 1);
 }
 
-/** A key of vend.py's DEFAULTS dict, or a top-level `NAME = <number>`. */
-function vendValue(symbol: string): number {
+/** A key of pool/base.py's DEFAULTS dict, or a top-level `NAME = <number>` there. */
+function poolValue(symbol: string): number {
   const key = symbol.startsWith("DEFAULTS.") ? symbol.slice("DEFAULTS.".length) : null;
-  const body = key ? VEND.slice(VEND.indexOf("DEFAULTS = {"), VEND.indexOf("\n}\n", VEND.indexOf("DEFAULTS = {"))) : VEND;
+  const body = key ? POOL_BASE.slice(POOL_BASE.indexOf("DEFAULTS = {"), POOL_BASE.indexOf("\n}\n", POOL_BASE.indexOf("DEFAULTS = {"))) : POOL_BASE;
   const match = key ? new RegExp(`^\\s+"${key}":\\s*([^,\\n]+),`, "m").exec(body) : new RegExp(`^${symbol} = ([^\\n#]+)`, "m").exec(body);
-  assert.ok(match, `${symbol} not found in vend.py`);
+  assert.ok(match, `${symbol} not found in pool/base.py`);
   return pythonNumber(match[1]!);
 }
 
-/** A key of vend.py's DEFAULTS dict whose value is a one-line JSON object, such as `max_moves_per_day`. */
-function vendObject(key: string): unknown {
-  const match = new RegExp(`^\\s+"${key}":\\s*(\\{[^\\n]*\\}),`, "m").exec(VEND);
-  assert.ok(match, `DEFAULTS.${key} not found in vend.py`);
+/** A key of pool/base.py's DEFAULTS dict whose value is a one-line JSON object, such as `max_moves_per_day`. */
+function poolObject(key: string): unknown {
+  const match = new RegExp(`^\\s+"${key}":\\s*(\\{[^\\n]*\\}),`, "m").exec(POOL_BASE);
+  assert.ok(match, `DEFAULTS.${key} not found in pool/base.py`);
   return JSON.parse(match[1]!);
 }
 
@@ -39,24 +39,24 @@ async function tsValue(file: string, symbol: string): Promise<number> {
   return value as number;
 }
 
-const sourceValue = (rule: Rule): Promise<number> => rule.source.file.endsWith(".py") ? Promise.resolve(vendValue(rule.source.symbol)) : tsValue(rule.source.file, rule.source.symbol);
+const sourceValue = (rule: Rule): Promise<number> => rule.source.file.endsWith(".py") ? Promise.resolve(poolValue(rule.source.symbol)) : tsValue(rule.source.file, rule.source.symbol);
 
 test("every How it works value matches the code it names", async () => {
   assert.ok(ALL_RULES.length > 0);
   for (const rule of ALL_RULES) assert.equal(rule.value.amount, await sourceValue(rule), `${rule.id}: ${rule.source.file} ${rule.source.symbol}`);
 });
 
-test("the literals that mirror server code and vend.py match their source", async () => {
+test("the literals that mirror server code and pi-pool match their source", async () => {
   assert.equal(CHECK_IN_MS, await tsValue("components/user-history/src/checkin-settings.ts", "CHECK_IN_MS"));
   assert.equal(STEP_STALE_MS, await tsValue("components/user-history/src/checkin-steps.ts", "STEP_STALE_MS"));
   assert.equal(JOB_CLEANUP_IDLE_MS, await tsValue("components/user-history/src/chat-checkin.ts", "JOB_CLEANUP_IDLE_MS"));
   assert.equal(NO_REPORT_GRACE_MS, await tsValue("components/user-history/src/chats.ts", "NO_REPORT_GRACE_MS"));
-  for (const [key, value] of Object.entries(POOL_DEFAULTS)) assert.equal(value, vendValue("DEFAULTS." + key), key);
-  assert.deepEqual(MOVES_PER_DAY, vendObject("max_moves_per_day"));
-  assert.deepEqual(TIER_UNITS, vendObject("tier_units"));
+  for (const [key, value] of Object.entries(POOL_DEFAULTS)) assert.equal(value, poolValue("DEFAULTS." + key), key);
+  assert.deepEqual(MOVES_PER_DAY, poolObject("max_moves_per_day"));
+  assert.deepEqual(TIER_UNITS, poolObject("tier_units"));
 });
 
-test("a pool rule that names a config key names a key of vend.py's DEFAULTS", () => {
+test("a pool rule that names a config key names a key of pi-pool's DEFAULTS", () => {
   for (const rule of ALL_RULES) {
     if (rule.setting.kind !== "pool-config") continue;
     assert.equal(rule.source.symbol, "DEFAULTS." + rule.setting.key, rule.id);

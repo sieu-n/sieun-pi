@@ -390,7 +390,7 @@ export const POOL_PRIORITIES: readonly PoolPriority[] = ["high", "normal", "low"
 export interface PoolWait { account: string; slotAt: number }
 /** `wait` is null when the thread does not wait on this provider. */
 export interface PoolProvider { provider: "anthropic" | "openai-codex"; rows: PoolAccount[]; resolution: PoolResolution | null; wait?: PoolWait | null; poolPin?: string | null; error?: string }
-/** The numeric settings of `pi-pool config` (vend.py DEFAULTS merged with ~/.config/pi-pool/config.json), by key. */
+/** The numeric settings of `pi-pool config` (pool/base.py DEFAULTS merged with ~/.config/pi-pool/config.json), by key. */
 export type PoolConfig = Readonly<Record<string, number>>;
 /** `poolConfig` is null when `pi-pool config` could not be read; the client then shows pi-pool's defaults. */
 /** `priority` is the thread's pool class, null with no thread or when the pool does not say. */

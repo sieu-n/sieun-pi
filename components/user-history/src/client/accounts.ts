@@ -31,7 +31,7 @@ export const PROVIDER_LABEL: Record<PoolProvider["provider"], string> = { anthro
 
 export type Tone = "accent" | "success" | "muted" | "warning" | "danger";
 export type AccountState = "off" | "needs-login" | "needs-terms" | "refused" | "cooldown" | "limited" | "depleted" | "pinned" | "seat" | "live";
-/** The pool's cooldown reason for an account whose updated Consumer Terms are not accepted on claude.ai yet (vend.py NEEDS_TERMS). */
+/** The pool's cooldown reason for an account whose updated Consumer Terms are not accepted on claude.ai yet (pi-pool's pool/base.py NEEDS_TERMS). */
 export const NEEDS_TERMS = "needs terms";
 export const STATE_LABEL: Record<AccountState, { label: string; tone: Tone }> = {
   off: { label: "Off", tone: "muted" },

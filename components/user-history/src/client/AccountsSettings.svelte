@@ -185,7 +185,7 @@
   const RESET_RETRY_MS = 10 * 60_000;
   const day = (ms: number): string => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
-  /** The grant `pi-pool reset` would spend: Anthropic's pick when it can be spent, else the first usable one. Mirrors grant_blocker in vend.py. */
+  /** The grant `pi-pool reset` would spend: Anthropic's pick when it can be spent, else the first usable one. Mirrors grant_blocker in pi-pool's pool/limit_resets.py. */
   function usableGrant(resets: AccountResets | null | undefined): ResetGrant | undefined {
     if (!resets?.eligible || (resets.cooldownUntil && resets.cooldownUntil > now)) return undefined;
     const usable = resets.grants.filter(grant => !grant.paused && grant.usableNow && grant.resetsLeft > 0 && (!grant.useRequiresLimit || resets.atLimit)

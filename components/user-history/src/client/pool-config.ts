@@ -1,6 +1,6 @@
 import type { PoolConfig } from "../shared/types.ts";
 
-/** pi-pool's defaults (`DEFAULTS` in vend.py) for the keys the app shows; test/how-it-works.test.ts checks them against vend.py. */
+/** pi-pool's defaults (`DEFAULTS` in pi-pool's pool/base.py) for the keys the app shows; test/how-it-works.test.ts checks them against it. */
 export const POOL_DEFAULTS = {
   admit_5h_max_pct: 70,
   low_admit_5h_max_pct: 50,
