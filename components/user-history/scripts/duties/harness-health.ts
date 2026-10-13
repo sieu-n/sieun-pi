@@ -4,15 +4,16 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import { fileOwnerTexts } from "../../src/owner-history.ts";
-import { missing } from "../../src/locked-json.ts";
 import { measureCache, readSessions, WINDOWS, type CacheMetric, type SessionCalls } from "./cache-ratio.ts";
+import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
  * The Skills and harness duty's precheck (`node --import tsx scripts/duties/harness-health.ts`): outcomes, never sizes. The owner (10-10, c39)
- * said word and line counts of skills and SKILL.md files mean nothing to watch. It counts skill smoke checks that fail, owner
+ * said word and line counts of skills and SKILL.md files mean nothing to watch. It counts skills that fail their smoke check (skill-smoke.ts), owner
  * corrections given again in 7 days, skills no agent read in 14 days, skill pairs whose descriptions overlap, and the prompt cache read share
- * of the last hour and day (cache-ratio.ts). No model call; the wiki database and the transcripts are read only.
+ * of the last hour and day (cache-ratio.ts). No model call; the wiki database and the transcripts are read only, and the smoke's repo skill reads
+ * carry SMOKE_SESSION so they never count as an agent read.
  */
 
 const HOUR = 60 * 60_000;
@@ -23,12 +24,13 @@ export const OVERLAP_MIN = 0.2;
 /** Pairs this close are listed for the job to judge, though only pairs at OVERLAP_MIN count in the metric. */
 export const OVERLAP_LIST = 0.1;
 const EXCERPT_MAX = 500;
-/** The results file a skill smoke duty writes in the data dir: `{ results: [{ skill, pass, detail? }] }`. */
-export const SKILL_SMOKE_FILE = "skill-smoke.json";
 const AUTO_SNS = process.env.HARNESS_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 
-/** Where skills live. `views` is the path prefix the llm-wiki view events use for this root; a root without one has no read tracking. */
-export interface SkillRoot { name: string; dir: string; views?: string }
+/**
+ * Where skills live. `views` is the path prefix the llm-wiki view events use for this root; a root without one has no read tracking.
+ * `repo` is the repo whose `scripts/skills/read-skill.mjs` reads this root's skills; the smoke check runs it for each one.
+ */
+export interface SkillRoot { name: string; dir: string; views?: string; repo?: string }
 export interface Skill {
   id: string; root: string; dir: string; description: string;
   /** The newest view event for any file in the skill, or null when it has read tracking and no view; undefined when it has no tracking. */
@@ -44,6 +46,7 @@ export interface HarnessDeps {
   sessions: (since: number) => Promise<SessionCalls[]>; cacheTargets: Record<CacheMetric, number>;
   /** A chat's owner messages, for the repeats the owner gave (`repeatsBetween`). */
   ownerTexts: (chat: string) => Promise<readonly string[]>;
+  smoke: SmokeEnv;
 }
 
 /** The `description` in a SKILL.md's frontmatter: one line, quoted or not, or a folded `>` / `|` block. */
@@ -122,19 +125,7 @@ export function markReads(skills: Skill[], roots: readonly SkillRoot[], views: r
   }
 }
 
-/** The skill smoke results in the data dir, or null when no skill smoke duty has written them yet. Throws on a file that is not the shape. */
-export async function readSkillSmoke(dataDir: string): Promise<SkillSmoke[] | null> {
-  const path = join(dataDir, SKILL_SMOKE_FILE);
-  let text: string;
-  try { text = await readFile(path, "utf8"); } catch (error) { if (missing(error)) return null; throw error; }
-  const results = (JSON.parse(text) as { results?: unknown }).results;
-  if (!Array.isArray(results) || !results.every(row => typeof row?.skill === "string" && typeof row.pass === "boolean")) {
-    throw new Error(`${path}: expected { results: [{ skill, pass, detail? }] }`);
-  }
-  return results.map(({ skill, pass, detail }) => ({ skill, pass, ...(typeof detail === "string" ? { detail } : {}) }));
-}
-
-export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput & { skills: Skill[] }> {
+export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput & { skills: Skill[]; smoke: SkillSmoke[] }> {
   const skills = await readSkills(deps.roots);
   const since = new Date(deps.now - UNREAD_DAYS * DAY).toISOString();
   markReads(skills, deps.roots, await deps.views(since));
@@ -142,11 +133,10 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   const pairs = listed.filter(pair => pair.score >= OVERLAP_MIN);
   const unread = skills.filter(skill => skill.lastRead === null);
   const repeats = await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.ownerTexts);
-  const smoke = await readSkillSmoke(deps.dataDir);
-  const failures = smoke?.filter(result => !result.pass) ?? [];
+  const smoke = await smokeSkills(skills, deps.roots, deps.smoke);
+  const failures = smoke.filter(result => !result.pass);
   const flagged: FlaggedSlice[] = [
     ...failures.map(result => ({ kind: "skill_smoke_failures", excerpt: `${result.skill} failed its smoke check${result.detail ? `: ${result.detail}` : ""}` })),
-    ...(smoke ? [] : [{ kind: "skill_smoke_failures", excerpt: `no ${join(deps.dataDir, SKILL_SMOKE_FILE)} yet: no skill smoke duty has run, so skill_smoke_failures is 0` }]),
     ...repeats.map(({ entry, repeat }) => ({ chat: repeat.chat.id, at: Date.parse(repeat.at), kind: "repeat_corrections_7d",
       excerpt: `${entry.id} "${entry.rule}" (enforced by ${entry.enforcedBy}: ${entry.ref}) given again in ${repeat.chat.name || repeat.chat.id}: ${repeat.words}`.slice(0, EXCERPT_MAX) })),
     ...unread.map(skill => ({ kind: "unread_14d", excerpt: `${skill.id} (${skill.dir}) has no view event since ${since.slice(0, 10)}` })),
@@ -159,16 +149,17 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
     metrics: { skill_smoke_failures: failures.length, repeat_corrections_7d: repeats.length, unread_14d: unread.length, overlapping_pairs: pairs.length, ...cache.metrics },
     flagged: [...cache.flagged, ...flagged.slice(0, 40)],
     skills,
+    smoke,
   };
 }
 
-/** The view events since `since` for files under .agents/skills or .claude/skills-native, from the wiki database, opened read only. */
+/** The view events since `since` for files under .agents/skills or .claude/skills-native, from the wiki database, opened read only, without the smoke's reads. */
 async function wikiViews(db: string, since: string): Promise<View[]> {
   const { DatabaseSync } = await import("node:sqlite");
   const database = new DatabaseSync(db, { readOnly: true });
   try {
-    return database.prepare("SELECT path, max(ts) AS ts FROM views WHERE ts >= ? AND (path LIKE '@code/.agents/skills/%' OR path LIKE '@code/.claude/skills-native/%') GROUP BY path")
-      .all(since) as unknown as View[];
+    return database.prepare("SELECT path, max(ts) AS ts FROM views WHERE ts >= ? AND (path LIKE '@code/.agents/skills/%' OR path LIKE '@code/.claude/skills-native/%') AND coalesce(session_id, '') != ? GROUP BY path")
+      .all(since, SMOKE_SESSION) as unknown as View[];
   } finally { database.close(); }
 }
 
@@ -176,18 +167,19 @@ async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("harness-health: OUTPUT_FILE is not set\n"); process.exit(2); }
   const roots: SkillRoot[] = [
-    { name: "repo", dir: join(AUTO_SNS, ".agents/skills"), views: "@code/.agents/skills/" },
-    { name: "native", dir: join(AUTO_SNS, ".claude/skills-native"), views: "@code/.claude/skills-native/" },
+    { name: "repo", dir: join(AUTO_SNS, ".agents/skills"), views: "@code/.agents/skills/", repo: AUTO_SNS },
+    { name: "native", dir: join(AUTO_SNS, ".claude/skills-native"), views: "@code/.claude/skills-native/", repo: AUTO_SNS },
     { name: "prime", dir: join(homedir(), ".prime/agent/skills") },
   ];
   const db = join(AUTO_SNS, "apps/llm-wiki/content/.wiki/wiki.db");
   const dataDir = process.env.HARNESS_DATA_DIR || join(homedir(), ".prime/agent/browser-chat");
   const duty = JSON.parse(await readFile(join(import.meta.dirname, "harness-health.duty.json"), "utf8")) as { metrics: { key: string; target: number }[] };
   const cacheTargets = Object.fromEntries(Object.keys(WINDOWS).map(key => [key, duty.metrics.find(metric => metric.key === key)!.target])) as Record<CacheMetric, number>;
-  const { skills, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), sessions: since => readSessions(homedir(), since), cacheTargets,
-    ownerTexts: chat => fileOwnerTexts(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`)) });
+  const python = join(process.env.PRIME_AGENT_KERNEL_VENV || join(homedir(), ".prime/agent/kernel-venv"), "bin/python");
+  const { skills, smoke, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), sessions: since => readSessions(homedir(), since), cacheTargets,
+    ownerTexts: chat => fileOwnerTexts(join(homedir(), ".prime/agent/sessions", `${chat}.jsonl`)), smoke: { python } });
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
-  if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify(skills.map(({ description: _, ...skill }) => skill), null, 2) + "\n");
+  if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify({ skills: skills.map(({ description: _, ...skill }) => skill), smoke }, null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

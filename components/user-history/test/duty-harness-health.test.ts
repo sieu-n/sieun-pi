@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { description, measureHarness, overlaps, SKILL_SMOKE_FILE, type Skill, type SkillRoot, type View } from "../scripts/duties/harness-health.ts";
+import { description, measureHarness, overlaps, readSkills, type Skill, type SkillRoot, type View } from "../scripts/duties/harness-health.ts";
+import { declaredScripts, namedPaths, SMOKE_SESSION, smokeSkills } from "../scripts/duties/skill-smoke.ts";
 import { measureCache, MIN_CALLS, readTranscript, type Call, type SessionCalls } from "../scripts/duties/cache-ratio.ts";
 
 const NOW = Date.parse("2026-10-10T04:00:00Z");
@@ -13,8 +14,9 @@ const iso = (ago: number) => new Date(NOW - ago).toISOString();
 const skillMd = (name: string, about: string) => `---\nname: ${name}\ndescription: "${about}"\n---\n\n# ${name}\n`;
 const chat = (id: string) => ({ id, name: `chat ${id}` });
 const TARGETS = { cache_read_ratio_1h: 90, cache_read_ratio_24h: 94 };
-/** No transcripts with model calls; in chat c the owner wrote the words of c1's repeat, and nothing else. */
-const stubs = { sessions: async () => [], cacheTargets: TARGETS, ownerTexts: async (id: string) => id === "c" ? ["ok, again, the same thing. fix it"] : [] };
+/** No transcripts with model calls; in chat c the owner wrote the words of c1's repeat, and nothing else. No fixture skill is a Python skill. */
+const stubs = { sessions: async () => [], cacheTargets: TARGETS, ownerTexts: async (id: string) => id === "c" ? ["ok, again, the same thing. fix it"] : [],
+  smoke: { python: "/nonexistent/python" } };
 
 async function tree(): Promise<{ dir: string; roots: SkillRoot[]; dataDir: string }> {
   const dir = await mkdtemp(join(tmpdir(), "harness-health-"));
@@ -43,7 +45,7 @@ test("harness health: frontmatter descriptions in one line, quoted, or folded", 
   assert.equal(description("# no frontmatter\n"), "");
 });
 
-test("harness health: outcomes only; repeat corrections in 7 days, skills read in 14 days, overlapping descriptions, and no smoke file yet", async () => {
+test("harness health: outcomes only; every skill passes its smoke check, repeat corrections in 7 days, skills read in 14 days, overlapping descriptions", async () => {
   const { dir, roots, dataDir } = await tree();
   try {
     const views: View[] = [
@@ -64,8 +66,8 @@ test("harness health: outcomes only; repeat corrections in 7 days, skills read i
     assert.deepEqual(result.metrics, { skill_smoke_failures: 0, repeat_corrections_7d: 1, unread_14d: 1, overlapping_pairs: 1, cache_read_ratio_1h: 100, cache_read_ratio_24h: 100 },
       "no size counts");
     const kinds = result.flagged!.map(slice => slice.kind);
-    assert.deepEqual([...new Set(kinds)], ["cache_read_ratio_1h", "cache_read_ratio_24h", "skill_smoke_failures", "repeat_corrections_7d", "unread_14d", "overlap", "untracked"]);
-    assert.match(result.flagged!.find(slice => slice.kind === "skill_smoke_failures")!.excerpt, /no .*skill-smoke\.json yet: no skill smoke duty has run, so skill_smoke_failures is 0/);
+    assert.deepEqual([...new Set(kinds)], ["cache_read_ratio_1h", "cache_read_ratio_24h", "repeat_corrections_7d", "unread_14d", "overlap", "untracked"]);
+    assert.deepEqual(result.smoke.map(row => [row.skill, row.pass]), result.skills.map(skill => [skill.id, true]), "the smoke check ran on every skill, and each passed");
     const repeat = result.flagged!.find(slice => slice.kind === "repeat_corrections_7d")!;
     assert.equal(repeat.chat, "c");
     assert.equal(repeat.excerpt, "c1 \"rule c1\" (enforced by brief: brief bullet) given again in chat c: again, the same thing");
@@ -75,18 +77,67 @@ test("harness health: outcomes only; repeat corrections in 7 days, skills read i
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("harness health: skill smoke results count each failing skill; a file that is not the shape is an error", async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "harness-smoke-"));
+const SH = (body: string) => `#!/bin/sh\n${body}\n`;
+async function put(path: string, text: string, mode?: number): Promise<void> {
+  await mkdir(join(path, ".."), { recursive: true });
+  await writeFile(path, text);
+  if (mode) await chmod(path, mode);
+}
+const pyproject = (name: string, script: string) => `[project]\nname = "${name}"\nversion = "1.0.0"\n\n[project.scripts]\n${script} = "rlm.skill:cli"\n\n[build-system]\nrequires = ["hatchling"]\n`;
+
+test("skill smoke: a missing script path, a failing import, a missing CLI, a missing name and a failing repo read each fail; good skills pass", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "skill-smoke-"));
   try {
-    await writeFile(join(dataDir, SKILL_SMOKE_FILE), JSON.stringify({ results: [{ skill: "websearch", pass: true }, { skill: "aside-browser", pass: false, detail: "screenshot timed out" },
-      { skill: "why", pass: false }] }));
-    const result = await measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...stubs });
-    assert.equal(result.metrics.skill_smoke_failures, 2);
-    assert.deepEqual(result.flagged!.filter(slice => slice.kind === "skill_smoke_failures").map(slice => slice.excerpt),
-      ["aside-browser failed its smoke check: screenshot timed out", "why failed its smoke check"]);
-    await writeFile(join(dataDir, SKILL_SMOKE_FILE), JSON.stringify({ results: [{ skill: "why", pass: "yes" }] }));
-    await assert.rejects(measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...stubs }), /skill-smoke\.json: expected \{ results: \[\{ skill, pass, detail\? \}\] \}/);
-  } finally { await rm(dataDir, { recursive: true, force: true }); }
+    const prime = join(dir, "prime"), repo = join(dir, "repo"), bin = join(dir, "venv/bin");
+    await put(join(prime, "good/SKILL.md"), `${skillMd("good", "Use for good things.")}\nRead [the guide](references/guide.md), then run \`scripts/run.sh\`.\nShow a picture with \`![alt](path)\`; see [snippet](snippet).\n\n\`\`\`md\n[not a file](nowhere/at-all.md)\n\`\`\`\n`);
+    await put(join(prime, "good/references/guide.md"), "Run `../scripts/run.sh` from here.\n");
+    await put(join(prime, "good/scripts/run.sh"), SH("exit 0"), 0o755);
+    await put(join(prime, "lost/SKILL.md"), `${skillMd("lost", "Use for lost things.")}\nRun \`scripts/run.sh\` and read [notes](references/notes.md).\n`);
+    await put(join(prime, "nameless/SKILL.md"), "---\ndescription: \"Use for things with no name.\"\n---\n");
+    await put(join(prime, "blank/SKILL.md"), "---\nname: blank\n---\n");
+    await put(join(prime, "good-tool/SKILL.md"), skillMd("good-tool", "Use for a Python tool that imports."));
+    await put(join(prime, "good-tool/pyproject.toml"), pyproject("good-tool", "good_tool"));
+    await put(join(prime, "good-tool/src/good_tool/__init__.py"), "def run():\n    return 1\n");
+    await put(join(prime, "broken-tool/SKILL.md"), skillMd("broken-tool", "Use for a Python tool that does not import."));
+    await put(join(prime, "broken-tool/pyproject.toml"), pyproject("broken-tool", "broken_tool"));
+    await put(join(prime, "broken-tool/src/broken_tool/__init__.py"), "raise ImportError('httpx2 is not installed')\n");
+    await put(join(bin, "python"), SH(`PYTHONPATH="${join(prime, "good-tool/src")}:${join(prime, "broken-tool/src")}" exec python3 "$@"`), 0o755);
+    await put(join(bin, "good_tool"), SH(`[ "$1" = --help ] && exit 0; exit 2`), 0o755);
+    await put(join(repo, ".agents/skills/apps/read/SKILL.md"), skillMd("read", "Use for a repo skill that reads."));
+    await put(join(repo, ".agents/skills/apps/unread/SKILL.md"), skillMd("unread", "Use for a repo skill the reader refuses."));
+    await put(join(repo, "scripts/skills/read-skill.mjs"), `const id = process.argv[2];
+if (process.env.RLM_SESSION_DIR !== "/${SMOKE_SESSION}") process.exit(3);
+if (id.endsWith("unread")) { console.error("[read-skill] Skill not found: " + id); process.exit(1); }
+process.stdout.write("# " + id);
+`);
+    const roots: SkillRoot[] = [{ name: "repo", dir: join(repo, ".agents/skills"), views: "@code/.agents/skills/", repo }, { name: "prime", dir: prime }];
+    const results = Object.fromEntries((await smokeSkills(await readSkills(roots), roots, { python: join(bin, "python") })).map(row => [row.skill, row.detail ?? "pass"]));
+    assert.deepEqual(results, {
+      "prime:blank": "Prime does not load it: description is required",
+      "prime:broken-tool": "import broken_tool fails in the kernel venv: ImportError: httpx2 is not installed; broken_tool --help exits without a code: " +
+        `spawn ${join(bin, "broken_tool")} ENOENT`,
+      "prime:good": "pass",
+      "prime:good-tool": "pass",
+      "prime:lost": "missing path: SKILL.md names references/notes.md; missing path: SKILL.md names scripts/run.sh",
+      "prime:nameless": "the frontmatter has no name",
+      "repo:apps/read": "pass",
+      "repo:apps/unread": "node scripts/skills/read-skill.mjs .agents/skills/apps/unread exits 1: [read-skill] Skill not found: .agents/skills/apps/unread",
+    });
+    const measured = await measureHarness({ roots, views: async () => [], dataDir: join(dir, "data"), now: NOW, ...stubs, smoke: { python: join(bin, "python") } });
+    assert.equal(measured.metrics.skill_smoke_failures, 5);
+    assert.deepEqual(measured.flagged!.filter(slice => slice.kind === "skill_smoke_failures").map(slice => slice.excerpt.split(" failed")[0]),
+      ["prime:blank", "prime:broken-tool", "prime:lost", "prime:nameless", "repo:apps/unread"]);
+    assert.match(measured.flagged!.find(slice => slice.excerpt.startsWith("prime:lost"))!.excerpt, /^prime:lost failed its smoke check: missing path: SKILL\.md names references\/notes\.md/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("skill smoke: the paths a markdown file names, and the CLIs a pyproject.toml declares", () => {
+  assert.deepEqual(namedPaths("See [a](references/a.md#top), `scripts/b.sh`, `apps/x/y.ts:12`, `~/.prime/c.md`, `/abs/d.md`, [e](https://x.dev/e.md), " +
+    "`<dir>/f.md`, `word`, `a/b`, [slug](snippet), `![g](path)`.\n```\n[h](h.md)\n```\n"), [
+    { path: "references/a.md", strict: true }, { path: "scripts/b.sh", strict: true }, { path: "apps/x/y.ts", strict: false },
+  ]);
+  assert.deepEqual(declaredScripts("[project]\nname = \"w\"\n\n[project.scripts]\nwebsearch = \"rlm.skill:cli\"\n\"other-cli\" = \"m:main\"\n\n[build-system]\nx = 1\n"), ["websearch", "other-cli"]);
+  assert.deepEqual(declaredScripts("[project]\nname = \"board\"\n"), []);
 });
 
 test("harness health: overlap ignores stop words and empty descriptions", () => {
