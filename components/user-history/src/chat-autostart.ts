@@ -1,12 +1,13 @@
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { userInfo } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { runCommand, type Runner } from "./chat-remote.ts";
 
 export const AUTOSTART_LABEL = "com.sieun.agent-chat";
 
-export type LaunchJob = { node: string; cli: string; dataDir: string; port: number; socketPath: string; logPath: string };
+/** `home` defaults to os.homedir(); tests pass their own. */
+export type LaunchJob = { node: string; cli: string; dataDir: string; port: number; socketPath: string; logPath: string; home?: string };
 export type KeepRunningSnapshot = { available: boolean; enabled: boolean; state: "on" | "off" | "problem"; message: string };
 
 const escapeXml = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -24,10 +25,11 @@ export function loginItemCli(started: string | undefined, resolved: string, real
 /**
  * RunAtLoad starts chat at login; KeepAlive restarts it after a crash but not after `chat stop`, which exits 0.
  * Interactive lifts launchd's background CPU and I/O limits, which stretched a restart from 1.4 s to 10-40 s on a loaded Mac.
+ * PATH carries ~/.local/bin because duty prechecks spawn `uv` from there; without it they failed with `spawn uv ENOENT`.
  */
 export function launchAgentPlist(job: LaunchJob): string {
   const args = [job.node, job.cli, "serve", "--supervised", "--data-dir", job.dataDir, "--port", String(job.port), "--socket", job.socketPath];
-  const path = [dirname(job.node), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"].filter((entry, index, all) => all.indexOf(entry) === index).join(":");
+  const path = [dirname(job.node), "/opt/homebrew/bin", "/usr/local/bin", join(job.home ?? homedir(), ".local", "bin"), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].filter((entry, index, all) => all.indexOf(entry) === index).join(":");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
