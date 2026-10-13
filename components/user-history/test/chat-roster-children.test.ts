@@ -129,7 +129,7 @@ test("an attached chat's children take the daemon row's later activity and runni
   await roster.roster(new Map([[CHAT, [row("running", "2026-10-13T09:45:33.530Z")]]]));
   observer!.children(CHAT, [attach(undefined)]);
   await settle();
-  assert.deepEqual(prompts, [], "the row shows the job mid-turn, so the attach's stop is no end");
+  assert.equal(prompts.length, 0, "the row shows the job mid-turn, so the attach's stop is no end");
   assert.equal((await chats.links(CHAT)).children[0]!.lastActivityAt, Date.parse("2026-10-13T09:45:33.530Z"), "the clock is the row's, not the attach's 09:20:49Z");
 
   now = Date.parse("2026-10-13T09:48:10.000Z");
