@@ -339,6 +339,17 @@ const withoutCheckHosts = (text: string, topics: readonly string[]): string => M
   const pattern = MACHINE.test(topic) ? phrasePattern(topic)?.source : undefined;
   return pattern ? rest.replace(new RegExp(`${RUNS_ON}${pattern}|${pattern}${RUN_BY}`, "giu"), " ") : rest;
 }, text);
+/**
+ * A one-word resource topic ("swap", "memory", "load", "disk", "CPU") that also has a plain meaning: launch main bro's p93 "Swap the 196
+ * renamed Watchlist usernames to their new Instagram usernames" swaps data, and c7's "swap" flagged it in 3 check-ins in a row (10-14). It is
+ * machine work only when the step also names a machine (a machine topic of the rule, this Mac, a MacBook) or pairs the word with what it
+ * measures ("swap usage", "memory pressure", "load average", "disk space").
+ */
+const RESOURCE = /^(?:swap|memory|load|disk|cpu)$/i;
+const MAC = /\b(?:this|the)\s+Mac\b|\bMacBook|\bMac\s+mini\b/i;
+const machineTopics = (text: string, topics: readonly string[]): readonly string[] =>
+  MAC.test(text) || matchTopic(text, topics.filter(topic => MACHINE.test(topic))) !== undefined ? topics : topics.filter(topic => !RESOURCE.test(topic.trim()) ||
+    new RegExp(`(?<![\\p{L}\\p{N}])${topic.trim()}[\\s-]+(?:usage|use|used|pressure|average|space|files?|memory|full)(?![\\p{L}\\p{N}])`, "iu").test(text));
 /** An open plan item whose work belongs to another thread by a ledger handoff: the rule, and the topic its text or note names. */
 export interface ScopeMiss { item: PlanItem; rule: HandoffRule; topic: string }
 /**
@@ -356,7 +367,7 @@ export function scopeMisses(board: ChatBoard | null, rules: readonly HandoffRule
       for (const rule of mine) {
         // Only the step's own text says what the work is; a note names machines as context (VP of CI 10-09: p56 "CI dashboard" flagged for
         // "swap" in its note; a crawler thread 10-10: five crawler builds flagged for "runner-a", the CI runner their land queued on).
-        const topic = matchTopic(withoutCheckHosts(item.text, rule.topics), rule.topics);
+        const topic = matchTopic(withoutCheckHosts(item.text, rule.topics), machineTopics(item.text, rule.topics));
         if (topic === undefined) continue;
         if (rule.with?.length && matchTopic(item.text, rule.with) === undefined) continue;
         if (ci && !rule.topics.some(topic => CI_WORK.test(topic.toUpperCase()))) continue;

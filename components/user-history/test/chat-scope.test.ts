@@ -103,9 +103,9 @@ test("scope: a topic as whole words in a step's text; not in the target chat, no
 
 test("check-in precheck: a step on another thread's work is listed with its scope line for the duty job, not in the target chat", () => {
   const context = { self: ["vp", "dev VP"], handoffs: [RULE] };
-  const plan = board([step("p1", "Find what eats swap", "todo", { note: "12 GB, load 30" }), step("p2", "Write the docs", "doing", { job: "vp" })]);
+  const plan = board([step("p1", "Find what eats swap on this Mac", "todo", { note: "12 GB, load 30" }), step("p2", "Write the docs", "doing", { job: "vp" })]);
   const first = checkInPrecheck(undefined, [], plan, NOW, context);
-  const line = `p1 "Find what eats swap" belongs to ${OPS} (correction c7): hand it off with a message to that thread and remove it from this plan`;
+  const line = `p1 "Find what eats swap on this Mac" belongs to ${OPS} (correction c7): hand it off with a message to that thread and remove it from this plan`;
   assert.deepEqual(first.scope.map(scopeLine), [line]);
   assert.match(checkInPrecheckText(first, [], [], NOW), new RegExp(`### Owned by another thread by an owner ruling\\n- ${line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   const other = checkInPrecheck(undefined, [], plan, NOW, { ...context, self: ["ops", OPS] });
@@ -174,6 +174,24 @@ test("scope: the M1 Air named only as where checks run is not machine work; a cl
   ]);
   assert.deepEqual(scopeMisses(plan, [live], ["01a11b0b-7c15-73da-9481-8de15903eab4", "slack green guy"]).map(miss => `${miss.item.id} ${miss.topic}`),
     ["p101 M1 Air", "p4 M1 Air", "p5 M2 Air"], "p113, p2 and p3 name an Air as the check host; ops guy's p101 cleanup, a runner restart and a slow Air still flag");
+});
+
+test("scope: a bare resource word flags only next to a machine or what it measures; swapping data is not machine work (launch main bro 10-14, p93 in 3 check-ins)", () => {
+  const live: HandoffRule = { correction: "c7", to: OPS, topics: ["M1 Air", "M2 Air", "Mac load", "load average", "swap", "memory pressure", "alert bot"] };
+  const generic: HandoffRule = { correction: "c99", to: OPS, topics: ["memory", "disk", "load"] };
+  const plan = board([
+    step("p93", "Swap the 196 renamed Watchlist usernames to their new Instagram usernames on prod, keep the old data, and list the rest for the owner", "doing",
+      { job: "removed handle swaps" }),
+    step("p2", "Load the creator list into memory before the disk export", "todo"),
+    step("p3", "Read swap usage after the build", "todo"),
+    step("p4", "Check swap on the M2 Air after the macOS update", "todo"),
+    step("p5", "Free disk space: delete the old release folders", "todo"),
+    step("p6", "Cut memory use on this Mac", "todo"),
+    step("p7", "Swap memory hit 12 GB during the build", "todo"),
+  ]);
+  assert.deepEqual(scopeMisses(plan, [live, generic], ["01a11bd7-072f-7591-ad1d-f123c276cde5", "launch main bro"]).map(miss => `${miss.item.id} ${miss.rule.correction} ${miss.topic}`),
+    ["p3 c7 swap", "p4 c7 M2 Air", "p5 c99 disk", "p6 c99 memory", "p7 c7 swap"],
+    "p93 swaps usernames and p2 loads data; swap usage, the M2 Air, disk space, memory on this Mac and swap memory still flag");
 });
 
 test("scope: a handoff with `with` words flags only steps that also name one of them (VP of CI 10-10, c36: a CI health check is not a local uptime check)", () => {

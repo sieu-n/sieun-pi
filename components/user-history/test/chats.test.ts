@@ -534,7 +534,7 @@ test("chats: the check-in reads the ledger's handoffs: a step on another thread'
   await index.add("c1");
   const now = 100_000_000;
   const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [],
-    plan: [{ id: "p1", text: "Find what eats swap", status: "doing", job: "c1", note: "at 12 GB", children: [] }] };
+    plan: [{ id: "p1", text: "Find what eats swap on this Mac", status: "doing", job: "c1", note: "at 12 GB", children: [] }] };
   const ledger: Ledger = { corrections: [{ id: "c7", at: "", chat: { id: "vp", name: "dev VP" }, words: "w", rule: "Machine work goes to ops guy.", enforcedBy: "code",
     ref: "pending commit", status: "reopened", theme: ["mac"], repeats: [], handoff: { to: "ops guy (+observability)", topics: ["swap", "M1 Air"] } }] };
   const sink = dutySink();
@@ -544,7 +544,7 @@ test("chats: the check-in reads the ledger's handoffs: a step on another thread'
   threads.fire().live("c1", []);
   await chats.settled();
   await chats.checkIn("c1");
-  assert.match(sink.runs[0]!.run.findings, /### Owned by another thread by an owner ruling\n- p1 "Find what eats swap" belongs to ops guy \(\+observability\) \(correction c7\): hand it off/);
+  assert.match(sink.runs[0]!.run.findings, /### Owned by another thread by an owner ruling\n- p1 "Find what eats swap on this Mac" belongs to ops guy \(\+observability\) \(correction c7\): hand it off/);
   assert.equal(sink.runs[0]!.run.output.metrics.scope_misses, 1);
   chats.close();
 });
