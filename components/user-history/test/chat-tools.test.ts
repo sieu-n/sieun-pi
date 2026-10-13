@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { dailyRun, toolChecks, TOOLS_CACHE_MS } from "../src/chat-tools.ts";
-import type { Deps, ExecResult, McpResult } from "../scripts/duties/skills-and-tools.ts";
+import { RECHECKS_FILE, type Deps, type ExecResult, type McpResult, type Recheck } from "../scripts/duties/skills-and-tools.ts";
 
 const HOME = "/h";
 const ok = (stdout: string, code = 0, stderr = ""): ExecResult => ({ code, stdout, stderr, ms: 5 });
@@ -136,6 +137,48 @@ test("the daily run is the newest run of a skills-and-tools duty across chats, w
     await writeFile(join(dir, `${CHAT}.json`), JSON.stringify({ version: 1, duties: [duty("d1", "chat-health.ts")] }));
     await rm(join(dir, `${OTHER}.json`));
     assert.equal(await dailyRun(store), null);
+  } finally {
+    await rm(data, { recursive: true, force: true });
+  }
+});
+
+test("a daily failure carries the newest re-check after the run, and the --only run of the script records one", async () => {
+  const data = await mkdtemp(join(tmpdir(), "chat-tools-"));
+  try {
+    const dir = join(data, "duties");
+    await mkdir(join(dir, CHAT), { recursive: true });
+    const detail = join(dir, CHAT, "d5-run.json");
+    await writeFile(detail, JSON.stringify({ metrics: { checks_run: 30 }, flagged: [
+      { kind: "fail_agent", item: "railway_auth", excerpt: "railway_auth: exit 1" },
+      { kind: "fail_agent", item: "skill_paths", excerpt: "skill_paths: dead paths" },
+      { kind: "fail_agent", item: "gh_auth", excerpt: "gh_auth: not logged in" }] }));
+    await writeFile(join(dir, `${CHAT}.json`), JSON.stringify({ version: 1, duties: [duty("d5", "skills-and-tools.ts")] }));
+    await writeFile(join(dir, `${CHAT}.runs.jsonl`), record("d5", 300, { detail }) + "\n");
+    await writeFile(join(dir, RECHECKS_FILE), [
+      { at: 200, results: [{ id: "gh_auth", status: "pass", detail: "before the run" }] },
+      { at: 400, results: [{ id: "railway_auth", status: "fail", detail: "still exit 1" }, { id: "skill_paths", status: "pass", detail: "no dead paths" }] },
+      { at: 500, results: [{ id: "railway_auth", status: "pass", detail: "signed in" }] },
+    ].map(line => JSON.stringify(line)).join("\n") + "\nnot json\n");
+
+    const problems = (await dailyRun(new DutyStore(data)))?.problems;
+    assert.deepEqual(problems, [
+      { id: "railway_auth", status: "fail", text: "railway_auth: exit 1", recheck: { at: 500, status: "pass", detail: "signed in" } },
+      { id: "skill_paths", status: "fail", text: "skill_paths: dead paths", recheck: { at: 400, status: "pass", detail: "no dead paths" } },
+      { id: "gh_auth", status: "fail", text: "gh_auth: not logged in" }]);
+
+    const file = join(data, "rechecks.jsonl");
+    const script = join(import.meta.dirname, "../scripts/duties/skills-and-tools.ts");
+    await new Promise<void>((resolve, reject) => execFile(process.execPath, ["--import", "tsx", script, "--only", "no_such_check"], { env: { ...process.env, RECHECKS_FILE: file } },
+      error => error ? resolve() : reject(new Error("an unknown id must exit non-zero"))));
+    await assert.rejects(readFile(file, "utf8"));
+    await new Promise<void>((resolve, reject) => execFile(process.execPath, ["--import", "tsx", script, "--only", "skill_files"], { env: { ...process.env, RECHECKS_FILE: file }, timeout: 60_000 },
+      error => error ? reject(error) : resolve()));
+    const [line, ...rest] = (await readFile(file, "utf8")).trim().split("\n");
+    assert.equal(rest.length, 0);
+    const recorded = JSON.parse(line!) as Recheck;
+    assert.equal(typeof recorded.at, "number");
+    assert.deepEqual(recorded.results.map(result => result.id), ["skill_files"]);
+    assert.ok(["pass", "fail", "off"].includes(recorded.results[0]!.status));
   } finally {
     await rm(data, { recursive: true, force: true });
   }

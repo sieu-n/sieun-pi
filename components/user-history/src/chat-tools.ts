@@ -1,9 +1,10 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { CHECKS, realDeps, runChecks, type Deps } from "../scripts/duties/skills-and-tools.ts";
+import { CHECKS, RECHECKS_FILE, realDeps, runChecks, type Deps, type Recheck } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import type { Duty, DutyRunRecord, PrecheckOutput } from "./shared/chat-duties.ts";
-import type { ToolCheck, ToolKind, ToolsDailyRun, ToolsView } from "./shared/types.ts";
+import type { ToolCheck, ToolKind, ToolsDailyRun, ToolsRecheck, ToolsView } from "./shared/types.ts";
 
 /** The Skills and tools duty's checks that Settings > Tools and skills runs live, in CHECKS order. websearch_query is a paid Virev search. */
 const TOOL_CHECK_IDS = new Set(["aside_tabs", "aside_account", "websearch_kernel", "websearch_query", "cua_permissions", "cua_mcp"]);
@@ -36,6 +37,20 @@ export function toolChecks(options: { dutyStore?: DutyStore | undefined; deps?: 
   };
 }
 
+/** Each check's newest re-check after `since`, from the duty's re-check file; a missing file or a bad line counts as no re-check. */
+async function latestRechecks(file: string, since: number): Promise<Map<string, ToolsRecheck>> {
+  const latest = new Map<string, ToolsRecheck>();
+  const text = await readFile(file, "utf8").catch(() => "");
+  for (const line of text.split("\n")) {
+    let entry: Partial<Recheck>;
+    try { entry = JSON.parse(line) as Partial<Recheck>; } catch { continue; }
+    if (typeof entry.at !== "number" || entry.at <= since || !Array.isArray(entry.results)) continue;
+    for (const result of entry.results)
+      if (typeof result?.id === "string" && entry.at > (latest.get(result.id)?.at ?? 0)) latest.set(result.id, { at: entry.at, status: result.status, detail: String(result.detail ?? "") });
+  }
+  return latest;
+}
+
 /** The newest run of any duty whose precheck runs skills-and-tools.ts, across every chat, with the checks its saved output flagged as failing or off. */
 export async function dailyRun(store: DutyStore): Promise<ToolsDailyRun | null> {
   let newest: { chatId: string; duty: Duty; record: DutyRunRecord } | undefined;
@@ -54,6 +69,8 @@ export async function dailyRun(store: DutyStore): Promise<ToolsDailyRun | null> 
     const status = slice?.kind === "off" ? "off" : slice?.kind === "fail_agent" || slice?.kind === "fail_owner" ? "fail" : undefined;
     return status && typeof slice.item === "string" ? [{ id: slice.item, status, text: String(slice.excerpt ?? "") }] : [];
   });
+  const rechecks = await latestRechecks(join(store.dir, RECHECKS_FILE), record.at);
+  for (const problem of problems) { const recheck = rechecks.get(problem.id); if (recheck) problem.recheck = recheck; }
   const checksRun = output?.metrics?.checks_run ?? record.metrics.checks_run?.value;
   return { chatId, dutyId: duty.id, name: duty.name, at: record.at, verdict: record.verdict, summary: record.summary,
     checksRun: typeof checksRun === "number" ? checksRun : null, problems };

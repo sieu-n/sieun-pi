@@ -486,10 +486,15 @@ export interface MachineView {
  */
 export type ToolKind = "browser" | "web search" | "computer use";
 export interface ToolCheck { id: string; kind: ToolKind; tool: string; status: "pass" | "fail" | "off"; detail: string; fix?: string; ms: number }
-/** The daily Skills and tools duty's newest run: its chat, when, the verdict, and each check it flagged as failing or off, by check id. */
+/** The newest `--only` re-check of a flagged check after the daily run, as the duty job runs it after a fix. */
+export interface ToolsRecheck { at: number; status: "pass" | "fail" | "off"; detail: string }
+/**
+ * The daily Skills and tools duty's newest run: its chat, when, the verdict, and each check it flagged as failing or off, by check id, with the
+ * duty job's latest re-check of that check when there is one.
+ */
 export interface ToolsDailyRun {
   chatId: string; dutyId: string; name: string; at: number; verdict: "met" | "missed" | "error" | "skipped"; summary: string;
-  checksRun: number | null; problems: { id: string; status: "fail" | "off"; text: string }[];
+  checksRun: number | null; problems: { id: string; status: "fail" | "off"; text: string; recheck?: ToolsRecheck }[];
 }
 /** `checkedAt` is when the live checks ran; the server keeps one result for a few minutes so opening the tab does not pay for a search each time. */
 export interface ToolsView { checkedAt: number; checks: ToolCheck[]; daily: ToolsDailyRun | null }

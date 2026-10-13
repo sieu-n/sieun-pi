@@ -148,20 +148,38 @@
       <p class="note">No daily Skills and tools check has run yet.</p>
     {:else}
       {@const daily = tools.daily}
-      <p class="current {VERDICT[daily.verdict].tone}">
+      {@const fails = daily.problems.filter(problem => problem.status === "fail")}
+      {@const fixed = fails.filter(problem => problem.recheck?.status === "pass")}
+      {@const lastFix = Math.max(0, ...fixed.map(problem => problem.recheck!.at))}
+      {@const allFixed = fails.length > 0 && fixed.length === fails.length}
+      <p class="current {allFixed ? "on" : VERDICT[daily.verdict].tone}">
         <span class="dot" aria-hidden="true"></span>
         <span>
-          {daily.name} ran {localTime(daily.at)} ({ago(daily.at, clock.now)}) and {VERDICT[daily.verdict].text}{daily.checksRun !== null ? `, ${daily.checksRun} checks run` : ""}.
+          {daily.name} ran {localTime(daily.at)} ({ago(daily.at, clock.now)}){daily.checksRun !== null ? ` over ${daily.checksRun} checks` : ""}
+          {#if allFixed}
+            and found {fails.length} {fails.length === 1 ? "failure" : "failures"}, all fixed; the re-check at {clockTime(lastFix)} passed.
+          {:else if fixed.length}
+            and found {fails.length} failures; {fixed.length} fixed, {fails.length - fixed.length} still failing.
+          {:else}
+            and {VERDICT[daily.verdict].text}.
+          {/if}
         </span>
       </p>
-      {#if daily.summary}<p class="note summary" title={daily.summary}>{daily.summary}</p>{/if}
+      {#if daily.summary && !allFixed}<p class="note summary" title={daily.summary}>{daily.summary}</p>{/if}
       {#if daily.problems.length}
         <ul class="rows problems">
           {#each daily.problems as problem (problem.id)}
             <li class="problem-row">
-              {@render mark(problem.status)}
+              {#if problem.status === "fail" && problem.recheck?.status === "pass"}
+                <span class="mark pass"><Icon name="check" size={12} />fixed</span>
+              {:else}
+                {@render mark(problem.status)}
+              {/if}
               <code class="mono id">{problem.id}</code>
               <span class="detail" title={problem.text}>{problem.text}</span>
+              {#if problem.recheck}
+                <span class="recheck" title={problem.recheck.detail}>Re-checked {clockTime(problem.recheck.at)}: {problem.recheck.status === "pass" ? "passes" : problem.recheck.status === "off" ? "off" : `still fails, ${problem.recheck.detail}`}</span>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -240,6 +258,7 @@
   .ring { width: 8px; height: 8px; margin: 0 2px; border-radius: 50%; border: 1.5px solid var(--border-strong); box-sizing: border-box; }
 
   .problems { margin-left: 16px; }
+  .recheck { grid-column: 3; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .problem-row { display: grid; grid-template-columns: 52px max-content minmax(0, 1fr); align-items: baseline; gap: 12px; padding: 4px 0; }
   .id { font-size: 12px; color: var(--text-muted); }
 

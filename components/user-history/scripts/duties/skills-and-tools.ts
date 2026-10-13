@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,6 +11,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * use on this Mac is installed, signed in and answers a real call. Each check runs a CLI with argv (no shell) or speaks raw MCP over stdio, all in
  * parallel with their own timeouts. No model call, nothing sent outside; the one paid call is a single Virev web search ($0.003 at most).
  * The research behind each pass rule is in the auto-sns-agent session folder sessions/2026/10/10/1617-skills-and-tools-duty.
+ * A `--only` run is the duty job's re-check after a fix; it is also appended to RECHECKS_FILE (RECHECKS_FILE env overrides the path).
  */
 
 export type Group = "computer use" | "web search" | "browser" | "mcp" | "prime skills" | "accounts" | "peers" | "service clis" | "repo skills";
@@ -429,6 +430,13 @@ export async function runChecks(deps: Deps, checks: readonly Check[] = CHECKS): 
   }));
 }
 
+/** Where a `--only` re-check is recorded, in the chat's duties folder, so Settings can show that a daily run's failures were fixed. */
+export const RECHECKS_FILE = "skills-and-tools.rechecks.jsonl";
+/** One `--only` re-check: when it ran and each check's outcome. */
+export interface Recheck { at: number; results: { id: string; status: Outcome["status"]; detail: string }[] }
+export const recheckRecord = (results: readonly CheckResult[], at: number): Recheck =>
+  ({ at, results: results.map(({ check, outcome }) => ({ id: check.id, status: outcome.status, detail: outcome.detail })) });
+
 export function toOutput(results: readonly CheckResult[], at: number): PrecheckOutput {
   const failed = results.filter(result => result.outcome.status === "fail");
   const metrics = {
@@ -566,7 +574,9 @@ async function main(): Promise<void> {
   if (unknown.length) { process.stderr.write(`skills-and-tools: unknown check ids ${unknown.join(", ")}; known: ${CHECKS.map(check => check.id).join(", ")}\n`); process.exit(2); }
   const stateFile = process.env.STATE_FILE;
   const deps = realDeps(stateFile ? dirname(stateFile) : tmpdir());
-  const output = toOutput(await runChecks(deps, only ? CHECKS.filter(check => only.has(check.id)) : CHECKS), deps.now());
+  const results = await runChecks(deps, only ? CHECKS.filter(check => only.has(check.id)) : CHECKS);
+  const output = toOutput(results, deps.now());
+  if (only) await appendFile(process.env.RECHECKS_FILE || join(deps.home, ".prime/agent/browser-chat/duties", RECHECKS_FILE), JSON.stringify(recheckRecord(results, deps.now())) + "\n", { mode: 0o600 });
   const text = JSON.stringify(output, null, 2) + "\n";
   if (process.env.OUTPUT_FILE) await writeFile(process.env.OUTPUT_FILE, text);
   else process.stdout.write(text);
