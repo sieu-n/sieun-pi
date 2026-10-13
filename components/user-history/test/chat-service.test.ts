@@ -26,7 +26,8 @@ function viaHost(url: string, { method = "GET", headers, body, until }: { method
       res.setEncoding("utf8").on("data", (chunk: string) => { text += chunk; if (until?.test(text)) { req.destroy(); resolve({ status: res.statusCode ?? 0, text }); } });
       res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
     });
-    req.setTimeout(10000, () => req.destroy(new Error("No response within 10 s.")));
+    // A 10 s bound failed at load 61 (full suite, 10-13); a request that gets no answer within the CLI's own start bound is a hang.
+    req.setTimeout(START_TIMEOUT_MS, () => req.destroy(new Error(`No response within ${START_TIMEOUT_MS / 1000} s.`)));
     req.on("error", error => { if (!until?.test("")) reject(error); });
     req.end(body);
   });
