@@ -77,8 +77,14 @@
   const skillGroups = $derived(SOURCES.map(entry => ({
     ...entry,
     total: skills?.skills.filter(skill => skill.source === entry.source).length ?? 0,
+    tokens: skills?.tokens.groups[entry.source] ?? 0,
     skills: shown.filter(skill => skill.source === entry.source).sort((a, b) => a.name.localeCompare(b.name)),
   })).filter(group => group.skills.length));
+  const count = (value: number) => value.toLocaleString("en-US");
+  /** Why a skill adds no tokens, for the token cell's tooltip. */
+  const noTokens = (skill: SkillInfo) => !skill.enabled ? "Off, so Prime leaves it out of the prompt."
+    : skill.userOnly ? "disable-model-invocation is set, so only a /skill command loads it and the prompt never lists it."
+    : "Prime does not read this folder; it is a Claude Code skill.";
 </script>
 
 {#snippet mark(status: ToolCheck["status"])}
@@ -206,14 +212,20 @@
     {:else if !skillGroups.length}
       <p class="note">No skill matches "{query.trim()}".</p>
     {:else}
+      {@const first = skills.tokens.firstPrompt}
+      <p class="note" title="Each skill's <skill> block in Prime's system prompt, counted at {skills.tokens.charsPerToken} chars per token (measured with Anthropic's count_tokens), plus {skills.tokens.header} tokens of fixed lines around the list.">
+        Skills add {count(skills.tokens.total)} tokens to every new session{#if first}, {Math.round(skills.tokens.total / first.tokens * 100)}% of the
+          {count(first.tokens)} token first prompt of the newest session in the repo ({localTime(first.at)}){/if}.
+      </p>
       {#each skillGroups as group (group.source)}
         <div class="source">
-          <h5>{group.label}<span class="count">{needle ? `${group.skills.length} of ${group.total}` : group.total}</span></h5>
+          <h5>{group.label}<span class="count">{needle ? `${group.skills.length} of ${group.total}` : group.total}</span><span class="count">{count(group.tokens)} tokens</span></h5>
           <ul class="rows">
             {#each group.skills as skill (skill.path)}
               <li class="skill" class:disabled={!skill.enabled} title={skill.path}>
                 <span class="skill-name">{skill.name}</span>
                 <span class="detail" title={skill.description}>{skill.description}</span>
+                <span class="tokens" class:none={!skill.tokens} title={skill.tokens ? `${count(skill.tokens)} tokens in every session's prompt` : noTokens(skill)}>{count(skill.tokens)}</span>
                 <span class="from" title={skill.from}>{#if !skill.enabled}<span class="off-tag">off</span>{/if}{skill.from}</span>
               </li>
             {/each}
@@ -265,7 +277,9 @@
   .filter { width: 240px; padding: 3px 10px; font-size: 12.5px; }
   .source { display: flex; flex-direction: column; }
   .source + .source { margin-top: 8px; }
-  .skill { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 170px; align-items: baseline; gap: 12px; padding: 4px 0; }
+  .skill { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr) 56px 170px; align-items: baseline; gap: 12px; padding: 4px 0; }
+  .tokens { text-align: right; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .tokens.none { color: var(--text-faint); }
   .skill-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   .from { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: 12px; color: var(--text-faint); }
   .off-tag { margin-right: 6px; color: var(--text-muted); font-weight: 500; }

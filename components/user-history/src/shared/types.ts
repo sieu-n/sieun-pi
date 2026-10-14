@@ -524,9 +524,20 @@ export interface ToolsView { checkedAt: number; checks: ToolCheck[]; daily: Tool
 
 /** Where an installed skill comes from: the global folder, the running Prime release's built-in skills, or a repo's skill folder. */
 export type SkillSource = "global" | "built-in" | "repo";
-/** One installed skill: its front matter name and one-line description, its source, a short label of the folder (`from`), and its SKILL.md path after links. */
-export interface SkillInfo { name: string; description: string; source: SkillSource; from: string; path: string; enabled: boolean }
-export interface SkillsView { skills: SkillInfo[] }
+/**
+ * One installed skill: its front matter name and one-line description, its source, a short label of the folder (`from`), and its SKILL.md path after links.
+ * `tokens` is what its <skill> block adds to every Prime session's system prompt, 0 when Prime leaves it out; `userOnly` is a skill whose front matter
+ * sets disable-model-invocation, which Prime loads for /skill commands but never lists in the prompt.
+ */
+export interface SkillInfo { name: string; description: string; source: SkillSource; from: string; path: string; enabled: boolean; tokens: number; userOnly: boolean }
+/** The first request of the newest fresh root session in the repo: input plus cache read plus cache write tokens, from its first reply's usage. */
+export interface FirstPrompt { tokens: number; at: number; sessionId: string }
+/**
+ * Skill tokens per fresh session: each group's blocks, the fixed lines around them, the sum, the measured first prompt they are a share of, and the
+ * chars per token the blocks are counted at.
+ */
+export interface SkillTokens { groups: Record<SkillSource, number>; header: number; total: number; firstPrompt: FirstPrompt | null; charsPerToken: number }
+export interface SkillsView { skills: SkillInfo[]; tokens: SkillTokens }
 
 /** A chat-client SDK update. `failed` comes back after a restart until the daemon version changes or Retry succeeds. */
 export interface SdkUpdateState { state: "idle" | "running" | "failed" | "restarting"; target?: string; message: string; log: string[]; at?: string }
