@@ -1,0 +1,39 @@
+{
+  "name": "Slack green deploys",
+  "ownerWords": "look, YOUR JOB IS TO MAKE SURE THE SOFTWARE IS DURABLE. 자체적으로 고쳐질 수 있게 설계를 바꾸는게 니 역할이야",
+  "goal": "Every push to slack-green main reaches the Railway worker (when it touches packages/backend) and Vercel production within 20 minutes. A deploy that Railway skips because a CI check failed is redeployed once by the precheck itself, and any other skip, failure or stuck deploy is reported to the chat.",
+  "metrics": [
+    {
+      "key": "railway_off_main",
+      "label": "Railway worker skipped, failed, stuck or missing a main commit",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "vercel_off_main",
+      "label": "Vercel production failed, stuck or missing the main head",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources that failed in this check",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "every",
+    "minutes": 10
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/slack-green-deploys.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "source_errors: fix the precheck or its login first. A Railway skip the precheck already redeployed (flag redeploy) needs no hand fix: tell the chat which commit was skipped and why, and check on the next run that the worker went live. A redeploy_error, a failed or stuck worker deploy, or a second skip of the same commit: read `railway deployment list --json` and the build logs, tell the chat in one line with the commit and the status, and start one fix job for the cause (for a CI skip, the failing check suite on that commit). Vercel failed or stuck: read the deployment's build log and tell the chat; a missing deployment means GitHub sent no push event, fixed by an empty commit through a PR, never `vercel redeploy`. Never merge, and never deploy anything but main's head."
+}
