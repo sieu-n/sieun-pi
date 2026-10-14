@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import {
-  type DsQuery, DAY, HOUR, MINUTE, PG, PROM, SOURCE_DEADLINE_MS, grafanaClient, num, promInstant, readGrafanaAuth, round1, settle, sqlRows, ssh,
+  type DsQuery, DAY, HOUR, PG, PROM, SOURCE_DEADLINE_MS, grafanaClient, num, promInstant, readGrafanaAuth, round1, settle, sqlRows, ssh,
   unmeasuredFlag, utc,
 } from "./estate-reads.ts";
 
@@ -16,7 +16,8 @@ import {
  *   with its last config_audit writer;
  * - estate_prometheus: crawler_v3_engage_admissible_now{world="prod"} (the healthy accounts: active, bound and passing egress admission, GET
  *   /ops/engage/health admissible_now), and crawler_v3_engage_deaths_24h{cause} to cross-check the death count;
- * - prod watch_targets through one ssh to us-metal01 as owner_ro (grafana_ro cannot read watch_targets), for the deep collab walks.
+ * - prod watch_targets through one ssh to us-metal01 as owner_ro (grafana_ro cannot read watch_targets), for the deep collab walks, and
+ *   staging watch_targets the same way, for the oldest due staging collab read.
  * grafana_ro cannot read the actor, transition and from_status columns of ig_engage_account_events, so a death here is a dead-outcome event, and
  * its cause is that event's error_code through CODE_CAUSES below.
  */
@@ -31,7 +32,9 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   prod: of the 365-day collab walks, 8,960 of 8,978 in the last 72 h reached their end (99.8%), by UTC day 10-12 5,259 of 5,259 and 10-13
  *   3,664 of 3,681 (99.5%). The target is the 72 h value rounded down to a whole percent.
  * - canary_accounts_short <= 0: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
- * - staging_last_read_min <= 60: staging stays a working test bed; an hour with no staging read means it stopped.
+ * - staging_due_wait_min <= 60: staging stays a working test bed, so a due staging collab read starts within an hour. The owner keeps about
+ *   10 monitored accounts on staging (t17, 10-12), so staging reads come in bursts hours apart by design, and the time since the last read
+ *   says nothing; the wait of the oldest due, unpaused, unclaimed tagged row does. The 60 min is the launch VP's number, not the owner's.
  * - source_errors <= 0: a source that failed is reported, never shown as green.
  * The schedule is daily (owner rule c66). The duty's timeoutMs 120000 is the runner's own cap, PRECHECK_TIMEOUT_MS in src/shared/chat-duties.ts.
  */
@@ -57,25 +60,27 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
 /** The data each metric reads; a metric whose source failed is not measured. */
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
   prod_capacity_pages_day: ["prod read log", "prod accounts", "prod healthy gauge"],
-  staging_last_read_min: ["staging read log"],
+  staging_due_wait_min: ["staging due reads"],
   fleet_ig_killed_pct: ["prod accounts", "prod config"], canary_ig_deaths_1h: ["prod accounts", "prod config"],
   canary_accounts_short: ["prod accounts", "prod config"],
   deep_walk_ok_pct: ["prod deep walks"],
 };
-export type Source = "grafana auth" | "prod read log" | "staging read log" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod death gauge" | "prod deep walks";
+export type Source = "grafana auth" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod death gauge" | "prod deep walks";
 
 /** Pages one prod account read on one full UTC day (YYYY-MM-DD). */
 export interface DayPages { day: string; accountId: number; pages: number }
 /** A dead-outcome event: Instagram's verdict when causeOf() says so. `pages24h` is what the account read in the 24 h before it. */
 export interface Death { accountId: number; at: number; status: string; code: string | null; readBefore: boolean; pages24h: number }
 export interface Account { id: number; status: string; reason?: string }
+/** Staging's due collab reads: tagged rows past next_due_at, unpaused and with no open claim, and the oldest one's wait in minutes. */
+export interface StagingDue { due: number; waitMin: number }
 /** A staging pause row that reads 'true', with the config_audit row that last wrote its key (null fields when none did). */
 export interface StagingPause { key: string; auditId: number | null; at: number | null; actor: string | null; reason: string | null }
 /** The 365-day collab walks of the last 24 h: walks that reached their end (since or exhausted), and error stops by code. */
 export interface DeepWalks { reached: number; errors: Record<string, number> }
 export interface EngageData {
   now: number;
-  days?: DayPages[]; stagingLastReadAt?: number | null; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
+  days?: DayPages[]; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
   healthy?: number; deepWalks?: DeepWalks;
   /** crawler_v3_engage_deaths_24h by cause. */
   deathGauge?: Record<string, number>;
@@ -157,16 +162,16 @@ export function provenRate(days: readonly DayPages[], deaths: readonly Death[], 
 const fmt = (value: number): string => value.toLocaleString("en-US");
 
 /**
- * When staging is past its last-read target (or never read), the staging pause rows that read 'true' and who last wrote each. A deploy that
+ * When the oldest due staging collab read has waited past its target, the staging pause rows that read 'true' and who last wrote each. A deploy that
  * closes admissions writes pause rows as actor metal-deploy, and on 2026-10-14 staging's pause.crawl and pause.refresh had read 'true' since a
  * 2026-09-23 deploy (config_audit 13588, 13589) that never reopened them (owner rule c63). This line names such a row so the duty run clears
  * it instead of finding it weeks later.
  */
-export function stagingStallFlag(data: EngageData, dutyMetrics: readonly DutyMetric[], minutes: number | undefined): FlaggedSlice | null {
-  const target = dutyMetrics.find(metric => metric.key === "staging_last_read_min")?.target ?? 60;
-  if (data.stagingLastReadAt !== null && (minutes === undefined || minutes <= target)) return null;
-  if (!data.stagingPauses) return null;
-  const late = data.stagingLastReadAt === null ? "staging has never read a page" : `staging read no page for ${minutes} min (target ${target})`;
+export function stagingStallFlag(data: EngageData, dutyMetrics: readonly DutyMetric[]): FlaggedSlice | null {
+  const target = dutyMetrics.find(metric => metric.key === "staging_due_wait_min")?.target ?? 60;
+  if (!data.stagingDue || data.stagingDue.waitMin <= target || !data.stagingPauses) return null;
+  const lastRead = data.stagingLastReadAt ? `last staging page read ${utc(data.stagingLastReadAt)}` : data.stagingLastReadAt === null ? "staging has never read a page" : "last staging read not measured";
+  const late = `the oldest of ${data.stagingDue.due} due staging collab reads has waited ${data.stagingDue.waitMin} min (target ${target}), ${lastRead}`;
   const rows = data.stagingPauses.map(pause => `${pause.key}${pause.auditId === null ? " (no config_audit row)"
     : ` (audit ${pause.auditId}, ${utc(pause.at!)}, ${pause.actor === "metal-deploy" ? "LEFT BY A DEPLOY, " : ""}${pause.actor}: ${(pause.reason ?? "").slice(0, 90)})`}`);
   const excerpt = `${late}. ${rows.length ? `Staging pause rows on: ${rows.join("; ")}. A row a deploy or a stale job left on goes back to its prior value (c63, c72); a row with an owner's reason stays.` : "No staging pause row is 'true'."} `
@@ -183,8 +188,8 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
   const failed = new Set(data.errors.map(error => error.source));
   const unmeasured = new Set(Object.keys(NEEDS).filter(key => NEEDS[key]!.some(source => failed.has(source))));
   if (data.stagingLastReadAt === null) flagged.push({ at, kind: "never_read", excerpt: "staging ig_engage_read_log has no read with pages > 0 at all" });
-  else if (data.stagingLastReadAt !== undefined) metrics.staging_last_read_min = round1((now - data.stagingLastReadAt) / MINUTE);
-  const stagingStall = stagingStallFlag(data, dutyMetrics, metrics.staging_last_read_min);
+  if (data.stagingDue) metrics.staging_due_wait_min = data.stagingDue.waitMin;
+  const stagingStall = stagingStallFlag(data, dutyMetrics);
   if (stagingStall) flagged.push(stagingStall);
   if (data.accounts && data.config && data.deaths) {
     const active = data.accounts.filter(account => account.status === "active");
@@ -260,6 +265,23 @@ group by 1, 2;
 SQL
 `;
 
+/** The oldest due staging collab read, as stagingDueOf parses it: tagged rows past next_due_at, unpaused and with no open claim. */
+export const STAGING_DUE_REMOTE = `set -u
+PW=$(tr -d '\\n' < /root/staging-pg-owner-ro.txt)
+docker exec -i -e PGAPPNAME=engage-reads-duty -e PGPASSWORD="$PW" virev-staging-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
+set default_transaction_read_only = on;
+select count(*), coalesce(round((extract(epoch from now() - min(w.next_due_at)) / 60)::numeric, 1), 0)
+from watch_targets w where w.platform = 'instagram' and w.kind = 'tagged' and not w.paused and w.next_due_at < now()
+  and not exists (select 1 from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.settled_at is null);
+SQL
+`;
+
+export function stagingDueOf(tsv: string): StagingDue {
+  const [due, waitMin, ...rest] = tsv.trim().split("\t").map(Number);
+  if (due === undefined || waitMin === undefined || rest.length || !Number.isFinite(due) || !Number.isFinite(waitMin)) throw new Error(`staging due reads: unexpected answer ${tsv.slice(0, 80)}`);
+  return { due, waitMin };
+}
+
 export const daysOf = (rows: Record<string, unknown>[]): DayPages[] => rows.map(row => ({ day: String(row.day), accountId: Number(row.account_id), pages: Number(row.pages) }));
 export const accountsOf = (rows: Record<string, unknown>[]): Account[] => rows.map(row => ({ id: Number(row.id), status: String(row.status), ...(row.reason ? { reason: String(row.reason) } : {}) }));
 export const stagingPausesOf = (rows: Record<string, unknown>[]): StagingPause[] => rows.map(row => ({
@@ -280,20 +302,22 @@ export function deepWalksOf(tsv: string): DeepWalks {
   return walks;
 }
 
-export async function measure(query: DsQuery | null, authError: string | null, now: number, remote: () => Promise<string>): Promise<EngageData> {
+export async function measure(query: DsQuery | null, authError: string | null, now: number, remote: () => Promise<string>, stagingRemote: () => Promise<string>): Promise<EngageData> {
   const data: EngageData = { now, errors: [] };
   const step = async <T>(source: Source, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
   const deepWalks = step("prod deep walks", async () => deepWalksOf(await remote()));
+  const stagingDue = step("staging due reads", async () => stagingDueOf(await stagingRemote()));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
     for (const source of ["prod read log", "staging read log", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
-    const walks = await deepWalks;
+    const [walks, due] = await Promise.all([deepWalks, stagingDue]);
     if (walks) data.deepWalks = walks;
+    if (due) data.stagingDue = due;
     return data;
   }
-  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks] = await Promise.all([
+  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due] = await Promise.all([
     step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL))),
     step("staging read log", async () => num((await sqlRows(query, PG.staging, STAGING_SQL))[0]?.last_read_at)),
     step("staging config", async () => stagingPausesOf(await sqlRows(query, PG.staging, STAGING_PAUSES_SQL))),
@@ -307,9 +331,10 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     }),
     step("prod death gauge", async () => Object.fromEntries((await promInstant(query, PROM.prod, 'max by (cause)(crawler_v3_engage_deaths_24h{world="prod"})')).map(series => [series.labels.cause ?? "?", series.value]))),
     deepWalks,
+    stagingDue,
   ]);
   Object.assign(data, days && { days }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
-    healthy !== undefined && { healthy }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks });
+    healthy !== undefined && { healthy }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due });
   return data;
 }
 
@@ -322,7 +347,7 @@ async function main(): Promise<void> {
   let query: DsQuery | null = null;
   let authError: string | null = null;
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
-  const result = report(await measure(query, authError, now, () => ssh(DEEP_WALKS_REMOTE, signal)), dutyMetrics);
+  const result = report(await measure(query, authError, now, () => ssh(DEEP_WALKS_REMOTE, signal), () => ssh(STAGING_DUE_REMOTE, signal)), dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`engage-reads: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
 }

@@ -37,8 +37,8 @@
       "target": 0
     },
     {
-      "key": "staging_last_read_min",
-      "label": "Minutes since the last staging page read",
+      "key": "staging_due_wait_min",
+      "label": "Minutes the oldest due staging collab read has waited",
       "op": "<=",
       "target": 60,
       "unit": " min"

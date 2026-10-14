@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { type DutyMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import {
-  type Account, type DayPages, type Death, type EngageData, canaryRoster, causeOf, deepWalksOf, measure, parseArms, provenRate, report, stagingPausesOf,
+  type Account, type DayPages, type Death, type EngageData, canaryRoster, causeOf, deepWalksOf, measure, parseArms, provenRate, report, stagingDueOf, stagingPausesOf,
 } from "../scripts/duties/engage-reads.ts";
 import { UNMEASURED, frameRows, frameSeries, grafanaAuth, missValue } from "../scripts/duties/estate-reads.ts";
 
@@ -24,7 +24,7 @@ const reads = (days: string[], count: number, pages: number, firstId = 1): DayPa
   days.flatMap(day => Array.from({ length: count }, (_, index) => ({ day, accountId: firstId + index, pages })));
 
 function data(fields: Partial<EngageData> = {}): EngageData {
-  return { now: NOW, errors: [], stagingLastReadAt: NOW - 5 * MIN, accounts: Array.from({ length: 100 }, (_, index) => account(index + 1)), deaths: [],
+  return { now: NOW, errors: [], stagingLastReadAt: NOW - 5 * MIN, stagingDue: { due: 0, waitMin: 0 }, accounts: Array.from({ length: 100 }, (_, index) => account(index + 1)), deaths: [],
     days: reads(["2026-10-12", "2026-10-13"], 100, 1000), healthy: 100, deepWalks: { reached: 995, errors: { invalid_request: 5 } },
     config: { "engage.rate_test_arms": "2000:1,2,3,4,5,6,7,8,9,10", "engage.rate_test_started_at": "2026-10-12T03:00:00+00:00" }, ...fields };
 }
@@ -98,23 +98,29 @@ test("engage reads: deep walks count error stops against walks that reached thei
   assert.match(output.flagged!.find(item => item.kind === "deep_walks")!.excerpt, /847 reached their end, 17 stopped on an error/);
 });
 
-test("engage reads: a staging read stall names each staging pause row on and its last writer, and marks a deploy's leftover", async () => {
+test("engage reads: a due staging read waiting past the target names each staging pause row on and its last writer, and marks a deploy's leftover", async () => {
   const metrics = await dutyMetrics();
   const stagingPauses = stagingPausesOf([
     { key: "pause.crawl", id: 13588, at: Date.parse("2026-09-23T09:34:00Z"), actor: "metal-deploy", reason: "metal deploy 737c640e7d8e: admissions closed" },
     { key: "pause.enrich", id: 14212, at: Date.parse("2026-10-13T22:39:00Z"), actor: "api-key", reason: "owner: \"can we not enrich for now?\"" },
     { key: "pause.odd", id: null, at: null, actor: null, reason: null },
   ]);
-  const stalled = report(data({ stagingLastReadAt: NOW - 157 * MIN, stagingPauses }), metrics);
+  const stalled = report(data({ stagingLastReadAt: NOW - 157 * MIN, stagingDue: { due: 4, waitMin: 95.5 }, stagingPauses }), metrics);
+  assert.equal(stalled.metrics.staging_due_wait_min, 95.5);
+  assert.equal(judge(metrics, stalled).verdict, "missed");
   const line = stalled.flagged!.find(item => item.kind === "staging_stall")!.excerpt;
-  assert.match(line, /^staging read no page for 157 min \(target 60\)/);
+  assert.match(line, /^the oldest of 4 due staging collab reads has waited 95\.5 min \(target 60\), last staging page read 10-14 00:23Z\./);
   assert.match(line, /pause\.crawl \(audit 13588, 09-23 09:34Z, LEFT BY A DEPLOY, metal-deploy: metal deploy 737c640e7d8e: admissions closed\)/);
   assert.match(line, /pause\.enrich \(audit 14212, 10-13 22:39Z, api-key: owner/);
   assert.match(line, /pause\.odd \(no config_audit row\)/);
-  const quiet = report(data({ stagingLastReadAt: NOW - 90 * MIN, stagingPauses: [] }), metrics);
+  const quiet = report(data({ stagingDue: { due: 1, waitMin: 61 }, stagingPauses: [] }), metrics);
   assert.match(quiet.flagged!.find(item => item.kind === "staging_stall")!.excerpt, /No staging pause row is 'true'\. Then read the staging refusal reasons/);
-  assert.equal(report(data({ stagingLastReadAt: NOW - 30 * MIN, stagingPauses }), metrics).flagged!.some(item => item.kind === "staging_stall"), false, "a read inside the target flags nothing");
-  assert.ok(report(data({ stagingLastReadAt: null, stagingPauses }), metrics).flagged!.some(item => item.kind === "staging_stall"), "never read flags too");
+  const bursty = report(data({ stagingLastReadAt: NOW - 400 * MIN, stagingDue: { due: 0, waitMin: 0 }, stagingPauses }), metrics);
+  assert.equal(bursty.flagged!.some(item => item.kind === "staging_stall"), false, "hours since the last read with nothing due is staging working as the owner set it (t17)");
+  assert.equal(judge(metrics, bursty).verdict, "met");
+  assert.deepEqual(stagingDueOf("3\t42.5\n"), { due: 3, waitMin: 42.5 });
+  assert.deepEqual(stagingDueOf("0\t0\n"), { due: 0, waitMin: 0 });
+  assert.throws(() => stagingDueOf("what\n"), /unexpected/);
 });
 
 test("engage reads: a failed source reports source_errors and a value that misses, never a fake good one", async () => {
@@ -131,10 +137,11 @@ test("engage reads: a failed source reports source_errors and a value that misse
 
 test("engage reads: no Grafana login still gives a value for every metric, and the deep walks still read", async () => {
   const metrics = await dutyMetrics();
-  const output = report(await measure(null, "GRAFANA_ADMIN_PASSWORD is missing", NOW, async () => "reached\t\t10\n"), metrics);
+  const output = report(await measure(null, "GRAFANA_ADMIN_PASSWORD is missing", NOW, async () => "reached\t\t10\n", async () => "2\t15\n"), metrics);
   assert.deepEqual(Object.keys(output.metrics).sort(), metrics.map(metric => metric.key).sort());
   assert.equal(output.metrics.source_errors, 7);
   assert.equal(output.metrics.deep_walk_ok_pct, 100);
+  assert.equal(output.metrics.staging_due_wait_min, 15, "the staging due read comes over ssh, not Grafana");
   assert.notEqual(judge(metrics, output).verdict, "error");
 });
 
