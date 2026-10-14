@@ -164,9 +164,12 @@ export class Chats {
   /** When each chat's finished jobs were last checked, and the jobs already deleted (or tried once). */
   private readonly cleanedAt = new Map<string, number>();
   private readonly deletedJobs = new Set<string>();
-  /** When the idle roots were last looked at, and the roots archived (or being archived) in this serve. */
+  /**
+   * When the idle roots were last looked at, and each root archived, being archived or found archived in this serve, at the activity stamp it
+   * had then: a root that runs again (an agent message resumes it) gets a newer stamp and is looked at again.
+   */
   private rootsSweptAt = -Infinity;
-  private readonly rootsEnded = new Set<string>();
+  private readonly rootsEnded = new Map<string, string | undefined>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
   private readonly jobGone = new Map<string, string>();
   /** When the scheduler last looked for lost chats, and the threads with messages found plain (their head never changes). */
@@ -610,7 +613,9 @@ export class Chats {
    * last report and the chat it reports to are saved in `<data dir>/job-resumes`, then it is archived, so its worker ends, and the chat gets a
    * notice naming the file. A root is its own worker: on 10-14 at 12:39Z 8 roots idle with their reports in held 2.81 GB. Never a
    * chat, a duty run (the duty code archives those), a root that waits on a board.wake, or one the daemon shows in a turn, a tool call or a
-   * background bash at the moment of the archive.
+   * background bash at the moment of the archive. A root the daemon lists as archived is skipped: it keeps its row under the chat, so before,
+   * each service start archived it again and sent a second notice (10-14 17:50Z: stale tree guard land, vp worker heap fix and harness
+   * footprint fix, archived 16:03Z to 17:15Z, were archived again at 17:50Z, a minute after the 17:49Z start, each with a second notice).
    */
   private async endRoots(row: SessionRow): Promise<void> {
     const resumes = this.source.resumes;
@@ -623,11 +628,13 @@ export class Chats {
     const now = this.now();
     for (const agent of idleRoots(row.agents ?? [], board, lastJobMessages(messages), now)) {
       const id = agent.sessionId!;
-      if (this.chatIds.has(id) || duty.has(id) || this.rootsEnded.has(id)) continue;
-      this.rootsEnded.add(id);
+      if (this.chatIds.has(id) || duty.has(id) || (this.rootsEnded.has(id) && this.rootsEnded.get(id) === agent.lastActivityAt)) continue;
+      this.rootsEnded.set(id, agent.lastActivityAt);
       try {
+        const summary = await this.summary(id);
+        if (summary?.lifecycle === "archived") continue;
         if (await this.source.waking?.(id) || await this.threads.sessionActive(id)) { this.rootsEnded.delete(id); continue; }
-        const sessionFile = (await this.summary(id))?.sessionFile;
+        const sessionFile = summary?.sessionFile;
         const brief = sessionFile ? await sessionBrief(sessionFile) : undefined;
         if (brief === undefined) { this.log(`chat ${row.id.slice(0, 8)}: kept root ${agent.name}: its brief could not be read`); continue; }
         const quiet = Math.round((now - Date.parse(agent.lastActivityAt!)) / 60_000);
