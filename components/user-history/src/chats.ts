@@ -431,7 +431,8 @@ export class Chats {
 
   /**
    * Deletes each finished job of a chat (`finishedJobs`) once, with one log line, so its worker and Python kernel stop holding memory. A board
-   * that cannot be read deletes nothing; a failed delete is logged and not tried again.
+   * that cannot be read deletes nothing; a failed delete is logged and not tried again in this serve. A job the daemon deleted, or one the chat
+   * no longer holds (`deleteSubagent` false), goes on the deleted job record, so a restart does not try it again while the daemon still lists it.
    */
   private async cleanJobs(id: string): Promise<void> {
     const children = this.children.get(id);
@@ -439,13 +440,21 @@ export class Chats {
     let board: ChatBoard | null;
     try { board = await this.source.board(id); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: job cleanup: ${error instanceof Error ? error.message : String(error)}`); return; }
+    const record = this.source.deletedJobs;
+    const gone = await record?.gone(id, children.map(child => child.id)).catch(error => {
+      this.log(`chat ${id.slice(0, 8)}: job cleanup: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    });
+    if (record && !gone) return;
     const now = this.now();
     for (const child of finishedJobs(children, board, now, lastJobMessages(this.messages(id) ?? []))) {
-      if (this.deletedJobs.has(child.id)) continue;
+      if (this.deletedJobs.has(child.id) || gone?.has(child.id)) continue;
       this.deletedJobs.add(child.id);
       try {
-        await this.threads.deleteSubagent(id, child.id);
-        this.log(`chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`);
+        const deleted = await this.threads.deleteSubagent(id, child.id);
+        await record?.add(id, child.id, now);
+        this.log(deleted ? `chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`
+          : `chat ${id.slice(0, 8)}: finished job ${childName(child)} is no longer a subagent of the chat (the daemon still lists its session); recorded, not tried again`);
       } catch (error) { this.log(`chat ${id.slice(0, 8)}: delete finished job ${childName(child)}: ${error instanceof Error ? error.message : String(error)}`); }
     }
   }

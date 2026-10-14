@@ -31,7 +31,9 @@ export function fakeThreads(calls: string[]) {
     async restart(id: string, message: string, abort?: boolean) { calls.push(`restart ${id} ${message}${abort ? " (abort)" : ""}`); },
     async abort(id: string) { calls.push(`abort ${id}`); },
     async resumeQueue(id: string) { calls.push(`resume ${id}`); },
-    async deleteSubagent(id: string, childId: string) { calls.push(`delete ${id} ${childId}`); },
+    /** What the daemon answers a delete: true deleted, false the chat no longer holds that subagent. */
+    deleteAnswer: true,
+    async deleteSubagent(id: string, childId: string) { calls.push(`delete ${id} ${childId}`); return this.deleteAnswer; },
     async unarchive(id: string) { calls.push(`unarchive ${id}`); },
     async archive(id: string) { calls.push(`archive ${id}`); },
     catalog: { models: [] as ModelInfo[], configuredProviders: [] as string[] },

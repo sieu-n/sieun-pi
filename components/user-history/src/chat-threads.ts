@@ -791,12 +791,15 @@ export class ThreadHub {
    * Deletes a finished subagent of the thread the way `rlm.delete_subagent` does, so its worker and Python kernel stop holding memory. A dormant
    * chat refuses: on 10-14 the job cleanup after a service start woke slack green guy 7 s after it was left detached, 236 min idle.
    */
-  async deleteSubagent(id: string, childId: string): Promise<void> {
+  async deleteSubagent(id: string, childId: string): Promise<boolean> {
     if (this.dormant.has(id)) throw new ThreadError(409, "The chat is dormant; its finished jobs go with its worker, or at the next service start after it wakes.");
     const { live } = await this.requireLive(id, "delete_subagent");
     await this.catalog.connect();
     const response = await this.catalog.client.request({ type: "delete_rlm_subagent", activeSessionId: live.activeSessionId, childId }, 30000, { recoverable: false });
     if (!response.success) throw new ThreadError(502, response.error);
+    const data = response.data as { deleted?: boolean; reason?: string } | undefined;
+    if (data?.reason === "running") throw new ThreadError(409, "The job runs again.");
+    return data?.deleted === true;
   }
 
   /** `all` batches every queued steer into one turn; `one-at-a-time` runs each as its own turn. Runtime state: it resets on every re-create. */

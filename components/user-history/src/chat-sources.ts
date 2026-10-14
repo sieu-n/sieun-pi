@@ -85,6 +85,33 @@ export function briefCheckRecord(path: string, now: () => number = Date.now): Br
     },
   };
 }
+/**
+ * The finished jobs the cleanup already deleted, on disk so a service restart does not delete them again. The daemon keeps listing a deleted
+ * subagent's session under its chat, so after each restart the cleanup read it as a finished job again: on 10-14 frontend bro's email app outside
+ * in was "deleted" 5 times (02:18Z to 03:36Z, each after a service start), and every later delete_rlm_subagent answered `deleted: false`.
+ */
+export interface DeletedJobRecord {
+  /** The chat's jobs on record, after dropping each one the chat's `listed` subagents no longer hold, so the record stays as small as the listing. */
+  gone(chat: string, listed: readonly string[]): Promise<Set<string>>;
+  add(chat: string, childId: string, at: number): Promise<void>;
+}
+/** `<data dir>/deleted-jobs.json` through locked-json: `{ [chat]: { [childId]: delete time } }`. */
+export function deletedJobRecord(path: string): DeletedJobRecord {
+  const file: JsonFile<Record<string, Record<string, number>>> = { path, label: "Deleted job record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
+    ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, Record<string, number>] => typeof entry[1] === "object" && entry[1] !== null)) : {} };
+  return {
+    async gone(chat, listed) {
+      return (await transactJsonFile(file, state => {
+        const jobs = state[chat] ?? {};
+        for (const id of Object.keys(jobs)) if (!listed.includes(id)) delete jobs[id];
+        if (Object.keys(jobs).length) state[chat] = jobs; else delete state[chat];
+        return new Set(Object.keys(jobs));
+      })).result;
+    },
+    async add(chat, childId, at) { await transactJsonFile(file, state => { state[chat] = { ...state[chat], [childId]: at }; }); },
+  };
+}
+
 /** A job spawned longer ago than this when the server first sees it gets no `[brief check]`, so a restart does not check every old job. */
 export const BRIEF_CHECK_MAX_AGE_MS = 30 * 60_000;
 
@@ -109,8 +136,11 @@ export interface ChatThreads {
   abort(id: string): Promise<void>;
   /** Reopens the session's input pump, so queued input runs now. */
   resumeQueue(id: string): Promise<void>;
-  /** Deletes a finished subagent of the chat (the daemon's delete_rlm_subagent, the path `rlm.delete_subagent` takes). */
-  deleteSubagent(id: string, childId: string): Promise<void>;
+  /**
+   * Deletes a finished subagent of the chat (the daemon's delete_rlm_subagent, the path `rlm.delete_subagent` takes): true when the daemon deleted
+   * it, false when the chat no longer holds that subagent (the daemon answers `deleted: false`) though its session may still be listed.
+   */
+  deleteSubagent(id: string, childId: string): Promise<boolean>;
   /** Undoes an archive: the session comes back as a saved thread that resumes on the next pin or reply. */
   unarchive(id: string): Promise<void>;
   /** Archives the session: its turn stops, its worker ends and its session file records the archived state. */
@@ -179,6 +209,8 @@ export interface CheckInSource {
   replyChecks: ReplyCheckRecord;
   /** The jobs that got a `[brief check]` (`<data dir>/brief-checks.json`). Absent: no brief check runs. */
   briefChecks?: BriefCheckRecord;
+  /** The finished jobs the cleanup deleted (`<data dir>/deleted-jobs.json`). Absent (tests): each serve remembers its own deletes only. */
+  deletedJobs?: DeletedJobRecord;
   /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
   corrections?: () => Promise<Ledger>;
   /**
