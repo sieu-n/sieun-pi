@@ -81,7 +81,7 @@ export interface Footprints { workers: Record<string, { pids: number; bytes: num
 /** A command that only waits on CI or a clock under a job's kernel (worker-footprint.py `WAITER`), with the session its kernel serves. */
 export interface RawWaiter { pid: number; kernel: number; session: string; command: string; age_s: number | null }
 /** A waiter with the job and chat tree that own it. */
-export interface WaiterLine { pid: number; command: string; ageMin: number | null; session: string; job: string; root: string; tree: string }
+export interface WaiterLine { pid: number; kernel?: number; command: string; ageMin: number | null; session: string; job: string; root: string; tree: string }
 
 const round = (value: number, places = 2): number => Math.round(value * 10 ** places) / 10 ** places;
 
@@ -148,7 +148,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     waiters: (input.footprints.waiters ?? []).map(waiter => {
       const row = byId.get(waiter.session);
       const owner = row ? tree(row) : { root: waiter.session, tree: input.title(waiter.session) ?? waiter.session.slice(0, 8) };
-      return { pid: waiter.pid, command: waiter.command, ageMin: waiter.age_s === null ? null : Math.round(waiter.age_s / 60), session: waiter.session,
+      return { pid: waiter.pid, kernel: waiter.kernel, command: waiter.command, ageMin: waiter.age_s === null ? null : Math.round(waiter.age_s / 60), session: waiter.session,
         job: row?.name ?? input.title(waiter.session) ?? waiter.session.slice(0, 8), root: owner.root, tree: owner.tree };
     }),
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
@@ -238,31 +238,37 @@ export function waiterLine(waiter: WaiterLine): string {
     "Tell it to end that wait and set board.wake for the CI run or time instead, so the service wakes it and its worker can rest.";
 }
 
+/** How long an asked kernel stays asked after its last waiter: a sleep loop starts a new pid each round and can miss a minute's sample. */
+const ASKED_KEEP_MS = 60 * MINUTE;
+
 /**
- * Asks each waiter's tree once per waiter pid (`<dataDir>/mac-usable/waiters-asked.json`, pruned to the waiters still running): a chat by a
- * notice line (`notify`), a plain thread's root by a daemon message (`message`), since its waiter pins its worker the same. A waiter whose ask
- * fails is asked again next minute, and its failure is logged once.
+ * Asks each waiter's tree once per kernel (`<dataDir>/mac-usable/waiters-asked.json`, `{ [kernel]: { asked, seen } }`, kept ASKED_KEEP_MS past
+ * the kernel's last waiter): a chat by a notice line (`notify`), a plain thread's root by a daemon message (`message`), since its waiter pins
+ * its worker the same. A waiter whose ask fails is asked again next minute, and its failure is logged once.
  */
 export async function askWaiters(source: Pick<WatchSource, "dataDir" | "notify" | "message" | "log">, waiters: readonly WaiterLine[], chats: ReadonlySet<string>, now: number): Promise<string[]> {
   if (!source.notify && !source.message) return [];
   const file = join(source.dataDir, "mac-usable", "waiters-asked.json");
-  const asked: Record<string, number> = JSON.parse(await readFile(file, "utf8").catch(() => "{}"));
-  const kept: Record<string, number> = {};
+  const read: unknown = JSON.parse(await readFile(file, "utf8").catch(() => "{}"));
+  const asked = new Map(Object.entries(typeof read === "object" && read !== null ? read : {}).flatMap(([key, value]): [string, { asked: number; seen: number }][] =>
+    typeof value === "object" && value !== null && typeof value.asked === "number" && typeof value.seen === "number" ? [[key, { asked: value.asked, seen: value.seen }]] : []));
   const sent: string[] = [];
   for (const waiter of waiters) {
-    const key = String(waiter.pid);
-    if (asked[key] !== undefined) { kept[key] = asked[key]; continue; }
+    const key = String(waiter.kernel ?? waiter.pid);
+    const known = asked.get(key);
+    if (known) { known.seen = now; continue; }
     const send = chats.has(waiter.root) ? source.notify : source.message;
     if (!send) continue;
     try {
       await send(waiter.root, waiterLine(waiter));
-      kept[key] = now;
+      asked.set(key, { asked: now, seen: now });
       sent.push(key);
     } catch (error) {
       if (!failedAsks.has(key)) source.log(`mac usable watch: ask ${waiter.root.slice(0, 8)} about pid ${waiter.pid}: ${error instanceof Error ? error.message : String(error)}`);
       failedAsks.add(key);
     }
   }
+  const kept = Object.fromEntries([...asked].filter(([, value]) => now - value.seen < ASKED_KEEP_MS));
   await writeFile(file + ".tmp", JSON.stringify(kept));
   await rename(file + ".tmp", file);
   return sent;

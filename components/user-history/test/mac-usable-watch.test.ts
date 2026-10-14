@@ -160,17 +160,19 @@ print(json.dumps([bool(m.WAITER.search(c)) for c in json.loads(sys.argv[2])]))`,
   await mkdir(join(dir, "mac-usable"), { recursive: true });
   const sent: [string, string][] = [];
   const source = { dataDir: dir, log: () => {}, notify: async (chat: string, text: string) => { sent.push([chat, text]); } };
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW), ["12634"], "with no thread sender only launch main bro is asked");
+  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW), ["64730"], "with no thread sender only launch main bro is asked, keyed by the kernel");
   assert.match(sent[0]![1], /^\[job\] watch read errors \(session 01a13918\) holds its kernel and worker in `.*gh run watch 38589314491 --interval 180` \(pid 12634\) for 6 min\. .*board\.wake/);
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + MIN), [], "asked once per pid");
-  assert.deepEqual(await askWaiters(source, [], new Set(["lmb"]), NOW + 2 * MIN), []);
-  assert.deepEqual(JSON.parse(await readFile(join(dir, "mac-usable", "waiters-asked.json"), "utf8")), {}, "a waiter that ended leaves the record");
+  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + MIN), [], "asked once per kernel");
+  const nextRound = line.waiters!.map(waiter => ({ ...waiter, pid: waiter.pid + 1 }));
+  assert.deepEqual(await askWaiters(source, nextRound, new Set(["lmb"]), NOW + 2 * MIN), [], "a loop's next sleep in the same kernel is not asked again");
+  assert.deepEqual(await askWaiters(source, [], new Set(["lmb"]), NOW + 63 * MIN), []);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, "mac-usable", "waiters-asked.json"), "utf8")), {}, "a kernel with no waiter for an hour leaves the record");
   const { metrics, flagged } = measure([watch(59, { waiters: line.waiters! })], NOW);
   assert.equal(metrics.kernel_waiters_1h, 2);
   assert.deepEqual(flagged!.filter(item => item.kind === "kernel_waiter").map(item => item.item), ["12634", "25528"]);
 });
 
-test("waiters: a plain thread's waiter pins its worker too, so its root gets the line as a daemon message, once per pid (10-14 15:38Z: pid 72541, sleep 2280 in secrets-cutover under 'api portal figure out how identity work')", async () => {
+test("waiters: a plain thread's waiter pins its worker too, so its root gets the line as a daemon message, once per kernel (10-14 15:38Z: pid 72541, sleep 2280 in secrets-cutover under 'api portal figure out how identity work')", async () => {
   const rows = [row("01a0f6ae-849d-76ed-9889-ffc86a5d4de1", { sessionName: "api portal figure out how identity work", workerPid: 48062 }),
     row("01a0f80d-3003-75be-8b62-f17a48d8f716", { parentSessionId: "01a0f6ae-849d-76ed-9889-ffc86a5d4de1", sessionName: "secrets-cutover", activity: "working", workerPid: 48062 })];
   const waiters = [{ pid: 72541, kernel: 9001, session: "01a0f80d-3003-75be-8b62-f17a48d8f716", command: "sleep 2280", age_s: 1260 }];
@@ -187,8 +189,8 @@ test("waiters: a plain thread's waiter pins its worker too, so its root gets the
   assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + MIN), []);
   assert.equal(logs.length, 1, "its failure is logged once");
   fail = false;
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + 2 * MIN), ["72541"]);
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + 3 * MIN), [], "asked once per pid");
+  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + 2 * MIN), ["9001"]);
+  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + 3 * MIN), [], "asked once per kernel");
   assert.deepEqual(noticed, [], "a thread gets no chat notice");
   assert.equal(messaged.length, 1);
   assert.equal(messaged[0]![0], "01a0f6ae-849d-76ed-9889-ffc86a5d4de1");
