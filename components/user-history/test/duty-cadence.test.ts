@@ -5,7 +5,7 @@ import { CHECK_IN_DUTY, type DutyRunRecord, type DutyView } from "../src/shared/
 
 const record = (changes: Partial<DutyRunRecord>): DutyRunRecord => ({ duty: "checkin", at: 1, trigger: "schedule", ms: 0, verdict: "missed", metrics: {}, summary: "", ...changes });
 const view = (runs: DutyRunRecord[]): DutyView => ({ duty: { ...CHECK_IN_DUTY, status: "active" }, builtin: "checkin", schedule: { kind: "every", minutes: 15 }, paused: false,
-  nextAt: null, running: false, runs });
+  nextAt: null, running: false, runs, priority: "high" });
 
 test("duty cadence editor: the draft starts from the schedule; the check-in saves 1 to 240 minutes and no daily time; another duty 5 to 10080 minutes or HH:MM", () => {
   assert.deepEqual(cadenceDraft({ kind: "every", minutes: 15 }), { kind: "every", minutes: 15, at: "09:00" });

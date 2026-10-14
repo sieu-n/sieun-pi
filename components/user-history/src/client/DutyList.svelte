@@ -13,8 +13,12 @@
    * its target over the last runs, the last run's output file, and the cadence editor (every N minutes or a daily time). Run now and Pause or
    * Resume act through the server. Each run starts one duty job, named under the row. The check-in is a built-in duty: it carries a Built-in
    * tag and its last run's open steps per class and what it flagged, and its cadence and pause are the chat's check-in setting (the header's control).
+   * Each row names the chat's priority, which picks a new duty's morning band.
    */
   let { chat, duties, now }: { chat: string; duties: ChatDuties; now: number } = $props();
+
+  const PRIORITY_TIP = "The chat's priority, from its sidebar label (none is high). A new duty runs daily in its morning band: high from 06:00, normal from 07:40, " +
+    "low from 09:20. Duty jobs always wait in the low class of the agent queue.";
 
   let open = $state<Record<string, boolean>>({});
   const toggle = (id: string) => { open = { ...open, [id]: !open[id] }; };
@@ -51,6 +55,7 @@
           <span class="duty-state">{#if state === "running"}<span class="spinner tiny"></span>{:else}<span class="duty-dot {state}"></span>{/if}</span>
           <span class="duty-name">{duty.name}</span>
           {#if view.builtin}<span class="duty-tag" use:tooltip={"Built in: the check-in. Its cadence and pause are the header's Check-in control"}>Built-in</span>{/if}
+          <span class="duty-priority" use:tooltip={PRIORITY_TIP}>{view.priority} priority</span>
           <span class="duty-when">{scheduleLabel(view.schedule)} · {nextLabel(view, now)}</span>
         </button>
         <span class="duty-actions">
@@ -164,6 +169,7 @@
   .board-goal { color: var(--text-faint); }
   .duty-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
   .duty-tag { flex: none; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
+  .duty-priority { flex: none; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
   .duty-found { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); overflow-wrap: anywhere; }
   .cadence { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text-muted); }
   .cadence-label { color: var(--text-faint); }

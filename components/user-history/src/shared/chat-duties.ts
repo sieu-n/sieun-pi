@@ -1,3 +1,5 @@
+import type { PoolPriority } from "./types.ts";
+
 /**
  * Duties: standing work a chat owns. A duty is a goal in the owner's words with numeric targets, a schedule, and a code precheck that measures
  * the targets for 0 tokens. On every scheduled run the server runs the precheck, then starts one duty job linked to the chat with the precheck
@@ -69,7 +71,20 @@ export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metri
  * What the Duties card shows per duty: the duty, `builtin` for the check-in, its schedule (the check-in's is the chat's check-in setting) and
  * whether it is paused, when it runs next, whether a run is going now, and its last runs, newest first.
  */
-export interface DutyView { duty: DutyCard; builtin?: "checkin"; schedule: DutySchedule; paused: boolean; nextAt: number | null; running: boolean; runs: DutyRunRecord[] }
+export interface DutyView {
+  duty: DutyCard; builtin?: "checkin"; schedule: DutySchedule; paused: boolean; nextAt: number | null; running: boolean; runs: DutyRunRecord[];
+  /** The chat's pool class from its sidebar label (`chatPoolPriority`): it picks the duty's morning band. The duty job itself always runs low. */
+  priority: PoolPriority;
+}
+
+/**
+ * The morning window a new duty's daily time comes from, as [first, last] minute of the local day, one 100-minute band per pool class so a
+ * high-priority chat's duties run first: high 06:00-07:39, normal 07:40-09:19, low 09:20-10:59. The owner (c66, 10-14): "when creating duty it
+ * should kind of default to daily at some random morning time", then "also remember the priority system?".
+ */
+export const MORNING_BANDS: Readonly<Record<PoolPriority, readonly [number, number]>> = { high: [360, 459], normal: [460, 559], low: [560, 659] };
+/** An agent's duty runs at most this often: `every N minutes` under a day is refused for agents (c66). The check-in keeps its own cadence. */
+export const AGENT_EVERY_MIN_MINUTES = 24 * 60;
 
 /** A missed daily slot still runs once after the Mac wakes if it is at most this late; later it is recorded as skipped. */
 export const CATCH_UP_MS = 6 * 60 * 60_000;
@@ -91,6 +106,31 @@ export function dailySlot(at: string, now: number): number {
   slot.setHours(Number(hours), Number(minutes), 0, 0);
   if (slot.getTime() > now) slot.setDate(slot.getDate() - 1);
   return slot.getTime();
+}
+
+const clock = (minute: number): string => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+
+/**
+ * A new duty's daily time, "HH:MM": a uniformly random minute of the priority's MORNING_BANDS band that no daily duty in any chat uses (`taken`).
+ * When the band is full, the first free minute after it inside the window; when that is full too, a random minute of the band, shared.
+ */
+export function morningTime(taken: ReadonlySet<string>, priority: PoolPriority, random: () => number): string {
+  const [first, last] = MORNING_BANDS[priority];
+  const minutes = (from: number, to: number): number[] => Array.from({ length: Math.max(0, to - from + 1) }, (_, index) => from + index);
+  const free = minutes(first, last).filter(minute => !taken.has(clock(minute)));
+  if (free.length) return clock(free[Math.min(free.length - 1, Math.floor(random() * free.length))]!);
+  const after = minutes(last + 1, MORNING_BANDS.low[1]).find(minute => !taken.has(clock(minute)));
+  return clock(after ?? first + Math.min(last - first, Math.floor(random() * (last - first + 1))));
+}
+
+/**
+ * Why an agent may not give a duty this schedule, or null: `every N minutes` under AGENT_EVERY_MIN_MINUTES runs more often than daily. The
+ * owner's own page may still set it.
+ */
+export function agentScheduleProblem(schedule: DutySchedule): string | null {
+  if (schedule.kind !== "every" || schedule.minutes >= AGENT_EVERY_MIN_MINUTES) return null;
+  return `c66: the owner keeps duties daily ("we're gonna keep these ops stuff a daily duty"), so every ${schedule.minutes} minutes is refused; ` +
+    "leave out schedule for a random morning time, or give { kind: daily, at: HH:MM }.";
 }
 
 /** Whether the duty runs now, and why; or a slot that is too late to run and is recorded as skipped. A paused duty is never due. */
@@ -188,10 +228,13 @@ export function metricSizeProblem(metric: Pick<DutyMetric, "key" | "label" | "un
   return counted ? `"${metric.label}" counts the size of text (${counted.toLowerCase()}); a duty measures outcomes (a thing works, a mistake stops repeating), never the size of text.` : null;
 }
 
-/** Parses a duty definition from a file or a request: the fields a person writes. Run state starts empty. Throws with the first bad field. */
-export function parseDutyInput(value: unknown, id: string, now: number): Duty {
+/**
+ * Parses a duty definition from a file or a request: the fields a person writes. Run state starts empty. A definition with no `schedule` takes
+ * `schedule` from the caller (upsertDuty). Throws with the first bad field.
+ */
+export function parseDutyInput(value: unknown, id: string, now: number, schedule?: DutySchedule): Duty {
   if (!isRecord(value)) throw new Error("A duty is an object.");
-  const { name, ownerWords, goal, metrics, schedule, precheck, onMiss, boardGoal } = value;
+  const { name, ownerWords, goal, metrics, precheck, onMiss, boardGoal } = value;
   if (!str(name, 80)) throw new Error("name: 1 to 80 characters.");
   const nameProblem = dutyNameProblem(name);
   if (nameProblem) throw new Error(nameProblem);
@@ -208,7 +251,7 @@ export function parseDutyInput(value: unknown, id: string, now: number): Duty {
     if (sizeProblem) throw new Error(`metrics[${index}]: ${sizeProblem}`);
     return parsed;
   });
-  const parsedSchedule = parseSchedule(schedule);
+  const parsedSchedule = value.schedule === undefined && schedule ? schedule : parseSchedule(value.schedule);
   if (!isRecord(precheck) || !Array.isArray(precheck.command) || !precheck.command.length || !precheck.command.every(word => typeof word === "string" && word.length > 0) ||
     !str(precheck.cwd, 1024)) throw new Error("precheck: { command: [argv], cwd, timeoutMs? }.");
   const timeoutMs = typeof precheck.timeoutMs === "number" && precheck.timeoutMs > 0 ? Math.min(precheck.timeoutMs, PRECHECK_TIMEOUT_MS) : PRECHECK_TIMEOUT_MS;
@@ -219,10 +262,13 @@ export function parseDutyInput(value: unknown, id: string, now: number): Duty {
 
 /**
  * Adds a duty definition to a chat's duties, or updates the definition of the duty with the same name and keeps its run state, so applying it
- * twice changes nothing. Returns what it did: "added d3", "updated d1" or "unchanged d1".
+ * twice changes nothing. A definition with no `schedule` keeps the existing duty's schedule, and a new one runs daily at `morning`
+ * (`morningTime`). Returns what it did: "added d3", "updated d1" or "unchanged d1".
  */
-export function upsertDuty(duties: Duty[], definition: unknown, now: number): string {
-  const parsed = parseDutyInput(definition, nextDutyId(duties), now);
+export function upsertDuty(duties: Duty[], definition: unknown, now: number, morning?: string): string {
+  const name = isRecord(definition) && typeof definition.name === "string" ? definition.name.trim() : undefined;
+  const before = duties.find(duty => duty.name === name);
+  const parsed = parseDutyInput(definition, nextDutyId(duties), now, before?.schedule ?? (morning ? { kind: "daily", at: morning } : undefined));
   const existing = duties.find(duty => duty.name === parsed.name);
   if (!existing) { duties.push(parsed); return `added ${parsed.id}`; }
   const { id: _id, status: _status, createdAt: _createdAt, updatedAt: _updatedAt, runCount: _runCount, ...fields } = parsed;

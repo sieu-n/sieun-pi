@@ -41,8 +41,8 @@ test("api/threads/:id/duties: GET lists a chat's duties; POST runs, pauses, resu
     const paused = await post("chat1", { duty: "d1", action: "pause" });
     assert.deepEqual([paused.status, paused.body.duties[0]!.duty.status, paused.body.duties[0]!.nextAt], [200, "paused", null]);
     assert.equal((await post("chat1", { duty: "d1", action: "resume" })).body.duties[0]!.duty.status, "active");
-    const moved = await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "every", minutes: 30 } });
-    assert.deepEqual([moved.status, moved.body.duties[0]!.schedule, moved.body.duties[0]!.nextAt], [200, { kind: "every", minutes: 30 }, now + 30 * 60_000]);
+    const moved = await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "every", minutes: 2880 } });
+    assert.deepEqual([moved.status, moved.body.duties[0]!.schedule, moved.body.duties[0]!.nextAt], [200, { kind: "every", minutes: 2880 }, now + 2880 * 60_000]);
     const bad = await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "every", minutes: 2 } });
     assert.deepEqual([bad.status, bad.body.error], [400, "schedule: { kind: daily, at: HH:MM } or { kind: every, minutes } (5 to 10080)."]);
     assert.equal((await post("chat1", { duty: "d1", action: "schedule", schedule: { kind: "daily", at: "23:07" } })).status, 200);
@@ -51,5 +51,41 @@ test("api/threads/:id/duties: GET lists a chat's duties; POST runs, pauses, resu
     await duties.settled();
     const after = (await get("chat1")).body.duties[0]!;
     assert.deepEqual([after.running, after.runs[0]?.verdict, after.runs[0]?.trigger], [false, "met", "owner"]);
+  } finally { await server.close(); }
+});
+
+test("api/threads/:id/duties: an agent may not reschedule a duty more often than daily (c66); weekly and daily pass, and the owner's page still sets every 45", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duties-route-c66-"));
+  const store = new DutyStore(dir);
+  const now = new Date(2026, 9, 14, 11, 0).getTime();
+  await store.update("chat1", duties => { duties.push(parseDutyInput({ name: "CI system", ownerWords: "w", goal: "g", onMiss: "m",
+    metrics: [{ key: "red_runs", label: "Red runs", op: "<=", target: 0 }], schedule: { kind: "daily", at: "07:12" }, precheck: { command: ["node", "-e", "0"], cwd: dir } }, "d1", now)); });
+  const duties = new Duties(store, { isChat: async id => id === "chat1", now: () => now, tickMs: 0, priority: async () => "normal",
+    jobs: { chat: async id => ({ id, name: "dev VP", cwd: dir, board: join(dir, id + ".json") }), working: async () => false, start: async (_chat, name) => ({ id: "s1", name }), retire: async () => {} } });
+  const backend = { duties, chats: { ids: async () => new Set(["chat1"]) }, close: async () => {} } as unknown as ChatBackend;
+  const asset = { body: Buffer.from(""), etag: '"x"', contentType: "text/plain" };
+  const server = await startChatServer({ backend, bundle: { js: asset, css: asset, version: "t" }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",
+    identity: { pid: process.pid, instanceId: "i", socketPath: "/none" }, onStop: async () => {} });
+  const origin = new URL(server.url).origin;
+  type Body = { duties: DutyView[]; error?: string };
+  const post = async (schedule: unknown, headers: Record<string, string> = {}) => {
+    const res = await fetch(server.url + "api/threads/chat1/duties", { method: "POST", body: JSON.stringify({ duty: "d1", action: "schedule", schedule }),
+      headers: { "Content-Type": "application/json", "X-Chat-Token": "token", Origin: origin, ...headers } });
+    return { status: res.status, body: await res.json() as Body };
+  };
+  try {
+    for (const minutes of [10, 60, 120]) {
+      for (const headers of [{}, { "X-Chat-Agent-Session": "s-agent" }]) {
+        const refused = await post({ kind: "every", minutes }, headers);
+        assert.equal(refused.status, 400, `every ${minutes}`);
+        assert.match(refused.body.error ?? "", /^c66: the owner keeps duties daily \("we're gonna keep these ops stuff a daily duty"\)/);
+      }
+    }
+    assert.deepEqual((await store.list("chat1"))[0]!.schedule, { kind: "daily", at: "07:12" }, "a refused change leaves the schedule");
+    const weekly = await post({ kind: "every", minutes: 10080 });
+    assert.deepEqual([weekly.status, weekly.body.duties[0]!.schedule, weekly.body.duties[0]!.priority], [200, { kind: "every", minutes: 10080 }, "normal"]);
+    assert.equal((await post({ kind: "daily", at: "08:01" })).status, 200);
+    const owner = await post({ kind: "every", minutes: 45 }, { "X-Chat-Owner-Ui": "1" });
+    assert.deepEqual([owner.status, owner.body.duties[0]!.schedule], [200, { kind: "every", minutes: 45 }]);
   } finally { await server.close(); }
 });

@@ -5,9 +5,9 @@ import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "
 import type { CheckInActor } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
-import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, repeatMisses, type Duty, type DutyJobRef,
+import { agentScheduleProblem, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, repeatMisses, type Duty, type DutyJobRef,
   type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type CheckInPause, type CheckInView } from "./shared/types.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type CheckInPause, type CheckInView, type PoolPriority } from "./shared/types.ts";
 
 /** The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one) and a run now. */
 export interface CheckInDutyHost {
@@ -39,6 +39,8 @@ export interface DutyHost {
   daemon?: { tick(): Promise<void> };
   /** The Mac-wide turn queue's wait before a duty job's session is created (`dutyAdmitter`); absent: every job starts at once. */
   admit?: DutyAdmitter["admit"];
+  /** The chat's pool class from its sidebar label (`chatPoolPriority`), for the card; absent: high, as for an unlabelled chat. */
+  priority?: (chatId: string) => Promise<PoolPriority>;
 }
 
 export const DUTY_TICK_MS = 30_000;
@@ -271,12 +273,15 @@ export class Duties {
 
   /**
    * A new cadence: every N minutes or a daily time. The check-in duty takes whole minutes from CHECK_IN_MIN_MINUTES to CHECK_IN_MAX_MINUTES and
-   * writes the chat's check-in setting (the header's control shows the change); a daily time is refused for it. A daily duty moved to a time
-   * already past today waits for tomorrow's slot. Throws on a bad schedule; false when the duty is unknown.
+   * writes the chat's check-in setting (the header's control shows the change); a daily time is refused for it. An agent may not run a standing
+   * duty more often than daily (`agentScheduleProblem`, c66); the owner's page may. A daily duty moved to a time already past today waits for
+   * tomorrow's slot. Throws on a bad or refused schedule; false when the duty is unknown.
    */
   async setSchedule(chatId: string, dutyId: string, value: unknown, actor: CheckInActor): Promise<boolean> {
     if (dutyId === CHECK_IN_DUTY_ID && this.host.checkIn) return (await this.host.checkIn.set(chatId, { everyMs: checkInMinutes(value) * 60_000 }, actor)) !== null;
     const schedule = parseSchedule(value);
+    const refused = actor.by === "agent" ? agentScheduleProblem(schedule) : null;
+    if (refused) throw new Error(refused);
     const at = this.now();
     return this.store.update(chatId, duties => {
       const duty = duties.find(entry => entry.id === dutyId);
@@ -289,14 +294,15 @@ export class Duties {
   }
 
   async view(chatId: string): Promise<DutyView[]> {
-    const [file, runs, checkIn] = await Promise.all([this.store.read(chatId), this.store.runs(chatId), this.host.checkIn?.view(chatId) ?? null]);
+    const [file, runs, checkIn, priority] = await Promise.all([this.store.read(chatId), this.store.runs(chatId), this.host.checkIn?.view(chatId) ?? null,
+      this.host.priority?.(chatId) ?? "high" as const]);
     const now = this.now();
     const views: DutyView[] = file.duties.map(duty => ({ duty, schedule: duty.schedule, paused: duty.status === "paused", nextAt: nextRunAt(duty, now),
-      running: this.running.has(`${chatId}/${duty.id}`), runs: runs.filter(run => run.duty === duty.id).slice(0, VIEW_RUNS) }));
+      running: this.running.has(`${chatId}/${duty.id}`), runs: runs.filter(run => run.duty === duty.id).slice(0, VIEW_RUNS), priority }));
     if (!checkIn) return views;
     return [{ duty: { ...CHECK_IN_DUTY, status: checkIn.paused ? "paused" : "active" }, builtin: "checkin", schedule: { kind: "every", minutes: Math.round(checkIn.everyMs / 60_000) },
       paused: checkIn.paused, nextAt: checkIn.nextAt, running: this.running.has(`${chatId}/${CHECK_IN_DUTY_ID}`),
-      runs: runs.filter(run => run.duty === CHECK_IN_DUTY_ID).slice(0, VIEW_RUNS) }, ...views];
+      runs: runs.filter(run => run.duty === CHECK_IN_DUTY_ID).slice(0, VIEW_RUNS), priority }, ...views];
   }
 
   /**

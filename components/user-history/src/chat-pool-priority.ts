@@ -3,6 +3,8 @@ import type { PoolPriority, Priority, SessionRow } from "./shared/types.ts";
 /** The sidebar priority label as a pool class. None (0) leaves the thread's own class; Low (1) is low, Medium (2) normal, High (3) high. */
 export const LABEL_POOL_PRIORITY: Readonly<Record<Priority, PoolPriority | null>> = { 0: null, 1: "low", 2: "normal", 3: "high" };
 const RANK: Readonly<Record<PoolPriority, number>> = { low: 0, normal: 1, high: 2 };
+/** A chat's pool class: its sidebar label, and high with none (rule 3 of `poolPriorities`). Its duties' morning band follows it (MORNING_BANDS). */
+export const chatPoolPriority = (label: Priority): PoolPriority => LABEL_POOL_PRIORITY[label] ?? "high";
 
 /**
  * The pool class of every live root thread, first match wins (pi-pool scheduler design, "Priority"):
@@ -19,7 +21,7 @@ export function poolPriorities(rows: readonly SessionRow[], duties: ReadonlySet<
   const owned = new Map<string, PoolPriority>();
   for (const chat of live) {
     if (!chat.chat) continue;
-    const own = label(chat) ?? "high";
+    const own = chatPoolPriority(chat.priority);
     for (const agent of chat.agents ?? []) {
       if (!agent.sessionId || (agent.link !== "root" && agent.link !== "step")) continue;
       const before = owned.get(agent.sessionId);

@@ -13,7 +13,7 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
 import { dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
-import { dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
+import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { Chats } from "./chats.ts";
@@ -143,6 +143,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const turns = dutyAdmitter({ log: dutyLog });
   const queued = queueReader();
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
+    priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
     jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
       started: id => poolPriorities.set(id, "low") }),
     checkIn: { view: id => chats.checkInView(id), run: id => chats.runCheckIn(id),
