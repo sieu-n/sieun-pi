@@ -120,3 +120,61 @@ export function finishedOpen(board: ChatBoard | null, now: number): { item: Plan
   (board?.plan ?? []).forEach(visit);
   return found;
 }
+
+/**
+ * A CI run, a probe, a land or a push named in a wait or a note. A run is a CI run only by its id or a CI word before it, so "18 not yet run"
+ * rows and a duty that "runs daily" are no run (launch main bro 10-13 p43, AI harness 10-13 p1).
+ */
+const SHIP_WORK = /\b(?:probes?|land(?:s|ed|ing)?|push(?:es|ed|ing)?|verify-dev)\b|\bci\/|\b(?:ci|air|guard|candidate|workflow|fresh|re-?)\s*runs?\b|\bruns?\s+\d{8,}|\b\d{8,}\b/i;
+/** A wait on a land or a push: it is over only when a note names the landed commit. */
+const LAND_WAIT = /\b(?:land(?:s|ed|ing)?|push(?:es|ed|ing)?)\b/i;
+/** A sentence that leaves the run, the land or the push to later or to another session: on its way, on green, handed to or owned by another thread. */
+const NOT_YET = new RegExp(String.raw`\b(?:still|not\s+yet|(?:goes|go)\s+green|on\s+green|waits?\s+(?:for|on)|until|will|hand(?:s|ed)?\s+(?:it\s+)?(?:off\s+)?to|` +
+  String.raw`moved\s+to|takes?\s+over|owns?\s+(?:the\s+|its\s+)?(?:[\w'’-]+\s+){0,2}(?:land|lands|push|pushes|run|runs|probe)|reports?\s+back|lands\s+it|to\s+land)\b`, "i");
+const SHA = /(?<![\w/.-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w/-])/i;
+/** A commit said to be on a shared branch ("on sieun/dev as c839950e5c", "in land 33 on origin/staging (f9f3a0f1c6)"). */
+const ON_BRANCH = /\b(?:on|in|into|to)\s+(?:local\s+)?(?:origin\/[\w/-]+|sieun\/dev|main|staging|prod(?:uction)?)\b/i;
+/** A sentence without its quotes and asides: "the owner answered t45 with 'Not yet'" and "(freeze, probe, wait for verify-dev, commit on green)" name no wait of the step. */
+const plainWords = (sentence: string): string => sentence.replace(/(['"‘“])[^'"’”]*['"’”]|\([^()]*\)/g, " ");
+
+/**
+ * Why a check-in or another duty job may not mark this step done, or null (AI harness 10-14 17:01 KST: the check-in closed p389, p393, p402,
+ * p409, p319 and p357 at rev 2568 with notes "handed to the skill rules land thread ... Its verify-dev run 38529531177 was still queued", and
+ * cleared their waits in the same op; the land jobs were the chat's own roots). A step closes when its run, probe, land or push has finished
+ * green and landed: a sentence of the new note that names one still on its way, on green, or handed to another session refuses the close, and
+ * so does a wait (before the op or after it) on a land or a push whose note names no commit sha that landed or sits on a shared branch, or a
+ * wait on a run or a probe whose note reports nothing green. The step's own job name ("skill rules land") is no land. A step owned by a live job is already in the end
+ * state, so the job keeps it open.
+ */
+export function unlandedClose(before: Pick<PlanItem, "status" | "waitFor">, after: Pick<PlanItem, "status" | "waitFor" | "note" | "job">): string | null {
+  if (after.status !== "done" || !OPEN.has(before.status)) return null;
+  const note = after.note ?? "";
+  const ship = note.split(/(?<=[.;!?])\s+/).map(sentence => ({ sentence, words: plainWords(claimWords(sentence, after.job)) })).filter(({ words }) => SHIP_WORK.test(words));
+  const pending = (ship.find(({ words }) => IN_FLIGHT.test(words)) ?? ship.find(({ words }) => NOT_YET.test(words) || LEFT_TO_DO.test(words)))?.sentence;
+  if (pending) return `its note says ${quoteText(pending)}`;
+  for (const wait of [before.waitFor, after.waitFor]) {
+    if (!wait?.trim() || !SHIP_WORK.test(wait)) continue;
+    if (LAND_WAIT.test(wait) ? !((SAYS_SHIPPED.test(note) || ON_BRANCH.test(note)) && SHA.test(note)) : !GREEN.test(note)) {
+      return `it waits for ${quoteText(wait)} and its note names no ${LAND_WAIT.test(wait) ? "landed commit sha" : "green run"}`;
+    }
+  }
+  return null;
+}
+const quoteText = (text: string): string => `"${text.trim().length > 160 ? text.trim().slice(0, 159) + "…" : text.trim()}"`;
+/** Every step a board change marks done that `unlandedClose` refuses, as "p389 \"...\": its note says ...". */
+export function unlandedCloses(before: ChatBoard, after: ChatBoard): string[] {
+  const was = new Map<string, PlanItem>();
+  const index = (items: readonly PlanItem[]) => { for (const item of items) { was.set(item.id, item); index(item.children); } };
+  index(before.plan);
+  const refused: string[] = [];
+  const visit = (items: readonly PlanItem[]) => {
+    for (const item of items) {
+      const prior = was.get(item.id);
+      const reason = prior ? unlandedClose(prior, item) : null;
+      if (reason) refused.push(`${item.id} "${item.text.length > 70 ? item.text.slice(0, 69) + "…" : item.text}": ${reason}`);
+      visit(item.children);
+    }
+  };
+  visit(after.plan);
+  return refused;
+}

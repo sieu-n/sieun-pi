@@ -1,4 +1,5 @@
 import type { IdIndex } from "./id-index.ts";
+import { sessionHandles } from "./shared/created-sessions.ts";
 import { type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
 import type { Ledger } from "./chat-corrections.ts";
 import type { CheckInRecord } from "./chat-checkin.ts";
@@ -21,6 +22,16 @@ export interface JobRegistry {
   rootsOf(chat: readonly string[]): Promise<string[]>;
   /** Drops entries: a retired duty job. */
   remove(names: readonly string[]): Promise<void>;
+}
+/**
+ * Registers under `chat` the root every create_session handle in a tool result's text names (`sessionHandles`). A cell that names its roots
+ * with a variable (`name=name` in a loop) has no literal for tool_call to read (AI harness 10-14: the 15:01 KST check-in started skill rules
+ * land, stale tree guard land and skill rewrite land that way, and the 17:01 and 19:02 check-ins read their steps as held by other threads).
+ */
+export async function registerPrintedRoots(registry: Pick<JobRegistry, "add">, text: string, chat: string): Promise<string[]> {
+  const names = [...new Set(sessionHandles(text).map(handle => handle.name).filter(Boolean))];
+  if (names.length) await registry.add(names, chat);
+  return names;
 }
 const REGISTRY_KEEP_MS = 30 * 24 * 60 * 60_000;
 /** `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName or id]: { chat, at } } }` through locked-json; entries older than 30 days go on the next add. */

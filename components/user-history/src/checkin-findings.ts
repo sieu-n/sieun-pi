@@ -44,7 +44,8 @@ export const extraGoalsLine = (goals: readonly PlanItem[]): string => `${goals.l
  * thread (`waitTarget`). A step of the chat, a subagent's step and a step with a For you todo keep the goal here, and so does a target gap: a
  * goal short of its number is still this chat's to push (Crawler VP 10-12: p19, 32 of 180 Mbps, waited on the release owner's ramp). The
  * check-in checks the wait against the real state and closes the goal on that evidence, or hands the leftover to the holding thread and
- * closes it here, or adds the step of its own that comes after the wait.
+ * closes it here, or adds the step of its own that comes after the wait. A step whose own run, probe, land or push has not landed is never
+ * closed for a hand-off (`unlandedClose`, AI harness 10-14 17:01 KST).
  *
  * A root the chat started with rlm.create_session is the chat's own job, never another thread (launch main bro 10-14 04:1xZ to 04:2xZ: a
  * check-in started "release driver", session 01a1389b, and moved p75 and p77 of p81 and p56, p57, p87 and p97 of p82 onto it; it is a
@@ -78,9 +79,10 @@ export function heldElsewhere(views: readonly StepView[], board: ChatBoard | nul
 export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quote(goal.text)} has no open work of its own: ` +
   steps.map(({ item, thread }) => `${item.id} ${quote(item.text)} is held by the ${clip(thread.name, 40)} thread (thread:${thread.id})` +
     (item.waitFor ? ` and waits for ${quote(item.waitFor)}` : "")).join("; ") +
-  ". Check the wait against the real state now: if it is met, close the step and the goal on that evidence; if not, send that thread the " +
-  "leftover in one message with what it must check, close the step here with a note naming the thread, and close the goal. Keep the goal " +
-  "only when more work of this chat comes after the wait, and add that step now";
+  ". Check the wait against the real state now: if it is met, close the step and the goal on that evidence. If not, send that thread the " +
+  "leftover in one message with what it must check. A step whose run, probe, land or push has not finished green and landed stays open with " +
+  "its job, and board-apply refuses that close; close a step here with a note naming the thread only when what is left is that thread's own " +
+  "work. Keep the goal while a step under it is open, or when more work of this chat comes after the wait, and add that step now";
 
 /**
  * An open step whose wait is over (c45): its waitFor names plan steps or For you todos of this board (`p67`, `t8`), and everything it names is

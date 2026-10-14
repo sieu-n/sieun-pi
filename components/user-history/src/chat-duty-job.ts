@@ -103,7 +103,8 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
       "You can message another thread yourself to chase it: `await agent_message.send(text, receiver_role=\"sibling\", receiver_name=<thread name>)`.",
       `Apply each board change to the chat's board yourself in this run, with \`import json, shlex\` and \`${apply}\`, where ops is a list of ` +
         "chat_board ops like `[{\"op\":\"plan_update\",\"id\":\"p4\",\"status\":\"done\",\"note\":\"live on production at 4f1c2a, checked on the live page\"}]`. " +
-        "It refuses what chat_board refuses and prints each op's summary. Close a step only on evidence you name in its note.",
+        "It refuses what chat_board refuses and prints each op's summary. Close a step only on evidence you name in its note. A step whose run, " +
+        "probe, land or push has not finished green and landed stays open with its job, which is a live owner, and board-apply refuses that close.",
       "Every stuck step needs a live owner, a For you todo, or a close in this run. Give a step an owner that outlives this run with " +
         "`await rlm.create_session(brief, name=..., cwd=...)`, which registers the session as a job of the chat, and set the step's job to that " +
         "name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.",

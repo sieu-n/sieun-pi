@@ -27,8 +27,11 @@ export class BoardStore {
     catch (error) { if (missing(error)) return null; throw error; }
   }
 
-  /** Applies the ops in order, all or none: a refused op (BoardError) leaves the file as it was. No ops reads the board. */
-  async apply(id: string, ops: readonly BoardOp[], actor: BoardActor): Promise<{ board: ChatBoard | null; summaries: string[] }> {
+  /**
+   * Applies the ops in order, all or none: a refused op (BoardError) leaves the file as it was. No ops reads the board. `check` sees the board
+   * before and after all the ops and refuses the change by throwing (a duty job's close of a step that has not landed, scripts/board-apply.ts).
+   */
+  async apply(id: string, ops: readonly BoardOp[], actor: BoardActor, check?: (before: ChatBoard, after: ChatBoard) => void): Promise<{ board: ChatBoard | null; summaries: string[] }> {
     if (!ops.length) return { board: await this.read(id), summaries: [] };
     const { state, result } = await transactJsonFile(this.file(id), state => {
       const now = new Date().toISOString();
@@ -39,6 +42,7 @@ export class BoardStore {
         board = next.board;
         summaries.push(next.summary);
       }
+      check?.(state, board);
       Object.assign(state, board);
       return summaries;
     });

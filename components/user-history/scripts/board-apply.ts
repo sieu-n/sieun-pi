@@ -2,9 +2,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../src/chat-board-store.ts";
+import { unlandedCloses } from "../src/checkin-done.ts";
 import { jobNames } from "../src/limit-names.ts";
 import { boardRevLine, parseBoardOps } from "../src/shared/chat-board.ts";
 import { boardLimitRefusal } from "../src/shared/reply-lint.ts";
+import type { ChatBoard } from "../src/shared/types.ts";
 
 /**
  * A duty job applies its board ops to its chat's board itself, with the same refusals as the chat's chat_board tool. Before, a duty job could
@@ -17,8 +19,20 @@ export async function applyDutyOps(dataDir: string, chatId: string, value: unkno
   if (!ops.length) throw new Error("Add a board op: the ops are a JSON array of chat_board ops.");
   const refusal = boardLimitRefusal(ops) && boardLimitRefusal(ops, await jobNames(dataDir));
   if (refusal) throw new Error(refusal);
-  const { board, summaries } = await new BoardStore(dataDir).apply(chatId, ops, "agent");
+  const { board, summaries } = await new BoardStore(dataDir).apply(chatId, ops, "agent", refuseUnlandedCloses);
   return [...summaries, ...(board ? [boardRevLine(board)] : [])].join("\n");
+}
+
+/**
+ * A duty job never marks a step done while its run, probe, land or push has not finished green and landed (`unlandedCloses`). The step's job
+ * owns it to the end, and an open step with a live job is already in the end state.
+ */
+export function refuseUnlandedCloses(before: ChatBoard, after: ChatBoard): void {
+  const refused = unlandedCloses(before, after);
+  if (!refused.length) return;
+  throw new Error(`Nothing was applied. A check-in does not mark a step done before its work has landed: ${refused.join("; ")}. Leave ` +
+    `${refused.length === 1 ? "it" : "them"} open with ${refused.length === 1 ? "its" : "their"} job, and steer that job if it is idle. Close a ` +
+    "step once its note can name the landed commit sha or the green run. If the work was dropped or superseded, mark it dropped and say why.");
 }
 
 async function main(): Promise<void> {

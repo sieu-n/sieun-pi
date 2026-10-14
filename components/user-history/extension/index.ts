@@ -6,7 +6,7 @@ import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobPersonaGuideline, jobReplyGuideline, pinnedBrief } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
-import { jobRegistry } from "../src/chat-sources.ts";
+import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
 import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "../src/chats.ts";
 import { boardRevLine, parseBoardOps, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
@@ -253,6 +253,17 @@ export default function historyExtension(pi: ExtensionAPI): void {
       }
       return undefined;
     } catch { return undefined; }
+  });
+  // A root started with a computed name (`name=name` in a loop) has no literal for tool_call to read, so its printed handle registers it
+  // (AI harness 10-14: the 15:01 check-in started skill rules land, stale tree guard land and skill rewrite land this way, so the 17:01
+  // check-in read their steps as held by other threads and closed them before their runs went green).
+  pi.on("tool_result", async (event, ctx) => {
+    try {
+      if (event.toolName !== "ipython") return;
+      const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
+      if (!rootChat) return;
+      await registerPrintedRoots(jobs(), event.content.map(part => part.type === "text" ? part.text : "").join("\n"), rootChat);
+    } catch { /* the literal names tool_call registered */ }
   });
   pi.registerFlag("agent-chat-socket", {
     description: "Native daemon socket for browser chat",
