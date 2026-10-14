@@ -43,18 +43,26 @@ export async function jobBrief(childDir: string): Promise<string | undefined> {
   if (spawn) return spawn.prompt;
   const names = await readdir(childDir).catch(() => [] as string[]);
   for (const name of names.filter(name => name.endsWith(".jsonl") && name !== "semantic-edges.jsonl")) {
-    const lines = createInterface({ input: createReadStream(join(childDir, name), "utf8"), crlfDelay: Infinity });
-    try {
-      for await (const line of lines) {
-        const task = line.startsWith('{"type":"custom_message","customType":"agent_message"');
-        if (!task && !line.includes('"role":"user"')) continue;
-        const entry = JSON.parse(line) as { content?: unknown; message?: { role?: string; content?: unknown } };
-        if (!task && entry.message?.role !== "user") continue;
-        const text = contentText(task ? entry.content : entry.message!.content);
-        if (text !== undefined) return text.replace(/^\[task from parent\]\s*/, "");
-      }
-    } finally { lines.close(); }
+    const brief = await sessionBrief(join(childDir, name));
+    if (brief !== undefined) return brief;
   }
+  return undefined;
+}
+
+/** The task a session file opens with: its first `agent_message` custom message (a `[task from parent]`) or its first user message (a root's prompt). */
+export async function sessionBrief(file: string): Promise<string | undefined> {
+  const lines = createInterface({ input: createReadStream(file, "utf8"), crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      const task = line.startsWith('{"type":"custom_message","customType":"agent_message"');
+      if (!task && !line.includes('"role":"user"')) continue;
+      const entry = JSON.parse(line) as { content?: unknown; message?: { role?: string; content?: unknown } };
+      if (!task && entry.message?.role !== "user") continue;
+      const text = contentText(task ? entry.content : entry.message!.content);
+      if (text !== undefined) return text.replace(/^\[task from parent\]\s*/, "");
+    }
+  } catch { return undefined; }
+  finally { lines.close(); }
   return undefined;
 }
 const contentText = (content: unknown): string | undefined => typeof content === "string" ? content

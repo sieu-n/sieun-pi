@@ -6,7 +6,7 @@ import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
-import type { ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
+import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, ownerState, parkedBy, quote, readySteps,
   noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
   waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
@@ -482,6 +482,20 @@ export function waitingJobs(children: readonly ChildAgent[], board: ChatBoard | 
     const steps = open.filter(item => stepNamesJob(item, jobRef(child)));
     return steps.length ? [{ child, steps }] : [];
   });
+}
+
+/**
+ * A create_session root of the chat that ended its turn with its report in: idle (not working, failed, or waiting on an answer from the chat)
+ * and its last message is in the chat's transcript (`said`, by the name it sends with).
+ */
+export const reportedRoot = (agent: ChatAgent, said: ReadonlyMap<string, JobMessage>): boolean =>
+  agent.link === "root" && agent.state === "idle" && agent.sessionId !== undefined && said.has(agent.sender);
+
+/** The chat's reported roots (`reportedRoot`) quiet PARK_IDLE_MS that no open step names (`stepNamesJob`), each its own worker to end. */
+export function idleRoots(agents: readonly ChatAgent[], board: ChatBoard | null, said: ReadonlyMap<string, JobMessage>, now: number): ChatAgent[] {
+  const open = openSteps(board);
+  return agents.filter(agent => reportedRoot(agent, said) && now - Date.parse(agent.lastActivityAt ?? "") >= PARK_IDLE_MS &&
+    !open.some(item => stepNamesJob(item, { id: agent.sessionId!, names: [agent.name, agent.sender] })));
 }
 
 /**

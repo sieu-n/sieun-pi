@@ -9,8 +9,8 @@ import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, Chec
 import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs } from "./checkin-steps.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
-  jobReport, lastJobMessages, noReportNotice, retryDue, waitingJobs } from "./chat-checkin.ts";
-import { jobBrief, savedStateNote, waitText } from "./job-resume.ts";
+  idleRoots, jobReport, lastJobMessages, noReportNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
+import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
@@ -164,6 +164,9 @@ export class Chats {
   /** When each chat's finished jobs were last checked, and the jobs already deleted (or tried once). */
   private readonly cleanedAt = new Map<string, number>();
   private readonly deletedJobs = new Set<string>();
+  /** When the idle roots were last looked at, and the roots archived (or being archived) in this serve. */
+  private rootsSweptAt = -Infinity;
+  private readonly rootsEnded = new Set<string>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
   private readonly jobGone = new Map<string, string>();
   /** When the scheduler last looked for lost chats, and the threads with messages found plain (their head never changes). */
@@ -555,6 +558,10 @@ export class Chats {
     catch (error) { this.log(`chats: jobs: ${error instanceof Error ? error.message : String(error)}`); return; }
     const chatRows = rows.filter(row => this.chatIds.has(row.id));
     this.refreshJobs(chatRows);
+    if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS) {
+      this.rootsSweptAt = this.now();
+      for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
+    }
     this.source.awake?.(chatRows.some(row => row.working || (row.agents ?? []).some(agent => agent.state === "working")));
     const now = this.now();
     const threads = new Set<string>();
@@ -585,13 +592,55 @@ export class Chats {
   private refreshJobs(chatRows: readonly SessionRow[]): void {
     const first = this.jobsSeen === undefined;
     const seen = this.jobsSeen ??= new Set();
-    for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
-      const id = agent.sessionId;
-      if (!id || (agent.link !== "subagent" && agent.link !== "root") || this.chatIds.has(id) || this.jobsCurrent.has(id)) continue;
-      const fresh = !first && !seen.has(id);
-      seen.add(id);
-      if (agent.state === "done" || (agent.state === "working" && !fresh)) continue;
-      this.queue("#reload", () => this.refreshJob(id, fresh));
+    for (const row of chatRows) {
+      const said = lastJobMessages(this.messages(row.id) ?? []);
+      for (const agent of row.agents ?? []) {
+        const id = agent.sessionId;
+        if (!id || (agent.link !== "subagent" && agent.link !== "root") || this.chatIds.has(id) || this.jobsCurrent.has(id)) continue;
+        const fresh = !first && !seen.has(id);
+        seen.add(id);
+        if (agent.state === "done" || reportedRoot(agent, said) || (agent.state === "working" && !fresh)) continue;
+        this.queue("#reload", () => this.refreshJob(id, fresh));
+      }
+    }
+  }
+
+  /**
+   * Ends each create_session root of a chat that reported and has been quiet PARK_IDLE_MS while no open step names it (`idleRoots`): its brief,
+   * last report and the chat it reports to are saved in `<data dir>/job-resumes`, then it is archived, so its worker ends, and the chat gets a
+   * notice naming the file. A root is its own worker: on 10-14 at 12:39Z 8 roots idle with their reports in held 2.81 GB. Never a
+   * chat, a duty run (the duty code archives those), a root that waits on a board.wake, or one the daemon shows in a turn, a tool call or a
+   * background bash at the moment of the archive.
+   */
+  private async endRoots(row: SessionRow): Promise<void> {
+    const resumes = this.source.resumes;
+    if (!resumes) return;
+    let board: ChatBoard | null;
+    try { board = await this.source.board(row.id); }
+    catch (error) { this.log(`chat ${row.id.slice(0, 8)}: root cleanup: ${error instanceof Error ? error.message : String(error)}`); return; }
+    const messages = this.messages(row.id) ?? [];
+    const duty = new Set(await this.source.dutyJobs?.(row.id).catch(() => []) ?? []);
+    const now = this.now();
+    for (const agent of idleRoots(row.agents ?? [], board, lastJobMessages(messages), now)) {
+      const id = agent.sessionId!;
+      if (this.chatIds.has(id) || duty.has(id) || this.rootsEnded.has(id)) continue;
+      this.rootsEnded.add(id);
+      try {
+        if (await this.source.waking?.(id) || await this.threads.sessionActive(id)) { this.rootsEnded.delete(id); continue; }
+        const sessionFile = (await this.summary(id))?.sessionFile;
+        const brief = sessionFile ? await sessionBrief(sessionFile) : undefined;
+        if (brief === undefined) { this.log(`chat ${row.id.slice(0, 8)}: kept root ${agent.name}: its brief could not be read`); continue; }
+        const quiet = Math.round((now - Date.parse(agent.lastActivityAt!)) / 60_000);
+        const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
+          report: jobReport(messages, agent.sender), endedAt: now });
+        await this.threads.archive(id);
+        await this.threads.notice(row.id, `${JOB_NOTICE_PREFIX}${agent.name} was archived after ${quiet} min quiet with its report in and no open step naming it, so its worker ended. ` +
+          `Its brief and last report are saved in ${path}; to send it more work, spawn a fresh job from that file.`);
+        this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}`);
+      } catch (error) {
+        this.rootsEnded.delete(id);
+        this.log(`chat ${row.id.slice(0, 8)}: archive idle root ${agent.name}: ${error instanceof Error ? error.message : String(error)}; tried again at the next sweep`);
+      }
     }
   }
 
