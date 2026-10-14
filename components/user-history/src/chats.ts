@@ -539,7 +539,7 @@ export class Chats {
       if (action === "none") {
         this.jobWakes.delete(threadId);
         this.jobQuiet.set(threadId, stamp);
-        if (job && state) this.queue(job.chat, () => this.jobEndNote(threadId, job, state.messages));
+        if (job && state) this.queue(job.chat, () => this.jobEndNote(threadId, job));
         return;
       }
       this.jobQuiet.delete(threadId);
@@ -855,10 +855,13 @@ export class Chats {
    * at work again, a subagent with no child snapshot, an end older than JOB_END_NOTE_MAX_AGE_MS, and a chat whose transcript the server does not
    * hold are left out.
    */
-  private async jobEndNote(threadId: string, job: ChatJob, messages: readonly ThreadMessage[]): Promise<void> {
+  private async jobEndNote(threadId: string, job: ChatJob): Promise<void> {
     const { chat, agent } = job;
-    if (!this.chatIds.has(chat) || this.threads.running(threadId)) return;
-    const end = jobEnd(messages);
+    if (!this.chatIds.has(chat)) return;
+    // Read when the note runs: it waits on the chat's queue, and a view taken before the final reply ends at the last tool result.
+    const state = await this.threads.view(threadId).catch(() => null);
+    if (!state || this.threads.running(threadId)) return;
+    const end = jobEnd(state.messages);
     const now = this.now();
     if (!end || now - end.at > JOB_END_NOTE_MAX_AGE_MS) return;
     const child = agent.childId !== undefined ? this.children.get(chat)?.find(candidate => candidate.id === agent.childId) : undefined;
