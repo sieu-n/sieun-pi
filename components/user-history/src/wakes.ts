@@ -12,7 +12,8 @@ import { join } from "node:path";
  * and 18 of them were root jobs whose Bun worker each stayed up only to wait, 8.92 GB with their kernels.
  */
 export type WakeOn = { kind: "run"; run: number; repo?: string } | { kind: "time"; at: number };
-export interface Wake { session: string; on: WakeOn; note: string; since: number }
+/** `root`: the chat tree's root session, when the wake's session is a child of it; board.wake reads it from RLM_SESSION_DIR. */
+export interface Wake { session: string; root?: string; on: WakeOn; note: string; since: number }
 /** What a run's state read answers: still going, finished with its conclusion, or not readable now (looked at again next tick). */
 export type RunState = { done: false } | { done: true; conclusion: string; url: string; label: string } | { error: string };
 
@@ -29,11 +30,12 @@ export function parseWake(value: unknown): Wake | null {
   if (!isRecord(value) || typeof value.session !== "string" || !SESSION.test(value.session) || !isRecord(value.on)) return null;
   const note = typeof value.note === "string" ? value.note : "";
   const since = typeof value.since === "number" ? value.since : 0;
+  const root = typeof value.root === "string" && SESSION.test(value.root) && value.root !== value.session ? { root: value.root } : {};
   const on = value.on;
   if (on.kind === "run" && typeof on.run === "number" && Number.isSafeInteger(on.run) && on.run > 0) {
-    return { session: value.session, note, since, on: { kind: "run", run: on.run, ...(typeof on.repo === "string" && on.repo ? { repo: on.repo } : {}) } };
+    return { session: value.session, ...root, note, since, on: { kind: "run", run: on.run, ...(typeof on.repo === "string" && on.repo ? { repo: on.repo } : {}) } };
   }
-  if (on.kind === "time" && typeof on.at === "number" && Number.isFinite(on.at)) return { session: value.session, note, since, on: { kind: "time", at: on.at } };
+  if (on.kind === "time" && typeof on.at === "number" && Number.isFinite(on.at)) return { session: value.session, ...root, note, since, on: { kind: "time", at: on.at } };
   return null;
 }
 
@@ -53,8 +55,14 @@ export interface WakeDeps {
   runState: (on: Extract<WakeOn, { kind: "run" }>) => Promise<RunState>;
   /** The run's CI cache stamp (any string that changes when the run moves), or null when the cache has none. */
   stamp?: (run: number) => Promise<string | null>;
-  /** Sends the session the text; resolves "gone" when the daemon knows no such session, so the wake is dropped. */
+  /** Sends the session the text; resolves "gone" when the daemon knows no such session. */
   deliver: (session: string, text: string) => Promise<"sent" | "gone">;
+  /**
+   * Starts the worker of the chat tree `root` with no prompt. The daemon finds a child only while its tree's worker runs, so a child whose tree
+   * was evicted is "gone" until then (10-14 13:37Z: the idle sweep evicted this job's tree, wake-probe-2's wake at 13:39Z was dropped, and the
+   * same message reached it at 13:45Z once a wake had restarted the root). Absent: such a wake is dropped.
+   */
+  startRoot?: (root: string) => Promise<void>;
   log: (line: string) => void;
 }
 
@@ -91,7 +99,13 @@ export class Wakes {
     for (const [session, wakes] of due) {
       const what = wakes.map(({ wake }) => wake.on.kind === "run" ? `run ${wake.on.run}` : "its time").join(", ");
       try {
-        const result = await this.deps.deliver(session, wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n"));
+        const text = wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n");
+        const root = wakes.find(({ wake }) => wake.root)?.wake.root;
+        let result = await this.deps.deliver(session, text);
+        if (result === "gone" && root && this.deps.startRoot) {
+          await this.deps.startRoot(root);
+          result = await this.deps.deliver(session, text);
+        }
         for (const { file } of wakes) await rm(file, { force: true });
         if (result === "sent") sent++;
         this.deps.log(`wakes: ${result === "sent" ? "woke" : "dropped, no such session:"} ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min`);

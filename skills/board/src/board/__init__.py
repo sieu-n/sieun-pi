@@ -330,7 +330,9 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
                            "Wait inside this turn with await bash(...) instead.")
     path = folder / f"{session}-{key}.json"
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"session": session, "on": on, "note": note, "since": int(time.time() * 1000)}))
+    parts = Path(os.environ.get("RLM_SESSION_DIR", "")).parts
+    root = parts[parts.index("session-artifacts") + 1] if "session-artifacts" in parts and parts.index("session-artifacts") + 1 < len(parts) else session
+    tmp.write_text(json.dumps({"session": session, **({"root": root} if root != session and _UUID.match(root) else {}), "on": on, "note": note, "since": int(time.time() * 1000)}))
     os.replace(tmp, path)
     return _Text(f"Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
                  f"so Prime can unload the session while it waits. ({path})")

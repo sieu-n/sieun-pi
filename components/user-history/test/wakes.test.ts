@@ -29,17 +29,20 @@ async function fixture(states: Map<number, RunState>) {
   const failing = new Set<string>();
   const gone = new Set<string>();
   const stamps = new Map<number, string>();
+  const evicted = new Map<string, string>();
+  const started: string[] = [];
   const wakes = new Wakes({ dir, now: () => now, log: () => {},
+    startRoot: async root => { started.push(root); for (const [child, of] of evicted) if (of === root) evicted.delete(child); },
     runState: async (on: Extract<WakeOn, { kind: "run" }>) => { reads.push(on.run); return states.get(on.run) ?? { done: false }; },
     stamp: async run => stamps.get(run) ?? null,
     deliver: async (session, text) => {
       if (failing.has(session)) throw new Error("Timed out waiting for daemon worker response");
-      if (gone.has(session)) return "gone";
+      if (gone.has(session) || evicted.has(session)) return "gone";
       sent.push({ session, text });
       return "sent";
     } });
   const put = (name: string, body: unknown) => writeFile(join(dir, name), JSON.stringify(body));
-  return { dir, wakes, reads, sent, failing, gone, stamps, put, files: () => readdir(dir), at: (ms: number) => { now = ms; } };
+  return { dir, wakes, reads, sent, failing, gone, stamps, evicted, started, put, files: () => readdir(dir), at: (ms: number) => { now = ms; } };
 }
 
 test("wakes: a session waiting on a CI run is messaged once when the run finishes, and its wake file goes", async () => {
@@ -140,7 +143,8 @@ test("wakes: board.wake refuses while no service ticks, then writes the wake fil
   const names = (await readdir(join(data, "wakes"))).filter(name => name !== TICKED).sort();
   assert.deepEqual(names, [`${SESSION_B}-run-38556270524.json`, `${SESSION_B}-time-1792017000.json`, `${SESSION_A}-run-38556270524.json`, `${SESSION_A}-time-1792017000.json`].sort());
   const wake = parseWake(JSON.parse(await readFile(join(data, "wakes", `${SESSION_A}-run-38556270524.json`), "utf8")));
-  assert.deepEqual(wake && { session: wake.session, on: wake.on, note: wake.note }, { session: SESSION_A, on: { kind: "run", run: 38556270524 }, note: "land" });
+  assert.deepEqual(wake && { session: wake.session, root: wake.root, on: wake.on, note: wake.note }, { session: SESSION_A, root: SESSION_B, on: { kind: "run", run: 38556270524 }, note: "land" });
+  assert.equal(parseWake(JSON.parse(await readFile(join(data, "wakes", `${SESSION_B}-run-38556270524.json`), "utf8")))?.root, undefined);
   const time = parseWake(JSON.parse(await readFile(join(data, "wakes", `${SESSION_A}-time-1792017000.json`), "utf8")));
   assert.deepEqual(time?.on, { kind: "time", at: Date.parse("2026-10-14T22:30:00Z") });
 });
@@ -174,4 +178,20 @@ test("wakes: a finished job that set a board.wake is kept by the cleanup, and de
   await chats.settled();
   assert.deepEqual(calls.filter(call => call.startsWith("delete")), ["delete c1 sub-93487470"]);
   chats.close();
+});
+
+test("wakes: a child whose chat tree was evicted is reached by starting its root's worker first, and a wake with no root to start is dropped", async () => {
+  const f = await fixture(new Map());
+  const ROOT = "01a13a3e-103d-70f9-a848-580a776e5501";
+  const CHILD = "01a13a7e-9bd4-7519-a1a4-f62625dbcb96";
+  f.evicted.set(CHILD, ROOT);
+  await f.put(`${CHILD}-time.json`, { session: CHILD, root: ROOT, on: { kind: "time", at: NOW - 1 }, note: "passivated child probe", since: NOW - 40 * MIN });
+  assert.equal(await f.wakes.tick(), 1);
+  assert.deepEqual(f.started, [ROOT]);
+  assert.equal(f.sent[0]!.session, CHILD);
+  f.gone.add(SESSION_A);
+  await f.put(`${SESSION_A}-time.json`, { session: SESSION_A, on: { kind: "time", at: NOW - 1 }, note: "", since: NOW });
+  assert.equal(await f.wakes.tick(), 0);
+  assert.deepEqual(f.started, [ROOT]);
+  assert.deepEqual(await f.files(), []);
 });

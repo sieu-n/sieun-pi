@@ -32,6 +32,7 @@ import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./sh
 import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
 import { readRunState, runStamp, startWakes, waking } from "./wakes.ts";
+import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
 export interface ChatDefaultsStore extends IdleEviction {
@@ -187,6 +188,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (response.success) return "sent";
       if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
       throw new Error(response.error);
+    },
+    startRoot: async root => {
+      const sessionPath = (await catalog.summary(root))?.sessionFile;
+      if (!sessionPath) throw new Error(`no session file for root ${root.slice(0, 8)}`);
+      const response = await catalog.client.request({ type: "create", lifecycle: "resident", sessionPath }, DAEMON_WORKER_START_MS, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
     } });
   const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync.unref();
