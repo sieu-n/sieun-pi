@@ -425,31 +425,35 @@ export function endedWithoutReport(before: readonly ChildAgent[], after: readonl
   });
 }
 
-/** A finished job is deleted once it has been quiet this long; the check runs at most once per JOB_CLEANUP_EVERY_MS per chat. */
-export const JOB_CLEANUP_IDLE_MS = 60 * 60_000;
+/** The check for finished jobs runs on each job end and chat idle, and at least once per JOB_CLEANUP_EVERY_MS per chat. */
 export const JOB_CLEANUP_EVERY_MS = 10 * 60_000;
 
-/**
- * The chat's finished jobs to delete (each holds a worker process and a Python kernel until it is deleted): a direct subagent that is done, sent
- * its final report (`repliedSinceTask` true), has been quiet JOB_CLEANUP_IDLE_MS, and is owed no more work. A job is owed work while an open
- * step names it (`stepNamesJob`: its owner, or its id or name in the step's job, waitFor, note or text), or while its last reply to the chat
- * (`said`, from `lastJobMessages`) says it holds parked work (`parkedWork`). launch main bro 10-14 04:1xZ to 04:2xZ: the 04:11Z check-in moved
- * 13 build steps to the job "release driver" and named each build job in the step's note; the rule read only the owner and the waitFor, so
- * instagram access canary and watchlist all green (04:12Z) and fair crawl queue and collab lane self balance (04:24Z) were deleted with pushes
- * parked for 'released'.
- */
-export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard | null, now: number, said: ReadonlyMap<string, JobMessage> = new Map()): ChildAgent[] {
-  const ids = new Set(children.map(child => child.id));
+/** A direct subagent that ended its task: done, not working, its final report sent (`repliedSinceTask`) and in the chat's transcript (`said`). */
+function reported(child: ChildAgent, ids: ReadonlySet<string>, said: ReadonlyMap<string, JobMessage>): boolean {
+  if (child.parentId !== undefined && ids.has(child.parentId)) return false;
+  return child.status === "done" && !childWorking(child) && child.repliedSinceTask === true && said.has(childName(child));
+}
+const openSteps = (board: ChatBoard | null): PlanItem[] => {
   const open: PlanItem[] = [];
   walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) open.push(item); });
-  return children.filter(child => {
-    if (child.parentId !== undefined && ids.has(child.parentId)) return false;
-    if (child.status !== "done" || childWorking(child) || child.repliedSinceTask !== true) return false;
-    if (child.lastActivityAt === undefined || now - child.lastActivityAt < JOB_CLEANUP_IDLE_MS) return false;
-    if (said.get(childName(child))?.parked !== undefined) return false;
-    const job = { id: child.id, names: [childName(child), child.label, child.sessionId] };
-    return !open.some(item => stepNamesJob(item, job));
-  });
+  return open;
+};
+const jobRef = (child: ChildAgent) => ({ id: child.id, names: [childName(child), child.label, child.sessionId] });
+
+/**
+ * The chat's finished jobs to delete now (each holds a Python kernel, and its session holds memory in the chat's worker, until it is deleted): a
+ * job that ended its task with its final report in the chat's transcript and is owed no more work. A job is owed work while an open step names
+ * it (`stepNamesJob`: its owner, or its id or name in the step's job, waitFor, note or text), or while its last reply to the chat (`said`, from
+ * `lastJobMessages`) says it holds parked work (`parkedWork`). launch main bro 10-14 04:1xZ to 04:2xZ: the 04:11Z check-in moved 13 build
+ * steps to the job "release driver" and named each build job in the step's note; the rule read only the owner and the waitFor, so instagram
+ * access canary and watchlist all green (04:12Z) and fair crawl queue and collab lane self balance (04:24Z) were deleted with pushes parked
+ * for 'released'.
+ */
+export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard | null, said: ReadonlyMap<string, JobMessage> = new Map()): ChildAgent[] {
+  const ids = new Set(children.map(child => child.id));
+  const open = openSteps(board);
+  return children.filter(child => reported(child, ids, said) && said.get(childName(child))?.parked === undefined &&
+    !open.some(item => stepNamesJob(item, jobRef(child))));
 }
 
 /**

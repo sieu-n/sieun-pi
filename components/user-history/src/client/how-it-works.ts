@@ -32,7 +32,6 @@ const CODE: Setting = { kind: "code" };
 export const CHECK_IN_MS = 15 * 60_000;
 export const STEP_STALE_MS = 2 * 60 * 60_000;
 export const NO_REPORT_GRACE_MS = 90_000;
-export const JOB_CLEANUP_IDLE_MS = 60 * 60_000;
 
 /** `DEFAULTS.max_moves_per_day` and `DEFAULTS.tier_units` in pi-pool's pool/base.py, checked against it by the test. */
 export const MOVES_PER_DAY = { high: 6, normal: 3, low: 1 } as const;
@@ -78,8 +77,6 @@ const CHAT_RULES: Rule[] = [
     text: "A step that waits on another thread or an event with no progress for this long is flagged for the check-in to chase.", source: { file: USER_HISTORY + "checkin-steps.ts", symbol: "STEP_STALE_MS" } },
   { id: "no-report", title: "Job ended with no report", value: q(NO_REPORT_GRACE_MS, "ms"), setting: CODE,
     text: "When a job goes quiet without reporting, the chat is told after this long.", source: { file: USER_HISTORY + "chats.ts", symbol: "NO_REPORT_GRACE_MS" } },
-  { id: "job-cleanup", title: "Finished job cleanup", value: q(JOB_CLEANUP_IDLE_MS, "ms"), setting: CODE,
-    text: "A finished job that reported and no open step needs is deleted after it has been quiet this long, so it stops holding memory.", source: { file: USER_HISTORY + "chat-checkin.ts", symbol: "JOB_CLEANUP_IDLE_MS" } },
   { id: "duty-errors", title: "Duty errors before pause", value: q(ERROR_PAUSE_RUNS, "count"), setting: CODE,
     text: "This many failed duty runs in a row pause the duty until you resume it.", source: { file: USER_HISTORY + "shared/chat-duties.ts", symbol: "ERROR_PAUSE_RUNS" } },
 ];

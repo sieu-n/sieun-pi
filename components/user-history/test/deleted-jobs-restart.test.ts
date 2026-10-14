@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadRecord } from "../src/chat-brief.ts";
-import { deletedJobRecord } from "../src/chat-sources.ts";
+import { deletedJobRecord, type SubagentDelete } from "../src/chat-sources.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
-import type { ChatBoard, ChildAgent } from "../src/shared/types.ts";
+import type { ChatBoard, ChildAgent, ThreadMessage } from "../src/shared/types.ts";
 import { fakeThreads, source } from "./chats-helpers.ts";
 
 /**
@@ -21,11 +21,16 @@ const NOW = Date.parse("2026-10-14T03:11:07Z");
 const EMAIL: ChildAgent = { id: "sub-9b3a7eaa", label: "email app outside in", sessionName: "email app outside in", status: "done", repliedSinceTask: true,
   lastActivityAt: Date.parse("2026-10-14T00:16:22Z") };
 
-async function serve(dir: string, answer: boolean, children: ChildAgent[]) {
+/** The job's final report as the chat's transcript holds it. */
+export const report = (name: string, at: number, body = "Done."): ThreadMessage =>
+  ({ role: "custom", customType: "agent_message", content: `[agent-message from child:${name}]\n${body}`, display: true, timestamp: at }) as ThreadMessage;
+
+async function serve(dir: string, answer: SubagentDelete, children: ChildAgent[]) {
   const calls: string[] = [];
   const lines: string[] = [];
   const threads = fakeThreads(calls);
   threads.deleteAnswer = answer;
+  threads.transcripts.set("c1", children.map(child => report(child.label, child.lastActivityAt!)));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
@@ -41,19 +46,19 @@ async function serve(dir: string, answer: boolean, children: ChildAgent[]) {
 
 test("frontend bro 10-14: a finished job the daemon still lists after its delete is not deleted again after a service restart", async () => {
   const dir = await mkdtemp(join(tmpdir(), "deleted-jobs-"));
-  const first = await serve(dir, false, [EMAIL]);
+  const first = await serve(dir, "not_held", [EMAIL]);
   assert.deepEqual(first.deletes, ["delete c1 sub-9b3a7eaa"]);
   assert.deepEqual(first.lines, ["chat c1: finished job email app outside in is no longer a subagent of the chat (the daemon still lists its session); recorded, not tried again"],
     "a delete the daemon answers with deleted false is not logged as a delete");
-  for (let restart = 0; restart < 4; restart++) assert.deepEqual((await serve(dir, false, [EMAIL])).deletes, [], `restart ${restart + 1} does not delete it again`);
+  for (let restart = 0; restart < 4; restart++) assert.deepEqual((await serve(dir, "not_held", [EMAIL])).deletes, [], `restart ${restart + 1} does not delete it again`);
 });
 
 test("frontend bro 10-14: a job the daemon deleted is logged once, and the record drops a job once the chat's listing no longer holds it", async () => {
   const dir = await mkdtemp(join(tmpdir(), "deleted-jobs-"));
-  const first = await serve(dir, true, [EMAIL]);
+  const first = await serve(dir, "deleted", [EMAIL]);
   assert.deepEqual(first.lines, ["chat c1: deleted finished job email app outside in (reported, quiet 175 min, no open step)"]);
-  assert.deepEqual((await serve(dir, true, [EMAIL])).deletes, []);
+  assert.deepEqual((await serve(dir, "deleted", [EMAIL])).deletes, []);
   const other: ChildAgent = { ...EMAIL, id: "sub-other", label: "other job", sessionName: "other job" };
-  await serve(dir, true, [other]);
+  await serve(dir, "deleted", [other]);
   assert.deepEqual(Object.keys(JSON.parse(await readFile(join(dir, "deleted-jobs.json"), "utf8")).c1), ["sub-other"], "sub-9b3a7eaa left the listing, so it left the record");
 });

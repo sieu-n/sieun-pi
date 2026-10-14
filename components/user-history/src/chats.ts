@@ -22,7 +22,7 @@ import { briefCheckWithHistory } from "./owner-history.ts";
 import type { CheckInRun } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
-import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS } from "./chat-sources.ts";
+import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
@@ -186,6 +186,7 @@ export class Chats {
       children: (id, attached) => { this.attachedChildren.set(id, attached); this.childrenChanged(id, withRoster(attached, this.subagents.get(id) ?? [])); },
       idle: id => {
         if (this.reloadWaiting.has(id)) this.queue(id, () => this.refreshExtension(id));
+        this.cleanSoon(id);
         this.queue(id, () => this.replyCheck(id));
         this.queue(id, () => this.opsCheck(id));
       },
@@ -203,6 +204,14 @@ export class Chats {
     for (const child of children) if (childWorking(child) && !before?.some(was => was.id === child.id && childWorking(was))) this.workingSince.set(child.id, this.now());
     if (before) for (const child of endedWithoutReport(before, children)) this.laterNoReport(id, child.id);
     for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
+    if (before?.some(was => childWorking(was) && children.some(child => child.id === was.id && !childWorking(child)))) this.cleanSoon(id);
+  }
+
+  /** A job of the chat just ended its turn, or the chat went idle with its reports in: its finished jobs are deleted now, not at the next sweep. */
+  private cleanSoon(id: string): void {
+    if (!this.children.get(id)?.length) return;
+    this.cleanedAt.set(id, this.now());
+    this.queue(id, () => this.cleanJobs(id));
   }
 
   /**
@@ -430,9 +439,9 @@ export class Chats {
   }
 
   /**
-   * Deletes each finished job of a chat (`finishedJobs`) once, with one log line, so its worker and Python kernel stop holding memory. A board
-   * that cannot be read deletes nothing; a failed delete is logged and not tried again in this serve. A job the daemon deleted, or one the chat
-   * no longer holds (`deleteSubagent` false), goes on the deleted job record, so a restart does not try it again while the daemon still lists it.
+   * Deletes each finished job of a chat (`finishedJobs`) once, with one log line, so its Python kernel and session stop holding memory. A
+   * board that cannot be read deletes nothing; a failed delete is logged and not tried again in this serve. A job the daemon deleted, or one the chat no longer
+   * holds (`not_held`), goes on the deleted job record, so a restart does not try it again while the daemon still lists it.
    */
   private async cleanJobs(id: string): Promise<void> {
     const children = this.children.get(id);
@@ -441,21 +450,43 @@ export class Chats {
     try { board = await this.source.board(id); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: job cleanup: ${error instanceof Error ? error.message : String(error)}`); return; }
     const record = this.source.deletedJobs;
-    const gone = await record?.gone(id, children.map(child => child.id)).catch(error => {
+    const listed = children.map(child => child.id);
+    const gone = await record?.gone(id, listed).catch(error => {
       this.log(`chat ${id.slice(0, 8)}: job cleanup: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     });
     if (record && !gone) return;
     const now = this.now();
-    for (const child of finishedJobs(children, board, now, lastJobMessages(this.messages(id) ?? []))) {
-      if (this.deletedJobs.has(child.id) || gone?.has(child.id)) continue;
-      this.deletedJobs.add(child.id);
-      try {
-        const deleted = await this.threads.deleteSubagent(id, child.id);
-        await record?.add(id, child.id, now);
-        this.log(deleted ? `chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`
-          : `chat ${id.slice(0, 8)}: finished job ${childName(child)} is no longer a subagent of the chat (the daemon still lists its session); recorded, not tried again`);
-      } catch (error) { this.log(`chat ${id.slice(0, 8)}: delete finished job ${childName(child)}: ${error instanceof Error ? error.message : String(error)}`); }
+    const said = lastJobMessages(this.messages(id) ?? []);
+    for (const child of finishedJobs(children, board, said)) {
+      if (gone?.has(child.id)) continue;
+      const result = await this.deleteJob(id, child, listed, now);
+      if (result === "deleted") this.log(`chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`);
+    }
+  }
+
+  /**
+   * Deletes one job of the chat unless it works: the hub's view of it is read again first, and the daemon refuses a job that streams or holds
+   * an unfinished action in the same request (`running`), so a job that started a turn since the cleanup read its children is kept and looked
+   * at again later.
+   */
+  private async deleteJob(id: string, child: ChildAgent, listed: readonly string[], now: number): Promise<SubagentDelete | "kept"> {
+    const current = this.children.get(id)?.find(candidate => candidate.id === child.id);
+    if (this.deletedJobs.has(child.id) || !current || childWorking(current)) return "kept";
+    this.deletedJobs.add(child.id);
+    try {
+      const result = await this.threads.deleteSubagent(id, child.id);
+      if (result === "running") {
+        this.deletedJobs.delete(child.id);
+        this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: the daemon shows it running`);
+        return result;
+      }
+      await this.source.deletedJobs?.add(id, child.id, now, listed);
+      if (result === "not_held") this.log(`chat ${id.slice(0, 8)}: finished job ${childName(child)} is no longer a subagent of the chat (the daemon still lists its session); recorded, not tried again`);
+      return result;
+    } catch (error) {
+      this.log(`chat ${id.slice(0, 8)}: delete job ${childName(child)}: ${error instanceof Error ? error.message : String(error)}`);
+      return "kept";
     }
   }
 

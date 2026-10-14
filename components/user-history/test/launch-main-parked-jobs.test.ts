@@ -58,8 +58,7 @@ const JOBS: ChildAgent[] = [
 const names = (children: readonly ChildAgent[]): string[] => children.map(child => child.sessionName ?? child.label);
 
 test("launch main bro 04:1xZ: the four build jobs the 04:11Z notes name are not finished jobs, though the release driver owns their steps", () => {
-  assert.deepEqual(names(finishedJobs(JOBS, BOARD_0411, NOW)), [], "the step notes name all four");
-  assert.deepEqual(names(finishedJobs(JOBS, BOARD_0411, NOW, lastJobMessages(MESSAGES))), []);
+  assert.deepEqual(names(finishedJobs(JOBS, BOARD_0411, lastJobMessages(MESSAGES))), [], "the step notes name all four");
 });
 
 test("launch main bro 04:1xZ: with no step naming them, the jobs whose last reply holds parked work stay and a plain final report is deleted", () => {
@@ -68,7 +67,7 @@ test("launch main bro 04:1xZ: with no step naming them, the jobs whose last repl
   assert.match(kept.get("collab lane self balance")?.parked ?? "", /still waiting for/i, "10132: \"I'm still waiting for the r14 sha\"");
   assert.match(kept.get("instagram access canary")?.parked ?? "", /once it's on prod/i, "9908 and 9909 are one reply sent 1 ms apart");
   assert.equal(kept.get("watchlist all green")?.parked, undefined, "10041: \"It's already landed\" is a plain report");
-  assert.deepEqual(names(finishedJobs(JOBS, UNNAMED, NOW, kept)), ["watchlist all green"]);
+  assert.deepEqual(names(finishedJobs(JOBS, UNNAMED, kept)), ["watchlist all green"]);
 });
 
 test("launch main bro 04:1xZ: a step names a job by id or whole-word name in job, waitFor, note or text; a short name or a part of a word does not count", () => {

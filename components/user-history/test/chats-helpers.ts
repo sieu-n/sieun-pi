@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
-import { type ChatThreads, type CheckInSource, replyCheckRecord, type ThreadView } from "../src/chat-sources.ts";
+import { type ChatThreads, type CheckInSource, replyCheckRecord, type SubagentDelete, type ThreadView } from "../src/chat-sources.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
 import type { ChatBoard, ChatWait, ModelInfo, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 
@@ -31,8 +31,8 @@ export function fakeThreads(calls: string[]) {
     async restart(id: string, message: string, abort?: boolean) { calls.push(`restart ${id} ${message}${abort ? " (abort)" : ""}`); },
     async abort(id: string) { calls.push(`abort ${id}`); },
     async resumeQueue(id: string) { calls.push(`resume ${id}`); },
-    /** What the daemon answers a delete: true deleted, false the chat no longer holds that subagent. */
-    deleteAnswer: true,
+    /** What the daemon answers a delete. */
+    deleteAnswer: "deleted" as SubagentDelete,
     async deleteSubagent(id: string, childId: string) { calls.push(`delete ${id} ${childId}`); return this.deleteAnswer; },
     async unarchive(id: string) { calls.push(`unarchive ${id}`); },
     async archive(id: string) { calls.push(`archive ${id}`); },

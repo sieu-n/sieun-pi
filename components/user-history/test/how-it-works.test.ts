@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ALL_RULES, CHECK_IN_MS, JOB_CLEANUP_IDLE_MS, MOVES_PER_DAY, NO_REPORT_GRACE_MS, STEP_STALE_MS, TIER_UNITS, formatQuantity, howTopics, settingText, type Rule } from "../src/client/how-it-works.ts";
+import { ALL_RULES, CHECK_IN_MS, MOVES_PER_DAY, NO_REPORT_GRACE_MS, STEP_STALE_MS, TIER_UNITS, formatQuantity, howTopics, settingText, type Rule } from "../src/client/how-it-works.ts";
 import { POOL_DEFAULTS } from "../src/client/pool-config.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -49,7 +49,6 @@ test("every How it works value matches the code it names", async () => {
 test("the literals that mirror server code and pi-pool match their source", async () => {
   assert.equal(CHECK_IN_MS, await tsValue("components/user-history/src/checkin-settings.ts", "CHECK_IN_MS"));
   assert.equal(STEP_STALE_MS, await tsValue("components/user-history/src/checkin-steps.ts", "STEP_STALE_MS"));
-  assert.equal(JOB_CLEANUP_IDLE_MS, await tsValue("components/user-history/src/chat-checkin.ts", "JOB_CLEANUP_IDLE_MS"));
   assert.equal(NO_REPORT_GRACE_MS, await tsValue("components/user-history/src/chats.ts", "NO_REPORT_GRACE_MS"));
   for (const [key, value] of Object.entries(POOL_DEFAULTS)) assert.equal(value, poolValue("DEFAULTS." + key), key);
   assert.deepEqual(MOVES_PER_DAY, poolObject("max_moves_per_day"));

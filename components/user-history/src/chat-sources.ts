@@ -1,5 +1,4 @@
 import type { IdIndex } from "./id-index.ts";
-import { sessionHandles } from "./shared/created-sessions.ts";
 import { type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
 import type { Ledger } from "./chat-corrections.ts";
 import type { CheckInRecord } from "./chat-checkin.ts";
@@ -8,6 +7,8 @@ import type { DutyRef } from "./checkin-findings.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+
+export type SubagentDelete = "deleted" | "not_held" | "running";
 
 /** What the Chats class (src/chats.ts) reads and drives: the thread backend, the check-in sources, and the job, reply-check and brief-check records. */
 
@@ -22,16 +23,6 @@ export interface JobRegistry {
   rootsOf(chat: readonly string[]): Promise<string[]>;
   /** Drops entries: a retired duty job. */
   remove(names: readonly string[]): Promise<void>;
-}
-/**
- * Registers under `chat` the root every create_session handle in a tool result's text names (`sessionHandles`). A cell that names its roots
- * with a variable (`name=name` in a loop) has no literal for tool_call to read (AI harness 10-14: the 15:01 KST check-in started skill rules
- * land, stale tree guard land and skill rewrite land that way, and the 17:01 and 19:02 check-ins read their steps as held by other threads).
- */
-export async function registerPrintedRoots(registry: Pick<JobRegistry, "add">, text: string, chat: string): Promise<string[]> {
-  const names = [...new Set(sessionHandles(text).map(handle => handle.name).filter(Boolean))];
-  if (names.length) await registry.add(names, chat);
-  return names;
 }
 const REGISTRY_KEEP_MS = 30 * 24 * 60 * 60_000;
 /** `<data dir>/chat-jobs.json`: `{ jobs: { [sessionName or id]: { chat, at } } }` through locked-json; entries older than 30 days go on the next add. */
@@ -102,24 +93,31 @@ export function briefCheckRecord(path: string, now: () => number = Date.now): Br
  * in was "deleted" 5 times (02:18Z to 03:36Z, each after a service start), and every later delete_rlm_subagent answered `deleted: false`.
  */
 export interface DeletedJobRecord {
-  /** The chat's jobs on record, after dropping each one the chat's `listed` subagents no longer hold, so the record stays as small as the listing. */
+  /** The chat's jobs on record that its `listed` subagents still hold. */
   gone(chat: string, listed: readonly string[]): Promise<Set<string>>;
-  add(chat: string, childId: string, at: number): Promise<void>;
+  /** Records a delete and drops each job of the chat that its `listed` subagents no longer hold, so the record stays as small as the listing. */
+  add(chat: string, childId: string, at: number, listed: readonly string[]): Promise<void>;
 }
-/** `<data dir>/deleted-jobs.json` through locked-json: `{ [chat]: { [childId]: delete time } }`. */
+/**
+ * `<data dir>/deleted-jobs.json`: `{ [chat]: { [childId]: delete time } }`. `gone` reads the file without the lock, since every write replaces
+ * it whole by rename: on 10-14 from 07:42Z every chat's cleanup ran `gone` under the lock at the same tick, and each one gave up after the
+ * lock's 3 s wait with "Deleted job record is busy" (service.log, 12 lines from 07:42Z to 09:22Z and no delete after 07:12Z).
+ */
 export function deletedJobRecord(path: string): DeletedJobRecord {
   const file: JsonFile<Record<string, Record<string, number>>> = { path, label: "Deleted job record", initial: () => ({}), parse: value => typeof value === "object" && value !== null
     ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, Record<string, number>] => typeof entry[1] === "object" && entry[1] !== null)) : {} };
   return {
     async gone(chat, listed) {
-      return (await transactJsonFile(file, state => {
-        const jobs = state[chat] ?? {};
-        for (const id of Object.keys(jobs)) if (!listed.includes(id)) delete jobs[id];
-        if (Object.keys(jobs).length) state[chat] = jobs; else delete state[chat];
-        return new Set(Object.keys(jobs));
-      })).result;
+      const jobs = (await snapshotJsonFile(file))[chat] ?? {};
+      return new Set(Object.keys(jobs).filter(id => listed.includes(id)));
     },
-    async add(chat, childId, at) { await transactJsonFile(file, state => { state[chat] = { ...state[chat], [childId]: at }; }); },
+    async add(chat, childId, at, listed) {
+      await transactJsonFile(file, state => {
+        const jobs: Record<string, number> = { ...state[chat], [childId]: at };
+        for (const id of Object.keys(jobs)) if (id !== childId && !listed.includes(id)) delete jobs[id];
+        state[chat] = jobs;
+      });
+    },
   };
 }
 
@@ -148,10 +146,11 @@ export interface ChatThreads {
   /** Reopens the session's input pump, so queued input runs now. */
   resumeQueue(id: string): Promise<void>;
   /**
-   * Deletes a finished subagent of the chat (the daemon's delete_rlm_subagent, the path `rlm.delete_subagent` takes): true when the daemon deleted
-   * it, false when the chat no longer holds that subagent (the daemon answers `deleted: false`) though its session may still be listed.
+   * Deletes a finished subagent of the chat (the daemon's delete_rlm_subagent, the path `rlm.delete_subagent` takes). The daemon checks the
+   * subagent's turn in the same request and refuses one that streams or holds an unfinished action (`running`); `not_held` means the chat no
+   * longer holds that subagent (the daemon answers `deleted: false`) though its session may still be listed.
    */
-  deleteSubagent(id: string, childId: string): Promise<boolean>;
+  deleteSubagent(id: string, childId: string): Promise<SubagentDelete>;
   /** Undoes an archive: the session comes back as a saved thread that resumes on the next pin or reply. */
   unarchive(id: string): Promise<void>;
   /** Archives the session: its turn stops, its worker ends and its session file records the archived state. */
