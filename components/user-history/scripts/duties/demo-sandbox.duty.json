@@ -23,8 +23,8 @@
       "target": 1
     },
     {
-      "key": "ssr_timeouts_1h",
-      "label": "SSR \"transport invoke timed out\" errors over the last hour",
+      "key": "ssr_timeouts_24h",
+      "label": "SSR timeouts (\"transport invoke timed out\" errors) in the last 24 h",
       "op": "<=",
       "target": 0
     },

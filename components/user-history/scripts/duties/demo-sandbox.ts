@@ -40,7 +40,8 @@ export const PM2_NAME = "virev-demo";
 export const WALK_FILE = ".cache/duties/virev-demo-offline.json";
 /** The proposal runs the offline walk once a day, so a report older than a day is stale. */
 export const WALK_STALE_MS = 24 * 3_600_000;
-const HOUR_MS = 3_600_000;
+/** The window for guard restarts and SSR timeouts in the pm2 log: the duty runs daily, so each run counts the whole day. */
+const DAY_MS = 24 * 3_600_000;
 
 export type Exec = (file: string, args: readonly string[], env?: Record<string, string>) => Promise<string>;
 export interface SandboxDeps {
@@ -73,9 +74,10 @@ export function logTime(line: string): number | null {
 }
 
 /**
- * dev-guard memory restarts over the last 24 h and SSR transport timeouts over the last hour, from the pm2 error log. The windows are the
- * proposal's metrics guard_restarts_24h (target at most 1) and ssr_timeouts_1h (target 0). Incident: this log shows 7 dev-guard restarts
- * on 2026-10-12 (11:32 to 20:51 KST) and the SSR timeouts of the 22:38 hang; step p86's goal is that the guard stops restarting 5180.
+ * dev-guard memory restarts and SSR transport timeouts over the last 24 h, from the pm2 error log. The metrics are guard_restarts_24h
+ * (target at most 1) and ssr_timeouts_24h (target 0). Both windows are 24 h because the duty runs once a day (owner c66, 10-14), so one run
+ * covers the whole day since the last one. Incident: this log shows 7 dev-guard restarts on 2026-10-12 (11:32 to 20:51 KST) and the SSR
+ * timeouts of the 22:38 hang; step p86's goal is that the guard stops restarting 5180.
  */
 export function countLog(text: string, now: number): { guardRestarts: string[]; ssrTimeouts: string[] } {
   const guardRestarts: string[] = [];
@@ -86,8 +88,8 @@ export function countLog(text: string, now: number): { guardRestarts: string[]; 
     if (!guard && !timeout) continue;
     const at = logTime(line);
     if (at === null || at > now) continue;
-    if (guard && now - at <= 24 * HOUR_MS) guardRestarts.push(line);
-    if (timeout && now - at <= HOUR_MS) ssrTimeouts.push(line);
+    if (now - at > DAY_MS) continue;
+    (guard ? guardRestarts : ssrTimeouts).push(line);
   }
   return { guardRestarts, ssrTimeouts };
 }
@@ -123,9 +125,9 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   const at = deps.now();
   const flagged: FlaggedSlice[] = [];
   // Targets in demo-sandbox.duty.json and their sources: health_ok at least 1 and configure_ms at most CONFIGURE_TARGET_MS (see ANSWER_TIMEOUT_MS),
-  // guard_restarts_24h at most 1 and ssr_timeouts_1h 0 (see countLog), dev_tree_mb at most MEMORY_TARGET_MB, outside_requests 0 (the owner:
+  // guard_restarts_24h at most 1 and ssr_timeouts_24h 0 (see countLog), dev_tree_mb at most MEMORY_TARGET_MB, outside_requests 0 (the owner:
   // "no external connection should work off of internal fake database"; offline.spec.ts fails on any), source_errors 0 (an unread source is a miss).
-  const metrics: Record<string, number> = { health_ok: 0, configure_ms: 0, guard_restarts_24h: 0, ssr_timeouts_1h: 0, dev_tree_mb: 0, outside_requests: 0, source_errors: 0 };
+  const metrics: Record<string, number> = { health_ok: 0, configure_ms: 0, guard_restarts_24h: 0, ssr_timeouts_24h: 0, dev_tree_mb: 0, outside_requests: 0, source_errors: 0 };
   const sourceError = (kind: string, excerpt: string) => { metrics.source_errors = (metrics.source_errors ?? 0) + 1; flagged.push({ at, kind, excerpt }); };
 
   const configureUrl = `${BASE_URL}/configure?world=${PROBE_WORLD}`;
@@ -140,9 +142,9 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
   try {
     const { guardRestarts, ssrTimeouts } = countLog(await deps.read(logPath), at);
     metrics.guard_restarts_24h = guardRestarts.length;
-    metrics.ssr_timeouts_1h = ssrTimeouts.length;
+    metrics.ssr_timeouts_24h = ssrTimeouts.length;
     if (guardRestarts.length) flagged.push({ at, kind: "guard_restarts", excerpt: `${guardRestarts.length} dev-guard restarts in 24 h, last: ${guardRestarts.at(-1)}` });
-    if (ssrTimeouts.length) flagged.push({ at, kind: "ssr_timeouts", excerpt: `${ssrTimeouts.length} SSR timeout errors in 1 h, last: ${ssrTimeouts.at(-1)}` });
+    if (ssrTimeouts.length) flagged.push({ at, kind: "ssr_timeouts", excerpt: `${ssrTimeouts.length} SSR timeout errors in 24 h, last: ${ssrTimeouts.at(-1)}` });
   } catch (error) { sourceError("source", `${logPath}: ${error instanceof Error ? error.message : String(error)}`); }
 
   try {

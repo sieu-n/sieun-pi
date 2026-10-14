@@ -43,13 +43,13 @@ function deps(options: { answers?: Record<string, number | Error>; log?: string 
 }
 const JLIST = "pm2 warning\n" + JSON.stringify([{ name: "virev-demo", pid: 100, pm2_env: { status: "online" } }]);
 
-test("demo sandbox: pm2 log times are local, and the windows are 24 h for guard restarts and 1 h for SSR timeouts", () => {
+test("demo sandbox: pm2 log times are local, and guard restarts and SSR timeouts both count over the last 24 h", () => {
   assert.equal(logTime(logLine(0, "x")), NOW);
   assert.equal(logTime("no time here"), null);
-  const log = [logLine(25 * HOUR, GUARD), logLine(23 * HOUR, GUARD), logLine(2 * HOUR, GUARD), logLine(2 * HOUR, TIMEOUT), logLine(10 * 60_000, TIMEOUT), logLine(60_000, TIMEOUT), "  at stack frame"].join("\n");
+  const log = [logLine(25 * HOUR, GUARD), logLine(23 * HOUR, GUARD), logLine(2 * HOUR, GUARD), logLine(25 * HOUR, TIMEOUT), logLine(23 * HOUR, TIMEOUT), logLine(2 * HOUR, TIMEOUT), logLine(60_000, TIMEOUT), "  at stack frame"].join("\n");
   const counted = countLog(log, NOW);
   assert.equal(counted.guardRestarts.length, 2);
-  assert.equal(counted.ssrTimeouts.length, 2);
+  assert.equal(counted.ssrTimeouts.length, 3);
 });
 
 test("demo sandbox: the offline walk report gives each outside request; another failure is not counted as 0 outside", () => {
@@ -68,7 +68,7 @@ test("demo sandbox: the offline walk report gives each outside request; another 
 test("demo sandbox: a healthy 5180 with a fresh clean walk meets every target", async () => {
   const fresh = new Date(NOW - 2 * HOUR).toISOString();
   const output = await measureSandbox(deps({ jlist: JLIST, footprintMb: 2500, log: logLine(3 * HOUR, GUARD), walk: walkReport(fresh, [{ title: "a", status: "passed" }]) }));
-  assert.deepEqual(output.metrics, { health_ok: 1, configure_ms: 0, guard_restarts_24h: 1, ssr_timeouts_1h: 0, dev_tree_mb: 2500, outside_requests: 0, source_errors: 0 });
+  assert.deepEqual(output.metrics, { health_ok: 1, configure_ms: 0, guard_restarts_24h: 1, ssr_timeouts_24h: 0, dev_tree_mb: 2500, outside_requests: 0, source_errors: 0 });
 });
 
 test("demo sandbox: a hung server, a missing walk and a dead pm2 still give every metric, with the unread sources counted", async () => {
