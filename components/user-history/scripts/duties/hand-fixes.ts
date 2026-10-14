@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { type DsQuery, DAY, PG, SOURCE_DEADLINE_MS, grafanaClient, num, readGrafanaAuth, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { type DsQuery, DAY, PG, REPO, SOURCE_DEADLINE_MS, grafanaClient, num, readGrafanaAuth, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The Hand fix designs duty's precheck for launch main bro (`node --import tsx scripts/duties/hand-fixes.ts`). Code only, no model call, reads
@@ -13,7 +13,7 @@ import { type DsQuery, DAY, PG, SOURCE_DEADLINE_MS, grafanaClient, num, readGraf
  * a design job the same turn. This check finds the hand fixes made since its last run and matches each to a fault in hand-fixes.faults.json:
  * - config_audit on prod and staging Postgres through Grafana (estate_pg_prod, estate_pg_stg, user grafana_ro); /ops/controls writes land there;
  * - ig_engage_account_events of kind status on prod and staging (grafana_ro reads kind, outcome, error_code, account_id and at, not the actor);
- * - launch main bro's board notes, and the status of each fault's board step;
+ * - launch main bro's board notes, and each fault's design refs: board steps in any chat, or a branch or commit in the auto-sns-agent checkout;
  * - us-metal01 over one read-only ssh: containers with no compose service (one-off containers) and running docker exec sessions in app containers;
  * - this Mac's processes started from an agent session folder whose script writes to prod or staging config.
  * The fault list and the audit behind it: auto-sns-agent sessions/2026/10/14/1044-self-healing-audit (findings.html, duty-spec.html).
@@ -42,7 +42,11 @@ export interface FaultMatch {
   config_key_prefixes?: string[]; config_reason_regex?: string; note_regex?: string;
   engage_event?: { kind: string; outcomes: string[] }; mac_process_regex?: string; box_exec_regex?: string; box_container_regex?: string;
 }
-export interface Fault { id: string; title: string; board_step: string | null; owner: string; match: FaultMatch }
+/**
+ * A fault's design work, one ref each: `pN` (a step on this chat's board), `<chat id>/pN` (a step on another chat's board), `branch:<name>` or
+ * `commit:<sha>` (in the auto-sns-agent checkout, for work no board tracks).
+ */
+export interface Fault { id: string; title: string; designs: string[]; owner: string; match: FaultMatch }
 export interface Registry {
   automatic_writers: { config_actors: string[] };
   exempt: { config_reason_regex: string; note_regex?: string };
@@ -54,6 +58,8 @@ export interface AuditRow { id: number; ts: number; actor: string; key: string; 
 export interface StatusEvent { accountId: number; at: number; outcome: string; errorCode: string }
 export interface Note { id: string; at: number; text: string }
 export interface BoardStep { id: string; status: string; job?: string }
+/** What a design ref resolves to: a board step's status, or whether a branch or commit exists. */
+export type RefState = { kind: "step"; status: string | null } | { kind: "git"; exists: boolean };
 export interface BoxContainer { name: string; status: string; service: string }
 export interface BoxExec { container: string; service: string; running: boolean; command: string }
 export interface MacProcess { pid: number; command: string; script: string | null; writes: boolean }
@@ -83,7 +89,8 @@ export function parseRegistry(value: unknown): Registry {
   if (!registry?.automatic_writers || !Array.isArray(registry.automatic_writers.config_actors) || !registry.exempt?.config_reason_regex || !Array.isArray(registry.faults))
     throw new Error("hand-fixes.faults.json needs automatic_writers.config_actors, exempt.config_reason_regex and faults");
   for (const fault of registry.faults) {
-    if (!/^F\d+$/.test(fault.id) || !fault.title || !fault.match) throw new Error(`fault ${String(fault.id)}: id F<n>, title and match`);
+    if (!/^F\d+$/.test(fault.id) || !fault.title || !fault.match || !Array.isArray(fault.designs)) throw new Error(`fault ${String(fault.id)}: id F<n>, title, designs and match`);
+    for (const ref of fault.designs) if (!/^(?:branch:\S+|commit:[0-9a-f]{7,40}|(?:[0-9a-f-]{36}\/)?p\d+)$/.test(ref)) throw new Error(`fault ${fault.id}: design ref ${ref} is not pN, <chat id>/pN, branch:<name> or commit:<sha>`);
     for (const pattern of [fault.match.config_reason_regex, fault.match.note_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
       if (pattern) new RegExp(pattern);
   }
@@ -125,11 +132,27 @@ export function classifyNote(note: Note, registry: Registry): Verdict | null {
   return fault ? { kind: "fault", fault } : { kind: "undesigned" };
 }
 
-/** A fault's design state from its board step: none (no step, missing or dropped), live (todo, doing or blocked) or done. */
-export function stepState(fault: Fault, steps: ReadonlyMap<string, BoardStep>): StepState {
-  const step = fault.board_step ? steps.get(fault.board_step) : undefined;
-  if (!step || step.status === "dropped") return "none";
-  return step.status === "done" ? "done" : "live";
+/**
+ * A fault's design state from its refs: done when it has board steps and every one is done; live when any step is open (todo, doing, blocked)
+ * or any branch or commit exists; none otherwise (no refs, missing or dropped steps, no git ref).
+ */
+export function stepState(fault: Fault, refs: ReadonlyMap<string, RefState>): StepState {
+  const states = fault.designs.map(ref => refs.get(ref));
+  const steps = states.filter((state): state is { kind: "step"; status: string | null } => state?.kind === "step" && state.status !== null && state.status !== "dropped");
+  if (steps.length && steps.length === states.filter(state => state?.kind === "step").length && steps.every(state => state.status === "done")) return "done";
+  if (steps.some(state => state.status !== "done") || states.some(state => state?.kind === "git" && state.exists)) return "live";
+  return "none";
+}
+
+/** Each step ref's status from the boards (`pN` is this chat's), or null when that board or step is missing. */
+export function stepRefs(faults: readonly Fault[], boards: ReadonlyMap<string, ReadonlyMap<string, BoardStep>>): Map<string, RefState> {
+  const refs = new Map<string, RefState>();
+  for (const ref of faults.flatMap(fault => fault.designs)) {
+    if (ref.startsWith("branch:") || ref.startsWith("commit:")) continue;
+    const [chat, step] = ref.includes("/") ? ref.split("/") as [string, string] : [CHAT, ref];
+    refs.set(ref, { kind: "step", status: boards.get(chat)?.get(step)?.status ?? null });
+  }
+  return refs;
 }
 
 /** The ssh output: `C<TAB>name<TAB>status|service|execids` per container and `E<TAB>name<TAB><exec json>` per exec session. */
@@ -168,7 +191,7 @@ export const isSessionProcess = (command: string): boolean =>
 
 export interface HandData {
   now: number;
-  registry?: Registry; steps?: Map<string, BoardStep>; notes?: Note[];
+  registry?: Registry; refs?: Map<string, RefState>; notes?: Note[];
   audit: Partial<Record<World, AuditRow[]>>; events: Partial<Record<World, StatusEvent[]>>;
   box?: { containers: BoxContainer[]; execs: BoxExec[] }; mac?: MacProcess[];
   errors: { source: Source; message: string }[];
@@ -181,7 +204,7 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
   const failed = new Set(data.errors.map(error => error.source));
   const unmeasured = new Set(Object.keys(NEEDS).filter(key => NEEDS[key]!.some(source => failed.has(source))));
   const registry = data.registry;
-  const steps = data.steps ?? new Map<string, BoardStep>();
+  const refs = data.refs ?? new Map<string, RefState>();
   if (registry) {
     const fixes: { fix: HandFix; verdict: Verdict }[] = [];
     for (const world of WORLDS) {
@@ -197,7 +220,7 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     }
     const counted = fixes.filter(item => item.verdict.kind === "fault" || item.verdict.kind === "undesigned");
     const undesigned = counted.filter(item => item.verdict.kind === "undesigned");
-    const repeats = counted.filter(item => item.verdict.kind === "fault" && stepState(item.verdict.fault, steps) === "done");
+    const repeats = counted.filter(item => item.verdict.kind === "fault" && stepState(item.verdict.fault, refs) === "done");
     metrics.undesigned_hand_fixes = undesigned.length;
     metrics.repeats_after_design = repeats.length;
     const byFault = new Map<string, number>();
@@ -208,10 +231,10 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     const line = (item: { fix: HandFix }) => `${item.fix.source} ${utc(item.fix.at)} ${item.fix.what}: ${item.fix.text}`.slice(0, 400);
     for (const item of undesigned) flagged.push({ at: item.fix.at, kind: "undesigned", excerpt: line(item) });
     for (const item of repeats) flagged.push({ at: item.fix.at, kind: "repeat", excerpt: `${item.verdict.kind === "fault" ? item.verdict.fault.id : ""} design step done, yet: ${line(item)}`.slice(0, 400),
-      ...(item.verdict.kind === "fault" && item.verdict.fault.board_step ? { item: item.verdict.fault.board_step } : {}) });
-    const jobless = registry.faults.filter(fault => stepState(fault, steps) === "none");
+      ...(item.verdict.kind === "fault" && item.verdict.fault.designs[0] ? { item: item.verdict.fault.designs[0] } : {}) });
+    const jobless = registry.faults.filter(fault => stepState(fault, refs) === "none");
     metrics.faults_without_job = jobless.length;
-    if (jobless.length) flagged.push({ at, kind: "faults_without_job", excerpt: `No live or done design step: ${jobless.map(fault => `${fault.id} ${fault.title} (${fault.owner})`).join("; ")}`.slice(0, 1000) });
+    if (jobless.length) flagged.push({ at, kind: "faults_without_job", excerpt: `No live or done design work: ${jobless.map(fault => `${fault.id} ${fault.title} (${fault.owner})`).join("; ")}`.slice(0, 1000) });
   }
   if (data.mac) {
     const writers = data.mac.filter(process => process.writes);
@@ -325,7 +348,10 @@ function flattenNotes(items: readonly { id: string; text?: string; at?: string; 
 export interface HandDeps {
   now: number; state: HandState; query: DsQuery | null; authError: string | null;
   registry: () => Promise<unknown>;
-  board: () => Promise<{ plan?: unknown[]; scratch?: unknown[] } | null>;
+  /** One chat's board, or null when it has none. */
+  board: (chat: string) => Promise<{ plan?: unknown[]; scratch?: unknown[] } | null>;
+  /** Whether a `branch:<name>` or `commit:<sha>` ref exists in the auto-sns-agent checkout. */
+  gitRef: (ref: string) => Promise<boolean>;
   box: () => Promise<string>; mac: () => Promise<MacProcess[]>;
 }
 
@@ -345,7 +371,7 @@ export async function measure(deps: HandDeps): Promise<HandData> {
     accountId: num(row.account_id) ?? 0, at: num(row.at) ?? 0, outcome: String(row.outcome ?? ""), errorCode: String(row.error_code ?? "") })));
   const [registry, board, box, mac, prodAudit, stagingAudit, prodEvents, stagingEvents] = await Promise.all([
     step("registry", async () => parseRegistry(await deps.registry())),
-    step("board", async () => { const board = await deps.board(); if (!board) throw new Error(`no board for chat ${CHAT}`); return board; }),
+    step("board", async () => { const board = await deps.board(CHAT); if (!board) throw new Error(`no board for chat ${CHAT}`); return board; }),
     step("box", async () => parseBox(await deps.box())),
     step("mac", deps.mac),
     query ? audit("prod") : undefined, query ? audit("staging") : undefined,
@@ -355,9 +381,20 @@ export async function measure(deps: HandDeps): Promise<HandData> {
   else if (box) data.box = box;
   if (registry) data.registry = registry;
   if (board) {
-    data.steps = flattenSteps((board.plan ?? []) as never[]);
     const since = deps.state.notesAt ?? deps.now - DAY;
     data.notes = flattenNotes((board.scratch ?? []) as never[]).filter(note => note.at > since);
+  }
+  if (registry && board) {
+    const refs = await step("board", async () => {
+      const chats = new Set(registry.faults.flatMap(fault => fault.designs).filter(ref => /^[0-9a-f-]{36}\//.test(ref)).map(ref => ref.split("/")[0]!));
+      const boards = new Map<string, Map<string, BoardStep>>([[CHAT, flattenSteps((board.plan ?? []) as never[])]]);
+      for (const chat of chats) { const other = await deps.board(chat); if (other) boards.set(chat, flattenSteps((other.plan ?? []) as never[])); }
+      const refs = stepRefs(registry.faults, boards);
+      for (const ref of new Set(registry.faults.flatMap(fault => fault.designs).filter(item => /^(?:branch|commit):/.test(item))))
+        refs.set(ref, { kind: "git", exists: await deps.gitRef(ref) });
+      return refs;
+    });
+    if (refs) data.refs = refs;
   }
   if (mac) data.mac = mac;
   if (prodAudit) data.audit.prod = prodAudit;
@@ -380,7 +417,8 @@ async function main(): Promise<void> {
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
   const data = await measure({ now, state, query, authError,
     registry: async () => JSON.parse(await readFile(REGISTRY_FILE, "utf8")),
-    board: () => new BoardStore(join(homedir(), ".prime/agent/browser-chat")).read(CHAT) as never,
+    board: chat => new BoardStore(join(homedir(), ".prime/agent/browser-chat")).read(chat) as never,
+    gitRef: ref => run("git", ["-C", REPO, "rev-parse", "--verify", "--quiet", ref.startsWith("branch:") ? `refs/heads/${ref.slice(7)}` : `${ref.slice(7)}^{commit}`], signal).then(() => true, () => false),
     box: () => run("ssh", ["-o", "BatchMode=yes", BOX, "bash -s"], signal, BOX_SCRIPT),
     mac: () => macProcesses(signal) });
   const result = report(data, dutyMetrics);

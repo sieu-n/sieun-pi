@@ -11,7 +11,9 @@
     {
       "id": "F1",
       "title": "Lane rates and pauses steered by hand",
-      "board_step": null,
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p170"
+      ],
       "owner": "Crawler ops / Crawler VP (01a115e2), TikTok Shop thread, metal (01a11d24)",
       "match": {
         "config_key_prefixes": [
@@ -35,7 +37,9 @@
     {
       "id": "F2",
       "title": "Guards that act on prod live inside agent sessions",
-      "board_step": null,
+      "designs": [
+        "branch:sieun/box-selfheal"
+      ],
       "owner": "metal (01a11d24) and each lane owner",
       "match": {
         "config_reason_regex": "^watch_proxy abort|watch --act|box stop|left on with no owner",
@@ -45,7 +49,9 @@
     {
       "id": "F3",
       "title": "Acquisition writer count is fixed",
-      "board_step": "p100",
+      "designs": [
+        "p100"
+      ],
       "owner": "Instagram Main (01a10db0), acq-writer-autoscale",
       "match": {
         "box_exec_regex": "acquisition-writer",
@@ -58,7 +64,9 @@
     {
       "id": "F4",
       "title": "Collab slot split and re-read due times set by hand",
-      "board_step": "p97",
+      "designs": [
+        "p97"
+      ],
       "owner": "collab lane self balance, fair crawl queue, posts reread inside 24h (p91)",
       "match": {
         "config_key_prefixes": [
@@ -73,7 +81,9 @@
     {
       "id": "F5",
       "title": "Engage account states fixed by hand",
-      "board_step": "p98",
+      "designs": [
+        "p98"
+      ],
       "owner": "engage read pacing, engage 100k throughput, Crawler ops 302 fix",
       "match": {
         "engage_event": {
@@ -93,7 +103,9 @@
     {
       "id": "F6",
       "title": "CI cancel and rerun waves by hand",
-      "board_step": null,
+      "designs": [
+        "01a1180e-6567-747f-bf44-452520ebdd1b/p155"
+      ],
       "owner": "VP of CI (01a1180e), CI keeper Fable (01a0cc5e)",
       "match": {
         "note_regex": "cancell?(ed)? \\d+ runs|ghost|re-?push|\\brerun|\\breran\\b|\\bhold\\d+\\b",
@@ -103,7 +115,10 @@
     {
       "id": "F7",
       "title": "Deploys lose live changes and get blocked by sessions they do not own",
-      "board_step": null,
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p172",
+        "branch:sieun/box-selfheal"
+      ],
       "owner": "metal (01a11d24), release owner (01a10810)",
       "match": {
         "config_reason_regex": "docker update|deploy recreates",
@@ -113,7 +128,11 @@
     {
       "id": "F8",
       "title": "Wrong not-found and gone verdicts",
-      "board_step": null,
+      "designs": [
+        "commit:477ed1034f",
+        "commit:699c919215",
+        "p90"
+      ],
       "owner": "Instagram Main, watchlist all green",
       "match": {
         "note_regex": "false gone|false profile_not_found|recheck"
@@ -122,7 +141,9 @@
     {
       "id": "F9",
       "title": "One limit in two places, code and config",
-      "board_step": "p77",
+      "designs": [
+        "p77"
+      ],
       "owner": "remove-unmeasured-caps, instagram access canary (p75)",
       "match": {
         "config_key_prefixes": [
@@ -137,7 +158,9 @@
     {
       "id": "F10",
       "title": "Writes to the wrong environment",
-      "board_step": null,
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p171"
+      ],
       "owner": "Crawler ops",
       "match": {
         "config_reason_regex": "^undo audit|by mistake|wrong (env|key)"
@@ -146,7 +169,9 @@
     {
       "id": "F11",
       "title": "Secrets in transcripts and logs",
-      "board_step": null,
+      "designs": [
+        "01a1180e-6567-747f-bf44-452520ebdd1b/p156"
+      ],
       "owner": "VP of CI",
       "match": {
         "note_regex": "rotate|clear text|printed .* key"
@@ -155,7 +180,9 @@
     {
       "id": "F12",
       "title": "Staging runs out of work",
-      "board_step": null,
+      "designs": [
+        "p98"
+      ],
       "owner": "Instagram Main, duty d1",
       "match": {
         "note_regex": "staging read nothing|queued staging"

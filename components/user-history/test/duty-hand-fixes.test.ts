@@ -5,8 +5,8 @@ import { test } from "node:test";
 import { type DutyMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import { UNMEASURED } from "../scripts/duties/estate-reads.ts";
 import {
-  type AuditRow, type BoardStep, type HandData, type Registry, BOX_SCRIPT, HAND_FIX_WORDS, WRITES, auditSql, classifyConfig, classifyEvent, classifyNote,
-  groupAudit, handExecs, isSessionProcess, measure, nextState, oneOffs, parseBox, parseRegistry, report, scriptOf, stepState,
+  type AuditRow, type HandData, type RefState, type Registry, BOX_SCRIPT, HAND_FIX_WORDS, WRITES, auditSql, classifyConfig, classifyEvent, classifyNote,
+  groupAudit, handExecs, isSessionProcess, measure, nextState, oneOffs, parseBox, parseRegistry, report, scriptOf, stepRefs, stepState,
 } from "../scripts/duties/hand-fixes.ts";
 
 const NOW = Date.parse("2026-10-14T01:30:00Z");
@@ -16,9 +16,9 @@ const registry = async (): Promise<Registry> => parseRegistry(JSON.parse(await r
 const dutyMetrics = async (): Promise<DutyMetric[]> => parseDutyInput(JSON.parse(await readFile(FILE, "utf8")), "d", NOW).metrics;
 let nextId = 1;
 const row = (key: string, reason: string, fields: Partial<AuditRow> = {}): AuditRow => ({ id: nextId++, ts: NOW - 3_600_000, actor: "api-key", key, reason, source: "ops-api", ...fields });
-const steps = (entries: [string, string][]): Map<string, BoardStep> => new Map(entries.map(([id, status]) => [id, { id, status }]));
-const allLive = (): Map<string, BoardStep> => steps([["p97", "doing"], ["p98", "doing"], ["p100", "doing"], ["p77", "doing"]]);
-const clean = async (): Promise<HandData> => ({ now: NOW, registry: await registry(), steps: allLive(), notes: [], audit: { prod: [], staging: [] }, events: { prod: [], staging: [] },
+const steps = (entries: [string, string | null][]): Map<string, RefState> => new Map(entries.map(([ref, status]) => [ref, { kind: "step", status }]));
+const allLive = (): Map<string, RefState> => steps([["p97", "doing"], ["p98", "doing"], ["p100", "doing"], ["p77", "doing"]]);
+const clean = async (): Promise<HandData> => ({ now: NOW, registry: await registry(), refs: allLive(), notes: [], audit: { prod: [], staging: [] }, events: { prod: [], staging: [] },
   box: { containers: [{ name: "virev-prod-crawler-worker", status: "running", service: "crawler-worker" }], execs: [] }, mac: [], errors: [] });
 
 test("hand fixes: the duty file parses as a daily duty, and the precheck writes every metric key", async () => {
@@ -64,24 +64,37 @@ test("hand fixes: engage status writes and board notes count only when a fault o
   assert.ok(HAND_FIX_WORDS.test("Check now on 5,752 rows"));
 });
 
-test("hand fixes: a fault whose design step is done turns its hand fixes into repeats; no step means no job", async () => {
+test("hand fixes: a fault whose design steps are all done turns its hand fixes into repeats; no live ref means no job", async () => {
   const reg = await registry();
   const f4 = reg.faults.find(fault => fault.id === "F4")!;
-  const f1 = reg.faults.find(fault => fault.id === "F1")!;
+  const f8 = reg.faults.find(fault => fault.id === "F8")!;
+  assert.deepEqual(f8.designs, ["commit:477ed1034f", "commit:699c919215", "p90"]);
   assert.equal(stepState(f4, steps([["p97", "doing"]])), "live");
   assert.equal(stepState(f4, steps([["p97", "done"]])), "done");
   assert.equal(stepState(f4, steps([["p97", "dropped"]])), "none");
-  assert.equal(stepState(f1, steps([])), "none");
+  assert.equal(stepState(f4, steps([["p97", null]])), "none", "a step missing from its board is no job");
+  const git = (exists: boolean): RefState => ({ kind: "git", exists });
+  assert.equal(stepState(f8, new Map([["commit:477ed1034f", git(true)], ["commit:699c919215", git(true)], ["p90", { kind: "step", status: "done" }]])), "done");
+  assert.equal(stepState(f8, new Map([["commit:477ed1034f", git(true)], ["p90", { kind: "step", status: null }]])), "live", "a commit that exists keeps the design live");
+  const box = { id: "F2", title: "t", owner: "metal", match: {}, designs: ["branch:sieun/box-selfheal"] };
+  assert.equal(stepState(box, new Map([["branch:sieun/box-selfheal", git(false)]])), "none");
+  const other = "01a115e2-9544-7204-b8db-8ce4d5319048";
+  const refs = stepRefs(reg.faults, new Map([["01a11bd7-072f-7591-ad1d-f123c276cde5", new Map([["p97", { id: "p97", status: "doing" }]])], [other, new Map([["p170", { id: "p170", status: "done" }]])]]));
+  assert.deepEqual(refs.get("p97"), { kind: "step", status: "doing" });
+  assert.deepEqual(refs.get(`${other}/p170`), { kind: "step", status: "done" });
+  assert.deepEqual(refs.get(`${other}/p171`), { kind: "step", status: null });
+  assert.ok(!refs.has("branch:sieun/box-selfheal"), "git refs are read by measure, not from boards");
   const metrics = await dutyMetrics();
   const data = await clean();
-  data.steps = steps([["p97", "done"], ["p98", "doing"], ["p100", "doing"], ["p77", "doing"]]);
+  data.refs = steps([["p97", "done"], ["p98", "doing"], ["p100", "doing"], ["p77", "doing"]]);
   data.audit.prod = [row("watch.deep_walk_slot_share", "share 50 -> 20 by hand")];
   const output = report(data, metrics);
   assert.equal(output.metrics.repeats_after_design, 1);
   assert.equal(output.metrics.undesigned_hand_fixes, 0);
-  assert.equal(output.metrics.faults_without_job, reg.faults.filter(fault => !fault.board_step).length);
+  assert.equal(output.metrics.faults_without_job, reg.faults.filter(fault => !fault.designs.some(ref => ["p97", "p98", "p100", "p77"].includes(ref))).length);
   assert.ok(output.flagged!.some(slice => slice.kind === "repeat" && slice.item === "p97"));
   assert.equal(judge(metrics, output).verdict, "missed");
+  assert.throws(() => parseRegistry({ ...reg, faults: [{ ...f4, designs: ["lane rate controller"] }] }), /design ref/);
 });
 
 test("hand fixes: the box read finds a docker exec writer and one-off containers, and skips psql in data stores", () => {
@@ -138,11 +151,17 @@ test("hand fixes: a failed source is a miss and keeps its read mark; the first r
 test("hand fixes: measure reads every source through its deps, and no Grafana login fails the four Postgres reads", async () => {
   const data = await measure({ now: NOW, state: {}, query: null, authError: "GRAFANA_ADMIN_PASSWORD is missing",
     registry: async () => JSON.parse(await readFile(join(DIR, "hand-fixes.faults.json"), "utf8")),
-    board: async () => ({ plan: [{ id: "p96", status: "doing", children: [{ id: "p97", status: "doing" }] }], scratch: [{ id: "s1", text: "thawed 31 by hand", at: new Date(NOW - 1000).toISOString() }, { id: "s0", text: "old", at: "2026-10-01T00:00:00Z" }] }),
+    board: async chat => chat === "01a11bd7-072f-7591-ad1d-f123c276cde5"
+      ? { plan: [{ id: "p96", status: "doing", children: [{ id: "p97", status: "doing" }] }], scratch: [{ id: "s1", text: "thawed 31 by hand", at: new Date(NOW - 1000).toISOString() }, { id: "s0", text: "old", at: "2026-10-01T00:00:00Z" }] }
+      : { plan: [{ id: "p170", status: "doing" }] },
+    gitRef: async ref => ref === "branch:sieun/box-selfheal",
     box: async () => "C\tvirev-prod-crawler-worker\trunning|crawler-worker|",
     mac: async () => [] });
   assert.deepEqual(data.errors.map(error => error.source).sort(), ["grafana auth", "prod config", "prod engage", "staging config", "staging engage"]);
-  assert.equal(data.steps?.get("p97")?.status, "doing");
+  assert.deepEqual(data.refs?.get("p97"), { kind: "step", status: "doing" });
+  assert.deepEqual(data.refs?.get("01a115e2-9544-7204-b8db-8ce4d5319048/p170"), { kind: "step", status: "doing" });
+  assert.deepEqual(data.refs?.get("branch:sieun/box-selfheal"), { kind: "git", exists: true });
+  assert.deepEqual(data.refs?.get("commit:477ed1034f"), { kind: "git", exists: false });
   assert.deepEqual(data.notes?.map(note => note.id), ["s1"], "a note older than 24 h is not read on the first run");
   const output = report(data, await dutyMetrics());
   assert.equal(output.metrics.undesigned_hand_fixes, UNMEASURED);

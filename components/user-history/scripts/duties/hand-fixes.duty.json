@@ -54,6 +54,6 @@
     "cwd": "../..",
     "timeoutMs": 120000
   },
-  "onMiss": "Read the flagged items first. An undesigned hand fix: name its fault, add it to scripts/duties/hand-fixes.faults.json in sieun-pi with detect, correct and prove lines, and start a design job the same turn under p96 (c63). A repeat after a done design: reopen that design step with the hand fix as evidence and message its job. A session loop or a docker exec process: message its owner to move it into a supervised service. A fault without a job: start one under p96. Ship staging changes directly (c50), ask only for prod promotes, merge nothing without his go on that PR (c49), send nothing outside (c37). source_error: fix the read. All on target: end the turn with no message.",
+  "onMiss": "Read the flagged items first. An undesigned hand fix: name its fault, add it to scripts/duties/hand-fixes.faults.json in sieun-pi with its design refs, and start a design job the same turn under p96 (c63). A repeat after a done design: reopen that design step with the hand fix as evidence and message its job. A session loop or a docker exec process: message its owner to move it into a supervised service. A fault without a job: start one under p96. Ship staging changes directly (c50), ask only for prod promotes, merge nothing without his go on that PR (c49), send nothing outside (c37). source_error: fix the read. All on target: end the turn with no message.",
   "boardGoal": "p96"
 }
