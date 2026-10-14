@@ -19,6 +19,14 @@ KERNEL_CRITICAL = 4
 # paging, and at 18:20 it held 17.1 GB (50%) with a median 12,000 swap-ins a
 # second while the kernel said warn in all 27 samples over 80 s.
 COMPRESSOR_CRITICAL_SHARE = 0.45
+# Swap this full reads critical too, because macOS kept saying warn through the thrash: at
+# 10:21Z on 10-14 ops guy's feed read warn with swap 45.18 of 46.0 GB (98%), 16,191
+# swapouts a second, kernel_task at 224% and load 145.
+SWAP_CRITICAL_SHARE = 0.95
+# Swapouts per second (pages, from the feed) at or above this read critical: 18 feed
+# reads at 10:59-11:02Z on 10-14 all read warn while kernel_task paged at 168% to 256%,
+# with swapouts from 6,210 to 22,956 a second (sessions/2026/10/14/1815-mac-stays-usable/feed-samples.jsonl).
+SWAPOUTS_CRITICAL = 6000
 # host_statistics64 flavor HOST_VM_INFO64 (mach/host_info.h).
 HOST_VM_INFO64 = 4
 # ops guy's machine-wide feed, rewritten every 10 s. A file older than FEED_FRESH_SEC
@@ -33,7 +41,9 @@ def level(reading):
     because a broken probe must not hold the Mac's agents."""
     if reading is None:
         return "ok"
-    if reading["kernel"] >= KERNEL_CRITICAL or reading["compressor"] >= COMPRESSOR_CRITICAL_SHARE * reading["ram"]:
+    swap_full = reading["swap_total"] > 0 and reading["swap_used"] > SWAP_CRITICAL_SHARE * reading["swap_total"]
+    if (reading["kernel"] >= KERNEL_CRITICAL or reading["compressor"] >= COMPRESSOR_CRITICAL_SHARE * reading["ram"]
+            or swap_full or reading.get("swapouts", 0) >= SWAPOUTS_CRITICAL):
         return "critical"
     if reading["kernel"] >= KERNEL_WARN:
         return "high"
@@ -42,8 +52,8 @@ def level(reading):
 
 def read(feed=FEED, now=None):
     """{kernel, swap_used, swap_total, compressor, ram, source} in bytes but kernel and
-    source, or None off macOS. The feed's level and compressor size replace the kernel's
-    while the feed is fresh and parses (source "feed"); otherwise source is "sysctl"."""
+    source, or None off macOS. The feed's level, compressor, swap and swapouts replace the
+    kernel's while the feed is fresh and parses (source "feed"); otherwise source is "sysctl"."""
     own = read_kernel()
     if own is None:
         return None
@@ -63,17 +73,25 @@ def read_feed(path=FEED, now=None):
 
 
 def parse_feed(data):
-    """{kernel, compressor} from one feed record, or None for a shape this does not know.
-    The feed's schema is not out yet, so this takes `pressure_level` (1, 2, 4 or a name)
-    and `compressed_gb` (GiB, the unit top shows) and nothing else."""
-    if not isinstance(data, dict):
+    """{kernel, compressor, swap_used, swap_total, swapouts} from one schema v1 feed
+    record, or None for a record this does not know. Sizes come in GiB and leave in bytes;
+    swapouts are pages a second."""
+    if not isinstance(data, dict) or data.get("v") != 1:
         return None
-    level, gb = data.get("pressure_level"), data.get("compressed_gb")
+    level, mem, swap, swapouts = data.get("pressure_level"), data.get("mem_gb"), data.get("swap_gb"), data.get("swapouts_per_s")
     if isinstance(level, bool) or not isinstance(level, (int, str)) or level not in FEED_LEVELS:
         return None
-    if isinstance(gb, bool) or not isinstance(gb, (int, float)) or not 0 <= gb < 1024:
+    if not isinstance(mem, dict) or not isinstance(swap, dict):
         return None
-    return {"kernel": FEED_LEVELS[level], "compressor": int(gb * 2 ** 30)}
+    gbs = [mem.get("compressed"), swap.get("used"), swap.get("total")]
+    if not all(gb_ok(gb) for gb in gbs) or not gb_ok(swapouts, 10 ** 9):
+        return None
+    compressed, used, total = (int(gb * 2 ** 30) for gb in gbs)
+    return {"kernel": FEED_LEVELS[level], "compressor": compressed, "swap_used": used, "swap_total": total, "swapouts": swapouts}
+
+
+def gb_ok(value, top=1024):
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and 0 <= value < top
 
 
 def read_kernel():

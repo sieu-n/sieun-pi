@@ -280,8 +280,14 @@ RAM = 34359738368
 # 10-14 18:20 KST on the owner's Mac: the kernel said warn, the compressor held 17.1 GB
 # of 34.4 GB RAM, and swap held 45.7 of 46.2 GB.
 THRASH = {"kernel": 2, "swap_used": 45661159424, "swap_total": 46170898432, "compressor": 17304076288, "ram": RAM}
-WARN = dict(THRASH, compressor=8 * GB)
-CALM = dict(THRASH, kernel=1, compressor=4 * GB)
+WARN = dict(THRASH, compressor=8 * GB, swap_used=20 * GB)
+CALM = dict(WARN, kernel=1, compressor=4 * GB)
+# ops guy's feed, schema v1, at 10:21Z on 10-14: warn while swap held 45.18 of 46.0 GB,
+# 16,191 swapouts a second, kernel_task at 224% and load 145.
+FEED_1021 = {"v": 1, "ts": "2026-10-14T10:21:36Z", "interval_s": 10, "pressure": "warn", "pressure_level": 2, "free_pct": 35,
+             "mem_gb": {"total": 32.0, "free": 0.05, "compressed": 15.9, "wired": 3.8}, "swap_gb": {"used": 45.18, "total": 46.0},
+             "swapins_per_s": 14000.0, "swapouts_per_s": 16191.0, "kernel_task_cpu_pct": 224.0, "load": [145.0, 120.0, 100.0],
+             "owner_mem_metric": "footprint", "owners": [], "sampler_ms": 40}
 
 
 class Readings:
@@ -304,6 +310,15 @@ class PressureLevel(unittest.TestCase):
         self.assertEqual(level(THRASH), "critical", "18:20 KST: kernel warn, compressor at half of RAM")
         self.assertEqual(level(dict(CALM, compressor=16 * GB)), "critical", "18:00 KST: 16 GB compressor")
         self.assertEqual(level(None), "ok", "a broken probe never holds the Mac's agents")
+
+    def test_full_swap_or_fast_swapouts_read_critical_while_the_kernel_says_warn(self):
+        level = pressure.level
+        feed = pressure.parse_feed(FEED_1021)
+        self.assertEqual(level(dict(WARN, **feed)), "critical", "10:21Z: warn, swap 98% full, 16,191 swapouts a second")
+        self.assertEqual(level(dict(WARN, swap_used=int(0.96 * WARN["swap_total"]))), "critical", "swap over 95% alone")
+        self.assertEqual(level(dict(WARN, swapouts=6210)), "critical", "the slowest swapout rate measured while kernel_task paged")
+        self.assertEqual(level(dict(WARN, swapouts=5999)), "high")
+        self.assertEqual(level(dict(CALM, swap_total=0, swap_used=0)), "ok", "no swap file is no full swap")
 
     @unittest.skipUnless(sys.platform == "darwin", "reads this Mac's kernel")
     def test_a_read_on_this_mac_gives_every_value(self):
@@ -331,34 +346,40 @@ class PressureFeed(unittest.TestCase):
         at = time.time() - age
         os.utime(self.path, (at, at))
 
-    def test_a_fresh_feed_gives_the_level_and_the_compressor(self):
-        self.write(json.dumps({"pressure_level": "critical", "compressed_gb": 16.0, "load": [54, 49, 36]}), age=9)
-        self.assertEqual(pressure.read_feed(self.path), {"kernel": 4, "compressor": 16 * 2 ** 30})
-        self.write(json.dumps({"pressure_level": 2, "compressed_gb": 4}))
-        self.assertEqual(pressure.read_feed(self.path), {"kernel": 2, "compressor": 4 * 2 ** 30})
+    def test_a_fresh_feed_gives_the_level_the_compressor_the_swap_and_the_swapouts(self):
+        self.write(json.dumps(FEED_1021), age=9)
+        self.assertEqual(pressure.read_feed(self.path), {"kernel": 2, "compressor": int(15.9 * 2 ** 30), "swap_used": int(45.18 * 2 ** 30),
+                                                          "swap_total": int(46.0 * 2 ** 30), "swapouts": 16191.0})
+        self.write(json.dumps(dict(FEED_1021, pressure_level=4)))
+        self.assertEqual(pressure.read_feed(self.path)["kernel"], 4)
 
     @unittest.skipUnless(sys.platform == "darwin", "reads this Mac's kernel")
     def test_a_fresh_feed_sets_the_level_and_marks_its_source(self):
-        self.write(json.dumps({"pressure_level": "normal", "compressed_gb": 0.5}))
+        self.write(json.dumps(dict(FEED_1021, pressure_level=1, mem_gb=dict(FEED_1021["mem_gb"], compressed=0.5),
+                                   swap_gb={"used": 1.0, "total": 4.0}, swapouts_per_s=0)))
         reading = pressure.read(self.path)
-        self.assertEqual((reading["source"], reading["kernel"], reading["compressor"]), ("feed", 1, 2 ** 29))
+        self.assertEqual((reading["source"], reading["kernel"], reading["compressor"], reading["swapouts"]), ("feed", 1, 2 ** 29, 0))
         self.assertEqual(pressure.level(reading), "ok")
+        self.write(json.dumps(FEED_1021))
+        self.assertEqual(pressure.level(pressure.read(self.path)), "critical")
 
     def test_a_stale_feed_is_ignored(self):
-        self.write(json.dumps({"pressure_level": "critical", "compressed_gb": 16.0}), age=31)
+        self.write(json.dumps(FEED_1021), age=31)
         self.assertIsNone(pressure.read_feed(self.path))
         if sys.platform == "darwin":
             self.assertEqual(pressure.read(self.path)["source"], "sysctl")
 
     def test_a_missing_or_malformed_feed_is_ignored(self):
         self.assertIsNone(pressure.read_feed(os.path.join(self.dir, "absent.json")))
-        for text in ("", "{", "[]", "null", '{"pressure_level": "purple", "compressed_gb": 1}', '{"pressure_level": true, "compressed_gb": 1}',
-                     '{"pressure_level": 2}', '{"pressure_level": 2, "compressed_gb": "16"}', '{"pressure_level": 2, "compressed_gb": -1}',
-                     '{"pressure_level": 2, "compressed_gb": NaN}', '{"pressure_level": [2], "compressed_gb": 1}', b"\xff".decode("latin-1")):
+        bad = [dict(FEED_1021, v=2), dict(FEED_1021, pressure_level="purple"), dict(FEED_1021, pressure_level=True),
+               dict(FEED_1021, mem_gb={"compressed": "16"}), dict(FEED_1021, mem_gb={"compressed": -1}), dict(FEED_1021, swap_gb=None),
+               dict(FEED_1021, swap_gb={"used": 1}), dict(FEED_1021, swapouts_per_s=None), {k: v for k, v in FEED_1021.items() if k != "mem_gb"}]
+        for text in ["", "{", "[]", "null", '{"pressure_level": 2, "compressed_gb": 1}', b"\xff".decode("latin-1")] + [json.dumps(b) for b in bad]:
             self.write(text)
             self.assertIsNone(pressure.read_feed(self.path), text)
             if sys.platform == "darwin":
                 self.assertEqual(pressure.read(self.path)["source"], "sysctl", text)
+
 
 class Governor(unittest.TestCase):
     """Under memory pressure the queue admits fewer turns and holds the low ones."""
