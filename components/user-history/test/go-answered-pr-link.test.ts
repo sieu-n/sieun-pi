@@ -64,3 +64,30 @@ test("answered go by PR, control: a step whose PR no answered go names is still 
   const hold: OwnerTodo = { id: "t21", text: "Hold #229 for now?", done: true, choices: ["Hold", "Merge"], reply: "Hold", answeredBy: "owner", step: "p130", from: "agent", at: "2026-10-14T03:30:00.000Z" };
   assert.equal(stepGo(board(STEPS, [...TODOS, hold]), stepOf("p82")), null, "a later hold that names #229 takes t17's go on p82 back");
 });
+
+/*
+ * The same board at rev 827: p133 waits for "t20: the owner's go (For you)", and t20 links p132, the goal above it. The check-in said For you had
+ * no question for p133.
+ */
+const P133: PlanItem = {"id": "p133", "text": "Ship: make a new Resend key, switch the app to it, cancel the old one and delete the script, after the owner's go on t20", "status": "todo", "waitFor": "t20: the owner's go (For you)", "go": "needed", "children": []};
+const T20: OwnerTodo = {"id": "t20", "text": "The password our app uses to send email (Resend) is written in plain text in an old script in our code. The code is private, but anyone with access can read it. Can I make a new one, switch the app over to it, cancel the old one and delete that script? Emails keep sending during the switch.", "done": false, "choices": ["Go: make a new one", "Not yet"], "step": "p132", "from": "agent", "at": "2026-10-14T01:50:34.522Z"};
+
+test("answered go by todo id: a step that names t20 is covered by t20, so p133 waits on it, and a go on t20 is p133's go", () => {
+  const gate = gateFindings(board([...STEPS, P133], [...TODOS, T20]), []).find(entry => entry.item.id === "p133");
+  assert.equal(gate?.kind === "go_waiting" ? gate.todo?.id : undefined, "t20");
+  assert.doesNotMatch(gateLine(gate!), /no question for it/);
+  const go: OwnerTodo = { ...T20, done: true, reply: "Go: make a new one", answeredBy: "owner" };
+  assert.equal(stepGo(board([...STEPS, P133], [...TODOS, go]), P133)?.id, "t20");
+});
+
+test("answered go by todo id, control: a step that names a todo whose answer is no go, or a todo not answered, still has no go", () => {
+  const held: OwnerTodo = { ...T20, done: true, reply: "Not yet", answeredBy: "owner" };
+  assert.equal(stepGo(board([...STEPS, P133], [...TODOS, held]), P133), null, "a Not yet on t20 is no go for p133");
+  const atWork: PlanItem = { ...P133, status: "doing" };
+  assert.equal(gateFindings(board([...STEPS, atWork], [...TODOS, held]), []).find(gate => gate.item.id === "p133")?.kind, "go_missing");
+  const onT19: PlanItem = { ...P133, id: "p134", status: "doing", text: "Ship: launch experiment 482542 after the owner's go on t19", waitFor: "t19" };
+  assert.equal(gateFindings(board([...STEPS, onT19], [...TODOS, T20]), []).find(gate => gate.item.id === "p134")?.kind, "go_missing", "t19 is not answered");
+  const onT2: PlanItem = { ...P133, id: "p135", text: "Ship: rotate the key after the owner's go on t2", waitFor: "t2" };
+  const go: OwnerTodo = { ...T20, done: true, reply: "Go: make a new one", answeredBy: "owner" };
+  assert.equal(stepGo(board([...STEPS, onT2], [...TODOS, go]), onT2), null, "a step that names t2 is not about t20");
+});

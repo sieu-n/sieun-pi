@@ -674,12 +674,15 @@ type GoStep = Pick<PlanItem, "id" | "text"> & Partial<Pick<PlanItem, "note" | "w
 /** The PR numbers a step names in its text, note or waitFor (p57 "merge validated onboarding replay", waitFor "a green re-run of #218"). */
 export const stepPrs = (step: Omit<GoStep, "id">): string[] => prNumbers(`${step.text}\n${step.note ?? ""}\n${step.waitFor ?? ""}`);
 /**
- * Whether a todo is about a plan step: it links the step (`linksStep`), or its text or the owner's answer names a PR the step names (`stepPrs`).
- * slack green guy 10-13: t18 asked fifteen PRs by number but could link only p109, so the check-in read eleven merge steps as having no question
- * in For you. 10-14: t16 named #247 but linked p71, so p94, which waits for #247, read as at work without the owner's go.
+ * Whether a todo is about a plan step: it links the step (`linksStep`), the step's text, note or waitFor names the todo's id ("after the owner's
+ * go on t20"), or the todo's text or the owner's answer names a PR the step names (`stepPrs`). slack green guy 10-13: t18 asked fifteen PRs by
+ * number but could link only p109, so the check-in read eleven merge steps as having no question in For you. 10-14: t16 named #247 but linked
+ * p71, so p94, which waits for #247, read as at work without the owner's go, and p133 waits for "the owner's go on t20" while t20 links p132.
  */
-export const coversStep = (todo: Pick<OwnerTodo, "text" | "step" | "reply">, step: GoStep): boolean =>
-  linksStep(todo, step.id) || stepPrs(step).some(pr => namesPr(`${todo.text}\n${todo.reply ?? ""}`, pr));
+export const coversStep = (todo: Pick<OwnerTodo, "text" | "step" | "reply"> & Partial<Pick<OwnerTodo, "id">>, step: GoStep): boolean =>
+  linksStep(todo, step.id) ||
+  (todo.id !== undefined && new RegExp(`(?<![\\w-])${todo.id}(?![\\w-])`).test(`${step.text}\n${step.note ?? ""}\n${step.waitFor ?? ""}`)) ||
+  stepPrs(step).some(pr => namesPr(`${todo.text}\n${todo.reply ?? ""}`, pr));
 /** Whether an answer is a go or a hold; a reply to a side question on the step ("Leave it in the old history") is neither. */
 const goOrHold = (reply: string, choices: readonly string[]): boolean => {
   const text = choiceLead(reply, choices);
@@ -834,7 +837,7 @@ export const mergedPrs = (text: string): string[] =>
 /**
  * The owner's go that counts for this step: of the owner's go-or-hold answers on todos about the step, the last one approves, so a later "not
  * yet" takes a go back. On most steps a todo is about the step when it covers it (`coversStep`: its step field, the step id in its text, or a PR
- * the step's text, note or waitFor names in the todo's text or answer), so t16, which names #247 and links p71, is the go of p94, which waits
+ * the step's text, note or waitFor names in the todo's text or answer, or the todo's id the step names), so t16, which names #247 and links p71, is the go of p94, which waits
  * for #247. A merge step needs that go for each PR it merges (`mergedPrs`): the last answer on a todo that links the step or names the PR in its
  * text, approved (`approvedTodo`), naming the PR, and on a push to main, master or staging saying push or naming the branch. That is the rule the
  * merge guard applies to an OWNER_OK todo, which also wants the repo's name, which the command knows and a step may not. A go on a PR the step
