@@ -24,11 +24,11 @@ Do not start the run until you can state these three things.
 - The scope is counted in units and effort, and it lists the blockers you found while reading the code.
 - The rigor level is set high for one-way doors and wide impact, and lower for reversible low-stakes steps.
 
-Rigor means gates and artifacts. Present the framing and tradeoffs before a run of more than an hour. Reversible work proceeds without waiting, per principle-never-block-on-the-human.
+Rigor means gates and artifacts. Present the framing and tradeoffs before a run of more than an hour. Reversible work proceeds without waiting.
 
 ## Phase B: Design the workflow
 
-Split the work into units that can each land alone. Put the riskiest unknown first. Build scaffold and verification before features, per principle-foundational-thinking.
+Split the work into units that can each land alone. Put the riskiest unknown first. Build scaffold and verification before features.
 
 - Build the verification harness before the work, and capture the baseline from the pre-change state.
 - Run the **architect** skill for one-way-door design decisions, and skip it for mechanical work whose shape is already clear.

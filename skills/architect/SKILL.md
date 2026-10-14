@@ -32,7 +32,7 @@ Run the `arena` skill with the design-sketch task and the Phase A artifacts. Giv
 
 Take the runner list from the `architect runners` role in `~/.prime/agent/pstack-models.json` (repo default `config/pstack-models.json`). At the `RLM_MAX_DEPTH` ceiling, write the candidates yourself.
 
-Require at least two structurally different candidates, even when the first looks good enough, per `principle-exhaust-the-design-space`. Two variants of one shape count as one candidate.
+Require at least two structurally different candidates, even when the first looks good enough. Two variants of one shape count as one candidate.
 
 Screen every candidate against [`references/design-red-flags.md`](references/design-red-flags.md) before synthesis, and revise or reject the ones that fail. Among the rest, prefer the one that hides the most complexity behind the smallest public interface.
 
@@ -44,7 +44,7 @@ Go straight to Phase D with the synthesized design by default.
 
 Stop for sign-off only when the invoker asks for it, for example "`architect` with checkpoint" or "show me before implementing". Then show the synthesized design and wait.
 
-You may commit the sketch on its own, per `principle-foundational-thinking`. Later commits then fill in bodies against a stable contract, and planned breakage during fill-in is fine, per `principle-outcome-oriented-execution`. To test the design adversarially before implementing, run the `interrogate` skill on the sketch.
+You may commit the sketch on its own. Later commits then fill in bodies against a stable contract, and planned breakage during fill-in is fine. To test the design before implementing, have two reviewers on different models check the sketch against its intent.
 
 If the human pushes back on the shape, at a checkpoint or later, treat it as Phase A evidence. Re-ground and re-run Phase B before you write more code.
 
@@ -73,7 +73,7 @@ When you scrap:
 
 1. Re-run the `how` skill over what you built, so the lessons enter the new design as inputs.
 2. Redesign as if the new constraints had been there from day one.
-3. Make the new sketch smaller than the old one before it grows, per `principle-subtract-before-you-add`.
+3. Make the new sketch smaller than the old one before it grows.
 4. Return to Phase B and re-run arena.
 
 ## Outputs

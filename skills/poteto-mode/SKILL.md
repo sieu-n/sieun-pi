@@ -32,10 +32,10 @@ Start every multi-step task with a written checklist. Its first item is to read 
 
 - Use the how skill for a nontrivial change, an architecture decision, or an "are we sure?" question.
 - Before you ask the user which approach to take, check whether running something would answer it. If it would, settle it with `playbooks/prototype.md`. Ask only about a product or preference call that no experiment can settle. A read-only Investigation answers from evidence and does not build a sketch.
-- Name the data shape before you write code, and pick its structure with principle-model-the-domain.
+- Name the data shape before you write code, and pick its structure with principle-model-the-domain. Define the core types and the shared scaffold, such as CI, tests and shared types, before feature logic.
 - Use the architect skill before code that crosses a function boundary.
 - Use the swarm skill for coverage fan-out and the arena skill for design or code bakeoffs.
-- Use the interrogate skill on a contested design before you ship it.
+- Before you ship a contested design, spawn two reviewers on different models with the same diff, intent and rubric, and give a verdict without applying their changes. Trust a finding both raise, and weigh a finding from one.
 - Write the throughput checkpoint from Feature step 3 for nontrivial multi-step work.
 - Apply the unslop skill to every prose surface, including the reply, docs, commits, and PR bodies. Agent-facing prose also follows Prime's skill-creator skill.
 - Run the no-comments skill over the diff before you commit.
@@ -50,13 +50,8 @@ Read the leaf skill in full for any principle you apply.
 | Principle skill | Apply when |
 |---|---|
 | principle-laziness-protocol | You size a diff or want to add a layer. Prefer deletion and the smallest change that works. |
-| principle-foundational-thinking | You start logic. Settle core types, data structures, and what concurrent actors share first. |
 | principle-redesign-from-first-principles | A new requirement lands on an old design. Design as if it had been there from day one. |
-| principle-subtract-before-you-add | You order an addition, refactor, or rewrite. Remove dead weight first. |
-| principle-minimize-reader-load | Code is hard to trace. Cut layers, hidden state, and one-caller wrappers. |
-| principle-outcome-oriented-execution | A planned rewrite or migration has phases. Go to the target shape and skip throwaway compatibility states. |
 | principle-experience-first | You weigh product, UX, or scope. Pick what the user sees over what is easy to build. |
-| principle-exhaust-the-design-space | A decision has no precedent. Build 2 or 3 competing prototypes and compare. |
 | principle-build-the-lever | Work is non-trivial. Build the script, codemod, or generator that does or proves it. |
 | principle-model-the-domain | Logic holds state or branches a lot. Encode it in a state machine, typed model, table, or reducer. |
 | principle-boundary-discipline | You wire validation, errors, or adapters. Guard at system edges and trust internal types. |
@@ -68,8 +63,14 @@ Read the leaf skill in full for any principle you apply.
 | principle-fix-root-causes | You debug. Reproduce first and trace each symptom to its cause. |
 | principle-sequence-verifiable-units | Work has many steps. Cut it into small units that each end in a check. |
 | principle-guard-the-context-window | Output, files, or fan-out planning are large. Send bulk to subagents and keep summaries here. |
-| principle-never-block-on-the-human | You want to ask about reversible work. Do it, show the result, and let the user correct it. |
 | principle-encode-lessons-in-structure | You write the same instruction twice. Turn it into a lint, check, flag, or script. |
+
+These four rules have no leaf skill, so apply them as written.
+
+1. Delete dead code, stub references and guards the spec does not ask for before you build, and design for the usage you have seen.
+2. Inline a wrapper or adapter with one caller, and keep state in the smallest scope, so a new reader can answer "where does X come from?" in 30 seconds.
+3. In a phased rewrite or migration, state what may break between phases and write no compatibility code that only keeps a middle step working.
+4. When a choice has no precedent, build 2 or 3 structurally different candidates and compare them, because two variants of one shape count as one.
 
 ## Autonomy
 
@@ -83,7 +84,7 @@ When asked whether to do something, give your real judgment. Decline or push bac
 
 ## Subagents
 
-Prepend the poteto-agent skill to the brief of any subagent you spawn in a playbook step. Routed skills such as how, why, interrogate, and swarm set up their own children, so follow them as written.
+Prepend the poteto-agent skill to the brief of any subagent you spawn in a playbook step. Routed skills such as how, why, and swarm set up their own children, so follow them as written.
 
 Spawn with `handle = await rlm.spawn(brief, name=...)`. End every brief with `await agent_message.send(report, receiver_role="parent")`, because the spawn call never returns the child's answer. Read `../setup-pstack/references/prime-agent-runtime.md` before you fan out, and check `RLM_MAX_DEPTH`. At the ceiling, do the work inline.
 

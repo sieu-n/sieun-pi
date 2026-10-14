@@ -152,7 +152,7 @@ Each live lane runs as its own RLM child in its own git worktree at the PR head.
 
 ## Appendix D. Links and reading list
 
-<Docs to read before editing. Which PRs get `$POTETO_SKILLS_DIR/how/SKILL.md` and `$POTETO_SKILLS_DIR/interrogate/SKILL.md`. The trail per `$POTETO_SKILLS_DIR/show-me-your-work/SKILL.md`.>
+<Docs to read before editing. Which PRs get `$POTETO_SKILLS_DIR/how/SKILL.md`. The trail per `$POTETO_SKILLS_DIR/show-me-your-work/SKILL.md`.>
 ````
 
 Reply with the plan path, the PR ids with dependencies and the review-gated set, what the prototypes proved and what stays unproven, and the check script output.

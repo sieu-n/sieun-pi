@@ -58,7 +58,6 @@ test("documented source paths exist in the packaged layout", () => {
     "../setup-pstack/references/prime-agent-runtime.md",
     "../swarm/SKILL.md",
     "../how/SKILL.md",
-    "../interrogate/SKILL.md",
     "../show-me-your-work/SKILL.md",
   ]) {
     assert.ok(checked.has(resolve(skillDir, source)), `uncovered source: ${source}`);

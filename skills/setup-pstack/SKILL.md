@@ -24,7 +24,7 @@ model = entries[0]["model"]                        # "provider/model" selector
 thinking = entries[0].get("thinking")              # off|minimal|low|medium|high|xhigh|max
 ```
 
-A panel role (`how critics`, `arena runners`, `architect runners`, `interrogate reviewers`, `arena cross-judge pool`) has one entry per subagent, so the list length sets the fan-out.
+A panel role (`how critics`, `arena runners`, `architect runners`, `arena cross-judge pool`) has one entry per subagent, so the list length sets the fan-out.
 For an entry of `{"model": "inherit-parent"}`, omit `model=` in `rlm.spawn(...)`. It still counts toward the fan-out.
 
 ## Steps
@@ -91,16 +91,11 @@ Overwrite the whole file, so a re-run gives the same result.
 Copy the `policy` block over unchanged unless the user changes the policy. Do not copy it into AGENTS.md or a skill.
 
 Use these role labels exactly:
-`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`, `judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`, `how critics`, `why investigators`, `why synthesizer`, `arena runners`, `arena cross-judge pool`, `swarm workers`, `architect runners`, `interrogate reviewers`, `frontend`.
+`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`, `judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`, `how critics`, `why investigators`, `why synthesizer`, `arena runners`, `arena cross-judge pool`, `swarm workers`, `architect runners`, `frontend`.
 
 ### 6. Confirm
 
 Tell the user the path you wrote. Skills read the file at spawn time, so the change applies on the next spawn with no restart.
-
-### 7. Offer a verification skill
-
-If the project has no `verify-*` skill or other way to drive the real app, offer once to generate one with the `create-verification-skill` skill.
-If the user says no, move on.
 
 ## Skill visibility
 

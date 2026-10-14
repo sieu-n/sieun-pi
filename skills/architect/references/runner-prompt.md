@@ -15,6 +15,6 @@ The orchestrator compares candidates on these rules:
 - Validate at boundaries, trust types inside, and keep business logic in pure functions, per `principle-boundary-discipline`.
 - Give each invariant one source of truth and derive the rest.
 - Make state transitions safe to run twice or to resume after a crash, per `principle-make-operations-idempotent`.
-- Flatten the design when tracing one flow takes more than three files, per `principle-minimize-reader-load`.
+- Flatten the design when tracing one flow takes more than three files.
 
 Other runners get the same brief. Make the best design you can and commit to it. The orchestrator picks a base from the differences, so a safe middle design wastes your slot.
