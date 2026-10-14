@@ -1,16 +1,11 @@
-import { getAgentDir, SettingsManager, type SessionSummary } from "prime-agent";
-import type { SessionRow } from "./shared/types.ts";
+import type { SessionSummary } from "prime-agent";
+import type { IdleEvictionMinutes, SessionRow } from "./shared/types.ts";
 
-/** The daemon's `idleEvictionMinutes`: whole minutes, or "off" for never. */
-export type IdleMinutes = number | "off";
 /**
- * When a pinned chat lets go of its worker. `minutes` reads the daemon's own idle time; `held` keeps a chat attached while a duty of it starts
- * or runs; `now` is the hub clock.
+ * When a pinned chat lets go of its worker. `minutes` reads the daemon's own idle time (Settings, Unload idle sessions after); with none a chat
+ * never detaches. `held` keeps a chat attached while a duty of it starts or runs; `now` is the hub clock.
  */
-export interface IdleDetach { minutes?: () => IdleMinutes; held?: (id: string) => Promise<boolean>; now?: () => number }
-
-/** Prime reads `idleEvictionMinutes` only from the global ~/.prime/agent/settings.json, so `agentDir` doubles as `cwd` (see `chatDefaultsStore`). */
-const daemonIdleMinutes = (): IdleMinutes => SettingsManager.create(getAgentDir(), getAgentDir()).getIdleEvictionMinutes();
+export interface IdleDetach { minutes?: () => IdleEvictionMinutes; held?: (id: string) => Promise<boolean>; now?: () => number }
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
@@ -22,12 +17,12 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 export class Dormancy {
   private readonly since = new Map<string, number>();
   readonly now: () => number;
-  private readonly idleMinutes: () => IdleMinutes;
+  private readonly idleMinutes: () => IdleEvictionMinutes;
   private readonly isHeld: ((id: string) => Promise<boolean>) | undefined;
 
   constructor(idle: IdleDetach = {}) {
     this.now = idle.now ?? Date.now;
-    this.idleMinutes = idle.minutes ?? daemonIdleMinutes;
+    this.idleMinutes = idle.minutes ?? (() => "off");
     this.isHeld = idle.held;
   }
 
@@ -35,7 +30,7 @@ export class Dormancy {
   forget(id: string): void { this.since.delete(id); }
 
   /** The daemon's idle time, or "off" when the settings file cannot be read (logged), so a bad file never detaches a chat. */
-  minutes(): IdleMinutes {
+  minutes(): IdleEvictionMinutes {
     try { return this.idleMinutes(); }
     catch (error) { process.stderr.write(`rest: idleEvictionMinutes: ${message(error)}\n`); return "off"; }
   }
