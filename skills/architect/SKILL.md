@@ -44,7 +44,7 @@ Go straight to Phase D with the synthesized design by default.
 
 Stop for sign-off only when the invoker asks for it, for example "`architect` with checkpoint" or "show me before implementing". Then show the synthesized design and wait.
 
-You may commit the sketch on its own. Later commits then fill in bodies against a stable contract, and planned breakage during fill-in is fine. To test the design before implementing, have two reviewers on different models check the sketch against its intent.
+You may commit the sketch on its own. Later commits then fill in bodies against a stable contract, and planned breakage during fill-in is fine.
 
 If the human pushes back on the shape, at a checkpoint or later, treat it as Phase A evidence. Re-ground and re-run Phase B before you write more code.
 
