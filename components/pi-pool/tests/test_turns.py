@@ -396,15 +396,19 @@ class Governor(unittest.TestCase):
         self.assertEqual(turns.step(t, self.SESSIONS, 62, self.CFG, read)[2], [("b", "slot")], "12 of 16")
         self.assertEqual(t["pressure"]["limit"], 16)
 
-    def test_a_held_child_does_not_borrow_its_parents_slot(self):
+    def test_a_held_child_takes_its_in_flight_parents_lent_slot_and_never_a_free_one(self):
+        """ops guy's review of db7b8bf: a normal job's parent that waits on its child in a cell
+        would hold its slot for the whole pressure spell if the held child could not borrow."""
         t, read = turns.empty(), Readings(THRASH)
-        fill(t, 8)
+        fill(t, 2)
         t["working"]["parent"] = dict(entry(tree="normal-job"), kind="slot")
-        self.assertEqual(self.ask(t, "kid", 0, read, tree="normal-job", parent="parent")["state"], "queued")
-        self.assertEqual(self.ask(t, "chat-kid", 1, read, tree="high-chat", parent="high-parent")["state"], "queued")
-        t["working"]["high-parent"] = dict(entry(tree="high-chat"), kind="slot")
-        self.assertEqual(turns.step(t, self.SESSIONS, 2, self.CFG, read)[2], [("chat-kid", "borrow")])
-        self.assertIn("kid", t["queued"])
+        kid = self.ask(t, "kid", 0, read, tree="normal-job", parent="parent")
+        self.assertEqual((t["pressure"]["level"], kid["state"]), ("critical", "admitted"))
+        self.assertEqual(t["working"]["kid"]["kind"], "borrow", "a held child adds no slot, though 5 of 8 are free")
+        self.assertEqual(len(turns.in_slots(t["working"])), 3)
+        self.assertEqual(self.ask(t, "kid2", 1, read, tree="normal-job", parent="parent")["state"], "queued", "a parent lends one slot")
+        self.assertEqual(self.ask(t, "orphan", 2, read, tree="normal-job", parent="gone")["state"], "queued", "no parent in flight, no borrow")
+        self.assertEqual(sorted(t["queued"]), ["kid2", "orphan"])
 
     def test_a_level_change_is_recorded_with_its_reading_and_logged(self):
         t, read = turns.empty(), Readings(CALM)

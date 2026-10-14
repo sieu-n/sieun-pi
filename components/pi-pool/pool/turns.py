@@ -12,7 +12,8 @@ The governor: while memory pressure is high or critical (pool/pressure.py), the 
 limit drops to pressure_working_max[level] and a queued turn whose own class and whose
 tree's class are both below high is held, so duties, check-ins and jobs of a normal or
 low chat wait and a chat and the work of a High chat run under the lower limit. A held
-turn keeps its place and runs when the level drops. The level is read again every
+turn keeps its place and runs when the level drops, and a held child may still borrow its
+in-flight parent's lent slot, so a parent waiting on it in a cell does not sit on its slot. The level is read again every
 PRESSURE_TTL_SEC, and the record holds only what the next read recomputes.
 
 Order: an owner turn runs at once and never waits. Then queued turns take free slots
@@ -129,10 +130,12 @@ def lending(turns):
 
 def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None):
     """Move queued entries to working: free slots by class first, then borrows. An entry
-    `hold(entry)` is true for stays queued. Returns [(session, kind)] in admission order."""
+    `hold(entry)` is true for takes no free slot but may still borrow its in-flight parent's
+    lent slot, which adds no slot. Returns [(session, kind)] in admission order."""
     lease = lease or base.DEFAULTS["lease_s"]
     admitted = []
-    queue = [s for s in order(turns["queued"], now, aging) if not (hold and hold(turns["queued"][s]))]
+    ordered = order(turns["queued"], now, aging)
+    queue = [s for s in ordered if not (hold and hold(turns["queued"][s]))]
     trees = {}
     held = in_slots(turns["working"])
     for entry in held:
@@ -155,7 +158,7 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None):
         if trees.get(turns["queued"][session]["tree"], 0) < tree_max:
             start(session, "slot")
     lent = lending(turns)
-    for session in [s for s in queue if s in turns["queued"]]:
+    for session in [s for s in ordered if s in turns["queued"]]:
         parent = turns["queued"][session].get("parent")
         if parent and parent in turns["working"] and parent not in lent:
             start(session, "borrow", lender=parent)

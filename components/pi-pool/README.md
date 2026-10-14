@@ -541,7 +541,7 @@ At 18:00 KST on 10-14 the compressor held 16 GB of 32 with kernel_task paging at
 Swap shows in the reading and sets no level, because macOS grows swap a 1 GB file at a time and used swap sat at 95-99% of the total in every sample.
 While the level is high or critical the Mac limit is the lower of `mac_working_max` and `pressure_working_max[level]` (16 and 8).
 A queued turn whose own class and whose tree's class are both below high is held: duties and check-ins queue low and a job of a normal or low chat takes that chat's class, so they wait, while a chat and every job and subagent of a High chat run under the lower limit.
-A held turn keeps its place, never borrows a parent's slot, and runs when the level drops; an owner turn never queues, and a running turn is never stopped.
+A held turn keeps its place, takes no free slot, may still borrow its in-flight parent's lent slot, and runs when the level drops; an owner turn never queues, and a running turn is never stopped.
 The level is read again once `state["turns"]["pressure"]` is 30 s old, a read costs about 0.01 ms, and a lost record is read again at the next admit.
 `queue --json` carries `pressure` with the level, the reading, the limit, the held count and the last level change (`changed`, with its reading and the limits before and after), and pi-pool.log gets a `pressure_level` line for each change.
 `pi-pool set memory_governor_on 0` keeps the limits as set under any pressure.
