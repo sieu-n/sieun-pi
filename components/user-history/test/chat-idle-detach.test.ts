@@ -333,6 +333,26 @@ test("thread hub: the daemon unloading an idle done job and the cleanup deleting
   await again.threads.close();
 });
 
+test("thread hub: a chat whose job the daemon shows running, though the hub's own record of it is done, is not detached, so the catalog does not attach it again 0 min later (SEO guy 22:56 and slack green guy 23:09 KST on 10-14: 'dormant 01a11a24: idle 30 min, detached' then 'wake 01a11a24: catalog, dormant 0 min', 6 of the last 10 detaches)", async () => {
+  const stale: ChildAgent = { id: "k1", label: "creator count copy fix", status: "done", repliedSinceTask: true, lastActivityAt: T0 - 5 * MIN };
+  const fake = await attached(hub({ children: () => [stale] }));
+  fake.fire([jobRow(T0 + 85 * MIN)]);
+  await flush();
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isDormant("c1"), false, "the catalog shows the job at work, so the chat stays attached");
+  assert.equal(fake.threads.isLive("c1"), true);
+  assert.equal(fake.connections.length, 1, "no detach and no attach again");
+  fake.fire([{ ...jobRow(T0 + 85 * MIN), working: false, agents: [] }]);
+  await flush();
+  fake.at(T0 + 91 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isDormant("c1"), true, "once the catalog shows it resting, it detaches");
+  fake.fire([{ id: "c1", kind: "live", status: "running", working: true, lastActivityAt: new Date(T0 + 92 * MIN).toISOString() }]);
+  assert.equal(await fake.live("c1"), true, "a real new turn still wakes it");
+  await fake.threads.close();
+});
+
 test("thread hub: a running child silent for less than CHILD_SILENT_MS still holds its chat, and detaches it once it reaches the limit", async () => {
   const child: ChildAgent = { id: "k1", label: "slow job", status: "running", lastActivityAt: T0 - 80 * MIN };
   const fake = await attached(hub({ children: () => [child] }));

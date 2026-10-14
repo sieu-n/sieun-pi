@@ -190,14 +190,20 @@ export class Dormancy {
    * A row at work only through silent jobs (`silentSince`) does not count, or a chat detached past its silent child would attach again at once.
    */
   woken(rows: readonly SessionRow[]): string[] {
-    const now = this.now();
     return rows.flatMap(row => {
       const since = this.since.get(row.id);
       if (since === undefined) return [];
-      const jobs = agentChildren(row.agents ?? []).filter(child => child.status === "running");
-      const working = row.status === "running" || (row.working && (jobs.length === 0 || unsilent(jobs, now).length > 0));
-      return working || (row.kind === "live" && Date.parse(row.lastActivityAt ?? "") > since) ? [row.id] : [];
+      return this.atWork(row) || (row.kind === "live" && Date.parse(row.lastActivityAt ?? "") > since) ? [row.id] : [];
     });
+  }
+
+  /**
+   * Whether a catalog row shows the chat at work: its own turn runs, or the daemon shows a job below it running that is not silent. `rest`
+   * asks this too, so a chat the catalog would wake at once is never detached.
+   */
+  atWork(row: SessionRow): boolean {
+    const jobs = agentChildren(row.agents ?? []).filter(child => child.status === "running");
+    return row.status === "running" || (row.working && (jobs.length === 0 || unsilent(jobs, this.now()).length > 0));
   }
 
   /**

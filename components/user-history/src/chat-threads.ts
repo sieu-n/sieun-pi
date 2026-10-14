@@ -178,6 +178,8 @@ export class ThreadHub {
   /** Pinned chats detached by `rest`. They stay pinned and keep their last state until `resume` wakes them. */
   private readonly dormant: Dormancy;
   private unwatchCatalog: (() => void) | undefined;
+  /** Each pinned chat's row from the last catalog update, so `rest` never detaches a chat the catalog would wake at once (`atWork`). */
+  private readonly catalogRows = new Map<string, SessionRow>();
   private readonly attaches = new AttachQueue();
   private readonly observers = new Set<ThreadObserver>();
   private closed = false;
@@ -211,6 +213,8 @@ export class ThreadHub {
 
   /**
    * Detaches each pinned chat whose whole tree rested for the daemon's idleEvictionMinutes; it keeps its last state for `state` and `revive`.
+   * A chat whose last catalog row is at work stays: the hub's own child records can miss a job the daemon shows running, and the catalog wake
+   * then attached the chat again 0 min after the detach (SEO guy 22:56 and slack green guy 23:09 KST on 10-14, 6 of the last 10 detaches).
    * Just before the detach, the chat gets one notice line per silent child it was not told of (`silentLines`). A notice starts no turn, and it
    * lands before the detach time `woken` compares the session's activity with, so it does not wake the chat again. Then it saves each attached
    * chat's idle clock for the next service start.
@@ -219,6 +223,8 @@ export class ThreadHub {
     for (const id of this.pinned) {
       const thread = this.threads.get(id);
       if (!thread?.live || !this.resting(thread) || !await this.dormant.due(id, thread.activeAt)) continue;
+      const row = this.catalogRows.get(id);
+      if (row && this.dormant.atWork(row)) continue;
       for (const line of this.dormant.silentLines(thread.state.children, thread.state.messages)) {
         await this.notice(id, line).catch(error => { process.stderr.write(`rest ${id.slice(0, 8)}: silent child notice: ${error instanceof Error ? error.message : String(error)}\n`); });
       }
@@ -254,6 +260,7 @@ export class ThreadHub {
     this.pinned.add(id);
     this.unwatchCatalog ??= this.catalog.subscribe(event => {
       if (event.daemon !== "up") return;
+      for (const row of event.sessions ?? []) if (this.pinned.has(row.id)) this.catalogRows.set(row.id, row);
       this.keepPinnedLive();
       for (const id of this.dormant.woken(event.sessions ?? [])) {
         void this.resume(id, true, "catalog").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
@@ -264,6 +271,7 @@ export class ThreadHub {
   unpin(id: string): void {
     this.pinned.delete(id);
     this.pinRetry.delete(id);
+    this.catalogRows.delete(id);
     this.dormant.forget(id);
   }
 
