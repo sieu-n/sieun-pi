@@ -220,7 +220,7 @@ test("stale extension in a job: a job of a chat that runs an older build than th
   await loads.set("working", "b1");
   const threads = fakeThreads([]);
   threads.sessionBusy.add("kernel");
-  const agent = (sessionId: string, link: ChatAgent["link"], state: ChatAgent["state"] = "done"): ChatAgent =>
+  const agent = (sessionId: string, link: ChatAgent["link"], state: ChatAgent["state"] = "idle"): ChatAgent =>
     ({ key: `thread:${sessionId}`, sessionId, name: sessionId, job: sessionId, sender: sessionId, link, state, lastActivityAt: new Date(0).toISOString(), steps: [] });
   let agents: ChatAgent[] = [agent("old", "subagent"), agent("unknown", "root"), agent("current", "subagent"), agent("kernel", "subagent"),
     agent("working", "subagent", "working"), agent("t3", "step")];
@@ -256,4 +256,33 @@ test("jobs of a chat work in poteto-mode when the skill is installed, and get no
   const line = jobPersonaGuideline(skill, path => path === skill);
   assert.equal(line, `Work in poteto-mode: read ${skill} before your first step.`);
   assert.equal(jobPersonaGuideline(skill, () => false), null, "no skill installed: no persona line");
+});
+
+test("a job that ended its task is not reloaded at a service start, so its Python kernel is not rebuilt, and is reloaded once it is idle on new work", async () => {
+  // 10-14 07:12Z to 07:15Z: 70 kernels (4.3 GB) started within 60 s of their job's "extension reloaded" line, 13 of them in finished jobs.
+  const dir = await mkdtemp(join(tmpdir(), "chats-"));
+  const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+  await index.add("c1");
+  const loads = loadRecord(join(dir, "extension-loads.json"));
+  for (const id of ["finished", "asks", "root"]) await loads.set(id, "b1");
+  const threads = fakeThreads([]);
+  const agent = (sessionId: string, link: ChatAgent["link"], state: ChatAgent["state"]): ChatAgent =>
+    ({ key: `thread:${sessionId}`, sessionId, name: sessionId, job: sessionId, sender: sessionId, link, state, lastActivityAt: new Date(0).toISOString(), steps: [] });
+  let agents: ChatAgent[] = [agent("finished", "subagent", "done"), agent("asks", "subagent", "waiting"), agent("root", "root", "idle")];
+  const rows = (): SessionRow[] => [row("c1", new Date(0).toISOString(), { chat: true, agents })];
+  const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b2", loads, { ...source(dir, {}, () => 0, rows), tickMs: 0 });
+  await chats.adopt();
+  await chats.tick();
+  await chats.settled();
+  assert.deepEqual(threads.reloaded, ["asks", "root"], "a job the chat still owes an answer and an idle root are reloaded; a finished job is not");
+  assert.equal(await loads.get("finished"), "b1", "its record keeps the build it runs");
+  agents = [agent("finished", "subagent", "working"), ...agents.slice(1)];
+  await chats.tick();
+  await chats.settled();
+  assert.deepEqual(threads.reloaded, ["asks", "root"], "not mid-turn");
+  agents = [agent("finished", "subagent", "waiting"), ...agents.slice(1)];
+  await chats.tick();
+  await chats.settled();
+  assert.deepEqual(threads.reloaded, ["asks", "root", "finished"], "given new work, it is reloaded once it runs nothing and has not ended");
+  chats.close();
 });

@@ -559,7 +559,10 @@ export class Chats {
   /**
    * The extension build of each job of a chat (a subagent or a create_session root), kept the way `refreshExtension` keeps a chat's: a job
    * that last loaded an older build than the one on disk, or that already ran when this service first looked, is reloaded once it runs
-   * nothing, one job at a time; a job that shows up later started on this build. A working job is looked at again on a later tick.
+   * nothing, one job at a time; a job that shows up later started on this build. A working job is looked at again on a later tick. A job that
+   * ended its task (`done`) is not reloaded: a reload rebuilds its Python kernel, and at the 10-14 07:12Z service start 70 kernels (4.3 GB)
+   * came back within 60 s of their job's reload, 13 of them in finished jobs. It is looked at again once its state changes; a message to it
+   * runs on the build it loaded, and after the daemon passivates it, the next message hydrates it on the build on disk.
    */
   private refreshJobs(chatRows: readonly SessionRow[]): void {
     const first = this.jobsSeen === undefined;
@@ -569,7 +572,7 @@ export class Chats {
       if (!id || (agent.link !== "subagent" && agent.link !== "root") || this.chatIds.has(id) || this.jobsCurrent.has(id)) continue;
       const fresh = !first && !seen.has(id);
       seen.add(id);
-      if (agent.state === "working" && !fresh) continue;
+      if (agent.state === "done" || (agent.state === "working" && !fresh)) continue;
       this.queue("#reload", () => this.refreshJob(id, fresh));
     }
   }
