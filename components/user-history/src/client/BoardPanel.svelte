@@ -227,6 +227,7 @@
         <button type="button" class="icon-button small edit" aria-label="Edit {todo.text}" use:tooltip={"Edit"} onclick={() => { editing = { id: todo.id, text: todo.text }; }}><Icon name="pencil" size={12} /></button>
       </div>
     {/if}
+    {#if todo.links?.length}{@render linkChips(todo.links)}{/if}
     {#if answering?.id === todo.id}
       <input class="field inline" bind:value={answering.text} placeholder="Your reply, Enter sends" aria-label="Reply to {todo.text}" use:focusEnd
         onkeydown={onKey(() => { if (answering) answer(todo, answering.text); }, () => { answering = null; })} />
@@ -252,6 +253,20 @@
   </li>
 {/snippet}
 
+{#snippet linkChips(links: readonly ArtifactLink[])}
+  <div class="chips">
+    {#each links as link, index (link.target + index)}
+      {@const chip = linkChip(link)}
+      {#if chip.target}
+        {@const target = chip.target}
+        <button type="button" class="link-chip {chip.kind}" title={target.kind === "job" ? undefined : link.target} data-preview-chat={id} data-preview-job={target.kind === "job" ? target.name : undefined} onclick={() => store.openArtifact(target, id)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
+      {:else}
+        <span class="link-chip broken" title="This link cannot be opened: {link.target}"><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></span>
+      {/if}
+    {/each}
+  </div>
+{/snippet}
+
 {#snippet noteRow(row: TreeRow<ScratchItem>)}
   {#if row.kind === "item"}
     {@const item = row.item}
@@ -264,19 +279,7 @@
       </span>
       <div class="note-body">
         <p class="note-text">{item.text}{#if item.children.length && !open}<span class="progress">{item.children.length} under it</span>{/if}</p>
-        {#if item.links.length}
-          <div class="chips">
-            {#each item.links as link, index (link.target + index)}
-              {@const chip = linkChip(link)}
-              {#if chip.target}
-                {@const target = chip.target}
-                <button type="button" class="link-chip {chip.kind}" title={target.kind === "job" ? undefined : link.target} data-preview-chat={id} data-preview-job={target.kind === "job" ? target.name : undefined} onclick={() => store.openArtifact(target, id)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
-              {:else}
-                <span class="link-chip broken" title="This link cannot be opened: {link.target}"><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></span>
-              {/if}
-            {/each}
-          </div>
-        {/if}
+        {#if item.links.length}{@render linkChips(item.links)}{/if}
       </div>
       <span class="note-actions">
         {@render openRow(item.id)}

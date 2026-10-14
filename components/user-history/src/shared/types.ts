@@ -137,6 +137,8 @@ export interface OwnerTodo {
   step?: string;
   /** Who wrote `reply`. Only the owner answers; a reply without it predates the field and is no go. */
   answeredBy?: "owner";
+  /** The pages the owner opens to answer it; a review ask needs one here or an http URL in its text (`reviewAskWithoutLink`). */
+  links?: ArtifactLink[];
 }
 export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; scratch: ScratchItem[]; todos: OwnerTodo[]; updatedAt: string }
 export type BoardActor = "agent" | "owner";
@@ -153,8 +155,8 @@ export type BoardOp =
   | { op: "scratch_add"; parent?: string; text: string; links?: ArtifactLink[] }
   | { op: "scratch_update"; id: string; text?: string; links?: ArtifactLink[] }
   | { op: "scratch_remove"; id: string }
-  | { op: "todo_add"; text: string; choices?: string[]; step?: string }
-  | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null }
+  | { op: "todo_add"; text: string; choices?: string[]; step?: string; links?: ArtifactLink[] }
+  | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null; links?: ArtifactLink[] }
   | { op: "todo_remove"; id: string };
 
 export interface ThreadSnapshot {

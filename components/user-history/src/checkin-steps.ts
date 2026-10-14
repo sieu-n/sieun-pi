@@ -80,6 +80,52 @@ export function todoForStep(step: Pick<PlanItem, "id" | "text" | "waitFor"> & Pa
   return todos.some(todo => id.test(todo.text) || coversStep(todo, step) || (todo.id !== undefined && named.has(todo.id)) ||
     [...distinctiveWords(todo.text)].some(word => words.has(word)));
 }
+/**
+ * A step that asks the owner to look at or pick something ("You look at the new Connections on Staging and say good or what to change"), a
+ * check step that drives the page in a browser ("Check the list app in Aside at 1440x900"), and a note that says such a check or walk passed.
+ */
+const OWNER_LOOK = /^\s*you\s+(?:look\s+at|pick|choose|review|try)\b/i;
+const BROWSER_CHECK = /^\s*(?:check|walk|test|re-?walk)\b.*\b(?:browser|aside)\b|^\s*(?:walk|re-?walk)\b/i;
+const CHECK_PASSED = new RegExp([
+  String.raw`\b(?:walk|re-?walk|browser[- ]check|check(?:ed)?\s+in\s+(?:the\s+)?(?:browser|aside))\w*\b[^.\n]{0,80}?\bpass(?:ed|es)?\b`,
+  String.raw`\bbrowser[- ]checked\b`, String.raw`\bchecked\s+in\s+(?:the\s+)?(?:browser|aside)\b`,
+  String.raw`\bpass(?:ed|es)?\b[^.\n]{0,80}?\bin\s+(?:the\s+)?(?:browser|aside)\b`,
+].join("|"), "i");
+/** A review that is ready: the owner's look or pick step, and the step whose browser check or walk passed. */
+export interface ReadyReview { look: PlanItem; passed: PlanItem }
+/**
+ * The owner's look and pick steps that are ready for him and have no question in For you (c32 repeat, owner 10-14: "is any other tabs ready for
+ * review? keep listing them in FOR YOU with the links i need to check"). A look step is ready when a step under the same parent passed its browser
+ * check: a done check step (BROWSER_CHECK), or a note that says the check or walk passed (CHECK_PASSED). An open check step under that parent
+ * means the next round is not checked yet. A todo covers the look step when it links it (`coversStep`) and is open or answered and not yet
+ * closed; a shared word is not enough, since t21 about the Inbox named Staging like the Connections step. A step parked by an active rule is left.
+ */
+export function readyReviews(board: ChatBoard | null, active?: ReadonlySet<string>): ReadyReview[] {
+  const ready: ReadyReview[] = [];
+  const asks = (board?.todos ?? []).filter(todo => !todo.done);
+  const visit = (items: readonly PlanItem[]): void => {
+    for (const item of items) {
+      const below: PlanItem[] = [];
+      const collect = (list: readonly PlanItem[]) => { for (const child of list) { below.push(child); collect(child.children); } };
+      collect(item.children);
+      const checking = below.some(step => OPEN.has(step.status) && BROWSER_CHECK.test(step.text) && !OWNER_LOOK.test(step.text));
+      const passed = below.find(step => (step.status === "done" && BROWSER_CHECK.test(step.text)) || CHECK_PASSED.test(step.note ?? ""));
+      if (passed && !checking) {
+        for (const look of item.children) {
+          if (!OPEN.has(look.status) || !OWNER_LOOK.test(look.text) || look === passed || parkedBy(look, active) !== undefined) continue;
+          if (!asks.some(todo => coversStep(todo, look))) ready.push({ look, passed });
+        }
+      }
+      visit(item.children);
+    }
+  };
+  visit(board?.plan ?? []);
+  return ready;
+}
+export const readyReviewLine = ({ look, passed }: ReadyReview): string =>
+  `${look.id} ${quote(look.text)} is ready for the owner: ${passed.id} passed its browser check, and For you has no todo for it. Add one todo now ` +
+  `with step "${look.id}" and links to each page he checks (the exact URL), in plain words`;
+
 /** Whether an open step waits on the owner: its note says so (WAITS_ON_OWNER). */
 export const waitsOnOwner = (item: PlanItem): boolean => item.status === "blocked" && WAITS_ON_OWNER.test(item.note ?? "");
 

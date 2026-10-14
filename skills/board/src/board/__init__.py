@@ -101,7 +101,8 @@ def _todo_line(todo: dict) -> str:
     extra = f", for {todo['step']}" if todo.get("step") else ""
     choices = f", choices: {' / '.join(todo['choices'])}" if todo.get("choices") else ""
     answer = f", answer: {todo['reply']}" if todo.get("reply") is not None else ""
-    return f"  {'[x]' if todo.get('done') else '[ ]'} {todo['id']} {todo['text']} (from {todo.get('from', '?')}{extra}){choices}{answer}"
+    links = f", links: {' '.join(link['target'] for link in todo['links'])}" if todo.get("links") else ""
+    return f"  {'[x]' if todo.get('done') else '[ ]'} {todo['id']} {todo['text']} (from {todo.get('from', '?')}{extra}){choices}{links}{answer}"
 
 
 def _scratch_line(note: dict, depth: int) -> str:

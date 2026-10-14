@@ -70,8 +70,8 @@ Ops apply in order, all or none. A refused op returns the reason and the fix.
 3. `plan_update {id,parent?,text?,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?}` changes an item. `null` clears job, sessionId, note, waitUntil, waitFor, kind, requirements or target. `parent` moves the item with its steps to the end of that item's steps; `null` moves it to the top level.
 4. `plan_remove {id}` removes an item and its steps.
 5. `scratch_add {text,parent?,links?}`, `scratch_update {id,text?,links?}` (links replaces the list, `[]` clears it) and `scratch_remove {id}` edit the scratchpad.
-6. `todo_add {text,choices?,step?}` asks the owner one short question. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks the owner's go for.
-7. `todo_update {id,text?,done?}` edits a todo; only the owner answers one. `todo_remove {id}` removes it.
+6. `todo_add {text,choices?,step?,links?}` asks the owner one short question in plain words. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks about. A todo that asks him to review, look at or pick something needs `links` to each exact page, or the URL in its text, and the board refuses it otherwise (c32).
+7. `todo_update {id,text?,done?,links?}` edits a todo, and `links` replaces its list; only the owner answers one. `todo_remove {id}` removes it.
 
 A link is `{label,target}`, up to 5 per note. The target is `job:<name>`, `thread:<session id>`, `thread:<session id>@<message timestamp ms>`, `wiki:<path under the llm-wiki content>`, `file:<absolute path>` or an http(s) URL.
 

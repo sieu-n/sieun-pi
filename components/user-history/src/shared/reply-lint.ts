@@ -64,7 +64,9 @@ const ruleRegex = (rule: WordRule): RegExp => new RegExp([
   ...(rule.en?.length ? [`(?<![\\p{Script=Latin}\\p{N}_-])(?:${rule.en.join("|")})(?![\\p{Script=Latin}\\p{N}_-])`] : []),
   ...(rule.ko?.length ? [`(?<![\\p{L}\\p{N}])(?:${rule.ko.join("|")})`] : []),
 ].join("|"), "giu");
-const RULE_REGEX = new Map(WORD_RULES.map(rule => [rule, ruleRegex(rule)]));
+/** c32's own examples (owner 10-09: "unslop easy word"), refused in For you text only: a reply may name a plan the owner already knows. */
+const BOARD_NAMES: WordRule = { kind: "jargon", en: ["probe slots?", "land flows?", "key locks?"] };
+const RULE_REGEX = new Map([...WORD_RULES, BOARD_NAMES].map(rule => [rule, ruleRegex(rule)]));
 
 const HINTS: Record<FindingKind, string> = {
   long: `cut it to ${REPLY_FOLD_WORDS} words: the answer in one line, then at most 3 short lines; detail goes in a wiki page you link`,
@@ -327,9 +329,18 @@ export function lintOwnerReply(text: string, ownerText = ""): Finding[] {
   const bold = lines.flatMap(line => [...line.shown.matchAll(BOLD)].map(match => match[2]!));
   const longBold = bold.filter(span => span.length > BOLD_CHARS);
   if (bold.length > BOLD_MAX || longBold.length) add("bold", longBold.length ? `bold over ${BOLD_CHARS} characters ${quoteList(longBold.map(span => clipQuote(span)))}` : `${bold.length} bold spans`);
-  const owner = ownerText.replace(SKILL_BLOCK, " ");
+  const found = ruleWords(lines, ownerText.replace(SKILL_BLOCK, " "));
+  if (found.abstract.length) add("abstract", `abstract words ${quoteList(found.abstract)}`);
+  if (found.jargon.length) add("jargon", `internal terms ${quoteList(found.jargon)}`);
+  const limits = unmeasuredLimits(lines);
+  if (limits.length) add("unmeasured", `limit with no measurement ${quoteList(limits)}`);
+  return findings;
+}
+
+/** The words in `lines` that WORD_RULES flag, by kind; a rule the owner's own words (`owner`) match is spared. */
+function ruleWords(lines: readonly { words: string }[], owner: string, rules: readonly WordRule[] = WORD_RULES): Record<"abstract" | "jargon", string[]> {
   const found: Record<"abstract" | "jargon", string[]> = { abstract: [], jargon: [] };
-  for (const rule of WORD_RULES) {
+  for (const rule of rules) {
     const regex = RULE_REGEX.get(rule)!;
     regex.lastIndex = 0;
     if (owner && regex.test(owner)) continue;
@@ -341,12 +352,12 @@ export function lintOwnerReply(text: string, ownerText = ""): Finding[] {
       }
     }
   }
-  if (found.abstract.length) add("abstract", `abstract words ${quoteList(found.abstract)}`);
-  if (found.jargon.length) add("jargon", `internal terms ${quoteList(found.jargon)}`);
-  const limits = unmeasuredLimits(lines);
-  if (limits.length) add("unmeasured", `limit with no measurement ${quoteList(limits)}`);
-  return findings;
+  return found;
 }
+
+/** The internal terms in text the owner reads on the board, such as a For you todo (c32); links, code, URLs and quotes are not read. */
+export const jargonTerms = (text: string): string[] => [...new Set(ruleWords(proseLines(text), "", [...WORD_RULES, BOARD_NAMES]).jargon)];
+export const JARGON_HINT = HINTS.jargon;
 
 /** The findings as one line: "74 words; label opener "Update:"". */
 export const findingsLine = (findings: readonly Finding[]): string => findings.map(finding => finding.what).join("; ");

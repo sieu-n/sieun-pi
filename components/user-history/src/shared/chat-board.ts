@@ -1,4 +1,5 @@
 import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
+import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
   type Requirement, type RequirementStatus, type ScratchItem } from "./types.ts";
 
@@ -268,6 +269,35 @@ export const PLACEHOLDER_TODO_ERROR = "This todo holds a place for something not
   "and when the article exists, send its link in a chat message (tell_owner on a wake-up).";
 
 /**
+ * A review ask with nothing to open (c32 repeat, owner 10-14: "is any other tabs ready for review? keep listing them in FOR YOU with the links i
+ * need to check"): a todo that asks the owner to review, look at or pick something carries the page he checks, in `links` or as an http URL in
+ * its text. "Links and screenshots are in the chat" sent him searching the feed (t11 to t14).
+ */
+const REVIEW_ASK = /\b(?:review|look\s+(?:at|over|through)|(?:take|have)\s+a\s+look|pick|choose|check\s+out|try\s+out)\b/i;
+const HTTP_URL = /https?:\/\/\S/i;
+export const reviewAskWithoutLink = (todo: Pick<OwnerTodo, "text" | "links">): boolean =>
+  REVIEW_ASK.test(todo.text) && !todo.links?.length && !HTTP_URL.test(todo.text);
+export const REVIEW_LINK_ERROR = "Refused, nothing changed. This todo asks the owner to review, look at or pick something, so it carries what he opens: " +
+  "add links [{label, target}] with each exact page, like {label: \"Connections on Staging\", target: \"http://localhost:5180/app/connections?line=staging\"}, " +
+  "or put the URL in the text. \"Links are in the chat\" is not enough (c32).";
+/**
+ * The refusal for a todo whose text uses our internal terms (`jargonTerms`), or null (c32, owner 10-09: "unslop easy word"). Links, URLs and
+ * page paths stay: they are what the owner opens.
+ */
+export function todoJargon(text: string): string | null {
+  const terms = jargonTerms(text);
+  return terms.length ? `Refused, nothing changed. For you is read by the owner in one pass, and this todo uses ${terms.map(term => `"${term}"`).join(", ")}: ` +
+    `${JARGON_HINT} (c32).` : null;
+}
+function checkAgentTodo(todo: OwnerTodo): void {
+  if (placeholderTodo(todo)) invalid(PLACEHOLDER_TODO_ERROR);
+  if (leaveAsk(todo)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
+  const jargon = todoJargon(todo.text);
+  if (jargon) invalid(jargon);
+  if (reviewAskWithoutLink(todo)) invalid(REVIEW_LINK_ERROR);
+}
+
+/**
  * The internal detail in a plan title, or null (c61, owner 10-13: "the titles should be human-readable (like fix bug in X, instead of the internal
  * file name , /...)"). It finds a file name with a code or doc extension, a path, a git sha, a CI run id or a ci/ ref; they go in the step's note.
  * A slash word counts as a path when it starts at ~/, ./, ../ or /, carries a scheme, has three or more parts, names a repo folder first
@@ -351,11 +381,13 @@ export function parseBoardOp(value: unknown): BoardOp {
       const op: BoardOp = { op: "todo_add", text: str(value.text, "text", BOARD_LIMITS.text) };
       if (value.choices !== undefined) op.choices = choices(value.choices);
       if (value.step !== undefined) op.step = id(value.step, "step");
+      const list = links(value.links); if (list?.length) op.links = list;
       return op;
     }
     case "todo_update": {
       const op: BoardOp = { op: "todo_update", id: id(value.id) };
       const text = optStr(value.text, "text", BOARD_LIMITS.text); if (text !== undefined) op.text = text;
+      const list = links(value.links); if (list) op.links = list;
       if (value.done !== undefined) { if (typeof value.done !== "boolean") invalid("done must be true or false."); op.done = value.done; }
       if (value.reply === null) op.reply = null;
       else if (value.reply !== undefined) op.reply = str(value.reply, "reply", BOARD_LIMITS.reply);
@@ -523,11 +555,12 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         invalid(`The owner already has ${BOARD_LIMITS.openAsks} open asks. Decide this yourself and note it in the scratchpad, or remove an ask first.`);
       }
       if (actor === "agent" && op.step !== undefined && !find(board.plan, op.step)) unknown("plan item", op.step);
-      const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), ...(op.step ? { step: op.step } : {}), from: actor, at: now };
-      if (actor === "agent" && placeholderTodo(todo)) invalid(PLACEHOLDER_TODO_ERROR);
-      if (actor === "agent" && leaveAsk(todo)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
+      const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), ...(op.step ? { step: op.step } : {}),
+        ...(op.links ? { links: op.links } : {}), from: actor, at: now };
+      if (actor === "agent") checkAgentTodo(todo);
       return done({ todos: [...board.todos, todo] },
-        `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}${todo.step ? ` for ${todo.step}` : ""}${todo.choices ? ` with choices ${todo.choices.map(quote).join(" / ")}` : ""}`);
+        `added a todo ${actor === "owner" ? "" : todo.id + " "}${quote(todo.text)}${todo.step ? ` for ${todo.step}` : ""}${todo.choices ? ` with choices ${todo.choices.map(quote).join(" / ")}` : ""}` +
+        `${todo.links ? ` with ${todo.links.length === 1 ? "a link" : `${todo.links.length} links`}` : ""}`);
     }
     case "todo_update": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
@@ -539,10 +572,13 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== todo.text) {
         next.text = op.text;
-        if (actor === "agent" && placeholderTodo(next)) invalid(PLACEHOLDER_TODO_ERROR);
-        if (actor === "agent" && leaveAsk(next)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
         parts.push(`renamed ${quote(todo.text)} to ${quote(op.text)}`);
       }
+      if (op.links !== undefined) {
+        if (op.links.length) next.links = op.links; else delete next.links;
+        parts.push(op.links.length ? `set ${op.links.length === 1 ? "a link" : `${op.links.length} links`} on ${parts.length ? "it" : quote(next.text)}` : `cleared the links on ${parts.length ? "it" : quote(next.text)}`);
+      }
+      if (actor === "agent" && (op.text !== undefined && op.text !== todo.text || op.links !== undefined)) checkAgentTodo(next);
       // The first part names the todo, later parts say "it".
       const label = () => parts.length ? "it" : quote(next.text);
       // A reply that is one of the offered choices is a tap: "chose X for Q", which also covers the check that comes with it.
@@ -952,7 +988,8 @@ export function renderOpenPlan(board: ChatBoard | null, sessionId?: string, chec
   lines.push(`Owner todos open: ${open.length ? "" : "none"}`.trimEnd());
   for (const todo of open) {
     const offered = todo.choices ? `, choices: ${todo.choices.map(choice => quote(choice)).join(" / ")}` : "";
-    lines.push(`  [ ] ${todo.id} ${clip(todo.text, 160)} (from ${todo.from}${todo.step ? `, for ${todo.step}` : ""})${offered}`);
+    const linked = todo.links?.length ? `, links: ${todo.links.map(link => link.target).join(" ")}` : "";
+    lines.push(`  [ ] ${todo.id} ${clip(todo.text, 160)} (from ${todo.from}${todo.step ? `, for ${todo.step}` : ""})${offered}${linked}`);
   }
   const left = [`${hidden.steps} done or dropped steps`, `${board.todos.length - open.length} answered todos`, `${count(board.scratch)} notes`,
     `${hidden.notes} step notes and requirements`];

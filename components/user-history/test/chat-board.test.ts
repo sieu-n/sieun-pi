@@ -225,7 +225,7 @@ test("chat board: a v1 file migrates to bullets, one per non-empty line; a v2 fi
 });
 
 test("chat board: todos from the agent, checked and answered by the owner in plain words", () => {
-  const agent = run(emptyBoard(T0), [{ op: "todo_add", text: "Approve the Email picks" }, { op: "todo_add", text: "Pick a provider" }]);
+  const agent = run(emptyBoard(T0), [{ op: "todo_add", text: "Approve the Email picks" }, { op: "todo_add", text: "Which email provider do we use?" }]);
   assert.deepEqual(agent.board.todos[0], { id: "t1", text: "Approve the Email picks", done: false, from: "agent", at: T1 });
   assert.equal(agent.summaries[0], 'Added a todo t1 "Approve the Email picks"');
   const owner = run(agent.board, [
@@ -235,13 +235,13 @@ test("chat board: todos from the agent, checked and answered by the owner in pla
     { op: "todo_update", id: "t1", done: false, text: "Approve the picks" },
     { op: "todo_remove", id: "t3" },
   ], "owner");
-  assert.deepEqual(owner.summaries, ['Owner checked "Approve the Email picks"', 'Owner checked "Pick a provider" and answered: Use Resend',
+  assert.deepEqual(owner.summaries, ['Owner checked "Approve the Email picks"', 'Owner checked "Which email provider do we use?" and answered: Use Resend',
     'Owner added a todo "Ping me at 5"', 'Owner renamed "Approve the Email picks" to "Approve the picks" and unchecked it', 'Owner removed the todo "Ping me at 5"']);
   assert.equal(owner.board.todos[1]!.reply, "Use Resend");
   assert.equal(owner.board.rev, 7);
   const cleared = run(owner.board, [{ op: "todo_update", id: "t2", reply: null }], "owner");
   assert.equal(cleared.board.todos[1]!.reply, undefined);
-  assert.equal(cleared.summaries[0], 'Owner cleared the answer on "Pick a provider"');
+  assert.equal(cleared.summaries[0], 'Owner cleared the answer on "Which email provider do we use?"');
 });
 
 test("chat board: the owner may change todos and the scratchpad, never the plan; unknown ids and bad input are refused", () => {

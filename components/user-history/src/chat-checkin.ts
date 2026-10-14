@@ -7,7 +7,8 @@ import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json
 import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, parkedBy, quote, readySteps,
-  noteFacts, recordedAt, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepOwner, stepView, type StepView, todoForStep, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
+  noteFacts, readyReviewLine, readyReviews, recordedAt, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepOwner, stepView, type StepView, todoForStep, waitsOnOwner, walk,
+  withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, type GoalGap, goalGapLine, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
@@ -67,7 +68,7 @@ export interface CheckInPrecheck {
   held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: RedundantHeartbeat[];
   /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties. */
   noDuty: PlanItem[];
-  /** A board read error, an ask overflow, steps that can start, and steps that wait on the owner with no question in For you. */
+  /** A board read error, an ask overflow, steps that can start, steps that wait on the owner with no question in For you, and reviews ready with no todo. */
   facts: string[];
 }
 
@@ -111,6 +112,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     for (const step of readySteps(board)) if (!held.has(step.id)) notes.push(`${step.id} ${quote(step.text)} can start: the steps before it are done and it has no job`);
   }
   for (const gate of gates) if (gate.kind === "go_waiting") notes.push(gateLine(gate));
+  if (!context.boardError) for (const review of readyReviews(board, active)) notes.push(readyReviewLine(review));
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
   const queued = context.queued ?? new Map<string, unknown>();
