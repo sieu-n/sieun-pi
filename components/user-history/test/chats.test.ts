@@ -358,7 +358,7 @@ test("chats: a serve that does not own the live chats pins, steers, reloads and 
   main.close();
 });
 
-test("chats: a finished job (reported, done, quiet an hour, no open step) is deleted once, checked at most every 10 min; a job a step keeps stays", async () => {
+test("chats: a finished job (reported, done, its report in the chat, no open step) is deleted once at the first check; a job a step keeps stays", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const calls: string[] = [];
   const lines: string[] = [];
@@ -376,18 +376,19 @@ test("chats: a finished job (reported, done, quiet an hour, no open step) is del
   const job = (id: string, name: string, at: number, extra: Partial<ChildAgent> = {}): ChildAgent =>
     ({ id, label: name, sessionName: name, status: "done", repliedSinceTask: true, lastActivityAt: at, ...extra });
   const old = now - 61 * 60_000;
+  threads.transcripts.set("c1", ["auditor", "builder", "reviewer", "fresh", "silent", "busy", "nested"].map(name =>
+    ({ role: "custom", customType: "agent_message", content: `[agent-message from child:${name}]\nDone.`, display: true, timestamp: old }) as ThreadMessage));
   threads.fire().live("c1", [job("k1", "auditor", old), job("k2", "builder", old), job("k3", "reviewer", old), job("k4", "fresh", now - 10 * 60_000),
     job("k5", "silent", old, { repliedSinceTask: false }), job("k6", "busy", old, { activity: { kind: "writing" } }), job("k7", "nested", old, { parentId: "k1" })]);
   await chats.settled();
   const deletes = async () => { calls.length = 0; await chats.tick(); await chats.settled(); return calls.filter(call => call.startsWith("delete")); };
-  assert.deepEqual(await deletes(), ["delete c1 k1"], "only the reported, idle job whose step is done");
-  assert.deepEqual(lines.filter(line => line.includes("finished job")), ["chat c1: deleted finished job auditor (reported, quiet 61 min, no open step)"]);
+  assert.deepEqual(await deletes(), ["delete c1 k1", "delete c1 k4"], "the reported, idle jobs no open step names, however long they have been quiet");
+  assert.deepEqual(lines.filter(line => line.includes("finished job")), ["chat c1: deleted finished job auditor (reported, quiet 61 min, no open step)",
+    "chat c1: deleted finished job fresh (reported, quiet 10 min, no open step)"]);
   now += 5 * 60_000;
   assert.deepEqual(await deletes(), [], "not checked again within 10 min");
   now += 6 * 60_000;
-  threads.fire().children("c1", [job("k1", "auditor", old), job("k4", "fresh", now - 70 * 60_000)]);
-  await chats.settled();
-  assert.deepEqual(await deletes(), ["delete c1 k4"], "each job once; a job quiet past the hour goes at the next check");
+  assert.deepEqual(await deletes(), [], "each job once");
   chats.close();
 });
 
