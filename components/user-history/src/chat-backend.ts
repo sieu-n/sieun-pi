@@ -18,7 +18,7 @@ import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priori
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
-import { Chats } from "./chats.ts";
+import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
 import { archiveDutyJob, dutyJobHost } from "./chat-duty-job.ts";
@@ -31,6 +31,7 @@ import { ThreadOrigins } from "./thread-origin.ts";
 import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
 import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
+import { readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
 export interface ChatDefaultsStore extends IdleEviction {
@@ -156,6 +157,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
+      waking: session => waking(join(dataDir, "wakes"), session),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
@@ -178,6 +180,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const stopWatch = options.ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog });
+  const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog,
+    deliver: async (session, text) => {
+      await catalog.connect();
+      const response = await catalog.client.request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false });
+      if (response.success) return "sent";
+      if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
+      throw new Error(response.error);
+    } });
   const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync.unref();
   void poolPriorities.sync();
@@ -191,6 +201,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       closed = true;
       clearInterval(prioritySync);
       stopWatch();
+      stopWakes();
       unwatchBoards();
       stopPublish();
       duties.close();

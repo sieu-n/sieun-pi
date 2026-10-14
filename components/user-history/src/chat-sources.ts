@@ -235,6 +235,8 @@ export interface CheckInSource {
   briefChecks?: BriefCheckRecord;
   /** The finished jobs the cleanup deleted (`<data dir>/deleted-jobs.json`). Absent (tests): each serve remembers its own deletes only. */
   deletedJobs?: DeletedJobRecord;
+  /** Whether a session holds a pending `board.wake` (src/wakes.ts); the cleanup keeps such a job, since its wake would reopen it. */
+  waking?: (session: string) => Promise<boolean>;
   /**
    * Where the cleanup saves a job it ends while the job waits on a board step (`JobResumes`, src/job-resume.ts), and how it writes that step's
    * note (the board store's apply). Absent: such a job is kept.

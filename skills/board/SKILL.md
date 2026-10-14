@@ -1,6 +1,6 @@
 ---
 name: board
-description: Read a browser chat's board, corrections and the log of outside sends from Python, plus the chat_board op rules and a VP chat's rules for jobs, check-ins and git.
+description: Read a browser chat's board, corrections and the log of outside sends from Python, set a kernel-free wake for a CI run or a time, plus the chat_board op rules and a VP chat's rules for jobs, check-ins and git.
 ---
 
 # Board
@@ -25,6 +25,18 @@ board.sends("iwebfusion")  # every email, ticket reply or message an agent sent 
 ```
 
 Answer "did an agent send X anything" from `board.sends(...)`, never from the wiki or Aside memory. The send guards write one line to `~/.prime/agent/browser-chat/sends.jsonl` for each send they allow or refuse, with the session, time, target and OWNER_OK token. A backfill of the session transcripts adds the sends from 10-08 on. A `ran` line is a backfilled send that went out unchecked and that the guard would refuse today. From a shell in the sieun-pi checkout, read the same log with `node --import tsx components/user-history/src/send-log.ts --match <text>`, which also takes `--since`, `--chat` and `--decision ran`.
+
+## Wait without a kernel
+
+A job that waits for a CI run or a time sets a wake and ends its turn with nothing running. The chat service checks each wake every 30 s and sends the session an agent message that starts with `[wake]` when the run finishes or the time comes. That message reopens the session even after Prime unloaded it.
+
+```python
+board.wake(run=38556270524, note="land r11 on green")   # read from the local CI cache, so no GitHub call
+board.wake(run=123, repo="sieu-n/sieun-pi")             # a run in another repo, read with gh every 2 min
+board.wake(at="2026-10-14T22:30:00Z", note="remeasure") # a time, instead of bash("sleep ...")
+```
+
+Never end a turn with `bash("ci-run-status <id> --wait")`, `gh run watch`, or a `sleep` still running. Prime counts a session with a running bash handle as busy, so the session keeps its Python kernel and its worker for the whole wait. On 10-14, 125 of 152 working sessions waited that way and held 8.69 GB of kernels. A wait inside one turn that ends in under a minute can still use `await bash(...)`.
 
 A chat and every job under it find the chat from `RLM_SESSION_DIR`. A root job that a chat started with `rlm.create_session` has its own id, so it passes `chat="<chat session id>"`.
 

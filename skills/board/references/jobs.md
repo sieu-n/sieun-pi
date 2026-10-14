@@ -17,7 +17,8 @@ The brief has these parts, in this order.
 4. `My read:` gives your interpretation.
 5. `Split:` names the subagents the job spawns, one per unit of output, or says why the work stays inline.
 6. The task follows.
-7. The brief ends with the reply line: `await agent_message.send(report, receiver_role="parent")` for a child, or `receiver_role="sibling", receiver_name=<your session name>` for a create_session root. Get the name from `current.sessionName` in `await agent_observe.list_agents()`.
+7. A job that waits for a CI run or a time sets `board.wake(run=...)` or `board.wake(at=...)` and ends its turn, and never ends a turn with `ci-run-status --wait`, `gh run watch` or a `sleep` still running, because that wait keeps its kernel and worker in memory.
+8. The brief ends with the reply line: `await agent_message.send(report, receiver_role="parent")` for a child, or `receiver_role="sibling", receiver_name=<your session name>` for a create_session root. Get the name from `current.sessionName` in `await agent_observe.list_agents()`.
 
 Everything you send another agent (briefs, relays, answers) is in English. After the owner's exact words, say in plain English what they mean and what to do, and translate any Korean (c2). The server checks each brief and sends `[brief check]` when one breaks these rules; fix it in the job with a message.
 

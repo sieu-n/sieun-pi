@@ -1,4 +1,4 @@
-"""Read a browser chat's board (plan, owner todos, scratchpad) as plain text.
+"""Read a browser chat's board (plan, owner todos, scratchpad) as plain text, and set a kernel-free wake with wake().
 
 The chat server keeps each chat's board in <agent dir>/browser-chat/boards/<chat session id>.json. The chat_board tool shows only the open
 checklist; these calls read the rest. A chat's kernel and every job under it find the chat from RLM_SESSION_DIR. corrections() reads the
@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["open", "get", "notes", "done", "todos", "corrections", "sends"]
+__all__ = ["open", "get", "notes", "done", "todos", "corrections", "sends", "wake"]
 
 _OPEN = {"todo", "doing", "blocked"}
 _MARKS = {"todo": "[ ]", "doing": "[~]", "done": "[x]", "blocked": "[!]", "dropped": "[-]"}
@@ -281,3 +283,54 @@ def corrections(id: str | None = None) -> str:  # noqa: A002
         lines += [f"  repeated {repeat.get('at', '?')}: {repeat.get('words', '')}" for repeat in entry.get("repeats", [])]
         return _Text("\n".join(lines))
     return _Text(f"No correction {id} in {path}.")
+
+
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _own_session() -> str:
+    """This kernel's session id: a root's RLM_SESSION_DIR is named for it, a subagent's holds its one <session id>.jsonl."""
+    folder = Path(os.environ.get("RLM_SESSION_DIR", ""))
+    if _UUID.match(folder.name):
+        return folder.name
+    if folder.name.startswith("sub-"):
+        logs = [path.stem for path in folder.glob("*.jsonl") if _UUID.match(path.stem)]
+        if len(logs) == 1:
+            return logs[0]
+    raise LookupError(f"No session id found from RLM_SESSION_DIR={folder}.")
+
+
+def wake(run: int | str | None = None, at: str | float | None = None, note: str = "", repo: str | None = None) -> str:
+    """Wake this session when CI run `run` finishes or at time `at` (ISO 8601 or epoch seconds), then end the turn with nothing running.
+
+    The chat service sends the wake as an agent message, which reopens the session even after Prime passivated it, so the wait holds no
+    Python kernel and no worker. `repo` ("owner/name") reads the run with gh instead of the local CI cache. `note` comes back in the wake.
+    """
+    if (run is None) == (at is None):
+        raise ValueError("Pass exactly one of run=<run id> or at=<time>.")
+    if run is not None:
+        run_id = int(str(run).strip())
+        if run_id <= 0:
+            raise ValueError(f"Not a run id: {run!r}")
+        on: dict = {"kind": "run", "run": run_id, **({"repo": repo} if repo else {})}
+        key, what = f"run-{run_id}", f"run {run_id}{' in ' + repo if repo else ''} finishes"
+    else:
+        when = float(at) if isinstance(at, (int, float)) else datetime.fromisoformat(str(at).replace("Z", "+00:00")).timestamp()
+        on = {"kind": "time", "at": int(when * 1000)}
+        key, what = f"time-{int(when)}", f"it is {datetime.fromtimestamp(when, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    session = _own_session()
+    data_dir = Path(os.environ["AGENT_CHAT_DATA_DIR"]) if os.environ.get("AGENT_CHAT_DATA_DIR") else _agent_dir() / "browser-chat"
+    folder = data_dir / "wakes"
+    try:
+        quiet = time.time() - (folder / ".ticked").stat().st_mtime
+    except FileNotFoundError:
+        quiet = None
+    if quiet is None or quiet > 120:
+        raise RuntimeError(f"No chat service delivers wakes now ({folder / '.ticked'} is {'missing' if quiet is None else f'{int(quiet)} s old'}). "
+                           "Wait inside this turn with await bash(...) instead.")
+    path = folder / f"{session}-{key}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"session": session, "on": on, "note": note, "since": int(time.time() * 1000)}))
+    os.replace(tmp, path)
+    return _Text(f"Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
+                 f"so Prime can unload the session while it waits. ({path})")
