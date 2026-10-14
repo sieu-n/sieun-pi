@@ -3,7 +3,7 @@
   import { api } from "./api.ts";
   import Checkbox from "./ui/Checkbox.svelte";
   import type { AgentQueueInput, AgentQueueView } from "../shared/types.ts";
-  import { queueLine, setLine } from "./agent-queue.ts";
+  import { pressureChangeLine, pressureLine, queueLine, setLine } from "./agent-queue.ts";
   import { POOL_DEFAULTS } from "./pool-config.ts";
 
   const POLL_MS = 5000;
@@ -72,6 +72,7 @@
   {:else}
     <p class="live" class:problem={view.pool.state === "unread"} aria-live="polite">{queueLine(view.pool)}</p>
     {#if view.pool.state === "unread"}<p class="note">{view.pool.error}</p>{/if}
+    {#if pool && pressureLine(pool.governor, pool.macWorkingMax)}<p class="note" class:problem={pool.governor?.level === "critical"}>{pressureLine(pool.governor, pool.macWorkingMax)}</p>{/if}
 
     <button type="button" class="toggle" role="switch" aria-checked={pool?.enabled ?? false} aria-busy={saving === "queue"} disabled={!pool || saving !== null}
       onclick={() => { if (pool) void apply({ action: "queue", on: !pool.enabled }); }}>
@@ -84,6 +85,7 @@
 
     {@render limit("mac", "Working sessions on this Mac", "", 999, pool !== null,
       [...(pool ? [setLine(pool.macWorkingMax, pool.macWorkingMaxSet, POOL_DEFAULTS.mac_working_max)] : []),
+        ...(pool?.governor?.changed ? [pressureChangeLine(pool.governor.changed) ?? ""] : []),
         `The default ${POOL_DEFAULTS.mac_working_max} is measured: a p90 working session uses 426 MB, and ${POOL_DEFAULTS.mac_working_max} fit in the 6.9 GB free (10-14 07:38 KST).`])}
     {@render limit("tree", "Working sessions per chat", "", 999, pool !== null,
       ["Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14."])}

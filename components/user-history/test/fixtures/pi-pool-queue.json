@@ -44,5 +44,34 @@
       "since": 1792000000,
       "wait_s": 245
     }
-  ]
+  ],
+  "pressure": {
+    "level": "high",
+    "on": true,
+    "at": 1792000300.5,
+    "since": 1792000290.0,
+    "reading": {
+      "kernel": 2,
+      "swap_used": 45661159424,
+      "swap_total": 46170898432,
+      "compressor": 8000000000,
+      "ram": 34359738368
+    },
+    "limit": 16,
+    "changed": {
+      "from": "ok",
+      "to": "high",
+      "at": 1792000290.0,
+      "limit_from": 30,
+      "limit_to": 16,
+      "reading": {
+        "kernel": 2,
+        "swap_used": 45661159424,
+        "swap_total": 46170898432,
+        "compressor": 8000000000,
+        "ram": 34359738368
+      }
+    },
+    "held": 2
+  }
 }

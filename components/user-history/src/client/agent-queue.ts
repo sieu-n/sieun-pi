@@ -1,4 +1,4 @@
-import type { AgentQueuePool, PoolSetRecord } from "../shared/types.ts";
+import type { AgentQueueGovernor, AgentQueuePool, PoolSetRecord, PressureChange, PressureReading } from "../shared/types.ts";
 import { duration } from "./format.ts";
 
 export const POOL_SILENT = "The pool did not answer. The queue is off until it does.";
@@ -26,4 +26,26 @@ export function setLine(value: number, record: PoolSetRecord | null, fallback: n
   if (!record) return `Holds the default ${fallback}; nobody has set it.`;
   if (!record.by) return `Set to ${value} at ${kst(record.at)}, the file time of config.json, by a writer pi-pool did not record then.`;
   return `Set to ${value} by ${record.by} at ${kst(record.at)}.`;
+}
+
+const KERNEL: Readonly<Record<number, string>> = { 1: "normal", 2: "warn", 4: "critical" };
+const gb = (bytes: number): string => (bytes / 1e9).toFixed(1);
+const readingText = (r: PressureReading): string =>
+  `kernel ${KERNEL[r.kernel] ?? r.kernel}, compressor ${gb(r.compressorBytes)} of ${gb(r.ramBytes)} GB, swap ${gb(r.swapUsedBytes)} of ${gb(r.swapTotalBytes)} GB`;
+
+/** The governor's line under the live line: the level, the limit it allows and the turns it holds, with the reading behind it. Null with no governor. */
+export function pressureLine(governor: AgentQueueGovernor | null, macWorkingMax: number): string | null {
+  if (!governor) return null;
+  if (!governor.on) return "The memory governor is off, so the limit holds under any memory pressure.";
+  const reading = governor.reading ? ` (${readingText(governor.reading)})` : "";
+  if (governor.level === "ok") return `Memory pressure ok${reading}.`;
+  return `Memory pressure ${governor.level}${reading}: up to ${governor.limit} of ${macWorkingMax} working, ${governor.held} low turns held.`;
+}
+
+/** The governor's last limit change on the Mac limit's row, with the reading that made it. */
+export function pressureChangeLine(change: PressureChange | null): string | null {
+  if (!change) return null;
+  const why = `memory pressure went ${change.to}${change.reading ? ` (${readingText(change.reading)})` : ""}`;
+  if (change.limitFrom === change.limitTo) return `At ${kst(change.at)} ${why}, and the limit stayed ${change.limitTo}.`;
+  return `${change.limitTo < change.limitFrom ? "Lowered" : "Raised"} from ${change.limitFrom} to ${change.limitTo} at ${kst(change.at)}: ${why}.`;
 }

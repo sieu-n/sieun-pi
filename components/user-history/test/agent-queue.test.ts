@@ -22,7 +22,7 @@ process.env.PI_POOL_BIN = fake;
 const { parseAgentQueue, readAgentQueue, readQueueTimers, setPoolKey } = await import("../src/chat-pool.ts");
 const { agentQueue, parseAgentQueueInput } = await import("../src/chat-agent-queue.ts");
 const { chatDefaultsStore } = await import("../src/chat-backend.ts");
-const { queueLine, setLine, POOL_SILENT } = await import("../src/client/agent-queue.ts");
+const { pressureChangeLine, pressureLine, queueLine, setLine, POOL_SILENT } = await import("../src/client/agent-queue.ts");
 
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 const raw = () => JSON.parse(readFileSync(fixture, "utf8")) as Record<string, unknown>;
@@ -58,6 +58,25 @@ test("the Mac limit carries who last set it and when, and the Settings row says 
   assert.equal(setLine(30, { by: "the Settings pane", at: 1791942343000 }, 16), "Set to 30 by the Settings pane at 10-14 10:45 KST.");
   assert.equal(setLine(30, { by: null, at: 1791942343000 }, 16),
     "Set to 30 at 10-14 10:45 KST, the file time of config.json, by a writer pi-pool did not record then.");
+});
+
+test("the memory governor's record parses, and the Settings row shows its level, its limit, its held turns and its last limit change with the reading", () => {
+  const governor = parseAgentQueue(raw()).governor;
+  const reading = { kernel: 2, swapUsedBytes: 45661159424, swapTotalBytes: 46170898432, compressorBytes: 8000000000, ramBytes: 34359738368 };
+  assert.deepEqual(governor, { on: true, level: "high", limit: 16, held: 2, since: 1792000290000, reading,
+    changed: { from: "ok", to: "high", at: 1792000290000, limitFrom: 30, limitTo: 16, reading } });
+  assert.equal(parseAgentQueue({ ...raw(), pressure: undefined }).governor, null, "a pi-pool with no governor");
+  assert.throws(() => parseAgentQueue({ ...raw(), pressure: { ...raw().pressure as object, level: "warn" } }));
+  assert.throws(() => parseAgentQueue({ ...raw(), pressure: { ...raw().pressure as object, reading: { kernel: 2 } } }));
+  assert.equal(pressureLine(governor, 30),
+    "Memory pressure high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB): up to 16 of 30 working, 2 low turns held.");
+  assert.equal(pressureChangeLine(governor!.changed),
+    "Lowered from 30 to 16 at 10-15 02:51 KST: memory pressure went high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB).");
+  assert.equal(pressureChangeLine({ ...governor!.changed!, from: "high", to: "ok", limitFrom: 16, limitTo: 30, reading: null }), "Raised from 16 to 30 at 10-15 02:51 KST: memory pressure went ok.");
+  assert.equal(pressureChangeLine({ ...governor!.changed!, limitFrom: 12, limitTo: 12, reading: null }), "At 10-15 02:51 KST memory pressure went high, and the limit stayed 12.");
+  assert.equal(pressureLine({ ...governor!, level: "ok", limit: 30, held: 0, reading: null }, 30), "Memory pressure ok.");
+  assert.equal(pressureLine({ ...governor!, on: false }, 30), "The memory governor is off, so the limit holds under any memory pressure.");
+  assert.equal(pressureLine(null, 30), null);
 });
 
 test("pool writes go through pi-pool set with the value as text", async () => {
