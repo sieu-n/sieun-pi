@@ -65,3 +65,22 @@ test("looks done: a quoted ship word or one another actor did, and a note that a
   assert.equal(looksDone(p357("Run 38378517237 went green, and stale tree sync landed ci/stale-tree-guard-9 by CAS at 10:20Z.")),
     'its note says "landed"', "a real green and land still count");
 });
+
+/*
+ * VP of CI 10-14: the check-ins at 00:4xZ, 01:0xZ and 01:4xZ flagged p150 "looks done: its note says "landed"". The step waits until 22:30Z to
+ * re-measure, and "the 4 queue cuts landed" is the change it measures, which its title names. The text, note and waitUntil are p150's board.
+ */
+const p150 = (note: string): PlanItem => ({ id: "p150", status: "todo", children: [], job: "ci queue demand", note, waitUntil: "2026-10-14T22:30:00.000Z",
+  text: "Re-measure heavy-runner demand a day after the queue cuts landed, to check the forecast of about a fifth less" });
+const P150_NOTE = "Status 00:4xZ: the 4 queue cuts landed at 22:16Z on 10-13 (green run 38435171151). The job holds until the re-measure at 22:30Z " +
+  "on 10-14 with the same script. Its timer can die on a Mac restart (the heartbeat skill failed with an ImportError), so this step's waitUntil is " +
+  "the backup wake.";
+
+test("looks done: a step before its waitUntil, or a ship claim about what its title measures after, is not done (VP of CI 10-14, p150)", () => {
+  assert.equal(looksDone(p150(P150_NOTE), Date.parse("2026-10-14T01:45:00Z")), null, "the 01:4xZ check-in, before the waitUntil");
+  assert.equal(looksDone(p150(P150_NOTE), Date.parse("2026-10-14T23:00:00Z")), null, "after the waitUntil, the queue cuts are the starting point");
+  assert.equal(looksDone(p150("The re-measure report merged in PR 900 at 23:10Z."), Date.parse("2026-10-14T23:20:00Z")), 'its note says "merged"',
+    "a ship claim about the step's own work still counts");
+  assert.equal(looksDone({ ...p150(P150_NOTE), text: "Ship the queue cuts" }, Date.parse("2026-10-14T23:00:00Z")), 'its note says "landed"',
+    "a step whose own work is the cuts still counts");
+});

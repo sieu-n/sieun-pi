@@ -22,6 +22,9 @@ const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|
   String.raw`(?<![-/.'"‘“])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)` +
   String.raw`(?!(?<=merged)\s+into\s+(?:one|a|a\s+single)\b)(?!(?<=released)\s+(?:the\s+|its\s+|their\s+|a\s+)?(?:\w+\s+)?(?:queue|hold|lock)s?\b)|` +
   String.raw`(?:is|are|now|went|already)\s+live|live\s+on\s+(?:prod|production|staging|main))\b`, "i");
+/** A step that measures or checks something "after X landed": X shipping is where the step starts, not its own work. The capture is X (VP of CI
+ * 10-14: p150 "Re-measure heavy-runner demand a day after the queue cuts landed", flagged in 3 check-ins for "the 4 queue cuts landed"). */
+const CHECKS_AFTER = /^\s*(?:re-?)?(?:measure|check|verify|watch|compare)\b.*?\bafter\s+((?:[\w'’-]+\s+){1,6}?)(?:shipped|merged|deployed|landed|released|(?:is|are|went)\s+live)\b/i;
 /** A waitFor on the owner: a For you todo id (t41) or the owner's go, answer or pick. */
 const OWNER_WAIT = /\bt\d+\b|\bowner'?s?\b/i;
 /** A waitFor on the work reaching users: a land, deploy, release, merge, promote, push or ship, staging or production. */
@@ -60,8 +63,12 @@ function claimWords(note: string, job: string | undefined): string {
  * (SAYS_SHIPPED). The check-in then lists it for a check against the real state (dev env VP 10-09: a goal stayed open after it was live on
  * production).
  */
-export function looksDone(item: Pick<PlanItem, "status" | "note" | "children" | "waitFor"> & Partial<Pick<PlanItem, "job">>): string | null {
+export function looksDone(item: Pick<PlanItem, "status" | "note" | "children" | "waitFor"> & Partial<Pick<PlanItem, "job" | "text" | "waitUntil">>,
+  now = Date.now()): string | null {
   if (!OPEN.has(item.status)) return null;
+  // A step that waits on purpose until a time is not done before that time; wait_met takes it then (VP of CI 10-14: p150 waited until 22:30Z
+  // to re-measure and was flagged at 00:4xZ, 01:0xZ and 01:4xZ).
+  if (item.waitUntil && Date.parse(item.waitUntil) > now) return null;
   const wait = item.waitFor?.trim() ?? "";
   // An item that waits on the owner's answer is not done, whatever its steps or note say (VP of CI 10-12: p41's steps were all done and its
   // build waited on the owner's ok on t26; it was flagged in every run).
@@ -84,7 +91,10 @@ export function looksDone(item: Pick<PlanItem, "status" | "note" | "children" | 
   // were queued).
   if (/\bgreen\b/i.test(wait) && !GREEN.test(note)) return null;
   const sentences = note.split(/(?<=[.;!?])\s+/).map(text => ({ text, said: SAYS_SHIPPED.exec(claimWords(text, item.job)), ...partNames(text) }));
-  const claims = sentences.flatMap(({ said, ...sentence }) => said ? [{ ...sentence, said }] : []);
+  // A ship claim about what the step's title measures "after" is the step's starting point (VP of CI 10-14: p150 "the 4 queue cuts landed").
+  const start = subjectWords(CHECKS_AFTER.exec(item.text ?? "")?.[1] ?? "");
+  const claims = sentences.flatMap(({ said, ...sentence }) => said &&
+    ![...subjectWords(claimWords(sentence.text, item.job))].some(word => start.has(word)) ? [{ ...sentence, said }] : []);
   // With a ship wait, only a claim about the waited thing may mean the wait is over: "PROBE A deployed" for a wait on PROBE A counts, and
   // "Obs is deployed" for a wait on promote 8 is another service (launch main bro 10-12, p68).
   const waited = subjectWords(wait);
@@ -100,11 +110,11 @@ export function looksDone(item: Pick<PlanItem, "status" | "note" | "children" | 
   return wait.split(/[,;]|\b(?:and|then|plus)\b/i).map(partNames).every(named) ? `its note says "${about.said[0]}"` : null;
 }
 /** Every open plan item that looks done (`looksDone`), steps before the goal above them. */
-export function finishedOpen(board: ChatBoard | null): { item: PlanItem; reason: string }[] {
+export function finishedOpen(board: ChatBoard | null, now: number): { item: PlanItem; reason: string }[] {
   const found: { item: PlanItem; reason: string }[] = [];
   const visit = (item: PlanItem) => {
     item.children.forEach(visit);
-    const reason = looksDone(item);
+    const reason = looksDone(item, now);
     if (reason) found.push({ item, reason });
   };
   (board?.plan ?? []).forEach(visit);

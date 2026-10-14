@@ -120,7 +120,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const onOthers = new Set(blocked.map(block => block.view.item.id));
   return { memory: { at: now, steps, since }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train).filter(stall => !onOthers.has(stall.view.item.id)),
-    goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board),
+    goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board, now),
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued),
@@ -182,7 +182,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
   const staleIds = new Set(stale.map(slice => slice.item));
   const act = precheck.steps.flatMap(view => {
     /** An orphan that looks done needs a check and a close, not a new job: it is listed under Look done only. */
-    const line = staleIds.has(view.item.id) || (view.cls === "orphan" && looksDone(view.item) !== null) ? null : classLine(view, now);
+    const line = staleIds.has(view.item.id) || (view.cls === "orphan" && looksDone(view.item, now) !== null) ? null : classLine(view, now);
     return line ? [view.target ? `${line} (the thread to chase: ${clip(view.target.name, 40)}, thread:${view.target.id})` : line] : [];
   });
   const ended = flagged.filter(slice => slice.kind === "job_end_unrecorded" || slice.kind === "job_end_silent").map(slice => slice.excerpt);
