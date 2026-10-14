@@ -121,6 +121,8 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "(`node scripts/repo/agent/commit.mjs --object-only -m \"<type>(<scope>): <what>\" <files>`) and send it to the chat, which asks Fable for a probe slot; " +
         "code reaches the shared tip only after its own green probe. Every file you touch stays " +
         "under its light-guard line limit (1,000 lines for most source files); split a file before it would cross it.",
+      "Never cancel or rerun a CI run (`gh run cancel`, `gh run rerun` or their API calls), yours included; a superseded run is cancelled by " +
+        "Fable's loop or its own probe family, so send Fable its id through the chat, and push a fresh run for a new attempt.",
       "Do what you can reach yourself: Convex data is read or written with `npx convex run` or a query using the deploy key and an identity; " +
         "never ask the owner for his browser or to act as him, and turn such a For you todo into a job.",
       "Never send anything outside on your own: an email, a vendor or support ticket reply, a customer message or a public post is drafted and " +
