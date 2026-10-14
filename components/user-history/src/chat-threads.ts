@@ -326,14 +326,27 @@ export class ThreadHub {
   async reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved"> {
     const activeSessionId = this.threads.get(id)?.live?.activeSessionId ?? (await this.summary(id)).activeSessionId;
     if (activeSessionId === undefined) return "saved";
+    if (await this.daemonBusy(activeSessionId)) return "busy";
+    const response = await timedWorkerStart(`reload ${id.slice(0, 8)}`, () => this.catalog.client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }));
+    if (!response.success) throw new ThreadError(502, response.error);
+    return "reloaded";
+  }
+
+  /**
+   * Whether the daemon shows the resident session doing anything now: a turn, a tool call, a retry, a compaction, queued input, or a
+   * background bash in its Python kernel (`isSessionActive`). False for a session that is not resident.
+   */
+  async sessionActive(id: string): Promise<boolean> {
+    const activeSessionId = this.threads.get(id)?.live?.activeSessionId ?? (await this.summary(id)).activeSessionId;
+    return activeSessionId !== undefined && await this.daemonBusy(activeSessionId);
+  }
+
+  private async daemonBusy(activeSessionId: string): Promise<boolean> {
     await this.catalog.connect();
     const state = await this.catalog.client.request({ type: "get_state", activeSessionId }, undefined, { recoverable: false });
     if (!state.success) throw new ThreadError(502, state.error);
     const now = state.data as Partial<Pick<SessionSummary, "isSessionActive" | "isStreaming" | "isCompacting" | "isBashRunning">>;
-    if (now.isSessionActive !== false || now.isStreaming || now.isCompacting || now.isBashRunning) return "busy";
-    const response = await timedWorkerStart(`reload ${id.slice(0, 8)}`, () => this.catalog.client.request({ type: "reload", activeSessionId }, DAEMON_WORKER_START_MS, { recoverable: false }));
-    if (!response.success) throw new ThreadError(502, response.error);
-    return "reloaded";
+    return now.isSessionActive !== false || now.isStreaming === true || now.isCompacting === true || now.isBashRunning === true;
   }
 
   /**

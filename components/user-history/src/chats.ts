@@ -9,7 +9,9 @@ import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, Chec
 import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs } from "./checkin-steps.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
-  lastJobMessages, noReportNotice, retryDue } from "./chat-checkin.ts";
+  jobReport, lastJobMessages, noReportNotice, retryDue, waitingJobs } from "./chat-checkin.ts";
+import { jobBrief, savedStateNote, waitText } from "./job-resume.ts";
+import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
 import { newestReportAt, opsSteer, tailMessages } from "./checkin-ops.ts";
@@ -20,7 +22,7 @@ import { replyCheck } from "./shared/reply-lint.ts";
 import { briefCheckNote, ownerSaid, turnOwnerAt } from "./shared/brief-check.ts";
 import { briefCheckWithHistory } from "./owner-history.ts";
 import type { CheckInRun } from "./chat-duty-run.ts";
-import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
@@ -439,8 +441,9 @@ export class Chats {
   }
 
   /**
-   * Deletes each finished job of a chat (`finishedJobs`) once, with one log line, so its Python kernel and session stop holding memory. A
-   * board that cannot be read deletes nothing; a failed delete is logged and not tried again in this serve. A job the daemon deleted, or one the chat no longer
+   * Deletes each finished job of a chat (`finishedJobs`) once, with one log line, so its Python kernel and session stop holding memory, and
+   * ends each job whose only open work is a board wait (`waitingJobs`) with its state saved on the step (`parkJob`). A board that cannot be
+   * read deletes nothing; a failed delete is logged and not tried again in this serve. A job the daemon deleted, or one the chat no longer
    * holds (`not_held`), goes on the deleted job record, so a restart does not try it again while the daemon still lists it.
    */
   private async cleanJobs(id: string): Promise<void> {
@@ -457,16 +460,20 @@ export class Chats {
     });
     if (record && !gone) return;
     const now = this.now();
-    const said = lastJobMessages(this.messages(id) ?? []);
+    const messages = this.messages(id) ?? [];
+    const said = lastJobMessages(messages);
     for (const child of finishedJobs(children, board, said)) {
       if (gone?.has(child.id)) continue;
       const result = await this.deleteJob(id, child, listed, now);
       if (result === "deleted") this.log(`chat ${id.slice(0, 8)}: deleted finished job ${childName(child)} (reported, quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, no open step)`);
     }
+    if (!this.source.resumes) return;
+    for (const { child, steps } of waitingJobs(children, board, now, said)) if (!gone?.has(child.id)) await this.parkJob(id, child, steps, jobReport(messages, childName(child)), listed, now);
   }
 
   /**
-   * Deletes one job of the chat unless it works: the hub's view of it is read again first, and the daemon refuses a job that streams or holds
+   * Deletes one job of the chat unless it works: the hub's view of it is read again first, then the daemon's state of its session (a tool call
+   * such as `ci-run-status --wait`, or a background bash its kernel waits on, keeps it), and the daemon refuses a job that streams or holds
    * an unfinished action in the same request (`running`), so a job that started a turn since the cleanup read its children is kept and looked
    * at again later.
    */
@@ -475,6 +482,11 @@ export class Chats {
     if (this.deletedJobs.has(child.id) || !current || childWorking(current)) return "kept";
     this.deletedJobs.add(child.id);
     try {
+      if (current.sessionId !== undefined && await this.threads.sessionActive(current.sessionId)) {
+        this.deletedJobs.delete(child.id);
+        this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: its session runs a tool call or a background bash`);
+        return "kept";
+      }
       const result = await this.threads.deleteSubagent(id, child.id);
       if (result === "running") {
         this.deletedJobs.delete(child.id);
@@ -488,6 +500,30 @@ export class Chats {
       this.log(`chat ${id.slice(0, 8)}: delete job ${childName(child)}: ${error instanceof Error ? error.message : String(error)}`);
       return "kept";
     }
+  }
+
+  /**
+   * Ends a job whose only open work is a board wait: its brief (`jobBrief`), last report and the steps' waits are saved first
+   * (`<data dir>/job-resumes`), then the job is deleted, then each step's note names the saved state, so the check-in's line for the step when
+   * its wait is due or stale (`classLine`) tells the chat to spawn a fresh job from it, and the chat gets a notice now. A job whose brief cannot
+   * be read is kept.
+   */
+  private async parkJob(id: string, child: ChildAgent, steps: readonly PlanItem[], report: string, listed: readonly string[], now: number): Promise<void> {
+    const resumes = this.source.resumes!;
+    const name = childName(child);
+    try {
+      const sessionFile = (await this.summary(id))?.sessionFile;
+      const brief = sessionFile ? await jobBrief(join(artifactsDir(sessionFile), child.id)) : undefined;
+      if (brief === undefined) { this.log(`chat ${id.slice(0, 8)}: kept waiting job ${name}: its brief could not be read`); return; }
+      const event = steps.map(waitText).join("; ");
+      const path = await resumes.store.save({ chat: id, childId: child.id, job: name, steps: steps.map(step => step.id), event, brief, report, endedAt: now });
+      if (await this.deleteJob(id, child, listed, now) !== "deleted") return;
+      const line = savedStateNote(name, now, path);
+      await resumes.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, note: [line, step.note].filter(Boolean).join("\n").slice(0, BOARD_LIMITS.note) })));
+      await this.threads.notice(id, `${JOB_NOTICE_PREFIX}${name} was ended after ${Math.round((now - child.lastActivityAt!) / 60_000)} min quiet while it waited (${event}). ` +
+        `Its brief, last report and wait are saved in ${path}; when the wait is over, or to send it more work, spawn a fresh job from that file.`);
+      this.log(`chat ${id.slice(0, 8)}: ended waiting job ${name} (quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, ${event}); saved state ${path}`);
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: end waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /**

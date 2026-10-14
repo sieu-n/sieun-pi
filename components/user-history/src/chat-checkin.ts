@@ -427,6 +427,8 @@ export function endedWithoutReport(before: readonly ChildAgent[], after: readonl
 
 /** The check for finished jobs runs on each job end and chat idle, and at least once per JOB_CLEANUP_EVERY_MS per chat. */
 export const JOB_CLEANUP_EVERY_MS = 10 * 60_000;
+/** A job quiet this long whose only open work is a board wait is ended, with its state saved on the step (`waitingJobs`). */
+export const PARK_IDLE_MS = 60 * 60_000;
 
 /** A direct subagent that ended its task: done, not working, its final report sent (`repliedSinceTask`) and in the chat's transcript (`said`). */
 function reported(child: ChildAgent, ids: ReadonlySet<string>, said: ReadonlyMap<string, JobMessage>): boolean {
@@ -454,6 +456,24 @@ export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard |
   const open = openSteps(board);
   return children.filter(child => reported(child, ids, said) && said.get(childName(child))?.parked === undefined &&
     !open.some(item => stepNamesJob(item, jobRef(child))));
+}
+
+/** An open step that waits on an event: a `waitFor` (a CI run, a deploy, a reply) or a `waitUntil` time. */
+const waitsOnEvent = (item: PlanItem): boolean => item.waitFor !== undefined || item.waitUntil !== undefined;
+
+/**
+ * The chat's jobs that ended their task, have been quiet PARK_IDLE_MS, and whose only open work is a board wait: every open step that names
+ * the job waits on an event (`waitsOnEvent`), and at least one does. Each comes with those steps, so the chat can save the job's state on them
+ * and delete it. A job owed work by its parked words alone, with no step to hold the wait, is kept.
+ */
+export function waitingJobs(children: readonly ChildAgent[], board: ChatBoard | null, now: number, said: ReadonlyMap<string, JobMessage> = new Map()): { child: ChildAgent; steps: PlanItem[] }[] {
+  const ids = new Set(children.map(child => child.id));
+  const open = openSteps(board);
+  return children.flatMap(child => {
+    if (!reported(child, ids, said) || child.lastActivityAt === undefined || now - child.lastActivityAt < PARK_IDLE_MS) return [];
+    const steps = open.filter(item => stepNamesJob(item, jobRef(child)));
+    return steps.length && steps.every(waitsOnEvent) ? [{ child, steps }] : [];
+  });
 }
 
 /**
@@ -494,6 +514,18 @@ export function lastJobMessages(messages: readonly { role: string; customType?: 
       ...(parked !== undefined ? { parked } : {}) });
   }
   return last;
+}
+/** The whole body of the last agent message the job named `name` sent the chat, header cut, as `lastJobMessages` reads it; "" when none. */
+export function jobReport(messages: readonly { role: string; customType?: string; content?: unknown }[], name: string): string {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role !== "custom" || message.customType !== "agent_message") continue;
+    const text = typeof message.content === "string" ? message.content
+      : Array.isArray(message.content) ? message.content.map(part => typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text) : "").join("") : "";
+    const header = /^\s*\[agent-message from\s+(?:child:)?([^\]]+)\]/.exec(text);
+    if (header?.[1]!.trim() === name) return text.slice(header[0].length).trim();
+  }
+  return "";
 }
 /**
  * The `[job]` notice for a job that went quiet while the daemon says it did not reply to its task: one that messaged the chat at or after its

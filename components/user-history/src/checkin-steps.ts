@@ -1,6 +1,7 @@
 import { BOARD_LIMITS, coversStep, planJob } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, QueuePlace, SessionRow } from "./shared/types.ts";
 import { clockTime, localTime } from "./checkin-settings.ts";
+import { savedStatePath } from "./job-resume.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 
 /** The check-in's step classes: the chat's job facts, the class of each open plan step (`stepClass`), and the line the duty job reads for it. */
@@ -452,6 +453,11 @@ export interface StepView extends StepFacts { cls: StepClass; target?: { id: str
 
 /** The line for a step in an ACT_CLASSES class, naming what it needs now; null for the others. */
 export function classLine(view: StepView, now: number): string | null {
+  const line = actLine(view, now);
+  const saved = savedStatePath(view.item);
+  return line !== null && saved !== undefined ? `${line}. Its job was ended while it waited: spawn a fresh job with the brief, last report and wait saved in ${saved}` : line;
+}
+function actLine(view: StepView, now: number): string | null {
   const { item, cls, changedAt, owner, mine } = view;
   const head = `${item.id} ${quote(item.text)}`;
   if (cls === "due") {

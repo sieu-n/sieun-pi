@@ -7,7 +7,8 @@ import type { CheckInSettings } from "./checkin-settings.ts";
 import type { DutyRef } from "./checkin-findings.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
-import type { ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
+import type { JobResumes } from "./job-resume.ts";
+import type { BoardOp, ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
 export type SubagentDelete = "deleted" | "not_held" | "running";
 
@@ -162,6 +163,8 @@ export interface ChatThreads {
    * longer holds that subagent (the daemon answers `deleted: false`) though its session may still be listed.
    */
   deleteSubagent(id: string, childId: string): Promise<SubagentDelete>;
+  /** Whether the daemon shows the session in a turn, a tool call or a background bash now (`isSessionActive`); false when it is not resident. */
+  sessionActive(id: string): Promise<boolean>;
   /** Undoes an archive: the session comes back as a saved thread that resumes on the next pin or reply. */
   unarchive(id: string): Promise<void>;
   /** Archives the session: its turn stops, its worker ends and its session file records the archived state. */
@@ -232,6 +235,11 @@ export interface CheckInSource {
   briefChecks?: BriefCheckRecord;
   /** The finished jobs the cleanup deleted (`<data dir>/deleted-jobs.json`). Absent (tests): each serve remembers its own deletes only. */
   deletedJobs?: DeletedJobRecord;
+  /**
+   * Where the cleanup saves a job it ends while the job waits on a board step (`JobResumes`, src/job-resume.ts), and how it writes that step's
+   * note (the board store's apply). Absent: such a job is kept.
+   */
+  resumes?: { store: JobResumes; applyBoard(id: string, ops: readonly BoardOp[]): Promise<unknown> };
   /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
   corrections?: () => Promise<Ledger>;
   /**

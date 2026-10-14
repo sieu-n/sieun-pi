@@ -52,6 +52,7 @@ export function fakeThreads(calls: string[]) {
     /** Job threads whose daemon state shows work (a turn, a background bash, queued input), and the jobs `reloadIdle` reloaded. */
     sessionBusy: new Set<string>(),
     reloaded: [] as string[],
+    async sessionActive(id: string) { return this.sessionBusy.has(id); },
     async reloadIdle(id: string): Promise<"reloaded" | "busy" | "saved"> { if (this.sessionBusy.has(id)) return "busy"; this.reloaded.push(id); return "reloaded"; },
     async create(input: { cwd: string; name: string; kind: "chat"; thinkingLevel?: string }) { calls.push(`create ${input.kind} ${input.name} ${input.cwd}`); return { id: `s${next++}` }; },
     pin(id: string) { calls.push(`pin ${id}`); pinned.add(id); },
