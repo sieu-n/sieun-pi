@@ -32,6 +32,7 @@ import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./sh
 import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
 import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
+import { readGrafanaAlerts, startAlertBridge } from "./alert-bridge.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -189,20 +190,24 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const response = await catalog.client.request({ type: "send_message", targetActiveSessionId: active, message: line }, 30_000, { recoverable: false });
       if (!response.success) throw new Error(response.error);
     } });
-  const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog,
-    deliver: async (session, text) => {
+  const agentMessage = {
+    deliver: async (session: string, text: string): Promise<"sent" | "gone"> => {
       await catalog.connect();
       const response = await catalog.client.request({ type: "send_message", targetActiveSessionId: session, message: text }, 30_000, { recoverable: false });
       if (response.success) return "sent";
       if (response.error.startsWith(UNKNOWN_ACTIVE)) return "gone";
       throw new Error(response.error);
     },
-    startRoot: async root => {
+    startRoot: async (root: string): Promise<void> => {
       const sessionPath = (await catalog.summary(root))?.sessionFile;
       if (!sessionPath) throw new Error(`no session file for root ${root.slice(0, 8)}`);
       const response = await catalog.client.request({ type: "create", lifecycle: "resident", sessionPath }, DAEMON_WORKER_START_MS, { recoverable: false });
       if (!response.success) throw new Error(response.error);
-    } });
+    },
+  };
+  const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
+  const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"), alerts: () => readGrafanaAlerts(join(dataDir, "grafana-alerts.json")),
+    boards, log: dutyLog, ...agentMessage });
   const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync.unref();
   void poolPriorities.sync();
@@ -217,6 +222,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       clearInterval(prioritySync);
       stopWatch();
       stopWakes();
+      stopAlerts();
       unwatchBoards();
       stopPublish();
       duties.close();
