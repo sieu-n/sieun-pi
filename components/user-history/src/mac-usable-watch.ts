@@ -57,7 +57,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 function parseRow(value: unknown): Row | null {
   if (!isRecord(value) || typeof value.sessionId !== "string") return null;
   return { id: value.sessionId, parent: typeof value.parentSessionId === "string" ? value.parentSessionId : undefined,
-    name: typeof value.sessionName === "string" && value.sessionName ? value.sessionName : undefined, live: value.lifecycle === "live",
+    name: typeof value.sessionName === "string" && value.sessionName ? value.sessionName : undefined, live: value.lifecycle === "live" && typeof value.workerPid === "number",
     working: value.activity === "working", lastAt: typeof value.lastActivityAt === "string" ? Date.parse(value.lastActivityAt) : NaN,
     worker: typeof value.workerPid === "number" ? value.workerPid : undefined, ended: value.activity === "idle" && value.taskState === "needs_input" };
 }
