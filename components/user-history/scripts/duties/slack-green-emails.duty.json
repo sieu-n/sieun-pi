@@ -1,0 +1,61 @@
+{
+  "name": "Slack green emails",
+  "ownerWords": "also your duty is to keep monitor Resend if there are no false-positive emails being sent or we're being annoying.",
+  "goal": "Every email Slack Green sends through Resend still fits the person who gets it. No connect nudge after a workspace is connected, no email to a deleted account, no removed email, at most 2 connect nudges per person, one email per kind per day, and bounces plus complaints under Resend's 4% bounce guide (resend.com/docs/knowledge-base/warming-up).",
+  "metrics": [
+    {
+      "key": "false_positive_sends",
+      "label": "Emails sent to someone they no longer fit, last 24 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "users_over_cap",
+      "label": "People who got more than 2 connect nudges, Resend log",
+      "op": "<=",
+      "target": 0,
+      "unit": " people"
+    },
+    {
+      "key": "repeat_sends_24h",
+      "label": "Same email to the same person again within 24 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "bounce_or_complaint_pct",
+      "label": "Sends that bounced or were marked spam, last 24 h",
+      "op": "<=",
+      "target": 4,
+      "unit": "%"
+    },
+    {
+      "key": "unsubscribes_24h",
+      "label": "People who turned marketing email off since the last run",
+      "op": "<=",
+      "target": 0,
+      "unit": " people"
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources that failed in this check",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "10:00"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/slack-green-emails.ts"
+    ],
+    "cwd": "../.."
+  },
+  "onMiss": "source_errors: fix the precheck or its key first. For each bad send, write on p68 the template, the recipient's user id (never the address) and why it was wrong, then find the code path that sent it in slack-green and start one fix job that opens a draft PR. If one template floods (many wrong sends in a day), turn its flag off at once, CONNECT_REMINDER_ENABLED on Railway slack-green-backend or PHONE_SETUP_EMAIL_AUTO_ENABLED on Vercel, and tell the chat. The flag change is the only prod change this job makes; never email users or merge.",
+  "boardGoal": "p68"
+}
