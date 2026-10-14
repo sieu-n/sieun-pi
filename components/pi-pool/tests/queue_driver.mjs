@@ -1,4 +1,4 @@
-// Drives the extension's turn-queue handlers (input, context, agent_end) against the
+// Drives the extension's turn-queue handlers (input when it has one, context, agent_end) against the
 // real pool CLI in the PI_POOL_DIR this process inherits, and prints what happened.
 // node queue_driver.mjs <index.ts> '<steps JSON>'
 import { execFileSync } from 'node:child_process';
@@ -38,7 +38,7 @@ for (const step of steps) {
     };
     sessions.set(step.name, { handlers, ctx, state });
   } else if (step.op === 'input') {
-    await session.handlers.get('input')({ type: 'input', text: 'hi', source: step.source }, session.ctx);
+    await session.handlers.get('input')?.({ type: 'input', text: 'hi', source: step.source }, session.ctx);
   } else if (step.op === 'context') {
     session.state.controller = new AbortController();
     session.state.idle = false;
@@ -54,6 +54,11 @@ for (const step of steps) {
     await session.handlers.get('agent_end')({ type: 'agent_end', messages: [] }, session.ctx);
   } else if (step.op === 'queue') {
     out.queues[step.label] = JSON.parse(execFileSync('/usr/bin/python3', ['-B', CLI, 'queue', '--json'], { encoding: 'utf8' }));
+  } else if (step.op === 'cli') {
+    execFileSync('/usr/bin/python3', ['-B', CLI, ...step.args], { encoding: 'utf8' });
+  } else if (step.op === 'clock') {
+    const real = Date.now;
+    Date.now = () => real() + step.ms;
   } else if (step.op === 'sleep') {
     await new Promise((r) => setTimeout(r, step.ms));
   }

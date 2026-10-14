@@ -1,7 +1,7 @@
 """The Mac-wide turn queue (pool/turns.py): admit, release, owner-turn, queue --json,
 borrowing, class order, aging, the stale sweep, and a replay of the 10-14 02 KST burst.
 """
-import collections, heapq, json, os, subprocess, sys, tempfile, time, unittest
+import calendar, collections, heapq, json, os, subprocess, sys, tempfile, time, unittest
 
 from fixture_isolation import isolate_test_module
 from test_core import SOURCE
@@ -61,6 +61,23 @@ class Order(unittest.TestCase):
         got = queue_up(t, 5, mac=16, tree=2, a2=entry(tree="A", klass="high", since=1), b0=entry(tree="B", since=2))
         self.assertEqual(got, [("b0", "slot")])
         self.assertIn("a2", t["queued"])
+
+    def test_a_borrow_takes_no_slot(self):
+        """10-14 11:02 KST: 7 of 30 working turns were borrows, and each one kept a
+        queued run off a free slot."""
+        t = turns.empty()
+        fill(t, 14)
+        t["working"]["parent"] = dict(entry(tree="P"), kind="slot")
+        t["working"]["kid"] = dict(entry(tree="P", parent="parent"), kind="borrow", lender="parent")
+        self.assertEqual(queue_up(t, 1, job=entry(tree="j")), [("job", "slot")], "15 slots in use, so the 16th is free")
+        self.assertEqual(queue_up(t, 2, late=entry(tree="l")), [])
+        self.assertEqual((len(turns.in_slots(t["working"])), len(t["working"])), (16, 17))
+
+    def test_a_borrow_does_not_count_toward_its_trees_limit(self):
+        t = turns.empty()
+        t["working"]["parent"] = dict(entry(tree="P"), kind="slot")
+        t["working"]["kid"] = dict(entry(tree="P", parent="parent"), kind="borrow", lender="parent")
+        self.assertEqual(queue_up(t, 1, tree=2, other=entry(tree="P")), [("other", "slot")])
 
     def test_every_working_turn_counts_toward_the_mac_limit(self):
         t = turns.empty()
@@ -137,9 +154,9 @@ def ask_args(session, tree="t", parent=None, klass=None, renew=False):
 class Lease(unittest.TestCase):
     CFG = dict(base.DEFAULTS, mac_working_max=1)
 
-    def test_a_3000_s_run_that_renews_keeps_its_slot(self):
-        """A run whose one tool call lasts 3,000 s, longer than lease_s, with the
-        extension renewing every 300 s; another session waits the whole time."""
+    def test_a_run_that_calls_the_model_every_300_s_keeps_its_slot(self):
+        """A 3,000 s run, longer than lease_s, whose model calls renew every 300 s;
+        another session waits the whole time."""
         t = turns.empty()
         self.assertEqual(turns.ask(t, {}, ask_args("long"), 0, self.CFG)[1]["state"], "admitted")
         self.assertEqual(turns.ask(t, {}, ask_args("other", tree="o"), 1, self.CFG)[1]["state"], "queued")
@@ -160,10 +177,81 @@ class Lease(unittest.TestCase):
         self.assertEqual(sorted(t["working"]), ["asleep", "other"], "the Mac runs one over its limit rather than stop a run")
         self.assertIn("turn_renewed_after_lapse", [e for e, _ in events])
 
+    def test_a_run_stuck_in_one_tool_call_frees_its_slot_after_lease_s(self):
+        """10-14 11:02 KST: 01a137fe held an owner slot 2,887 s inside one bash call
+        (`devstack.mjs logs`) and three aside_browser cells held slots 2,653 to 2,937 s,
+        each kept by a timer renewal with no model call. With renewals only from model
+        calls the lease runs out, the queued run takes the slot, and the stuck run's next
+        model call works again at once."""
+        t = turns.empty()
+        turns.ask(t, {}, ask_args("stuck"), 0, self.CFG)
+        self.assertEqual(turns.ask(t, {}, ask_args("other", tree="o"), 1, self.CFG)[1]["state"], "queued")
+        lease = base.DEFAULTS["lease_s"]
+        changed, answer, events = turns.ask(t, {}, ask_args("third", tree="x"), lease + 1, self.CFG)
+        self.assertIn(("turn_swept", {"session": "stuck", "part": "working", "why": "lease ran out"}), events)
+        self.assertEqual(list(t["working"]), ["other"])
+        self.assertEqual(turns.ask(t, {}, ask_args("stuck", renew=True), 2887, self.CFG)[1]["state"], "admitted")
+
     def test_without_renew_a_lapsed_session_queues_like_a_new_run(self):
         t = turns.empty()
         turns.ask(t, {}, ask_args("other", tree="o"), 0, self.CFG)
         self.assertEqual(turns.ask(t, {}, ask_args("next"), 1, self.CFG)[1]["state"], "queued")
+
+
+def kst(clock):
+    """Epoch seconds of 10-14 `clock` KST."""
+    return calendar.timegm(time.strptime(f"2026-10-14 {clock}", "%Y-%m-%d %H:%M:%S")) - 9 * 3600
+
+
+class OwnerLog(unittest.TestCase):
+    """pi-pool.log on 10-14 had 25 owner admits that waited, up to 712.7 s. Each one
+    was owner-turn starting an agent run already in the queue, logged as the owner's
+    with that run's wait, and 15 of the 25 marks came from the extension's input hook
+    on a [job] or [brief check] notice, not from the owner."""
+    CFG = dict(base.DEFAULTS, mac_working_max=16)
+
+    def full(self):
+        t = turns.empty()
+        fill(t, 16)
+        return t
+
+    def test_frontend_bro_1021_the_owners_board_answer_never_waits(self):
+        """01a11ba8: an agent-message wake queued at 10:09:15 behind 16 working turns.
+        The owner answered a board todo at 10:21:07, which the log showed as an owner
+        admit that waited 712.7 s. That run ended at 10:21:15 and the owner's own run
+        started at 10:21:16."""
+        t, chat = self.full(), "01a11ba8-9d2c-727c-8ded-38f819ca9f29"
+        self.assertEqual(turns.ask(t, {}, ask_args(chat, tree=chat, klass="high"), kst("10:09:15"), self.CFG)[1]["state"], "queued")
+        answer, events = turns.mark_owner(t, chat, kst("10:21:07"), 1800)
+        self.assertEqual(answer["state"], "marked")
+        self.assertEqual(events[-1], ("turn_admitted", {"session": chat, "tree": chat, "kind": "ahead", "waited_s": 712.0}))
+        del t["working"][chat]
+        changed, answer, events = turns.ask(t, {}, ask_args(chat, tree=chat), kst("10:21:16"), self.CFG)
+        self.assertEqual(answer["kind"], "owner")
+        self.assertEqual([f for e, f in events if e == "turn_admitted"], [{"session": chat, "tree": chat, "kind": "owner", "waited_s": 0.0}])
+        self.assertEqual(t["owner"], {}, "the owner's run took the mark")
+
+    def test_launch_main_bro_0935_a_job_notice_is_no_owner_turn(self):
+        """01a11bd7: a run queued at 09:31:11, and a [job] notice at 09:35:44 made the
+        input hook call owner-turn, so the log showed an owner admit that waited
+        273.2 s. Without a mark the notice's run keeps its place in the queue."""
+        t, chat = self.full(), "01a11bd7-072f-7591-ad1d-f123c276cde5"
+        turns.ask(t, {}, ask_args(chat, tree=chat, klass="high"), kst("09:31:11"), self.CFG)
+        changed, answer, events = turns.ask(t, {}, ask_args(chat, tree=chat, klass="high"), kst("09:35:44"), self.CFG)
+        self.assertEqual((answer["state"], [e for e, _ in events if e == "turn_admitted"]), ("queued", []))
+        del t["working"]["w0"]
+        self.assertEqual(turns.admit_pass(t, kst("09:35:50"), 16, 8, 18), [(chat, "slot")])
+
+    def test_a_mark_on_a_working_session_waits_for_its_next_run(self):
+        """The owner's prompt to a session in flight starts the next run: 107 of 107
+        owner prompts on 10-14 08:06-11:02 KST did."""
+        t = turns.empty()
+        turns.ask(t, {}, ask_args("chat"), 0, self.CFG)
+        turns.mark_owner(t, "chat", 5, 1800)
+        self.assertEqual(t["working"]["chat"]["kind"], "slot")
+        del t["working"]["chat"]
+        self.assertEqual(turns.ask(t, {}, ask_args("chat"), 40, self.CFG)[1]["kind"], "owner")
+        self.assertEqual(turns.ask(t, {}, ask_args("wake", tree="w"), 41, self.CFG)[1]["kind"], "slot")
 
 
 class Class(unittest.TestCase):
@@ -286,12 +374,18 @@ class Cli(unittest.TestCase):
         self.run_cli("release", "boss")
         self.assertEqual([w["session"] for w in self.queue()["working"]], ["b", "job"])
 
-    def test_an_owner_turn_admits_a_queued_session_at_once(self):
+    def test_an_owner_turn_starts_a_queued_agent_run_ahead_and_keeps_the_mark(self):
         self.admit("a", "--tree", "A")
         self.admit("b", "--tree", "B")
         self.admit("chat", "--tree", "C")
-        self.assertEqual(json.loads(self.run_cli("owner-turn", "chat").stdout)["state"], "admitted")
-        self.assertEqual({w["session"]: w["kind"] for w in self.queue()["working"]}["chat"], "owner")
+        self.assertEqual(json.loads(self.run_cli("owner-turn", "chat").stdout), {"session": "chat", "state": "marked", "ahead": True})
+        self.assertEqual({w["session"]: w["kind"] for w in self.queue()["working"]}["chat"], "ahead")
+        self.run_cli("release", "chat")
+        self.assertEqual(self.admit("chat", "--tree", "C")["kind"], "owner")
+        with open(os.path.join(self.dir, "pi-pool.log")) as f:
+            logged = [json.loads(line) for line in f if '"turn_admitted"' in line and '"chat"' in line]
+        self.assertEqual([e["kind"] for e in logged], ["ahead", "owner"])
+        self.assertEqual(logged[1]["waited_s"], 0.0)
 
     def test_off_admits_everything_records_nothing_and_keeps_the_limit(self):
         self.set("agent_queue_on", "0")
@@ -413,7 +507,7 @@ class Burst(unittest.TestCase):
             peak_borrows = max(peak_borrows, kinds["borrow"])
         self.assertEqual(admitted, len(fixture), "every turn ran")
         self.assertEqual(peak_slots, 16)
-        self.assertEqual((peak_working, peak_borrows), (20, 9), "turns over 16 are only children on a lent slot")
+        self.assertEqual((peak_working, peak_borrows), (27, 11), "turns over 16 are only children on a lent slot")
         waits.sort()
         print(f"\nburst replay: {admitted} turns, peak {peak_working} working, {peak_borrows} borrows at once, "
               f"median wait {waits[len(waits) // 2]:.0f} s, p90 {waits[int(len(waits) * 0.9)]:.0f} s", file=sys.stderr)

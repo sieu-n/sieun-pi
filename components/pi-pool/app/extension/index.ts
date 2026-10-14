@@ -348,10 +348,20 @@ async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | u
  * The Mac-wide turn queue (pool/turns.py). A run takes a working slot at its first
  * model call: the `context` handler awaits `admit --wait`, which Prime awaits with no
  * timeout before every model call from every turn source, agent-message wakes and
- * retries included. The run keeps the slot until agent_end, renewing its lease every
- * QUEUE_RENEW_MS while it is live, and gives it back when it finds the session idle,
- * because agent_end does not fire on some aborts. A failed admit lets the run go.
+ * retries included. The run keeps the slot until agent_end and renews its lease from
+ * its model calls, at most once per QUEUE_RENEW_MS, so a run stuck in one tool call
+ * loses its slot after lease_s with no model call and takes it back at once on its next
+ * one. A timer gives the slot back when it finds the session idle, because agent_end
+ * does not fire on some aborts. A failed admit lets the run go.
+ *
+ * The extension marks no owner turn. Every prompt the daemon delivers reads as source
+ * "interactive", so on 10-14 the input hook marked 21 [job] notices, 6 [brief check]
+ * notes and 51 duty and check-in briefs as owner turns
+ * (0735-agent-queue-design/data/owner_wait_and_leak_check_1014_11kst.json). The chat
+ * service marks the owner's own prompts with `pi-pool owner-turn`.
  */
+// Six renewals per lease_s of 1,800 s, so a run that calls the model at least once per
+// 25 minutes never lapses; the p99.9 gap between model calls was 1,508 s (base.py lease_s).
 const QUEUE_RENEW_MS = 5 * 60_000;
 const QUEUE_ENTRY = "pi-pool-queue";
 
@@ -382,11 +392,6 @@ function parentSessionId(ctx: ExtensionContext): string | undefined {
 		// Fall back to the file name below.
 	}
 	return basename(path).replace(/\.jsonl$/, "");
-}
-
-function sessionDepth(ctx: ExtensionContext): number {
-	const header = ctx.sessionManager?.getHeader?.();
-	return header?.rlmDepth ?? (header?.parentSession ? 1 : 0);
 }
 
 /**
@@ -480,6 +485,7 @@ export default function (pi: ExtensionAPI): void {
 	let slot: "none" | "held" | "free" | Promise<void> = "none";
 	let cancelWait = () => {};
 	let renewTimer: ReturnType<typeof setInterval> | undefined;
+	let renewedAt = 0;
 	const dropSlot = async (sid: string | undefined): Promise<void> => {
 		const held = slot === "held";
 		if (typeof slot === "object") cancelWait();
@@ -489,12 +495,18 @@ export default function (pi: ExtensionAPI): void {
 		if (held && sid) await pool(["release", sid]);
 	};
 	const holdSlot = async (ctx: ExtensionContext): Promise<void> => {
-		if (slot === "held" || slot === "free") return;
-		if (slot !== "none") return slot;
+		if (slot === "free") return;
 		const sid = sessionId(ctx);
+		const parent = parentSessionId(ctx);
+		if (slot === "held") {
+			if (!sid || Date.now() - renewedAt < QUEUE_RENEW_MS) return;
+			renewedAt = Date.now();
+			await pool(["admit", sid, "--renew", ...(parent ? ["--parent", parent] : [])]);
+			return;
+		}
+		if (slot !== "none") return slot;
 		if (!sid) return;
 		let told = false;
-		const parent = parentSessionId(ctx);
 		const wait = admitWait(sid, parent, ctx.signal, (reply) => {
 			if (told || reply.position === null || reply.total === null) return;
 			told = true;
@@ -511,28 +523,20 @@ export default function (pi: ExtensionAPI): void {
 			}
 			slot = result !== "failed" && result.state === "admitted" ? "held" : "free";
 			if (slot !== "held") return;
+			renewedAt = Date.now();
 			renewTimer = setInterval(() => {
+				let idle = true;
 				try {
-					if (ctx.isIdle()) {
-						void dropSlot(sid);
-						return;
-					}
+					idle = ctx.isIdle();
 				} catch {
-					void dropSlot(sid);
-					return;
+					// A replaced session's ctx throws: its run is over.
 				}
-				void pool(["admit", sid, "--renew", ...(parent ? ["--parent", parent] : [])]);
+				if (idle) void dropSlot(sid);
 			}, QUEUE_RENEW_MS);
 		});
 		slot = waiting;
 		return waiting;
 	};
-	pi.on("input", async (event, ctx) => {
-		// A prompt typed into a depth-0 session is the owner's, so its run never queues.
-		const sid = sessionId(ctx);
-		if (event.source === "interactive" && sid && sessionDepth(ctx) === 0) await pool(["owner-turn", sid]);
-		return undefined;
-	});
 	pi.on("context", async (_event, ctx) => {
 		await holdSlot(ctx);
 		return undefined;

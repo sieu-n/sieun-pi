@@ -9,27 +9,36 @@ agent_end. state.json keeps the queue under the pool flock in state["turns"]:
 
 Order: an owner turn runs at once and never waits. Then queued turns take free slots
 by class, high before normal before low, longest wait first inside a class, while the
-Mac has under mac_working_max working turns and the tree under tree_working_max. A
+Mac has under mac_working_max slots in use and the tree under tree_working_max. A
 queued entry moves up one class for every queue_aging_s it has waited. A child whose
 parent's turn is in flight and that finds no slot borrows the parent's slot: a parent
-lends at most one slot at a time, so the borrow pushes the total over the limit by at
-most one per parent in flight. Every working turn counts toward both limits.
+lends at most one slot at a time, and a borrow rides on its lender's slot, so it counts
+toward neither limit and the working total runs over the limit by at most one per
+parent in flight.
+
+Only the chat service's `owner-turn` marks an owner turn, right before it sends the
+owner's prompt. That prompt starts the session's next run (107 of 107 owner prompts on
+10-14 08:06-11:02 KST started a run of their own and none joined a live one), so the
+mark waits for that run's admit. A session queued when the mark lands has an agent run
+in the way: that run starts at once as kind "ahead", logged with its own wait, and the
+owner's run after it takes the mark.
 
 The pi-pool extension asks at a run's first model call (`admit --wait`), renews the
-slot's lease every few minutes while the run is live (`admit --renew`), and releases
-at agent_end or when it finds the session idle. A slot whose
-lease ran out, or whose process (`pid`, the Prime worker that asked) is gone, is
-dropped, and so is a queue entry whose `admit --wait` process (`waiter`) is gone, so
-an abort with no agent_end or a crash cannot hold a slot.
+slot's lease from the run's model calls (`admit --renew`), and releases at agent_end
+or when it finds the session idle. A slot whose lease ran out, which a run stuck in one
+tool call reaches after lease_s with no model call, or whose process (`pid`, the Prime
+worker that asked) is gone, is dropped, and so is a queue entry whose `admit --wait`
+process (`waiter`) is gone, so an abort with no agent_end, a hung tool or a crash
+cannot hold a slot.
 """
 import json, os, sys, time
 
 from . import base, registry
 
 CLASSES = ("low", "normal", "high")
-# An owner-turn mark that no admit consumed is dropped after this long. A mark waits
-# for the session's next turn, which starts after the turn in flight ends: the 99th
-# percentile turn was 2,956 s over the 22,675 turns of 10-11 to 10-14
+# An owner-turn mark that no admit consumed (a failed send) is dropped after this long.
+# A mark waits for the session's next turn, which starts after the turn in flight ends:
+# the 99th percentile turn was 2,956 s over the 22,675 turns of 10-11 to 10-14
 # (agent-queue-design/data/turns.json, measure_turns.py).
 OWNER_MARK_TTL_SEC = 3600
 # `admit --wait` re-reads state.json this often while queued.
@@ -97,6 +106,11 @@ def sweep(turns, now, is_alive=alive):
     return gone
 
 
+def in_slots(working):
+    """Working turns that hold a slot of their own: every one but a borrow."""
+    return [e for e in working.values() if e.get("kind") != "borrow"]
+
+
 def lending(turns):
     """Parent session -> the child running on its lent slot."""
     return {e["lender"]: s for s, e in turns["working"].items() if e.get("kind") == "borrow"}
@@ -109,18 +123,23 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None):
     admitted = []
     queue = order(turns["queued"], now, aging)
     trees = {}
-    for entry in turns["working"].values():
+    held = in_slots(turns["working"])
+    for entry in held:
         trees[entry["tree"]] = trees.get(entry["tree"], 0) + 1
+    used = len(held)
 
     def start(session, kind, **extra):
+        nonlocal used
         entry = turns["queued"].pop(session)
         entry.pop("waiter", None)
         turns["working"][session] = dict(entry, kind=kind, since=now, queued_since=entry["since"], lease_until=now + lease, **extra)
-        trees[entry["tree"]] = trees.get(entry["tree"], 0) + 1
+        if kind != "borrow":
+            trees[entry["tree"]] = trees.get(entry["tree"], 0) + 1
+            used += 1
         admitted.append((session, kind))
 
     for session in queue:
-        if len(turns["working"]) >= mac_max:
+        if used >= mac_max:
             break
         if trees.get(turns["queued"][session]["tree"], 0) < tree_max:
             start(session, "slot")
@@ -158,7 +177,8 @@ def view(turns, now, cfg):
                "wait_s": round(now - turns["queued"][s]["since"])} for i, s in enumerate(queue)]
     return {"enabled": mac is not None, "mac_working_max": int(cfg["mac_working_max"]),
             "mac_working_max_set": last_set("mac_working_max"),
-            "tree_working_max": int(cfg["tree_working_max"]), "working": working, "queued": queued}
+            "tree_working_max": int(cfg["tree_working_max"]), "slots_used": len(in_slots(turns["working"])),
+            "working": working, "queued": queued}
 
 
 def last_set(key):
@@ -370,22 +390,31 @@ def cmd_release(rest):
     return 0
 
 
+def mark_owner(turns, session, now, lease):
+    """The owner's prompt to `session` goes out next: mark its next admit as the owner's.
+    A queued agent run of the session would hold that prompt behind the queue, so it
+    starts now as kind "ahead". Returns (answer, events to log)."""
+    turns["owner"][session] = now
+    events = [("turn_owner_marked", {"session": session})]
+    if session not in turns["queued"]:
+        return {"session": session, "state": "marked"}, events
+    entry = turns["queued"].pop(session)
+    entry.pop("waiter", None)
+    turns["working"][session] = dict(entry, kind="ahead", since=now, queued_since=entry["since"], lease_until=now + lease)
+    events.append(("turn_admitted", dict(session=session, tree=entry["tree"], kind="ahead", waited_s=round(now - entry["since"], 1))))
+    return {"session": session, "state": "marked", "ahead": True}, events
+
+
 def cmd_owner_turn(rest):
-    """The session's next admit is an owner turn. A session already queued starts now."""
+    """The session's next admit is an owner turn. A queued run of the session starts now."""
     if len(rest) != 1 or rest[0].startswith("--"):
         raise SystemExit("usage: pi-pool owner-turn <session>")
-    session = rest[0]
 
     def mark(state, turns, now):
-        if session in turns["queued"]:
-            entry = turns["queued"].pop(session)
-            entry.pop("waiter", None)
-            turns["working"][session] = dict(entry, kind="owner", since=now, queued_since=entry["since"],
-                                             lease_until=now + int(base.config()["lease_s"]))
-            base.log("turn_admitted", session=session, tree=entry["tree"], kind="owner", waited_s=round(now - entry["since"], 1))
-            return True, {"session": session, "state": "admitted"}
-        turns["owner"][session] = now
-        return True, {"session": session, "state": "marked"}
+        answer, events = mark_owner(turns, rest[0], now, int(base.config()["lease_s"]))
+        for event, fields in events:
+            base.log(event, **fields)
+        return True, answer
     emit(locked(mark))
     return 0
 
@@ -403,7 +432,8 @@ def cmd_queue(rest):
     if not out["enabled"]:
         print("The queue is off.")
     else:
-        print(f"{len(out['working'])} working of {out['mac_working_max']}, {len(out['queued'])} queued.")
+        borrows = len(out["working"]) - out["slots_used"]
+        print(f"{out['slots_used']} slots of {out['mac_working_max']} in use, {borrows} borrowed, {len(out['queued'])} queued.")
     for e in out["queued"]:
         print(f"  {e['position']}. {e['session']} {e['class']} (was {e['base_class']}), waiting {e['wait_s']} s")
     return 0

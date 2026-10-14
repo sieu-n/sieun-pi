@@ -505,14 +505,15 @@ One run of one session holds one working slot from its first model call to its a
 - With `--wait` the command prints one line each time its place changes and blocks until it prints the admitted or off line.
 - `--renew` renews a running session's lease, and a session whose slot lapsed works again at once and never queues.
 - `pi-pool release <session>` frees the slot or drops the queue entry, and a second release does nothing.
-- `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and a session already queued starts at once.
-- `pi-pool queue --json` prints the working and queued runs with their classes, positions and waits.
+- `pi-pool owner-turn <session>` marks the session's next admit as the owner's, which runs at once, and an agent run of the session already in the queue starts at once as kind `ahead`, so the owner's prompt never waits behind the queue.
+- `pi-pool queue --json` prints the working and queued runs with their classes, positions and waits, and `slots_used`, the working runs that are not borrows.
 
 An owner run never waits and still counts toward the limit, so background work waits behind it.
 Queued runs take free slots by class, high before normal before low, and the longest wait goes first inside a class.
 A queued run moves up one class for every `queue_aging_s` it waits.
-A slot is free while the Mac has fewer than `mac_working_max` working runs and the run's tree has fewer than `tree_working_max`, and every working run counts toward both.
+A slot is free while the Mac has fewer than `mac_working_max` slots in use and the run's tree has fewer than `tree_working_max`, and every working run but a borrow counts toward both.
 A child whose parent's run is in flight and that finds no free slot runs on the parent's lent slot, and a parent lends one slot at a time, so a parent that spawns six children in one cell runs one of them over the limit, not six.
+A borrow rides on its lender's slot and takes none: at 11:02 KST on 10-14, 7 of 30 working runs were borrows that each kept a queued run off a free slot.
 An entry whose Prime worker or waiting `admit --wait` process is gone is dropped, and so is a slot whose lease (`lease_s`) runs out.
 `pi-pool set agent_queue_on 0` turns the queue off and keeps the limits, and every admit then answers off.
 Every `pi-pool set` records who ran it and when under `set_by` in config.json and as a `set` line in pi-pool.log with the old value.
@@ -522,11 +523,13 @@ The writer is `--by <who>` (the chat service's Settings pane passes "the Setting
 The extension's `context` handler, which Prime awaits before every model call from every turn source, runs `admit --wait` at a run's first model call.
 A queued run gets one `pi-pool-queue` entry in its transcript that reads "Queued for a working slot, 3rd of 7".
 Stop reaches the waiting handler through `ctx.signal`, kills the wait and drops the entry (`tests/native/queue.mjs`).
-While the run holds its slot, the extension renews the lease every 5 minutes, and it releases the slot at agent_end or when a renewal finds the session idle, because agent_end does not fire on some aborts.
-A prompt typed into a depth-0 session (input source `interactive`) marks an owner turn, and the chat service marks the browser chat's prompts with `pi-pool owner-turn`.
+While the run holds its slot, its model calls renew the lease at most once every 5 minutes, and a timer releases the slot when it finds the session idle, because agent_end does not fire on some aborts.
+A run stuck in one tool call makes no model call, so its slot lapses after `lease_s` and its next model call takes it back at once: at 11:02 KST on 10-14 four runs held slots 2,653 to 2,937 s inside one bash or aside_browser call, kept by the old timer renewal.
+Only the chat service marks an owner turn, with `pi-pool owner-turn` right before it sends the owner's prompt.
+The extension marks none, because every prompt the daemon delivers reads as input source `interactive`: on 10-14 that hook marked 21 [job] notices, 6 [brief check] notes and 51 duty and check-in briefs as owner turns.
 A failed admit lets the run go, so a broken pool never stops the Mac's agents.
 
-A replay of the 852 runs that started 10-14 02:00-03:00 KST, when load reached 208, runs every run, gives at most 16 slots at once, and puts at most 9 children on lent slots at once (`tests/test_turns.py`).
+A replay of the 852 runs that started 10-14 02:00-03:00 KST, when load reached 208, runs every run, gives at most 16 slots at once, and puts at most 11 children on lent slots at once (`tests/test_turns.py`).
 
 Rollout: `install.py` runs the Python tests and checks only the token hooks, and a running session keeps the extension code it loaded until the session is rebuilt, so the queue reaches each session at its next load, reload or worker restart.
 
