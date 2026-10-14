@@ -112,16 +112,14 @@ class Wiring(unittest.TestCase):
         self.assertEqual({w["session"]: w["kind"] for w in run["queues"]["q"]["working"]}, {"chat": "slot", "kid": "borrow"})
 
     def test_a_pool_that_fails_lets_the_run_go(self):
-        # The pool refuses a folder inside the code root of the CLI the extension calls,
-        # which for a staged release is current's (poolBin), not the staged folder.
-        root = TESTS.parent
-        if root.parent.name == "releases":
-            root = root.parent.parent / "current"
-        self.env["PI_POOL_DIR"] = str(Path(os.path.realpath(root)) / "inside-the-source")
+        """The pool CLI exits nonzero on a config it cannot read as numbers. A staged release's
+        extension calls current's CLI (poolBin), so the failure comes from the state folder,
+        which every CLI reads, and not from where the code sits."""
+        with open(os.path.join(self.dir, "config.json"), "w") as f:
+            json.dump({"agent_queue_on": "broken"}, f)
         run = self.drive({"op": "start", "name": "job"}, {"op": "context", "name": "job"},
                          {"op": "wait", "name": "job", "ms": 5000, "label": "open"})
         self.assertIsNotNone(run["context"]["open"])
-
 
 if __name__ == "__main__":
     unittest.main()
