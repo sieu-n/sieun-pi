@@ -165,7 +165,7 @@ print(json.dumps([bool(m.WAITER.search(c)) for c in json.loads(sys.argv[2])]))`,
   assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + MIN), [], "asked once per pid");
   assert.deepEqual(await askWaiters(source, [], new Set(["lmb"]), NOW + 2 * MIN), []);
   assert.deepEqual(JSON.parse(await readFile(join(dir, "mac-usable", "waiters-asked.json"), "utf8")), {}, "a waiter that ended leaves the record");
-  const { metrics, flagged } = measure([watch(59, { waiters: line.waiters })], NOW);
+  const { metrics, flagged } = measure([watch(59, { waiters: line.waiters! })], NOW);
   assert.equal(metrics.kernel_waiters_1h, 2);
   assert.deepEqual(flagged!.filter(item => item.kind === "kernel_waiter").map(item => item.item), ["12634", "25528"]);
 });
