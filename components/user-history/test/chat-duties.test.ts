@@ -94,17 +94,18 @@ Measured against the targets: all 2 on target. This is information, not a verdic
 - Split work by the job rules: one goal per job, one subagent per unit of output, and work of 1 to 3 tool calls stays inline. Start subagents with \`await rlm.spawn(brief, name=...)\`, all at once, each brief ending with \`await agent_message.send(report, receiver_role="parent")\`; end your turn, read each reply as it comes, and delete each subagent after its report. Work for another repository goes to \`await rlm.create_session(brief, name=..., cwd=...)\`.
 - Map the chat's work as a graph: one job or subagent per part, never steps piled on one old long-running session; when the findings list a session that carries too much, move its steps to new jobs per part. Heartbeats the check-in covers go: name each for the chat to delete.
 - You can message another thread yourself to chase it: \`await agent_message.send(text, receiver_role="sibling", receiver_name=<thread name>)\`.
-- You cannot edit the board. Send the chat each change as one chat_board op JSON per line, like \`{"op":"plan_update","id":"p4","status":"done","note":"live on production at 4f1c2a, checked on the live page"}\`. Close a step only on evidence you name in its note.
+- Apply each board change to the chat's board yourself in this run, with \`import json, shlex\` and \`await bash("cd ${join(import.meta.dirname, "..")} && node --import tsx scripts/board-apply.ts c1 " + shlex.quote(json.dumps(ops)) + " --data-dir /data")\`, where ops is a list of chat_board ops like \`[{"op":"plan_update","id":"p4","status":"done","note":"live on production at 4f1c2a, checked on the live page"}]\`. It refuses what chat_board refuses and prints each op's summary. Close a step only on evidence you name in its note.
+- Every stuck step needs a live owner, a For you todo, or a close in this run. Give a step an owner that outlives this run with \`await rlm.create_session(brief, name=..., cwd=...)\`, which registers the session as a job of the chat, and set the step's job to that name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.
 - Two hard gates hold for every chat. A step marked as needing the owner's go moves only after the owner answers its For you todo with a go (a step whose only target is staging never needs one): never start, steer or report work on it as approved before that, and stop a job that started without it. A Build step starts only after its goal's requirements check: a plan or design job's report quotes the original owner request and checks each line of it against the design before build.
 - Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Production needs his explicit approval of that specific PR or push in For you (c49): never merge a PR into the production branch, turn on auto-merge for one, push to main or master, or promote to production before a todo linked to the step, whose text names the PR (for a push, the repo and the branch or the word push), is answered by him with a go and checked off. There is no standing "merge once checks pass" approval, and a go on another step, PR or push does not carry over. For such a merge or push the global-rules merge guard refuses the command until it carries that todo as OWNER_OK=<chat id>/<todo id>: an env prefix in bash (\`OWNER_OK=<chat>/<todo> gh pr merge 123\`), or a \`# OWNER_OK=<chat>/<todo>\` line in an ipython cell. The guard passes staging pushes and branch merges that name base staging with no token, but it still refuses \`gh pr merge <n>\` for a staging PR, because that command never names the base: merge a staging PR through a path that names the base, or the land script. A merge step done without that go is a repo rule breach: report it to the owner in your report, with the PR.
-- A goal can carry a target: when you measure it, send plan_update with its whole target, like \`{"op":"plan_update","id":"p1","target":{"metric":"proxy bandwidth used","target":200,"unit":"Mbps","current":8,"measuredAt":"2026-10-09T21:00:00+09:00","source":"proxy dashboard, 24 h average"}}\`. Close the largest gap first: start or steer the job that moves the number.
+- A goal can carry a target: when you measure it, apply plan_update with its whole target, like \`{"op":"plan_update","id":"p1","target":{"metric":"proxy bandwidth used","target":200,"unit":"Mbps","current":8,"measuredAt":"2026-10-09T21:00:00+09:00","source":"proxy dashboard, 24 h average"}}\`. Close the largest gap first: start or steer the job that moves the number.
 - Never push a ci/ branch or use --push-ci: build the commit object for auto-sns-agent (\`node scripts/repo/agent/commit.mjs --object-only -m "<type>(<scope>): <what>" <files>\`) and send it to the chat, which asks Fable for a probe slot; code reaches the shared tip only after its own green probe. Every file you touch stays under its light-guard line limit (1,000 lines for most source files); split a file before it would cross it.
 - Do what you can reach yourself: Convex data is read or written with \`npx convex run\` or a query using the deploy key and an identity; never ask the owner for his browser or to act as him, and turn such a For you todo into a job.
 - Never send anything outside on your own: an email, a vendor or support ticket reply, a customer message or a public post is drafted and put in For you with the draft and choices; it goes out only after the owner approves it there.
 - Act directly and ship: do not invent waiting rules, extra review rounds or safety gates of your own; keep only the gates the owner asked for.
 - No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.
 - When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.
-- Otherwise send the chat one report when your work is done, with only what it and the owner need: the board ops, then at most 3 short plain lines the owner should hear, or "nothing for the owner". Send it with \`await agent_message.send(report, receiver_role="sibling", receiver_name="dev VP")\`.
+- Otherwise send the chat one report when your work is done, with only what it and the owner need: the board ops you applied, then at most 3 short plain lines the owner should hear, or "nothing for the owner". Send it with \`await agent_message.send(report, receiver_role="sibling", receiver_name="dev VP")\`.
 `);
   assert.doesNotMatch(brief, /verifier per goal|start at least these subagents/i, "no fixed split");
   const record = (verdict: DutyRunRecord["verdict"], metrics: DutyRunRecord["metrics"] = {}): DutyRunRecord => ({ duty: "d1", at: 1, trigger: "schedule", ms: 1, verdict, metrics, summary: "" });
@@ -113,8 +114,9 @@ Measured against the targets: all 2 on target. This is information, not a verdic
   assert.deepEqual(repeatMisses(miss, record("met")), []);
   assert.equal(errorStreak([record("error"), record("skipped"), record("error"), record("met"), record("error")]), 2);
   assert.ok(CHECK_IN_FOCUS.some(line => line.includes("an open goal with independent work and no live job gets jobs")), "the check-in job looks for idle goals");
-  assert.ok(CHECK_IN_FOCUS[0]!.startsWith("Organize the plan first") && CHECK_IN_FOCUS[0]!.includes("plan_update parent"), "c44: the check-in job tidies the plan first");
-  assert.ok(CHECK_IN_FOCUS[1]!.startsWith("A goal held only by other threads") && CHECK_IN_FOCUS[1]!.includes("send the holding thread the leftover in one message"),
+  assert.ok(CHECK_IN_FOCUS[0]!.startsWith("Your number is the stuck count"), "owner 10-14: the check-in job is judged on the stuck count first");
+  assert.ok(CHECK_IN_FOCUS[1]!.startsWith("Organize the plan first") && CHECK_IN_FOCUS[1]!.includes("plan_update parent"), "c44: the check-in job tidies the plan next");
+  assert.ok(CHECK_IN_FOCUS[2]!.startsWith("A goal held only by other threads") && CHECK_IN_FOCUS[2]!.includes("send the holding thread the leftover in one message"),
     "c45: the check-in job closes or hands off a goal that only waits on another thread");
 });
 
@@ -377,7 +379,7 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   const duties = new Duties(store, { isChat: async () => true, jobs: jobs.host, tickMs: 0, now: () => now });
   const quiet = { orphan_steps: 0, due_late: 0, stale_chase_24h: 0, job_end_unrecorded: 0, job_end_silent: 0, scope_misses: 0, idle_goals: 0, stalled_steps: 0, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 0,
     finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
-    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 0 };
+    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 0, stuck_steps: 0 };
   const run = (minutes: number, metrics = quiet): CheckInRun => ({ at: now + minutes * 60_000, trigger: "schedule", everyMs: 15 * 60_000, output: { metrics, flagged: [] }, classes: { live: 2 },
     findings: "### Every open step, oldest change first\n- p2 (live) \"Build\" doing" });
   await duties.checkIn("chat1", run(0));
@@ -385,7 +387,7 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   assert.match(jobs.briefs[0]!, /^# check-in dev VP 18:00: the Check-in duty of the chat "dev VP"/);
   assert.match(jobs.briefs[0]!, /Goal: The check-in keeps two things true in every chat/);
   assert.match(jobs.briefs[0]!, /> YES\. it - checks and synchronizes the agent swarm with user intent/);
-  assert.match(jobs.briefs[0]!, /Measured against the targets: all 25 on target\./);
+  assert.match(jobs.briefs[0]!, /Measured against the targets: stuck_steps 0 \(on target\); all 26 on target\./);
   assert.match(jobs.briefs[0]!, /### Every open step, oldest change first\n- p2 \(live\) "Build" doing/);
   assert.match(jobs.briefs[0]!, /When nothing needs work, end in one short turn and send nothing/);
   for (const line of CHECK_IN_FOCUS) assert.ok(jobs.briefs[0]!.includes(`- ${line}`), line);
@@ -403,7 +405,7 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   assert.deepEqual(runs[2]!.metrics.orphan_steps, { value: 1, target: 0, op: "<=", met: false }, "the measure is kept as information");
   assert.deepEqual([(await store.read("chat1")).checkIn?.runCount, (await store.read("chat1")).duties], [3, []]);
   assert.deepEqual(runs[0]!.classes, { live: 2 });
-  assert.equal(CHECK_IN_DUTY.metrics.length, 25);
+  assert.equal(CHECK_IN_DUTY.metrics.length, 26);
   duties.close();
 });
 

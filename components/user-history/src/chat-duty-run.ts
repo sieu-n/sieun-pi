@@ -51,6 +51,10 @@ export const VIEW_RUNS = 14;
  * tasks to subagent & Jobs actively").
  */
 export const CHECK_IN_FOCUS: readonly string[] = [
+  "Your number is the stuck count the precheck opens with (owner 10-14: \"all the PLAN list should clear or be stuck in FOR YOU\"). Every step " +
+    "under Stuck steps ends this run with a live owner (steer its job, or start one with rlm.create_session and set the step's job), a For you " +
+    "todo that links it when only the owner can unblock it, or a close on evidence. A chase message, a new wait text or a later waitUntil " +
+    "leaves it stuck. Report the stuck count before and after your run.",
   "Organize the plan first, in every run, with board ops: close or fold what shipped (name the evidence), move a loose step under its goal with " +
     "plan_update parent, remove a step another thread now owns (one scratch note names the new owner), close a step a duty now covers, and fix " +
     "stale notes. A run that only rewrites notes and wait times while Plan shape or Look done lists items has not done its job: the owner should " +

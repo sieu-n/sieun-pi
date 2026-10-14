@@ -6,7 +6,7 @@ import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile } fro
 import { flagStreaks } from "./checkin-repeats.ts";
 import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, jobFacts, liveJobs } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs } from "./checkin-steps.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   lastJobMessages, noReportNotice, retryDue } from "./chat-checkin.ts";
@@ -17,7 +17,7 @@ import { previousSpawn, spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
-import { briefCheckNote, turnOwnerAt } from "./shared/brief-check.ts";
+import { briefCheckNote, ownerSaid, turnOwnerAt } from "./shared/brief-check.ts";
 import { briefCheckWithHistory } from "./owner-history.ts";
 import type { CheckInRun } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
@@ -744,7 +744,8 @@ export class Chats {
       const train = await readTrain(trainFile(this.source.home));
       const previous = await this.source.memory.get(id);
       const precheck = checkInPrecheck(previous, facts, board, at,
-        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}) });
+        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+          owner: ownerSaid(this.messages(id) ?? []) });
       // A job at work an hour with no report gets one status ask through the chat; the check-in job cannot message the chat's subagents.
       const said = this.stall(id) ? undefined : this.messages(id);
       for (const ask of said ? statusAsks(said, facts, key => this.workingSince.get(key), at) : []) {
@@ -775,7 +776,7 @@ export class Chats {
     const dutyJobs = await this.source.dutyJobs?.(id).catch(() => []) ?? [];
     const nested = dutyJobs.flatMap(job => (this.subagents.get(job) ?? []).map(child => ({ ...child, parentId: job })));
     const children = this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []);
-    const live = liveJobs([...children, ...nested], this.subagents, this.now(), (await this.source.settings.get(id)).everyMs);
+    const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs));
     const threads = liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now());
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
     const facts = withQueuePlaces(threads.map(fact => {

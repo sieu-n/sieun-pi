@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
-import { ACT_CLASSES, classifyBoard, classLine, jobFacts, STEP_CLASSES, type StepClass, type StepView } from "../../src/checkin-steps.ts";
+import { ACT_CLASSES, classifyBoard, classLine, jobFacts, liveJobs, liveWindowMs, STEP_CLASSES, type StepClass, type StepView } from "../../src/checkin-steps.ts";
+import { endState, endStateKpi, endStateLine, type EndStateKpi, type EndStateView, OK_STATES, stuckLine } from "../../src/checkin-end-state.ts";
 import { checkInRecord, classCounts, convergenceMisses, type ConvergenceMisses, finishedOpen } from "../../src/chat-checkin.ts";
 import { checkInSettings } from "../../src/checkin-settings.ts";
 import { blockedOnOthers, deadRunWaits, extraGoals, gateFindings, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, noProgress, openUnderClosed, scopeMisses,
@@ -32,6 +33,8 @@ export interface DaemonSession {
 export interface ChatClasses {
   id: string; name: string; everyMs: number; open: number; counts: Record<StepClass, number>; misses: ConvergenceMisses;
   steps: StepView[]; flagged: FlaggedSlice[];
+  /** Each open leaf step's end state (`endState`) and the chat's KPI over them. */
+  end: EndStateView[]; kpi: EndStateKpi;
 }
 
 /** JSON whose strings may hold raw control characters (session titles do): they are escaped before parsing. */
@@ -91,8 +94,14 @@ export function chatChildren(sessions: readonly DaemonSession[], chatId: string)
   return sessions.filter(session => session.parentSessionId === chatId && session.rlmChildId && session.lifecycle !== "archived").map(session => {
     const at = ms(session.lastActivityAt);
     return { id: session.rlmChildId!, label: session.sessionName ?? session.rlmChildId!, ...(session.sessionName ? { sessionName: session.sessionName } : {}),
-      status: working.has(session.sessionId) ? "running" : "done", ...(at !== undefined ? { lastActivityAt: at } : {}) } as ChildAgent;
+      sessionId: session.sessionId, status: working.has(session.sessionId) ? "running" : "done", ...(at !== undefined ? { lastActivityAt: at } : {}) } as ChildAgent;
   });
+}
+/** Every listed subagent by its parent's session id, as the check-in's `liveJobs` reads the daemon's roster. */
+export function subagentsByParent(sessions: readonly DaemonSession[]): Map<string, ChildAgent[]> {
+  const byParent = new Map<string, ChildAgent[]>();
+  for (const session of sessions) if (session.parentSessionId) byParent.set(session.parentSessionId, [...byParent.get(session.parentSessionId) ?? [], ...chatChildren([session], session.parentSessionId)]);
+  return byParent;
 }
 
 /** The classes of every chat in `<dataDir>/chats.json` (or only `chats`), with the check-in duty's misses (`convergenceMisses`). */
@@ -123,8 +132,11 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
     sessions ??= hasOpen ? options.sessions() : undefined;
     const rows = sessionRows(sessions ?? []);
     const name = rows.find(row => row.id === id)?.name ?? id;
-    const facts = jobFacts(chatChildren(sessions ?? [], id), board, rows, id);
+    const children = chatChildren(sessions ?? [], id);
+    // The same working test as the check-in: a running subtree, or a session change within the chat's interval capped at LIVE_GAP_MS.
+    const facts = jobFacts(children, board, rows, id, [], liveJobs(children, subagentsByParent(sessions ?? []), now, liveWindowMs(everyMs)));
     const steps = classifyBoard(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), rows, now, active);
+    const end = steps.map(view => endState(view, board?.todos ?? [], rows, new Set([id, name]), now));
     const chatDuties = await duties.list(id).catch(() => undefined);
     const findings = { scope: scopeMisses(board, handoffs, [id, name]), gates: gateFindings(board, facts, active), stalled: stalledSteps(steps, memo?.steps ?? {}, rows, new Set([id, name]), now, train),
       goals: goalGaps(board, steps, everyMs, now), blocked: blockedOnOthers(steps, rows, new Set([id, name]), now, board?.scratch, train), done: finishedOpen(board, now), loose: looseGoals(board),
@@ -132,9 +144,9 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
       waitsMet: [...waitsMet(steps, board, rows, new Set([id, name])), ...deadRunWaits(steps, train, now)],
       stale: staleSteps(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), everyMs, now),
       fold: goalsToFold(board, facts, new Set([id, name]), chatDuties ?? []), load: oneSessionLoad(steps, rootsOf([id, name])),
-      heartbeats: redundantHeartbeats(readHeartbeats(heartbeatsFile(id, options.home)), chatDuties ?? []), noDuty: chatDuties ? goalsWithoutDuty(board, chatDuties) : [] };
+      heartbeats: redundantHeartbeats(readHeartbeats(heartbeatsFile(id, options.home)), chatDuties ?? []), noDuty: chatDuties ? goalsWithoutDuty(board, chatDuties) : [], end };
     const { metrics: misses, flagged } = convergenceMisses(id, steps, findings, told, everyMs, now);
-    result.push({ id, name, everyMs, open: steps.length, counts: classCounts(steps), misses, steps, flagged });
+    result.push({ id, name, everyMs, open: steps.length, counts: classCounts(steps), misses, steps, flagged, end, kpi: endStateKpi(end) });
   }
   return result;
 }
@@ -146,7 +158,9 @@ export function classesReport(chats: readonly ChatClasses[], now: number): strin
   for (const chat of chats) {
     for (const cls of STEP_CLASSES) total[cls] += chat.counts[cls];
     const misses = Object.entries(chat.misses).map(([key, value]) => `${key} ${value}`).join(", ");
-    lines.push(`${chat.id.slice(0, 8)} ${chat.name}: ${STEP_CLASSES.map(cls => `${cls} ${chat.counts[cls]}`).join(", ")} (open ${chat.open}); duty: ${misses}`);
+    lines.push(`${chat.id.slice(0, 8)} ${chat.name}: ${endStateLine(chat.kpi)}`);
+    lines.push(`  classes: ${STEP_CLASSES.map(cls => `${cls} ${chat.counts[cls]}`).join(", ")} (open ${chat.open}); duty: ${misses}`);
+    for (const entry of chat.end) if (!OK_STATES.has(entry.state)) lines.push(`  stuck: ${stuckLine(entry, now)}`);
     for (const view of chat.steps) if (ACT_CLASSES.has(view.cls)) lines.push(`  ${view.cls}: ${classLine(view, now)}`);
     for (const slice of chat.flagged) if (slice.kind === "merges_without_go") lines.push(`  merged without go: ${slice.excerpt}`);
     for (const slice of chat.flagged) if (slice.kind === "one_session_load") lines.push(`  one session: ${slice.excerpt}`);
@@ -158,7 +172,7 @@ export function classesReport(chats: readonly ChatClasses[], now: number): strin
     for (const slice of chat.flagged) if (slice.kind === "goals_to_fold") lines.push(`  fold: ${slice.excerpt}`);
     for (const slice of chat.flagged) if (slice.kind === "goals_without_duty") lines.push(`  no duty: ${slice.excerpt}`);
   }
-  lines.push("", `All chats: ${STEP_CLASSES.map(cls => `${cls} ${total[cls]}`).join(", ")}`);
+  lines.push("", `All chats: ${endStateLine(endStateKpi(chats.flatMap(chat => chat.end)))}`, `All chats, classes: ${STEP_CLASSES.map(cls => `${cls} ${total[cls]}`).join(", ")}`);
   return lines.join("\n") + "\n";
 }
 

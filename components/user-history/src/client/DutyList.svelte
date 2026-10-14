@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { DutyView } from "../shared/chat-duties.ts";
-  import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel } from "./duty-cadence.ts";
+  import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel, headlineLabel, metricsHeadlineFirst } from "./duty-cadence.ts";
   import { dutyState, history, lastLabel, metricValue, nextLabel, scheduleLabel, VERDICT_WORDS, type ChatDuties } from "./duties.svelte.ts";
   import Icon from "./Icon.svelte";
   import IdChip from "./IdChip.svelte";
@@ -49,6 +49,7 @@
     {@const state = dutyState(view)}
     {@const last = lastRun(view)}
     {@const found = flaggedLabel(view)}
+    {@const headline = headlineLabel(view)}
     <li class="duty">
       <div class="duty-line">
         <button type="button" class="duty-main" aria-expanded={open[duty.id] === true} onclick={() => toggle(duty.id)}>
@@ -63,6 +64,7 @@
           <button type="button" class="duty-act" onclick={() => void duties.act(duty.id, view.paused ? "resume" : "pause")}>{view.paused ? "Resume" : "Pause"}</button>
         </span>
       </div>
+      {#if headline}<p class="duty-headline">{headline}</p>{/if}
       <p class="duty-last">
         <span class="duty-verdict {state}">{lastLabel(view, now)}</span>
         {#if view.runs.length}
@@ -83,7 +85,7 @@
           <table class="metrics">
             <thead><tr><th>Metric</th><th>Target</th><th>Last</th><th>Runs</th></tr></thead>
             <tbody>
-              {#each duty.metrics as metric (metric.key)}
+              {#each metricsHeadlineFirst(duty.metrics) as metric (metric.key)}
                 {@const result = last?.metrics[metric.key]}
                 <tr>
                   <td title={metric.key}>{metric.label}</td>
@@ -170,6 +172,7 @@
   .duty-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
   .duty-tag { flex: none; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
   .duty-priority { flex: none; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
+  .duty-headline { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text); font-weight: 500; }
   .duty-found { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); overflow-wrap: anywhere; }
   .cadence { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text-muted); }
   .cadence-label { color: var(--text-faint); }

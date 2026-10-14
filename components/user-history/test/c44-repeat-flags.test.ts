@@ -113,10 +113,11 @@ test("check-in: a finding the last check-in flagged and the board did not fix he
   await chats.tick();
   await chats.settled();
   const second = runs.get(D)![1]!.findings;
-  assert.ok(second.startsWith("### Flagged again ("), "the repeats head the brief");
-  const section = second.split("\n\n")[0]!;
-  assert.match(section, /\n- finished_open: p31 "Goal: demo apps" doing, looks done: every step under it is closed \(flagged in 2 check-ins in a row\)/);
-  assert.ok(section.includes(`send the ${CHAT_SYSTEM_THREAD} thread one message`), "a wrong finding goes to the thread that owns the checks");
+  const heads = second.split("\n\n").filter(part => part.startsWith("### "));
+  const repeats = heads[heads[0]!.startsWith("### Stuck steps (") ? 1 : 0]!;
+  assert.ok(repeats.startsWith("### Flagged again ("), "the repeats head the brief, after the stuck steps");
+  assert.match(repeats, /\n- finished_open: p31 "Goal: demo apps" doing, looks done: every step under it is closed \(flagged in 2 check-ins in a row\)/);
+  assert.ok(repeats.includes(`send the ${CHAT_SYSTEM_THREAD} thread one message`), "a wrong finding goes to the thread that owns the checks");
   assert.equal((await memory.get(D))?.flags?.["finished_open p31"], 2, "the streak is kept in the check-in memory");
   chats.close();
 });

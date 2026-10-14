@@ -52,15 +52,18 @@ test("board classes: one class per open leaf step, and the convergence misses", 
   assert.deepEqual(chat!.steps.map(view => `${view.item.id} ${view.cls}`), ["p2 orphan", "p3 due", "p4 stale-chase", "p5 orphan", "p6 foryou", "p7 live"]);
   assert.deepEqual(chat!.misses, { orphan_steps: 2, due_late: 1, stale_chase_24h: 1, job_end_unrecorded: 1, job_end_silent: 0, scope_misses: 0, idle_goals: 0, stalled_steps: 2, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 1,
     finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
-    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 1 });
+    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 1, stuck_steps: 4 });
   assert.deepEqual(chat!.flagged.map(slice => `${slice.kind} ${slice.item}`), ["orphan_steps p2", "due_late p3", "stale_chase_24h p4", "orphan_steps p5", "job_end_unrecorded p5",
-    "stalled_steps p3", "stalled_steps p4", "blocked_on_others p4", "goals_without_duty p1"],
+    "stalled_steps p3", "stalled_steps p4", "blocked_on_others p4", "goals_without_duty p1", "stuck_steps p2", "stuck_steps p3", "stuck_steps p4", "stuck_steps p5"],
     "each flagged slice names its step, for the after-turn recheck");
+  assert.deepEqual(chat!.end.map(entry => `${entry.view.item.id} ${entry.state}`), ["p2 no_owner", "p3 time", "p4 release", "p5 job_ended", "p6 foryou", "p7 moving"]);
+  assert.deepEqual([chat!.kpi.open, chat!.kpi.stuck, chat!.kpi.pct], [6, 4, 33.3]);
   const report = classesReport([chat!], NOW);
-  assert.match(report, /c1 dev VP.: live 1, foryou 1, waiting 0, due 1, stale-chase 1, orphan 2, parked 0 \(open 6\); duty: orphan_steps 2, due_late 1, stale_chase_24h 1, job_end_unrecorded 1, job_end_silent 0, scope_misses 0/);
+  assert.match(report, /c1 dev VP.: End state: 2 of 6 open steps \(33\.3%\) are moving, in For you or parked; 4 stuck \(release 1, time 1, job_ended 1, no_owner 1\)\.\n  classes: live 1, foryou 1, waiting 0, due 1, stale-chase 1, orphan 2, parked 0 \(open 6\); duty: orphan_steps 2, due_late 1, stale_chase_24h 1, job_end_unrecorded 1, job_end_silent 0, scope_misses 0/);
+  assert.match(report, /\n  stuck: p4 "Revoke the old app" is stuck \(release\)/);
   assert.match(report, /  stale-chase: p4 "Revoke the old app" waits for "Promote 5 green" for 30 h: make it a For you todo or replan it now/);
   assert.match(report, /  blocked: p4 "Revoke the old app" is blocked on Promote for 30 h and no job works on it: find out why and start a job that fixes the blocker/);
-  assert.match(report, /All chats: live 1, foryou 1, waiting 0, due 1, stale-chase 1, orphan 2, parked 0/);
+  assert.match(report, /All chats: End state: 2 of 6 open steps \(33\.3%\)[^\n]*\nAll chats, classes: live 1, foryou 1, waiting 0, due 1, stale-chase 1, orphan 2, parked 0/);
 });
 
 test("board classes CLI: prints the classes report for Chat health's misses; it is no duty precheck and writes no OUTPUT_FILE", async () => {
@@ -79,7 +82,7 @@ test("board classes: a step whose job the server told as a bad end with no repor
   const [chat] = await boardClasses({ dataDir: dir, now: NOW, sessions: () => parsed.sessions });
   assert.deepEqual(chat!.misses, { orphan_steps: 2, due_late: 1, stale_chase_24h: 1, job_end_unrecorded: 0, job_end_silent: 1, scope_misses: 0, idle_goals: 0, stalled_steps: 2, go_missing: 0, requirements_missing: 0, goal_gaps: 0, blocked_on_others: 1,
     finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
-    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 1 });
+    held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, merges_without_go: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 1, stuck_steps: 4 });
   assert.deepEqual(chat!.flagged.filter(slice => slice.kind.startsWith("job_end")).map(slice => `${slice.kind}: ${slice.excerpt}`),
     ['job_end_silent: p5 "Fix the dates": job dates fix stopped on a provider error 60 min ago with no report and the step has not changed since']);
   await checkInRecord(join(dir, "check-ins.json")).told("c1", "sub-1", { at: NOW - 3 * HOUR, cause: "aborted" });

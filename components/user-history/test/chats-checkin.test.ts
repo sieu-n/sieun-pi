@@ -42,9 +42,14 @@ test("chats: every scheduled check-in hands one run with the precheck to the dut
   assert.equal(sink.runs.length, 1, "exactly one run");
   const [{ id, run }] = sink.runs as [{ id: string; run: CheckInRun }];
   assert.equal(id, "c1");
-  assert.deepEqual(Object.values(run.output.metrics).filter(value => Number(value) > 0), [], "every target met, and the run still goes to a job");
+  assert.deepEqual(Object.entries(run.output.metrics).filter(([, value]) => Number(value) > 0), [["stuck_steps", 1]],
+    "every target met but the end state (p3 waits a day with no owner), and the run goes to a job");
   assert.deepEqual([run.at, run.trigger, run.classes.live, run.classes.waiting], [now, "schedule", 1, 1]);
-  assert.equal(run.findings, `### Jobs\n- job api-audit: working, last activity 15 min ago, on p2 "Plan" (doing)\n\n### Every open step, oldest change first\n` +
+  assert.equal(run.findings, `End state: 1 of 2 open steps (50%) are moving, in For you or parked; 1 stuck (time 1).\n\n` +
+    `### Stuck steps (the owner's end state: every open step is moved by a live owner now, held by an open For you todo that links it, or parked by his ` +
+    `correction. Each step below ends this run with a live owner, a For you todo or a close; a chase, a new wait text or a later waitUntil leaves it stuck)\n` +
+    `- p3 "Build" is stuck (time): waits on a time and no live job of this chat watches it, last change 0 min ago: do it now if it can run now, or give ` +
+    `it a live owner that wakes at that time\n\n### Jobs\n- job api-audit: working, last activity 15 min ago, on p2 "Plan" (doing)\n\n### Every open step, oldest change first\n` +
     `- p2 (live) "Plan" doing, owner job api-audit (working), last change 0 min ago\n- p3 (waiting) "Build" blocked, no owner, waits until ${localTime(1_000_000 + 86_400_000)}, last change 0 min ago`);
   assert.deepEqual(calls, [], "no steer, no nudge, no note: the duty job decides");
   assert.deepEqual(await chats.tick(), [], "a second wake in the same slot does not run it again");

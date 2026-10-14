@@ -1,7 +1,8 @@
+import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
-import type { DutyCard, DutyJobRef } from "./shared/chat-duties.ts";
+import { type DutyCard, type DutyJobRef, headlineMetric } from "./shared/chat-duties.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /**
@@ -10,6 +11,9 @@ import type { SessionRow } from "./shared/types.ts";
  * the job reply guideline, and reports to the chat. Its brief is the duty, the owner's words and the precheck; the job decides what to check,
  * what to fix and what to start. The server only measures and starts it.
  */
+
+/** The folder that holds scripts/board-apply.ts, the command a duty job applies its board ops with. */
+const USER_HISTORY = join(import.meta.dirname, "..");
 
 /** The chat a duty job works for: its session id and name (the job's reply target), its working folder, and its board file. */
 export interface DutyChat { id: string; name: string; cwd: string; board: string }
@@ -65,6 +69,8 @@ export interface DutyJobInput {
  */
 export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [] }: DutyJobInput): string {
   const send = `await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
+  const headline = headlineMetric(duty.metrics);
+  const apply = `await bash("cd ${USER_HISTORY} && node --import tsx scripts/board-apply.ts ${chat.id} " + shlex.quote(json.dumps(ops)) + " --data-dir ${dirname(dirname(chat.board))}")`;
   return [
     `# ${job}: the ${duty.name} duty of the chat "${chat.name}"`,
     `You are the duty job "${job}" of the chat "${chat.name}" (session id ${chat.id}), started ${localTime(at)}. The server starts one duty job ` +
@@ -73,6 +79,8 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
     `Goal: ${duty.goal}`,
     `Owner's words (verbatim):\n\n${duty.ownerWords.split("\n").map(line => `> ${line}`).join("\n")}`,
     ...(duty.onMiss ? [`What to do about a miss: ${duty.onMiss}${duty.boardGoal ? ` Fixes go under the plan item ${duty.boardGoal}.` : ""}`] : []),
+    ...(headline ? [`## Headline KPI\nThis run is judged on moving one number: ${headline.label} (${headline.key} ${headline.op} ${headline.target}${headline.unit ?? ""}). ` +
+      "Spend the run on the work that moves it most; the other targets and the number of checks you run are detail."] : []),
     `Targets: ${duty.metrics.map(metric => `${metric.key} ${metric.op} ${metric.target}${metric.unit ?? ""} (${metric.label})`).join("; ")}.`,
     "## What the precheck found",
     `Measured against the targets: ${measure}. This is information, not a verdict: a met target does not mean nothing needs work, and code ` +
@@ -93,16 +101,19 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
       "Map the chat's work as a graph: one job or subagent per part, never steps piled on one old long-running session; when the findings list " +
         "a session that carries too much, move its steps to new jobs per part. Heartbeats the check-in covers go: name each for the chat to delete.",
       "You can message another thread yourself to chase it: `await agent_message.send(text, receiver_role=\"sibling\", receiver_name=<thread name>)`.",
-      "You cannot edit the board. Send the chat each change as one chat_board op JSON per line, like " +
-        "`{\"op\":\"plan_update\",\"id\":\"p4\",\"status\":\"done\",\"note\":\"live on production at 4f1c2a, checked on the live page\"}`. " +
-        "Close a step only on evidence you name in its note.",
+      `Apply each board change to the chat's board yourself in this run, with \`import json, shlex\` and \`${apply}\`, where ops is a list of ` +
+        "chat_board ops like `[{\"op\":\"plan_update\",\"id\":\"p4\",\"status\":\"done\",\"note\":\"live on production at 4f1c2a, checked on the live page\"}]`. " +
+        "It refuses what chat_board refuses and prints each op's summary. Close a step only on evidence you name in its note.",
+      "Every stuck step needs a live owner, a For you todo, or a close in this run. Give a step an owner that outlives this run with " +
+        "`await rlm.create_session(brief, name=..., cwd=...)`, which registers the session as a job of the chat, and set the step's job to that " +
+        "name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.",
       "Two hard gates hold for every chat. A step marked as needing the owner's go moves only after the owner answers its For you todo with a go " +
         "(a step whose only target is staging never needs one): " +
         "never start, steer or report work on it as approved before that, and stop a job that started without it. A Build step starts only after " +
         "its goal's requirements check: a plan or design job's report quotes the original owner request and checks each line of it against the " +
         "design before build.",
       `${MERGE_RULE} A merge step done without that go is a repo rule breach: report it to the owner in your report, with the PR.`,
-      "A goal can carry a target: when you measure it, send plan_update with its whole target, like " +
+      "A goal can carry a target: when you measure it, apply plan_update with its whole target, like " +
         "`{\"op\":\"plan_update\",\"id\":\"p1\",\"target\":{\"metric\":\"proxy bandwidth used\",\"target\":200,\"unit\":\"Mbps\",\"current\":8,\"measuredAt\":\"2026-10-09T21:00:00+09:00\",\"source\":\"proxy dashboard, 24 h average\"}}`. " +
         "Close the largest gap first: start or steer the job that moves the number.",
       "Never push a ci/ branch or use --push-ci: build the commit object for auto-sns-agent " +
@@ -116,7 +127,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
       "Act directly and ship: do not invent waiting rules, extra review rounds or safety gates of your own; keep only the gates the owner asked for.",
       "No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.",
       "When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.",
-      `Otherwise send the chat one report when your work is done, with only what it and the owner need: the board ops, then at most 3 short ` +
+      `Otherwise send the chat one report when your work is done, with only what it and the owner need: the board ops you applied, then at most 3 short ` +
         `plain lines the owner should hear, or "nothing for the owner". Send it with \`${send}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].filter(part => part !== "").join("\n\n") + "\n";

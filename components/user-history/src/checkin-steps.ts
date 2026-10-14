@@ -1,6 +1,7 @@
 import { BOARD_LIMITS, coversStep, planJob } from "./shared/chat-board.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, QueuePlace, SessionRow } from "./shared/types.ts";
 import { clockTime, localTime } from "./checkin-settings.ts";
+import type { OwnerMessage } from "./shared/brief-check.ts";
 
 /** The check-in's step classes: the chat's job facts, the class of each open plan step (`stepClass`), and the line the duty job reads for it. */
 
@@ -94,15 +95,26 @@ const CHECK_PASSED = new RegExp([
 /** A review that is ready: the owner's look or pick step, and the step whose browser check or walk passed. */
 export interface ReadyReview { look: PlanItem; passed: PlanItem }
 /**
+ * What orders a passed check against the owner's rulings: this run's step memos (when a step turned done, or its note last gained a fact) and
+ * what the owner wrote in the chat, his messages and board answers, oldest first.
+ */
+export interface ReviewHistory { memos: Readonly<Record<string, StepMemo>>; owner: readonly OwnerMessage[] }
+/**
  * The owner's look and pick steps that are ready for him and have no question in For you (c32 repeat, owner 10-14: "is any other tabs ready for
  * review? keep listing them in FOR YOU with the links i need to check"). A look step is ready when a step under the same parent passed its browser
  * check: a done check step (BROWSER_CHECK), or a note that says the check or walk passed (CHECK_PASSED). An open check step under that parent
  * means the next round is not checked yet. A todo covers the look step when it links it (`coversStep`) and is open or answered and not yet
- * closed; a shared word is not enough, since t21 about the Inbox named Staging like the Connections step. A step parked by an active rule is left.
+ * closed; a shared word is not enough, since t21 about the Inbox named Staging like the Connections step. A step parked by an active rule is left,
+ * and so is one whose own wait is not over (`waitOver`). With `history`, the check must have passed after the owner's last ruling on the goal
+ * (`lastRuling`): frontend bro's round 2 walk p114 passed at 10-13 23:52Z, the owner asked for round 3 at 10-14 00:44Z, and the check-in still
+ * called p115 ready at 03:40Z.
  */
-export function readyReviews(board: ChatBoard | null, active?: ReadonlySet<string>): ReadyReview[] {
+export function readyReviews(board: ChatBoard | null, active?: ReadonlySet<string>, history?: ReviewHistory): ReadyReview[] {
   const ready: ReadyReview[] = [];
-  const asks = (board?.todos ?? []).filter(todo => !todo.done);
+  const todos = board?.todos ?? [];
+  const asks = todos.filter(todo => !todo.done);
+  const byId = new Map<string, PlanItem>();
+  walk(board?.plan ?? [], item => { byId.set(item.id, item); });
   const visit = (items: readonly PlanItem[]): void => {
     for (const item of items) {
       const below: PlanItem[] = [];
@@ -111,9 +123,12 @@ export function readyReviews(board: ChatBoard | null, active?: ReadonlySet<strin
       const checking = below.some(step => OPEN.has(step.status) && BROWSER_CHECK.test(step.text) && !OWNER_LOOK.test(step.text));
       const passed = below.find(step => (step.status === "done" && BROWSER_CHECK.test(step.text)) || CHECK_PASSED.test(step.note ?? ""));
       if (passed && !checking) {
+        const at = history && passedAt(passed, history.memos);
         for (const look of item.children) {
-          if (!OPEN.has(look.status) || !OWNER_LOOK.test(look.text) || look === passed || parkedBy(look, active) !== undefined) continue;
-          if (!asks.some(todo => coversStep(todo, look))) ready.push({ look, passed });
+          if (!OPEN.has(look.status) || !OWNER_LOOK.test(look.text) || look === passed || parkedBy(look, active) !== undefined || !waitOver(look, byId, todos)) continue;
+          if (asks.some(todo => coversStep(todo, look))) continue;
+          if (history && at !== undefined && at <= lastRuling(item, look, todos, history.owner)) continue;
+          ready.push({ look, passed });
         }
       }
       visit(item.children);
@@ -121,6 +136,37 @@ export function readyReviews(board: ChatBoard | null, active?: ReadonlySet<strin
   };
   visit(board?.plan ?? []);
   return ready;
+}
+/**
+ * Whether a step's wait is over: it has no waitFor, or every step its waitFor names is closed and every todo it names is answered. A wait that
+ * names no step or todo ("round 3's review page") lasts until the chat clears it.
+ */
+function waitOver(step: PlanItem, items: ReadonlyMap<string, PlanItem>, todos: readonly OwnerTodo[]): boolean {
+  if (!step.waitFor?.trim()) return true;
+  const named = step.waitFor.match(/\b[pt]\d+\b/g) ?? [];
+  return named.length > 0 && named.every(id => {
+    const item = items.get(id);
+    if (item) return CLOSED.has(item.status);
+    const todo = todos.find(entry => entry.id === id);
+    return todo !== undefined && (todo.done || (todo.reply ?? "").trim() !== "");
+  });
+}
+/** When a check passed: the time its step turned done, or for a note that says it passed, the time the note last gained a fact; unknown with no memo. */
+const passedAt = (step: PlanItem, memos: Readonly<Record<string, StepMemo>>): number | undefined => {
+  const memo = memos[step.id];
+  return memo && (step.status === "done" ? memo.doneAt ?? memo.at : recordedAt(memo));
+};
+/**
+ * When the owner last ruled on a review: his last message or board answer that names the goal or look step by id or names the review's subject
+ * (a word both their texts have, "connections" for p106 and p115), or the ask time of the last todo on either step that he answered.
+ */
+function lastRuling(goal: PlanItem, look: PlanItem, todos: readonly OwnerTodo[], owner: readonly OwnerMessage[]): number {
+  const ids = new RegExp(`\\b(?:${goal.id}|${look.id})\\b`);
+  const goalWords = distinctiveWords(goal.text);
+  const subject = [...distinctiveWords(look.text)].filter(word => goalWords.has(word));
+  const said = owner.filter(message => ids.test(message.text) || subject.some(word => distinctiveWords(message.text).has(word))).map(message => message.at);
+  const answered = todos.filter(todo => (todo.step === goal.id || todo.step === look.id) && (todo.reply ?? "").trim() !== "").map(todo => Date.parse(todo.at));
+  return Math.max(-Infinity, ...said, ...answered);
 }
 export const readyReviewLine = ({ look, passed }: ReadyReview): string =>
   `${look.id} ${quote(look.text)} is ready for the owner: ${passed.id} passed its browser check, and For you has no todo for it. Add one todo now ` +
@@ -221,6 +267,14 @@ export function liveJobs(children: readonly ChildAgent[], subagents: ReadonlyMap
     return (session !== undefined && runningBelow(session, new Set([session]))) || now - at < windowMs;
   }).map(child => child.id));
 }
+
+/**
+ * The longest quiet a working job's session shows between model calls: 157 s at p99 and 1,508 s at p99.9 over 27,578 turns (ff68338). A job
+ * quiet longer is not at work, so the check-in's `liveJobs` window is the chat's interval capped at this. With the 2 h interval of AI harness and
+ * ops guy, a job that ended 1 h 50 min before still counted as working, and 49 steps read as stuck at 10-14 02:25Z where a 30 min window gave 101.
+ */
+export const LIVE_GAP_MS = 30 * 60_000;
+export const liveWindowMs = (everyMs: number): number => Math.min(everyMs, LIVE_GAP_MS);
 
 /** The agent's todos the owner has not answered yet; the board refuses a new one past BOARD_LIMITS.openAsks, but older ones stay. */
 export const openAsks = (board: ChatBoard | null): number => (board?.todos ?? []).filter(todo => todo.from === "agent" && !todo.done).length;

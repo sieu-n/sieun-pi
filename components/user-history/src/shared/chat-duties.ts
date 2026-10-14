@@ -10,7 +10,13 @@ import type { PoolPriority } from "./types.ts";
  */
 
 export type DutySchedule = { kind: "daily"; at: string } | { kind: "every"; minutes: number };
-export interface DutyMetric { key: string; label: string; op: "<=" | ">="; target: number; unit?: string }
+/**
+ * One target of a duty. `headline` marks the one number a run is judged on moving (owner 10-14 on the Chat system duty: "this is your KPI ... the
+ * fundamentals are much more important than the quantitative number of checks"): the brief leads with it, the card and the summary show it first.
+ */
+export interface DutyMetric { key: string; label: string; op: "<=" | ">="; target: number; unit?: string; headline?: true }
+/** The duty's headline metric, or undefined when none is marked. */
+export const headlineMetric = <M extends Pick<DutyMetric, "headline">>(metrics: readonly M[]): M | undefined => metrics.find(metric => metric.headline);
 /**
  * The precheck: `command` is an argv run in `cwd` with no shell (a first word `node` is this server's node). It gets the env STATE_FILE (its JSON
  * state, kept between runs, only when it exits 0), LAST_RUNS_FILE (the duty's last 10 run records) and OUTPUT_FILE, and writes a `PrecheckOutput`
@@ -168,12 +174,16 @@ export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): {
   const absent = metrics.filter(metric => typeof output.metrics[metric.key] !== "number" || !Number.isFinite(output.metrics[metric.key]));
   if (absent.length) return { verdict: "error", metrics: results, summary: `the precheck gave no value for ${absent.map(metric => metric.key).join(", ")}` };
   const misses: string[] = [];
-  for (const metric of metrics) {
+  // The headline metric leads the summary, met or not; the other misses follow.
+  const headline = headlineMetric(metrics);
+  for (const metric of headline ? [headline, ...metrics.filter(other => other !== headline)] : metrics) {
     const value = output.metrics[metric.key]!;
     results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value) };
     if (!results[metric.key]!.met) misses.push(`${metric.key} ${show(metric, value)} (target ${metric.op === "<=" ? "at most" : "at least"} ${show(metric, metric.target)})`);
   }
-  return misses.length ? { verdict: "missed", metrics: results, summary: misses.join(", ") } : { verdict: "met", metrics: results, summary: `all ${metrics.length} on target` };
+  const lead = headline && results[headline.key]!.met ? `${headline.key} ${show(headline, results[headline.key]!.value)} (on target)` : undefined;
+  if (!misses.length) return { verdict: "met", metrics: results, summary: lead ? `${lead}; all ${metrics.length} on target` : `all ${metrics.length} on target` };
+  return { verdict: "missed", metrics: results, summary: (lead ? [lead, ...misses] : misses).join(", ") };
 }
 
 /** The metrics that missed in this run and in the run before it. */
@@ -246,7 +256,8 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
   const parsedMetrics = metrics.map((metric: unknown, index): DutyMetric => {
     if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label, 80) || (metric.op !== "<=" && metric.op !== ">=") ||
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);
-    const parsed: DutyMetric = { key: metric.key, label: metric.label, op: metric.op, target: metric.target, ...(typeof metric.unit === "string" ? { unit: metric.unit } : {}) };
+    const parsed: DutyMetric = { key: metric.key, label: metric.label, op: metric.op, target: metric.target, ...(typeof metric.unit === "string" ? { unit: metric.unit } : {}),
+      ...(metric.headline === true ? { headline: true as const } : {}) };
     const sizeProblem = metricSizeProblem(parsed);
     if (sizeProblem) throw new Error(`metrics[${index}]: ${sizeProblem}`);
     return parsed;
@@ -311,6 +322,7 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
     "the whole status and messages, restarts or starts the jobs and threads that stalled, died or are missing. End state: every open step is done, " +
     "moved by a live owner, or blocked only by an open For you todo, and no goal stays open only to wait on another thread's work.",
   metrics: [
+    { key: "stuck_steps", label: "Open steps with no live owner, no linked For you todo and no park", op: "<=", target: 0, headline: true },
     { key: "orphan_steps", label: "Open steps with no live owner, todo or wait", op: "<=", target: 0 },
     { key: "due_late", label: "Steps due for more than one check-in", op: "<=", target: 0 },
     { key: "stale_chase_24h", label: "Chases over 24 h with no For you todo", op: "<=", target: 0 },

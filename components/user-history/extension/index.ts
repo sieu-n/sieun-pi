@@ -4,7 +4,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-age
 import { agentLines } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { ensureChatService } from "../src/chat-service.ts";
-import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, JOB_REPLY_TOOL, jobOf, jobPersonaGuideline, jobReplyGuideline, pinnedBrief } from "../src/chat-brief.ts";
+import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobPersonaGuideline, jobReplyGuideline, pinnedBrief } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { jobRegistry } from "../src/chat-sources.ts";
 import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "../src/chats.ts";
@@ -169,6 +169,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
   // again. Any error fails open: no tool.
   let job: ChatJobOf | null = null;
   let rootLooked = false;
+  // A duty job, registered by its session id: the roots it starts with rlm.create_session are its chat's jobs (`createdRootChat`).
+  let dutyJob = false;
   // A subagent at any depth whose top session is a chat or a root a chat started: it reads the corrections ledger like a job.
   let underChat = false;
   const findJob = async (ctx: ExtensionContext): Promise<void> => {
@@ -181,8 +183,10 @@ export default function historyExtension(pi: ExtensionAPI): void {
     const root = depth === 0 && !marked;
     const name = root ? ctx.sessionManager.getSessionName()?.trim() : undefined;
     // A duty job is registered by its session id (src/chat-duty-job.ts), a create_session root by its name.
-    const registered = root ? await jobs().chatOf(ctx.sessionManager.getSessionId()) ?? (name ? await jobs().chatOf(name) : undefined) : undefined;
+    const byId = root ? await jobs().chatOf(ctx.sessionManager.getSessionId()) : undefined;
+    const registered = byId ?? (root && name ? await jobs().chatOf(name) : undefined);
     job = jobOf({ depth, marked, parentChat, registered });
+    dutyJob = job !== null && byId !== undefined;
     if (!job) return;
     const guideline = jobReplyGuideline(job);
     const persona = jobPersonaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
@@ -237,9 +241,10 @@ export default function historyExtension(pi: ExtensionAPI): void {
         const loadWait = loadWaitGuard(event.toolName, event.input);
         if (loadWait) return loadWait;
       }
-      if (marked && event.toolName === "ipython" && typeof event.input.code === "string") {
+      const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
+      if (rootChat && event.toolName === "ipython" && typeof event.input.code === "string") {
         const names = createSessionNames(event.input.code);
-        if (names.length) await jobs().add(names, ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId());
+        if (names.length) await jobs().add(names, rootChat);
       }
       // A limit a chat or a job of a chat sends another session gets the reply rule's evidence check before it leaves the kernel (c43).
       if ((marked || job || underChat) && event.toolName === "ipython" && typeof event.input.code === "string") {

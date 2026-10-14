@@ -15,6 +15,7 @@ import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
 import { boardClasses, daemonSessions } from "./board-classes.ts";
+import { endStateKpi, endStateLine } from "../../src/checkin-end-state.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 import { noProgressHours, ownerBoardAsk, unfixedFlags } from "./checkin-quality.ts";
 import { unlinkedJobSentence } from "../../src/shared/job-mentions.ts";
@@ -43,7 +44,7 @@ const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 
-type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number; checkin_ops_dropped: number } & ConvergenceMisses;
+type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number; checkin_ops_dropped: number; end_state_pct: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -261,7 +262,7 @@ async function readWatch(file: string | undefined): Promise<Watch> {
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
   // goals_without_duty, target 0 in chat-health.duty.json: the duty proposals review of 10-12 found 5 chats with open goals and no duty.
-  const picked = [...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("checkin_ops_dropped", FEW), ...newest("corrections"),
+  const picked = [...newest("end_state_pct"), ...newest("stuck_steps", FEW), ...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("checkin_ops_dropped", FEW), ...newest("corrections"),
     ...newest("owner_board_asks"), ...newest("goals_without_duty")].slice(0, MAX_FLAGGED);
   const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
     newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW), newest("idle_goals", FEW), newest("goal_gaps", FEW), newest("blocked_on_others", FEW),
@@ -283,7 +284,7 @@ async function main(): Promise<void> {
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
   const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0,
-    no_progress_hours: 0, checkin_ops_dropped: 0, ...NO_MISSES },
+    no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, ...NO_MISSES },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   await countPlaceholderTodos(new BoardStore(dataDir), ids, now, tally);
@@ -300,10 +301,15 @@ async function main(): Promise<void> {
   tally.metrics.repeat_corrections = repeats.length;
   tally.flagged.set("repeat_corrections", repeats.map(({ entry, repeat }) => ({ chat: repeat.chat.id, at: Date.parse(repeat.at), kind: "repeat_corrections",
     excerpt: clip(`${entry.id} "${entry.rule}" repeated in ${repeat.chat.name || repeat.chat.id} (first ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}): ${repeat.words}`) })));
-  for (const chat of await boardClasses({ dataDir, now, sessions: daemonSessions, chats: ids })) {
+  const chats = await boardClasses({ dataDir, now, sessions: daemonSessions, chats: ids });
+  for (const chat of chats) {
     for (const [key, value] of Object.entries(chat.misses) as [keyof ConvergenceMisses, number][]) tally.metrics[key] += value;
     for (const slice of chat.flagged) { const list = tally.flagged.get(slice.kind as Kind) ?? []; list.push(slice); tally.flagged.set(slice.kind as Kind, list); }
   }
+  // The headline KPI (owner 10-14): the share of all open steps that are moving, in For you or parked, and one line per chat with its stuck split.
+  tally.metrics.end_state_pct = endStateKpi(chats.flatMap(chat => chat.end)).pct;
+  tally.flagged.set("end_state_pct", chats.filter(chat => chat.kpi.stuck).sort((a, b) => b.kpi.stuck - a.kpi.stuck)
+    .map(chat => ({ chat: chat.id, at: now, kind: "end_state_pct", excerpt: `${chat.name}: ${endStateLine(chat.kpi)}` })));
   tally.metrics.long_replies = tally.ownerTurns ? tenth(100 * tally.longTurns / tally.ownerTurns) : 0;
   const watch = watchRecurrences(tally.seen, await readWatch(process.env.STATE_FILE), now, tally);
   const fixes = fixCommits(process.env.CHAT_HEALTH_GIT_DIR || join(import.meta.dirname, "..", ".."), now - 2 * WINDOW_MS, now - WINDOW_MS);

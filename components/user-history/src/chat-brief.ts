@@ -95,6 +95,16 @@ export function jobOf(input: { depth: number; marked: boolean; parentChat?: stri
 }
 
 /**
+ * The chat a root this session starts with rlm.create_session belongs to: the chat itself, or a duty job's chat, so a job the check-in starts to
+ * own a stuck step is the chat's job and outlives the check-in. Null for any other session. Before, a duty job could only spawn subagents,
+ * which the next run archived with it: in the 48 h to 10-14 02:13Z check-ins started a job in 29 of 574 runs (KPI job, session 1108-checkin-swarm-kpi).
+ */
+export function createdRootChat(input: { marked: boolean; self: string; job: ChatJobOf | null; dutyJob: boolean }): string | null {
+  if (input.marked) return input.self;
+  return input.dutyJob && input.job?.root && input.job.chat ? input.job.chat : null;
+}
+
+/**
  * The brief a chat runs: the bullets its board tool puts in the base prompt, and their version (8 hex of a sha256 over the bullets). A chat
  * pins the brief it loaded (`pinnedBrief`) and keeps it in its system prompt until it compacts, so an edit to CHAT_BRIEF never rewrites a
  * running chat's cached prompt; it reaches the chat as the `briefNote` notice at the end of its history.
