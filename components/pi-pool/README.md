@@ -535,6 +535,7 @@ A replay of the 852 runs that started 10-14 02:00-03:00 KST, when load reached 2
 
 While the Mac is short of memory the queue lowers its limit and holds low turns, so agent work stops adding load while the Mac pages.
 `pool/pressure.py` reads three kernel values in-process, with no fork: `kern.memorystatus_vm_pressure_level`, `vm.swapusage`, and the pages the compressor occupies (`vm_stat`'s "Pages occupied by compressor").
+While ops guy's machine-wide feed `~/.cache/virev/mac-pressure.json` is under 30 s old and parses, its `pressure_level` (1, 2, 4, or normal, warn, critical) and `compressed_gb` (GiB) replace the kernel's two values, and the reading's `source` says `feed`; a missing, stale or malformed feed leaves the kernel read (`source` `sysctl`). The feed's schema is not out yet, so `pressure.parse_feed` is the one place to change when it lands.
 The level is critical when the kernel says critical (4) or the compressor holds 45% of RAM, high when the kernel says warn (2), and ok otherwise.
 At 18:00 KST on 10-14 the compressor held 16 GB of 32 with kernel_task paging at 189-268%, and at 18:20 it held 17.1 GB with a median 12,000 swap-ins a second while the kernel still said warn.
 Swap shows in the reading and sets no level, because macOS grows swap a 1 GB file at a time and used swap sat at 95-99% of the total in every sample.

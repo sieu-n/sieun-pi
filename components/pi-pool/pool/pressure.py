@@ -7,7 +7,7 @@ compressor"). On 10-14 18:2x KST at load 54 a read took 0.009 ms after a 3 ms
 `import ctypes`, where `sysctl -n` took 126 ms, `vm_stat` 69 ms and
 `memory_pressure -Q` 171 ms (sessions/2026/10/14/1815-mac-stays-usable/pressure-governor/read_cost.py).
 """
-import struct
+import json, os, struct, time
 
 LEVELS = ("ok", "high", "critical")
 # kern.memorystatus_vm_pressure_level holds xnu's NOTE_MEMORYSTATUS_PRESSURE_* bits:
@@ -21,6 +21,11 @@ KERNEL_CRITICAL = 4
 COMPRESSOR_CRITICAL_SHARE = 0.45
 # host_statistics64 flavor HOST_VM_INFO64 (mach/host_info.h).
 HOST_VM_INFO64 = 4
+# ops guy's machine-wide feed, rewritten every 10 s. A file older than FEED_FRESH_SEC
+# (three missed writes) is stale and the kernel read stands alone.
+FEED = os.path.join(os.path.expanduser("~"), ".cache", "virev", "mac-pressure.json")
+FEED_FRESH_SEC = 30
+FEED_LEVELS = {1: 1, 2: 2, 4: 4, "normal": 1, "ok": 1, "warn": 2, "warning": 2, "high": 2, "critical": 4}
 
 
 def level(reading):
@@ -35,9 +40,45 @@ def level(reading):
     return "ok"
 
 
-def read():
-    """{kernel, swap_used, swap_total, compressor, ram} in bytes but kernel, or None
-    when a kernel call fails (another OS, a changed struct)."""
+def read(feed=FEED, now=None):
+    """{kernel, swap_used, swap_total, compressor, ram, source} in bytes but kernel and
+    source, or None off macOS. The feed's level and compressor size replace the kernel's
+    while the feed is fresh and parses (source "feed"); otherwise source is "sysctl"."""
+    own = read_kernel()
+    if own is None:
+        return None
+    fed = read_feed(feed, now)
+    return dict(own, **fed, source="feed") if fed else dict(own, source="sysctl")
+
+
+def read_feed(path=FEED, now=None):
+    """parse_feed of the feed file, or None when it is missing, stale or unreadable."""
+    try:
+        if (time.time() if now is None else now) - os.stat(path).st_mtime >= FEED_FRESH_SEC:
+            return None
+        with open(path) as f:
+            return parse_feed(json.load(f))
+    except (OSError, ValueError):
+        return None
+
+
+def parse_feed(data):
+    """{kernel, compressor} from one feed record, or None for a shape this does not know.
+    The feed's schema is not out yet, so this takes `pressure_level` (1, 2, 4 or a name)
+    and `compressed_gb` (GiB, the unit top shows) and nothing else."""
+    if not isinstance(data, dict):
+        return None
+    level, gb = data.get("pressure_level"), data.get("compressed_gb")
+    if isinstance(level, bool) or not isinstance(level, (int, str)) or level not in FEED_LEVELS:
+        return None
+    if isinstance(gb, bool) or not isinstance(gb, (int, float)) or not 0 <= gb < 1024:
+        return None
+    return {"kernel": FEED_LEVELS[level], "compressor": int(gb * 2 ** 30)}
+
+
+def read_kernel():
+    """{kernel, swap_used, swap_total, compressor, ram} from the kernel, or None when a
+    kernel call fails (another OS, a changed struct)."""
     try:
         import ctypes
         libc = ctypes.CDLL(None)

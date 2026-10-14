@@ -308,13 +308,57 @@ class PressureLevel(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "reads this Mac's kernel")
     def test_a_read_on_this_mac_gives_every_value(self):
         reading = pressure.read()
-        self.assertEqual(set(reading), {"kernel", "swap_used", "swap_total", "compressor", "ram"})
+        self.assertEqual(set(reading), {"kernel", "swap_used", "swap_total", "compressor", "ram", "source"})
         self.assertIn(reading["kernel"], (1, 2, 4))
         self.assertLessEqual(reading["swap_used"], reading["swap_total"])
         self.assertLess(0, reading["compressor"])
         self.assertLess(reading["compressor"], reading["ram"])
         self.assertIn(pressure.level(reading), pressure.LEVELS)
 
+
+
+class PressureFeed(unittest.TestCase):
+    """ops guy's ~/.cache/virev/mac-pressure.json replaces the kernel's level and
+    compressor size while it is fresh and parses; anything else falls back."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pi-pool-feed-")
+        self.path = os.path.join(self.dir, "mac-pressure.json")
+
+    def write(self, text, age=0):
+        with open(self.path, "w") as f:
+            f.write(text)
+        at = time.time() - age
+        os.utime(self.path, (at, at))
+
+    def test_a_fresh_feed_gives_the_level_and_the_compressor(self):
+        self.write(json.dumps({"pressure_level": "critical", "compressed_gb": 16.0, "load": [54, 49, 36]}), age=9)
+        self.assertEqual(pressure.read_feed(self.path), {"kernel": 4, "compressor": 16 * 2 ** 30})
+        self.write(json.dumps({"pressure_level": 2, "compressed_gb": 4}))
+        self.assertEqual(pressure.read_feed(self.path), {"kernel": 2, "compressor": 4 * 2 ** 30})
+
+    @unittest.skipUnless(sys.platform == "darwin", "reads this Mac's kernel")
+    def test_a_fresh_feed_sets_the_level_and_marks_its_source(self):
+        self.write(json.dumps({"pressure_level": "normal", "compressed_gb": 0.5}))
+        reading = pressure.read(self.path)
+        self.assertEqual((reading["source"], reading["kernel"], reading["compressor"]), ("feed", 1, 2 ** 29))
+        self.assertEqual(pressure.level(reading), "ok")
+
+    def test_a_stale_feed_is_ignored(self):
+        self.write(json.dumps({"pressure_level": "critical", "compressed_gb": 16.0}), age=31)
+        self.assertIsNone(pressure.read_feed(self.path))
+        if sys.platform == "darwin":
+            self.assertEqual(pressure.read(self.path)["source"], "sysctl")
+
+    def test_a_missing_or_malformed_feed_is_ignored(self):
+        self.assertIsNone(pressure.read_feed(os.path.join(self.dir, "absent.json")))
+        for text in ("", "{", "[]", "null", '{"pressure_level": "purple", "compressed_gb": 1}', '{"pressure_level": true, "compressed_gb": 1}',
+                     '{"pressure_level": 2}', '{"pressure_level": 2, "compressed_gb": "16"}', '{"pressure_level": 2, "compressed_gb": -1}',
+                     '{"pressure_level": 2, "compressed_gb": NaN}', '{"pressure_level": [2], "compressed_gb": 1}', b"\xff".decode("latin-1")):
+            self.write(text)
+            self.assertIsNone(pressure.read_feed(self.path), text)
+            if sys.platform == "darwin":
+                self.assertEqual(pressure.read(self.path)["source"], "sysctl", text)
 
 class Governor(unittest.TestCase):
     """Under memory pressure the queue admits fewer turns and holds the low ones."""
