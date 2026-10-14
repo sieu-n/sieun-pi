@@ -1,7 +1,7 @@
 {
   "name": "Mac stays usable",
   "ownerWords": "look it's you and ops guys responsibility that this machine is usable.\n\nyou -harness side of bullshit, ops guy -app side of bullshit fixing monitoring\n\nsetup a 60min cadence duty",
-  "goal": "The harness side keeps the Mac usable every minute: Prime workers hold at most 5.8 GB of memory footprint, no working session sits quiet over 30 min, and no queued turn waits over 706 s. Swap and memory pressure are ops guy's to watch; this duty only reads them as context.",
+  "goal": "The harness side keeps the Mac usable every minute: Prime workers hold no more memory footprint than the working turns and live chats need (0.52 GB a working turn, 0.33 GB a live chat), no working session sits quiet over 30 min, and no queued turn waits over 706 s. Swap and memory pressure are ops guy's to watch; this duty only reads them as context.",
   "metrics": [
     {
       "key": "on_target_pct_1h",
@@ -20,7 +20,7 @@
     },
     {
       "key": "footprint_miss_min_1h",
-      "label": "Minutes in the last hour with Prime workers over 5.8 GB",
+      "label": "Minutes in the last hour with Prime workers over their footprint budget",
       "op": "<=",
       "target": 0
     },
@@ -44,10 +44,10 @@
       "unit": " min"
     },
     {
-      "key": "worker_gb_now",
-      "label": "Prime worker footprint at the last minute",
+      "key": "worker_gb_over_budget_now",
+      "label": "Prime worker footprint over its budget at the last minute",
       "op": "<=",
-      "target": 5.8,
+      "target": 0,
       "unit": " GB"
     }
   ],

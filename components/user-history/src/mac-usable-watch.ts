@@ -18,11 +18,19 @@ export const QUIET_MS = 15 * MINUTE;
 
 /**
  * The harness target. A minute is on target when every part holds; each number's evidence is in the commit that set it.
- * `footprintGb`: 32 GB of RAM less the 26.2 GB footprint of everything that was not a Prime worker at 18:00 KST on 10-14.
+ * `activeSessionGb` and `chatGb` set the footprint budget, what the sessions doing work need: each turn the agent queue holds working may take
+ * 0.52 GB, the 90th percentile of worker plus kernel footprint over the 16 workers that held one mid-turn session at 18:19 KST on 10-14
+ * (median 0.37 GB), and each live chat 0.33 GB, the base a worker held in a fit of footprint on resident sessions over the 33 workers then.
  * `idleMinutes`: pi-pool's lease_s of 1,800 s takes the slot of a run with no model call for that long, and the check-in stops counting a quiet job as working after 30 min.
  * `queueWaitS`: the 99th percentile of the 4,811 slot admits pi-pool logged on 10-14 from 08:06 to 18:24 KST waited 706 s.
  */
-export const TARGET = { footprintGb: 5.8, idleMinutes: 30, queueWaitS: 706 } as const;
+export const TARGET = { activeSessionGb: 0.52, chatGb: 0.33, idleMinutes: 30, queueWaitS: 706 } as const;
+
+/** The footprint the harness needs this minute: the queue's working turns (or, unread, the working sessions active in the last 15 min) and the live chats. */
+export function footprintBudgetGb(line: Pick<WatchLine, "queue" | "working" | "idle15" | "chatsLive">): number {
+  const active = line.queue ? line.queue.working : line.working - line.idle15;
+  return round(active * TARGET.activeSessionGb + (line.chatsLive ?? 0) * TARGET.chatGb);
+}
 export type TargetPart = "footprint" | "idle" | "queue";
 
 /** One worker process tree: its pid, its footprint, and the chat tree with the most sessions on it, by root session id and name. */
@@ -39,6 +47,8 @@ export interface QueueLine {
 export interface WatchLine {
   at: string;
   workers: number; workerGb: number; top: WorkerLine[];
+  /** `footprintBudgetGb` of this line, and the live chat roots it counts; absent on lines written before the budget. */
+  budgetGb?: number; chatsLive?: number;
   live: number; working: number; idle15: number;
   /** Working sessions with no activity for over TARGET.idleMinutes, and the trees that hold the most of them. */
   idleOver: number; idleTrees: TreeCount[];
@@ -116,11 +126,14 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     const row = byId.get(id);
     return row ? tree(row).tree : input.title(id) ?? id.slice(0, 8);
   });
+  const chatsLive = live.filter(row => input.chats.has(row.id)).length;
+  const counts = { working: working.length, idle15: quiet(QUIET_MS).length, chatsLive, queue };
   return {
     at: new Date(input.now).toISOString(),
+    budgetGb: footprintBudgetGb(counts), chatsLive,
     workers: Object.keys(input.footprints.workers).length,
     workerGb: round(Object.values(input.footprints.workers).reduce((sum, worker) => sum + worker.bytes, 0) / GB),
-    top, live: live.length, working: working.length, idle15: quiet(QUIET_MS).length,
+    top, live: live.length, working: counts.working, idle15: counts.idle15,
     idleOver: idleOver.length, idleTrees: topTrees(idleOver, tree),
     finished: finished.length, finishedTrees: topTrees(finished, tree),
     queue,
@@ -138,9 +151,9 @@ function queueLine(reading: QueueReading, now: number, treeName: (id: string) =>
 }
 
 /** The target parts a line misses, in TARGET's order; empty when the minute is on target. A line without a queue reading misses no queue part. */
-export function misses(line: Pick<WatchLine, "workerGb" | "idleOver" | "queue">): TargetPart[] {
+export function misses(line: Pick<WatchLine, "workerGb" | "idleOver" | "queue" | "working" | "idle15" | "chatsLive">): TargetPart[] {
   const missed: TargetPart[] = [];
-  if (line.workerGb > TARGET.footprintGb) missed.push("footprint");
+  if (line.workerGb > footprintBudgetGb(line)) missed.push("footprint");
   if (line.idleOver > 0) missed.push("idle");
   if (line.queue && line.queue.oldestWaitS > TARGET.queueWaitS) missed.push("queue");
   return missed;

@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { misses, readWatch, TARGET, type TargetPart, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { footprintBudgetGb, misses, readWatch, TARGET, type TargetPart, type WatchLine } from "../../src/mac-usable-watch.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -18,7 +18,7 @@ export const OFF_STREAK_ALERT = 10;
 
 const PARTS: readonly TargetPart[] = ["footprint", "idle", "queue"];
 const PART_WORDS: Record<TargetPart, string> = {
-  footprint: `Prime worker footprint over ${TARGET.footprintGb} GB`,
+  footprint: `Prime worker footprint over what the working turns and live chats need (${TARGET.activeSessionGb} GB a turn, ${TARGET.chatGb} GB a chat)`,
   idle: `working sessions quiet over ${TARGET.idleMinutes} min`,
   queue: `a queued turn waiting over ${TARGET.queueWaitS} s`,
 };
@@ -68,6 +68,8 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
     queue_miss_min_1h: missMinutes.queue.length,
     off_streak_max_1h: streak.minutes,
     worker_gb_now: latest?.workerGb ?? 0,
+    budget_gb_now: latest ? footprintBudgetGb(latest) : 0,
+    worker_gb_over_budget_now: latest ? Math.round((latest.workerGb - footprintBudgetGb(latest)) * 100) / 100 : 0,
     watched_min_1h: hour.length,
   };
   const flagged: FlaggedSlice[] = [];
@@ -81,7 +83,7 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
   }
   if (!hour.length) flagged.push({ kind: "no_watch", excerpt: "The Mac usable watch wrote no line in the last hour: the chat service is down or runs a release without the watch." });
   if (latest) {
-    flagged.push({ kind: "now", at: Date.parse(latest.at), excerpt: `At ${clock(latest.at)}: ${latest.workers} workers hold ${latest.workerGb} GB (top: ${latest.top.map(worker =>
+    flagged.push({ kind: "now", at: Date.parse(latest.at), excerpt: `At ${clock(latest.at)}: ${latest.workers} workers hold ${latest.workerGb} GB against a budget of ${footprintBudgetGb(latest)} GB (top: ${latest.top.map(worker =>
       `${worker.tree} ${worker.gb} GB`).join(", ")}); ${latest.live} live sessions, ${latest.working} working, ${latest.idleOver} quiet over ${TARGET.idleMinutes} min; ` +
       `${latest.finished} finished jobs not deleted (${latest.finishedTrees.map(tree => `${tree.tree} ${tree.count}`).join(", ") || "none"}); ` +
       `queue ${latest.queue ? `${latest.queue.working} working, ${latest.queue.queued} queued, oldest ${latest.queue.oldestWaitS} s` : "unread"}. ` +

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
-import { type Footprints, misses, readFootprints, readWatch, sample, TARGET, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { footprintBudgetGb, type Footprints, misses, readFootprints, readWatch, sample, TARGET, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import { longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
@@ -35,6 +35,7 @@ test("watchLine: worker footprint and the top workers with their chat tree, quie
   const line = watchLine({ now: NOW, rows: ROWS, footprints: FOOTPRINTS, queue: QUEUE, chats: new Set(["chatA", "chatB"]), title: id => id === "chatB" ? "VP of CI (title)" : null, cpuMs: 4 });
   assert.equal(line.at, "2026-10-14T09:30:00.000Z");
   assert.deepEqual([line.workers, line.workerGb], [2, 7.5]);
+  assert.deepEqual([line.budgetGb, line.chatsLive], [1.18, 2], "1 working turn and 2 live chats");
   assert.deepEqual(line.top, [{ pid: 11, gb: 6, sessions: 4, root: "chatA", tree: "Crawler VP" }, { pid: 22, gb: 1.5, sessions: 2, root: "chatB", tree: "VP of CI (title)" }]);
   assert.deepEqual([line.live, line.working, line.idle15, line.idleOver], [6, 3, 2, 1], "the archived row and the saved row with no worker count nowhere");
   assert.deepEqual(line.idleTrees, [{ root: "chatA", tree: "Crawler VP", count: 1 }]);
@@ -46,13 +47,16 @@ test("watchLine: worker footprint and the top workers with their chat tree, quie
 });
 
 test("misses: a minute is on target only when every harness part holds; swap is never a part", () => {
-  const on = { workerGb: TARGET.footprintGb, idleOver: 0, queue: { working: 3, queued: 1, held: null, pressure: null, oldestWaitS: TARGET.queueWaitS, oldestTree: null } };
+  const on = { workerGb: 2.22, working: 5, idle15: 1, chatsLive: 2, idleOver: 0,
+    queue: { working: 3, queued: 1, held: null, pressure: null, oldestWaitS: TARGET.queueWaitS, oldestTree: null } };
+  assert.equal(footprintBudgetGb(on), 2.22, "3 working turns at 0.52 GB and 2 live chats at 0.33 GB");
   assert.deepEqual(misses(on), []);
-  assert.deepEqual(misses({ ...on, workerGb: TARGET.footprintGb + 0.01 }), ["footprint"]);
+  assert.deepEqual(misses({ ...on, workerGb: 2.23 }), ["footprint"]);
+  assert.equal(footprintBudgetGb({ ...on, queue: null }), 2.74, "an unread queue counts the 4 working sessions active in the last 15 min");
   assert.deepEqual(misses({ ...on, idleOver: 1 }), ["idle"]);
   assert.deepEqual(misses({ ...on, queue: { ...on.queue, oldestWaitS: TARGET.queueWaitS + 1 } }), ["queue"]);
-  assert.deepEqual(misses({ ...on, queue: null }), [], "an unread queue misses nothing");
-  assert.deepEqual(TARGET, { footprintGb: 5.8, idleMinutes: 30, queueWaitS: 706 });
+  assert.deepEqual(misses({ ...on, queue: null }), [], "an unread queue misses no queue part");
+  assert.deepEqual(TARGET, { activeSessionGb: 0.52, chatGb: 0.33, idleMinutes: 30, queueWaitS: 706 });
 });
 
 test("sample: appends one line to the day's file under the data dir, and readWatch reads lines across the day files", async () => {
@@ -96,7 +100,7 @@ test("sharedQueueRead: one pi-pool read serves every reader for its ttl, and a f
 
 const at = (minute: number) => new Date(NOW - 59 * MIN + minute * MIN).toISOString();
 const watch = (minute: number, extra: Partial<WatchLine> = {}): WatchLine => ({ at: at(minute), workers: 2, workerGb: 4, top: [{ pid: 11, gb: 3, sessions: 4, root: "chatA", tree: "Crawler VP" }],
-  live: 10, working: 3, idle15: 0, idleOver: 0, idleTrees: [], finished: 1, finishedTrees: [{ root: "chatA", tree: "Crawler VP", count: 1 }],
+  budgetGb: 4.53, chatsLive: 9, live: 10, working: 3, idle15: 0, idleOver: 0, idleTrees: [], finished: 1, finishedTrees: [{ root: "chatA", tree: "Crawler VP", count: 1 }],
   queue: { working: 3, queued: 0, held: null, pressure: null, oldestWaitS: 0, oldestTree: null }, mac: { swapGb: 40, pressureLevel: 2 }, cpuMs: 210, ...extra });
 
 test("measure: the share on target over 1 h and 24 h, the minutes each part missed, and the top miss with the chat trees behind it", () => {
@@ -105,7 +109,7 @@ test("measure: the share on target over 1 h and 24 h, the minutes each part miss
     : watch(minute))];
   const { metrics, flagged } = measure(lines, NOW);
   assert.deepEqual(metrics, { on_target_pct_1h: 66.7, on_target_pct_24h: 65.6, footprint_miss_min_1h: 8, idle_miss_min_1h: 12, queue_miss_min_1h: 0, off_streak_max_1h: 20,
-    worker_gb_now: 4, watched_min_1h: 60 });
+    worker_gb_now: 4, budget_gb_now: 4.53, worker_gb_over_budget_now: -0.53, watched_min_1h: 60 });
   assert.deepEqual(flagged!.find(item => item.kind === "top_miss"), { kind: "top_miss", item: "idle",
     excerpt: "Top miss: working sessions quiet over 30 min in 12 of 60 minutes. Chat trees behind it: VP of CI 2 sessions." });
   assert.match(flagged!.find(item => item.kind === "alert")!.excerpt, /^The harness side was off target 20 minutes in a row, /);
@@ -124,7 +128,7 @@ test("measure: an alert at 10 minutes off target in a row and none at 9; a gap i
   const gap = [...Array.from({ length: 5 }, (_, minute) => off(minute)), ...Array.from({ length: 5 }, (_, minute) => off(10 + minute))];
   assert.equal(longestOffStreak(gap).minutes, 5);
   assert.deepEqual(measure([], NOW), { metrics: { on_target_pct_1h: 0, on_target_pct_24h: 0, footprint_miss_min_1h: 0, idle_miss_min_1h: 0, queue_miss_min_1h: 0,
-    off_streak_max_1h: 0, worker_gb_now: 0, watched_min_1h: 0 }, flagged: [{ kind: "no_watch", excerpt: "The Mac usable watch wrote no line in the last hour: the chat service is down or runs a release without the watch." }] });
+    off_streak_max_1h: 0, worker_gb_now: 0, budget_gb_now: 0, worker_gb_over_budget_now: 0, watched_min_1h: 0 }, flagged: [{ kind: "no_watch", excerpt: "The Mac usable watch wrote no line in the last hour: the chat service is down or runs a release without the watch." }] });
 });
 
 test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics the precheck gives, with the owner's words verbatim", async () => {
