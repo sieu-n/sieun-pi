@@ -1,11 +1,10 @@
-import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import {
-  type DsQuery, DAY, PG, PROM, SOURCE_DEADLINE_MS, grafanaClient, promInstant, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag,
+  type DsQuery, DAY, PG, PROM, SOURCE_DEADLINE_MS, grafanaClient, promInstant, readGrafanaAuth, round1, settle, sqlRows, ssh, unmeasuredFlag,
 } from "./estate-reads.ts";
 
 /**
@@ -37,7 +36,6 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
 /** The owner's org on prod, from findings.md ("the only prod org with about 9,846 watched accounts"). */
 export const OWNER_ORG = "org_3IrtoOAEP0nk1aCQHGVME02Dy6E";
 export const PROD_CONVEX = "befitting-sparrow-356";
-const BOX = "root@64.34.205.243";
 
 export type Source = "grafana auth" | "prod gauges" | "staging gauges" | "prod config" | "convex keys" | "prod rows";
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
@@ -193,19 +191,6 @@ set default_transaction_read_only = on;
 select platform, kind, lower(target), case when paused then 't' else 'f' end, coalesce(last_outcome, ''), coalesce((extract(epoch from last_run_at) * 1000)::bigint::text, '') from watch_targets where tier = 'monitor';
 SQL
 `;
-
-function ssh(script: string, signal: AbortSignal): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("ssh", ["-o", "BatchMode=yes", BOX, "bash -s"], { stdio: ["pipe", "pipe", "pipe"], signal });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", chunk => { out += chunk; });
-    child.stderr.on("data", chunk => { err += chunk; });
-    child.on("error", reject);
-    child.on("close", code => code === 0 ? resolve(out) : reject(new Error(`ssh exit ${code}: ${(err || out).trim().slice(-300)}`)));
-    child.stdin.end(script);
-  });
-}
 
 export interface WatchDeps { query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; now: number }
 

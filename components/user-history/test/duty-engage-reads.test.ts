@@ -7,20 +7,26 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { type DutyMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type Account, type EngageData, canaryRoster, causeOf, measure, parseArms, report } from "../scripts/duties/engage-reads.ts";
+import {
+  type Account, type DayPages, type Death, type EngageData, canaryRoster, causeOf, deepWalksOf, measure, parseArms, provenRate, report,
+} from "../scripts/duties/engage-reads.ts";
 import { UNMEASURED, frameRows, frameSeries, grafanaAuth, missValue } from "../scripts/duties/estate-reads.ts";
 
-const NOW = Date.parse("2026-10-12T14:00:00Z");
+const NOW = Date.parse("2026-10-14T03:00:00Z");
 const MIN = 60_000;
 const FILE = join(import.meta.dirname, "..", "scripts", "duties", "engage-reads.duty.json");
 const dutyMetrics = async (): Promise<DutyMetric[]> => parseDutyInput(JSON.parse(await readFile(FILE, "utf8")), "d", NOW).metrics;
-const account = (id: number, fields: Partial<Account> = {}): Account =>
-  ({ id, status: "active", diedAt: null, deathCode: null, evented: false, readBefore: true, read24h: true, ...fields });
+const account = (id: number, status = "active"): Account => ({ id, status });
+const death = (accountId: number, fields: Partial<Death> = {}): Death =>
+  ({ accountId, at: NOW - 30 * MIN, status: "challenged", code: "challenge_required", readBefore: true, pages24h: 500, ...fields });
+/** `count` accounts reading `pages` on each day. */
+const reads = (days: string[], count: number, pages: number, firstId = 1): DayPages[] =>
+  days.flatMap(day => Array.from({ length: count }, (_, index) => ({ day, accountId: firstId + index, pages })));
 
 function data(fields: Partial<EngageData> = {}): EngageData {
-  const accounts = [...Array.from({ length: 18 }, (_, index) => account(index + 1)), account(19, { read24h: false }), account(20, { read24h: false })];
-  return { now: NOW, errors: [], prod: { pages24h: 120_000, pages1h: 5000, lastReadAt: NOW - 2 * MIN }, staging: { pages24h: 6000, pages1h: 60, lastReadAt: NOW - 5 * MIN },
-    accounts, config: { "engage.rate_test_arms": "50:1;800:2", "engage.rate_test_started_at": "2026-10-12T03:00:00+00:00" }, ...fields };
+  return { now: NOW, errors: [], stagingLastReadAt: NOW - 5 * MIN, accounts: Array.from({ length: 100 }, (_, index) => account(index + 1)), deaths: [],
+    days: reads(["2026-10-12", "2026-10-13"], 100, 1000), healthy: 100, deepWalks: { reached: 995, errors: { invalid_request: 5 } },
+    config: { "engage.rate_test_arms": "2000:1,2,3,4,5,6,7,8,9,10", "engage.rate_test_started_at": "2026-10-12T03:00:00+00:00" }, ...fields };
 }
 
 test("engage reads: the duty file parses, its name passes c38, and the precheck writes every metric key", async () => {
@@ -31,33 +37,64 @@ test("engage reads: the duty file parses, its name passes c38, and the precheck 
   assert.deepEqual(Object.keys(output.metrics).sort(), duty.metrics.map(metric => metric.key).sort());
 });
 
-test("engage reads: a healthy fleet with a 10% canary meets every target", async () => {
+test("engage reads: 100 healthy accounts at a proven 1,000 pages a day meet every target", async () => {
   const metrics = await dutyMetrics();
   const output = report(data(), metrics);
-  assert.equal(output.metrics.prod_reading_pct, 90);
+  assert.equal(output.metrics.prod_capacity_pages_day, 100_000);
+  assert.equal(output.metrics.deep_walk_ok_pct, 99.5);
   assert.equal(output.metrics.canary_accounts_short, 0);
   assert.equal(judge(metrics, output).verdict, "met");
 });
 
-test("engage reads: deaths split by cause and by canary, and a stopped prod is flagged", async () => {
-  const accounts = [
-    account(1, { status: "challenged", diedAt: NOW - 30 * MIN, deathCode: "challenge_required", evented: true }),
-    account(2, { status: "disabled", diedAt: NOW - 3 * 60 * MIN, deathCode: "account_suspended", evented: true }),
-    account(3, { status: "frozen", diedAt: NOW - 60 * MIN + 1, deathCode: "transport", evented: true }),
-    account(4, { status: "frozen", diedAt: NOW - 10 * MIN, evented: true }),
-    account(5, { status: "challenged", diedAt: NOW - 10 * MIN, deathCode: "challenged", evented: true, readBefore: false }),
-    account(6, { status: "disabled", diedAt: NOW - 25 * 60 * MIN, deathCode: "challenged", evented: true }),
-    ...Array.from({ length: 10 }, (_, index) => account(10 + index)),
+test("engage reads: capacity is healthy accounts times the proven rate, and its line says how many more accounts reach 100k", async () => {
+  const output = report(data({ healthy: 95, days: reads(["2026-10-12", "2026-10-13"], 95, 962) }), await dutyMetrics());
+  assert.equal(output.metrics.prod_capacity_pages_day, 91_390);
+  const line = output.flagged!.find(item => item.kind === "capacity")!.excerpt;
+  assert.match(line, /95 healthy prod accounts .* x 962 pages a day per account, proven on 2026-10-12 and 2026-10-13/);
+  assert.match(line, /9 more healthy accounts at that rate reach 100,000/);
+  assert.match(line, /100 prod accounts on hand \(not dead\) x 962 = 96,200, short of 100,000/);
+});
+
+test("engage reads: a rate is proven by a canary's worth of accounts on 2 consecutive full UTC days with no Instagram verdict at or under it", () => {
+  const days = [...reads(["2026-10-10", "2026-10-11"], 90, 500, 11), ...reads(["2026-10-10", "2026-10-11"], 10, 2000)];
+  assert.deepEqual(provenRate(days, [], 10), { rate: 2000, days: ["2026-10-10", "2026-10-11"] });
+  assert.deepEqual(provenRate(days, [], 11), { rate: 500, days: ["2026-10-10", "2026-10-11"] }, "the 11th busiest account read 500");
+  assert.equal(provenRate(reads(["2026-10-10", "2026-10-12"], 10, 900), [], 10), null, "two days apart prove nothing");
+  assert.equal(provenRate(reads(["2026-10-10"], 10, 900), [], 10), null, "one day proves nothing");
+  const at = Date.parse("2026-10-11T12:00:00Z");
+  assert.deepEqual(provenRate(days, [death(1, { at, pages24h: 1900 })], 10), { rate: 500, days: ["2026-10-10", "2026-10-11"] },
+    "a canary verdict at 1,900 pages unproves 2,000 but not 500");
+  assert.equal(provenRate(days, [death(1, { at, pages24h: 2100 })], 10)?.rate, 2000, "a verdict above the rate leaves it proven");
+  assert.equal(provenRate(days, [death(20, { at, pages24h: 300 })], 10), null, "a verdict at 300 pages unproves both rates that day");
+  assert.deepEqual(provenRate(days, [death(20, { at, pages24h: 300, code: "transport" })], 10)?.rate, 2000, "our own freeze is no verdict");
+  assert.equal(provenRate(days, [death(20, { at: Date.parse("2026-10-13T08:00:00Z"), pages24h: 400 })], 10), null, "a later verdict at 400 pages withdraws both");
+});
+
+test("engage reads: kills split by cause and by canary, a move between dead statuses is one kill, and the 24 h line holds", async () => {
+  const deaths = [
+    death(1, { at: NOW - 30 * MIN }), death(1, { at: NOW - 20 * MIN, status: "disabled", code: "account_suspended" }),
+    death(2, { at: NOW - 3 * 60 * MIN, code: "account_suspended" }),
+    death(3, { at: NOW - 59 * MIN, code: "transport", status: "frozen" }),
+    death(20, { at: NOW - 10 * MIN, code: null, status: "frozen" }),
+    death(21, { at: NOW - 10 * MIN, code: "challenged", readBefore: false }),
+    death(22, { at: NOW - 25 * 60 * MIN, code: "challenged" }),
+    death(23, { at: NOW - 2 * 60 * MIN, code: "challenge_required" }),
+    death(24, { at: NOW - 4 * 60 * MIN, code: "sentry_block" }),
   ];
-  const output = report(data({ accounts, prod: { pages24h: 4, pages1h: 0, lastReadAt: NOW - 600 * MIN },
-    config: { "engage.rate_test_arms": "50:1,3;800:10", "engage.rate_test_started_at": "2026-10-12T03:00:00Z", "pause.engage_tagged": "true" } }), await dutyMetrics());
-  assert.equal(output.metrics.canary_ig_deaths_1h, 1, "account 1 is canary and Instagram's; 3 is ours");
-  assert.equal(output.metrics.fleet_ig_deaths_24h, 1, "account 2 only: 4 has no code, 5 never read, 6 is older than 24 h");
-  assert.equal(output.metrics.prod_last_read_min, 600);
-  assert.equal(output.metrics.canary_accounts_short, 0, "1 of 10 active accounts is in the roster");
+  const output = report(data({ deaths, config: { "engage.rate_test_arms": "50:1,2,3;800:4,5,6,7,8,9,10", "engage.rate_test_started_at": "2026-10-12T03:00:00Z", "pause.engage_tagged": "true" } }), await dutyMetrics());
+  assert.equal(output.metrics.canary_ig_deaths_1h, 1, "account 1 once; 2 is older than an hour, 3 is ours");
+  assert.equal(output.metrics.fleet_ig_killed_pct, 2, "23 and 24 of 100: 20 has no code, 21 never read, 22 is older than 24 h");
   const kinds = output.flagged!.map(item => item.kind);
-  assert.ok(kinds.includes("prod_stopped") && kinds.includes("pause"));
-  assert.equal(kinds.filter(kind => kind === "death").length, 5);
+  assert.ok(kinds.includes("pause"));
+  assert.equal(kinds.filter(kind => kind === "death").length, 8);
+});
+
+test("engage reads: deep walks count error stops against walks that reached their end", async () => {
+  assert.deepEqual(deepWalksOf("reached\t\t847\nerror\tinvalid_request\t13\nerror\tcursor_stalled\t1\n"), { reached: 847, errors: { invalid_request: 13, cursor_stalled: 1 } });
+  assert.throws(() => deepWalksOf("what\t\t1\n"), /unexpected/);
+  const output = report(data({ deepWalks: { reached: 847, errors: { invalid_request: 13, cursor_stalled: 1, repeated_content: 3 } } }), await dutyMetrics());
+  assert.equal(output.metrics.deep_walk_ok_pct, 98);
+  assert.match(output.flagged!.find(item => item.kind === "deep_walks")!.excerpt, /847 reached their end, 17 stopped on an error/);
 });
 
 test("engage reads: a failed source reports source_errors and a value that misses, never a fake good one", async () => {
@@ -65,18 +102,19 @@ test("engage reads: a failed source reports source_errors and a value that misse
   const { accounts: _accounts, ...rest } = data();
   const output = report({ ...rest, errors: [{ source: "prod accounts", message: "permission denied for table ig_engage_accounts" }] }, metrics);
   assert.equal(output.metrics.source_errors, 1);
-  assert.equal(output.metrics.prod_reading_pct, -UNMEASURED);
-  assert.equal(output.metrics.fleet_ig_deaths_24h, UNMEASURED);
-  assert.equal(output.metrics.prod_pages_24h, 120_000);
+  assert.equal(output.metrics.prod_capacity_pages_day, -UNMEASURED);
+  assert.equal(output.metrics.fleet_ig_killed_pct, UNMEASURED);
+  assert.equal(output.metrics.deep_walk_ok_pct, 99.5);
   assert.ok(output.flagged!.some(item => item.kind === "unmeasured"));
   assert.equal(judge(metrics, output).verdict, "missed");
 });
 
-test("engage reads: no Grafana login still gives a value for every metric", async () => {
+test("engage reads: no Grafana login still gives a value for every metric, and the deep walks still read", async () => {
   const metrics = await dutyMetrics();
-  const output = report(await measure(null, "GRAFANA_ADMIN_PASSWORD is missing", NOW), metrics);
+  const output = report(await measure(null, "GRAFANA_ADMIN_PASSWORD is missing", NOW, async () => "reached\t\t10\n"), metrics);
   assert.deepEqual(Object.keys(output.metrics).sort(), metrics.map(metric => metric.key).sort());
-  assert.equal(output.metrics.source_errors, 5);
+  assert.equal(output.metrics.source_errors, 6);
+  assert.equal(output.metrics.deep_walk_ok_pct, 100);
   assert.notEqual(judge(metrics, output).verdict, "error");
 });
 
@@ -86,15 +124,14 @@ test("engage reads: the roster parser and the cause rule match rate_test.py and 
   assert.throws(() => parseArms("0:1"), /above 0/);
   assert.throws(() => parseArms("50"), /form/);
   assert.equal(canaryRoster({}, NOW).ids.size, 0);
-  assert.equal(canaryRoster({ "engage.rate_test_arms": "50:1", "engage.rate_test_started_at": "2026-10-12T15:00:00Z" }, NOW).ids.size, 0, "a start in the future runs nothing yet");
+  assert.equal(canaryRoster({ "engage.rate_test_arms": "50:1", "engage.rate_test_started_at": "2026-10-14T15:00:00Z" }, NOW).ids.size, 0, "a start in the future runs nothing yet");
   assert.equal(canaryRoster({ "engage.rate_test_arms": "50:1", "engage.rate_test_started_at": "2026-10-12T03:00:00" }, NOW).ids.size, 0, "a start with no offset is refused");
   assert.match(canaryRoster({ "engage.rate_test_arms": "x:1", "engage.rate_test_started_at": "2026-10-12T03:00:00Z" }, NOW).note, /refused/);
-  assert.equal(causeOf({ deathCode: "challenge_required", evented: true, readBefore: true }), "instagram");
-  assert.equal(causeOf({ deathCode: "challenge_required", evented: true, readBefore: false }), "first_login");
-  assert.equal(causeOf({ deathCode: "transport", evented: true, readBefore: true }), "ours");
-  assert.equal(causeOf({ deathCode: "bad_password", evented: true, readBefore: false }), "bad_password");
-  assert.equal(causeOf({ deathCode: null, evented: true, readBefore: true }), "unknown");
-  assert.equal(causeOf({ deathCode: "challenged", evented: false, readBefore: true }), "unknown");
+  assert.equal(causeOf({ code: "challenge_required", readBefore: true }), "instagram");
+  assert.equal(causeOf({ code: "challenge_required", readBefore: false }), "first_login");
+  assert.equal(causeOf({ code: "transport", readBefore: true }), "ours");
+  assert.equal(causeOf({ code: "bad_password", readBefore: false }), "bad_password");
+  assert.equal(causeOf({ code: null, readBefore: true }), "unknown");
 });
 
 test("estate reads: Grafana frames, the auth line and the miss value", () => {

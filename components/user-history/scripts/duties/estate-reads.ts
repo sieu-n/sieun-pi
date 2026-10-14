@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { type DutyMetric, type FlaggedSlice, PRECHECK_TIMEOUT_MS } from "../../s
  * Grafana ds/query on obs.virev.ai serves the prod and staging Postgres datasources (estate_pg_prod, estate_pg_stg, user grafana_ro) and the
  * prod and staging Prometheus datasources (estate_prometheus, estate_prometheus_stg). The login is the admin pair in auto-sns-agent's
  * apps/infra/aws/secrets.env, the same one auto-sns-agent scripts/duties/crawler/crawler-pipeline.mjs uses.
+ * The prod box us-metal01 answers the reads grafana_ro cannot make (watch_targets) through `ssh`, as owner_ro in a read-only transaction.
  * A metric whose source failed gets `missValue`, a number that misses any target, so a broken source never reads as green.
  */
 
@@ -99,3 +101,19 @@ export const promInstant = async (query: DsQuery, uid: string, expr: string): Pr
 export const num = (value: unknown): number | null => value === null || value === undefined || value === "" ? null : Number(value);
 export const round1 = (value: number): number => Math.round(value * 10) / 10;
 export const utc = (ms: number): string => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
+
+const BOX = "root@64.34.205.243";
+
+/** Runs a bash script on the prod box us-metal01 and returns its stdout; throws on a nonzero exit. */
+export function ssh(script: string, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("ssh", ["-o", "BatchMode=yes", BOX, "bash -s"], { stdio: ["pipe", "pipe", "pipe"], signal });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", chunk => { out += chunk; });
+    child.stderr.on("data", chunk => { err += chunk; });
+    child.on("error", reject);
+    child.on("close", code => code === 0 ? resolve(out) : reject(new Error(`ssh exit ${code}: ${(err || out).trim().slice(-300)}`)));
+    child.stdin.end(script);
+  });
+}
