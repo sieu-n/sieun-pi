@@ -683,7 +683,7 @@ export class Chats {
       if (action === "none") {
         this.jobWakes.delete(threadId);
         this.jobQuiet.set(threadId, stamp);
-        if (job && state) this.queue(job.chat, () => this.jobEndNote(threadId, job));
+        if (job && state && jobEnd(state.messages)) this.queue(job.chat, () => this.jobEndNote(threadId, job));
         return;
       }
       this.jobQuiet.delete(threadId);
