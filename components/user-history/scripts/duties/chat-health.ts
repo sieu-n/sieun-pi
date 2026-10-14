@@ -10,7 +10,8 @@ import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts"
 import { fileOwnerTexts } from "../../src/owner-history.ts";
 import { placeholderTodo } from "../../src/shared/chat-board.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { foldReply, serverNote, TELL_OWNER_TOOL, type TurnStarter } from "../../src/shared/chat-feed.ts";
+import { foldReply, JOB_NOTICE_PREFIX, serverNote, TELL_OWNER_TOOL, type TurnStarter } from "../../src/shared/chat-feed.ts";
+import { agentMessageSender } from "../../src/no-report.ts";
 import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
@@ -148,6 +149,10 @@ async function measureChat(chat: string, file: string, start: number, now: numbe
     if (!message || !Number.isFinite(message.timestamp) || message.timestamp > now) continue;
     const at = message.timestamp;
     ops.read(message);
+    // A job's message ends its silence, so the next [job] line about it is a new notice, as `noticeStands` sends it (Crawler VP 10-14: lab compose
+    // additions answered the 08:58Z status ask at 08:59Z, went quiet after 10:09Z, and the new ask at 11:40Z counted as off_brief).
+    const sender = message.role === "custom" && message.customType === "agent_message" ? agentMessageSender(messageText(message)) : undefined;
+    if (sender) for (const text of seen) if (text.startsWith(`${JOB_NOTICE_PREFIX}${sender} `)) seen.delete(text);
     if (message.role === "user") {
       settleFailure(at);
       const text = messageText(message).trim();

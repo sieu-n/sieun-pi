@@ -488,3 +488,29 @@ test("check-in quality: the hours with a no-progress check-in count once each in
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("chat health: a [job] line after that job's message is a new notice, not off_brief; the same line with no job message between still is", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
+  try {
+    // Crawler VP 10-14: the status ask for lab compose additions at 08:58Z, its answer at 08:59Z, and the ask for its next silent hour at 11:40Z.
+    const ask = "[job] lab compose additions has worked on p43 \"Verify a lab copy\" for over an hour with no report: send it one short status ask now";
+    const answered = [user(ago(3 * HOUR), ask), reply(ago(3 * HOUR) + MIN, "asked"),
+      custom(ago(2.9 * HOUR), "agent_message", "[agent-message from child:lab compose additions]\n\nRound 6 is built."), reply(ago(2.9 * HOUR) + MIN, "noted"),
+      user(ago(1 * HOUR), ask), reply(ago(1 * HOUR) + MIN, "asked")];
+    const repeated = [user(ago(3 * HOUR), ask), reply(ago(3 * HOUR) + MIN, "asked"),
+      custom(ago(2.9 * HOUR), "agent_message", "[agent-message from child:other job]\n\nDone."), reply(ago(2.9 * HOUR) + MIN, "noted"),
+      user(ago(1 * HOUR), ask), reply(ago(1 * HOUR) + MIN, "asked")];
+    const offBrief = async (lines: Line[]) => {
+      await writeFile(join(dir, "chats.json"), JSON.stringify({ ids: ["chat-a"] }));
+      await writeFile(join(dir, "chat-a.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+      const output = join(dir, "out", "health.json");
+      const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
+      assert.equal(result.status, 0, result.stderr);
+      return (JSON.parse(await readFile(output, "utf8")) as PrecheckOutput).metrics.off_brief;
+    };
+    assert.equal(await offBrief(answered), 0);
+    assert.equal(await offBrief(repeated), 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
