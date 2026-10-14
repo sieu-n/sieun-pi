@@ -192,6 +192,19 @@ test("thread hub: the finished-job cleanup does not attach a dormant chat (10-14
   await fake.threads.close();
 });
 
+test("thread hub: a dormant chat that wakes mid-turn starts its quiet time at the attach, so the hung-turn check does not count its dormant minutes (slack green guy 10-14 00:47Z: woken by catalog after 75 min, then stopped as hung 76 min)", async () => {
+  const fake = await attached(hub());
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  const thread = (fake.threads as unknown as { threads: Map<string, { lastEventAt: number }> }).threads.get("c1")!;
+  thread.lastEventAt = Date.now() - 76 * MIN;
+  const before = Date.now();
+  fake.fire([{ id: "c1", kind: "live", working: true }]);
+  assert.equal(await fake.live("c1"), true);
+  assert.ok(thread.lastEventAt >= before, "the attach restarted the quiet time");
+  await fake.threads.close();
+});
+
 test("thread hub and chats: reads and ticks do not attach a dormant chat, and a daemon restart skips it", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-idle-"));
   const fake = await attached(hub());

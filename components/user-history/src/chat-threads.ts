@@ -480,8 +480,10 @@ export class ThreadHub {
     return { provider: ran.provider, id: ran.id, name: ran.name ?? ran.id, input: ["text"], contextWindow: 0, reasoning: false };
   }
 
+  /** An attach restarts the quiet time: a chat that woke from dormancy mid-turn read as hung for its dormant minutes and lost that turn (10-14 00:47Z). */
   private bind(thread: Thread, connection: DaemonAgentConnection, activeSessionId: string): void {
     thread.activeAt = this.dormant.now();
+    thread.lastEventAt = Date.now();
     const unsubscribe = connection.subscribe(event => { void this.onNativeEvent(thread, event); });
     thread.live = { connection, activeSessionId, unsubscribe };
   }
