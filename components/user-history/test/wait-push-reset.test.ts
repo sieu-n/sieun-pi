@@ -48,8 +48,9 @@ const replay = (history: [string, P4][]) => {
 };
 
 test("api portal vp p4: a waitUntil push of a wait cleared at 14:25Z does not count; two pushes of the same wait still do", () => {
-  assert.deepEqual(replay(HISTORY), ["13:08", "13:23", "14:38", "20:53", "21:53", "22:08", "22:23", "22:38", "22:53"],
-    "the 14:00Z to 14:30Z push belongs to the wait cleared at 14:25Z, and 00:50Z is the current wait's first waitUntil");
+  assert.deepEqual(replay(HISTORY), ["13:08", "13:23", "14:38", "20:53", "21:53", "22:08", "22:23", "22:38", "22:53 it has waited on the same thing for 2 h"],
+    "the 14:00Z to 14:30Z push belongs to the wait cleared at 14:25Z, and 00:50Z is the current wait's first waitUntil; the 21:44Z waitFor rewrite " +
+    "no longer restarts the wait seen at 20:53Z (c63), so 22:53Z is a stall by time, not by pushes");
   const pushed: [string, P4][] = [...HISTORY, ["2026-10-12T22:29:44.052Z", { waitUntil: "2026-10-13T01:20:00.000Z" }],
     ["2026-10-12T22:41:17.438Z", { waitUntil: "2026-10-13T01:50:00.000Z" }]];
   assert.deepEqual(replay(pushed).slice(-3), ["22:23", "22:38", "22:53 its waitUntil was pushed later 2 times"],

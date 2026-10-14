@@ -141,27 +141,40 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
 }
 
 /**
- * A step's memo at this run: `at` moves when its sig changes, `waitAt` when its wait changes, and a new waitUntil joins `untils`. A cleared
- * waitUntil or a new waitFor starts `untils` over, so only the current wait's pushes count (api portal vp p4: its 14:00Z to 14:30Z push was for a
- * wait cleared at 14:25Z).
+ * A step's memo at this run: `at` moves when its sig (status, text, owner) changes, `waitAt` when it starts or stops waiting or its owner
+ * changes, and a new waitUntil joins `untils`. A rewritten waitFor moves neither clock (c63): Crawler VP p39 sat blocked from 10-13 09:58Z while
+ * its waitFor was rewritten 98 times, the last at 10-14 04:01Z, and every rewrite made it a fresh wait, so it never read as a stale chase or a
+ * stall. A cleared waitUntil or a wait that starts over starts `untils` over, so only the current wait's pushes count (api portal vp p4: its
+ * 14:00Z to 14:30Z push was for a wait cleared at 14:25Z). A memo written before this rule (its sig and wait hold the wait texts) is read in the
+ * new form (`coreSig`, `waitKey`), so the release keeps every step's clock.
  */
 export function stepMemo(item: PlanItem, before: StepMemo | undefined, now: number, firstSeen: number): StepMemo {
   const sig = stepSig(item);
   const wait = waitSig(item);
-  const newWait = item.waitUntil === undefined || (before?.wait !== undefined && (JSON.parse(before.wait) as string[])[0] !== (item.waitFor ?? ""));
+  const sameWait = before?.wait !== undefined && waitKey(before.wait) === wait;
+  const newWait = item.waitUntil === undefined || (before?.wait !== undefined && !sameWait);
   const seen = newWait ? [] : before?.untils ?? [];
   const untils = item.waitUntil && seen.at(-1) !== item.waitUntil ? [...seen, item.waitUntil].slice(-STALL_UNTILS) : seen;
   const turnedDone = item.status === "done" && before !== undefined && !before.sig.startsWith('["done"');
   const doneAt = turnedDone ? now : item.status === "done" ? before?.doneAt : undefined;
   const facts = OPEN.has(item.status) ? noteFacts(item.note) : [];
   const factsAt = before?.facts && facts.some(fact => !before.facts!.includes(fact)) ? now : before?.factsAt;
-  return { sig, at: before ? before.sig === sig ? before.at : now : firstSeen, wait, ...(doneAt !== undefined ? { doneAt } : {}),
+  return { sig, at: before ? coreSig(before.sig) === sig ? before.at : now : firstSeen, wait, ...(doneAt !== undefined ? { doneAt } : {}),
     ...(facts.length ? { facts } : {}), ...(factsAt !== undefined && facts.length ? { factsAt } : {}),
-    // A memo from before `wait` existed counts its last change (its sig holds the waits) as the wait's start.
-    waitAt: !before ? firstSeen : before.wait === undefined ? before.at : before.wait === wait ? before.waitAt ?? before.at : now, ...(untils.length ? { untils } : {}) };
+    // A memo from before `wait` existed counts its last change as the wait's start.
+    waitAt: !before ? firstSeen : before.wait === undefined ? before.at : sameWait ? before.waitAt ?? before.at : now, ...(untils.length ? { untils } : {}) };
 }
-/** What a step waits on: its waitFor, its waitUntil and its owner. */
-const waitSig = (item: PlanItem): string => JSON.stringify([item.waitFor ?? "", item.waitUntil ?? "", stepOwner(item) ?? ""]);
+/** Whether a step waits (a waitFor or a waitUntil), and its owner; the wait's wording is left out (c63). */
+const waitSig = (item: PlanItem): string => JSON.stringify([item.waitFor !== undefined || item.waitUntil !== undefined ? "waits" : "", stepOwner(item) ?? ""]);
+/** A stored sig in today's form: a memo before c63 added the waitUntil and waitFor after the status, text and owner. */
+const coreSig = (sig: string): string => { try { return JSON.stringify((JSON.parse(sig) as unknown[]).slice(0, 3)); } catch { return sig; } };
+/** A stored wait in today's form: a memo before c63 held [waitFor, waitUntil, owner]. */
+const waitKey = (wait: string): string => {
+  try {
+    const parts = JSON.parse(wait) as string[];
+    return parts.length === 3 ? JSON.stringify([parts[0] || parts[1] ? "waits" : "", parts[2] ?? ""]) : wait;
+  } catch { return wait; }
+};
 
 /** The waitUntil values a step's memo keeps. */
 export const STALL_UNTILS = 5;
@@ -251,9 +264,11 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
   ].join("\n\n") || "The board has no open step and no job.";
 }
 
-/** What a step's last change compares: its status, text, owner and waits. A note edit is no change, so a chase note does not hide a stall. */
-export const stepSig = (item: PlanItem): string =>
-  JSON.stringify([item.status, item.text, planJob(item.job) ?? "", ...(item.waitUntil || item.waitFor ? [item.waitUntil ?? "", item.waitFor ?? ""] : [])]);
+/**
+ * What a step's last change compares: its status, text and owner. A note edit is no change, so a chase note does not hide a stall, and neither is
+ * a wait rewrite (c63): a new ETA or run id in the waitFor is no progress.
+ */
+export const stepSig = (item: PlanItem): string => JSON.stringify([item.status, item.text, planJob(item.job) ?? ""]);
 
 /**
  * The check-in duty's metrics (`CHECK_IN_DUTY`), each at most 0. `idle_goals` is an open goal nobody works on (`idleGoals`). `job_end_silent` is a step whose job ended badly (a provider error, an abort,

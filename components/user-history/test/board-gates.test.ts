@@ -182,7 +182,7 @@ test("check-in precheck: a step on the same wait past 2 h is stalled, one set 30
   const fresh = checkInPrecheck(undefined, [], boardOf(waiting.plan, [], new Date(NOW - 30 * 60_000).toISOString()), NOW);
   assert.deepEqual(fresh.stalled, [], "a wait set 30 min ago is not stalled");
   const reset = checkInPrecheck(first.memory, [], boardOf([step("p1", "Goal", "doing", { children: [step("p3", "Merge after CI", "blocked", { waitFor: "the nightly run" })] })]), NOW + 60_000);
-  assert.deepEqual(reset.stalled, [], "a new wait starts a new clock");
+  assert.deepEqual(reset.stalled.map(stall => stall.view.item.id), ["p3"], "c63: a rewritten waitFor keeps the wait's clock");
 
   const record = checkInRecord(join(await mkdtemp(join(tmpdir(), "stall-")), "check-ins.json"));
   const pushed = (hours: number) => boardOf([step("p1", "Goal", "doing", { children: [step("p2", "Renew the cert", "blocked", { waitUntil: until(hours) })] })], [], new Date(NOW).toISOString());

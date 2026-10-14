@@ -54,7 +54,10 @@ test("launch main bro 10-13: a step note that gains run ids after its job ended 
   const { lines, memory } = replay(FIXTURE.ops);
   for (const id of IDS) {
     const { sig, at, facts, factsAt } = memory.steps[id]!;
-    assert.deepEqual({ sig, at, facts, factsAt }, FIXTURE.memo[id], `${id}'s replayed memo at 02:50:40Z is the one check-ins.json holds`);
+    const held = FIXTURE.memo[id]!;
+    assert.deepEqual({ facts, factsAt }, { facts: held.facts, factsAt: held.factsAt }, `${id}'s replayed note facts at 02:50:40Z are the ones check-ins.json holds`);
+    assert.equal(sig, JSON.stringify((JSON.parse(held.sig) as unknown[]).slice(0, 3)), `${id}'s sig leaves its wait out (c63)`);
+    assert.ok(at <= held.at, `${id}'s last change is no later than check-ins.json's, which a waitFor rewrite moved (c63)`);
   }
   assert.deepEqual(lines.slice(4), ["02:20", `02:35 ${STALE("p77", "p87", "p89")}`, "02:50", "03:37"],
     "at 02:35Z p77, p87 and p89 had no note fact since their jobs ended at 02:11Z; p85's and p75's 02:06:59Z notes reached the memo at 02:20:39Z; " +
