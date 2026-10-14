@@ -157,7 +157,17 @@ def view(turns, now, cfg):
                "position": i + 1, "total": len(queue), "since": turns["queued"][s]["since"],
                "wait_s": round(now - turns["queued"][s]["since"])} for i, s in enumerate(queue)]
     return {"enabled": mac is not None, "mac_working_max": int(cfg["mac_working_max"]),
+            "mac_working_max_set": last_set("mac_working_max"),
             "tree_working_max": int(cfg["tree_working_max"]), "working": working, "queued": queued}
+
+
+def last_set(key):
+    """Who set `key` and when ({by, at} in epoch seconds) from `pi-pool set`; None while the key holds its default.
+    A value written before `set` recorded its writer has by None and config.json's file time."""
+    saved = base.load_json(base.CONFIG, {}) or {}
+    if key not in saved:
+        return None
+    return (saved.get("set_by") or {}).get(key) or {"by": None, "at": round(os.path.getmtime(base.CONFIG))}
 
 
 # --------------------------------------------------------------------- the CLI

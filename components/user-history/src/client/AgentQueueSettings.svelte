@@ -3,7 +3,8 @@
   import { api } from "./api.ts";
   import Checkbox from "./ui/Checkbox.svelte";
   import type { AgentQueueInput, AgentQueueView } from "../shared/types.ts";
-  import { queueLine } from "./agent-queue.ts";
+  import { queueLine, setLine } from "./agent-queue.ts";
+  import { POOL_DEFAULTS } from "./pool-config.ts";
 
   const POLL_MS = 5000;
   type Field = "mac" | "tree" | "aging" | "lease" | "idle";
@@ -82,7 +83,8 @@
     </button>
 
     {@render limit("mac", "Working sessions on this Mac", "", 999, pool !== null,
-      ["A p90 working session uses 426 MB; 16 fit in the 6.9 GB free (measured 10-14 07:38 KST)."])}
+      [...(pool ? [setLine(pool.macWorkingMax, pool.macWorkingMaxSet, POOL_DEFAULTS.mac_working_max)] : []),
+        `The default ${POOL_DEFAULTS.mac_working_max} is measured: a p90 working session uses 426 MB, and ${POOL_DEFAULTS.mac_working_max} fit in the 6.9 GB free (10-14 07:38 KST).`])}
     {@render limit("tree", "Working sessions per chat", "", 999, pool !== null,
       ["Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14."])}
     {@render limit("aging", "Move a waiting turn up a class every", "s", 86400, pool !== null,

@@ -487,8 +487,13 @@ export interface MachineView {
 /** One session in `pi-pool queue --json`. Times leave the server in epoch ms. */
 export interface AgentQueueSession { session: string; tree: string; parent: string | null; priority: PoolPriority; since: number }
 export interface AgentQueuedSession extends AgentQueueSession { basePriority: PoolPriority; position: number; total: number; waitMs: number }
-/** `pi-pool queue --json` as parsed. `enabled` is the `agent_queue_on` switch; the two limits keep their numbers while it is off. */
-export interface AgentQueueReading { enabled: boolean; macWorkingMax: number; treeWorkingMax: number; working: AgentQueueSession[]; queued: AgentQueuedSession[] }
+/** Who last ran `pi-pool set` on a key and when, in epoch ms. `by` is null for a value written before pi-pool recorded writers; `at` is then config.json's file time. */
+export interface PoolSetRecord { by: string | null; at: number }
+/**
+ * `pi-pool queue --json` as parsed. `enabled` is the `agent_queue_on` switch; the two limits keep their numbers while it is off.
+ * `macWorkingMaxSet` is null while the Mac limit holds pi-pool's default.
+ */
+export interface AgentQueueReading { enabled: boolean; macWorkingMax: number; macWorkingMaxSet: PoolSetRecord | null; treeWorkingMax: number; working: AgentQueueSession[]; queued: AgentQueuedSession[] }
 export type IdleEvictionMinutes = number | "off";
 
 /**

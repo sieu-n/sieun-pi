@@ -229,6 +229,30 @@ class Cli(unittest.TestCase):
         self.assertEqual(json.loads(self.run_cli("release", "a").stdout), {"released": False}, "release is idempotent")
         self.assertEqual([w["session"] for w in self.queue()["working"]], ["b", "c"], "the release admitted c")
 
+    def test_set_records_who_and_when_in_config_and_the_log(self):
+        before = round(time.time())
+        self.run_cli("set", "mac_working_max", "30", "--by", "the Settings pane")
+        record = self.queue()["mac_working_max_set"]
+        self.assertEqual(record["by"], "the Settings pane")
+        self.assertGreaterEqual(record["at"], before)
+        with open(os.path.join(self.dir, "pi-pool.log")) as f:
+            logged = [json.loads(line) for line in f if '"event": "set"' in line][-1]
+        self.assertEqual({k: logged[k] for k in ("key", "value", "was", "by")},
+                         {"key": "mac_working_max", "value": 30, "was": 2, "by": "the Settings pane"})
+        self.env["RLM_SESSION_DIR"] = os.path.expanduser("~/.prime/agent/session-artifacts/01a-root/sub-x")
+        self.set("mac_working_max", "16")
+        self.assertEqual(self.queue()["mac_working_max_set"]["by"], "agent 01a-root/sub-x")
+
+    def test_a_value_with_no_set_record_shows_the_file_time_and_the_default_shows_none(self):
+        path = os.path.join(self.dir, "config.json")
+        with open(path, "w") as f:
+            json.dump({"agent_queue_on": 1, "mac_working_max": 30}, f)
+        os.utime(path, (1791942343, 1791942343))
+        self.assertEqual(self.queue()["mac_working_max_set"], {"by": None, "at": 1791942343})
+        with open(path, "w") as f:
+            json.dump({"agent_queue_on": 1}, f)
+        self.assertIsNone(self.queue()["mac_working_max_set"])
+
     def test_priority_label_marks_the_tree_and_a_plain_priority_clears_it(self):
         self.run_cli("priority", "high", "--label", "--session", "01a00000-0000-0000-0000-000000000001")
         rec = read(os.path.join(self.dir, "state.json"))["sessions"]["01a00000-0000-0000-0000-000000000001"]
@@ -271,7 +295,8 @@ class Cli(unittest.TestCase):
 
     def test_off_admits_everything_records_nothing_and_keeps_the_limit(self):
         self.set("agent_queue_on", "0")
-        self.assertEqual(read(os.path.join(self.dir, "config.json")), {"mac_working_max": 2, "agent_queue_on": 0})
+        saved = read(os.path.join(self.dir, "config.json"))
+        self.assertEqual({k: v for k, v in saved.items() if k != "set_by"}, {"mac_working_max": 2, "agent_queue_on": 0})
         for s in "abc":
             self.assertEqual(self.admit(s)["state"], "off")
         view = self.queue()

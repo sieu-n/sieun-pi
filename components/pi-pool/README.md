@@ -515,6 +515,9 @@ A slot is free while the Mac has fewer than `mac_working_max` working runs and t
 A child whose parent's run is in flight and that finds no free slot runs on the parent's lent slot, and a parent lends one slot at a time, so a parent that spawns six children in one cell runs one of them over the limit, not six.
 An entry whose Prime worker or waiting `admit --wait` process is gone is dropped, and so is a slot whose lease (`lease_s`) runs out.
 `pi-pool set agent_queue_on 0` turns the queue off and keeps the limits, and every admit then answers off.
+Every `pi-pool set` records who ran it and when under `set_by` in config.json and as a `set` line in pi-pool.log with the old value.
+The writer is `--by <who>` (the chat service's Settings pane passes "the Settings pane"), else the agent's Prime session folder, else the parent pid.
+`queue --json` carries `mac_working_max_set` ({by, at}), which is null while the default 16 holds and has by null and config.json's file time for a value written before `set` recorded writers.
 
 The extension's `context` handler, which Prime awaits before every model call from every turn source, runs `admit --wait` at a run's first model call.
 A queued run gets one `pi-pool-queue` entry in its transcript that reads "Queued for a working slot, 3rd of 7".

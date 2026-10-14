@@ -22,7 +22,7 @@ process.env.PI_POOL_BIN = fake;
 const { parseAgentQueue, readAgentQueue, readQueueTimers, setPoolKey } = await import("../src/chat-pool.ts");
 const { agentQueue, parseAgentQueueInput } = await import("../src/chat-agent-queue.ts");
 const { chatDefaultsStore } = await import("../src/chat-backend.ts");
-const { queueLine, POOL_SILENT } = await import("../src/client/agent-queue.ts");
+const { queueLine, setLine, POOL_SILENT } = await import("../src/client/agent-queue.ts");
 
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 const raw = () => JSON.parse(readFileSync(fixture, "utf8")) as Record<string, unknown>;
@@ -48,11 +48,23 @@ test("both limits must be whole numbers, and a bad shape throws", () => {
   assert.throws(() => parseAgentQueue(null));
 });
 
+test("the Mac limit carries who last set it and when, and the Settings row says so next to the measured default", () => {
+  assert.equal(parseAgentQueue(raw()).macWorkingMaxSet, null);
+  assert.deepEqual(parseAgentQueue({ ...raw(), mac_working_max_set: { by: "the Settings pane", at: 1791942343 } }).macWorkingMaxSet,
+    { by: "the Settings pane", at: 1791942343000 });
+  assert.throws(() => parseAgentQueue({ ...raw(), mac_working_max_set: { by: "", at: 1791942343 } }));
+  assert.throws(() => parseAgentQueue({ ...raw(), mac_working_max_set: { by: null } }));
+  assert.equal(setLine(16, null, 16), "Holds the default 16; nobody has set it.");
+  assert.equal(setLine(30, { by: "the Settings pane", at: 1791942343000 }, 16), "Set to 30 by the Settings pane at 10-14 10:45 KST.");
+  assert.equal(setLine(30, { by: null, at: 1791942343000 }, 16),
+    "Set to 30 at 10-14 10:45 KST, the file time of config.json, by a writer pi-pool did not record then.");
+});
+
 test("pool writes go through pi-pool set with the value as text", async () => {
   writeFileSync(calls, "");
   await setPoolKey("agent_queue_on", 0);
   await setPoolKey("tree_working_max", 8);
-  assert.equal(readFileSync(calls, "utf8"), "set agent_queue_on 0\nset tree_working_max 8\n");
+  assert.equal(readFileSync(calls, "utf8"), "set agent_queue_on 0 --by the Settings pane\nset tree_working_max 8 --by the Settings pane\n");
 });
 
 function harness(initial: AgentQueueReading) {

@@ -1,6 +1,7 @@
 {
   "enabled": true,
   "mac_working_max": 16,
+  "mac_working_max_set": null,
   "tree_working_max": 8,
   "working": [
     {

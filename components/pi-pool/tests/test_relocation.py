@@ -92,8 +92,7 @@ class RelocatedSource(unittest.TestCase):
         ]
         for value, command in enumerate(commands, 10):
             self.run_command([*command, "set", "admit_slot_sec", str(value)])
-            self.assertEqual(json.loads((self.state / "config.json").read_text()),
-                             {"admit_slot_sec": value})
+            self.assertEqual(json.loads((self.state / "config.json").read_text())["admit_slot_sec"], value)
         self.assertEqual(self.snapshot(), before)
 
     def test_default_state_root_is_under_home_not_source(self):
@@ -102,8 +101,7 @@ class RelocatedSource(unittest.TestCase):
         env = {key: value for key, value in self.env.items() if key != "PI_POOL_DIR"}
         before = self.snapshot()
         self.run_command([str(self.source / "bin" / "pi-pool"), "set", "admit_slot_sec", "17"], env)
-        self.assertEqual(json.loads((default_state / "config.json").read_text()),
-                         {"admit_slot_sec": 17})
+        self.assertEqual(json.loads((default_state / "config.json").read_text())["admit_slot_sec"], 17)
         self.assertFalse((self.state / "config.json").exists())
         self.assertEqual(self.snapshot(), before)
 

@@ -69,9 +69,25 @@ def cmd_config(rest=()):
     return 0
 
 
+def setter():
+    """Who runs `pi-pool set` when it has no --by: the Prime session folder of an agent, else the parent pid."""
+    folder = os.environ.get("RLM_SESSION_DIR")
+    if folder:
+        return "agent " + os.path.relpath(folder, os.path.expanduser("~/.prime/agent/session-artifacts"))
+    if os.environ.get(base.SESSION_ENV):
+        return "Prime session " + os.environ[base.SESSION_ENV]
+    return f"a shell outside Prime (parent pid {os.getppid()})"
+
+
 def cmd_set(rest):
-    if len(rest) != 2:
-        raise SystemExit("usage: pi-pool set <key> <value>")
+    rest = list(rest)
+    by = None
+    if "--by" in rest:
+        i = rest.index("--by")
+        by = rest[i + 1] if i + 1 < len(rest) else None
+        del rest[i:i + 2]
+    if len(rest) != 2 or (by is not None and not by.strip()):
+        raise SystemExit("usage: pi-pool set <key> <value> [--by <who>]")
     key, value = rest
     if key not in base.DEFAULTS:
         raise SystemExit(f"unknown key {key}; known: {', '.join(sorted(base.DEFAULTS))}")
@@ -91,8 +107,11 @@ def cmd_set(rest):
     else:
         val = value
     cur = base.load_json(base.CONFIG, {}) or {}
+    was, by = base.config().get(key), by or setter()
     cur[key] = val
+    cur.setdefault("set_by", {})[key] = {"by": by, "at": round(time.time())}
     base.save_json(base.CONFIG, cur)
+    base.log("set", key=key, value=val, was=was, by=by)
     print(f"{key} = {json.dumps(val)} (in {base.CONFIG})")
     return 0
 

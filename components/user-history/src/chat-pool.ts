@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
-import { POOL_PRIORITIES, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider,
+import { POOL_PRIORITIES, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
   type PoolResolution, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
@@ -187,7 +187,7 @@ export const poolCommand = {
   login: (provider: string, account: string | null, seconds: number) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds)],
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
   queue: () => ["queue", "--json"],
-  set: (key: string, value: number) => ["set", key, String(value)],
+  set: (key: string, value: number) => ["set", key, String(value), "--by", "the Settings pane"],
   admit: (sessionId: string, tree: string, priority: PoolPriority) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
   release: (sessionId: string) => ["release", sessionId],
   ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
@@ -216,7 +216,14 @@ export function parseAgentQueue(value: unknown): AgentQueueReading {
     if (position === null || total === null || wait === null) throw new Error("pi-pool returned an invalid queue entry");
     return { ...session, basePriority, position, total, waitMs: wait * 1000 };
   }).sort((a, b) => a.position - b.position);
-  return { enabled: value.enabled, macWorkingMax, treeWorkingMax, working: value.working.map(queueSession), queued };
+  return { enabled: value.enabled, macWorkingMax, macWorkingMaxSet: setRecord(value.mac_working_max_set), treeWorkingMax, working: value.working.map(queueSession), queued };
+}
+
+function setRecord(value: unknown): PoolSetRecord | null {
+  if (value === null || value === undefined) return null;
+  const at = isRecord(value) ? epochMs(value.at) : null;
+  if (!isRecord(value) || at === null || (value.by !== null && !text(value.by))) throw new Error("pi-pool returned an invalid mac_working_max_set");
+  return { by: value.by as string | null, at };
 }
 
 export async function readAgentQueue(): Promise<AgentQueueReading> {
