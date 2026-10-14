@@ -80,7 +80,8 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
   metrics.kernel_waiters_1h = waiters.size;
   for (const waiter of waiters.values()) {
     flagged.push({ kind: "kernel_waiter", item: String(waiter.pid), excerpt: `${waiter.tree}, job ${waiter.job}, pid ${waiter.pid}, \`${waiter.command}\`, ` +
-      `${waiter.ageMin ?? "?"} min: a background wait in a kernel; the chat was asked to move it to board.wake.` });
+      `${waiter.ageMin ?? "?"} min: ${waiter.quietMin === undefined ? "a background wait in a kernel" : `a bash() handle held ${waiter.quietMin} min past its turn end`}; ` +
+      "the chat was asked to move it to board.wake." });
   }
   if (fed(hour).length) {
     const why = (["pressure", "swapouts", "kernel_task"] as const).map(miss => [miss, missMinutes.usable.filter(line => unusable(line.usable!).includes(miss)).length] as const);

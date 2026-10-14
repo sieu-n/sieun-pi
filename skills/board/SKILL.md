@@ -38,6 +38,8 @@ board.wake(at="2026-10-14T22:30:00Z", note="remeasure") # a time, instead of bas
 
 Never end a turn with `bash("ci-run-status <id> --wait")`, `gh run watch`, or a `sleep` still running. Prime counts a session with a running bash handle as busy, so the session keeps its Python kernel and its worker for the whole wait. On 10-14, 125 of 152 working sessions waited that way and held 8.69 GB of kernels. A wait inside one turn that ends in under a minute can still use `await bash(...)`.
 
+The same holds for any `bash()` handle that outlives its turn, such as a 3 h sampler. Run that command detached with `nohup <command> > <file> 2>&1 &` and set `board.wake(at=<its end>)`. The Mac usable watch asks the chat about every handle still held 30 min after its job's turn ended.
+
 A chat and every job under it find the chat from `RLM_SESSION_DIR`. A root job that a chat started with `rlm.create_session` has its own id, so it passes `chat="<chat session id>"`.
 
 ## Rules a VP chat reads on demand

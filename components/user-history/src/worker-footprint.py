@@ -2,7 +2,7 @@
 
 Reads worker pids, one per line, on stdin. Prints one JSON object: each worker's tree (the worker and every descendant, from
 proc_listchildpids) with its pid count and summed phys_footprint in bytes (the memory macOS counts, compressed and swapped pages
-included), every waiter (`WAITER`) running under a job's kernel with the kernel's session and the waiter's age, the Mac's swap use and memory pressure level, and this process's own CPU seconds. It uses libproc and sysctl through ctypes
+included), every waiter (`WAITER`) and every bash() handle (`HANDLE`, with the command it runs) under a job's kernel with the kernel's session and the process's age, the Mac's swap use and memory pressure level, and this process's own CPU seconds. It uses libproc and sysctl through ctypes
 and starts no other process, so one call costs well under a second of CPU at 1,000 processes.
 """
 import ctypes
@@ -41,6 +41,8 @@ def sysctl(name, value):
     return value if libc.sysctlbyname(name.encode(), ctypes.byref(value), ctypes.byref(size), None, 0) == 0 else None
 
 
+# The wrapper Prime's bash() runs each handle in: `/bin/bash -c "...{\n<command>\n} 8>&- 9>&-...prime-agent-complete..."`.
+HANDLE = re.compile(r"\{\n(.*?)\n\} 8>&- 9>&-\n.*prime-agent-complete", re.S)
 # A command that only waits on CI or a clock while it holds its job's kernel and worker; board.wake does the same with no kernel.
 WAITER = re.compile(r"(^|/)gh run watch\b|(^|/)gh pr checks\b.*--watch|ci-run-status(\.sh)? \S+ .*--wait|ci-run-status(\.sh)? --wait|(^|/)sleep (\d{3,}|[6-9]\d)(\.\d+)?$")
 CTL_KERN, KERN_PROCARGS2, KERN_ARGMAX, PROC_PIDTBSDINFO = 1, 49, 8, 3
@@ -78,7 +80,7 @@ def kernel_session(pid):
     return parts[-2] if len(parts) >= 2 and parts[-1] == "harness" else ""
 
 
-def tree(root, waiters, now):
+def tree(root, waiters, now, handles):
     pids, stack, seen = [], [(root, None)], set()
     while stack:
         pid, kernel = stack.pop()
@@ -96,19 +98,20 @@ def tree(root, waiters, now):
         elif kernel is not None:
             args = procargs(pid)
             command = " ".join(args[0]) if args else ""
-            if WAITER.search(command):
+            handle = HANDLE.search(command)
+            if handle or WAITER.search(command):
                 at = started(pid)
-                waiters.append({"pid": pid, "kernel": kernel[0], "session": kernel[1], "command": command[:200],
-                                "age_s": None if at is None else max(0, now - at)})
+                (handles if handle else waiters).append({"pid": pid, "kernel": kernel[0], "session": kernel[1],
+                                                         "command": (handle.group(1) if handle else command)[:200], "age_s": None if at is None else max(0, now - at)})
         stack.extend((child, kernel) for child in children(pid))
     return {"pids": len(pids), "bytes": sum(pids)}
 
 
 if __name__ == "__main__":
-    waiters = []
-    workers = {line.strip(): tree(int(line), waiters, int(time.time())) for line in sys.stdin if line.strip().isdigit()}
+    waiters, handles = [], []
+    workers = {line.strip(): tree(int(line), waiters, int(time.time()), handles) for line in sys.stdin if line.strip().isdigit()}
     swap = sysctl("vm.swapusage", SwapUsage())
     pressure = sysctl("kern.memorystatus_vm_pressure_level", ctypes.c_int())
     usage = resource.getrusage(resource.RUSAGE_SELF)
-    print(json.dumps({"workers": workers, "waiters": waiters, "swap_used_bytes": swap.used if swap else None, "pressure_level": pressure.value if pressure else None,
+    print(json.dumps({"workers": workers, "waiters": waiters, "handles": handles, "swap_used_bytes": swap.used if swap else None, "pressure_level": pressure.value if pressure else None,
                       "cpu_s": round(usage.ru_utime + usage.ru_stime, 3)}))

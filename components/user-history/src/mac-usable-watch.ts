@@ -85,7 +85,7 @@ export interface WatchLine {
   /** Live sessions that ended their task (`taskState` needs_input) and sit idle, chats left out. */
   finished: number; finishedTrees: TreeCount[];
   queue: QueueLine | null;
-  /** Background waiters in job kernels (gh run watch, ci-run-status --wait, long sleeps) that board.wake would replace; absent on older lines. */
+  /** Background waiters in job kernels that board.wake would replace: gh run watch, ci-run-status --wait and long sleeps, and any bash() handle of a session in `idleOver`; absent on older lines. */
   waiters?: WaiterLine[];
   /** Context only, from sysctl: swap in use and kern.memorystatus_vm_pressure_level (1 normal, 2 warn, 4 critical). */
   mac: { swapGb: number | null; pressureLevel: number | null };
@@ -106,11 +106,11 @@ function parseRow(value: unknown): Row | null {
 }
 
 /** What the footprint helper (src/worker-footprint.py) prints. */
-export interface Footprints { workers: Record<string, { pids: number; bytes: number }>; waiters?: RawWaiter[]; swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
-/** A command that only waits on CI or a clock under a job's kernel (worker-footprint.py `WAITER`), with the session its kernel serves. */
+export interface Footprints { workers: Record<string, { pids: number; bytes: number }>; waiters?: RawWaiter[]; handles?: RawWaiter[]; swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
+/** A command that only waits on CI or a clock under a job's kernel (worker-footprint.py `WAITER`), or the command of a bash() handle (`HANDLE`), with the session its kernel serves. */
 export interface RawWaiter { pid: number; kernel: number; session: string; command: string; age_s: number | null }
-/** A waiter with the job and chat tree that own it. */
-export interface WaiterLine { pid: number; kernel?: number; command: string; ageMin: number | null; session: string; job: string; root: string; tree: string }
+/** A waiter with the job and chat tree that own it; `quietMin`, set on a held bash() handle, is how long ago its session's turn ended. */
+export interface WaiterLine { pid: number; kernel?: number; command: string; ageMin: number | null; session: string; job: string; root: string; tree: string; quietMin?: number }
 
 const round = (value: number, places = 2): number => Math.round(value * 10 ** places) / 10 ** places;
 
@@ -164,6 +164,9 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     return row ? tree(row).tree : input.title(id) ?? id.slice(0, 8);
   });
   const chatsLive = live.filter(row => input.chats.has(row.id)).length;
+  const quietIds = new Set(idleOver.map(row => row.id));
+  const waitKernels = new Set((input.footprints.waiters ?? []).map(waiter => waiter.kernel));
+  const held = (input.footprints.handles ?? []).filter(handle => quietIds.has(handle.session) && !waitKernels.has(handle.kernel));
   return {
     at: new Date(input.now).toISOString(),
     usable: input.usable ?? null, chatsLive,
@@ -173,11 +176,12 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     idleOver: idleOver.length, idleTrees: topTrees(idleOver, tree),
     finished: finished.length, finishedTrees: topTrees(finished, tree),
     queue,
-    waiters: (input.footprints.waiters ?? []).map(waiter => {
+    waiters: [...(input.footprints.waiters ?? []), ...held].map(waiter => {
       const row = byId.get(waiter.session);
       const owner = row ? tree(row) : { root: waiter.session, tree: input.title(waiter.session) ?? waiter.session.slice(0, 8) };
+      const quietMin = row && held.includes(waiter) ? { quietMin: Math.round((input.now - row.lastAt) / MINUTE) } : {};
       return { pid: waiter.pid, kernel: waiter.kernel, command: waiter.command, ageMin: waiter.age_s === null ? null : Math.round(waiter.age_s / 60), session: waiter.session,
-        job: row?.name ?? input.title(waiter.session) ?? waiter.session.slice(0, 8), root: owner.root, tree: owner.tree };
+        job: row?.name ?? input.title(waiter.session) ?? waiter.session.slice(0, 8), root: owner.root, tree: owner.tree, ...quietMin };
     }),
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
@@ -261,9 +265,14 @@ export interface WatchSource {
 /** Waiter pids whose ask failed and was logged, so a retry each minute logs nothing new. */
 const failedAsks = new Set<string>();
 
-/** The line that asks a chat or thread to move its job's background wait to board.wake. */
+/** The line that asks a chat or thread to move its job's background wait, or its held bash() handle, to board.wake. */
 export function waiterLine(waiter: WaiterLine): string {
   const age = waiter.ageMin === null ? "" : ` for ${waiter.ageMin} min`;
+  if (waiter.quietMin !== undefined) {
+    return `${JOB_NOTICE_PREFIX}${waiter.job} (session ${waiter.session.slice(0, 8)}) ended its turn ${waiter.quietMin} min ago and still holds its kernel and worker in a bash() handle ` +
+      `running \`${waiter.command}\` (pid ${waiter.pid})${age}. Tell it to run a command that outlives its turn detached (nohup <command> > <file> 2>&1 &) ` +
+      "and set board.wake(at=<its end>), so the service wakes it and its worker can rest.";
+  }
   return `${JOB_NOTICE_PREFIX}${waiter.job} (session ${waiter.session.slice(0, 8)}) holds its kernel and worker in \`${waiter.command}\` (pid ${waiter.pid})${age}. ` +
     "Tell it to end that wait and set board.wake for the CI run or time instead, so the service wakes it and its worker can rest.";
 }

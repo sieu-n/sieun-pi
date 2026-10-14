@@ -233,6 +233,36 @@ test("waiters: a plain thread's waiter pins its worker too, so its root gets the
   assert.match(messaged[0]![1], /^\[job\] secrets-cutover \(session 01a0f80d\) holds its kernel and worker in `sleep 2280` \(pid 72541\) for 21 min\. .*board\.wake/);
 });
 
+// 10-14 21:29:58Z: the job 'm2 air docker swap' under ops guy ended its turn with a 3 h sampler (pid 78004) still in a bash() handle, so the
+// daemon kept it working and 20 minutes of 22:00-22:20Z missed the idle part with no ask, since no WAITER pattern took it.
+test("held handles: a bash() handle of a session quiet past TARGET.idleMinutes is a waiter whose chat is asked to run it detached with board.wake; a fresh session's handle is not", async () => {
+  const helper = join(import.meta.dirname, "../src/worker-footprint.py");
+  const sampler = "nice -n 20 python3 evidence/sampler.py evidence/cgroup-samples.jsonl 19";
+  const wrapper = `exec 9>&0 8>&1 0</dev/null\nread -r _prime_agent_gate <&9 || exit 127\n{\n${sampler}\n} 8>&- 9>&-\n__prime_status=$?\n'/usr/bin/printf' '\\036prime-agent-complete:%s%s\\037' 'a' 'b' >&8`;
+  const parsed = execFileSync("/usr/bin/python3", ["-B", "-c", `import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("wf", sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(json.dumps([(h.group(1) if (h := m.HANDLE.search(c)) else None) for c in sys.argv[2:]]))`, helper, `/bin/bash -c ${wrapper}`, "/bin/bash -c sleep 5", sampler], { encoding: "utf8" });
+  assert.deepEqual(JSON.parse(parsed), [sampler, null, null], "only Prime's bash() wrapper is a handle, read back to the command it runs");
+  const job = "01a13c3d-7876-704c-ad45-90c39ca9b262";
+  const rows = [row("ops", { sessionName: "ops guy (+observability)", workerPid: 96287 }),
+    row(job, { parentSessionId: "ops", sessionName: "m2 air docker swap", activity: "working", workerPid: 96287, lastActivityAt: new Date(NOW - 51 * MIN).toISOString() }),
+    row("fresh", { parentSessionId: "ops", sessionName: "fresh", activity: "working", workerPid: 96287, lastActivityAt: new Date(NOW - 5 * MIN).toISOString() }),
+    row("waits", { parentSessionId: "ops", sessionName: "waits", activity: "working", workerPid: 96287, lastActivityAt: new Date(NOW - 40 * MIN).toISOString() })];
+  const handles = [{ pid: 78004, kernel: 41785, session: job, command: sampler, age_s: 3300 }, { pid: 5, kernel: 6, session: "fresh", command: "npm run dev", age_s: 600 },
+    { pid: 7, kernel: 8, session: "waits", command: "sleep 3000", age_s: 2500 }];
+  const footprints = { ...FOOTPRINTS, waiters: [{ pid: 9, kernel: 8, session: "waits", command: "sleep 3000", age_s: 2500 }], handles };
+  const line = watchLine({ now: NOW, rows, footprints, queue: null, chats: new Set(["ops"]), title: () => null, cpuMs: 0 });
+  assert.equal(line.idleOver, 2, "the held session still counts as idle");
+  assert.deepEqual(line.waiters!.map(waiter => [waiter.pid, waiter.job, waiter.quietMin]), [[9, "waits", undefined], [78004, "m2 air docker swap", 51]],
+    "a fresh session's handle is no waiter, and a kernel already asked about its sleep adds no second line");
+  const dir = await mkdtemp(join(tmpdir(), "mac-usable-held-"));
+  await mkdir(join(dir, "mac-usable"), { recursive: true });
+  const sent: [string, string][] = [];
+  assert.deepEqual(await askWaiters({ dataDir: dir, log: () => {}, notify: async (chat, text) => { sent.push([chat, text]); } }, line.waiters!, new Set(["ops"]), NOW), ["8", "41785"]);
+  assert.match(sent[1]![1], /^\[job\] m2 air docker swap \(session 01a13c3d\) ended its turn 51 min ago and still holds its kernel and worker in a bash\(\) handle running `nice -n 20 python3 evidence\/sampler\.py .*` \(pid 78004\) for 55 min\. .*nohup .*board\.wake\(at=/);
+  assert.match(measure([watch(59, { waiters: line.waiters! })], NOW).flagged!.find(item => item.item === "78004")!.excerpt, /a bash\(\) handle held 51 min past its turn end; the chat was asked/);
+});
+
 test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics the precheck gives, with the owner's words verbatim", async () => {
   const value = JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/mac-stays-usable.duty.json"), "utf8"));
   const duty = parseDutyInput(value, "d1", 0);
