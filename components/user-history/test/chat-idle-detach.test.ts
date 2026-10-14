@@ -285,8 +285,8 @@ const jobRow = (at: number): Partial<SessionRow> => ({ id: "c1", kind: "live", s
     lastActivityAt: new Date(at).toISOString() } satisfies ChatAgent] });
 
 test("thread hub: a chat whose only running child went silent past CHILD_SILENT_MS detaches, its repeated child entries do not restart the idle time, and it gets one notice naming the child (10-14 08:17 KST: 8 of 9 chat trees held running or stale children and never detached)", async () => {
-  assert.equal(CHILD_SILENT_MS, 120 * MIN);
-  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 60 * MIN };
+  assert.equal(CHILD_SILENT_MS, 180 * MIN);
+  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 120 * MIN };
   const fake = await attached(hub({ children: () => [child] }));
   fake.at(T0 + 50 * MIN);
   threadOf(fake).broadcast(childUpdate({ ...child }));
@@ -297,28 +297,28 @@ test("thread hub: a chat whose only running child went silent past CHILD_SILENT_
   assert.equal(fake.threads.isDormant("c1"), true);
   const notices = fake.connections[0]!.notices;
   assert.equal(notices.length, 1);
-  assert.match(notices[0]!, /^\[job\] stuck job \(k1\) is silent since 08:00, 150 min, so it no longer holds this chat attached\. .*rlm\.delete_subagent.*agent_message\.send/);
-  fake.fire([jobRow(T0 - 60 * MIN)]);
+  assert.match(notices[0]!, /^\[job\] stuck job \(k1\) is silent since 07:00, 210 min, so it no longer holds this chat attached\. .*rlm\.delete_subagent.*agent_message\.send/);
+  fake.fire([jobRow(T0 - 120 * MIN)]);
   await flush();
   assert.equal(fake.threads.isLive("c1"), false, "a row at work only through the silent job does not wake the chat");
   await fake.threads.close();
 });
 
 test("thread hub: a running child silent for less than CHILD_SILENT_MS still holds its chat, and detaches it once it reaches the limit", async () => {
-  const child: ChildAgent = { id: "k1", label: "slow job", status: "running", lastActivityAt: T0 - 20 * MIN };
+  const child: ChildAgent = { id: "k1", label: "slow job", status: "running", lastActivityAt: T0 - 80 * MIN };
   const fake = await attached(hub({ children: () => [child] }));
   fake.at(T0 + 99 * MIN);
   await fake.rest();
-  assert.equal(fake.threads.isLive("c1"), true, "silent 119 min holds the chat");
+  assert.equal(fake.threads.isLive("c1"), true, "silent 179 min holds the chat");
   assert.deepEqual(fake.connections[0]!.notices, []);
   fake.at(T0 + 100 * MIN);
   await fake.rest();
-  assert.equal(fake.threads.isLive("c1"), false, "silent 120 min no longer does");
+  assert.equal(fake.threads.isLive("c1"), false, "silent 180 min no longer does");
   await fake.threads.close();
 });
 
 test("thread hub: a silent child gets its notice once: a second detach in the same silent spell sends none, and neither does a service start whose transcript already holds it", async () => {
-  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 60 * MIN };
+  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 120 * MIN };
   const fake = await attached(hub({ children: () => [child] }));
   fake.at(T0 + 90 * MIN);
   await fake.rest();
@@ -340,7 +340,7 @@ test("thread hub: a silent child gets its notice once: a second detach in the sa
 });
 
 test("thread hub: a silent child that works again counts again: the catalog wakes its dormant chat, it holds the chat until it is silent past the limit again, and that new silent spell gets its own notice", async () => {
-  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 60 * MIN };
+  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 120 * MIN };
   const fake = await attached(hub({ children: () => [{ ...child }] }));
   fake.at(T0 + 90 * MIN);
   await fake.rest();
@@ -349,13 +349,13 @@ test("thread hub: a silent child that works again counts again: the catalog wake
   child.lastActivityAt = T0 + 95 * MIN;
   fake.fire([jobRow(T0 + 95 * MIN)]);
   assert.equal(await fake.live("c1"), true, "the job at work again wakes the chat");
-  fake.at(T0 + 95 * MIN + 119 * MIN);
+  fake.at(T0 + 95 * MIN + 179 * MIN);
   await fake.rest();
   assert.equal(fake.threads.isLive("c1"), true, "the job counts as running again");
-  fake.at(T0 + 95 * MIN + 120 * MIN);
+  fake.at(T0 + 95 * MIN + 180 * MIN);
   await fake.rest();
   assert.equal(fake.threads.isLive("c1"), false);
   assert.equal(fake.connections[1]!.notices.length, 1);
-  assert.match(fake.connections[1]!.notices[0]!, /stuck job \(k1\) is silent since 10:35, 120 min/);
+  assert.match(fake.connections[1]!.notices[0]!, /stuck job \(k1\) is silent since 10:35, 180 min/);
   await fake.threads.close();
 });

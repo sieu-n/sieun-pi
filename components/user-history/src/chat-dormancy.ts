@@ -7,10 +7,10 @@ import type { ChildAgent, IdleEvictionMinutes, SessionRow, ThreadMessage } from 
 
 /**
  * How long a running or queued child may go with no model, tool or progress-note event, in its own session or any child under it, before it
- * stops holding its chat attached. Placeholder of 120 min until the measured limit lands: at 08:17 KST on 10-14, 8 of 9 chat trees never
- * detached because they held running or stale "working" children.
+ * stops holding its chat attached. Measured 10-14 over 2,542 child sessions of 6 days (334,998 gaps, host sleep left out): in-turn gaps reach
+ * 9.2 min at p99.9 and 373 max, and a bash await (CI or deploy wait) 94 min at p99 and 161 min at p99.9, so only 2 legit gaps pass 180 min.
  */
-export const CHILD_SILENT_MS = 120 * 60_000;
+export const CHILD_SILENT_MS = 180 * 60_000;
 
 /** The latest activity time of `child` and every child under it in `children` (by `parentId`); undefined when `child` itself has none. */
 function treeActivity(child: ChildAgent, children: readonly ChildAgent[]): number | undefined {
