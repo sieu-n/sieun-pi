@@ -108,6 +108,8 @@ class Thread {
   /** The owner asked for older messages (`ThreadHub.older`): every later read of the session file takes the whole branch. */
   full = false;
   readonly listeners = new Set<Listener>();
+  /** The listeners no person waits on (the Slack bridge): they get every event, but they do not hold the chat attached the way a tab does. */
+  readonly background = new Set<Listener>();
   touched = Date.now();
   idleSince: number | null = Date.now();
   /** When the session last sent an event, or the attach; the server's hung-turn check reads it (`quietSince`). */
@@ -196,12 +198,12 @@ export class ThreadHub {
   }
 
   /**
-   * Nothing in the thread's tree runs or waits: no tab, no turn, tool or session action, no queued input, no running or queued child but a silent
+   * Nothing in the thread's tree runs or waits: no tab (a Slack feed is none), no turn, tool or session action, no queued input, no running or queued child but a silent
    * one (`silentSince`). At 08:17 KST on 10-14, 8 of 9 chat trees held a running or stale "working" child, so they never detached.
    */
   private resting(thread: Thread): boolean {
     const { queue } = thread.state;
-    return thread.listeners.size === 0 && !isThreadBusy({ ...thread.state, children: unsilent(thread.state.children, this.dormant.now()) }) &&
+    return thread.listeners.size === thread.background.size && !isThreadBusy({ ...thread.state, children: unsilent(thread.state.children, this.dormant.now()) }) &&
       queue.steering.length === 0 && queue.followUp.length === 0 &&
       !this.resuming.has(thread.id) && !this.opening.has(thread.id);
   }
@@ -618,18 +620,25 @@ export class ThreadHub {
     return promise;
   }
 
-  /** `background` for a listener no person waits on (the Slack bridge): its attach waits its turn in the queue. */
+  /**
+   * `background` for a listener no person waits on (the Slack bridge): its attach waits its turn in the queue, it does not wake a dormant chat,
+   * and it does not hold the chat attached for `rest`. api portal vp 10-14 14:00 to 15:00 KST sat idle 61 min with all 30 jobs done and stayed
+   * attached, because its Slack feed counted as an open tab; a Slack message still wakes it through `prompt`, and the feed posts the reply.
+   */
   async subscribe(id: string, listener: Listener, background = false): Promise<() => void> {
     const thread = await this.open(id, background);
     thread.listeners.add(listener);
+    if (background) thread.background.add(listener);
     thread.idleSince = null;
     const { connection: _connection, error: _error, ...snapshot } = thread.state;
     listener({ type: "snapshot", snapshot });
     if (thread.state.connection !== "connected") listener({ type: "status", connection: thread.state.connection, ...(thread.state.error ? { error: thread.state.error } : {}) });
-    if (this.dormant.has(id)) void this.resume(id, background, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
+    if (!background && this.dormant.has(id)) void this.resume(id, false, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     return () => {
       thread.listeners.delete(listener);
-      if (thread.listeners.size === 0) { thread.idleSince = Date.now(); thread.activeAt = this.dormant.now(); }
+      thread.background.delete(listener);
+      if (thread.listeners.size === 0) thread.idleSince = Date.now();
+      if (!background && thread.listeners.size === thread.background.size) thread.activeAt = this.dormant.now();
     };
   }
 

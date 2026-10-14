@@ -27,7 +27,7 @@ const TOKEN_HOOK = "Failed to resolve API key for provider \"anthropic\" from sh
 
 type Summary = { sessionId: string; activeSessionId?: string; cwd: string; lifecycle: string; sessionFile: string; lastActivityAt?: string; isSessionActive: boolean;
   activity: string; isStreaming: boolean; hasRunningRlmChildren: boolean };
-type Connection = { prompts: string[]; notices: string[]; disposed: boolean };
+type Connection = { prompts: string[]; notices: string[]; disposed: boolean; emit: (event: unknown) => void };
 
 /**
  * A hub on a fake daemon: each attach makes a new connection that records its prompts, and `create` (a resume of a session with no worker)
@@ -65,9 +65,9 @@ function hub(options: { children?: (id: string) => ChildAgent[]; messages?: (id:
   const internals = threads as unknown as { attach(id: string): Promise<unknown>; liveSnapshot(connection: unknown, summary: { sessionId: string }): Promise<unknown>;
     savedSnapshot(summary: { sessionId: string }): Promise<unknown>; rest(): Promise<void> };
   internals.attach = async () => {
-    const record: Connection = { prompts: [], notices: [], disposed: false };
+    const record: Connection = { prompts: [], notices: [], disposed: false, emit: () => {} };
     connections.push(record);
-    return { subscribe: () => () => {}, dispose: async () => { record.disposed = true; }, setSteeringMode: async () => {}, getHeartbeat: async () => undefined, reload: async () => {},
+    return { subscribe: (listener: (event: unknown) => void) => { record.emit = listener; return () => {}; }, dispose: async () => { record.disposed = true; }, setSteeringMode: async () => {}, getHeartbeat: async () => undefined, reload: async () => {},
       getQueue: async () => ({ steering: [], followUp: [] }), prompt: async (message: string) => { record.prompts.push(message); },
       appendCustomMessage: async (message: { content: string }) => { record.notices.push(message.content); } };
   };
@@ -394,5 +394,41 @@ test("thread hub: at a service start a chat whose running subagents were all sil
   assert.equal(fake.threads.isDormant("stale"), true, "its subagents last worked 180 and 300 min ago");
   assert.equal(fake.threads.isLive("fresh"), true, "a subagent worked 20 min ago");
   assert.equal(fake.threads.isLive("unknown"), true, "a subagent with no activity time is not judged silent");
+  await fake.threads.close();
+});
+
+test("thread hub: a Slack feed does not hold its chat attached: api portal vp's case, a bridged chat with all jobs done detaches at its idle time, and the bridge's resubscribe leaves it dormant (10-14 14:00 to 15:00 KST: idle 61 min with 30 of 30 jobs done, held by its #api-portal-bot feed)", async () => {
+  const done: ChildAgent[] = [{ id: "k1", label: "staging dm ingress", status: "done", lastActivityAt: T0 - 600 * MIN }, { id: "k2", label: "portal api spec", status: "done" }];
+  const fake = await attached(hub({ children: () => done }));
+  const slack: string[] = [];
+  const unsubscribe = await fake.threads.subscribe("c1", event => { slack.push(event.type); }, true);
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isDormant("c1"), true, "the Slack feed is not a tab");
+  unsubscribe();
+  await fake.threads.subscribe("c1", event => { slack.push(event.type); }, true);
+  await flush();
+  assert.equal(fake.threads.isDormant("c1"), true, "the bridge's resubscribe does not wake the chat");
+  assert.equal(fake.connections.length, 1);
+  await fake.threads.close();
+});
+
+test("thread hub: a Slack message wakes a dormant bridged chat at once, its turn gets the message, and the reply reaches the Slack feed", async () => {
+  const fake = await attached(hub());
+  const slack: ThreadEvent[] = [];
+  await fake.threads.subscribe("c1", event => { slack.push(event); }, true);
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isDormant("c1"), true);
+  await fake.threads.prompt("c1", { message: "is the portal up?", images: [], mode: "steer" });
+  assert.equal(fake.threads.isLive("c1"), true);
+  assert.deepEqual(fake.connections[1]!.prompts, ["is the portal up?"]);
+  const reply = { role: "assistant", content: [{ type: "text", text: "yes, all green" }], provider: "anthropic", model: "claude-opus-5-5", stopReason: "stop", timestamp: T0 + 91 * MIN,
+    api: "anthropic-messages", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+  fake.connections[1]!.emit({ type: "session_event", event: { type: "message_end", message: reply } });
+  await flush();
+  const ended = slack.filter(event => event.type === "event" && event.event.type === "message_end");
+  assert.equal(ended.length, 1, "the feed gets the reply's message_end, which the bridge posts");
+  assert.match(JSON.stringify(fake.threads.state("c1")!.messages), /yes, all green/);
   await fake.threads.close();
 });
