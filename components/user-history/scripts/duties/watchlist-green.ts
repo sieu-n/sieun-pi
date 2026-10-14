@@ -28,8 +28,8 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  * - prod_loop_age_s <= 300: the prod watch-scheduler alert, apps/infra/metal/config/obs/grafana/alerting/crawler-health.yaml (loop age over 300 s).
  * - staging_tagged_overdue <= 0: "including collabs" on staging; the gauge already counts only rows overdue past 24 h.
  * - source_errors <= 0: a source that failed is reported, never shown as green.
- * The 24 h freshness line is the one the gauges (crawler_v3_watch_targets_overdue_24h_by_tier) and findings.md use. The schedule, every
- * 120 min, keeps the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the ssh read (3.2 s) to 12 a day; freshness is a 24 h window.
+ * The 24 h freshness line is the one the gauges (crawler_v3_watch_targets_overdue_24h_by_tier) and findings.md use. The schedule, daily at
+ * 06:28 (c66), runs the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the ssh read (3.2 s) once a day; freshness is a 24 h window.
  * The duty's timeoutMs 120000 is the runner's own cap, PRECHECK_TIMEOUT_MS in src/shared/chat-duties.ts.
  */
 
