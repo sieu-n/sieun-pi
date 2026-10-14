@@ -8,8 +8,8 @@ import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-boa
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, parkedBy, quote, readySteps,
-  noteFacts, readyReviewLine, readyReviews, recordedAt, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepOwner, stepView, type StepView, todoForStep, waitsOnOwner, walk,
-  withGoals } from "./checkin-steps.ts";
+  noteFacts, readyReviewLine, readyReviews, recordedAt, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
+  waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, type GoalGap, goalGapLine, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
@@ -51,7 +51,7 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   everyMs?: number;
   /** The chat's duties, for the goals they run (`goalsToFold`) and a chat with goals and no duty (`goalsWithoutDuty`); not given: neither counts them. */
   duties?: readonly DutyRef[];
-  /** The roots the chat started (the job registry's names or ids): its own jobs, never another session's load (`oneSessionLoad`). */
+  /** The roots the chat started (the job registry's names or ids): its own jobs, never another session's load (`oneSessionLoad`) or a thread that holds a goal (`heldElsewhere`). */
   jobs?: readonly string[];
   /** The chat's own schedules (`readHeartbeats`), for the heartbeats the check-in covers (`redundantHeartbeats`); none when not given. */
   heartbeats?: readonly ScheduledJob[];
@@ -119,6 +119,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   }
   for (const gate of gates) if (gate.kind === "go_waiting") notes.push(gateLine(gate));
   if (!context.boardError) for (const review of readyReviews(board, active, { memos: steps, owner: context.owner ?? [] })) notes.push(readyReviewLine(review));
+  if (!context.boardError) notes.push(...parkedUnnamed(board, facts));
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
   const queued = context.queued ?? new Map<string, unknown>();
@@ -130,7 +131,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train).filter(stall => !onOthers.has(stall.view.item.id)),
     goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board, now),
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
-    held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self),
+    held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
@@ -138,6 +139,24 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     fold: context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []), load: oneSessionLoad(goaled, context.jobs),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes,
     end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now)) };
+}
+
+/**
+ * The ended jobs whose last reply says they hold parked work (`JobMessage.parked`) while no open step names them (`stepNamesJob`), one line each.
+ * The cleanup keeps such a job (`finishedJobs`), but the board no longer says which step its work is for. launch main bro 10-14 04:1xZ to
+ * 04:2xZ: a check-in relinked 13 build steps to the job "release driver", and a relink whose note drops the build job leaves its parked pushes
+ * on no step.
+ */
+export function parkedUnnamed(board: ChatBoard | null, facts: readonly JobFact[]): string[] {
+  const open: PlanItem[] = [];
+  walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) open.push(item); });
+  return facts.flatMap(fact => {
+    const said = fact.lastMessage;
+    if (fact.state !== "ended" || fact.cancelled || fact.key.startsWith("thread:") || said?.parked === undefined) return [];
+    if (open.some(item => stepNamesJob(item, { id: fact.key, names: [fact.name, fact.sessionId] }))) return [];
+    return [`${fact.name} said at ${clockTime(said.at)} that it holds parked work (${quote(said.parked)}), but no open step names it in job, waitFor, note or text: ` +
+      "name it in the note of the step its work is for, or tell it to drop the work"];
+  });
 }
 
 /**
@@ -412,29 +431,46 @@ export const JOB_CLEANUP_EVERY_MS = 10 * 60_000;
 
 /**
  * The chat's finished jobs to delete (each holds a worker process and a Python kernel until it is deleted): a direct subagent that is done, sent
- * its final report (`repliedSinceTask` true), has been quiet JOB_CLEANUP_IDLE_MS, and that no open step keeps: one it owns, or one waiting on
- * purpose (`waitUntil`, `waitFor`) whose `waitFor` names it.
+ * its final report (`repliedSinceTask` true), has been quiet JOB_CLEANUP_IDLE_MS, and is owed no more work. A job is owed work while an open
+ * step names it (`stepNamesJob`: its owner, or its id or name in the step's job, waitFor, note or text), or while its last reply to the chat
+ * (`said`, from `lastJobMessages`) says it holds parked work (`parkedWork`). launch main bro 10-14 04:1xZ to 04:2xZ: the 04:11Z check-in moved
+ * 13 build steps to the job "release driver" and named each build job in the step's note; the rule read only the owner and the waitFor, so
+ * instagram access canary and watchlist all green (04:12Z) and fair crawl queue and collab lane self balance (04:24Z) were deleted with pushes
+ * parked for 'released'.
  */
-export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard | null, now: number): ChildAgent[] {
+export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard | null, now: number, said: ReadonlyMap<string, JobMessage> = new Map()): ChildAgent[] {
   const ids = new Set(children.map(child => child.id));
-  const keeps: { owner?: string; waitFor?: string }[] = [];
-  walk(board?.plan ?? [], item => {
-    if (!OPEN.has(item.status)) return;
-    const owner = stepOwner(item);
-    keeps.push({ ...(owner !== undefined ? { owner } : {}), ...(item.waitFor ? { waitFor: item.waitFor } : {}) });
-  });
+  const open: PlanItem[] = [];
+  walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) open.push(item); });
   return children.filter(child => {
     if (child.parentId !== undefined && ids.has(child.parentId)) return false;
     if (child.status !== "done" || childWorking(child) || child.repliedSinceTask !== true) return false;
     if (child.lastActivityAt === undefined || now - child.lastActivityAt < JOB_CLEANUP_IDLE_MS) return false;
-    const names = [child.id, childName(child), child.label];
-    return !keeps.some(keep => (keep.owner !== undefined && names.includes(keep.owner)) || (keep.waitFor !== undefined && names.some(name => keep.waitFor!.includes(name))));
+    if (said.get(childName(child))?.parked !== undefined) return false;
+    const job = { id: child.id, names: [childName(child), child.label, child.sessionId] };
+    return !open.some(item => stepNamesJob(item, job));
   });
 }
 
 /**
+ * Words in a job's message that say it still holds work for later: a push at, on, for or after 'released' (any quotes; "When you relay
+ * 'released', I'll push"), "still waiting for", "I'm waiting on",
+ * an armed wait or timer, "once it's on prod", or "parked pushes". Each comes from the jobs launch main bro's cleanup deleted on 10-14 at
+ * 04:12Z and 04:24Z (fair crawl queue: "It pushes with the land 35 set at "released""; collab lane self balance: "I'm still waiting for the r14
+ * sha"; instagram access canary: "Once it's on prod, I'll write the 2000 arm") or their earlier messages ("wait armed", "The parked pushes are
+ * ready"). A word alone such as "wait" or "holds" is not enough: final reports say "that path still holds", and one release path rule's final
+ * report (AI harness 10-14) listed "'released'" among the words a waitFor can name.
+ */
+const PARKED_WORK = /\b(?:at|on|for|after|until|relay|forward)\s+(?:(?:your|Fable's|the release driver's)\s+)?["'\u2018\u201c]released["'\u2019\u201d]|\bstill (?:waiting|wait) (?:for|on)\b|\b(?:I'm|I am) waiting (?:for|on)\b|\bwait (?:is )?armed\b|\b(?:my|the) wait follows\b|\btimer (?:is )?(?:set|armed)\b|\bonce it(?:'s|\u2019s| is) (?:on prod|promoted|landed|live)\b|\bparked (?:pushes|items?|work)\b/i;
+/** The words of a job's message that say it holds parked work (PARKED_WORK), or undefined. */
+export const parkedWork = (text: string): string | undefined => PARKED_WORK.exec(text)?.[0];
+/** Messages a job sends this close together are one reply (instagram access canary 10-14 01:49:41Z: one reply in two messages, 1 ms apart). */
+export const REPLY_GAP_MS = 5_000;
+
+/**
  * Each job's last agent message to the chat, by the name its header gives (`[agent-message from child:<name>]`, the `child:` cut), with when the
- * job last sent one that carries a fact (`noteFacts` over the whole message).
+ * job last sent one that carries a fact (`noteFacts` over the whole message), and the words of its last reply that say it holds parked work
+ * (`parkedWork` over the whole message; messages within REPLY_GAP_MS of each other are one reply).
  */
 export function lastJobMessages(messages: readonly { role: string; customType?: string; content?: unknown; timestamp?: number }[]): Map<string, JobMessage> {
   const last = new Map<string, JobMessage>();
@@ -447,8 +483,11 @@ export function lastJobMessages(messages: readonly { role: string; customType?: 
     const body = text.slice(header[0].length);
     const name = header[1]!.trim();
     const at = message.timestamp ?? 0;
-    const factsAt = noteFacts(body).length ? at : last.get(name)?.factsAt;
-    last.set(name, { at, text: body.split("\n").map(line => line.trim()).find(Boolean) ?? "", ...(factsAt !== undefined ? { factsAt } : {}) });
+    const before = last.get(name);
+    const factsAt = noteFacts(body).length ? at : before?.factsAt;
+    const parked = parkedWork(body) ?? (before !== undefined && at - before.at <= REPLY_GAP_MS ? before.parked : undefined);
+    last.set(name, { at, text: body.split("\n").map(line => line.trim()).find(Boolean) ?? "", ...(factsAt !== undefined ? { factsAt } : {}),
+      ...(parked !== undefined ? { parked } : {}) });
   }
   return last;
 }

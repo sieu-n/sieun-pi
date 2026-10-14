@@ -45,16 +45,25 @@ export const extraGoalsLine = (goals: readonly PlanItem[]): string => `${goals.l
  * goal short of its number is still this chat's to push (Crawler VP 10-12: p19, 32 of 180 Mbps, waited on the release owner's ramp). The
  * check-in checks the wait against the real state and closes the goal on that evidence, or hands the leftover to the holding thread and
  * closes it here, or adds the step of its own that comes after the wait.
+ *
+ * A root the chat started with rlm.create_session is the chat's own job, never another thread (launch main bro 10-14 04:1xZ to 04:2xZ: a
+ * check-in started "release driver", session 01a1389b, and moved p75 and p77 of p81 and p56, p57, p87 and p97 of p82 onto it; it is a
+ * top-level row, so its steps read as a `thread:` owner and both goals were flagged). `jobs` holds the chat's roots from the job registry
+ * (`rootsOf`, names or ids); a row whose name is one of them adds its session id. A step whose owner, or whose waitFor's thread
+ * (`waitTarget`), is one of these keeps the goal here.
  */
 export interface HeldGoal { goal: { id: string; text: string }; steps: { item: PlanItem; thread: { id: string; name: string } }[] }
-export function heldElsewhere(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>): HeldGoal[] {
+export function heldElsewhere(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>,
+  jobs: readonly string[] = []): HeldGoal[] {
   const settled = (goal: PlanItem): boolean => goal.children.some(child => CLOSED.has(child.status)) &&
     (!goal.target || (goal.target.current !== undefined && goal.target.current >= goal.target.target));
   const tops = new Map((board?.plan ?? []).map(goal => [goal.id, goal]));
+  const own = new Set([...jobs, ...rows.filter(row => jobs.includes(row.name)).map(row => row.id)]);
+  const other = (thread: { id: string; name: string } | undefined) => thread && !own.has(thread.id) && !own.has(thread.name) ? thread : undefined;
   const holder = (view: StepView): { id: string; name: string } | undefined => {
     if (view.mine || view.cls === "foryou") return undefined;
-    if (view.owner) return view.owner.key.startsWith("thread:") ? { id: view.owner.key.slice("thread:".length), name: view.owner.name } : undefined;
-    return waitTarget(view.item.waitFor, rows, self);
+    if (view.owner) return view.owner.key.startsWith("thread:") ? other({ id: view.owner.key.slice("thread:".length), name: view.owner.name }) : undefined;
+    return other(waitTarget(view.item.waitFor, rows, self));
   };
   const goals = new Map<string, HeldGoal | null>();
   for (const view of views) {

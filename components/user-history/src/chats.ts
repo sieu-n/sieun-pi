@@ -440,7 +440,7 @@ export class Chats {
     try { board = await this.source.board(id); }
     catch (error) { this.log(`chat ${id.slice(0, 8)}: job cleanup: ${error instanceof Error ? error.message : String(error)}`); return; }
     const now = this.now();
-    for (const child of finishedJobs(children, board, now)) {
+    for (const child of finishedJobs(children, board, now, lastJobMessages(this.messages(id) ?? []))) {
       if (this.deletedJobs.has(child.id)) continue;
       this.deletedJobs.add(child.id);
       try {

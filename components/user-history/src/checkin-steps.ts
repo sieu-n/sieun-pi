@@ -41,7 +41,9 @@ export interface JobFact {
  * One agent message a job sent the chat: when, and its first line; `factsAt` is when the job last sent one carrying a fact (`noteFacts`), such as a
  * commit, a run id or a count. A status answer with none ("still on it") does not move its goal.
  */
-export interface JobMessage { at: number; text: string; factsAt?: number }
+export interface JobMessage { at: number; text: string; factsAt?: number;
+  /** The words of the job's last reply that say it holds parked work (`parkedWork`); absent when the reply says none. */
+  parked?: string }
 /**
  * One plan item as last seen: what it said (`sig`: status, text, owner, waits) and when that last changed; its wait (`wait`: waitFor, waitUntil
  * and owner) and when that last changed (`waitAt`); and the waitUntil values it has had, oldest first (`untils`, the last STALL_UNTILS kept).
@@ -367,6 +369,32 @@ export function waitTarget(waitFor: string | undefined, rows: readonly Pick<Sess
     }
   }
   return best;
+}
+
+/** Whether `text` names `name` as whole words, case folded: no letter or digit right before or after one of its occurrences. */
+export function namesWhole(text: string, name: string): boolean {
+  const hay = text.toLowerCase();
+  const needle = name.trim().toLowerCase();
+  if (!needle) return false;
+  for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) {
+    if (!/[a-z0-9]/.test(hay[at - 1] ?? "") && !/[a-z0-9]/.test(hay[at + needle.length] ?? "")) return true;
+  }
+  return false;
+}
+/** A job name shorter than this never counts as named in a step's free text, as in `waitTarget`: "dev" would hit "sieun/dev". */
+export const JOB_NAME_MIN = 6;
+/**
+ * Whether an open step still owes a job work: the step's owner (`stepOwner`) is the job's id or name, or its job, waitFor, note or text names
+ * the job's id or one of its names (JOB_NAME_MIN characters or more) as whole words (`namesWhole`). launch main bro 10-14 04:1xZ to 04:2xZ: the
+ * 04:11Z check-in gave 13 build steps the job "release driver" and wrote in each note which build job still pushes its commits ("has the chat
+ * wake fair crawl queue for the push"), and a rule that read only the owner and the waitFor deleted four of those jobs.
+ */
+export function stepNamesJob(item: PlanItem, job: { id: string; names: readonly (string | undefined)[] }): boolean {
+  const names = job.names.filter((name): name is string => name !== undefined && name.trim() !== "");
+  const owner = stepOwner(item);
+  if (owner !== undefined && (owner === job.id || names.includes(owner))) return true;
+  const text = [item.job, item.waitFor, item.note, item.text].filter(Boolean).join("\n");
+  return namesWhole(text, job.id) || names.some(name => name.trim().length >= JOB_NAME_MIN && namesWhole(text, name));
 }
 
 /**
