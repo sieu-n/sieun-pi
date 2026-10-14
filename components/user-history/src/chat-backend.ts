@@ -12,7 +12,8 @@ import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
-import { dutyAdmitter, queueReader } from "./chat-turn-queue.ts";
+import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
+import { startMacUsableWatch } from "./mac-usable-watch.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
@@ -142,7 +143,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog });
   // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
   const turns = dutyAdmitter({ log: dutyLog });
-  const queued = queueReader();
+  const queueReading = sharedQueueRead();
+  const queued = queueReader(queueReading);
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
     jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
@@ -172,6 +174,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     .catch(error => { process.stderr.write(`boards: ${id}: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
+  const stopWatch = options.ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
+    queue: queueReading, log: dutyLog });
   const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync.unref();
   void poolPriorities.sync();
@@ -184,6 +188,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (closed) return;
       closed = true;
       clearInterval(prioritySync);
+      stopWatch();
       unwatchBoards();
       stopPublish();
       duties.close();

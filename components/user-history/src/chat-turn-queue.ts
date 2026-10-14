@@ -25,6 +25,19 @@ export function withQueuePlaces(facts: readonly JobFact[], places: ReadonlyMap<s
  */
 export const QUEUE_READ_MS = 10_000;
 
+/** One pi-pool queue read shared by its readers for `ttlMs`, so the Mac usable watch adds no pi-pool call while the catalog reads every 10 s; a failed read is not kept. */
+export function sharedQueueRead(read: () => Promise<AgentQueueReading> = readAgentQueue, ttlMs = QUEUE_READ_MS, now: () => number = Date.now): () => Promise<AgentQueueReading> {
+  let cached: { at: number; value: Promise<AgentQueueReading> } | null = null;
+  return () => {
+    if (cached && now() - cached.at < ttlMs) return cached.value;
+    const value = read();
+    const entry = { at: now(), value };
+    cached = entry;
+    value.catch(() => { if (cached === entry) cached = null; });
+    return value;
+  };
+}
+
 /** The queued sessions, read at most once per `ttlMs`; a read that fails gives none, so everything reads as it did before the queue. */
 export function queueReader(read: () => Promise<AgentQueueReading> = readAgentQueue, ttlMs = QUEUE_READ_MS, now: () => number = Date.now): () => Promise<ReadonlyMap<string, QueuePlace>> {
   let cached: { at: number; value: Promise<ReadonlyMap<string, QueuePlace>> } | null = null;

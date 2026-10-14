@@ -723,6 +723,11 @@ export class Catalog {
     return row ? sessionTitle(row) : null;
   }
 
+  /** The daemon's rows from the last list as it sent them, live roster rows laid over; empty before the first full list. */
+  daemonRows(): readonly SessionSummary[] {
+    return this.scanned ?? [];
+  }
+
   private find(sessionId: string): SessionSummary | undefined {
     const top = this.summaries.get(sessionId);
     if (top) return top;

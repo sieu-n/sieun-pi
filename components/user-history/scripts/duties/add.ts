@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { ChatLabels } from "../../src/chat-labels.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { chatPoolPriority } from "../../src/chat-pool-priority.ts";
+import { fileOwnerMessages, ownerCadenceRefusal } from "../../src/owner-history.ts";
 import { agentScheduleProblem, morningTime, parseSchedule, upsertDuty } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -13,16 +14,33 @@ import { agentScheduleProblem, morningTime, parseSchedule, upsertDuty } from "..
  * A duty is named by the system it looks after, in two to four plain words, like "Chat system"; parseDutyInput refuses "<something> health".
  * Leave out `schedule` and a new duty runs daily at a random free morning minute in its chat's priority band (`morningTime`; the chat's
  * sidebar label in labels.json, none is high), and an update keeps the duty's schedule. Agents run this, so `every N minutes` under a day is
- * refused (c66); `{ kind: daily, at: HH:MM }` and every 1440 or more pass. It prints the schedule and the chat's priority.
+ * refused (c66); `{ kind: daily, at: HH:MM }` and every 1440 or more pass. The owner's own ask passes too: `--owner-words "<his words>"
+ * --owner-message <message id>` (`ownerCadenceRefusal`), read from the chat's session file in `--sessions-dir` (default ~/.prime/agent/sessions).
+ * It prints the schedule and the chat's priority.
  */
+const FLAGS = ["--data-dir", "--sessions-dir", "--owner-words", "--owner-message"] as const;
 const args = process.argv.slice(2);
-const at = args.indexOf("--data-dir");
-const dataDir = at >= 0 ? resolve(args[at + 1] ?? "") : join(homedir(), ".prime/agent/browser-chat");
-const [chatId, file] = at >= 0 ? args.filter((_, index) => index !== at && index !== at + 1) : args;
-if (!chatId || !file) { process.stderr.write("usage: add.ts <chatId> <duty.json> [--data-dir <dir>]\n"); process.exit(2); }
+const flags = new Map<string, string>();
+const positional: string[] = [];
+for (let index = 0; index < args.length; index++) {
+  const arg = args[index]!;
+  if ((FLAGS as readonly string[]).includes(arg)) flags.set(arg, args[++index] ?? "");
+  else positional.push(arg);
+}
+const dataDir = flags.has("--data-dir") ? resolve(flags.get("--data-dir")!) : join(homedir(), ".prime/agent/browser-chat");
+const sessionsDir = flags.has("--sessions-dir") ? resolve(flags.get("--sessions-dir")!) : join(homedir(), ".prime/agent/sessions");
+const [chatId, file] = positional;
+if (!chatId || !file) {
+  process.stderr.write("usage: add.ts <chatId> <duty.json> [--data-dir <dir>] [--owner-words <words> --owner-message <id> [--sessions-dir <dir>]]\n");
+  process.exit(2);
+}
 const definition: unknown = JSON.parse(await readFile(file, "utf8"));
 const given = (definition as { schedule?: unknown }).schedule;
-const refused = given === undefined ? null : agentScheduleProblem(parseSchedule(given));
+const asked = given === undefined ? null : parseSchedule(given);
+const ok = flags.has("--owner-words") || flags.has("--owner-message") ? { words: flags.get("--owner-words") ?? "", messageId: flags.get("--owner-message") ?? "" } : undefined;
+const refused = asked && agentScheduleProblem(asked)
+  ? ownerCadenceRefusal(asked, ok, ok ? await fileOwnerMessages(join(sessionsDir, `${chatId}.jsonl`)) : [])
+  : null;
 if (refused) { process.stderr.write(refused + "\n"); process.exit(1); }
 const precheck = (definition as { precheck?: { cwd?: unknown } }).precheck;
 if (typeof precheck?.cwd === "string") precheck.cwd = resolve(dirname(resolve(file)), precheck.cwd);
@@ -37,4 +55,4 @@ const { result, schedule } = await store.update(chatId, duties => {
   return { result, schedule: duties.find(duty => duty.name === name?.trim())!.schedule };
 });
 const when = schedule.kind === "daily" ? `daily ${schedule.at}` : `every ${schedule.minutes} min`;
-process.stdout.write(`${result} "${name}" in ${chatId} ${when}, priority ${priority}\n`);
+process.stdout.write(`${result} "${name}" in ${chatId} ${when}, priority ${priority}${ok && asked && agentScheduleProblem(asked) ? `, the owner's ask ${ok.messageId}` : ""}\n`);
