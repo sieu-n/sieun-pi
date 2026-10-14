@@ -62,12 +62,13 @@ export interface WatchLine {
 }
 
 /** The daemon row fields the watch reads, parsed at the boundary from the catalog's raw rows. */
-interface Row { id: string; parent: string | undefined; name: string | undefined; live: boolean; working: boolean; lastAt: number; worker: number | undefined; ended: boolean }
+interface Row { id: string; parent: string | undefined; name: string | undefined; live: boolean; hosted: boolean; working: boolean; lastAt: number; worker: number | undefined; ended: boolean }
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function parseRow(value: unknown): Row | null {
   if (!isRecord(value) || typeof value.sessionId !== "string") return null;
   return { id: value.sessionId, parent: typeof value.parentSessionId === "string" ? value.parentSessionId : undefined,
-    name: typeof value.sessionName === "string" && value.sessionName ? value.sessionName : undefined, live: value.lifecycle === "live" && typeof value.workerPid === "number",
+    name: typeof value.sessionName === "string" && value.sessionName ? value.sessionName : undefined, live: value.lifecycle === "live" && typeof value.activeSessionId === "string",
+    hosted: value.lifecycle === "live" && typeof value.workerPid === "number",
     working: value.activity === "working", lastAt: typeof value.lastActivityAt === "string" ? Date.parse(value.lastActivityAt) : NaN,
     worker: typeof value.workerPid === "number" ? value.workerPid : undefined, ended: value.activity === "idle" && value.taskState === "needs_input" };
 }
@@ -216,7 +217,7 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const started = process.cpuUsage();
   const rows = source.rows();
   if (!rows.length) return null;
-  const pids = [...new Set(rows.map(parseRow).flatMap(row => row?.live && row.worker !== undefined ? [row.worker] : []))];
+  const pids = [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
   let own = process.cpuUsage(started);
   const [footprints, queue, chats] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), source.chats()]);
   const resumed = process.cpuUsage();
