@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
 import type { SessionSummary } from "prime-agent";
+import { missing } from "./locked-json.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { clockTime } from "./checkin-settings.ts";
 import { childName } from "./checkin-steps.ts";
@@ -62,9 +65,10 @@ const noticeKey = (child: ChildAgent, since: number): string => `(${child.id}) i
 
 /**
  * When a pinned chat lets go of its worker. `minutes` reads the daemon's own idle time (Settings, Unload idle sessions after); with none a chat
- * never detaches. `held` keeps a chat attached while a duty of it starts or runs; `now` is the hub clock.
+ * never detaches. `held` keeps a chat attached while a duty of it starts or runs; `now` is the hub clock. `file` keeps each pinned chat's idle
+ * clock across a service start; with none every attach after a start counts as activity.
  */
-export interface IdleDetach { minutes?: () => IdleEvictionMinutes; held?: (id: string) => Promise<boolean>; now?: () => number }
+export interface IdleDetach { minutes?: () => IdleEvictionMinutes; held?: (id: string) => Promise<boolean>; now?: () => number; file?: string }
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
@@ -80,11 +84,38 @@ export class Dormancy {
   readonly now: () => number;
   private readonly idleMinutes: () => IdleEvictionMinutes;
   private readonly isHeld: ((id: string) => Promise<boolean>) | undefined;
+  private readonly file: string | undefined;
+  /**
+   * Each chat's last activity as the service before this start saved it, kept until the chat's first attach. Without it a service start reset
+   * every idle clock: 10-14 11:18 to 13:52 KST, 13 releases restarted the service and only 1 of 9 chats detached.
+   */
+  private readonly before: Map<string, number>;
+  private saved = "";
 
   constructor(idle: IdleDetach = {}) {
     this.now = idle.now ?? Date.now;
     this.idleMinutes = idle.minutes ?? (() => "off");
     this.isHeld = idle.held;
+    this.file = idle.file;
+    this.before = new Map(this.file ? Object.entries(readClocks(this.file)) : []);
+  }
+
+  /** The idle clock of a chat that attaches now: its activity time saved before this service start, once, else now. */
+  attachedAt(id: string): number {
+    const before = this.before.get(id);
+    this.before.delete(id);
+    return before === undefined ? this.now() : Math.min(before, this.now());
+  }
+
+  /** Writes each chat's idle clock (`activeAt`) when it changed, with the saved times of chats not attached since the start. */
+  async save(clocks: Iterable<readonly [string, number]>): Promise<void> {
+    if (!this.file) return;
+    const text = JSON.stringify(Object.fromEntries([...this.before, ...clocks]));
+    if (text === this.saved) return;
+    const temp = `${this.file}.${process.pid}.tmp`;
+    await writeFile(temp, text, { mode: 0o600 });
+    await rename(temp, this.file);
+    this.saved = text;
   }
 
   has(id: string): boolean { return this.since.has(id); }
@@ -110,6 +141,7 @@ export class Dormancy {
 
   sleep(id: string, idleMs: number, how: "detached" | "left detached"): void {
     this.since.set(id, this.now());
+    this.before.delete(id);
     process.stderr.write(`dormant ${id.slice(0, 8)}: idle ${Math.floor(idleMs / 60_000)} min, ${how}\n`);
   }
 
@@ -156,11 +188,31 @@ export class Dormancy {
 
   /**
    * A pinned chat with no thread in the hub (a service start, or a daemon restart that closed it) whose session last worked longer ago than
-   * the daemon's idle time stays detached, so a restart does not load every idle worker again. The result is that idle time; null means resume it.
+   * the daemon's idle time stays detached, so a restart does not load every idle worker again. Its last work is the later of the session's
+   * activity and the idle clock saved before the start. Running subagents keep it only when one session below it (`childTimes`, epoch ms at any
+   * depth, NaN for none, read only then) was active within CHILD_SILENT_MS. The result is that idle time; null means resume it.
    */
-  async restedOnDisk(summary: SessionSummary): Promise<number | null> {
-    const last = Date.parse(summary.lastActivityAt ?? "");
-    if (!Number.isFinite(last) || summary.isSessionActive || summary.activity === "working" || summary.isStreaming || summary.hasRunningRlmChildren) return null;
-    return await this.due(summary.sessionId, last) ? this.now() - last : null;
+  async restedOnDisk(summary: SessionSummary, childTimes: () => readonly number[]): Promise<number | null> {
+    const known = [Date.parse(summary.lastActivityAt ?? ""), this.before.get(summary.sessionId) ?? Number.NaN].filter(Number.isFinite);
+    const last = Math.max(...known);
+    if (known.length === 0 || summary.isSessionActive || summary.activity === "working" || summary.isStreaming) return null;
+    const now = this.now();
+    if (summary.hasRunningRlmChildren) {
+      const times = childTimes();
+      if (times.length === 0 || times.some(at => !(now - at >= CHILD_SILENT_MS))) return null;
+    }
+    return await this.due(summary.sessionId, last) ? now - last : null;
+  }
+}
+
+/** The saved idle clocks; none when the file is missing, or unreadable (logged), so a bad file only costs the old reset. */
+function readClocks(file: string): Record<string, number> {
+  try {
+    const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("not an object");
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
+  } catch (error) {
+    if (!missing(error)) process.stderr.write(`rest: ${file}: ${message(error)}\n`);
+    return {};
   }
 }

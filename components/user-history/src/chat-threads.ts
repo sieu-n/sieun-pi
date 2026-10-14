@@ -209,7 +209,8 @@ export class ThreadHub {
   /**
    * Detaches each pinned chat whose whole tree rested for the daemon's idleEvictionMinutes; it keeps its last state for `state` and `revive`.
    * Just before the detach, the chat gets one notice line per silent child it was not told of (`silentLines`). A notice starts no turn, and it
-   * lands before the detach time `woken` compares the session's activity with, so it does not wake the chat again.
+   * lands before the detach time `woken` compares the session's activity with, so it does not wake the chat again. Then it saves each attached
+   * chat's idle clock for the next service start.
    */
   private async rest(): Promise<void> {
     for (const id of this.pinned) {
@@ -226,6 +227,7 @@ export class ThreadHub {
       live.unsubscribe();
       await live.connection.dispose().catch(() => {});
     }
+    await this.dormant.save([...this.pinned].flatMap(id => { const thread = this.threads.get(id); return thread?.live ? [[id, thread.activeAt] as const] : []; }));
   }
 
   /** Closes the oldest unpinned threads of `kind` with no tab open over MAX_LIVE or MAX_SAVED; pinned threads do not count, so pins never push other threads out. */
@@ -346,7 +348,7 @@ export class ThreadHub {
       void (async () => {
         const summary = await this.catalog.summary(id);
         if (!summary || summary.lifecycle === "archived") { this.unpin(id); return; }
-        const rested = this.threads.has(id) ? null : await this.dormant.restedOnDisk(summary);
+        const rested = this.threads.has(id) ? null : await this.dormant.restedOnDisk(summary, () => this.catalog.childActivity(id));
         if (rested !== null) {
           await this.open(id, true, false);
           this.dormant.sleep(id, rested, "left detached");
@@ -492,9 +494,12 @@ export class ThreadHub {
     return { provider: ran.provider, id: ran.id, name: ran.name ?? ran.id, input: ["text"], contextWindow: 0, reasoning: false };
   }
 
-  /** An attach restarts the quiet time: a chat that woke from dormancy mid-turn read as hung for its dormant minutes and lost that turn (10-14 00:47Z). */
+  /**
+   * An attach restarts the quiet time: a chat that woke from dormancy mid-turn read as hung for its dormant minutes and lost that turn (10-14 00:47Z).
+   * Its idle clock restarts too, except at the first attach after a service start, which keeps the clock saved before it (`attachedAt`).
+   */
   private bind(thread: Thread, connection: DaemonAgentConnection, activeSessionId: string): void {
-    thread.activeAt = this.dormant.now();
+    thread.activeAt = this.dormant.attachedAt(thread.id);
     thread.lastEventAt = Date.now();
     const unsubscribe = connection.subscribe(event => { void this.onNativeEvent(thread, event); });
     thread.live = { connection, activeSessionId, unsubscribe };

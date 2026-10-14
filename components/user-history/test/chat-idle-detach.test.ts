@@ -34,7 +34,7 @@ type Connection = { prompts: string[]; notices: string[]; disposed: boolean };
  * gives the session an active id. `children` and `messages` build each live snapshot; `saved` builds the snapshot read from the session file.
  */
 function hub(options: { children?: (id: string) => ChildAgent[]; messages?: (id: string) => ThreadMessage[]; held?: (id: string) => Promise<boolean>; minutes?: number | "off";
-  summaries?: Record<string, Partial<Summary>> } = {}) {
+  summaries?: Record<string, Partial<Summary>>; file?: string; childTimes?: Record<string, number[]> } = {}) {
   let now = T0;
   let fire: (event: { daemon: string; sessions?: Partial<SessionRow>[] }) => void = () => {};
   const summaries = new Map<string, Summary>();
@@ -57,10 +57,10 @@ function hub(options: { children?: (id: string) => ChildAgent[]; messages?: (id:
     }
     return { success: true, data: {} };
   } };
-  const catalog = { summary: async (id: string) => summary(id), refresh: async () => {}, connect: async () => {}, client,
+  const catalog = { summary: async (id: string) => summary(id), refresh: async () => {}, connect: async () => {}, client, childActivity: (id: string) => options.childTimes?.[id] ?? [],
     subscribe: (listener: typeof fire) => { fire = listener; return () => {}; } } as unknown as Catalog;
   const threads = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }), undefined,
-    { minutes: () => options.minutes ?? 90, now: () => now, ...(options.held ? { held: options.held } : {}) });
+    { minutes: () => options.minutes ?? 90, now: () => now, ...(options.held ? { held: options.held } : {}), ...(options.file ? { file: options.file } : {}) });
   const connections: Connection[] = [];
   const internals = threads as unknown as { attach(id: string): Promise<unknown>; liveSnapshot(connection: unknown, summary: { sessionId: string }): Promise<unknown>;
     savedSnapshot(summary: { sessionId: string }): Promise<unknown>; rest(): Promise<void> };
@@ -357,5 +357,42 @@ test("thread hub: a silent child that works again counts again: the catalog wake
   assert.equal(fake.threads.isLive("c1"), false);
   assert.equal(fake.connections[1]!.notices.length, 1);
   assert.match(fake.connections[1]!.notices[0]!, /stuck job \(k1\) is silent since 10:35, 180 min/);
+  await fake.threads.close();
+});
+
+test("thread hub: a service start keeps each chat's idle clock, so a chat idle 40 min before the start detaches 50 min after it at 90 idle min (10-14 11:18 to 13:52 KST: 13 service restarts reset every clock and 1 of 9 chats detached)", async () => {
+  const file = join(await mkdtemp(join(tmpdir(), "chat-idle-")), "idle-clocks.json");
+  const before = await attached(hub({ file }));
+  before.at(T0 + 40 * MIN);
+  await before.rest();
+  assert.equal(before.threads.isLive("c1"), true);
+  await before.threads.close();
+
+  const after = hub({ file });
+  after.at(T0 + 41 * MIN);
+  await attached(after);
+  after.at(T0 + 89 * MIN);
+  await after.rest();
+  assert.equal(after.threads.isLive("c1"), true, "idle 89 min across the start holds");
+  after.at(T0 + 90 * MIN);
+  await after.rest();
+  assert.equal(after.threads.isDormant("c1"), true, "idle 90 min counts from the activity before the start, not from the new attach");
+  await after.threads.prompt("c1", { message: "hi", images: [], mode: "steer" });
+  after.at(T0 + 90 * MIN + 89 * MIN);
+  await after.rest();
+  assert.equal(after.threads.isLive("c1"), true, "a wake after the start restarts the clock as before");
+  await after.threads.close();
+});
+
+test("thread hub: at a service start a chat whose running subagents were all silent past CHILD_SILENT_MS stays detached, and one with a subagent active within it resumes", async () => {
+  const restedFor = { lastActivityAt: new Date(T0 - 120 * MIN).toISOString(), hasRunningRlmChildren: true };
+  const fake = hub({ summaries: { stale: { ...restedFor }, fresh: { ...restedFor }, unknown: { ...restedFor } },
+    childTimes: { stale: [T0 - CHILD_SILENT_MS, T0 - 300 * MIN], fresh: [T0 - 300 * MIN, T0 - 20 * MIN], unknown: [T0 - 300 * MIN, Number.NaN] } });
+  for (const id of ["stale", "fresh", "unknown"]) { delete fake.summary(id).activeSessionId; fake.threads.pin(id); }
+  fake.fire();
+  for (let wait = 0; wait < 40 && !(fake.threads.isDormant("stale") && fake.threads.isLive("fresh") && fake.threads.isLive("unknown")); wait++) await flush();
+  assert.equal(fake.threads.isDormant("stale"), true, "its subagents last worked 180 and 300 min ago");
+  assert.equal(fake.threads.isLive("fresh"), true, "a subagent worked 20 min ago");
+  assert.equal(fake.threads.isLive("unknown"), true, "a subagent with no activity time is not judged silent");
   await fake.threads.close();
 });

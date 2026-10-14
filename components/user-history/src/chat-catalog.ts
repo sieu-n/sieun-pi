@@ -730,6 +730,21 @@ export class Catalog {
     return children.find(row => row.activeSessionId !== undefined) ?? children[0];
   }
 
+  /** The last activity of each session the daemon lists below `sessionId` at any depth, in epoch ms, NaN for one with none. */
+  childActivity(sessionId: string): number[] {
+    const children = childrenByParent(this.childSummaries);
+    const times: number[] = [];
+    const seen = new Set([sessionId]);
+    const pending = [...(children.get(sessionId) ?? [])];
+    for (let child = pending.pop(); child; child = pending.pop()) {
+      if (seen.has(child.sessionId)) continue;
+      seen.add(child.sessionId);
+      times.push(Date.parse(child.lastActivityAt ?? ""));
+      pending.push(...(children.get(child.sessionId) ?? []));
+    }
+    return times;
+  }
+
   /** Native usage cost of each subagent under a parent session, from the daemon summaries of non-top-level sessions. */
   childUsage(parentSessionId: string): ChildUsage[] {
     return this.childSummaries.filter(row => row.parentSessionId === parentSessionId).map(row => ({ sessionId: row.sessionId,
