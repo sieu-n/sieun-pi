@@ -33,7 +33,22 @@ import { fileURLToPath } from "node:url";
 // The root installer links this directory into <agent dir>/extensions, so the
 // loader's own path points at the link, not at the pool.
 const HERE = realpathSync(dirname(fileURLToPath(import.meta.url)));
-const POOL_BIN = join(dirname(dirname(HERE)), "bin", "pi-pool-token");
+const POOL_BIN = poolBin(HERE);
+
+/**
+ * The pool CLI that the extension in `here` calls. An installed release calls the CLI
+ * of `current`, not its own: a session keeps the extension it loaded until it reloads,
+ * and on 10-14 sessions still on release 6601cc2bbdfd ran its owner-turn code after
+ * 00a7feba9b52 went live at 11:32:34 KST, logging owner admits that waited 175.8 s
+ * (12:06:26) and 32.3 s (12:22:13). So the CLI keeps accepting every argument an older
+ * extension sends. A checkout or any other folder calls its own CLI.
+ */
+export function poolBin(here: string): string {
+	const root = dirname(dirname(here));
+	const releases = dirname(root);
+	const base = basename(releases) === "releases" ? join(dirname(releases), "current") : root;
+	return join(base, "bin", "pi-pool-token");
+}
 const SESSION_ENV = "PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID";
 const POOLED_PROVIDERS = new Set(["anthropic", "openai-codex"]);
 const FOLLOW = "follow";
