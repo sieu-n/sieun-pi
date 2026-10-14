@@ -1,14 +1,16 @@
 import { execFile } from "node:child_process";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { JOB_NOTICE_PREFIX } from "./shared/chat-feed.ts";
 import type { AgentQueueReading } from "./shared/types.ts";
 
 /**
- * The Mac usable watch: once a minute the chat service appends one line to `<dataDir>/mac-usable/<local date>.jsonl` with the harness numbers
- * that decide whether the Mac stays usable: the Prime workers' memory footprint and the top workers by it with their chat tree, the live, working
- * and quietly "working" sessions, the finished jobs nobody deleted, and the Mac-wide turn queue. The owner (10-14 09:16Z): "you -harness side of
- * bullshit, ops guy -app side of bullshit fixing monitoring", so the Mac's swap and memory pressure are context columns, never a target.
+ * The Mac usable watch: once a minute the chat service appends one line to `<dataDir>/mac-usable/<local date>.jsonl` with the Mac's usability
+ * from ops guy's pressure feed (memory pressure level, swapouts a second, kernel_task CPU) and the harness numbers behind it: the Prime workers'
+ * memory footprint and the top workers by it with their chat tree, the live, working and quietly "working" sessions, the finished jobs nobody
+ * deleted, and the Mac-wide turn queue. The owner (10-14 09:15Z): "look it's you and ops guys responsibility that this machine is usable", so a
+ * minute is judged on the Mac being usable (`USABLE`), and the worker footprint is a detail with no target (c67, the VP's ask of 10-14 20:2xZ).
  * The hourly "Mac stays usable" duty (scripts/duties/mac-stays-usable.ts) reads these lines and judges each minute with `misses`.
  */
 
@@ -19,20 +21,45 @@ export const QUIET_MS = 15 * MINUTE;
 
 /**
  * The harness target. A minute is on target when every part holds; each number's evidence is in the commit that set it.
- * `activeSessionGb` and `chatGb` set the footprint budget, what the sessions doing work need: each turn the agent queue holds working may take
- * 0.52 GB, the 90th percentile of worker plus kernel footprint over the 16 workers that held one mid-turn session at 18:19 KST on 10-14
- * (median 0.37 GB), and each live chat 0.33 GB, the base a worker held in a fit of footprint on resident sessions over the 33 workers then.
  * `idleMinutes`: pi-pool's lease_s of 1,800 s takes the slot of a run with no model call for that long, and the check-in stops counting a quiet job as working after 30 min.
  * `queueWaitS`: the 99th percentile of the 4,811 slot admits pi-pool logged on 10-14 from 08:06 to 18:24 KST waited 706 s.
  */
-export const TARGET = { activeSessionGb: 0.52, chatGb: 0.33, idleMinutes: 30, queueWaitS: 706 } as const;
+export const TARGET = { idleMinutes: 30, queueWaitS: 706 } as const;
 
-/** The footprint the harness needs this minute: the queue's working turns (or, unread, the working sessions active in the last 15 min) and the live chats. */
-export function footprintBudgetGb(line: Pick<WatchLine, "queue" | "working" | "idle15" | "chatsLive">): number {
-  const active = line.queue ? line.queue.working : line.working - line.idle15;
-  return round(active * TARGET.activeSessionGb + (line.chatsLive ?? 0) * TARGET.chatGb);
+/**
+ * A usable minute, from ops guy's feed: the kernel's pressure level under critical (4), swapouts under 6,000 a second, and kernel_task under
+ * one core. 6,000 is pi-pool's governor threshold (components/pi-pool/pool/pressure.py SWAPOUTS_CRITICAL): 18 feed reads at 10:59-11:02Z on
+ * 10-14 said warn while kernel_task paged at 168% to 256% of a core with 6,210 to 22,956 swapouts a second. The same reads set kernel_task's
+ * line at one core; at 20:23Z on 10-14, with the Mac usable by the VP's read, it ran at 17.7%.
+ */
+export const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100 } as const;
+/** ops guy's machine-wide feed, schema v1, rewritten every 10 s. A reading older than FEED_FRESH_MS (three missed writes) is stale, the feed contract pi-pool's pool/pressure.py and the devbox textfile script keep. */
+export const PRESSURE_FEED = join(homedir(), ".cache", "virev", "mac-pressure.json");
+const FEED_FRESH_MS = 30_000;
+/** One feed reading: the kernel's pressure level (1 normal, 2 warn, 4 critical), swapouts a second, and kernel_task CPU in % of a core. */
+export interface UsableReading { pressureLevel: number; swapoutsPerS: number; kernelTaskPct: number }
+export type UsableMiss = "pressure" | "swapouts" | "kernel_task";
+
+/** The feed reading in `value`, or null when it is not schema v1, is older than FEED_FRESH_MS at `now`, or lacks a number. */
+export function parseFeed(value: unknown, now: number): UsableReading | null {
+  if (!isRecord(value) || value.v !== 1 || typeof value.ts !== "string" || !(now - Date.parse(value.ts) < FEED_FRESH_MS)) return null;
+  const { pressure_level: pressureLevel, swapouts_per_s: swapoutsPerS, kernel_task_cpu_pct: kernelTaskPct } = value;
+  if (typeof pressureLevel !== "number" || typeof swapoutsPerS !== "number" || typeof kernelTaskPct !== "number") return null;
+  return { pressureLevel, swapoutsPerS, kernelTaskPct };
 }
-export type TargetPart = "footprint" | "idle" | "queue";
+export const readPressureFeed = async (now: number, path = PRESSURE_FEED): Promise<UsableReading | null> =>
+  parseFeed(await readFile(path, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), now);
+
+/** What makes a reading's minute unusable, in USABLE's order; empty when the Mac is usable. */
+export function unusable(reading: UsableReading): UsableMiss[] {
+  const missed: UsableMiss[] = [];
+  if (reading.pressureLevel >= USABLE.pressureLevel) missed.push("pressure");
+  if (reading.swapoutsPerS >= USABLE.swapoutsPerS) missed.push("swapouts");
+  if (reading.kernelTaskPct >= USABLE.kernelTaskPct) missed.push("kernel_task");
+  return missed;
+}
+
+export type TargetPart = "usable" | "idle" | "queue";
 
 /** One worker process tree: its pid, its footprint, and the chat tree with the most sessions on it, by root session id and name. */
 export interface WorkerLine { pid: number; gb: number; sessions: number; root: string; tree: string }
@@ -47,9 +74,11 @@ export interface QueueLine {
 }
 export interface WatchLine {
   at: string;
+  /** ops guy's feed this minute; null when it was stale or unreadable, absent on lines written before the watch read it. */
+  usable?: UsableReading | null;
   workers: number; workerGb: number; top: WorkerLine[];
-  /** `footprintBudgetGb` of this line, and the live chat roots it counts; absent on lines written before the budget. */
-  budgetGb?: number; chatsLive?: number;
+  /** The live chat roots; absent on lines written before it was counted. */
+  chatsLive?: number;
   live: number; working: number; idle15: number;
   /** Working sessions with no activity for over TARGET.idleMinutes, and the trees that hold the most of them. */
   idleOver: number; idleTrees: TreeCount[];
@@ -115,7 +144,7 @@ function topTrees(rows: readonly Row[], tree: (row: Row) => { root: string; tree
  * `title` names a chat tree's root.
  */
 export function watchLine(input: { now: number; rows: readonly unknown[]; footprints: Footprints; queue: QueueReading | null; chats: ReadonlySet<string>;
-  title: (id: string) => string | null; cpuMs: number }): WatchLine {
+  title: (id: string) => string | null; cpuMs: number; usable?: UsableReading | null }): WatchLine {
   const rows = input.rows.map(parseRow).filter((row): row is Row => row !== null);
   const byId = new Map(rows.map(row => [row.id, row]));
   const tree = treeOf(byId, input.title);
@@ -135,13 +164,12 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     return row ? tree(row).tree : input.title(id) ?? id.slice(0, 8);
   });
   const chatsLive = live.filter(row => input.chats.has(row.id)).length;
-  const counts = { working: working.length, idle15: quiet(QUIET_MS).length, chatsLive, queue };
   return {
     at: new Date(input.now).toISOString(),
-    budgetGb: footprintBudgetGb(counts), chatsLive,
+    usable: input.usable ?? null, chatsLive,
     workers: Object.keys(input.footprints.workers).length,
     workerGb: round(Object.values(input.footprints.workers).reduce((sum, worker) => sum + worker.bytes, 0) / GB),
-    top, live: live.length, working: counts.working, idle15: counts.idle15,
+    top, live: live.length, working: working.length, idle15: quiet(QUIET_MS).length,
     idleOver: idleOver.length, idleTrees: topTrees(idleOver, tree),
     finished: finished.length, finishedTrees: topTrees(finished, tree),
     queue,
@@ -164,10 +192,10 @@ function queueLine(reading: QueueReading, now: number, treeName: (id: string) =>
     oldestWaitS: oldest ? Math.max(0, Math.round((now - oldest.since) / 1000)) : 0, oldestTree: oldest ? treeName(oldest.tree) : null };
 }
 
-/** The target parts a line misses, in TARGET's order; empty when the minute is on target. A line without a queue reading misses no queue part. */
-export function misses(line: Pick<WatchLine, "workerGb" | "idleOver" | "queue" | "working" | "idle15" | "chatsLive">): TargetPart[] {
+/** The target parts a line misses; empty when the minute is on target. A line without a feed reading misses no usable part, and one without a queue reading no queue part. */
+export function misses(line: Pick<WatchLine, "usable" | "idleOver" | "queue">): TargetPart[] {
   const missed: TargetPart[] = [];
-  if (line.workerGb > footprintBudgetGb(line)) missed.push("footprint");
+  if (line.usable && unusable(line.usable).length) missed.push("usable");
   if (line.idleOver > 0) missed.push("idle");
   if (line.queue && line.queue.oldestWaitS > TARGET.queueWaitS) missed.push("queue");
   return missed;
@@ -222,6 +250,8 @@ export interface WatchSource {
   log: (line: string) => void;
   footprints?: typeof readFootprints;
   now?: () => number;
+  /** The pressure feed's reading at `now`; absent, `readPressureFeed`. */
+  feed?: (now: number) => Promise<UsableReading | null>;
   /** Sends a chat one notice line (the hub's notice, for a chat that is attached); absent, no chat is asked. */
   notify?: (chat: string, line: string) => Promise<void>;
   /** Sends a root that is not a chat (a plain thread) the line as a message through the daemon; absent, no thread is asked. */
@@ -282,9 +312,10 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   if (!rows.length) return null;
   const pids = [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
   let own = process.cpuUsage(started);
-  const [footprints, queue, chats] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), source.chats()]);
+  const [footprints, queue, chats, usable] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), source.chats(),
+    (source.feed ?? readPressureFeed)(now())]);
   const resumed = process.cpuUsage();
-  const line = watchLine({ now: now(), rows, footprints, queue, chats, title: source.title, cpuMs: 0 });
+  const line = watchLine({ now: now(), rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable });
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };

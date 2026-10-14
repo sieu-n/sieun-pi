@@ -1,28 +1,29 @@
 {
   "name": "Mac stays usable",
   "ownerWords": "look it's you and ops guys responsibility that this machine is usable.\n\nyou -harness side of bullshit, ops guy -app side of bullshit fixing monitoring\n\nsetup a 60min cadence duty",
-  "goal": "The harness side keeps the Mac usable every minute: Prime workers hold no more memory footprint than the working turns and live chats need (0.52 GB a working turn, 0.33 GB a live chat), no working session sits quiet over 30 min, and no queued turn waits over 706 s. Swap and memory pressure are ops guy's to watch; this duty only reads them as context.",
+  "goal": "The Mac stays usable every minute: memory pressure stays under critical, swapouts stay under 6,000 a second, and kernel_task stays under one core, read from ops guy's pressure feed. On the harness side no working session sits quiet over 30 min and no queued turn waits over 706 s. The Prime worker footprint is a detail line with no target.",
   "metrics": [
     {
-      "key": "on_target_pct_1h",
-      "label": "Share of the last hour's minutes on the harness target",
+      "key": "usable_pct_1h",
+      "label": "Share of the last hour's minutes the Mac was usable",
       "op": ">=",
       "target": 100,
       "unit": "%",
       "headline": true
     },
     {
-      "key": "on_target_pct_24h",
-      "label": "Share of the last 24 hours' minutes on the harness target",
+      "key": "usable_pct_24h",
+      "label": "Share of the last 24 hours' minutes the Mac was usable",
       "op": ">=",
       "target": 100,
       "unit": "%"
     },
     {
-      "key": "footprint_miss_min_1h",
-      "label": "Minutes in the last hour with Prime workers over their footprint budget",
+      "key": "unusable_streak_max_1h",
+      "label": "Longest run of unusable minutes in the last hour",
       "op": "<=",
-      "target": 0
+      "target": 9,
+      "unit": " min"
     },
     {
       "key": "idle_miss_min_1h",
@@ -35,20 +36,6 @@
       "label": "Minutes in the last hour with a queued turn waiting over 706 s",
       "op": "<=",
       "target": 0
-    },
-    {
-      "key": "off_streak_max_1h",
-      "label": "Longest run of minutes off target in the last hour",
-      "op": "<=",
-      "target": 9,
-      "unit": " min"
-    },
-    {
-      "key": "worker_gb_over_budget_now",
-      "label": "Prime worker footprint over its budget at the last minute",
-      "op": "<=",
-      "target": 0,
-      "unit": " GB"
     },
     {
       "key": "kernel_waiters_1h",
@@ -71,5 +58,5 @@
     "cwd": "../..",
     "timeoutMs": 60000
   },
-  "onMiss": "Start one fix job for the top miss with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\"), or message the job an earlier run started on the same part if it still works. The brief names the part, its minutes off target, the chat trees behind it and the now numbers, and asks for a root fix in the harness with a test and a commit. Footprint: find what keeps each top worker's finished or quiet sessions alive. Idle: find why those working sessions went quiet. Queue: find what holds the slots. Never kill a session mid-turn, restart the Prime daemon or the :5182 service, or message another chat. An alert flag: tell the chat in one line with the part, the minutes and the tree. All on target: end the turn with no message."
+  "onMiss": "Start one fix job for the top miss with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\"), or message the job an earlier run started on the same part if it still works. The brief names the part, its minutes off target, the chat trees behind it and the now numbers, and asks for a root fix in the harness with a test and a commit. Usable: find which harness load ran in the unusable minutes (the trees behind it, turns, worker reloads) and whether removing it would have kept those minutes usable; a part with no measured cost in usable minutes is reported, not fixed. Idle: find why those working sessions went quiet. Queue: find what holds the slots. Never kill a session mid-turn, restart the Prime daemon or the :5182 service, or message another chat. An alert flag: tell the chat in one line with the part, the minutes and the tree. All on target: end the turn with no message."
 }

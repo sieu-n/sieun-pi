@@ -6,12 +6,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
-import { askWaiters, footprintBudgetGb, type Footprints, misses, readFootprints, readWatch, sample, TARGET, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { askWaiters, type Footprints, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import { longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
-// The owner, 10-14 09:15Z: "look it's you and ops guys responsibility that this machine is usable." The harness side records a line a minute
-// and the hourly Mac stays usable duty judges each minute against TARGET; swap and pressure stay context.
+// The owner, 10-14 09:15Z: "look it's you and ops guys responsibility that this machine is usable." The watch records a line a minute with ops
+// guy's pressure feed and the harness numbers, and the hourly Mac stays usable duty judges each minute on USABLE; the worker footprint is a detail.
 
 const NOW = Date.parse("2026-10-14T09:30:00Z");
 const MIN = 60_000;
@@ -34,10 +34,11 @@ const QUEUE = { working: [{ session: "chatA", tree: "chatA", parent: null, prior
   queued: [{ session: "jobB1", tree: "chatB", parent: "chatB", priority: "low" as const, basePriority: "low" as const, since: NOW - 800_000, position: 1, total: 1, waitMs: 800_000 }], governor: { level: "high", held: 2 } };
 
 test("watchLine: worker footprint and the top workers with their chat tree, quiet and finished sessions by tree, the queue, and the Mac as context", () => {
-  const line = watchLine({ now: NOW, rows: ROWS, footprints: FOOTPRINTS, queue: QUEUE, chats: new Set(["chatA", "chatB"]), title: id => id === "chatB" ? "VP of CI (title)" : null, cpuMs: 4 });
+  const line = watchLine({ now: NOW, rows: ROWS, footprints: FOOTPRINTS, queue: QUEUE, chats: new Set(["chatA", "chatB"]), title: id => id === "chatB" ? "VP of CI (title)" : null, cpuMs: 4,
+    usable: { pressureLevel: 2, swapoutsPerS: 16191, kernelTaskPct: 224 } });
   assert.equal(line.at, "2026-10-14T09:30:00.000Z");
-  assert.deepEqual([line.workers, line.workerGb], [2, 7.5]);
-  assert.deepEqual([line.budgetGb, line.chatsLive], [1.18, 2], "1 working turn and 2 live chats");
+  assert.deepEqual(line.usable, { pressureLevel: 2, swapoutsPerS: 16191, kernelTaskPct: 224 });
+  assert.deepEqual([line.workers, line.workerGb, line.chatsLive], [2, 7.5, 2]);
   assert.deepEqual(line.top, [{ pid: 11, gb: 6, sessions: 4, root: "chatA", tree: "Crawler VP" }, { pid: 22, gb: 1.5, sessions: 2, root: "chatB", tree: "VP of CI (title)" }]);
   assert.deepEqual([line.live, line.working, line.idle15, line.idleOver], [6, 3, 2, 1], "the archived row, the saved row with no worker and the passivated row with no active session count nowhere");
   assert.deepEqual(line.idleTrees, [{ root: "chatA", tree: "Crawler VP", count: 1 }]);
@@ -45,28 +46,53 @@ test("watchLine: worker footprint and the top workers with their chat tree, quie
   assert.deepEqual(line.queue, { working: 1, queued: 1, held: 2, pressure: "high", oldestWaitS: 800, oldestTree: "VP of CI (title)" });
   assert.deepEqual(line.mac, { swapGb: 41.5, pressureLevel: 2 });
   assert.equal(line.cpuMs, 214, "the service's own CPU plus the helper's");
-  assert.deepEqual(misses(line), ["footprint", "idle", "queue"]);
+  assert.deepEqual(misses(line), ["usable", "idle", "queue"]);
 });
 
-test("misses: a minute is on target only when every harness part holds; swap is never a part", () => {
-  const on = { workerGb: 2.22, working: 5, idle15: 1, chatsLive: 2, idleOver: 0,
+// 10-14 10:21Z: ops guy's feed read warn with 16,191 swapouts a second and kernel_task at 224% while the Mac thrashed; 20:23Z: warn, 0 swapouts
+// and kernel_task 17.7% with the Mac usable.
+const FEED = { v: 1, ts: new Date(NOW - 5_000).toISOString(), interval_s: 10, pressure: "warn", pressure_level: 2, swapouts_per_s: 0.0, kernel_task_cpu_pct: 17.7, load: [6.95, 7.46, 7.45] };
+
+test("usable: a minute is unusable at pressure critical, 6,000 swapouts a second or kernel_task at one core; a stale or broken feed reads null", async () => {
+  assert.deepEqual(USABLE, { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100 });
+  const reading = parseFeed(FEED, NOW)!;
+  assert.deepEqual(reading, { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 17.7 });
+  assert.deepEqual(unusable(reading), [], "warn alone is usable");
+  assert.deepEqual(unusable({ pressureLevel: 2, swapoutsPerS: 16191, kernelTaskPct: 224 }), ["swapouts", "kernel_task"]);
+  assert.deepEqual(unusable({ ...reading, swapoutsPerS: 5999 }), []);
+  assert.deepEqual(unusable({ ...reading, swapoutsPerS: 6000 }), ["swapouts"]);
+  assert.deepEqual(unusable({ ...reading, kernelTaskPct: 99.9 }), []);
+  assert.deepEqual(unusable({ ...reading, kernelTaskPct: 100 }), ["kernel_task"]);
+  assert.deepEqual(unusable({ ...reading, pressureLevel: 4 }), ["pressure"]);
+  assert.equal(parseFeed({ ...FEED, ts: new Date(NOW - 30_000).toISOString() }, NOW), null, "three missed writes make the feed stale");
+  assert.equal(parseFeed({ ...FEED, v: 2 }, NOW), null);
+  assert.equal(parseFeed({ ...FEED, swapouts_per_s: null }, NOW), null);
+  const dir = await mkdtemp(join(tmpdir(), "mac-usable-feed-"));
+  await writeFile(join(dir, "feed.json"), JSON.stringify(FEED));
+  assert.deepEqual(await readPressureFeed(NOW, join(dir, "feed.json")), reading);
+  assert.equal(await readPressureFeed(NOW, join(dir, "missing.json")), null);
+  assert.match(PRESSURE_FEED, /\/\.cache\/virev\/mac-pressure\.json$/);
+});
+
+test("misses: a minute is on target only when every part holds; the worker footprint is never a part, and a line with no feed reading misses no usable part", () => {
+  const on = { usable: { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 17.7 }, idleOver: 0,
     queue: { working: 3, queued: 1, held: null, pressure: null, oldestWaitS: TARGET.queueWaitS, oldestTree: null } };
-  assert.equal(footprintBudgetGb(on), 2.22, "3 working turns at 0.52 GB and 2 live chats at 0.33 GB");
   assert.deepEqual(misses(on), []);
-  assert.deepEqual(misses({ ...on, workerGb: 2.23 }), ["footprint"]);
-  assert.equal(footprintBudgetGb({ ...on, queue: null }), 2.74, "an unread queue counts the 4 working sessions active in the last 15 min");
+  assert.deepEqual(misses({ ...on, usable: { ...on.usable, kernelTaskPct: 132.8 } }), ["usable"]);
+  assert.deepEqual(misses({ ...on, usable: null }), []);
   assert.deepEqual(misses({ ...on, idleOver: 1 }), ["idle"]);
   assert.deepEqual(misses({ ...on, queue: { ...on.queue, oldestWaitS: TARGET.queueWaitS + 1 } }), ["queue"]);
   assert.deepEqual(misses({ ...on, queue: null }), [], "an unread queue misses no queue part");
-  assert.deepEqual(TARGET, { activeSessionGb: 0.52, chatGb: 0.33, idleMinutes: 30, queueWaitS: 706 });
+  assert.deepEqual(TARGET, { idleMinutes: 30, queueWaitS: 706 });
 });
 
 test("sample: appends one line to the day's file under the data dir, and readWatch reads lines across the day files", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mac-usable-"));
   const asked: number[][] = [];
   const line = await sample({ dataDir: dir, rows: () => ROWS, chats: async () => new Set(["chatA", "chatB"]), title: () => null, queue: async () => QUEUE, log: () => {},
-    footprints: async pids => { asked.push([...pids]); return FOOTPRINTS; }, now: () => NOW });
+    footprints: async pids => { asked.push([...pids]); return FOOTPRINTS; }, feed: async now => parseFeed(FEED, now), now: () => NOW });
   assert.deepEqual(asked, [[11, 22]], "only live workers are measured");
+  assert.deepEqual(line?.usable, { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 17.7 }, "the feed's reading at the sample");
   assert.ok(line && line.cpuMs >= 210);
   const file = watchFile(dir, NOW);
   assert.match(file, /mac-usable\/2026-10-1[45]\.jsonl$/);
@@ -102,35 +128,45 @@ test("sharedQueueRead: one pi-pool read serves every reader for its ttl, and a f
 
 const at = (minute: number) => new Date(NOW - 59 * MIN + minute * MIN).toISOString();
 const watch = (minute: number, extra: Partial<WatchLine> = {}): WatchLine => ({ at: at(minute), workers: 2, workerGb: 4, top: [{ pid: 11, gb: 3, sessions: 4, root: "chatA", tree: "Crawler VP" }],
-  budgetGb: 4.53, chatsLive: 9, live: 10, working: 3, idle15: 0, idleOver: 0, idleTrees: [], finished: 1, finishedTrees: [{ root: "chatA", tree: "Crawler VP", count: 1 }],
+  usable: { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 17.7 }, chatsLive: 9, live: 10, working: 3, idle15: 0, idleOver: 0, idleTrees: [], finished: 1, finishedTrees: [{ root: "chatA", tree: "Crawler VP", count: 1 }],
   queue: { working: 3, queued: 0, held: null, pressure: null, oldestWaitS: 0, oldestTree: null }, mac: { swapGb: 40, pressureLevel: 2 }, cpuMs: 210, ...extra });
 
-test("measure: the share on target over 1 h and 24 h, the minutes each part missed, and the top miss with the chat trees behind it", () => {
-  const lines = [watch(-600, { workerGb: 9 }), ...Array.from({ length: 60 }, (_, minute) => minute < 12 ? watch(minute, { idleOver: 2, idleTrees: [{ root: "chatB", tree: "VP of CI", count: 2 }] })
-    : minute < 20 ? watch(minute, { workerGb: 8, top: [{ pid: 22, gb: 6, sessions: 9, root: "chatB", tree: "VP of CI" }, { pid: 11, gb: 2, sessions: 4, root: "chatA", tree: "Crawler VP" }] })
-    : watch(minute))];
+const thrash = { pressureLevel: 2, swapoutsPerS: 12633.8, kernelTaskPct: 124.2 };
+
+test("measure: the usable share over 1 h and 24 h of the minutes with a feed reading, the minutes each part missed, and the top miss with the trees behind it", () => {
+  const lines = [watch(-600, { usable: thrash }), watch(-500, { usable: null }), ...Array.from({ length: 60 }, (_, minute) => minute < 12 ? watch(minute, { idleOver: 2, idleTrees: [{ root: "chatB", tree: "VP of CI", count: 2 }] })
+    : minute < 26 ? watch(minute, { usable: minute < 16 ? { ...thrash, swapoutsPerS: 0 } : thrash, workerGb: 8,
+      top: [{ pid: 22, gb: 6, sessions: 9, root: "chatB", tree: "VP of CI" }, { pid: 11, gb: 2, sessions: 4, root: "chatA", tree: "Crawler VP" }] })
+    : minute < 30 ? watch(minute, { usable: null }) : watch(minute))];
   const { metrics, flagged } = measure(lines, NOW);
-  assert.deepEqual(metrics, { on_target_pct_1h: 66.7, on_target_pct_24h: 65.6, footprint_miss_min_1h: 8, idle_miss_min_1h: 12, queue_miss_min_1h: 0, off_streak_max_1h: 20,
-    worker_gb_now: 4, budget_gb_now: 4.53, worker_gb_over_budget_now: -0.53, watched_min_1h: 60, kernel_waiters_1h: 0 });
-  assert.deepEqual(flagged!.find(item => item.kind === "top_miss"), { kind: "top_miss", item: "idle",
-    excerpt: "Top miss: working sessions quiet over 30 min in 12 of 60 minutes. Chat trees behind it: VP of CI 2 sessions." });
-  assert.match(flagged!.find(item => item.kind === "alert")!.excerpt, /^The harness side was off target 20 minutes in a row, /);
-  assert.match(flagged!.find(item => item.kind === "now")!.excerpt, /Context, not a target: swap 40 GB, pressure level 2\.$/);
+  assert.deepEqual(metrics, { usable_pct_1h: 75, usable_pct_24h: 73.7, unusable_streak_max_1h: 14, idle_miss_min_1h: 12, queue_miss_min_1h: 0, kernel_waiters_1h: 0 },
+    "42 of 56 fed minutes in the hour; 42 of 57 over the day; the null lines count nowhere");
+  assert.equal(flagged!.find(item => item.kind === "usable")!.excerpt,
+    "The Mac was usable in 42 of the 56 minutes with a feed reading in the last hour (60 watched); unusable minutes by cause: swapouts 10, kernel_task 14.");
+  assert.deepEqual(flagged!.find(item => item.kind === "top_miss"), { kind: "top_miss", item: "usable",
+    excerpt: `Top miss: the Mac unusable (memory pressure critical, 6000 or more swapouts a second, or kernel_task at 100% of a core or more) in 14 of 60 minutes. Chat trees behind it, by Prime worker footprint in those minutes: VP of CI 6 GB, Crawler VP 2 GB.` });
+  assert.match(flagged!.find(item => item.kind === "alert")!.excerpt, /^The Mac was unusable 14 minutes in a row, /);
+  assert.match(flagged!.find(item => item.kind === "now")!.excerpt, /: pressure level 2, 0 swapouts a second, kernel_task 17\.7%\. Detail with no target: 2 Prime workers hold 4 GB .*; swap 40 GB\.$/);
 });
 
-test("measure: an alert at 10 minutes off target in a row and none at 9; a gap in the watch ends a run; no lines is flagged", () => {
-  const off = (minute: number) => watch(minute, { workerGb: 7 });
+test("measure: an alert at 10 unusable minutes in a row and none at 9; a gap in the watch ends a run; no lines or no feed reading is flagged and leaves the usable shares out", () => {
+  const off = (minute: number) => watch(minute, { usable: thrash });
   assert.equal(OFF_STREAK_ALERT, 10);
   const nine = [...Array.from({ length: 9 }, (_, minute) => off(minute)), watch(9), ...Array.from({ length: 9 }, (_, minute) => off(10 + minute))];
   assert.equal(longestOffStreak(nine).minutes, 9);
   assert.equal(measure(nine, NOW).flagged!.some(item => item.kind === "alert"), false);
+  assert.equal(longestOffStreak(Array.from({ length: 12 }, (_, minute) => watch(minute, { idleOver: 1 }))).minutes, 0, "a quiet session alone is no unusable minute");
   const ten = Array.from({ length: 10 }, (_, minute) => off(minute));
   assert.deepEqual(longestOffStreak(ten), { minutes: 10, from: at(0), to: at(9) });
   assert.equal(measure(ten, NOW).flagged!.filter(item => item.kind === "alert").length, 1);
   const gap = [...Array.from({ length: 5 }, (_, minute) => off(minute)), ...Array.from({ length: 5 }, (_, minute) => off(10 + minute))];
   assert.equal(longestOffStreak(gap).minutes, 5);
-  assert.deepEqual(measure([], NOW), { metrics: { on_target_pct_1h: 0, on_target_pct_24h: 0, footprint_miss_min_1h: 0, idle_miss_min_1h: 0, queue_miss_min_1h: 0,
-    off_streak_max_1h: 0, worker_gb_now: 0, budget_gb_now: 0, worker_gb_over_budget_now: 0, watched_min_1h: 0, kernel_waiters_1h: 0 }, flagged: [{ kind: "no_watch", excerpt: "The Mac usable watch wrote no line in the last hour: the chat service is down or runs a release without the watch." }] });
+  assert.deepEqual(measure([], NOW), { metrics: { unusable_streak_max_1h: 0, idle_miss_min_1h: 0, queue_miss_min_1h: 0, kernel_waiters_1h: 0 },
+    flagged: [{ kind: "no_watch", excerpt: "The Mac usable watch wrote no line in the last hour: the chat service is down or runs a release without the watch." }] });
+  const { usable: _, ...older } = watch(58);
+  const unfed = measure([older, watch(59, { usable: null })], NOW);
+  assert.equal("usable_pct_1h" in unfed.metrics || "usable_pct_24h" in unfed.metrics, false, "the run is an error that names them, not a share of nothing");
+  assert.ok(unfed.flagged!.some(item => item.kind === "no_feed"));
 });
 
 // ops guy, 10-14 15:3xZ: two kernel waits pinned workers. pid 12634 in launch main bro's job 'watch read errors' and pid 25528 in the main
@@ -204,5 +240,6 @@ test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics th
   assert.match(duty.ownerWords, /setup a 60min cadence duty$/);
   const given = Object.keys(measure([watch(59)], NOW).metrics);
   for (const metric of duty.metrics) assert.ok(given.includes(metric.key), metric.key);
-  assert.equal(duty.metrics.find(metric => metric.headline)?.key, "on_target_pct_1h");
+  assert.equal(duty.metrics.find(metric => metric.headline)?.key, "usable_pct_1h");
+  assert.equal(duty.metrics.some(metric => /gb|footprint|budget/.test(metric.key)), false, "the worker footprint has no target");
 });
