@@ -129,6 +129,8 @@ test("engage reads: the roster parser and the cause rule match rate_test.py and 
   assert.match(canaryRoster({ "engage.rate_test_arms": "x:1", "engage.rate_test_started_at": "2026-10-12T03:00:00Z" }, NOW).note, /refused/);
   assert.equal(causeOf({ code: "challenge_required", readBefore: true }), "instagram");
   assert.equal(causeOf({ code: "challenge_required", readBefore: false }), "first_login");
+  assert.equal(causeOf({ code: "login_redirect", readBefore: true }), "instagram", "prod 55 and 74, 10-12: 302 to login on every read");
+  assert.equal(causeOf({ code: "instagram_session_killed", readBefore: true }), "instagram");
   assert.equal(causeOf({ code: "transport", readBefore: true }), "ours");
   assert.equal(causeOf({ code: "bad_password", readBefore: false }), "bad_password");
   assert.equal(causeOf({ code: null, readBefore: true }), "unknown");
