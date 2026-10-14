@@ -117,9 +117,11 @@ DEFAULTS = {
     "memory_governor_on": 1,
     # The working limit while memory pressure is high or critical, when below mac_working_max.
     # High is the 16 that fit in the 6.9 GB free at 07:38 KST on 10-14 (426 MB per working
-    # session at p90). Critical is half of that: at 18:00 KST the compressor held half of RAM
-    # and the 33 active of 129 working sessions kept kernel_task paging at 189-268%.
-    "pressure_working_max": {"high": 16, "critical": 8},
+    # session at p90). Critical is the same 16: from 21:07 to 22:48 KST on 10-14 the
+    # pressure came from cold chat-worker heap, turns asked for 11.5 slots on average, and a
+    # replay of that log (tests/live_1014_2107_2248kst.json) at 8 left the 90th percentile
+    # turn waiting 1,932 s, at 16 44 s.
+    "pressure_working_max": {"high": 16, "critical": 16},
 }
 
 

@@ -12,8 +12,10 @@ The governor: while memory pressure is high or critical (pool/pressure.py), the 
 limit drops to pressure_working_max[level] and a queued turn whose own class and whose
 tree's class are both below high is held, so duties, check-ins and jobs of a normal or
 low chat wait and a chat and the work of a High chat run under the lower limit. A held
-turn keeps its place and runs when the level drops, and a held child may still borrow its
-in-flight parent's lent slot, so a parent waiting on it in a cell does not sit on its slot. The level is read again every
+turn keeps its place and takes a free slot under the lower limit only after every turn that
+is not held, and only one per tree each admit pass, so every chat's check-in still runs; a
+turn held HOLD_MAX_S queues like any other. A held child may still borrow its in-flight
+parent's lent slot, so a parent waiting on it in a cell does not sit on its slot. The level is read again every
 PRESSURE_TTL_SEC, and the record holds only what the next read recomputes.
 
 Order: an owner turn runs at once and never waits. Then queued turns take free slots
@@ -118,6 +120,11 @@ def sweep(turns, now, is_alive=alive):
     return gone
 
 
+# A held turn waits at most this long, then queues like any other: the 90th percentile wait of
+# the 6,125 slot admits pi-pool logged on 10-14 from 08:06 to 20:03 KST, before the governor.
+HOLD_MAX_S = 141
+
+
 def in_slots(working):
     """Working turns that hold a slot of their own: every one but a borrow."""
     return [e for e in working.values() if e.get("kind") != "borrow"]
@@ -130,12 +137,13 @@ def lending(turns):
 
 def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None):
     """Move queued entries to working: free slots by class first, then borrows. An entry
-    `hold(entry)` is true for takes no free slot but may still borrow its in-flight parent's
-    lent slot, which adds no slot. Returns [(session, kind)] in admission order."""
+    `hold(entry)` is true for takes a free slot only after the others, one per tree each pass,
+    and may borrow its in-flight parent's lent slot. Returns [(session, kind)] in admission order."""
     lease = lease or base.DEFAULTS["lease_s"]
     admitted = []
     ordered = order(turns["queued"], now, aging)
-    queue = [s for s in ordered if not (hold and hold(turns["queued"][s]))]
+    held_ids = {s for s in ordered if hold and hold(turns["queued"][s])}
+    queue = [s for s in ordered if s not in held_ids]
     trees = {}
     held = in_slots(turns["working"])
     for entry in held:
@@ -157,6 +165,14 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None):
             break
         if trees.get(turns["queued"][session]["tree"], 0) < tree_max:
             start(session, "slot")
+    let_through = set()
+    for session in [s for s in ordered if s in held_ids]:
+        tree = turns["queued"][session]["tree"]
+        if used >= mac_max:
+            break
+        if tree not in let_through and trees.get(tree, 0) < tree_max:
+            start(session, "slot")
+            let_through.add(tree)
     lent = lending(turns)
     for session in [s for s in ordered if s in turns["queued"]]:
         parent = turns["queued"][session].get("parent")
@@ -166,8 +182,11 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None):
     return admitted
 
 
-def holds(entry, sessions):
-    """Whether pressure holds a queued turn: its own class and its tree's class are both below high."""
+def holds(entry, sessions, now=None):
+    """Whether pressure holds a queued turn: its own class and its tree's class are both below high, and it
+    has waited under HOLD_MAX_S."""
+    if now is not None and now - entry["since"] >= HOLD_MAX_S:
+        return False
     rec = sessions.get(entry["tree"]) or {}
     tree = "high" if rec.get("priority_label") == "high" else rec.get("priority") or entry["class"]
     return entry["class"] != "high" and tree != "high"
@@ -205,7 +224,7 @@ def governed(turns, sessions, now, cfg, read=pressure.read):
     """(working limit, hold rule or None, refreshed, events) under the current pressure."""
     refreshed, events = governor(turns, now, cfg, read)
     rec = turns["pressure"]
-    hold = None if rec["level"] == "ok" else (lambda entry: holds(entry, sessions))
+    hold = None if rec["level"] == "ok" else (lambda entry: holds(entry, sessions, now))
     return rec["limit"], hold, refreshed, events
 
 
@@ -235,14 +254,14 @@ def view(turns, now, cfg, sessions=None):
     return {"enabled": mac is not None, "mac_working_max": int(cfg["mac_working_max"]),
             "mac_working_max_set": last_set("mac_working_max"),
             "tree_working_max": int(cfg["tree_working_max"]), "slots_used": len(in_slots(turns["working"])),
-            "working": working, "queued": queued, "pressure": pressure_view(turns, sessions or {})}
+            "working": working, "queued": queued, "pressure": pressure_view(turns, sessions or {}, now)}
 
 
-def pressure_view(turns, sessions):
+def pressure_view(turns, sessions, now=None):
     rec = turns.get("pressure")
     if not rec:
         return None
-    held = sum(1 for e in turns["queued"].values() if holds(e, sessions)) if rec["level"] != "ok" else 0
+    held = sum(1 for e in turns["queued"].values() if holds(e, sessions, now)) if rec["level"] != "ok" else 0
     return {k: rec.get(k) for k in ("level", "on", "at", "since", "reading", "limit", "changed")} | {"held": held}
 
 

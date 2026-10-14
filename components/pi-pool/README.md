@@ -539,9 +539,9 @@ While ops guy's machine-wide feed `~/.cache/virev/mac-pressure.json` (schema v1)
 The level is critical when the kernel says critical (4), the compressor holds 45% of RAM, swap is over 95% full or the feed counts 6,000 swapouts a second or more, high when the kernel says warn (2), and ok otherwise. macOS said warn through the 10-14 thrash, with swap 98% full and 6,210 to 22,956 swapouts a second while kernel_task paged at 168% to 256%.
 At 18:00 KST on 10-14 the compressor held 16 GB of 32 with kernel_task paging at 189-268%, and at 18:20 it held 17.1 GB with a median 12,000 swap-ins a second while the kernel still said warn.
 Swap shows in the reading and sets no level, because macOS grows swap a 1 GB file at a time and used swap sat at 95-99% of the total in every sample.
-While the level is high or critical the Mac limit is the lower of `mac_working_max` and `pressure_working_max[level]` (16 and 8).
+While the level is high or critical the Mac limit is the lower of `mac_working_max` and `pressure_working_max[level]` (16 for both).
 A queued turn whose own class and whose tree's class are both below high is held: duties and check-ins queue low and a job of a normal or low chat takes that chat's class, so they wait, while a chat and every job and subagent of a High chat run under the lower limit.
-A held turn keeps its place, takes no free slot, may still borrow its in-flight parent's lent slot, and runs when the level drops; an owner turn never queues, and a running turn is never stopped.
+A held turn keeps its place and takes a free slot under the lower limit only after every turn that is not held, one per tree each admit pass; a turn held 141 s (`HOLD_MAX_S`, the 90th percentile wait before the governor) queues like any other, and a held child may still borrow its in-flight parent's lent slot; an owner turn never queues, and a running turn is never stopped.
 The level is read again once `state["turns"]["pressure"]` is 30 s old, a read costs about 0.01 ms, and a lost record is read again at the next admit.
 `queue --json` carries `pressure` with the level, the reading, the limit, the held count and the last level change (`changed`, with its reading and the limits before and after), and pi-pool.log gets a `pressure_level` line for each change.
 `pi-pool set memory_governor_on 0` keeps the limits as set under any pressure.

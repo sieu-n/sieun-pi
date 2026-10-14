@@ -389,44 +389,58 @@ class Governor(unittest.TestCase):
     def ask(self, t, session, now, read, **kw):
         return turns.ask(t, self.SESSIONS, ask_args(session, **kw), now, self.CFG, read=read)[1]
 
-    def test_pressure_holds_duties_and_normal_jobs_never_an_owner_turn_or_a_high_chat(self):
+    def test_a_full_limit_holds_duties_and_normal_jobs_behind_the_rest_never_an_owner_turn(self):
+        """A held turn takes a free slot under the lower limit only after every turn that is
+        not held, one per tree each pass, so every chat's check-in still runs."""
         t, read = turns.empty(), Readings(WARN)
+        fill(t, 16)
         turns.mark_owner(t, "owner-chat", 0, 1800)
-        self.assertEqual(self.ask(t, "owner-chat", 1, read, tree="normal-job")["kind"], "owner")
+        self.assertEqual(self.ask(t, "owner-chat", 1, read, tree="normal-job")["kind"], "owner", "16 of 16, and the owner runs")
         self.assertEqual(self.ask(t, "duty", 2, read, tree="duty:c1:checkin", klass="low")["state"], "queued")
-        self.assertEqual(self.ask(t, "job", 3, read, tree="normal-job")["state"], "queued")
-        self.assertEqual(self.ask(t, "kid", 4, read, tree="high-chat", parent="high-chat")["state"], "admitted",
-                         "a child queues normal, and its High chat's tree keeps it running")
-        self.assertEqual(self.ask(t, "labeled-kid", 5, read, tree="labeled", parent="labeled")["state"], "admitted")
-        self.assertEqual(sorted(t["queued"]), ["duty", "job"])
-        self.assertEqual(turns.view(t, 5, self.CFG, self.SESSIONS)["pressure"]["held"], 2)
-        read.reading = CALM
-        self.assertEqual(turns.step(t, self.SESSIONS, 20, self.CFG, read)[2], [], "the level is read again only after 30 s")
-        changed, gone, admitted, events = turns.step(t, self.SESSIONS, 40, self.CFG, read)
-        self.assertEqual(sorted(s for s, _ in admitted), ["duty", "job"], "held turns run when the level drops, none dropped")
-        self.assertEqual(turns.view(t, 40, self.CFG, self.SESSIONS)["pressure"]["held"], 0)
+        self.assertEqual(self.ask(t, "duty-2", 3, read, tree="duty:c1:checkin", klass="low")["state"], "queued")
+        self.assertEqual(self.ask(t, "job", 4, read, tree="normal-job")["state"], "queued")
+        self.assertEqual(self.ask(t, "kid", 5, read, tree="high-chat", parent="high-chat")["state"], "queued")
+        self.assertEqual(turns.view(t, 5, self.CFG, self.SESSIONS)["pressure"]["held"], 3)
+        for i in range(5):
+            del t["working"][f"w{i}"]
+        admitted = turns.step(t, self.SESSIONS, 6, self.CFG, read)[2]
+        self.assertEqual([s for s, _ in admitted], ["kid", "job", "duty"], "the High chat's turn first, then one held turn per tree")
+        self.assertEqual(sorted(t["queued"]), ["duty-2"], "a slot stays free for the next pass")
+        self.assertEqual(turns.step(t, self.SESSIONS, 7, self.CFG, read)[2], [("duty-2", "slot")])
 
-    def test_the_limit_drops_to_16_when_high_and_8_when_critical(self):
+    def test_a_held_turn_waits_at_most_hold_max_s_then_queues_like_any_other(self):
+        t, read = turns.empty(), Readings(THRASH)
+        fill(t, 16)
+        self.assertEqual(self.ask(t, "duty", 0, read, tree="duty:c1:checkin", klass="low")["state"], "queued")
+        self.assertEqual(turns.view(t, turns.HOLD_MAX_S - 1, self.CFG, self.SESSIONS)["pressure"]["held"], 1)
+        self.assertEqual(turns.view(t, turns.HOLD_MAX_S, self.CFG, self.SESSIONS)["pressure"]["held"], 0)
+        self.assertEqual(self.ask(t, "kid", turns.HOLD_MAX_S, read, tree="high-chat", parent="high-chat", klass="high")["state"], "queued")
+        del t["working"]["w0"]
+        self.assertEqual(turns.step(t, self.SESSIONS, turns.HOLD_MAX_S + 1, self.CFG, read)[2], [("duty", "slot")],
+                         "past its hold the duty has aged to high and waited longest")
+        self.assertEqual(turns.HOLD_MAX_S, 141)
+    def test_the_limit_drops_to_16_when_high_or_critical(self):
         t, read = turns.empty(), Readings(CALM)
-        fill(t, 10, tree="high-chat")
-        self.assertEqual(self.ask(t, "a", 0, read, tree="high-chat", klass="high")["state"], "admitted", "11 of 30")
+        fill(t, 16, tree="high-chat")
+        self.assertEqual(self.ask(t, "a", 0, read, tree="high-chat", klass="high")["state"], "admitted", "17 of 30")
         read.reading = THRASH
-        self.assertEqual(self.ask(t, "b", 31, read, tree="high-chat", klass="high")["state"], "queued", "11 of 8")
-        self.assertEqual(t["pressure"]["limit"], 8)
+        self.assertEqual(self.ask(t, "b", 31, read, tree="high-chat", klass="high")["state"], "queued", "17 of 16")
+        self.assertEqual((t["pressure"]["level"], t["pressure"]["limit"]), ("critical", 16))
+        del t["working"]["w0"], t["working"]["w1"]
         read.reading = WARN
-        self.assertEqual(turns.step(t, self.SESSIONS, 62, self.CFG, read)[2], [("b", "slot")], "12 of 16")
-        self.assertEqual(t["pressure"]["limit"], 16)
+        self.assertEqual(turns.step(t, self.SESSIONS, 62, self.CFG, read)[2], [("b", "slot")], "16 of 16")
+        self.assertEqual((t["pressure"]["level"], t["pressure"]["limit"]), ("high", 16))
 
-    def test_a_held_child_takes_its_in_flight_parents_lent_slot_and_never_a_free_one(self):
+    def test_a_held_child_takes_its_in_flight_parents_lent_slot_when_the_limit_is_full(self):
         """ops guy's review of db7b8bf: a normal job's parent that waits on its child in a cell
         would hold its slot for the whole pressure spell if the held child could not borrow."""
         t, read = turns.empty(), Readings(THRASH)
-        fill(t, 2)
+        fill(t, 15)
         t["working"]["parent"] = dict(entry(tree="normal-job"), kind="slot")
         kid = self.ask(t, "kid", 0, read, tree="normal-job", parent="parent")
         self.assertEqual((t["pressure"]["level"], kid["state"]), ("critical", "admitted"))
-        self.assertEqual(t["working"]["kid"]["kind"], "borrow", "a held child adds no slot, though 5 of 8 are free")
-        self.assertEqual(len(turns.in_slots(t["working"])), 3)
+        self.assertEqual(t["working"]["kid"]["kind"], "borrow", "16 of 16 in use, and the held child adds no slot")
+        self.assertEqual(len(turns.in_slots(t["working"])), 16)
         self.assertEqual(self.ask(t, "kid2", 1, read, tree="normal-job", parent="parent")["state"], "queued", "a parent lends one slot")
         self.assertEqual(self.ask(t, "orphan", 2, read, tree="normal-job", parent="gone")["state"], "queued", "no parent in flight, no borrow")
         self.assertEqual(sorted(t["queued"]), ["kid2", "orphan"])
@@ -446,6 +460,7 @@ class Governor(unittest.TestCase):
 
     def test_one_read_serves_30_s_and_a_lost_record_is_read_again(self):
         t, read = turns.empty(), Readings(WARN)
+        fill(t, 16)
         for now in range(0, 30, 3):
             self.ask(t, f"s{now}", now, read, tree="normal-job")
         self.assertEqual(read.calls, 1)
@@ -453,7 +468,6 @@ class Governor(unittest.TestCase):
         self.assertEqual(self.ask(t, "after-restart", 31, read, tree="normal-job")["state"], "queued")
         self.assertEqual((read.calls, t["pressure"]["level"]), (2, "high"))
         self.assertEqual(turns.view(t, 31, self.CFG, self.SESSIONS)["pressure"]["held"], 11)
-
     def test_a_failed_read_and_the_off_switch_leave_the_limit(self):
         t = turns.empty()
         fill(t, 20, tree="high-chat")
@@ -465,16 +479,12 @@ class Governor(unittest.TestCase):
 
     def test_queue_json_carries_the_level_the_reading_the_limit_and_the_held_count(self):
         t, read = turns.empty(), Readings(WARN)
+        fill(t, 16)
         self.ask(t, "duty", 0, read, tree="duty:x", klass="low")
         p = turns.view(t, 0, self.CFG, self.SESSIONS)["pressure"]
         self.assertEqual({k: p[k] for k in ("level", "on", "limit", "held", "reading")},
                          {"level": "high", "on": True, "limit": 16, "held": 1, "reading": WARN})
         self.assertEqual(set(p), {"level", "on", "at", "since", "reading", "limit", "changed", "held"})
-
-
-class Cli(unittest.TestCase):
-    """The commands through bin/pi-pool, each in its own pool folder."""
-
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="pi-pool-turns-")
         self.env = dict(os.environ, PI_POOL_DIR=self.dir)
@@ -716,6 +726,45 @@ class Burst(unittest.TestCase):
         waits.sort()
         print(f"\nburst replay: {admitted} turns, peak {peak_working} working, {peak_borrows} borrows at once, "
               f"median wait {waits[len(waits) // 2]:.0f} s, p90 {waits[int(len(waits) * 0.9)]:.0f} s", file=sys.stderr)
+
+class Replay1014Evening(unittest.TestCase):
+    """The governor against the turns pi-pool logged on 10-14 from 21:07 to 22:48 KST, while
+    the Mac read critical: under the old rule 21 low turns sat held, the oldest 2,541 s."""
+
+    def test_held_turns_wait_about_hold_max_s_and_every_tree_with_one_gets_through(self):
+        with open(os.path.join(os.path.dirname(__file__), "live_1014_2107_2248kst.json")) as f:
+            arrivals = json.load(f)["turns"]
+        cfg = dict(base.DEFAULTS, mac_working_max=30)
+        limit = turns.working_limit(cfg, "critical")
+        t, waits, keys, seen, i = turns.empty(), {}, {}, collections.Counter(), 0
+        for now in range(max(a["t"] for a in arrivals) + 6000):
+            while i < len(arrivals) and arrivals[i]["t"] <= now:
+                a = arrivals[i]
+                i += 1
+                seen[a["session"]] += 1
+                t["queued"][f"{a['session']}#{seen[a['session']]}"] = dict(entry(tree=a["tree"], parent=a["parent"], klass=a["class"], since=a["t"]),
+                                                                           holdable=a["holdable"], dur=a["dur"], base=a["session"])
+            for s, e in list(t["working"].items()):
+                if now >= e["since"] + e["dur"]:
+                    del t["working"][s]
+                    keys.pop(e["base"], None)
+            for e in t["queued"].values():
+                e["parent"] = keys.get(e["parent"], e["parent"])
+            hold = lambda e, now=now: e["holdable"] and now - e["since"] < turns.HOLD_MAX_S
+            for s, _ in turns.admit_pass(t, now, limit, int(cfg["tree_working_max"]), int(cfg["queue_aging_s"]), 10 ** 9, hold):
+                w = t["working"][s]
+                waits[s] = (now - w["queued_since"], w["holdable"], w["tree"])
+                keys[w["base"]] = s
+            if i == len(arrivals) and not t["queued"]:
+                break
+        held = sorted(w for w, h, _ in waits.values() if h)
+        everyone = sorted(w for w, _, _ in waits.values())
+        p90 = lambda xs: xs[int(0.9 * (len(xs) - 1))]
+        self.assertEqual((len(waits), len(t["queued"])), (len(arrivals), 0), "every turn ran")
+        self.assertEqual(len(held), 113)
+        self.assertLessEqual(p90(held), 150, "the 90th percentile held turn waits about HOLD_MAX_S")
+        self.assertLessEqual(p90(everyone), 60)
+        self.assertEqual({tree for _, h, tree in waits.values() if h}, {a["tree"] for a in arrivals if a["holdable"]})
 
 
 if __name__ == "__main__":
