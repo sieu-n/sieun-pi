@@ -69,8 +69,8 @@ test("an idle job whose only open work is a board wait is kept up to PARK_IDLE_M
   const step = (await boards.read("c1"))!.plan[0]!;
   assert.equal(step.waitFor, WAIT, "the wait stays on the step");
   assert.equal(step.job, "ci clickhouse memcap");
-  assert.match(step.note!, new RegExp(`^Saved state: job ci clickhouse memcap ended at \\S+ while it waited; its brief, last report and wait are in ${path.replace(/[.]/g, "\\.")}\\.\\nr1 pushed$`));
-  assert.ok(calls.some(call => call.startsWith("notice c1 [job] ci clickhouse memcap was ended after 70 min quiet while it waited") && call.includes(path)), calls.join("\n"));
+  assert.match(step.note!, new RegExp(`^Saved state: job ci clickhouse memcap ended at \\S+ while it was quiet; its brief, last report and wait are in ${path.replace(/[.]/g, "\\.")}\\.\\nr1 pushed$`));
+  assert.ok(calls.some(call => call.startsWith("notice c1 [job] ci clickhouse memcap was ended after 70 min quiet while open steps named it") && call.includes(path)), calls.join("\n"));
   assert.ok(lines.some(line => line.startsWith("chat c1: ended waiting job ci clickhouse memcap (quiet 70 min")), lines.join("\n"));
   chats.close();
 });
@@ -118,4 +118,19 @@ test("a quiet waiting job whose session holds a live tool call or a background b
   await sweep(START + PARK_IDLE_MS + 20 * 60_000);
   assert.deepEqual(calls.filter(call => call.startsWith("delete")), ["delete c1 sub-9"]);
   chats.close();
+});
+
+test("frontend bro 10-14 12:07Z: a quiet job that a doing step with no wait names is saved and deleted too, and the step asks for a fresh job", async () => {
+  // connections multiple accounts sat 417 min after its report, held only by p106 doing and p115 blocked on a todo; neither had a waitFor.
+  const { dir, chats, boards, calls, sweep } = await setup({ prompt: BRIEF });
+  await boards.apply("c1", [{ op: "plan_update", id: "p12", waitFor: null }], "agent");
+  await sweep(START + PARK_IDLE_MS + 10 * 60_000);
+  assert.deepEqual(calls.filter(call => call.startsWith("delete")), ["delete c1 sub-9"]);
+  const path = join(dir, "job-resumes", "c1", "sub-9.json");
+  assert.equal(JSON.parse(await readFile(path, "utf8")).event, "p12 is doing");
+  chats.close();
+  const step = (await boards.read("c1"))!.plan[0]!;
+  const later = START + STEP_STALE_MS + 60_000;
+  const line = classLine(stepView(step, START, new Set(["c1"]), [], [], [], later), later);
+  assert.match(line ?? "", /^p12 .* has no live owner .*saved in /, line ?? "");
 });

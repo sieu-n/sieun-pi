@@ -56,14 +56,16 @@ export async function jobBrief(childDir: string): Promise<string | undefined> {
   return undefined;
 }
 
-/** The wait a step holds, as one line: `p12 waits for "the r14 sha"` or `p12 waits until 2026-10-14T12:00:00Z`. */
-export const waitText = (item: PlanItem): string =>
-  `${item.id} waits ${item.waitFor !== undefined ? `for "${item.waitFor}"` : ""}${item.waitFor !== undefined && item.waitUntil !== undefined ? " and " : ""}${item.waitUntil !== undefined ? `until ${item.waitUntil}` : ""}`;
+/** What a step holds, as one line: `p12 waits for "the r14 sha"`, `p12 waits until 2026-10-14T12:00:00Z`, or `p12 is doing` for a step with no wait. */
+export function waitText(item: PlanItem): string {
+  const waits = [item.waitFor !== undefined ? `for "${item.waitFor}"` : "", item.waitUntil !== undefined ? `until ${item.waitUntil}` : ""].filter(Boolean);
+  return waits.length ? `${item.id} waits ${waits.join(" and ")}` : `${item.id} is ${item.status}`;
+}
 
 const SAVED = "Saved state: ";
 /** The line the cleanup puts first in a step's note when it ends the step's job, naming the saved state's path. */
 export const savedStateNote = (job: string, endedAt: number, path: string): string =>
-  `${SAVED}job ${job} ended at ${clockTime(endedAt)} while it waited; its brief, last report and wait are in ${path}.`;
+  `${SAVED}job ${job} ended at ${clockTime(endedAt)} while it was quiet; its brief, last report and wait are in ${path}.`;
 /** The saved state path a step's note names (`savedStateNote`), or undefined. */
 export function savedStatePath(item: Pick<PlanItem, "note">): string | undefined {
   const line = item.note?.split("\n").find(text => text.startsWith(SAVED));

@@ -482,6 +482,11 @@ export class Chats {
     if (this.deletedJobs.has(child.id) || !current || childWorking(current)) return "kept";
     this.deletedJobs.add(child.id);
     try {
+      if (current.sessionId !== undefined && await this.source.waking?.(current.sessionId)) {
+        this.deletedJobs.delete(child.id);
+        this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: it waits on a board.wake`);
+        return "kept";
+      }
       if (current.sessionId !== undefined && await this.threads.sessionActive(current.sessionId)) {
         this.deletedJobs.delete(child.id);
         this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: its session runs a tool call or a background bash`);
@@ -503,10 +508,10 @@ export class Chats {
   }
 
   /**
-   * Ends a job whose only open work is a board wait: its brief (`jobBrief`), last report and the steps' waits are saved first
-   * (`<data dir>/job-resumes`), then the job is deleted, then each step's note names the saved state, so the check-in's line for the step when
-   * its wait is due or stale (`classLine`) tells the chat to spawn a fresh job from it, and the chat gets a notice now. A job whose brief cannot
-   * be read is kept.
+   * Ends a quiet job that open steps name (`waitingJobs`): its brief (`jobBrief`), last report and the steps' waits are saved first
+   * (`<data dir>/job-resumes`), then the job is deleted, then each step's note names the saved state, so the check-in's line for the step once
+   * it is due, stale or has no live owner (`classLine`) tells the chat to spawn a fresh job from it, and the chat gets a notice now. A job whose
+   * brief cannot be read is kept.
    */
   private async parkJob(id: string, child: ChildAgent, steps: readonly PlanItem[], report: string, listed: readonly string[], now: number): Promise<void> {
     const resumes = this.source.resumes!;
@@ -520,8 +525,8 @@ export class Chats {
       if (await this.deleteJob(id, child, listed, now) !== "deleted") return;
       const line = savedStateNote(name, now, path);
       await resumes.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, note: [line, step.note].filter(Boolean).join("\n").slice(0, BOARD_LIMITS.note) })));
-      await this.threads.notice(id, `${JOB_NOTICE_PREFIX}${name} was ended after ${Math.round((now - child.lastActivityAt!) / 60_000)} min quiet while it waited (${event}). ` +
-        `Its brief, last report and wait are saved in ${path}; when the wait is over, or to send it more work, spawn a fresh job from that file.`);
+      await this.threads.notice(id, `${JOB_NOTICE_PREFIX}${name} was ended after ${Math.round((now - child.lastActivityAt!) / 60_000)} min quiet while open steps named it (${event}). ` +
+        `Its brief, last report and wait are saved in ${path}; when the wait is over, or to go on with the step, spawn a fresh job from that file.`);
       this.log(`chat ${id.slice(0, 8)}: ended waiting job ${name} (quiet ${Math.round((now - child.lastActivityAt!) / 60_000)} min, ${event}); saved state ${path}`);
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: end waiting job ${name}: ${error instanceof Error ? error.message : String(error)}`); }
   }

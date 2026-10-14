@@ -458,13 +458,12 @@ export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard |
     !open.some(item => stepNamesJob(item, jobRef(child))));
 }
 
-/** An open step that waits on an event: a `waitFor` (a CI run, a deploy, a reply) or a `waitUntil` time. */
-const waitsOnEvent = (item: PlanItem): boolean => item.waitFor !== undefined || item.waitUntil !== undefined;
-
 /**
- * The chat's jobs that ended their task, have been quiet PARK_IDLE_MS, and whose only open work is a board wait: every open step that names
- * the job waits on an event (`waitsOnEvent`), and at least one does. Each comes with those steps, so the chat can save the job's state on them
- * and delete it. A job owed work by its parked words alone, with no step to hold the wait, is kept.
+ * The chat's jobs that ended their task, have been quiet PARK_IDLE_MS, and that open steps still name (a wait, or a step left doing). Each comes
+ * with those steps, so the chat can save the job's state on them and delete it; the step's class then asks the chat for a fresh job. On 10-14
+ * at 12:07Z frontend bro's connections multiple accounts (quiet 417 min, p106 doing, p115 blocked on a todo) and email list funnel columns
+ * (355 min, p118 doing) held their kernels only because a step named them, and neither step had a waitFor. A job owed work by its parked
+ * words alone, with no step to hold it, is kept.
  */
 export function waitingJobs(children: readonly ChildAgent[], board: ChatBoard | null, now: number, said: ReadonlyMap<string, JobMessage> = new Map()): { child: ChildAgent; steps: PlanItem[] }[] {
   const ids = new Set(children.map(child => child.id));
@@ -472,7 +471,7 @@ export function waitingJobs(children: readonly ChildAgent[], board: ChatBoard | 
   return children.flatMap(child => {
     if (!reported(child, ids, said) || child.lastActivityAt === undefined || now - child.lastActivityAt < PARK_IDLE_MS) return [];
     const steps = open.filter(item => stepNamesJob(item, jobRef(child)));
-    return steps.length && steps.every(waitsOnEvent) ? [{ child, steps }] : [];
+    return steps.length ? [{ child, steps }] : [];
   });
 }
 
