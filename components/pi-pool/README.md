@@ -531,6 +531,20 @@ A failed admit lets the run go, so a broken pool never stops the Mac's agents.
 
 A replay of the 852 runs that started 10-14 02:00-03:00 KST, when load reached 208, runs every run, gives at most 16 slots at once, and puts at most 11 children on lent slots at once (`tests/test_turns.py`).
 
+### The memory governor
+
+While the Mac is short of memory the queue lowers its limit and holds low turns, so agent work stops adding load while the Mac pages.
+`pool/pressure.py` reads three kernel values in-process, with no fork: `kern.memorystatus_vm_pressure_level`, `vm.swapusage`, and the pages the compressor occupies (`vm_stat`'s "Pages occupied by compressor").
+The level is critical when the kernel says critical (4) or the compressor holds 45% of RAM, high when the kernel says warn (2), and ok otherwise.
+At 18:00 KST on 10-14 the compressor held 16 GB of 32 with kernel_task paging at 189-268%, and at 18:20 it held 17.1 GB with a median 12,000 swap-ins a second while the kernel still said warn.
+Swap shows in the reading and sets no level, because macOS grows swap a 1 GB file at a time and used swap sat at 95-99% of the total in every sample.
+While the level is high or critical the Mac limit is the lower of `mac_working_max` and `pressure_working_max[level]` (16 and 8).
+A queued turn whose own class and whose tree's class are both below high is held: duties and check-ins queue low and a job of a normal or low chat takes that chat's class, so they wait, while a chat and every job and subagent of a High chat run under the lower limit.
+A held turn keeps its place, never borrows a parent's slot, and runs when the level drops; an owner turn never queues, and a running turn is never stopped.
+The level is read again once `state["turns"]["pressure"]` is 30 s old, a read costs about 0.01 ms, and a lost record is read again at the next admit.
+`queue --json` carries `pressure` with the level, the reading, the limit, the held count and the last level change (`changed`, with its reading and the limits before and after), and pi-pool.log gets a `pressure_level` line for each change.
+`pi-pool set memory_governor_on 0` keeps the limits as set under any pressure.
+
 Rollout: `install.py` runs the Python tests and checks only the token hooks, and a running session keeps the extension code it loaded until the session is rebuilt, so the queue reaches each session at its next load, reload or worker restart.
 
 ## Config
@@ -540,8 +554,8 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 `admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`, `allow_active_account`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`, `cache_ttl_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
-`mac_working_max`, `tree_working_max`, `queue_aging_s` and `lease_s`. `pi-pool set` takes a JSON object for
-`tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
+`mac_working_max`, `tree_working_max`, `queue_aging_s`, `lease_s`, `memory_governor_on` and `pressure_working_max`. `pi-pool set` takes a JSON object for
+`tier_units`, `max_moves_per_day` and `pressure_working_max`. `five_hour_max_pct`, the runway keys
 (`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
 `min_runway_hours`) and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`
 are gone; a leftover key in `config.json` is ignored.

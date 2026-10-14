@@ -24,6 +24,7 @@ class Wiring(unittest.TestCase):
         for key in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL"):
             self.env.pop(key, None)
         self.cli("set", "mac_working_max", "1")
+        self.cli("set", "memory_governor_on", "0")
         self.cli("admit", "blocker", "--tree", "B", "--pid", str(os.getpid()))
 
     def cli(self, *args):

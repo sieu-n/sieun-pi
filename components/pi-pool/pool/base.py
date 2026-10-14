@@ -113,6 +113,13 @@ DEFAULTS = {
     # one turn over the 3 days to 10-14 08 KST: p99 157 s, p99.9 1,508 s, and 110 over
     # 1,800 s (0735-agent-queue-design/data/measure_gaps.py).
     "lease_s": 1800,
+    # The memory governor (turns.governor): 0 leaves the limits above as they are under any pressure.
+    "memory_governor_on": 1,
+    # The working limit while memory pressure is high or critical, when below mac_working_max.
+    # High is the 16 that fit in the 6.9 GB free at 07:38 KST on 10-14 (426 MB per working
+    # session at p90). Critical is half of that: at 18:00 KST the compressor held half of RAM
+    # and the 33 active of 129 working sessions kept kernel_task paging at 189-268%.
+    "pressure_working_max": {"high": 16, "critical": 8},
 }
 
 
