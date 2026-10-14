@@ -27,7 +27,7 @@ const WAIT = "verify-dev run 38529508093 on ci/ci-clickhouse-memcap-r1 green";
 const STEP: PlanItem = { id: "p12", text: "Build: ClickHouse gets a memory cap in CI", status: "doing", job: "ci clickhouse memcap", waitFor: WAIT, note: "r1 pushed", children: [] };
 const JOB: ChildAgent = { id: "sub-9", sessionId: "01a13a00-0000-7000-8000-000000000000", label: "ci clickhouse memcap", sessionName: "ci clickhouse memcap", status: "done", repliedSinceTask: true, lastActivityAt: START };
 
-async function setup(spawn: { prompt?: string } | null, sessionLines: string[] = []) {
+async function setup(spawn: { prompt?: string } | null, sessionLines: string[] = [], job: ChildAgent = JOB) {
   const dir = await mkdtemp(join(tmpdir(), "waiting-job-"));
   const childDir = join(dir, "session-artifacts", "c1", JOB.id);
   await mkdir(childDir, { recursive: true });
@@ -48,7 +48,7 @@ async function setup(spawn: { prompt?: string } | null, sessionLines: string[] =
     { ...source(dir, {}, () => now), board: id => boards.read(id),
       resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") } }, line => lines.push(line));
   await chats.adopt();
-  threads.fire().live("c1", [JOB]);
+  threads.fire().live("c1", [job]);
   await chats.settled();
   const sweep = async (at: number) => { now = at; await chats.tick(); await chats.settled(); };
   return { dir, chats, threads, calls, lines, boards, sweep };
@@ -139,4 +139,16 @@ test("frontend bro 10-14 12:07Z: a quiet job that a doing step with no wait name
   const later = START + STEP_STALE_MS + 60_000;
   const line = classLine(stepView(step, START, new Set(["c1"]), [], [], [], later), later);
   assert.match(line ?? "", /^p12 .* has no live owner .*saved in /, line ?? "");
+});
+
+test("Crawler VP 10-14 13:05Z: a quiet job that ended its task with no reply to the chat, under an open step, is saved and deleted too", async () => {
+  // database explorer handed its commit to the sibling crawler ops train, sent the chat nothing, and sat 142 min under p160 until 15:2xZ.
+  const { dir, chats, calls, sweep } = await setup({ prompt: BRIEF }, [], { ...JOB, repliedSinceTask: false });
+  await sweep(START + PARK_IDLE_MS - 60_000);
+  assert.deepEqual(calls.filter(call => call.startsWith("delete")), [], "59 min quiet: kept");
+  await sweep(START + PARK_IDLE_MS + 10 * 60_000);
+  assert.deepEqual(calls.filter(call => call.startsWith("delete")), ["delete c1 sub-9"]);
+  const saved = JSON.parse(await readFile(join(dir, "job-resumes", "c1", "sub-9.json"), "utf8"));
+  assert.deepEqual([saved.brief, saved.report, saved.steps], [BRIEF, REPORT, ["p12"]]);
+  chats.close();
 });

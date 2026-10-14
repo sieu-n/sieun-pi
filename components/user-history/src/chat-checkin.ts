@@ -434,8 +434,11 @@ export const PARK_IDLE_MS = 60 * 60_000;
 
 /** A direct subagent that ended its task: done, not working, its final report sent (`repliedSinceTask`) and in the chat's transcript (`said`). */
 function reported(child: ChildAgent, ids: ReadonlySet<string>, said: ReadonlyMap<string, JobMessage>): boolean {
-  if (child.parentId !== undefined && ids.has(child.parentId)) return false;
-  return child.status === "done" && !childWorking(child) && child.repliedSinceTask === true && said.has(childName(child));
+  return ended(child, ids) && child.repliedSinceTask === true && said.has(childName(child));
+}
+/** A direct subagent that ended its task (done, not working), whether or not it replied to it. */
+function ended(child: ChildAgent, ids: ReadonlySet<string>): boolean {
+  return (child.parentId === undefined || !ids.has(child.parentId)) && child.status === "done" && !childWorking(child);
 }
 const openSteps = (board: ChatBoard | null): PlanItem[] => {
   const open: PlanItem[] = [];
@@ -465,13 +468,17 @@ export function finishedJobs(children: readonly ChildAgent[], board: ChatBoard |
  * with those steps, so the chat can save the job's state on them and delete it; the step's class then asks the chat for a fresh job. On 10-14
  * at 12:07Z frontend bro's connections multiple accounts (quiet 417 min, p106 doing, p115 blocked on a todo) and email list funnel columns
  * (355 min, p118 doing) held their kernels only because a step named them, and neither step had a waitFor. A job owed work by its parked
- * words alone, with no step to hold it, is kept.
+ * words alone, with no step to hold it, is kept. A job that ended its last task with no reply to the chat is ended the same way: it handed
+ * its result to a sibling or ended silently, so neither rule took it, and on 10-14 at 15:2xZ the 5 such jobs (Crawler VP's database explorer,
+ * engage login redirect and api health snapshots, VP of CI's ci scope root paths, launch main bro's collab backfill) sat resident under open
+ * steps, collab backfill quiet 628 min.
  */
 export function waitingJobs(children: readonly ChildAgent[], board: ChatBoard | null, now: number, said: ReadonlyMap<string, JobMessage> = new Map()): { child: ChildAgent; steps: PlanItem[] }[] {
   const ids = new Set(children.map(child => child.id));
   const open = openSteps(board);
   return children.flatMap(child => {
-    if (!reported(child, ids, said) || child.lastActivityAt === undefined || now - child.lastActivityAt < PARK_IDLE_MS) return [];
+    const done = reported(child, ids, said) || (ended(child, ids) && child.repliedSinceTask === false);
+    if (!done || child.lastActivityAt === undefined || now - child.lastActivityAt < PARK_IDLE_MS) return [];
     const steps = open.filter(item => stepNamesJob(item, jobRef(child)));
     return steps.length ? [{ child, steps }] : [];
   });
