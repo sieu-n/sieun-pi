@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { type DutyMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import {
-  type Account, type DayPages, type Death, type EngageData, canaryRoster, causeOf, deepWalksOf, measure, parseArms, provenRate, report,
+  type Account, type DayPages, type Death, type EngageData, canaryRoster, causeOf, deepWalksOf, measure, parseArms, provenRate, report, stagingPausesOf,
 } from "../scripts/duties/engage-reads.ts";
 import { UNMEASURED, frameRows, frameSeries, grafanaAuth, missValue } from "../scripts/duties/estate-reads.ts";
 
@@ -98,6 +98,25 @@ test("engage reads: deep walks count error stops against walks that reached thei
   assert.match(output.flagged!.find(item => item.kind === "deep_walks")!.excerpt, /847 reached their end, 17 stopped on an error/);
 });
 
+test("engage reads: a staging read stall names each staging pause row on and its last writer, and marks a deploy's leftover", async () => {
+  const metrics = await dutyMetrics();
+  const stagingPauses = stagingPausesOf([
+    { key: "pause.crawl", id: 13588, at: Date.parse("2026-09-23T09:34:00Z"), actor: "metal-deploy", reason: "metal deploy 737c640e7d8e: admissions closed" },
+    { key: "pause.enrich", id: 14212, at: Date.parse("2026-10-13T22:39:00Z"), actor: "api-key", reason: "owner: \"can we not enrich for now?\"" },
+    { key: "pause.odd", id: null, at: null, actor: null, reason: null },
+  ]);
+  const stalled = report(data({ stagingLastReadAt: NOW - 157 * MIN, stagingPauses }), metrics);
+  const line = stalled.flagged!.find(item => item.kind === "staging_stall")!.excerpt;
+  assert.match(line, /^staging read no page for 157 min \(target 60\)/);
+  assert.match(line, /pause\.crawl \(audit 13588, 09-23 09:34Z, LEFT BY A DEPLOY, metal-deploy: metal deploy 737c640e7d8e: admissions closed\)/);
+  assert.match(line, /pause\.enrich \(audit 14212, 10-13 22:39Z, api-key: owner/);
+  assert.match(line, /pause\.odd \(no config_audit row\)/);
+  const quiet = report(data({ stagingLastReadAt: NOW - 90 * MIN, stagingPauses: [] }), metrics);
+  assert.match(quiet.flagged!.find(item => item.kind === "staging_stall")!.excerpt, /No staging pause row is 'true'\. Then read the staging refusal reasons/);
+  assert.equal(report(data({ stagingLastReadAt: NOW - 30 * MIN, stagingPauses }), metrics).flagged!.some(item => item.kind === "staging_stall"), false, "a read inside the target flags nothing");
+  assert.ok(report(data({ stagingLastReadAt: null, stagingPauses }), metrics).flagged!.some(item => item.kind === "staging_stall"), "never read flags too");
+});
+
 test("engage reads: a failed source reports source_errors and a value that misses, never a fake good one", async () => {
   const metrics = await dutyMetrics();
   const { accounts: _accounts, ...rest } = data();
@@ -114,7 +133,7 @@ test("engage reads: no Grafana login still gives a value for every metric, and t
   const metrics = await dutyMetrics();
   const output = report(await measure(null, "GRAFANA_ADMIN_PASSWORD is missing", NOW, async () => "reached\t\t10\n"), metrics);
   assert.deepEqual(Object.keys(output.metrics).sort(), metrics.map(metric => metric.key).sort());
-  assert.equal(output.metrics.source_errors, 6);
+  assert.equal(output.metrics.source_errors, 7);
   assert.equal(output.metrics.deep_walk_ok_pct, 100);
   assert.notEqual(judge(metrics, output).verdict, "error");
 });
