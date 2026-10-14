@@ -60,6 +60,19 @@ class CiRunAtRunTime(KernelGuardBase):
         self.assert_passed(out)
         self.assertEqual(self.fake_runs(), ["gh run view 38578797513", "gh run watch 38578797513"])
 
+    def test_other_repos_pass_and_auto_sns_agent_is_refused_by_name(self):
+        rid = "38544915449"
+        out = self.run_as(
+            CHECK_IN,
+            f"import subprocess, httpx\nrepo = 'sieu-n/' + 'slack-green'\nsubprocess.run(['gh', 'run', 'rerun', '{rid}', '--repo', repo, '--failed'])\n"
+            f"httpx.Client(transport=mock_transport()).post(f'https://api.github.com/repos/{{repo}}/actions/runs/{rid}/cancel')\n",
+        )
+        self.assert_passed(out)
+        self.assertEqual(self.fake_runs(), [f"gh run rerun {rid} --repo sieu-n/slack-green --failed"])
+        self.assertEqual(len(out["seen"]), 1)
+        out = self.run_as(CHECK_IN, "import subprocess\nsubprocess.run(['gh', 'run', 'cancel', '38578797513', '-R', 'sieu-n/' + 'auto-sns-agent'])\n")
+        self.assert_ci_refused(out)
+
     def test_the_keepers_trees_pass(self):
         for session_dir in (FABLE_CHILD, RELEASE_OWNER):
             self.fake_log.write_text("")

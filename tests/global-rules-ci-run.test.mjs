@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 // The CI run guard (auto-sns-agent repo/git-workflow SKILL.md step 7): only the release owner and Fable, and their own subagents, cancel,
-// rerun or delete a GitHub Actions run. Nothing here runs gh or curl; the handlers only read the command text.
+// rerun or delete a GitHub Actions run of sieu-n/auto-sns-agent; other repos pass. Nothing here runs gh or curl; the handlers only read the
+// command text, and the scratch checkouts have remote URLs that are never contacted.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-ci-run-")));
 const home = join(root, "home");
 mkdirSync(join(home, ".prime/agent"), { recursive: true });
@@ -24,6 +26,16 @@ test.after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+const checkout = (dir, origin) => {
+  const path = join(root, dir);
+  mkdirSync(path);
+  execFileSync("git", ["-C", path, "init", "-q"], { stdio: "ignore" });
+  execFileSync("git", ["-C", path, "remote", "add", "origin", origin], { stdio: "ignore" });
+  return path;
+};
+const AUTO = checkout("auto-sns-agent", "https://github.com/sieu-n/auto-sns-agent.git");
+const SLACK_GREEN = checkout("slack-green", "git@github.com:sieu-n/slack-green.git");
+
 const agent = "/Users/sieunpark/.prime/agent";
 const RELEASE_OWNER = "01a10810-34b5-710f-88fe-3d369f89a8c9";
 const FABLE = "01a0cc5e-0ca4-762a-90e6-566c310bd50a";
@@ -39,8 +51,8 @@ const keepers = {
 };
 
 const event = (toolName, text) => ({ type: "tool_call", toolCallId: "t", toolName, input: toolName === "bash" ? { command: text } : { code: text } });
-const call = (toolName, text, sessionFile) =>
-  guard.onToolCall(event(toolName, text), { cwd: root, ...(sessionFile ? { sessionManager: { getSessionFile: () => sessionFile } } : {}) });
+const call = (toolName, text, sessionFile, cwd = AUTO) =>
+  guard.onToolCall(event(toolName, text), { cwd, ...(sessionFile ? { sessionManager: { getSessionFile: () => sessionFile } } : {}) });
 
 const REFUSED_BASH = [
   "gh run cancel 38578797513",
@@ -109,6 +121,41 @@ for (const [tool, texts] of [["bash", REFUSED_BASH], ["ipython", REFUSED_CELL]])
   }
 }
 
+test("scope: runs of other repos pass, and auto-sns-agent's runs are refused from any checkout", () => {
+  const checkIn = sessions["check-in 01a13b00"];
+  const passes = [
+    [SLACK_GREEN, "gh run rerun 38544915449 --failed"],
+    [SLACK_GREEN, "gh api -X POST repos/{owner}/{repo}/actions/runs/38544915449/cancel"],
+    [AUTO, "gh run rerun 38544915449 --repo sieu-n/slack-green --failed"],
+    [AUTO, "gh -R sieu-n/slack-green run cancel 38544915449"],
+    [AUTO, "gh run rerun 38544915449 -R https://github.com/sieu-n/slack-green"],
+    [AUTO, "gh run cancel 38544915449 --repo=sieu-n/slack-green"],
+    [AUTO, "GH_REPO=sieu-n/slack-green gh run cancel 38544915449"],
+    [AUTO, `cd ${SLACK_GREEN} && gh run rerun 38544915449`],
+    [AUTO, "gh api -X POST repos/sieu-n/slack-green/actions/runs/38544915449/rerun-failed-jobs"],
+    [AUTO, "curl -X POST https://api.github.com/repos/sieu-n/slack-green/actions/runs/38544915449/cancel"],
+  ];
+  for (const [cwd, text] of passes) assert.equal(call("bash", text, checkIn, cwd), undefined, `${cwd}: ${text}`);
+  // slack green guy (01a11b0b, cwd slack-green) at 08:43Z on 10-14.
+  assert.equal(call("ipython", "r=await bash('gh run rerun 38530084509 --repo sieu-n/slack-green --failed 2>&1 | tail -1'); print(r.output)",
+    `${agent}/sessions/01a11b0b-7c15-73da-9481-8de15903eab4.jsonl`, SLACK_GREEN), undefined);
+  const refused = [
+    [SLACK_GREEN, "gh run rerun 38492712967 --repo sieu-n/auto-sns-agent"],
+    [SLACK_GREEN, "gh run cancel 38578797513 --repo Sieu-N/Auto-SNS-Agent"],
+    [SLACK_GREEN, "GH_REPO=sieu-n/auto-sns-agent gh run cancel 38578797513"],
+    [SLACK_GREEN, `cd ${AUTO} && gh run cancel 38578797513`],
+    [SLACK_GREEN, "gh api -X POST repos/sieu-n/auto-sns-agent/actions/runs/38578797513/cancel"],
+    [SLACK_GREEN, "curl -X POST https://api.github.com/repos/sieu-n/auto-sns-agent/actions/runs/38578797513/cancel"],
+    [AUTO, "gh api -X POST repos/{owner}/{repo}/actions/runs/38578797513/cancel"],
+    [root, "gh run cancel 38578797513"],
+  ];
+  for (const [cwd, text] of refused) {
+    const result = call("bash", text, checkIn, cwd);
+    assert.equal(result?.block, true, `${cwd}: ${text}`);
+    assert.match(result.reason, cwd === root ? /in a repo it does not name/ : /sieu-n\/auto-sns-agent/);
+  }
+});
+
 test("a session the guard cannot place is refused", () => {
   const result = call("bash", "gh run cancel 38578797513");
   assert.equal(result?.block, true);
@@ -168,5 +215,7 @@ test("the kernel's run-time check refuses the same calls by the kernel's RLM_SES
     assert.deepEqual(check(fableChild, input), { block: false }, JSON.stringify(input));
   }
   assert.deepEqual(check(checkIn, { kind: "shell", text: "gh run view 38578797513", cwd: root }), { block: false });
+  assert.deepEqual(check(checkIn, { kind: "shell", text: "gh run rerun 38544915449 --failed", cwd: SLACK_GREEN }), { block: false });
+  assert.deepEqual(check(checkIn, { kind: "http", method: "POST", url: "https://api.github.com/repos/sieu-n/slack-green/actions/runs/38544915449/rerun" }), { block: false });
   assert.deepEqual(check(checkIn, { kind: "http", method: "GET", url: "https://api.github.com/repos/sieu-n/auto-sns-agent/actions/runs/38578797513" }), { block: false });
 });

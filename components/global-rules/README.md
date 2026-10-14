@@ -7,8 +7,8 @@ Repository rules do not live here. A repository ships its own guard as a project
 
 | Event | Module | Effect |
 | --- | --- | --- |
-| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a recursive grep of `~/.prime/agent`, a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a PR merge without the owner's go on that PR, and a CI run cancel or rerun outside the release owner's and Fable's sessions. |
-| `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send and a CI run cancel or rerun at run time. |
+| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a recursive grep of `~/.prime/agent`, a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a PR merge without the owner's go on that PR, and an auto-sns-agent CI run cancel or rerun outside the release owner's and Fable's sessions. |
+| `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send and an auto-sns-agent CI run cancel or rerun at run time. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 
 The extension adds no prompt text. The writing standard is the `unslop` skill, read on demand, and `config/AGENTS.md` (`~/.prime/agent/AGENTS.md`) points at it. Prime loads that file into the base system prompt, so owner turns, agent-message wakes, heartbeats and child notices all send the same prompt. Text added from a `before_agent_start` hook would break that: Prime 0.9.8 skips the hook on an agent-message wake, so the text vanishes on every wake and the prompt cache is rewritten twice. `components/user-history/test/prompt-prefix.test.ts` fails when any turn kind changes the cached prefix.
@@ -62,7 +62,8 @@ It follows `cd`, `git -C`, `bash -c`, `$(...)`, `eval`, `env`, `sudo`, `timeout`
 A merge or push passes with the same `OWNER_OK=<chat id>/<todo id>` token as a send. For a merge, the todo's text must name the PR: `#123`, `PR 123`, `pull request 123`, a `/pull/123` link, or the GraphQL node id for a mutation. For a push, it must name the repo, and the branch or the word push ("Push sieun-pi to the public repo?").
 A merge that names no PR number, such as a bare `gh pr merge` or a branch name, is refused even with a token.
 
-`ci-run-guard.ts` refuses a cancel, rerun or delete of a GitHub Actions run in any repo, unless the session belongs to the tree of the release owner (`01a10810`) or Fable (`01a0cc5e`), whose loop keeps the CI queue.
+`ci-run-guard.ts` refuses a cancel, rerun or delete of a GitHub Actions run of `sieu-n/auto-sns-agent`, unless the session belongs to the tree of the release owner (`01a10810`) or Fable (`01a0cc5e`), whose loop keeps that repo's CI queue.
+It reads the repo from `gh -R` or `--repo`, a `GH_REPO=` prefix, the `repos/<owner>/<name>` part of an API path, or else the origin of the checkout the command runs in (following `cd`). Runs of other repos, such as `sieu-n/slack-green`, pass. A run whose repo it cannot read counts as auto-sns-agent's, and the refusal says to add `--repo`.
 The rule is auto-sns-agent's repo/git-workflow SKILL.md step 7, "never cancel or re-run any run". Board notes did not hold it: check-in jobs of ***launch main bro*** reran 38492712967 at 01:13Z on 2026-10-14 and cancelled 38514703530 at 06:25Z and 38578797513 at 15:24Z.
 A session is placed by the chat at the root of its session file path (`sessions/<id>.jsonl` or `session-artifacts/<root>/sub-.../<id>.jsonl`), so the two keepers' own subagents pass, and a session the guard cannot place is refused. `CI_RUN_KEEPERS` in that file is the list.
 It covers `gh run cancel`, `gh run rerun` (with `--failed` or `--job`) and `gh run delete`, and `gh api`, `curl`, `wget`, `httpie` and `xh` writes to `actions/runs/<id>/cancel`, `/force-cancel`, `/rerun` and `/rerun-failed-jobs`, `actions/jobs/<id>/rerun`, `check-runs/<id>/rerequest` and `check-suites/<id>/rerequest`, and a `DELETE` of `actions/runs/<id>`.
@@ -117,7 +118,7 @@ The send guard misses a command decoded at run time and piped to a shell (`base6
 It also misses a desktop click on Send in a window that no snapshot has shown and that the guard cannot read, and a desktop click whose coordinates come from a downscaled `get_desktop_state` taken outside the proxy, such as a `cua-driver call` in a shell.
 In the Aside browser it misses Tab then Enter on a webmail page, selectors built at run time (`atob`), Gmail inside another site's iframe, and a mouse call through another name (`const m = page.mouse; m.click(x, y)`).
 The merge guard misses a `gh` alias made before it saw the `gh alias set` call (`gh m 123` runs `pr merge` unseen), a merge or push whose command or URL is built at runtime, and a helper script that merges or pushes.
-The CI run guard misses a cancel inside a script file or a Node process, a GraphQL `rerequestCheckSuite` mutation, and a `gh` alias made before it saw the `gh alias set` call.
+The CI run guard misses a cancel inside a script file or a Node process, a bare `gh run cancel` after a kernel `os.chdir` the tool_call guard cannot see (it reads the session cwd), a GraphQL `rerequestCheckSuite` mutation, and a `gh` alias made before it saw the `gh alias set` call.
 A handler error lets the call run and writes `handler error, failing open` to the log, because a bug here must not stop every tool call on the machine. The kernel guard also lets a call run when Node or `send-check.ts` cannot run.
 
 ## Tests
