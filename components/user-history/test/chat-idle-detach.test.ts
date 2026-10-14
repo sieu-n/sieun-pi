@@ -6,12 +6,13 @@ import { test } from "node:test";
 import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
+import { CHILD_SILENT_MS } from "../src/chat-dormancy.ts";
 import { type CheckInSource, replyCheckRecord } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import { IdIndex } from "../src/id-index.ts";
-import type { ChatBoard, ChildAgent, SessionRow, ThreadMessage } from "../src/shared/types.ts";
+import type { ChatAgent, ChatBoard, ChildAgent, SessionRow, ThreadEvent, ThreadMessage } from "../src/shared/types.ts";
 
 // Every chat is pinned (ea83c53), and a pin is an attached daemon client. Prime 0.9.8 evicts a worker tree only when no session in it has a
 // client and all of it idled for idleEvictionMinutes (default 90), so no chat worker was ever evicted. The hub now detaches a pinned chat once
@@ -26,7 +27,7 @@ const TOKEN_HOOK = "Failed to resolve API key for provider \"anthropic\" from sh
 
 type Summary = { sessionId: string; activeSessionId?: string; cwd: string; lifecycle: string; sessionFile: string; lastActivityAt?: string; isSessionActive: boolean;
   activity: string; isStreaming: boolean; hasRunningRlmChildren: boolean };
-type Connection = { prompts: string[]; disposed: boolean };
+type Connection = { prompts: string[]; notices: string[]; disposed: boolean };
 
 /**
  * A hub on a fake daemon: each attach makes a new connection that records its prompts, and `create` (a resume of a session with no worker)
@@ -64,10 +65,11 @@ function hub(options: { children?: (id: string) => ChildAgent[]; messages?: (id:
   const internals = threads as unknown as { attach(id: string): Promise<unknown>; liveSnapshot(connection: unknown, summary: { sessionId: string }): Promise<unknown>;
     savedSnapshot(summary: { sessionId: string }): Promise<unknown>; rest(): Promise<void> };
   internals.attach = async () => {
-    const record: Connection = { prompts: [], disposed: false };
+    const record: Connection = { prompts: [], notices: [], disposed: false };
     connections.push(record);
     return { subscribe: () => () => {}, dispose: async () => { record.disposed = true; }, setSteeringMode: async () => {}, getHeartbeat: async () => undefined, reload: async () => {},
-      getQueue: async () => ({ steering: [], followUp: [] }), prompt: async (message: string) => { record.prompts.push(message); } };
+      getQueue: async () => ({ steering: [], followUp: [] }), prompt: async (message: string) => { record.prompts.push(message); },
+      appendCustomMessage: async (message: { content: string }) => { record.notices.push(message.content); } };
   };
   const snapshot = (kind: "live" | "saved", id: string) => ({ kind, info: { isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0, sessionAction: null, queuedActions: 0 },
     messages: options.messages?.(id) ?? [], streaming: null, queue: { steering: [], followUp: [] }, children: kind === "live" ? options.children?.(id) ?? [] : [], tools: [], retry: null, runStartedAt: null });
@@ -270,5 +272,90 @@ test("chats: replay of a daemon restart with Crawler VP's failed turn 2 h old: t
   assert.equal(fake.requests.filter(type => type === "create").length, 2, "workers started again for the busy chat and the failed one only");
   assert.match(fake.connections[1]!.prompts[0] ?? "", /^\[check-in\] Your last turn failed at 07:00 /);
   chats.close();
+  await fake.threads.close();
+});
+
+/** The hub's thread for `id`, to send it the child updates its daemon connection would. */
+const threadOf = (fake: ReturnType<typeof hub>, id = "c1") =>
+  (fake.threads as unknown as { threads: Map<string, { broadcast(event: ThreadEvent): void }> }).threads.get(id)!;
+const childUpdate = (child: ChildAgent): ThreadEvent => ({ type: "event", event: { type: "rlm_child_update", child } });
+/** A chat row in the catalog whose one job runs, last active at `at`. */
+const jobRow = (at: number): Partial<SessionRow> => ({ id: "c1", kind: "live", status: "idle", working: true, lastActivityAt: new Date(T0 - 60 * MIN).toISOString(),
+  agents: [{ key: "child:k1", childId: "k1", name: "stuck job", job: "stuck job", sender: "stuck job", link: "subagent", state: "working", steps: [],
+    lastActivityAt: new Date(at).toISOString() } satisfies ChatAgent] });
+
+test("thread hub: a chat whose only running child went silent past CHILD_SILENT_MS detaches, its repeated child entries do not restart the idle time, and it gets one notice naming the child (10-14 08:17 KST: 8 of 9 chat trees held running or stale children and never detached)", async () => {
+  assert.equal(CHILD_SILENT_MS, 120 * MIN);
+  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 60 * MIN };
+  const fake = await attached(hub({ children: () => [child] }));
+  fake.at(T0 + 50 * MIN);
+  threadOf(fake).broadcast(childUpdate({ ...child }));
+  threadOf(fake).broadcast({ type: "snapshot", snapshot: { ...fake.threads.state("c1")!, children: [{ ...child }] } });
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isLive("c1"), false, "the silent child no longer holds the chat");
+  assert.equal(fake.threads.isDormant("c1"), true);
+  const notices = fake.connections[0]!.notices;
+  assert.equal(notices.length, 1);
+  assert.match(notices[0]!, /^\[job\] stuck job \(k1\) is silent since 08:00, 150 min, so it no longer holds this chat attached\. .*rlm\.delete_subagent.*agent_message\.send/);
+  fake.fire([jobRow(T0 - 60 * MIN)]);
+  await flush();
+  assert.equal(fake.threads.isLive("c1"), false, "a row at work only through the silent job does not wake the chat");
+  await fake.threads.close();
+});
+
+test("thread hub: a running child silent for less than CHILD_SILENT_MS still holds its chat, and detaches it once it reaches the limit", async () => {
+  const child: ChildAgent = { id: "k1", label: "slow job", status: "running", lastActivityAt: T0 - 20 * MIN };
+  const fake = await attached(hub({ children: () => [child] }));
+  fake.at(T0 + 99 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isLive("c1"), true, "silent 119 min holds the chat");
+  assert.deepEqual(fake.connections[0]!.notices, []);
+  fake.at(T0 + 100 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isLive("c1"), false, "silent 120 min no longer does");
+  await fake.threads.close();
+});
+
+test("thread hub: a silent child gets its notice once: a second detach in the same silent spell sends none, and neither does a service start whose transcript already holds it", async () => {
+  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 60 * MIN };
+  const fake = await attached(hub({ children: () => [child] }));
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  const told = fake.connections[0]!.notices;
+  assert.equal(told.length, 1);
+  await fake.threads.prompt("c1", { message: "hi again", images: [], mode: "steer" });
+  fake.at(T0 + 180 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isLive("c1"), false);
+  assert.deepEqual(fake.connections[1]!.notices, [], "the same silent spell is not told twice");
+  await fake.threads.close();
+
+  const restarted = await attached(hub({ children: () => [child], messages: () => [{ role: "custom", customType: "chat_notice", content: told[0]!, timestamp: T0 } as ThreadMessage] }));
+  restarted.at(T0 + 90 * MIN);
+  await restarted.rest();
+  assert.equal(restarted.threads.isLive("c1"), false);
+  assert.deepEqual(restarted.connections[0]!.notices, [], "the transcript holds the notice from before the service start");
+  await restarted.threads.close();
+});
+
+test("thread hub: a silent child that works again counts again: the catalog wakes its dormant chat, it holds the chat until it is silent past the limit again, and that new silent spell gets its own notice", async () => {
+  const child: ChildAgent = { id: "k1", label: "stuck job", status: "running", lastActivityAt: T0 - 60 * MIN };
+  const fake = await attached(hub({ children: () => [{ ...child }] }));
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isDormant("c1"), true);
+  fake.at(T0 + 95 * MIN);
+  child.lastActivityAt = T0 + 95 * MIN;
+  fake.fire([jobRow(T0 + 95 * MIN)]);
+  assert.equal(await fake.live("c1"), true, "the job at work again wakes the chat");
+  fake.at(T0 + 95 * MIN + 119 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isLive("c1"), true, "the job counts as running again");
+  fake.at(T0 + 95 * MIN + 120 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isLive("c1"), false);
+  assert.equal(fake.connections[1]!.notices.length, 1);
+  assert.match(fake.connections[1]!.notices[0]!, /stuck job \(k1\) is silent since 10:35, 120 min/);
   await fake.threads.close();
 });

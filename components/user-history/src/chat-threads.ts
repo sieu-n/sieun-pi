@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { DaemonAgentConnection, DaemonClient, SessionManager, type SessionEntry, type SessionSummary } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Catalog } from "./chat-catalog.ts";
-import { Dormancy, type IdleDetach } from "./chat-dormancy.ts";
+import { childrenStirred, Dormancy, type IdleDetach, unsilent } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG } from "./chat-guard.ts";
 import { UNKNOWN_ACTIVE } from "./chats.ts";
@@ -115,7 +115,7 @@ class Thread {
   /** The hub clock at the thread's last attach, session event, children change or tab close: its idle time for `rest` counts from here. */
   activeAt = Date.now();
   private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent } | undefined;
-  constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread) => void) { this.state = threadStateFromSnapshot(snapshot); }
+  constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread, before: readonly ChildAgent[]) => void) { this.state = threadStateFromSnapshot(snapshot); }
   broadcast(event: ThreadEvent): void {
     // A snapshot from the daemon carries no board or wait; a chat keeps both until their own events replace them.
     if (event.type === "snapshot" && event.snapshot.board === undefined && this.state.board !== undefined) event = { ...event, snapshot: { ...event.snapshot, board: this.state.board } };
@@ -123,7 +123,7 @@ class Thread {
     const children = this.state.children;
     this.state = applyThreadEvent(this.state, event);
     for (const listener of [...this.listeners]) listener(event);
-    if (this.state.children !== children) this.onChildren(this);
+    if (this.state.children !== children) this.onChildren(this, children);
   }
   coalesce(event: ProjectedSessionEvent, delayMs: number): void {
     if (event.type !== "message_update") { this.flush(); this.broadcast({ type: "event", event }); return; }
@@ -195,18 +195,29 @@ export class ThreadHub {
     void this.rest().catch(error => { process.stderr.write(`rest: ${error instanceof Error ? error.message : String(error)}\n`); });
   }
 
-  /** Nothing in the thread's tree runs or waits: no tab, no turn, tool or session action, no queued input, no running or queued child. */
+  /**
+   * Nothing in the thread's tree runs or waits: no tab, no turn, tool or session action, no queued input, no running or queued child but a silent
+   * one (`silentSince`). At 08:17 KST on 10-14, 8 of 9 chat trees held a running or stale "working" child, so they never detached.
+   */
   private resting(thread: Thread): boolean {
     const { queue } = thread.state;
-    return thread.listeners.size === 0 && !isThreadBusy(thread.state) && queue.steering.length === 0 && queue.followUp.length === 0 &&
+    return thread.listeners.size === 0 && !isThreadBusy({ ...thread.state, children: unsilent(thread.state.children, this.dormant.now()) }) &&
+      queue.steering.length === 0 && queue.followUp.length === 0 &&
       !this.resuming.has(thread.id) && !this.opening.has(thread.id);
   }
 
-  /** Detaches each pinned chat whose whole tree rested for the daemon's idleEvictionMinutes; it keeps its last state for `state` and `revive`. */
+  /**
+   * Detaches each pinned chat whose whole tree rested for the daemon's idleEvictionMinutes; it keeps its last state for `state` and `revive`.
+   * Just before the detach, the chat gets one notice line per silent child it was not told of (`silentLines`). A notice starts no turn, and it
+   * lands before the detach time `woken` compares the session's activity with, so it does not wake the chat again.
+   */
   private async rest(): Promise<void> {
     for (const id of this.pinned) {
       const thread = this.threads.get(id);
       if (!thread?.live || !this.resting(thread) || !await this.dormant.due(id, thread.activeAt)) continue;
+      for (const line of this.dormant.silentLines(thread.state.children, thread.state.messages)) {
+        await this.notice(id, line).catch(error => { process.stderr.write(`rest ${id.slice(0, 8)}: silent child notice: ${error instanceof Error ? error.message : String(error)}\n`); });
+      }
       const live = thread.live;
       if (!live || !this.resting(thread) || this.threads.get(id) !== thread) continue;
       this.dormant.sleep(id, this.dormant.now() - thread.activeAt, "detached");
@@ -263,8 +274,9 @@ export class ThreadHub {
     for (const observer of [...this.observers]) observer.live(thread.id, thread.state.children);
   }
 
-  private childrenChanged(thread: Thread): void {
-    thread.activeAt = this.dormant.now();
+  /** A change that shows work restarts the idle time; a silent child's repeated entry does not (`childrenStirred`), or its chat would never detach. */
+  private childrenChanged(thread: Thread, before: readonly ChildAgent[]): void {
+    if (childrenStirred(before, thread.state.children, this.dormant.now())) thread.activeAt = this.dormant.now();
     for (const observer of [...this.observers]) observer.children(thread.id, thread.state.children);
   }
 
@@ -581,12 +593,12 @@ export class ThreadHub {
       });
       if (activeSessionId !== undefined && live) {
         this.evict("live");
-        thread = new Thread(id, live.snapshot, candidate => this.childrenChanged(candidate));
+        thread = new Thread(id, live.snapshot, (candidate, before) => this.childrenChanged(candidate, before));
         at = mark("snapshot+project", at);
         this.bind(thread, live.connection, activeSessionId);
       } else {
         this.evict("saved");
-        thread = new Thread(id, await this.savedSnapshot(summary, false), candidate => this.childrenChanged(candidate));
+        thread = new Thread(id, await this.savedSnapshot(summary, false), (candidate, before) => this.childrenChanged(candidate, before));
         mark("read+project", at);
         thread.sessionFile = summary.sessionFile;
       }
@@ -709,7 +721,7 @@ export class ThreadHub {
     const connection = await this.attach(data.activeSessionId);
     let thread: Thread;
     try {
-      thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data as SessionSummary), candidate => this.childrenChanged(candidate));
+      thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data as SessionSummary), (candidate, before) => this.childrenChanged(candidate, before));
       this.bind(thread, connection, data.activeSessionId);
     } catch (error) { await connection.dispose().catch(() => {}); throw error; }
     this.threads.set(thread.id, thread);

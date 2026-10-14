@@ -1,5 +1,64 @@
 import type { SessionSummary } from "prime-agent";
-import type { IdleEvictionMinutes, SessionRow } from "./shared/types.ts";
+import { agentChildren } from "./chat-agents.ts";
+import { clockTime } from "./checkin-settings.ts";
+import { childName } from "./checkin-steps.ts";
+import { JOB_NOTICE_PREFIX } from "./shared/chat-feed.ts";
+import type { ChildAgent, IdleEvictionMinutes, SessionRow, ThreadMessage } from "./shared/types.ts";
+
+/**
+ * How long a running or queued child may go with no model, tool or progress-note event, in its own session or any child under it, before it
+ * stops holding its chat attached. Placeholder of 120 min until the measured limit lands: at 08:17 KST on 10-14, 8 of 9 chat trees never
+ * detached because they held running or stale "working" children.
+ */
+export const CHILD_SILENT_MS = 120 * 60_000;
+
+/** The latest activity time of `child` and every child under it in `children` (by `parentId`); undefined when `child` itself has none. */
+function treeActivity(child: ChildAgent, children: readonly ChildAgent[]): number | undefined {
+  if (child.lastActivityAt === undefined) return undefined;
+  let latest = child.lastActivityAt;
+  const seen = new Set([child.id]);
+  const below = [child.id];
+  for (let parent = below.pop(); parent !== undefined; parent = below.pop()) {
+    for (const other of children) {
+      if (other.parentId !== parent || seen.has(other.id)) continue;
+      seen.add(other.id);
+      below.push(other.id);
+      if (other.lastActivityAt !== undefined && other.lastActivityAt > latest) latest = other.lastActivityAt;
+    }
+  }
+  return latest;
+}
+
+/**
+ * The time a running or queued child went silent, when it and every child under it had no activity for CHILD_SILENT_MS; null when it is not
+ * silent. A child with no activity time is never silent, since the daemon seeds that time at its admission.
+ */
+export function silentSince(child: ChildAgent, children: readonly ChildAgent[], now: number): number | null {
+  if (child.status !== "running" && child.status !== "queued") return null;
+  const at = treeActivity(child, children);
+  return at !== undefined && now - at >= CHILD_SILENT_MS ? at : null;
+}
+
+/** A chat's children without the silent ones, for the checks that ask whether anything in its tree still runs. */
+export const unsilent = (children: readonly ChildAgent[], now: number): ChildAgent[] => children.filter(child => silentSince(child, children, now) === null);
+
+/**
+ * Whether a change of a chat's children shows work: a child added, removed or changed that is not silent. A snapshot that repeats the list, or
+ * only a silent child's entry, does not, so it leaves the chat's idle time alone.
+ */
+export function childrenStirred(before: readonly ChildAgent[], after: readonly ChildAgent[], now: number): boolean {
+  const was = new Map(before.map(child => [child.id, JSON.stringify(child)] as const));
+  const ids = new Set(after.map(child => child.id));
+  return after.some(child => was.get(child.id) !== JSON.stringify(child) && silentSince(child, after, now) === null) ||
+    before.some(child => !ids.has(child.id) && silentSince(child, before, now) === null);
+}
+
+/** The one line a chat gets for a silent child when it detaches; the id and the time it went silent make the line its own key. */
+export function silentNotice(child: ChildAgent, since: number, now: number): string {
+  return `${JOB_NOTICE_PREFIX}${childName(child)} (${child.id}) is silent since ${clockTime(since)}, ${Math.floor((now - since) / 60_000)} min, so it no longer holds this ` +
+    `chat attached. Delete it with rlm.delete_subagent if it is stuck, or steer it with agent_message.send.`;
+}
+const noticeKey = (child: ChildAgent, since: number): string => `(${child.id}) is silent since ${clockTime(since)},`;
 
 /**
  * When a pinned chat lets go of its worker. `minutes` reads the daemon's own idle time (Settings, Unload idle sessions after); with none a chat
@@ -16,6 +75,8 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
  */
 export class Dormancy {
   private readonly since = new Map<string, number>();
+  /** Each silent child told to its chat, with the time it went silent, so no later detach tells the same silent spell again. */
+  private readonly toldSilent = new Map<string, number>();
   readonly now: () => number;
   private readonly idleMinutes: () => IdleEvictionMinutes;
   private readonly isHeld: ((id: string) => Promise<boolean>) | undefined;
@@ -62,13 +123,34 @@ export class Dormancy {
   }
 
   /**
+   * The lines for the chat's silent children (`silentSince`) it was not told yet, each marked told: one line per child and silent spell. The
+   * hub's memory holds what it told, and after a service start the transcript does. A child that works again and later goes silent again is
+   * told again.
+   */
+  silentLines(children: readonly ChildAgent[], messages: readonly ThreadMessage[]): string[] {
+    const now = this.now();
+    return children.flatMap(child => {
+      const since = silentSince(child, children, now);
+      if (since === null || this.toldSilent.get(child.id) === since) return [];
+      this.toldSilent.set(child.id, since);
+      const key = noticeKey(child, since);
+      return messages.some(message => "content" in message && JSON.stringify(message.content).includes(key)) ? [] : [silentNotice(child, since, now)];
+    });
+  }
+
+  /**
    * The dormant chats a catalog update shows at work, or with message activity after the detach while a worker holds them: an agent message
    * or a child's report woke the session with no client attached. An evicted session's row falls back to its file time, so a saved row never counts.
+   * A row at work only through silent jobs (`silentSince`) does not count, or a chat detached past its silent child would attach again at once.
    */
   woken(rows: readonly SessionRow[]): string[] {
+    const now = this.now();
     return rows.flatMap(row => {
       const since = this.since.get(row.id);
-      return since !== undefined && (row.working || (row.kind === "live" && Date.parse(row.lastActivityAt ?? "") > since)) ? [row.id] : [];
+      if (since === undefined) return [];
+      const jobs = agentChildren(row.agents ?? []).filter(child => child.status === "running");
+      const working = row.status === "running" || (row.working && (jobs.length === 0 || unsilent(jobs, now).length > 0));
+      return working || (row.kind === "live" && Date.parse(row.lastActivityAt ?? "") > since) ? [row.id] : [];
     });
   }
 
