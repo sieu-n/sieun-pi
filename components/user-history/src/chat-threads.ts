@@ -681,11 +681,23 @@ export class ThreadHub {
     thread.broadcast({ type: "wait", wait });
   }
 
-  /** The thread's state for a stall check, attaching it first; null for a thread that is not live. A dormant chat stays detached and reads null. */
+  /**
+   * The thread's state for a stall check, attaching it first; null for a thread that is not live. A dormant chat stays detached and reads null.
+   * A thread this read opened lets go of its daemon client once the read is done, unless it is pinned, a tab or feed subscribed, or a resume
+   * took it, so the check holds no job attached. Before, it stayed attached until the 3 min sweep: at 19:16:17Z on 10-14 the job checks
+   * attached 3 VP of CI jobs, Prime's 19:20:23Z sweep skipped the tree for that client, and it evicted the 7.5 GB worker only at 19:23:57Z.
+   */
   async view(id: string): Promise<ThreadState | null> {
     if (this.dormant.has(id)) return null;
+    const opened = !this.threads.has(id) && !this.opening.has(id);
     const thread = await this.open(id, true);
-    return thread.live ? thread.state : null;
+    const state = thread.live ? thread.state : null;
+    if (opened) {
+      setTimeout(() => {
+        if (this.threads.get(id) === thread && thread.listeners.size === 0 && !this.pinned.has(id) && !this.resuming.has(id) && !this.opening.has(id)) void this.dispose(id);
+      }, 0);
+    }
+    return state;
   }
 
   /** `trigger` names the call in the wake line when it attaches a dormant chat. */

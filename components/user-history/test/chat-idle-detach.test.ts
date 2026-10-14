@@ -499,3 +499,21 @@ test("thread hub: a Slack message wakes a dormant bridged chat at once, its turn
   assert.match(JSON.stringify(fake.threads.state("c1")!.messages), /yes, all green/);
   await fake.threads.close();
 });
+
+test("thread hub: a job check's view lets go of the job's daemon client right after the read, so it holds no tree past a sweep (10-14 19:16:17Z: the checks attached 3 VP of CI jobs and Prime skipped the tree at 19:20:23Z)", async () => {
+  const fake = await attached(hub());
+  const jobs = ["metal ci runners", "ci train", "gate job checkout"];
+  const states = await Promise.all(jobs.map(id => fake.threads.view(id)));
+  assert.ok(states.every(state => state !== null), "each check reads the live job");
+  await flush();
+  for (const id of jobs) assert.equal(fake.threads.isLive(id), false, `${id} is detached after the read`);
+  assert.equal(fake.connections.filter(connection => connection.disposed).length, 3, "each job's daemon client is gone");
+  assert.equal(await fake.threads.view("c1") !== null, true);
+  await flush();
+  assert.equal(fake.threads.isLive("c1"), true, "a pinned chat stays attached");
+  await fake.threads.subscribe("tabbed", () => {});
+  await fake.threads.view("tabbed");
+  await flush();
+  assert.equal(fake.threads.isLive("tabbed"), true, "a job a tab watches stays attached");
+  await fake.threads.close();
+});
