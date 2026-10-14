@@ -304,6 +304,35 @@ test("thread hub: a chat whose only running child went silent past CHILD_SILENT_
   await fake.threads.close();
 });
 
+test("thread hub: the daemon unloading an idle done job and the cleanup deleting a finished one do not restart the chat's idle time, and a job that works again does (10-14 23:2x KST: no VP chat detached in 54,645 service log lines, and every rlm_child_update, a passivation or a delete included, reset the idle clock)", async () => {
+  const done = (id: string): ChildAgent => ({ id, label: "done " + id, status: "done", repliedSinceTask: true, lastActivityAt: T0 - 5 * MIN, activity: { kind: "waiting" } });
+  const fake = await attached(hub({ children: () => [done("k1"), done("k2")] }));
+  const native = (child: ChildAgent) => fake.connections[0]!.emit({ type: "session_event", event: { type: "rlm_child_update", child } });
+  fake.at(T0 + 60 * MIN);
+  native({ id: "k1", label: "done k1", status: "done", repliedSinceTask: true });
+  fake.at(T0 + 70 * MIN);
+  native({ ...done("k2"), status: "cancelled" });
+  await flush();
+  fake.at(T0 + 90 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isLive("c1"), false, "the unload at 60 min and the delete at 70 min left the idle clock at the attach");
+  assert.equal(fake.threads.isDormant("c1"), true);
+  await fake.threads.close();
+
+  const again = await attached(hub({ children: () => [done("k1")] }));
+  again.at(T0 + 60 * MIN);
+  again.connections[0]!.emit({ type: "session_event", event: { type: "rlm_child_update", child: { ...done("k1"), status: "running", lastActivityAt: T0 + 60 * MIN } } });
+  again.connections[0]!.emit({ type: "session_event", event: { type: "rlm_child_update", child: { ...done("k1"), lastActivityAt: T0 + 61 * MIN } } });
+  await flush();
+  again.at(T0 + 90 * MIN);
+  await again.rest();
+  assert.equal(again.threads.isLive("c1"), true, "the job's new turn at 60 min restarted the idle time");
+  again.at(T0 + 151 * MIN);
+  await again.rest();
+  assert.equal(again.threads.isLive("c1"), false, "90 min after its last activity the chat detaches");
+  await again.threads.close();
+});
+
 test("thread hub: a running child silent for less than CHILD_SILENT_MS still holds its chat, and detaches it once it reaches the limit", async () => {
   const child: ChildAgent = { id: "k1", label: "slow job", status: "running", lastActivityAt: T0 - 80 * MIN };
   const fake = await attached(hub({ children: () => [child] }));

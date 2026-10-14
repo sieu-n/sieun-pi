@@ -551,7 +551,9 @@ export class ThreadHub {
       switch (event.type) {
         case "session_event": {
           thread.lastEventAt = Date.now();
-          thread.activeAt = this.dormant.now();
+          // A child's entry changes its chat's idle time only through `childrenChanged`: the daemon unloading an idle job or a deleted job's
+          // cancel is an rlm_child_update too, and it reset the clock of every VP chat, so none detached (10-14).
+          if (event.event.type !== "rlm_child_update") thread.activeAt = this.dormant.now();
           const projected = this.projector.event(event.event);
           if (projected) thread.coalesce(projected, UPDATE_COALESCE_MS);
           const native = event.event.type;

@@ -46,14 +46,28 @@ export function silentSince(child: ChildAgent, children: readonly ChildAgent[], 
 export const unsilent = (children: readonly ChildAgent[], now: number): ChildAgent[] => children.filter(child => silentSince(child, children, now) === null);
 
 /**
- * Whether a change of a chat's children shows work: a child added, removed or changed that is not silent. A snapshot that repeats the list, or
- * only a silent child's entry, does not, so it leaves the chat's idle time alone.
+ * Whether a child's new entry shows work: a new status other than a cancel, a reply, new preview, recap or error words, a later activity time or
+ * a new activity. An entry that only drops its activity time or activity is the daemon unloading the idle child, and a cancel of a job that
+ * ran no turn is the cleanup deleting it.
+ */
+function childWorked(was: ChildAgent, child: ChildAgent): boolean {
+  const said = (key: "answerPreview" | "recap" | "error") => child[key] !== undefined && child[key] !== was[key];
+  return (child.status !== was.status && (child.status !== "cancelled" || was.status === "running" || was.status === "queued")) ||
+    (child.repliedSinceTask === true && was.repliedSinceTask !== true) || said("answerPreview") || said("recap") || said("error") ||
+    (child.lastActivityAt !== undefined && child.lastActivityAt > (was.lastActivityAt ?? -Infinity)) ||
+    (child.activity !== undefined && JSON.stringify(child.activity) !== JSON.stringify(was.activity));
+}
+
+/**
+ * Whether a change of a chat's children shows work: a child added, a child that worked (`childWorked`), or a running or queued child gone, none
+ * of them silent. A snapshot that repeats the list, a silent child's entry, an unload or a finished job's delete does not, so it leaves the
+ * chat's idle time alone.
  */
 export function childrenStirred(before: readonly ChildAgent[], after: readonly ChildAgent[], now: number): boolean {
-  const was = new Map(before.map(child => [child.id, JSON.stringify(child)] as const));
+  const was = new Map(before.map(child => [child.id, child] as const));
   const ids = new Set(after.map(child => child.id));
-  return after.some(child => was.get(child.id) !== JSON.stringify(child) && silentSince(child, after, now) === null) ||
-    before.some(child => !ids.has(child.id) && silentSince(child, before, now) === null);
+  return after.some(child => { const old = was.get(child.id); return (old === undefined || childWorked(old, child)) && silentSince(child, after, now) === null; }) ||
+    before.some(child => !ids.has(child.id) && (child.status === "running" || child.status === "queued") && silentSince(child, before, now) === null);
 }
 
 /** The one line a chat gets for a silent child when it detaches; the id and the time it went silent make the line its own key. */
