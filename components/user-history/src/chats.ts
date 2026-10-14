@@ -475,7 +475,8 @@ export class Chats {
    * Deletes one job of the chat unless it works: the hub's view of it is read again first, then the daemon's state of its session (a tool call
    * such as `ci-run-status --wait`, or a background bash its kernel waits on, keeps it), and the daemon refuses a job that streams or holds
    * an unfinished action in the same request (`running`), so a job that started a turn since the cleanup read its children is kept and looked
-   * at again later.
+   * at again later. A delete that fails is tried again at the next sweep: on 10-14 at 12:3xZ the daemon answered neither of Crawler VP's census
+   * write cuts and live route parity fixes within 30 s, and the job id stayed in `deletedJobs` until the next service start.
    */
   private async deleteJob(id: string, child: ChildAgent, listed: readonly string[], now: number): Promise<SubagentDelete | "kept"> {
     const current = this.children.get(id)?.find(candidate => candidate.id === child.id);
@@ -502,7 +503,8 @@ export class Chats {
       if (result === "not_held") this.log(`chat ${id.slice(0, 8)}: finished job ${childName(child)} is no longer a subagent of the chat (the daemon still lists its session); recorded, not tried again`);
       return result;
     } catch (error) {
-      this.log(`chat ${id.slice(0, 8)}: delete job ${childName(child)}: ${error instanceof Error ? error.message : String(error)}`);
+      this.deletedJobs.delete(child.id);
+      this.log(`chat ${id.slice(0, 8)}: delete job ${childName(child)}: ${error instanceof Error ? error.message : String(error)}; tried again at the next sweep`);
       return "kept";
     }
   }

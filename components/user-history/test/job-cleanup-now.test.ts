@@ -91,3 +91,26 @@ test("a mid-turn job is never deleted: one the hub shows working is not asked fo
   assert.deepEqual(calls.filter(call => call.startsWith("delete")), ["delete c1 sub-2", "delete c1 sub-2"], "a job the daemon kept is asked again at the next look");
   chats.close();
 });
+
+test("a delete the daemon does not answer in time is tried again at the next sweep, not only after a service start", async () => {
+  // Crawler VP 10-14 12:3xZ: census write cuts and live route parity fixes timed out after 30 s and stayed alive with their state saved.
+  const { chats, threads, calls, lines } = await chat([], [report("census write cuts", "Done.")]);
+  const done = job("sub-1", "census write cuts");
+  threads.fire().live("c1", [{ ...done, status: "running" }]);
+  const answer = threads.deleteSubagent.bind(threads);
+  let fail = true;
+  threads.deleteSubagent = async (id: string, childId: string) => {
+    if (!fail) return answer(id, childId);
+    calls.push(`delete ${id} ${childId}`);
+    throw new Error('Timed out after 30000ms waiting for the Prime Agent daemon response to "delete_rlm_subagent"');
+  };
+  threads.fire().children("c1", [done]);
+  await chats.settled();
+  assert.ok(lines.some(line => line.startsWith("chat c1: delete job census write cuts: Timed out") && line.endsWith("tried again at the next sweep")), lines.join("\n"));
+  fail = false;
+  threads.fire().idle("c1");
+  await chats.settled();
+  assert.deepEqual(calls.filter(call => call.startsWith("delete")), ["delete c1 sub-1", "delete c1 sub-1"]);
+  assert.ok(lines.includes("chat c1: deleted finished job census write cuts (reported, quiet 1 min, no open step)"), lines.join("\n"));
+  chats.close();
+});
