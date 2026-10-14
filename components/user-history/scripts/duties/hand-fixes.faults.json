@@ -116,8 +116,7 @@
       "id": "F7",
       "title": "Deploys lose live changes and get blocked by sessions they do not own",
       "designs": [
-        "01a115e2-9544-7204-b8db-8ce4d5319048/p172",
-        "branch:sieun/box-selfheal"
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p172"
       ],
       "owner": "metal (01a11d24), release owner (01a10810)",
       "match": {
