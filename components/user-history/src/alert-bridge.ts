@@ -346,13 +346,17 @@ export class AlertBridge {
   }
 }
 
+export class GrafanaError extends Error {
+  constructor(readonly status: number) { super(`Grafana answered ${status} for the alert list`); }
+}
+
 export async function readGrafanaAlerts(configFile: string): Promise<FiringAlert[] | null> {
   const text = await readFile(configFile, "utf8").catch((error: unknown) => { if (missing(error)) return null; throw error; });
   if (text === null) return null;
   const config = JSON.parse(text) as unknown;
   if (!isRecord(config) || typeof config.url !== "string" || typeof config.token !== "string") throw new Error(`${configFile} needs a url and a token`);
   const response = await fetch(new URL(GRAFANA_ALERTS_PATH, config.url), { headers: { Authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(20_000) });
-  if (!response.ok) throw new Error(`Grafana answered ${response.status} for the alert list`);
+  if (!response.ok) throw new GrafanaError(response.status);
   return parseAlerts(await response.json());
 }
 

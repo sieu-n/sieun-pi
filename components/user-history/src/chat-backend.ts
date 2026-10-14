@@ -34,6 +34,7 @@ import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
 import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
 import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
+import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -207,9 +208,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
   };
   const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
-  const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"), alerts: () => readGrafanaAlerts(join(dataDir, "grafana-alerts.json")),
-    owners: () => readOwnersFor(join(dataDir, "grafana-alerts.json"), homedir()), hasBoard: async session => (await boards.read(session)) !== null,
+  const grafanaConfig = join(dataDir, "grafana-alerts.json");
+  const pollHealth = new PollHealth();
+  const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"), alerts: () => pollHealth.poll(() => readGrafanaAlerts(grafanaConfig)),
+    owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
     boards, log: dutyLog, ...agentMessage });
+  const stopBridgeWatch = options.ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
+    configFile: grafanaConfig, log: dutyLog, ...agentMessage });
   const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync.unref();
   void poolPriorities.sync();
@@ -225,6 +230,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       stopWatch();
       stopWakes();
       stopAlerts();
+      stopBridgeWatch();
       unwatchBoards();
       stopPublish();
       duties.close();
