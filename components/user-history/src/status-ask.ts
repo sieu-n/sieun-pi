@@ -6,14 +6,14 @@ import { JOB_NOTICE_PREFIX } from "./shared/chat-feed.ts";
 /**
  * A job at work on an open step that sent its chat no report for PROGRESS_MS, the no-progress window: since its last message to the chat or since
  * it started working (`workingSince`, by child id), whichever is later. A thread owner is left out, since its chat reads its transcript, and so is a
- * job the server has not seen start. Chat health 10-13: in 27 of the 32 hours that counted in no_progress_hours, a step the check-in listed as moving
+ * job the server has not seen start, and a job asleep on a board.wake (`JobFact.wake`), which the ask would wake. Chat health 10-13: in 27 of the 32 hours that counted in no_progress_hours, a step the check-in listed as moving
  * had a job at work that had not reported for the hour, and the check-in job, a root session, cannot message the chat's subagents.
  */
 export type StepJob = JobFact & { item: NonNullable<JobFact["item"]> };
 export function silentJobs(facts: readonly JobFact[], workingSince: (key: string) => number | undefined, now: number): StepJob[] {
   return facts.filter((fact): fact is StepJob => {
     const started = workingSince(fact.key);
-    if (fact.state !== "working" || fact.key.startsWith("thread:") || !fact.item || !OPEN.has(fact.item.status) || started === undefined) return false;
+    if (fact.state !== "working" || fact.wake !== undefined || fact.key.startsWith("thread:") || !fact.item || !OPEN.has(fact.item.status) || started === undefined) return false;
     return now - Math.max(started, fact.lastMessage?.at ?? 0) >= PROGRESS_MS;
   });
 }

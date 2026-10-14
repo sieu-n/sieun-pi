@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { JobFact, StepView } from "./checkin-steps.ts";
+import { type Wake, wakeLabel } from "./wakes.ts";
 import type { PlanItem } from "./shared/types.ts";
 
 /*
@@ -127,6 +128,22 @@ export function heartbeatLive(jobs: readonly ScheduledJob[], activityAt: number 
 export const liveThreads = (facts: readonly JobFact[], heartbeatsOf: (sessionId: string) => readonly ScheduledJob[], now: number): JobFact[] =>
   facts.map(fact => fact.key.startsWith("thread:") && fact.state === "ended" && heartbeatLive(heartbeatsOf(fact.key.slice("thread:".length)), fact.activityAt, now)
     ? { ...fact, state: "working" } : fact);
+/**
+ * The facts with each job whose session sleeps on a wake the service still owes (`pendingWakes`) marked working and its wake named
+ * (`JobFact.wake`): a step it owns is moved by a live owner until the wake is due. `sessionOf` gives a subagent's session by its child id; a
+ * thread's is its key. launch main bro 10-14: the release driver root owned p53, p75 and p56, ended its turn at 13:40Z on a board.wake for
+ * 14:40Z (its hourly check of land 35 and promote 10), and the 13:50Z check-in flagged all three stuck and blocked on others, "release driver
+ * thread is idle".
+ */
+export function withWakes(facts: readonly JobFact[], wakes: readonly Wake[], sessionOf: (key: string) => string | undefined): JobFact[] {
+  const bySession = new Map<string, Wake[]>();
+  for (const wake of wakes) bySession.set(wake.session, [...bySession.get(wake.session) ?? [], wake]);
+  return facts.map(fact => {
+    const session = fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId ?? sessionOf(fact.key);
+    const owed = session === undefined ? undefined : bySession.get(session);
+    return owed ? { ...fact, state: "working", wake: wakeLabel(owed) } : fact;
+  });
+}
 /** Words in a heartbeat's label or prompt that name work the check-in already does: a check-in, the board, watching, monitoring, status, nudging. */
 const CHECK_IN_WORK = /\bcheck[- ]?ins?\b|\bboard\b|\bwatch(?:er|ers|es|ing)?\b|\bmonitor(?:s|ing)?\b|\bstatus\b|\bnudge[sd]?\b|\bguides?\b|\bstall(?:s|ed)?\b|\bprogress\b/i;
 /** A heartbeat prompt that starts a job: its work is that job's, and its "update the board" or "send the owner the status" is the job's report. */

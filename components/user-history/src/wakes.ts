@@ -158,6 +158,41 @@ export async function runStamp(id: number): Promise<string | null> {
   return info ? `${info.ino}:${info.mtimeMs}:${info.size}` : null;
 }
 
+/**
+ * How late a wake may be and still count as owed: the service ticks every TICK_MS, and board.wake refuses a wake once the last tick is over
+ * 2 min old (TICKED). A time wake more than this past its time, or any wake while the last tick is older than this, is one nobody delivers.
+ */
+export const WAKE_LATE_MS = 2 * 60_000;
+
+/**
+ * The wakes the service still owes at `now`, given its last finished tick (`tickedAt`, from TICKED): none when that tick is over WAKE_LATE_MS
+ * old; else every run wake, since the service reads its run at least every RUN_LOOK_MS and sends the wake once the run finished, and every time
+ * wake due at most WAKE_LATE_MS ago. The check-in counts a job asleep on one as a live owner (`withWakes`).
+ */
+export function owedWakes(wakes: readonly Wake[], tickedAt: number | undefined, now: number): Wake[] {
+  if (tickedAt === undefined || now - tickedAt > WAKE_LATE_MS) return [];
+  return wakes.filter(wake => wake.on.kind === "run" || now - wake.on.at <= WAKE_LATE_MS);
+}
+
+/** The wake files in `dir` the service still owes at `now` (`owedWakes`). */
+export async function pendingWakes(dir: string, now: number): Promise<Wake[]> {
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const tickedAt = Date.parse(await readFile(join(dir, TICKED), "utf8").catch(() => ""));
+  const wakes: Wake[] = [];
+  for (const name of names.filter(name => name.endsWith(".json"))) {
+    const wake = await readFile(join(dir, name), "utf8").then(text => parseWake(JSON.parse(text)), () => null).catch(() => null);
+    if (wake) wakes.push(wake);
+  }
+  return owedWakes(wakes, Number.isFinite(tickedAt) ? tickedAt : undefined, now);
+}
+
+/** What a session's owed wakes wait for: "a board.wake at 14:40Z", or "board.wakes on run 38555915600 and at 15:00Z". */
+export function wakeLabel(wakes: readonly Wake[]): string {
+  const what = [...wakes].sort((a, b) => (a.on.kind === "time" ? a.on.at : 0) - (b.on.kind === "time" ? b.on.at : 0))
+    .map(({ on }) => on.kind === "time" ? `at ${new Date(on.at).toISOString().slice(11, 16)}Z` : `on run ${on.run}${on.repo ? ` in ${on.repo}` : ""}`);
+  return `${what.length === 1 ? "a board.wake" : "board.wakes"} ${what.length > 1 ? `${what.slice(0, -1).join(", ")} and ${what.at(-1)}` : what[0]}`;
+}
+
 /** Whether `session` has a wake file in `dir`. */
 export async function waking(dir: string, session: string): Promise<boolean> {
   return (await readdir(dir).catch(() => [] as string[])).some(name => name.startsWith(`${session}-`) && name.endsWith(".json"));

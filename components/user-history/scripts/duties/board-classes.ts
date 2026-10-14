@@ -12,7 +12,8 @@ import { checkInSettings } from "../../src/checkin-settings.ts";
 import { blockedOnOthers, deadRunWaits, extraGoals, gateFindings, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, noProgress, openUnderClosed, scopeMisses,
   staleSteps, stalledSteps, waitsMet } from "../../src/checkin-findings.ts";
 import { activeCorrections, CorrectionLedger, handoffRules } from "../../src/chat-corrections.ts";
-import { heartbeatsFile, oneSessionLoad, readHeartbeats, readTrain, redundantHeartbeats, trainFile } from "../../src/checkin-load.ts";
+import { heartbeatsFile, oneSessionLoad, readHeartbeats, readTrain, redundantHeartbeats, trainFile, withWakes } from "../../src/checkin-load.ts";
+import { pendingWakes } from "../../src/wakes.ts";
 import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";
 import type { ChildAgent, SessionRow } from "../../src/shared/types.ts";
 
@@ -121,6 +122,9 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
   let sessions: DaemonSession[] | undefined;
   // The release train and every CI run, as the check-in reads them (`trainMoves`, `deadRun`, live runs in `noProgress`).
   const train = await readTrain(trainFile(options.home));
+  // The board.wakes the chat service still owes, as the check-in reads them: a job asleep on one works (`withWakes`).
+  const wakes = await pendingWakes(join(dataDir, "wakes"), now);
+  const asleep = new Set(wakes.map(wake => wake.session));
   const result: ChatClasses[] = [];
   for (const id of ids) {
     const board = await boards.read(id).catch(() => null);
@@ -133,13 +137,14 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
     const rows = sessionRows(sessions ?? []);
     const name = rows.find(row => row.id === id)?.name ?? id;
     const children = chatChildren(sessions ?? [], id);
-    // The same working test as the check-in: a running subtree, or a session change within the chat's interval capped at LIVE_GAP_MS.
-    const facts = jobFacts(children, board, rows, id, [], liveJobs(children, subagentsByParent(sessions ?? []), now, liveWindowMs(everyMs)));
+    // The same working test as the check-in: a running subtree, a session change within the chat's interval capped at LIVE_GAP_MS, or an owed wake.
+    const facts = withWakes(jobFacts(children, board, rows, id, [], liveJobs(children, subagentsByParent(sessions ?? []), now, liveWindowMs(everyMs), asleep)),
+      wakes, key => children.find(child => child.id === key)?.sessionId);
     const steps = classifyBoard(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), rows, now, active);
     const end = steps.map(view => endState(view, board?.todos ?? [], rows, new Set([id, name]), now));
     const chatDuties = await duties.list(id).catch(() => undefined);
     const findings = { scope: scopeMisses(board, handoffs, [id, name]), gates: gateFindings(board, facts, active), stalled: stalledSteps(steps, memo?.steps ?? {}, rows, new Set([id, name]), now, train),
-      goals: goalGaps(board, steps, everyMs, now), blocked: blockedOnOthers(steps, rows, new Set([id, name]), now, board?.scratch, train), done: finishedOpen(board, now), loose: looseGoals(board),
+      goals: goalGaps(board, steps, everyMs, now), blocked: blockedOnOthers(steps, rows, new Set([id, name]), now, board?.scratch, train, new Map(), asleep), done: finishedOpen(board, now), loose: looseGoals(board),
       extra: extraGoals(board), underClosed: openUnderClosed(board), held: heldElsewhere(steps, board, rows, new Set([id, name]), rootsOf([id, name])), noProgress: noProgress(board, steps, memo?.steps ?? {}, memo?.since ?? now, rows, new Set([id, name]), now, train),
       waitsMet: [...waitsMet(steps, board, rows, new Set([id, name])), ...deadRunWaits(steps, train, now)],
       stale: staleSteps(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), everyMs, now),

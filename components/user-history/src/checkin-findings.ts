@@ -4,7 +4,7 @@ import { CHECK_IN_DUTY_ID, type Duty } from "./shared/chat-duties.ts";
 import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
   type TargetState, targetText, walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, ScratchItem, SessionRow } from "./shared/types.ts";
-import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, owns, parkedBy, plural, quote, STATE_WORD, type StepMemo, stepOwner, type StepView, waitTarget,
+import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
 import { localTime } from "./checkin-settings.ts";
@@ -506,7 +506,9 @@ const othersWord = (text: string | undefined): string | undefined =>
  * its waitFor names another thread, it has not changed for BLOCKED_MS, and no job of it is working (an owner thread whose heartbeats keep it
  * live works, `liveThreads`). The step's own owner thread is never its blocker; a CI run id its waitFor names is named as the blocker. A step an open For you todo covers
  * waits on the owner, not on others (AI harness 10-12: p288 on t41 and p277 on t42 read as blocked on a release and on SEO guy). A step parked on
- * schedule or on a release train that moves (`parkedWait`) is not blocked yet. `on` names the blocker.
+ * schedule or on a release train that moves (`parkedWait`) is not blocked yet, and neither is a step whose owner or blocker thread sleeps on a
+ * board.wake the service still owes (`asleep`; launch main bro 10-14: "release driver thread is idle" on p53 and p75 while the release driver
+ * waited on its 14:40Z wake). `on` names the blocker.
  */
 export interface BlockedStep { view: StepView; on: string }
 /** How long past its planned end a parked-on-schedule wait may sit before it counts as blocked (owner's brief 10-13 for frontend bro p100). */
@@ -637,7 +639,7 @@ export function queueHolds(view: Pick<StepView, "item" | "owner" | "mine">, queu
   return target !== undefined && queued.has(target.id);
 }
 export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number,
-  scratch: readonly ScratchItem[] = [], train?: Train, queued: ReadonlyMap<string, unknown> = new Map()): BlockedStep[] {
+  scratch: readonly ScratchItem[] = [], train?: Train, queued: ReadonlyMap<string, unknown> = new Map(), asleep: ReadonlySet<string> = new Set()): BlockedStep[] {
   return views.flatMap(view => {
     const { item, owner } = view;
     if ((item.waitFor === undefined && item.status !== "blocked") || owner?.state === "working" || view.cls === "parked" || view.cls === "foryou" ||
@@ -645,6 +647,8 @@ export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<
     // The step's own owner thread is never its blocker (Crawler VP 10-13, p147 read "blocked on the meta ads thread", its owner); a thread its
     // waitFor names is.
     const thread = waitTarget(item.waitFor, rows, self);
+    // A blocker thread asleep on a board.wake the service still owes (`asleep`, session ids) is on it until the wake is due, as an owner is.
+    if (thread && asleep.has(thread.id)) return [];
     // A step on a cancelled run waits on nobody (api portal vp 10-13, p9, p12 and p14 read "blocked on CI run ..." at 23:07 KST for runs Fable's
     // land-34 loop cancelled at 13:55Z); `deadRunWaits` flags it.
     if (!thread && deadRun(item, train)) return [];
@@ -656,7 +660,7 @@ export function blockedOnOthers(views: readonly StepView[], rows: readonly Pick<
 }
 export const blockedLine = ({ view, on }: BlockedStep, now: number): string => {
   const { item, owner } = view;
-  const job = owner ? `${ownerLabel(owner)} is ${owner.cancelled ? "ended" : STATE_WORD[owner.state]}` : "no job works on it";
+  const job = owner ? `${ownerLabel(owner)} is ${ownerState(owner)}` : "no job works on it";
   return `${item.id} ${quote(item.text)} is blocked on ${on} for ${ago(now - view.changedAt)} and ${job}: find out why and start a job that fixes the ` +
     "blocker, or send the blocker's owner a concrete patch";
 };

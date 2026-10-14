@@ -37,6 +37,8 @@ export interface JobFact {
   sessionId?: string;
   /** Its turn waits for a working slot in the Mac-wide turn queue (`pi-pool queue --json`). */
   queued?: QueuePlace;
+  /** The pending board.wake its session sleeps on (`wakeLabel`): it ended its turn and counts as working until the wake is due (`withWakes`). */
+  wake?: string;
 }
 /**
  * One agent message a job sent the chat: when, and its first line; `factsAt` is when the job last sent one carrying a fact (`noteFacts`), such as a
@@ -258,16 +260,18 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
  * The subagents that work although their own turn ended: one with a running subagent at any depth below it, or one whose session changed
  * within `windowMs` (the check-in interval). `subagents` holds the daemon's subagents by parent session id (`rosterChildren`), which gives a
  * hub child its session id and last activity too. frontend bro 10-13: its 5 jobs end each turn while their browser checkers and fix jobs run,
- * and the 02:39 and 02:57 check-ins flagged p92 to p97 as orphans with each job "idle".
+ * and the 02:39 and 02:57 check-ins flagged p92 to p97 as orphans with each job "idle". A subagent whose session is in `asleep` (it sleeps on a
+ * pending board.wake, `pendingWakes`) works too, so the job above it does.
  */
-export function liveJobs(children: readonly ChildAgent[], subagents: ReadonlyMap<string, readonly ChildAgent[]>, now: number, windowMs: number): Set<string> {
+export function liveJobs(children: readonly ChildAgent[], subagents: ReadonlyMap<string, readonly ChildAgent[]>, now: number, windowMs: number,
+  asleep: ReadonlySet<string> = new Set()): Set<string> {
   const listed = new Map([...subagents.values()].flat().map(child => [child.id, child] as const));
   const runningBelow = (session: string, seen: Set<string>): boolean => (subagents.get(session) ?? []).some(child => childWorking(child) ||
     (child.sessionId !== undefined && !seen.has(child.sessionId) && runningBelow(child.sessionId, seen.add(child.sessionId))));
   return new Set(children.filter(child => {
     const session = child.sessionId ?? listed.get(child.id)?.sessionId;
     const at = Math.max(child.lastActivityAt ?? 0, listed.get(child.id)?.lastActivityAt ?? 0);
-    return (session !== undefined && runningBelow(session, new Set([session]))) || now - at < windowMs;
+    return (session !== undefined && (asleep.has(session) || runningBelow(session, new Set([session])))) || now - at < windowMs;
   }).map(child => child.id));
 }
 
@@ -310,6 +314,8 @@ export const ownerLabel = (fact: JobFact) => fact.key.startsWith("thread:") ? `$
 /** "p7 (usage backend thread)" for an owner with a plan item, else "job api-audit" or "usage backend thread". */
 const factLabel = (fact: JobFact) => fact.item ? `${fact.item.id} (${ownerLabel(fact)})` : ownerLabel(fact);
 export const STATE_WORD: Record<JobState, string> = { working: "working", ended: "idle", failed: "failed" };
+/** An owner's state as a precheck line names it: "ended" when cancelled, "asleep on a board.wake at 14:40Z" while it sleeps on a wake. */
+export const ownerState = (fact: JobFact): string => fact.cancelled ? "ended" : fact.wake ? `asleep on ${fact.wake}` : STATE_WORD[fact.state];
 export function ago(ms: number): string {
   const minutes = Math.max(0, Math.round(ms / 60_000));
   if (minutes < 120) return `${minutes} min`;
@@ -472,7 +478,7 @@ function actLine(view: StepView, now: number): string | null {
   }
   if (cls === "orphan") {
     if (mine) return `${head} is yours and has not moved for ${ago(now - changedAt)}: start a job, do it now, or ask the owner in For you`;
-    const who = owner ? ` (${ownerLabel(owner)} ${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? ` (${item.job} not found)` : "";
+    const who = owner ? ` (${ownerLabel(owner)} ${ownerState(owner)})` : item.job ? ` (${item.job} not found)` : "";
     return `${head} has no live owner${who}: start a job, take it yourself, or ask the owner in For you`;
   }
   return null;

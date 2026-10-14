@@ -2,7 +2,7 @@ import { basename, dirname, join } from "node:path";
 import type { IdIndex } from "./id-index.ts";
 import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
-import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile } from "./checkin-load.ts";
+import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
 import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
@@ -821,7 +821,7 @@ export class Chats {
     await this.load();
     if (!this.chatIds.has(id)) return;
     try {
-      const { board, boardError, rows, facts, queued, name } = await this.gather(id);
+      const { board, boardError, rows, facts, queued, asleep, name } = await this.gather(id);
       // With no catalog rows yet and no hub children, every job of the chat reads as missing (frontend bro 10-13 01:09 and 01:24, while the
       // daemon's list timed out after restarts: 7 false orphans each, and the duty runner skipped both runs anyway).
       if (!rows.length && !this.children.has(id)) {
@@ -841,7 +841,7 @@ export class Chats {
       const train = await readTrain(trainFile(this.source.home));
       const previous = await this.source.memory.get(id);
       const precheck = checkInPrecheck(previous, facts, board, at,
-        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
           owner: ownerSaid(this.messages(id) ?? []) });
       // A job at work an hour with no report gets one status ask through the chat; the check-in job cannot message the chat's subagents.
       const said = this.stall(id) ? undefined : this.messages(id);
@@ -861,7 +861,7 @@ export class Chats {
 
   /** What a check-in reads: the board (or why it cannot be read), the catalog rows, the chat's name, and its jobs with their last messages. */
   private async gather(id: string): Promise<{ board: ChatBoard | null; boardError?: string; rows: readonly SessionRow[]; facts: ReturnType<typeof jobFacts>;
-    queued: ReadonlyMap<string, QueuePlace>; name?: string }> {
+    queued: ReadonlyMap<string, QueuePlace>; asleep: ReadonlySet<string>; name?: string }> {
     let board: ChatBoard | null = null;
     let boardError: string | undefined;
     try { board = await this.source.board(id); }
@@ -873,15 +873,20 @@ export class Chats {
     const dutyJobs = await this.source.dutyJobs?.(id).catch(() => []) ?? [];
     const nested = dutyJobs.flatMap(job => (this.subagents.get(job) ?? []).map(child => ({ ...child, parentId: job })));
     const children = this.children.get(id) ?? agentChildren(rows.find(row => row.id === id)?.agents ?? []);
-    const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs));
-    const threads = liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now());
+    // A job that ended its turn on a board.wake the service still owes is at work until the wake is due (`withWakes`).
+    const wakes = await this.source.wakes?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in wakes: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
+    const sessions = new Map([...this.subagents.values()].flat().concat(children, nested).flatMap(child => child.sessionId ? [[child.id, child.sessionId] as const] : []));
+    const asleep = new Set(wakes.map(wake => wake.session));
+    const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs), asleep);
+    const threads = withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
+      wakes, key => sessions.get(key));
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
     const facts = withQueuePlaces(threads.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);
       return lastMessage ? { ...fact, lastMessage } : fact;
     }), queued, [...this.subagents.values()].flat().concat(children, nested));
     const name = rows.find(row => row.id === id)?.name;
-    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, queued, ...(name ? { name } : {}) };
+    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, queued, asleep, ...(name ? { name } : {}) };
   }
 
   /**

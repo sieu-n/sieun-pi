@@ -1,0 +1,105 @@
+{
+  "board": {
+    "v": 2,
+    "rev": 2583,
+    "updatedAt": "2026-10-14T14:13:38.186Z",
+    "scratch": [],
+    "todos": [],
+    "plan": [
+      {
+        "id": "p80",
+        "text": "Engage fleet move to prod: bind, renew proxy routes, admit bought logins, and raise the proven pages per account",
+        "status": "doing",
+        "children": [
+          {
+            "id": "p53",
+            "text": "Build: both tiers configured for 100k pages a day, rate per account set from measured evidence",
+            "status": "doing",
+            "job": "release driver",
+            "kind": "build",
+            "children": [],
+            "note": "14:3xZ: land 35 (the front set) becomes the promote vehicle. Golden upstream tagging bd52bc7dc4 is green (it tags HTTP 500+ scrape_blocked as upstream), and Crawler ops' YouTube deadline r2 fixes the YouTube hang. A tip-wide secrets red from 444846050d gets a 10-hex docs fix first.",
+            "waitFor": "land 35 front items CAS on green, the secrets docs fix, then the release owner pins land 35 (Fable's ETA about 15:30-16:00Z); staging, then promote, unless Crawler ops' egress watch passes first",
+            "sessionId": "01a1389b-63c7-75c9-8397-33705fb9d3d2"
+          },
+          {
+            "id": "p75",
+            "text": "Build: the test group can read past 1,000 pages, then it goes back to 2,000 on prod; the standing 10% test group runs as the engage duty",
+            "status": "doing",
+            "job": "release driver",
+            "children": [],
+            "note": "14:1xZ check-in: promote 10 failed its gate twice (38547662949, 38551982339) on contact-bio-crawl-time; the owner's go for it stands (s186). Its next try needs land 35's front (gate tagging, fast-connect, feed breaker, posts fix) landed on staging, which Fable expects green 14:30-15:00Z. The release driver (session 01a1389b) watches that on a 14:40Z wake and sends this chat the read-back.",
+            "waitFor": "promote 10 and its read-back (land 34 verdict about 09:45Z); then instagram access canary sets 2,000 on the 10 test accounts; 5 days of verdicts",
+            "sessionId": "01a1389b-63c7-75c9-8397-33705fb9d3d2"
+          }
+        ]
+      },
+      {
+        "id": "p83",
+        "text": "Watchlist rollout: tonight's release, watches on in batches, new adds work, and crawler capacity to read every watch inside 24 h",
+        "status": "doing",
+        "children": [
+          {
+            "id": "p56",
+            "text": "Build: one-off two-way data copy to build the dataset (staging's old collabs to prod, prod's data to staging)",
+            "status": "doing",
+            "job": "release driver",
+            "kind": "build",
+            "children": [],
+            "note": "14:1xZ check-in: promote 10 failed its gate twice (38547662949, 38551982339) on contact-bio-crawl-time; the owner's go for it stands (s186). Its next try needs land 35's front (gate tagging, fast-connect, feed breaker, posts fix) landed on staging, which Fable expects green 14:30-15:00Z. The release driver (session 01a1389b) watches that on a 14:40Z wake and sends this chat the read-back.",
+            "waitFor": "promote 10 and its read-back; 15 min notice to metal; then collab backfill runs 7 brands, a prod read-back, then the 310-brand run under s181",
+            "sessionId": "01a1389b-63c7-75c9-8397-33705fb9d3d2"
+          }
+        ]
+      }
+    ]
+  },
+  "memo": {
+    "p53": {
+      "sig": "[\"doing\",\"Build: both tiers configured for 100k pages a day, rate per account set from measured evidence\",\"release driver\"]",
+      "at": 1791951788666,
+      "wait": "[\"waits\",\"release driver\"]",
+      "waitAt": 1791951788666,
+      "facts": [
+        "10",
+        "38551982339",
+        "01a10810",
+        "35"
+      ],
+      "factsAt": 1791979375591
+    },
+    "p75": {
+      "sig": "[\"doing\",\"Build: the test group can read past 1,000 pages, then it goes back to 2,000 on prod; the standing 10% test group runs as the engage duty\",\"release driver\"]",
+      "at": 1791951788666,
+      "wait": "[\"waits\",\"release driver\"]",
+      "waitAt": 1791951788666,
+      "facts": [
+        "01a138ab-09c5",
+        "2,000",
+        "10",
+        "10's"
+      ],
+      "factsAt": 1791952688842
+    },
+    "p56": {
+      "sig": "[\"doing\",\"Build: one-off two-way data copy to build the dataset (staging's old collabs to prod, prod's data to staging)\",\"release driver\"]",
+      "at": 1791951788666,
+      "wait": "[\"waits\",\"release driver\"]",
+      "waitAt": 1791951788666,
+      "facts": [
+        "10's",
+        "35"
+      ],
+      "factsAt": 1791954512269
+    }
+  },
+  "wake": {
+    "session": "01a1389b-63c7-75c9-8397-33705fb9d3d2",
+    "on": {
+      "kind": "time",
+      "at": 1791988800000
+    },
+    "note": "release driver: check front released / land 35 pin, promote 10 state; Fable est front green 14:30-15:00Z",
+    "since": 1791985229605
+  }
+}

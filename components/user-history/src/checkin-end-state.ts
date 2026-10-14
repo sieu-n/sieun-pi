@@ -48,7 +48,7 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   const { item, owner, mine, cls } = view;
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
   if (cls === "parked") return out("parked", `parked by ${view.parked ?? "an owner correction"}`);
-  if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} works on it`);
+  if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${owner.wake ? `sleeps on ${owner.wake}` : "works on it"}`);
   const wait = item.waitFor ?? "";
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
   if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");

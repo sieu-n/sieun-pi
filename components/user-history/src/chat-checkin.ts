@@ -7,8 +7,8 @@ import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json
 import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
-import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, parkedBy, quote, readySteps,
-  noteFacts, readyReviewLine, readyReviews, recordedAt, STATE_WORD, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
+import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, ownerState, parkedBy, quote, readySteps,
+  noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
   waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
 import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, type GoalGap, goalGapLine, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
@@ -62,6 +62,8 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
    * working slot is queued, not blocked or stalled (`queueHolds`). A job's own place is on its fact (`JobFact.queued`). Not given: none.
    */
   queued?: ReadonlyMap<string, unknown>;
+  /** The sessions asleep on a board.wake the service still owes (`pendingWakes`): a blocker thread among them is not blocked on. Not given: none. */
+  asleep?: ReadonlySet<string>;
   /** What the owner wrote in the chat (`ownerSaid`), for when he last ruled on a review (`readyReviews`); none when not given. */
   owner?: readonly OwnerMessage[] }
 
@@ -123,7 +125,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
   const queued = context.queued ?? new Map<string, unknown>();
-  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch, context.train, queued);
+  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch, context.train, queued, context.asleep);
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
@@ -200,8 +202,8 @@ export const STALL_UNTILS = 5;
 
 /** One job of the chat as the brief lists it: its name, state, last activity, its step and its last message. */
 function jobLine(fact: JobFact, now: number): string {
-  const state = fact.cancelled ? "ended (cancelled)" : STATE_WORD[fact.state];
-  const quiet = fact.state === "working" && fact.activityAt !== undefined && now - fact.activityAt > STALE_MS ? `, no activity for ${ago(now - fact.activityAt)}` : "";
+  const state = fact.cancelled ? "ended (cancelled)" : ownerState(fact);
+  const quiet = fact.state === "working" && !fact.wake && fact.activityAt !== undefined && now - fact.activityAt > STALE_MS ? `, no activity for ${ago(now - fact.activityAt)}` : "";
   const last = fact.activityAt !== undefined ? `, last activity ${ago(now - fact.activityAt)} ago` : "";
   const step = fact.item ? `, on ${fact.item.id} ${quote(fact.item.text)} (${fact.item.status})` : "";
   const error = fact.state === "failed" && fact.error ? `, error: ${clip(fact.error, 120)}` : "";
@@ -232,7 +234,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
   const merged = flagged.filter(slice => slice.kind === "merges_without_go").map(slice => slice.excerpt);
   const open = [...precheck.steps].sort((a, b) => a.changedAt - b.changedAt).map(view => {
     const { item, owner, mine, cls } = view;
-    const who = mine ? "owner the chat" : owner ? `owner ${ownerLabel(owner)} (${owner.cancelled ? "ended" : STATE_WORD[owner.state]})` : item.job ? `owner ${item.job} (not found)` : "no owner";
+    const who = mine ? "owner the chat" : owner ? `owner ${ownerLabel(owner)} (${ownerState(owner)})` : item.job ? `owner ${item.job} (not found)` : "no owner";
     const until = Date.parse(item.waitUntil ?? "");
     const waits = `${Number.isFinite(until) ? `, waits until ${localTime(until)}` : ""}${item.waitFor ? `, waits for ${quote(item.waitFor)}` : ""}`;
     const note = item.note ? `; note: "${clip(item.note.replace(/\s+/g, " "), 300)}"` : "";

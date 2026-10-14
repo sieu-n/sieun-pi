@@ -23,6 +23,7 @@ import { checkInSettings } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { readBranchTail } from "../src/session-tail.ts";
+import { pendingWakes } from "../src/wakes.ts";
 
 const chat = process.argv[2];
 if (!chat || chat.startsWith("-")) { process.stderr.write("usage: node --import tsx scripts/checkin-precheck.ts <chat id> [--roster]\n"); process.exit(2); }
@@ -63,7 +64,7 @@ const source: CheckInSource = {
   board: id => boards.read(id), rows: async () => rows, registry: jobRegistry(join(dataDir, "chat-jobs.json")),
   memory: checkInRecord(await copy("check-ins.json")), replyChecks: replyCheckRecord(await copy("reply-checks.json")),
   settings: checkInSettings(await copy("check-in-settings.json")), tickMs: 0, noReportGraceMs: 60 * 60_000,
-  corrections: () => corrections.read(), duties: id => duties.list(id),
+  corrections: () => corrections.read(), duties: id => duties.list(id), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
   dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
   duty: { async checkIn(_id, run) {
     printed = true;
