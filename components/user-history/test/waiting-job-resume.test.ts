@@ -98,6 +98,12 @@ test("a brief over the daemon's 4,096 character spawn record comes from the job'
   const lines = [JSON.stringify({ type: "session", id: "01a13a00" }), JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: long }] } })];
   const { dir, chats, calls, sweep } = await setup({}, lines);
   assert.equal(await jobBrief(join(dir, "session-artifacts", "c1", "sub-9")), long);
+  const taskDir = await mkdtemp(join(tmpdir(), "job-task-"));
+  // The way the daemon writes a spawned job's task (frontend bro's connections multiple accounts, 10-13 23:08Z): no user message at all.
+  await writeFile(join(taskDir, "01a13785.jsonl"), [JSON.stringify({ type: "session", id: "01a13785" }),
+    JSON.stringify({ type: "custom_message", customType: "harness_digest", content: "[harness-digest]\n..." }),
+    JSON.stringify({ type: "custom_message", customType: "agent_message", content: `[task from parent]\n\n${long}`, display: true })].join("\n") + "\n");
+  assert.equal(await jobBrief(taskDir), long, "the [task from parent] message is the brief");
   await sweep(START + PARK_IDLE_MS + 60_000);
   assert.deepEqual(calls.filter(call => call.startsWith("delete")), ["delete c1 sub-9"]);
   chats.close();

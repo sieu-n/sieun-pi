@@ -33,8 +33,10 @@ export function jobResumes(dir: string): JobResumes {
 }
 
 /**
- * A job's brief: the prompt the daemon stored at the spawn (`rlm-subagent.json`, which keeps prompts of 4,096 characters or fewer), else the
- * first user message of the job's session file in its folder `childDir`. Undefined when neither can be read.
+ * A job's brief: the prompt the daemon stored at the spawn (`rlm-subagent.json`, which keeps prompts of 4,096 characters or fewer), else the task
+ * its session file in its folder `childDir` opens with: the first `agent_message` custom message, a `[task from parent]` (frontend bro 10-14:
+ * connections multiple accounts had a longer brief, no user message, and the cleanup kept it as "its brief could not be read"), or a first
+ * user message. Undefined when none can be read.
  */
 export async function jobBrief(childDir: string): Promise<string | undefined> {
   const spawn = await spawnRecord(childDir);
@@ -44,17 +46,19 @@ export async function jobBrief(childDir: string): Promise<string | undefined> {
     const lines = createInterface({ input: createReadStream(join(childDir, name), "utf8"), crlfDelay: Infinity });
     try {
       for await (const line of lines) {
-        if (!line.includes('"role":"user"')) continue;
-        const entry = JSON.parse(line) as { message?: { role?: string; content?: unknown } };
-        if (entry.message?.role !== "user") continue;
-        const content = entry.message.content;
-        return typeof content === "string" ? content
-          : Array.isArray(content) ? content.map(part => typeof part === "object" && part && "text" in part ? String(part.text) : "").join("") : undefined;
+        const task = line.startsWith('{"type":"custom_message","customType":"agent_message"');
+        if (!task && !line.includes('"role":"user"')) continue;
+        const entry = JSON.parse(line) as { content?: unknown; message?: { role?: string; content?: unknown } };
+        if (!task && entry.message?.role !== "user") continue;
+        const text = contentText(task ? entry.content : entry.message!.content);
+        if (text !== undefined) return text.replace(/^\[task from parent\]\s*/, "");
       }
     } finally { lines.close(); }
   }
   return undefined;
 }
+const contentText = (content: unknown): string | undefined => typeof content === "string" ? content
+  : Array.isArray(content) ? content.map(part => typeof part === "object" && part && "text" in part ? String(part.text) : "").join("") : undefined;
 
 /** What a step holds, as one line: `p12 waits for "the r14 sha"`, `p12 waits until 2026-10-14T12:00:00Z`, or `p12 is doing` for a step with no wait. */
 export function waitText(item: PlanItem): string {
