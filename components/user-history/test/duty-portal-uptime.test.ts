@@ -55,6 +55,6 @@ test("portal uptime: a failed direct GET is flagged, and so is the Convex probe 
 test("portal uptime: the duty JSON passes parseDutyInput with the targets the script cites", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile("scripts/duties/portal-uptime.duty.json", "utf8")), "d1", AT);
   assert.equal(duty.name, "Portal stays up");
-  assert.deepEqual(duty.schedule, { kind: "every", minutes: 15 });
+  assert.deepEqual(duty.schedule, { kind: "daily", at: "07:29" });
   assert.deepEqual(duty.metrics.map(m => [m.key, m.op, m.target]), [["probes_down_now", "<=", 0], ["probe_uptime_24h_pct", ">=", 100], ["probe_age_min", "<=", 15], ["source_errors", "<=", 0]]);
 });

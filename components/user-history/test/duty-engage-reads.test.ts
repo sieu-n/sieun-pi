@@ -25,7 +25,7 @@ function data(fields: Partial<EngageData> = {}): EngageData {
 
 test("engage reads: the duty file parses, its name passes c38, and the precheck writes every metric key", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(FILE, "utf8")), "d", NOW);
-  assert.deepEqual(duty.schedule, { kind: "every", minutes: 60 });
+  assert.deepEqual(duty.schedule, { kind: "daily", at: "09:00" });
   assert.equal(duty.precheck.cwd, "../..");
   const output = report(data(), duty.metrics);
   assert.deepEqual(Object.keys(output.metrics).sort(), duty.metrics.map(metric => metric.key).sort());

@@ -91,7 +91,7 @@ test("demo sandbox: a stale walk and a walk that failed before its outside check
 
 test("demo sandbox duty file parses, and every metric is a key the precheck writes", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "demo-sandbox.duty.json"), "utf8")), "d", NOW);
-  assert.deepEqual(duty.schedule, { kind: "every", minutes: 30 });
+  assert.deepEqual(duty.schedule, { kind: "daily", at: "06:25" });
   assert.equal(duty.precheck.cwd, "../..");
   const output = await measureSandbox(deps({}));
   assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), Object.keys(output.metrics).sort());

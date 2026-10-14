@@ -81,7 +81,7 @@ test("env parsing and targets", () => {
 
 test("local dev uptime duty file parses, and every metric is a key the precheck writes", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "local-dev-uptime.duty.json"), "utf8")), "d", NOW);
-  assert.deepEqual(duty.schedule, { kind: "every", minutes: 10 });
+  assert.deepEqual(duty.schedule, { kind: "daily", at: "08:08" });
   const { output } = await measureUptime(deps({ jlist: jlist(0, 0) }), undefined);
   assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), Object.keys(output.metrics).sort());
 });

@@ -23,8 +23,8 @@
     }
   ],
   "schedule": {
-    "kind": "every",
-    "minutes": 10
+    "kind": "daily",
+    "at": "03:00"
   },
   "precheck": {
     "command": [

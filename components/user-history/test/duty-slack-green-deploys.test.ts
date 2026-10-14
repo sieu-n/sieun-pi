@@ -114,9 +114,9 @@ test("deploys: a failed redeploy is flagged and tried again on the next run", as
   assert.deepEqual(run.state.redeployed, {});
 });
 
-test("deploys: the duty file parses and runs every 10 minutes", async () => {
+test("deploys: the duty file parses and runs daily at 03:00", async () => {
   const definition: unknown = JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/slack-green-deploys.duty.json"), "utf8"));
   const duty = parseDutyInput(definition, "d-test", NOW);
-  assert.deepEqual(duty.schedule, { kind: "every", minutes: 10 });
+  assert.deepEqual(duty.schedule, { kind: "daily", at: "03:00" });
   assert.deepEqual(duty.metrics.map(metric => metric.key), ["railway_off_main", "vercel_off_main", "source_errors"]);
 });

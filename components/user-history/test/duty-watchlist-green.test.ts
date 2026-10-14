@@ -19,7 +19,7 @@ const green = (): WatchData => ({ now: NOW, errors: [], keys: ["instagram:accoun
 
 test("watchlist green: the duty file parses, and the precheck writes every metric key", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(FILE, "utf8")), "d", NOW);
-  assert.deepEqual(duty.schedule, { kind: "every", minutes: 120 });
+  assert.deepEqual(duty.schedule, { kind: "daily", at: "06:28" });
   assert.equal(duty.precheck.cwd, "../..");
   assert.deepEqual(Object.keys(report(green(), duty.metrics).metrics).sort(), duty.metrics.map(metric => metric.key).sort());
 });
