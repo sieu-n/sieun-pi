@@ -70,10 +70,21 @@ export function withRoster(attached: readonly ChildAgent[], roster: readonly Chi
     if (!row) return child;
     const at = Math.max(child.lastActivityAt ?? -Infinity, row.lastActivityAt ?? -Infinity);
     const running = row.status === "running" && !childWorking(child);
-    if (at === (child.lastActivityAt ?? -Infinity) && !running) return child;
-    return { ...child, ...(Number.isFinite(at) ? { lastActivityAt: at } : {}), ...(running ? { activity: { kind: "executing" as const } } : {}) };
+    const settled = settledLater(child, row);
+    if (at === (child.lastActivityAt ?? -Infinity) && !running && !settled) return child;
+    return { ...child, ...(Number.isFinite(at) ? { lastActivityAt: at } : {}), ...(running ? { activity: { kind: "executing" as const } } : {}),
+      ...(settled ? { status: row.status, ...(row.repliedSinceTask !== undefined ? { repliedSinceTask: row.repliedSinceTask } : {}) } : {}) };
   });
 }
+
+/**
+ * Whether the daemon's row shows a later end of the job than the chat's attached record: the row is newer, the job is not working in either,
+ * and the owner did not cancel it. Its status and `repliedSinceTask` then come from the row. frontend bro 10-14: the chat's record of email list
+ * funnel columns froze at 02:19:44Z with status error and no reply, while the job was woken, worked until 06:14Z and reported, so the cleanup
+ * never deleted it; the daemon's row said done and replied.
+ */
+const settledLater = (child: ChildAgent, row: ChildAgent): boolean => (row.lastActivityAt ?? -Infinity) > (child.lastActivityAt ?? -Infinity) &&
+  row.status !== "running" && !childWorking(child) && child.status !== "cancelled" && (row.status !== child.status || row.repliedSinceTask !== child.repliedSinceTask);
 
 /** The check-in scheduler wakes this often; each chat runs at its own interval, so an interval is kept to within this much. */
 export const CHECK_IN_TICK_MS = 30_000;

@@ -114,3 +114,18 @@ test("a delete the daemon does not answer in time is tried again at the next swe
   assert.ok(lines.includes("chat c1: deleted finished job census write cuts (reported, quiet 1 min, no open step)"), lines.join("\n"));
   chats.close();
 });
+
+test("frontend bro 10-14: a job whose attached record froze at an error is deleted once the daemon's row shows it done and replied later", async () => {
+  // The chat's record of email list funnel columns: status error, no reply, last activity 02:19:44Z. The daemon's row: done, replied, 06:14:17Z.
+  const frozen = job("sub-6fd4ad58", "email list funnel columns", { status: "error", repliedSinceTask: false, lastActivityAt: Date.parse("2026-10-14T02:19:44Z") });
+  const row = job("sub-6fd4ad58", "email list funnel columns", { status: "done", repliedSinceTask: true, lastActivityAt: Date.parse("2026-10-14T06:14:17Z") });
+  const { chats, threads, deletes } = await chat([], [report("email list funnel columns", "Both fixes are done.", Date.parse("2026-10-14T06:14:12Z"))]);
+  (threads as unknown as { isLive(id: string): boolean }).isLive = () => true;
+  threads.fire().live("c1", [frozen]);
+  await chats.settled();
+  await (chats as unknown as { roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> }).roster(new Map([["c1", [row]]]));
+  threads.fire().idle("c1");
+  await chats.settled();
+  assert.deepEqual(deletes(), ["delete c1 sub-6fd4ad58"]);
+  chats.close();
+});
