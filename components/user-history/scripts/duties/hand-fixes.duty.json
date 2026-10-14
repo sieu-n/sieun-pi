@@ -1,0 +1,59 @@
+{
+  "name": "Hand fix designs",
+  "ownerWords": "look, YOUR JOB IS TO MAKE SURE THE SOFTWARE IS DURABLE. 자체적으로 고쳐질 수 있게 설계를 바꾸는게 니 역할이야\n\n문제를 고치는게 아니라 소프트웨어 엔지니어야 너는",
+  "goal": "Every hand fix on prod or staging (a config write, a hand-started process, a thaw, a re-queue, a CI cancel or rerun) maps to a fault in the design list with a live design job, a fault whose design shipped stops needing hand fixes, and no prod-writing loop runs inside an agent session.",
+  "metrics": [
+    {
+      "key": "undesigned_hand_fixes",
+      "label": "Hand fixes in 24 h that match no fault in the design list",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "repeats_after_design",
+      "label": "Hand fixes in 24 h for a fault whose design step is done",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "session_loops_writing",
+      "label": "Agent session processes that write to prod or staging",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "unsupervised_box_processes",
+      "label": "Box processes from docker exec, plus one-off containers left",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "faults_without_job",
+      "label": "Open faults with no live design job and no done design step",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "source_errors",
+      "label": "Data sources this check could not read",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "daily",
+    "at": "10:30"
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/hand-fixes.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "Read the flagged items first. An undesigned hand fix: name its fault, add it to scripts/duties/hand-fixes.faults.json in sieun-pi with detect, correct and prove lines, and start a design job the same turn under p96 (c63). A repeat after a done design: reopen that design step with the hand fix as evidence and message its job. A session loop or a docker exec process: message its owner to move it into a supervised service. A fault without a job: start one under p96. Ship staging changes directly (c50), ask only for prod promotes, merge nothing without his go on that PR (c49), send nothing outside (c37). source_error: fix the read. All on target: end the turn with no message.",
+  "boardGoal": "p96"
+}
