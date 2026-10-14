@@ -1,7 +1,7 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { looksDone, pathLike } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty } from "./shared/chat-duties.ts";
-import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
+import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
   type TargetState, targetText, walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, ScratchItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, owns, parkedBy, plural, quote, STATE_WORD, type StepMemo, stepOwner, type StepView, waitTarget,
@@ -696,7 +696,7 @@ export function gateLine(gate: GateFinding): string {
     case "requirements_missing": return `${head} has Build step ${gate.step.id} doing and ${gate.reason}: have the plan or design job ` +
       "quote each line of the owner's request and check it against the design";
     case "merges_without_go": {
-      const prs = prNumbers(gate.item.text).map(pr => `PR #${pr}`).join(" and ") || "the merge or push";
+      const prs = mergedPrs(gate.item.text).map(pr => `PR #${pr}`).join(" and ") || "the merge or push";
       return `${head} is done, and the board shows no owner go that names ${prs}: a repo rule breach. Tell the owner in this run, and add one ` +
         `For you todo with step "${gate.item.id}" naming ${prs}, choices like "Yes, keep it" and "No, revert it"`;
     }

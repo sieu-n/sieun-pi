@@ -669,27 +669,22 @@ export const tapsFirstChoice = (reply: string, choices: readonly string[] = []):
 /** Whether a todo asks about a plan step: its `step` field, or the step id as a whole word in its text. */
 export const linksStep = (todo: Pick<OwnerTodo, "text" | "step">, stepId: string): boolean =>
   todo.step === stepId || new RegExp(`(?<![\\w-])${stepId}(?![\\w-])`).test(todo.text);
-/** The PR numbers a step names in its text or its waitFor (p57 "merge validated onboarding replay", waitFor "a green re-run of #218"). */
-export const stepPrs = (step: Pick<PlanItem, "text"> & Partial<Pick<PlanItem, "waitFor">>): string[] => prNumbers(`${step.text}\n${step.waitFor ?? ""}`);
+/** A plan step as the go checks read it: its id, text, note and waitFor. */
+type GoStep = Pick<PlanItem, "id" | "text"> & Partial<Pick<PlanItem, "note" | "waitFor">>;
+/** The PR numbers a step names in its text, note or waitFor (p57 "merge validated onboarding replay", waitFor "a green re-run of #218"). */
+export const stepPrs = (step: Omit<GoStep, "id">): string[] => prNumbers(`${step.text}\n${step.note ?? ""}\n${step.waitFor ?? ""}`);
 /**
- * Whether a todo is about a plan step: it links the step (`linksStep`), or its text names a PR the step names (`stepPrs`). slack green guy 10-13:
- * t18 asked fifteen PRs by number but could link only p109, so the check-in read eleven merge steps as having no question in For you.
+ * Whether a todo is about a plan step: it links the step (`linksStep`), or its text or the owner's answer names a PR the step names (`stepPrs`).
+ * slack green guy 10-13: t18 asked fifteen PRs by number but could link only p109, so the check-in read eleven merge steps as having no question
+ * in For you. 10-14: t16 named #247 but linked p71, so p94, which waits for #247, read as at work without the owner's go.
  */
-export const coversStep = (todo: Pick<OwnerTodo, "text" | "step">, step: Pick<PlanItem, "id" | "text"> & Partial<Pick<PlanItem, "waitFor">>): boolean =>
-  linksStep(todo, step.id) || stepPrs(step).some(pr => namesPr(todo.text, pr));
+export const coversStep = (todo: Pick<OwnerTodo, "text" | "step" | "reply">, step: GoStep): boolean =>
+  linksStep(todo, step.id) || stepPrs(step).some(pr => namesPr(`${todo.text}\n${todo.reply ?? ""}`, pr));
 /** Whether an answer is a go or a hold; a reply to a side question on the step ("Leave it in the old history") is neither. */
 const goOrHold = (reply: string, choices: readonly string[]): boolean => {
   const text = choiceLead(reply, choices);
   return HOLD.test(text) || APPROVE.test(text);
 };
-/**
- * The owner's go on a step: the last go-or-hold answer the owner gave on a todo linked to it, when it approves. A later "not yet" takes a go back.
- * A todo that only names one of the step's PRs is no go here, since only `stepGo` on a merge step checks that the go names each PR (c49).
- */
-export function ownerGo(board: Pick<ChatBoard, "todos">, stepId: string): OwnerTodo | null {
-  const last = board.todos.filter(todo => todo.answeredBy === "owner" && linksStep(todo, stepId) && goOrHold(todo.reply ?? "", todo.choices ?? [])).at(-1);
-  return last && approves(last.reply!, last.choices ?? []) ? last : null;
-}
 /*
  * Merges (owner 10-12, c49): "never auto merge anything without my approval". A step whose text merges a PR or a branch, turns on auto-merge or
  * lands code needs the owner's go even when the chat did not mark it, and a go on it counts only when the approving todo names the PR the step
@@ -833,18 +828,37 @@ export const leaveAsk = (todo: Pick<OwnerTodo, "text" | "choices">): boolean =>
 export const LEAVE_ASK_ERROR = `This todo asks the owner for leave on a non-production move. ${GO_WAIT_FIX} Do it, and tell the owner what shipped in a chat message.`;
 /** Whether a step needs the owner's go: the chat marked it, or it is a merge step, and its target is not staging only. */
 export const needsGo = (item: Pick<PlanItem, "go" | "text">): boolean => (item.go === "needed" || mergeStep(item.text)) && !stagingOnly(item.text);
+/** The PRs a merge step merges: the ones its text names, less one it names as replaced ("#236, replaces #207"). */
+export const mergedPrs = (text: string): string[] =>
+  prNumbers(text).filter(pr => !new RegExp(String.raw`\b(?:replac|supersed)\w*\s+(?:PR\s*)?#?${pr}(?!\d)|\binstead\s+of\s+(?:PR\s*)?#?${pr}(?!\d)`, "i").test(text));
 /**
- * The owner's go that counts for this step. On a merge step it is the last go-or-hold answer on a todo about the step (`coversStep`, so t17 is
- * the go of p85 by #231), when that todo is approved (`approvedTodo`), its text names each PR the step's text names, and on a push to main, master or staging it says push or names the branch:
- * the rule the merge guard applies to an OWNER_OK todo. The guard also wants the repo's name, which the command knows and a step may not. Elsewhere `ownerGo`.
+ * The owner's go that counts for this step: of the owner's go-or-hold answers on todos about the step, the last one approves, so a later "not
+ * yet" takes a go back. On most steps a todo is about the step when it covers it (`coversStep`: its step field, the step id in its text, or a PR
+ * the step's text, note or waitFor names in the todo's text or answer), so t16, which names #247 and links p71, is the go of p94, which waits
+ * for #247. A merge step needs that go for each PR it merges (`mergedPrs`): the last answer on a todo that links the step or names the PR in its
+ * text, approved (`approvedTodo`), naming the PR, and on a push to main, master or staging saying push or naming the branch. That is the rule the
+ * merge guard applies to an OWNER_OK todo, which also wants the repo's name, which the command knows and a step may not. A go on a PR the step
+ * only waits for is that PR's merge, not this one: t18 names #234, which p82 waits for, and t17 stays p82's go on #229. A merge step that names
+ * no PR takes the last answer on a todo that covers it.
  */
-export function stepGo(board: Pick<ChatBoard, "todos">, item: Pick<PlanItem, "id" | "text"> & Partial<Pick<PlanItem, "waitFor">>): OwnerTodo | null {
-  if (!mergeStep(item.text)) return ownerGo(board, item.id);
-  const last = board.todos.filter(todo => todo.answeredBy === "owner" && coversStep(todo, item) &&
-    (goOrHold(todo.reply ?? "", todo.choices ?? []) || tapsFirstChoice(todo.reply ?? "", todo.choices ?? []))).at(-1);
+export function stepGo(board: Pick<ChatBoard, "todos">, item: GoStep): OwnerTodo | null {
+  const answered = board.todos.filter(todo => todo.answeredBy === "owner");
+  if (!mergeStep(item.text)) {
+    const last = answered.filter(todo => coversStep(todo, item) && goOrHold(todo.reply ?? "", todo.choices ?? [])).at(-1);
+    return last && approves(last.reply!, last.choices ?? []) ? last : null;
+  }
+  const decides = (todo: OwnerTodo): boolean => goOrHold(todo.reply ?? "", todo.choices ?? []) || tapsFirstChoice(todo.reply ?? "", todo.choices ?? []);
   const branch = pushBranch(item.text);
-  const pushNamed = branch === null || new RegExp(String.raw`\bpush|(?<![\w/-])${branch}(?![\w-])`, "i").test(last?.text ?? "");
-  return last && approvedTodo(last) && prNumbers(item.text).every(pr => namesPr(last.text, pr)) && pushNamed ? last : null;
+  const counts = (todo: OwnerTodo | undefined, pr?: string): todo is OwnerTodo => !!todo && approvedTodo(todo) && (pr === undefined || namesPr(todo.text, pr)) &&
+    (branch === null || new RegExp(String.raw`\bpush|(?<![\w/-])${branch}(?![\w-])`, "i").test(todo.text));
+  const prs = mergedPrs(item.text);
+  if (!prs.length) {
+    const last = answered.filter(todo => coversStep(todo, item) && decides(todo)).at(-1);
+    return counts(last) ? last : null;
+  }
+  const gos = prs.map(pr => answered.filter(todo => (linksStep(todo, item.id) || namesPr(todo.text, pr)) && decides(todo)).at(-1));
+  if (!gos.every((go, index) => counts(go, prs[index]))) return null;
+  return answered.findLast(todo => gos.includes(todo)) ?? null;
 }
 /** Every plan item that needs the owner's go, in board order. */
 export function goSteps(plan: readonly PlanItem[]): PlanItem[] {
@@ -889,7 +903,7 @@ function checkGates(before: ChatBoard, plan: readonly PlanItem[]): void {
       if (MOVES.has(item.status) && prior !== item.status) {
         const held = [...above, item].find(step => needsGo(step) && !stepGo(before, step));
         if (held) {
-          const prs = mergeStep(held.text) ? prNumbers(held.text).map(pr => `#${pr}`) : [];
+          const prs = mergeStep(held.text) ? mergedPrs(held.text).map(pr => `#${pr}`) : [];
           const merge = mergeStep(held.text) ? ` Only his answer on this merge counts${prs.length ? `, on a todo that names ${prs.join(" and ")}` : ""}; ` +
             `a standing "merge once checks pass" go does not.` : " Only the owner's answer counts.";
           throw new BoardError("forbidden", `${item.id} ${quote(item.text)} cannot move to ${item.status}: ${held === item ? "it needs" : `${held.id} ${quote(held.text)} above it needs`} ` +

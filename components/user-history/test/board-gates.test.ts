@@ -8,7 +8,7 @@ import { gateFindings, STALL_MS } from "../src/checkin-findings.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { dutyJobBrief } from "../src/chat-duty-job.ts";
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
-import { AGENT_REPLY_ERROR, applyBoardOp, approves, BoardError, emptyBoard, nextIds, ownerGo, parseBoardOps, renderOpenPlan, requirementGaps } from "../src/shared/chat-board.ts";
+import { AGENT_REPLY_ERROR, applyBoardOp, approves, BoardError, emptyBoard, nextIds, parseBoardOps, stepGo, renderOpenPlan, requirementGaps } from "../src/shared/chat-board.ts";
 import { CHECK_IN_DUTY } from "../src/shared/chat-duties.ts";
 import type { BoardActor, BoardOp, ChatBoard, PlanItem, Requirement } from "../src/shared/types.ts";
 
@@ -23,6 +23,7 @@ function refused(board: ChatBoard, ops: unknown[], pattern: RegExp, actor: Board
   assert.throws(() => run(board, ops, actor), error => error instanceof BoardError && error.kind === "forbidden" && pattern.test(error.message));
 }
 const MET: Requirement[] = [{ text: '"separate designs in separate implementations"', status: "met", evidence: "apps/demo/variants/<name>/ per variant" }];
+const p2Of = (board: ChatBoard): PlanItem => board.plan[0]!.children[0]!;
 /** A goal with a Port step that needs the owner's go, a Build step, and an agent todo t1 that asks for the go on p2. */
 function gated(): ChatBoard {
   return run(emptyBoard(T0), [
@@ -46,7 +47,7 @@ test("owner go: approving answers are a go; holds and refusals are not", () => {
   assert.equal(approves("Go, 5.5 high with no fallback"), false, "typed by hand, the whole reply is read and 'no' holds it");
   const board = run(gated(), [{ op: "todo_add", text: "Put every chat on 5.5 high?", choices, step: "p2" }]);
   const answered = run(board, [{ op: "todo_update", id: "t2", reply: "Go, 5.5 high with no fallback", done: true }], "owner");
-  assert.equal(ownerGo(answered, "p2")?.id, "t2", "the tapped first choice is the owner's go");
+  assert.equal(stepGo(answered, p2Of(answered))?.id, "t2", "the tapped first choice is the owner's go");
 });
 
 test("owner go: the agent cannot move a go-needed step or a step under it to doing or done until the owner answers its todo with a go", () => {
@@ -64,17 +65,17 @@ test("owner go: the agent cannot move a go-needed step or a step under it to doi
   refused(held, [{ op: "plan_update", id: "p2", status: "doing" }], /needs the owner's go/, "agent");
 
   const go = run(board, [{ op: "todo_update", id: "t1", reply: "Go: port it", done: true }], "owner");
-  assert.equal(ownerGo(go, "p2")?.id, "t1");
+  assert.equal(stepGo(go, p2Of(go))?.id, "t1");
   const started = run(go, [{ op: "plan_update", id: "p2", status: "doing" }, { op: "plan_add", parent: "p2", text: "Copy the CSS", status: "doing" }]);
   assert.equal(started.plan[0]!.children[0]!.status, "doing");
   assert.match(renderOpenPlan(started), /\[~\] p2 Port the picked design to the search app \(owner's go on t1\)/);
 
   const takenBack = run(go, [{ op: "todo_add", text: "p2: still port today?", choices: ["Go", "Not yet"] }]);
   const later = run(takenBack, [{ op: "todo_update", id: "t2", reply: "Not yet" }], "owner");
-  assert.equal(ownerGo(later, "p2"), null, "the last owner answer linked by the step id in the text decides");
+  assert.equal(stepGo(later, p2Of(later)), null, "the last owner answer linked by the step id in the text decides");
   const side = run(go, [{ op: "todo_add", text: "Keep the old p2 history?", choices: ["Leave it in the old history", "Erase it from the history"], step: "p2" }]);
   const sideAnswered = run(side, [{ op: "todo_update", id: "t2", reply: "Leave it in the old history", done: true }], "owner");
-  assert.equal(ownerGo(sideAnswered, "p2")?.id, "t1", "an answer to a side question on the step keeps the go");
+  assert.equal(stepGo(sideAnswered, p2Of(sideAnswered))?.id, "t1", "an answer to a side question on the step keeps the go");
   refused(later, [{ op: "plan_update", id: "p2", status: "doing" }], /needs the owner's go/);
 });
 
@@ -88,7 +89,7 @@ test("owner go: only the owner answers; the agent cannot write, clear, re-word o
   assert.equal(run(go, [{ op: "todo_update", id: "t1", done: true }]).todos[0]!.done, true, "the agent may still check it off");
   assert.equal(run(go, [{ op: "todo_remove", id: "t1" }], "owner").todos.length, 0, "the owner's own actions are never refused");
   const old: ChatBoard = { ...board, todos: [{ ...board.todos[0]!, reply: "Go: port it" }] };
-  assert.equal(ownerGo(old, "p2"), null, "an answer with no answeredBy predates the field and is no go");
+  assert.equal(stepGo(old, p2Of(old)), null, "an answer with no answeredBy predates the field and is no go");
   assert.throws(() => parseBoardOps([{ op: "plan_update", id: "p2", go: null }]), BoardError, "the go mark never clears");
   const kept = run(board, [{ op: "plan_set", items: [{ id: "p1", text: "Ship the demo design", children: [{ id: "p2", text: "Port it" }] }] }]);
   assert.equal(kept.plan[0]!.children[0]!.go, "needed", "plan_set keeps the go of an item that keeps its id");
