@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, stepSig } from "../src/chat-checkin.ts";
 import { readyReviews } from "../src/checkin-steps.ts";
 import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderOpenPlan } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
@@ -118,4 +118,46 @@ test("c32: a done Check step under the goal counts as a passed check, and an ope
   const parked = boardOf([connections(step("p115", "You look at the new Connections on Staging", "blocked", "Parked by your rule until you say 5180 is good enough (c40)."))]);
   assert.deepEqual(readyReviews(parked, new Set(["c40"])), [], "a look step parked by an active rule waits");
   assert.deepEqual(readyReviews(boardOf([connections(step("p115", "You look at the new Connections on Staging", "done"))])), [], "a done look step is no ask");
+});
+
+// frontend bro 10-14 12:40 KST: the check-in called p115 ready because p114 passed, but p114 was round 2's walk (done by 10-13 23:52Z), the
+// owner ruled on round 2 at 10-14 00:44Z and asked for round 3, and p115 waits for "round 3's review page". The texts are the ones on that board.
+const WALKED = Date.parse("2026-10-13T23:52:35.161Z");
+const RULED = Date.parse("2026-10-14T00:44:57.642Z");
+const LATER = Date.parse("2026-10-14T03:40:32.516Z");
+const ROUND_2_RULING = { at: RULED, text: "> Connections round 2 is on Staging and ready for you. Every Add uses one button style, nothing is cut off even at narrow widths, " +
+  "the status sentences and Owner…  shit like this, should be actually legit not mock slop (like First address is not needed at all) and more intuitive. can you make it proper " +
+  "overall? one-by-one thorough review." };
+const P115 = step("p115", "You look at the new Connections on Staging and say good or what to change", "blocked",
+  "The review todo goes up with round 3's review page link once its walk passes on a working 5180.");
+const round3 = (look: PlanItem = { ...P115, waitFor: "round 3's review page" }): ChatBoard => boardOf([
+  step("p106", "Connections: multiple accounts per channel, clearer sections, API keys made in place, simpler email setup, and Instagram DM outreach split from the Meta inbox",
+    "doing", "Owner round 3 (10-14): no mock slop and a thorough one-by-one review.", [
+      step("p114", "Walk the Staging Connections page in Aside at 1440x900 with 0 outside requests", "done",
+        "The walk passed with 0 outside requests and 0 console errors, and Staging was re-set."),
+      look,
+    ])]);
+const p114 = (board: ChatBoard): PlanItem => board.plan[0]!.children[0]!;
+/** The memory of a check-in that saw p114 turn done at `walked`. */
+const walkedAt = (board: ChatBoard, walked: number) => ({ at: walked, steps: { p114: { sig: stepSig(p114(board)), at: walked, doneAt: walked } } });
+const readyIds = (board: ChatBoard, walked: number, owner = [ROUND_2_RULING]) =>
+  checkInPrecheck(walkedAt(board, walked), [], board, LATER, { owner }).facts.filter(line => / is ready for the owner: /.test(line)).map(line => line.split(" ")[0]);
+
+test("c32: a review is not ready again when the owner ruled after its walk passed, or when its own wait is not over", () => {
+  assert.deepEqual(readyIds(round3(), WALKED), [], "p115 waits for round 3's review page, and the owner ruled on round 2 after p114 passed");
+  assert.deepEqual(readyIds(round3(P115), WALKED), [], "with no wait, round 2's walk is still older than the owner's round 2 ruling");
+  const board = round3(P115);
+  const memos = walkedAt(board, WALKED).steps;
+  assert.deepEqual(readyReviews(board, undefined, { memos, owner: [] }).map(review => review.look.id), ["p115"], "no ruling yet: round 2's walk is ready");
+  const t30 = { id: "t30", text: "Look at the new Connections on Staging.", done: true, reply: "Needs changes", answeredBy: "owner" as const, step: "p115", from: "agent" as const,
+    at: "2026-10-14T00:10:00.000Z", links: [{ label: "Connections", target: STAGING }] };
+  assert.deepEqual(readyReviews({ ...board, todos: [t30] }, undefined, { memos, owner: [] }), [], "an answered todo on the step, asked after the walk, is a ruling");
+});
+
+test("c32: a walk that passed after the owner's last ruling makes the review ready", () => {
+  const round3Walk = Date.parse("2026-10-14T05:10:00.000Z");
+  assert.deepEqual(readyIds(round3(P115), round3Walk), ["p115"], "round 3's walk passed after the round 2 ruling");
+  assert.deepEqual(readyIds(round3({ ...P115, waitFor: "p114 passes" }), round3Walk), ["p115"], "a wait on the walk step is over once the walk is done");
+  const inbox = { at: round3Walk + 60_000, text: "the Inbox table is nice, ship it" };
+  assert.deepEqual(readyIds(round3(P115), round3Walk, [ROUND_2_RULING, inbox]), ["p115"], "a later message about another page is no ruling on Connections");
 });

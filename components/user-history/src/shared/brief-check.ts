@@ -115,13 +115,16 @@ export function briefCheckNote(job: string, findings: readonly BriefFinding[]): 
     "words, the Split line or the action it takes without waiting. Write your next brief by the Jobs rule.";
 }
 
-/** The messages the owner typed in a chat, oldest first: no server notes and no board actions. */
-export function ownerMessages(messages: readonly ThreadMessage[]): OwnerMessage[] {
+/** What the owner wrote in a chat, oldest first: his messages and his board actions ("[board] Owner checked ... and answered: ..."), no server notes. */
+export function ownerSaid(messages: readonly ThreadMessage[]): OwnerMessage[] {
   return messages.flatMap(message => {
     const text = ownerMessage(message);
-    return text === undefined || text.startsWith(BOARD_PREFIX) ? [] : [{ text, at: message.timestamp }];
+    return text === undefined ? [] : [{ text, at: message.timestamp }];
   });
 }
+
+/** The messages the owner typed in a chat, oldest first: no server notes and no board actions. */
+export const ownerMessages = (messages: readonly ThreadMessage[]): OwnerMessage[] => ownerSaid(messages).filter(message => !message.text.startsWith(BOARD_PREFIX));
 
 const BOARD_ANSWER = " and answered: ";
 /**
