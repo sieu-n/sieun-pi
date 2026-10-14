@@ -64,12 +64,16 @@ export class Wakes {
   private readonly now: () => number;
   constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
 
-  /** One pass: every due wake is delivered and its file removed; a wake whose read or send failed stays for the next tick. Returns the sent count. */
+  /**
+   * One pass: a session's due wakes go out as one message and their files are removed; a wake whose read or send failed stays for the next tick.
+   * Returns the count of sessions messaged. 10-14 12:35 to 12:56Z: release driver held up to 17 wakes due in one tick, each sent as its own
+   * message, and the daemon refused the rest with "too many pending messages: 20 unfinished, limit is 20" every 2 s.
+   */
   async tick(): Promise<number> {
     const names = await readdir(this.deps.dir).catch(() => [] as string[]);
     const now = this.now();
     const states = new Map<number, RunState | null>();
-    let sent = 0;
+    const due = new Map<string, { file: string; wake: Wake; state: RunState | null }[]>();
     for (const name of names.filter(name => name.endsWith(".json")).sort()) {
       const file = join(this.deps.dir, name);
       let wake: Wake | null;
@@ -81,13 +85,18 @@ export class Wakes {
         state = states.get(wake.on.run) ?? null;
         if (!state || !("done" in state) || !state.done) continue;
       } else if (wake.on.at > now) continue;
+      due.set(wake.session, [...due.get(wake.session) ?? [], { file, wake, state }]);
+    }
+    let sent = 0;
+    for (const [session, wakes] of due) {
+      const what = wakes.map(({ wake }) => wake.on.kind === "run" ? `run ${wake.on.run}` : "its time").join(", ");
       try {
-        const result = await this.deps.deliver(wake.session, wakeText(wake, state, now));
-        await rm(file, { force: true });
+        const result = await this.deps.deliver(session, wakes.map(({ wake, state }) => wakeText(wake, state, now)).join("\n"));
+        for (const { file } of wakes) await rm(file, { force: true });
         if (result === "sent") sent++;
-        this.deps.log(`wakes: ${result === "sent" ? "woke" : "dropped, no such session:"} ${wake.session.slice(0, 8)} for ${wake.on.kind === "run" ? `run ${wake.on.run}` : "its time"}, waited ${Math.round((now - wake.since) / 60_000)} min`);
+        this.deps.log(`wakes: ${result === "sent" ? "woke" : "dropped, no such session:"} ${session.slice(0, 8)} for ${what}, waited ${Math.round((now - Math.min(...wakes.map(({ wake }) => wake.since))) / 60_000)} min`);
       } catch (error) {
-        this.deps.log(`wakes: wake ${wake.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
+        this.deps.log(`wakes: wake ${session.slice(0, 8)} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
       }
     }
     for (const run of this.looked.keys()) if (!states.has(run)) this.looked.delete(run);

@@ -79,6 +79,22 @@ test("wakes: a run whose CI cache stamp did not move is read again only after RU
   assert.deepEqual(f.reads, [7, 7, 7]);
 });
 
+test("wakes: a session's wakes due in one tick go out as one message, so a release driver with 17 finished runs is one turn, not 17", async () => {
+  const states = new Map<number, RunState>();
+  const f = await fixture(states);
+  for (let run = 1; run <= 17; run++) {
+    states.set(run, { done: true, conclusion: "success", url: `https://example.test/${run}`, label: "verify-dev.yml" });
+    await f.put(`${SESSION_A}-run-${run}.json`, { session: SESSION_A, on: { kind: "run", run }, note: "", since: NOW });
+  }
+  await f.put(`${SESSION_B}-run-3.json`, { session: SESSION_B, on: { kind: "run", run: 3 }, note: "", since: NOW });
+  assert.equal(await f.wakes.tick(), 2);
+  assert.deepEqual(f.sent.map(({ session }) => session).sort(), [SESSION_A, SESSION_B].sort());
+  const a = f.sent.find(({ session }) => session === SESSION_A)!;
+  assert.equal(a.text.split("\n").length, 17);
+  assert.match(a.text, /^\[wake\] Run 1 finished: success/);
+  assert.deepEqual(await f.files(), []);
+});
+
 test("wakes: a time wake fires at its time and not before", async () => {
   const f = await fixture(new Map());
   const at = Date.parse("2026-10-14T22:30:00Z");
