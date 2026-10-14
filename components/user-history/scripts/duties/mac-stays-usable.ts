@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { footprintBudgetGb, misses, readWatch, TARGET, type TargetPart, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { footprintBudgetGb, misses, readWatch, TARGET, type TargetPart, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -71,8 +71,16 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
     budget_gb_now: latest ? footprintBudgetGb(latest) : 0,
     worker_gb_over_budget_now: latest ? Math.round((latest.workerGb - footprintBudgetGb(latest)) * 100) / 100 : 0,
     watched_min_1h: hour.length,
+    kernel_waiters_1h: 0,
   };
   const flagged: FlaggedSlice[] = [];
+  const waiters = new Map<number, WaiterLine>();
+  for (const line of hour) for (const waiter of line.waiters ?? []) waiters.set(waiter.pid, waiter);
+  metrics.kernel_waiters_1h = waiters.size;
+  for (const waiter of waiters.values()) {
+    flagged.push({ kind: "kernel_waiter", item: String(waiter.pid), excerpt: `${waiter.tree}, job ${waiter.job}, pid ${waiter.pid}, \`${waiter.command}\`, ` +
+      `${waiter.ageMin ?? "?"} min: a background wait in a kernel; the chat was asked to move it to board.wake.` });
+  }
   const top = PARTS.reduce<TargetPart | null>((best, part) => missMinutes[part].length > (best ? missMinutes[best].length : 0) ? part : best, null);
   if (top) {
     flagged.push({ kind: "top_miss", item: top, excerpt: `Top miss: ${PART_WORDS[top]} in ${missMinutes[top].length} of ${hour.length} minutes. ` +

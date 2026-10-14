@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
-import { footprintBudgetGb, type Footprints, misses, readFootprints, readWatch, sample, TARGET, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { askWaiters, footprintBudgetGb, type Footprints, misses, readFootprints, readWatch, sample, TARGET, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import { longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
@@ -110,7 +111,7 @@ test("measure: the share on target over 1 h and 24 h, the minutes each part miss
     : watch(minute))];
   const { metrics, flagged } = measure(lines, NOW);
   assert.deepEqual(metrics, { on_target_pct_1h: 66.7, on_target_pct_24h: 65.6, footprint_miss_min_1h: 8, idle_miss_min_1h: 12, queue_miss_min_1h: 0, off_streak_max_1h: 20,
-    worker_gb_now: 4, budget_gb_now: 4.53, worker_gb_over_budget_now: -0.53, watched_min_1h: 60 });
+    worker_gb_now: 4, budget_gb_now: 4.53, worker_gb_over_budget_now: -0.53, watched_min_1h: 60, kernel_waiters_1h: 0 });
   assert.deepEqual(flagged!.find(item => item.kind === "top_miss"), { kind: "top_miss", item: "idle",
     excerpt: "Top miss: working sessions quiet over 30 min in 12 of 60 minutes. Chat trees behind it: VP of CI 2 sessions." });
   assert.match(flagged!.find(item => item.kind === "alert")!.excerpt, /^The harness side was off target 20 minutes in a row, /);
@@ -129,7 +130,44 @@ test("measure: an alert at 10 minutes off target in a row and none at 9; a gap i
   const gap = [...Array.from({ length: 5 }, (_, minute) => off(minute)), ...Array.from({ length: 5 }, (_, minute) => off(10 + minute))];
   assert.equal(longestOffStreak(gap).minutes, 5);
   assert.deepEqual(measure([], NOW), { metrics: { on_target_pct_1h: 0, on_target_pct_24h: 0, footprint_miss_min_1h: 0, idle_miss_min_1h: 0, queue_miss_min_1h: 0,
-    off_streak_max_1h: 0, worker_gb_now: 0, budget_gb_now: 0, worker_gb_over_budget_now: 0, watched_min_1h: 0 }, flagged: [{ kind: "no_watch", excerpt: "The Mac usable watch wrote no line in the last hour: the chat service is down or runs a release without the watch." }] });
+    off_streak_max_1h: 0, worker_gb_now: 0, budget_gb_now: 0, worker_gb_over_budget_now: 0, watched_min_1h: 0, kernel_waiters_1h: 0 }, flagged: [{ kind: "no_watch", excerpt: "The Mac usable watch wrote no line in the last hour: the chat service is down or runs a release without the watch." }] });
+});
+
+// ops guy, 10-14 15:3xZ: two kernel waits pinned workers. pid 12634 in launch main bro's job 'watch read errors' and pid 25528 in the main
+// dev thread's job 'wp-engage-crawl'.
+const WAITER_ROWS = [
+  row("lmb", { sessionName: "***launch main bro***", workerPid: 4042 }),
+  row("01a13918-bc49-751b-b701-c33d1e99f838", { parentSessionId: "lmb", sessionName: "watch read errors", activity: "working", workerPid: 4042 }),
+  row("dev", { sessionName: "**** main dev thread ***", workerPid: 48062 }),
+  row("01a0f7cb-3ae2-71ae-8656-c20e725a3599", { parentSessionId: "dev", sessionName: "wp-engage-crawl", activity: "working", workerPid: 48062 }),
+];
+const WAITERS = [
+  { pid: 12634, kernel: 64730, session: "01a13918-bc49-751b-b701-c33d1e99f838", command: "/bin/bash /Users/sieunpark/.local/bin/gh run watch 38589314491 --interval 180", age_s: 331 },
+  { pid: 25528, kernel: 2701, session: "01a0f7cb-3ae2-71ae-8656-c20e725a3599", command: "/bin/sh /Users/sieunpark/.cache/virev/pinned/ci-cache-60542b39bbd1/scripts/dev/ci-run-status.sh 38579579684 --wait", age_s: 4288 },
+];
+
+test("waiters: the helper's pattern takes both 10-14 kernel waits and not plain commands; the line names each one's job and chat; each chat is asked once per pid, a thread never, and the duty lists both", async () => {
+  const helper = join(import.meta.dirname, "../src/worker-footprint.py");
+  const matched = execFileSync("/usr/bin/python3", ["-B", "-c", `import importlib.util,json,sys
+spec=importlib.util.spec_from_file_location("wf", sys.argv[1]); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(json.dumps([bool(m.WAITER.search(c)) for c in json.loads(sys.argv[2])]))`, helper, JSON.stringify([...WAITERS.map(waiter => waiter.command), "sleep 600", "sleep 5",
+    "/bin/sh ci-run-status.sh 38579579684", "gh run view 38589314491 --json conclusion", "gh pr checks 12 --watch"])], { encoding: "utf8" });
+  assert.deepEqual(JSON.parse(matched), [true, true, true, false, false, false, true]);
+  const line = watchLine({ now: NOW, rows: WAITER_ROWS, footprints: { ...FOOTPRINTS, waiters: WAITERS }, queue: null, chats: new Set(["lmb"]), title: () => null, cpuMs: 0 });
+  assert.deepEqual(line.waiters!.map(waiter => [waiter.pid, waiter.tree, waiter.job, waiter.ageMin]),
+    [[12634, "***launch main bro***", "watch read errors", 6], [25528, "**** main dev thread ***", "wp-engage-crawl", 71]]);
+  const dir = await mkdtemp(join(tmpdir(), "mac-usable-waiters-"));
+  await mkdir(join(dir, "mac-usable"), { recursive: true });
+  const sent: [string, string][] = [];
+  const source = { dataDir: dir, log: () => {}, notify: async (chat: string, text: string) => { sent.push([chat, text]); } };
+  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW), ["12634"], "the thread is no chat, so only launch main bro is asked");
+  assert.match(sent[0]![1], /^\[job\] watch read errors \(session 01a13918\) holds its kernel and worker in `.*gh run watch 38589314491 --interval 180` \(pid 12634\) for 6 min\. .*board\.wake/);
+  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + MIN), [], "asked once per pid");
+  assert.deepEqual(await askWaiters(source, [], new Set(["lmb"]), NOW + 2 * MIN), []);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, "mac-usable", "waiters-asked.json"), "utf8")), {}, "a waiter that ended leaves the record");
+  const { metrics, flagged } = measure([watch(59, { waiters: line.waiters })], NOW);
+  assert.equal(metrics.kernel_waiters_1h, 2);
+  assert.deepEqual(flagged!.filter(item => item.kind === "kernel_waiter").map(item => item.item), ["12634", "25528"]);
 });
 
 test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics the precheck gives, with the owner's words verbatim", async () => {

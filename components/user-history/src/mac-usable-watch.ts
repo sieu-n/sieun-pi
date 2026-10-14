@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { JOB_NOTICE_PREFIX } from "./shared/chat-feed.ts";
 import type { AgentQueueReading } from "./shared/types.ts";
 
 /**
@@ -55,6 +56,8 @@ export interface WatchLine {
   /** Live sessions that ended their task (`taskState` needs_input) and sit idle, chats left out. */
   finished: number; finishedTrees: TreeCount[];
   queue: QueueLine | null;
+  /** Background waiters in job kernels (gh run watch, ci-run-status --wait, long sleeps) that board.wake would replace; absent on older lines. */
+  waiters?: WaiterLine[];
   /** Context only, from sysctl: swap in use and kern.memorystatus_vm_pressure_level (1 normal, 2 warn, 4 critical). */
   mac: { swapGb: number | null; pressureLevel: number | null };
   /** CPU this sample cost: the service's own work plus the footprint helper's. */
@@ -74,7 +77,11 @@ function parseRow(value: unknown): Row | null {
 }
 
 /** What the footprint helper (src/worker-footprint.py) prints. */
-export interface Footprints { workers: Record<string, { pids: number; bytes: number }>; swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
+export interface Footprints { workers: Record<string, { pids: number; bytes: number }>; waiters?: RawWaiter[]; swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
+/** A command that only waits on CI or a clock under a job's kernel (worker-footprint.py `WAITER`), with the session its kernel serves. */
+export interface RawWaiter { pid: number; kernel: number; session: string; command: string; age_s: number | null }
+/** A waiter with the job and chat tree that own it. */
+export interface WaiterLine { pid: number; command: string; ageMin: number | null; session: string; job: string; root: string; tree: string }
 
 const round = (value: number, places = 2): number => Math.round(value * 10 ** places) / 10 ** places;
 
@@ -138,6 +145,12 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     idleOver: idleOver.length, idleTrees: topTrees(idleOver, tree),
     finished: finished.length, finishedTrees: topTrees(finished, tree),
     queue,
+    waiters: (input.footprints.waiters ?? []).map(waiter => {
+      const row = byId.get(waiter.session);
+      const owner = row ? tree(row) : { root: waiter.session, tree: input.title(waiter.session) ?? waiter.session.slice(0, 8) };
+      return { pid: waiter.pid, command: waiter.command, ageMin: waiter.age_s === null ? null : Math.round(waiter.age_s / 60), session: waiter.session,
+        job: row?.name ?? input.title(waiter.session) ?? waiter.session.slice(0, 8), root: owner.root, tree: owner.tree };
+    }),
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
   };
@@ -209,6 +222,42 @@ export interface WatchSource {
   log: (line: string) => void;
   footprints?: typeof readFootprints;
   now?: () => number;
+  /** Sends a chat one notice line (the hub's notice, for a chat that is attached); absent, no chat is asked. */
+  notify?: (chat: string, line: string) => Promise<void>;
+}
+
+/** The line that asks a chat to move its job's background wait to board.wake. */
+export function waiterLine(waiter: WaiterLine): string {
+  const age = waiter.ageMin === null ? "" : ` for ${waiter.ageMin} min`;
+  return `${JOB_NOTICE_PREFIX}${waiter.job} (session ${waiter.session.slice(0, 8)}) holds its kernel and worker in \`${waiter.command}\` (pid ${waiter.pid})${age}. ` +
+    "Tell it to end that wait and set board.wake for the CI run or time instead, so the service wakes it and its worker can rest.";
+}
+
+/**
+ * Asks each waiter's chat once per waiter pid (`<dataDir>/mac-usable/waiters-asked.json`, pruned to the waiters still running). A waiter
+ * whose chat is not one of `chats` (a plain thread) or that `notify` fails for is asked again next minute.
+ */
+export async function askWaiters(source: Pick<WatchSource, "dataDir" | "notify" | "log">, waiters: readonly WaiterLine[], chats: ReadonlySet<string>, now: number): Promise<string[]> {
+  if (!source.notify) return [];
+  const file = join(source.dataDir, "mac-usable", "waiters-asked.json");
+  const asked: Record<string, number> = JSON.parse(await readFile(file, "utf8").catch(() => "{}"));
+  const kept: Record<string, number> = {};
+  const sent: string[] = [];
+  for (const waiter of waiters) {
+    const key = String(waiter.pid);
+    if (asked[key] !== undefined) { kept[key] = asked[key]; continue; }
+    if (!chats.has(waiter.root)) continue;
+    try {
+      await source.notify(waiter.root, waiterLine(waiter));
+      kept[key] = now;
+      sent.push(key);
+    } catch (error) {
+      source.log(`mac usable watch: ask ${waiter.root.slice(0, 8)} about pid ${waiter.pid}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  await writeFile(file + ".tmp", JSON.stringify(kept));
+  await rename(file + ".tmp", file);
+  return sent;
 }
 
 /** Takes one sample and appends its line; null when the catalog holds no rows yet. */
@@ -228,6 +277,7 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const file = watchFile(source.dataDir, now());
   await mkdir(join(source.dataDir, "mac-usable"), { recursive: true });
   await appendFile(file, JSON.stringify(measured) + "\n");
+  await askWaiters(source, measured.waiters ?? [], chats, now());
   return measured;
 }
 

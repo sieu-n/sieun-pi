@@ -49,6 +49,12 @@
       "op": "<=",
       "target": 0,
       "unit": " GB"
+    },
+    {
+      "key": "kernel_waiters_1h",
+      "label": "Background waiters in job kernels in the last hour",
+      "op": "<=",
+      "target": 0
     }
   ],
   "schedule": {
