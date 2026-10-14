@@ -224,9 +224,14 @@ export interface WatchSource {
   now?: () => number;
   /** Sends a chat one notice line (the hub's notice, for a chat that is attached); absent, no chat is asked. */
   notify?: (chat: string, line: string) => Promise<void>;
+  /** Sends a root that is not a chat (a plain thread) the line as a message through the daemon; absent, no thread is asked. */
+  message?: (root: string, line: string) => Promise<void>;
 }
 
-/** The line that asks a chat to move its job's background wait to board.wake. */
+/** Waiter pids whose ask failed and was logged, so a retry each minute logs nothing new. */
+const failedAsks = new Set<string>();
+
+/** The line that asks a chat or thread to move its job's background wait to board.wake. */
 export function waiterLine(waiter: WaiterLine): string {
   const age = waiter.ageMin === null ? "" : ` for ${waiter.ageMin} min`;
   return `${JOB_NOTICE_PREFIX}${waiter.job} (session ${waiter.session.slice(0, 8)}) holds its kernel and worker in \`${waiter.command}\` (pid ${waiter.pid})${age}. ` +
@@ -234,11 +239,12 @@ export function waiterLine(waiter: WaiterLine): string {
 }
 
 /**
- * Asks each waiter's chat once per waiter pid (`<dataDir>/mac-usable/waiters-asked.json`, pruned to the waiters still running). A waiter
- * whose chat is not one of `chats` (a plain thread) or that `notify` fails for is asked again next minute.
+ * Asks each waiter's tree once per waiter pid (`<dataDir>/mac-usable/waiters-asked.json`, pruned to the waiters still running): a chat by a
+ * notice line (`notify`), a plain thread's root by a daemon message (`message`), since its waiter pins its worker the same. A waiter whose ask
+ * fails is asked again next minute, and its failure is logged once.
  */
-export async function askWaiters(source: Pick<WatchSource, "dataDir" | "notify" | "log">, waiters: readonly WaiterLine[], chats: ReadonlySet<string>, now: number): Promise<string[]> {
-  if (!source.notify) return [];
+export async function askWaiters(source: Pick<WatchSource, "dataDir" | "notify" | "message" | "log">, waiters: readonly WaiterLine[], chats: ReadonlySet<string>, now: number): Promise<string[]> {
+  if (!source.notify && !source.message) return [];
   const file = join(source.dataDir, "mac-usable", "waiters-asked.json");
   const asked: Record<string, number> = JSON.parse(await readFile(file, "utf8").catch(() => "{}"));
   const kept: Record<string, number> = {};
@@ -246,13 +252,15 @@ export async function askWaiters(source: Pick<WatchSource, "dataDir" | "notify" 
   for (const waiter of waiters) {
     const key = String(waiter.pid);
     if (asked[key] !== undefined) { kept[key] = asked[key]; continue; }
-    if (!chats.has(waiter.root)) continue;
+    const send = chats.has(waiter.root) ? source.notify : source.message;
+    if (!send) continue;
     try {
-      await source.notify(waiter.root, waiterLine(waiter));
+      await send(waiter.root, waiterLine(waiter));
       kept[key] = now;
       sent.push(key);
     } catch (error) {
-      source.log(`mac usable watch: ask ${waiter.root.slice(0, 8)} about pid ${waiter.pid}: ${error instanceof Error ? error.message : String(error)}`);
+      if (!failedAsks.has(key)) source.log(`mac usable watch: ask ${waiter.root.slice(0, 8)} about pid ${waiter.pid}: ${error instanceof Error ? error.message : String(error)}`);
+      failedAsks.add(key);
     }
   }
   await writeFile(file + ".tmp", JSON.stringify(kept));

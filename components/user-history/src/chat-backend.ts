@@ -181,7 +181,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const stopWatch = options.ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     queue: queueReading, log: dutyLog,
-    notify: async (chat, line) => { if (!threads.isLive(chat)) throw new Error("the chat is not attached"); await threads.notice(chat, line); } });
+    notify: async (chat, line) => { if (!threads.isLive(chat)) throw new Error("the chat is not attached"); await threads.notice(chat, line); },
+    message: async (root, line) => {
+      const active = (await catalog.summary(root))?.activeSessionId;
+      if (!active) throw new Error("the thread is not loaded");
+      await catalog.connect();
+      const response = await catalog.client.request({ type: "send_message", targetActiveSessionId: active, message: line }, 30_000, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+    } });
   const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog,
     deliver: async (session, text) => {
       await catalog.connect();
