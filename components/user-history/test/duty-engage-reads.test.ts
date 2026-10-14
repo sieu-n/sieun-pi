@@ -68,6 +68,7 @@ test("engage reads: a rate is proven by a canary's worth of accounts on 2 consec
   assert.equal(provenRate(days, [death(20, { at, pages24h: 300 })], 10), null, "a verdict at 300 pages unproves both rates that day");
   assert.deepEqual(provenRate(days, [death(20, { at, pages24h: 300, code: "transport" })], 10)?.rate, 2000, "our own freeze is no verdict");
   assert.equal(provenRate(days, [death(20, { at: Date.parse("2026-10-13T08:00:00Z"), pages24h: 400 })], 10), null, "a later verdict at 400 pages withdraws both");
+  assert.equal(provenRate(days, [death(20, { at, pages24h: 0 })], 10)?.rate, 2000, "a verdict after 0 pages in 24 h says nothing about a rate");
 });
 
 test("engage reads: kills split by cause and by canary, a move between dead statuses is one kill, and the 24 h line holds", async () => {

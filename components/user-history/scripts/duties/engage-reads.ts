@@ -126,7 +126,9 @@ const nextDay = (day: string): string => new Date(Date.parse(`${day}T00:00:00Z`)
  * The highest pages a day one account is proven to read safely. A rate R is proven over PROOF_DAYS consecutive full UTC days when on each of
  * them at least `cohort` accounts (a canary's worth) read R pages or more, and every Instagram verdict from the first of those days on hit an
  * account that read more than R in the 24 h before it: a verdict at v pages unproves every rate of v or more, so a canary death at a higher
- * rate leaves a lower rate proven. The rates tried are the day totals accounts read. Returns the best rate and its days, or null.
+ * rate leaves a lower rate proven. A verdict on an account that read no page in its last 24 h says nothing about a read rate and is left out
+ * (prod 55 and 74 on 10-12: every read answered 302 to login, so they read 0 pages before Instagram killed the session). The rates tried are
+ * the day totals accounts read. Returns the best rate and its days, or null.
  */
 export function provenRate(days: readonly DayPages[], deaths: readonly Death[], cohort: number): { rate: number; days: string[] } | null {
   if (cohort < 1) return null;
@@ -140,7 +142,7 @@ export function provenRate(days: readonly DayPages[], deaths: readonly Death[], 
     while (run.length < PROOF_DAYS && byDay.has(nextDay(run.at(-1)!))) run.push(nextDay(run.at(-1)!));
     if (run.length < PROOF_DAYS) continue;
     const start = Date.parse(`${first}T00:00:00Z`);
-    const unsafe = Math.min(Infinity, ...verdicts.filter(death => death.at >= start).map(death => death.pages24h));
+    const unsafe = Math.min(Infinity, ...verdicts.filter(death => death.at >= start && death.pages24h > 0).map(death => death.pages24h));
     const rates = run.map(day => byDay.get(day)!.slice(cohort - 1).find(pages => pages < unsafe));
     if (rates.some(rate => rate === undefined)) continue;
     const rate = Math.min(...rates as number[]);
