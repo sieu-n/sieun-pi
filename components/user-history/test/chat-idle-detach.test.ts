@@ -133,16 +133,34 @@ test("thread hub: a tab opening a dormant chat attaches it again, and the tab's 
   const close = await fake.threads.subscribe("c1", event => { events.push(event.type); });
   assert.equal(await fake.live("c1"), true);
   assert.deepEqual(events, ["snapshot", "snapshot"], "the saved state at once, then the live snapshot");
-  fake.at(T0 + 300 * MIN);
-  await fake.rest();
-  assert.equal(fake.threads.isLive("c1"), true, "an open tab holds the chat");
+  fake.at(T0 + 120 * MIN);
   close();
-  fake.at(T0 + 300 * MIN + 89 * MIN);
+  fake.at(T0 + 120 * MIN + 89 * MIN);
   await fake.rest();
   assert.equal(fake.threads.isLive("c1"), true);
-  fake.at(T0 + 300 * MIN + 90 * MIN);
+  fake.at(T0 + 120 * MIN + 90 * MIN);
   await fake.rest();
   assert.equal(fake.threads.isLive("c1"), false);
+  await fake.threads.close();
+});
+
+test("thread hub: an open tab does not hold an idle chat: it detaches at its idle time from the tab's open, and the tab gets the snapshot when a message wakes it (frontend bro 10-14: a tab open from 16:02Z held its 4.3 GB worker through a 74 min idle spell)", async () => {
+  const fake = await attached(hub());
+  fake.at(T0 + 30 * MIN);
+  const tab: ThreadEvent[] = [];
+  await fake.threads.subscribe("c1", event => { tab.push(event); });
+  fake.at(T0 + 30 * MIN + 89 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isLive("c1"), true, "opening the tab counts as activity");
+  fake.at(T0 + 30 * MIN + 90 * MIN);
+  await fake.rest();
+  assert.equal(fake.threads.isDormant("c1"), true, "the open tab does not hold the chat");
+  assert.equal(fake.connections[0]!.disposed, true, "the hub's daemon client is gone, so the daemon can evict the worker");
+  const before = tab.length;
+  await fake.threads.prompt("c1", { message: "status?", images: [], mode: "steer" });
+  assert.equal(fake.threads.isLive("c1"), true);
+  assert.deepEqual(fake.connections[1]!.prompts, ["status?"]);
+  assert.ok(tab.slice(before).some(event => event.type === "snapshot"), "the open tab gets the live snapshot after the wake");
   await fake.threads.close();
 });
 
