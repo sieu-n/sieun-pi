@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultDaemonSocketPath, getAgentDir, SettingsManager } from "prime-agent";
 import { BoardStore } from "./chat-board-store.ts";
@@ -32,7 +33,7 @@ import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./sh
 import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
 import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
-import { readGrafanaAlerts, startAlertBridge } from "./alert-bridge.ts";
+import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -207,6 +208,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   };
   const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
   const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"), alerts: () => readGrafanaAlerts(join(dataDir, "grafana-alerts.json")),
+    owners: () => readOwnersFor(join(dataDir, "grafana-alerts.json"), homedir()), hasBoard: async session => (await boards.read(session)) !== null,
     boards, log: dutyLog, ...agentMessage });
   const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync.unref();

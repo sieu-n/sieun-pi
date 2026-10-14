@@ -4,7 +4,9 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ALERT_GOAL, AlertBridge, alertKey, parseAlerts, REWAKE_MS, type FiringAlert } from "../src/alert-bridge.ts";
+import { execFileSync } from "node:child_process";
+import { rm, writeFile } from "node:fs/promises";
+import { ALERT_GOAL, AlertBridge, alertKey, ESCALATE_MS, OWNERS_PATH, ownerRoute, parseAlerts, parseOwners, readOwners, REWAKE_MS, routerFor, type FiringAlert, type OwnerMap } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES, routeAlert } from "../src/alert-routes.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { walkItems } from "../src/shared/chat-board.ts";
@@ -17,6 +19,9 @@ const CRAWLER = chat("Crawler VP");
 const CI = chat("VP of CI");
 const LAUNCH = chat("launch main bro");
 const OPS = chat("ops guy");
+const OWNERS_TEXT = readFileSync(new URL("./fixtures/alert-owners.json", import.meta.url), "utf8");
+const OWNERS: OwnerMap = parseOwners(JSON.parse(OWNERS_TEXT));
+const METAL = OWNERS.owners["metal box owner"]!;
 const REPLAY = readFileSync(new URL("./fixtures/alert-replay-crawler-snapshot-down-20261014.json", import.meta.url), "utf8");
 
 function raw(fingerprint: string, labels: Record<string, string>, extra: Record<string, unknown> = {}) {
@@ -26,7 +31,7 @@ function raw(fingerprint: string, labels: Record<string, string>, extra: Record<
 }
 const ciAlert = raw("aaaa000000000001", { alertname: "CI runner queue over 30 min", __alert_rule_uid__: "ci-queue-wait", environment: "production" });
 
-async function fixture(list: unknown[] = []) {
+async function fixture(list: unknown[] = [], options: { owners?: OwnerMap; boardless?: readonly string[] } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "alert-bridge-"));
   const boards = new BoardStore(dir);
   let now = NOW;
@@ -35,6 +40,7 @@ async function fixture(list: unknown[] = []) {
   const failing = new Set<string>();
   const bridge = new AlertBridge({ file: join(dir, "alert-bridge.json"), boards, now: () => now, log: () => {},
     alerts: async () => alerts && parseAlerts(alerts),
+    owners: async () => options.owners ?? null, hasBoard: async session => !options.boardless?.includes(session),
     deliver: async (session, text) => {
       if (failing.has(session)) throw new Error("Timed out waiting for daemon worker response");
       sent.push({ session, text });
@@ -232,4 +238,99 @@ test("alert bridge: a replay of crawler-prod-health-snapshot-down from 2026-10-1
   assert.match(step!.note!, /Grafana: https:\/\/obs\.virev\.ai\/alerting\/grafana\/crawler-prod-health-snapshot-down\/view$/);
   assert.deepEqual(f.sent.map(({ session }) => session), [CRAWLER]);
   for (const other of ALERT_ROUTES.filter(route => route.session !== CRAWLER)) assert.equal(await f.boards.read(other.session), null);
+});
+
+const OWNER_CASES: [Record<string, string>, string][] = [
+  [{ __alert_rule_uid__: "crawler-acquisitions-writer-lag" }, "Instagram Main"],
+  [{ __alert_rule_uid__: "crawler-acquisitions-writer-lag-stg" }, "Instagram Main"],
+  [{ __alert_rule_uid__: "crawler-prod-census-crawl-lag-seconds", box: "us-metal01" }, "Instagram Main"],
+  [{ __alert_rule_uid__: "crawler-acquisitions-quarantine-stg" }, "crawler ops"],
+  [{ __alert_rule_uid__: "metal-box-stop-silent", box: "us-metal01" }, "metal box owner"],
+  [{ __alert_rule_uid__: "a-rule-added-later", box: "us-metal01" }, "metal box owner"],
+  [{ __alert_rule_uid__: "mac-silent-mbp" }, "ops guy"],
+  [{ __alert_rule_uid__: "hyperdx-error-logs", service: "crawler-v3" }, "crawler ops"],
+  [{ __alert_rule_uid__: "hyperdx-error-logs", service: "search" }, "ops guy"],
+  [{ __alert_rule_uid__: "hyperdx-error-logs" }, "ops guy"],
+  [{ __alert_rule_uid__: "metal-backup-ch-redis-age", alertname: "ClickHouse or Redis backup older than 9h, or ClickHouse full older than 26h", box: "us-metal01", grafana_folder: "metal" }, "metal box owner"],
+  [JSON.parse(REPLAY)[0].labels as Record<string, string>, "crawler ops"],
+];
+
+test("alert owners: owners.json routes match ops/alert-relay/owners.mjs ownerFor case for case, first route whose every label pattern matches wins", () => {
+  for (const [labels, owner] of OWNER_CASES) assert.deepEqual(ownerRoute(labels, OWNERS), { owner, session: OWNERS.owners[owner] }, JSON.stringify(labels));
+  assert.equal(ownerRoute({}, OWNERS), null);
+  assert.throws(() => parseOwners({ ...JSON.parse(OWNERS_TEXT), fallback: "nobody" }), /names owner "nobody", which has no session/);
+});
+
+test("alert owners: an alert owners.json does not match, or any alert when the file is missing, goes by the keyword routes and then to ops guy", () => {
+  const alert = (labels: Record<string, string>) => parseAlerts([raw("eeee000000000001", labels)])[0]!;
+  const test = alert({ alertname: "launch-alert-bridge-test", __alert_rule_uid__: "launch-alert-bridge-test", environment: "test" });
+  assert.equal(routerFor(OWNERS)(test), LAUNCH);
+  assert.equal(routerFor(OWNERS)(alert({ alertname: "Something new", __alert_rule_uid__: "brand-new-rule" })), OPS);
+  assert.equal(routerFor(OWNERS)(alert({ alertname: "Backup", __alert_rule_uid__: "metal-backup-x", box: "us-metal01" })), METAL);
+  assert.equal(routerFor(null)(alert({ alertname: "Backup", __alert_rule_uid__: "metal-backup-x", box: "us-metal01" })), OPS);
+});
+
+test("alert owners: owners.json is read fresh from the checkout, and from a git ref while the checkout has no copy", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "alert-owners-"));
+  const env = { ...process.env, GIT_DIR: undefined, GIT_INDEX_FILE: undefined, GIT_WORK_TREE: undefined, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  const sh = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, stdio: "pipe" });
+  sh("init", "-q");
+  assert.equal(await readOwners(repo, ["HEAD"]), null);
+  execFileSync("mkdir", ["-p", join(repo, "ops/alert-relay")]);
+  await writeFile(join(repo, OWNERS_PATH), OWNERS_TEXT);
+  sh("add", OWNERS_PATH);
+  sh("commit", "-q", "-m", "owners");
+  const ref = sh("rev-parse", "HEAD").toString().trim();
+  await rm(join(repo, OWNERS_PATH));
+  assert.deepEqual(await readOwners(repo, ["origin/main", ref]), OWNERS);
+  await writeFile(join(repo, OWNERS_PATH), JSON.stringify({ ...JSON.parse(OWNERS_TEXT), fallback: "metal box owner" }));
+  assert.equal((await readOwners(repo, [ref]))!.fallback, "metal box owner");
+});
+
+test("alert bridge: an owner with no board, such as metal box owner, gets one message with the alert's labels and link and no step, re-wake or escalation", async () => {
+  const backup = raw("ffff000000000001", { alertname: "Backup too old", __alert_rule_uid__: "metal-backup-ch-redis-age", box: "us-metal01" });
+  const f = await fixture([backup], { owners: OWNERS, boardless: [METAL] });
+  await f.bridge.tick();
+  assert.equal(await f.boards.read(METAL), null);
+  assert.deepEqual(f.sent.map(({ session }) => session), [METAL]);
+  assert.match(f.sent[0]!.text, /^\[alert\] A Grafana alert you own started firing: "Backup too old is firing\." \(Backup too old, firing since 2026-10-14T01:00Z, labels __alert_rule_uid__=metal-backup-ch-redis-age, box=us-metal01, https:\/\/obs\.virev\.ai\/alerting\/grafana\/metal-backup-ch-redis-age\/view\)/);
+  for (const at of [REWAKE_MS, ESCALATE_MS, 3 * REWAKE_MS]) { f.at(NOW + at); await f.bridge.tick(); }
+  assert.equal(f.sent.length, 1);
+  f.set([]);
+  await f.bridge.tick();
+  assert.deepEqual((await f.state()).alerts, {});
+  assert.equal(f.sent.length, 1);
+});
+
+test("alert bridge: a step still open with no job 30 min after its first wake sends ops guy one escalation, and never for a step a job owns or ops guy's own", async () => {
+  const devbox = raw("dddd000000000009", { alertname: "Dev box swap low", job: "devbox" });
+  const f = await fixture([ciAlert, devbox]);
+  await f.bridge.tick();
+  const [step] = await f.steps(CI);
+  f.sent.length = 0;
+  f.at(NOW + ESCALATE_MS - 30_000);
+  await f.bridge.tick();
+  assert.equal(f.sent.filter(({ text }) => text.startsWith("[alert-escalation]")).length, 0);
+  f.at(NOW + ESCALATE_MS);
+  await f.bridge.tick();
+  const escalations = f.sent.filter(({ text }) => text.startsWith("[alert-escalation]"));
+  assert.equal(escalations.length, 1);
+  assert.equal(escalations[0]!.session, OPS);
+  assert.match(escalations[0]!.text, new RegExp(`^\\[alert-escalation\\] An alert step is still open with no job 30 min after the alert bridge first woke the chat that owns it: ${step!.id} "CI runner queue over 30 min is firing\\." on VP of CI`));
+  for (const at of [2, 3, 4]) { f.at(NOW + at * ESCALATE_MS); await f.bridge.tick(); }
+  assert.equal(f.sent.filter(({ text }) => text.startsWith("[alert-escalation]")).length, 1);
+
+  const g = await fixture([ciAlert]);
+  await g.bridge.tick();
+  await g.boards.apply(CI, [{ op: "plan_update", id: (await g.steps(CI))[0]!.id, job: "ci queue fix", status: "doing" }], "agent");
+  g.at(NOW + 2 * ESCALATE_MS);
+  await g.bridge.tick();
+  assert.equal(g.sent.filter(({ text }) => text.startsWith("[alert-escalation]")).length, 0);
+});
+
+test("alert bridge: an alert labelled severity=test makes no step and no message", async () => {
+  const f = await fixture([raw("abab000000000001", { alertname: "Relay test", job: "ci", severity: "test" })]);
+  await f.bridge.tick();
+  assert.equal(await f.boards.read(CI), null);
+  assert.equal(f.sent.length, 0);
 });

@@ -1,0 +1,54 @@
+{
+	"owners": {
+		"metal box owner": "01a11d24-ac9b-757d-ac51-9b2b7598782f",
+		"crawler ops": "01a115e2-9544-7204-b8db-8ce4d5319048",
+		"Instagram Main": "01a10db0-4784-72fc-bbfd-6b22b3d1a4f4",
+		"ops guy": "01a11af8-962e-773d-a19a-ee4104011987"
+	},
+	"fallback": "ops guy",
+	"routes": [
+		{
+			"name": "crawler and census services in the shared ERROR logs rule",
+			"match": {
+				"__alert_rule_uid__": "^hyperdx-error-logs$",
+				"service": "crawler|census"
+			},
+			"owner": "crawler ops"
+		},
+		{
+			"name": "Instagram census rules and acquisitions writer lag",
+			"match": {
+				"__alert_rule_uid__": "census|^crawler-acquisitions-writer-lag"
+			},
+			"owner": "Instagram Main"
+		},
+		{
+			"name": "box backups, restores, host, runners, stop loop, containers and stores",
+			"match": {
+				"__alert_rule_uid__": "^(metal-backup-|metal-restore-|langfuse-backup-|metal-host-|metal-box-|metal-runner-|metal-aws-egress-|metal-(prod|stg)-(container|store)-|estate-)"
+			},
+			"owner": "metal box owner"
+		},
+		{
+			"name": "crawler-v3 lanes and supply",
+			"match": {
+				"__alert_rule_uid__": "^(crawler-|corpus-|engage-|b2-|ig-jobs-|enrichment-|poison-quarantine-|metal-(prod|stg)-crawler-health$)"
+			},
+			"owner": "crawler ops"
+		},
+		{
+			"name": "ops tooling, dev boxes, Macs, CLIProxy, Langfuse and app health",
+			"match": {
+				"__alert_rule_uid__": "^(devbox-|mac-|metal-cliproxy-|langfuse-|metal-triage-agent-|golden-|api-portal-|http-|otel-|error-fingerprint-|hyperdx-|svc-down$|worker-stalled$)"
+			},
+			"owner": "ops guy"
+		},
+		{
+			"name": "any other rule on us-metal01",
+			"match": {
+				"box": "^us-metal01$"
+			},
+			"owner": "metal box owner"
+		}
+	]
+}
