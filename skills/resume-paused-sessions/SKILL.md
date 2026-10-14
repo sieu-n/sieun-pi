@@ -5,9 +5,9 @@ description: "Use when a network drop, sleep, or restart stopped Prime runs. Fin
 
 # Resume paused sessions
 
-An interrupted run sits `idle` and looks finished. Nothing restarts it except a heartbeat or a message.
+An interrupted run sits `idle` and looks finished. Only a heartbeat or a message restarts it.
 
-Resume only the head session. The head gets `continue` plus the list of its stopped runs, and it re-drives its children. Do not message the children too, because they would then work in parallel with a head that does not know they restarted.
+Resume the head session only. The head gets `continue` plus the list of its stopped runs, and it re-drives its children. Do not message the children too, because they would then work in parallel with a head that does not know they restarted.
 
 ## Run the script
 
@@ -23,15 +23,17 @@ The script reads `prime-agent list --json` and the tail of each live session fil
 - The last message is an empty model reply that asked for a tool.
 - The run shows `working` but did nothing for 30 minutes, or for 120 minutes inside one tool call.
 
-It skips runs that were aborted or archived, runs older than `--since-minutes` (default 1440), runs whose head got a user message after the stop, and runs it already resumed. It records resumed runs in `~/.prime/agent/resume-paused-sessions.json`. It also skips a run until `pi-pool who` names an account that can serve its tree, because resuming earlier fails again at once.
+It skips runs that were aborted or archived, runs older than `--since-minutes` (default 1440), runs whose head got a user message after the stop, and runs it already resumed. It records resumed runs in `~/.prime/agent/resume-paused-sessions.json`. It also holds back a run until `pi-pool who` names an account that can serve its tree, because an earlier resume fails again at once.
 
 Each run maps to its head through `parentActiveSessionId`. An idle head gets the message plus the list of stopped runs below it. A working head gets the list as a steer note. A working head with no stopped children is skipped.
 
+The other flags are `--message`, `--since-minutes 0` for no age limit, `--include-children` (use it only when the user asks), `--state` and `--json`.
+
+## Hung runs and dead workers
+
 A message cannot reach a hung run. Abort it first, then pass its full session id with `--unstuck <id,id>`. The sieun-pi chat Resume button does both steps (`components/user-history/src/chat-resume.ts`).
 
-A run whose Prime worker died (`workerState` is `failed` in `prime-agent list --json`) takes no abort, stop or message; each answers "Session worker is failed". The script lists it as `worker_failed` and never messages its head. Reopen the head from its saved file (a daemon `create` with its `sessionPath`, which the chat Resume button and a pinned chat both do); the daemon then drops the dead worker and starts the head on a new one.
-
-The other flags are `--message`, `--since-minutes 0` for no age limit, `--include-children` (use it only when the user asks), `--state` and `--json`.
+A run whose Prime worker died shows `workerState` `failed` in `prime-agent list --json`. It takes no abort, stop or message, and each one answers "Session worker is failed". The script lists it as `worker_failed` and skips any head whose own worker died. Reopen that head from its saved file with a daemon `create` that passes its `sessionPath`, then run the script again. The daemon drops the dead worker and starts the head on a new one. The chat Resume button and a pinned chat both do the reopen.
 
 ## Verify
 
@@ -46,4 +48,4 @@ prime-agent list --json                       # sessions, sessionFile, parentAct
 prime-agent send --json <12-char-id> continue # deliveryStatus: delivered, deliveryMode: steer
 ```
 
-The 12-char id is the last 12 characters of the session UUID. Do not send `continue` to a run whose last message ended with `stopReason: "stop"` or `aborted`, or to a run that failed on a 400 request error or stopped days ago.
+The 12-char id is the last 12 characters of the session UUID. Do not send `continue` to a run whose last message ended with `stopReason: "stop"` or `aborted`. Do not send it to a run that failed on a 400 request error or stopped days ago.

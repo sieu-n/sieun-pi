@@ -10,12 +10,11 @@ Read the `aside-browser` skill for the REPL API and its limits.
 
 ## Linear
 
+- `push()` and `upload_image()` import Prime's `linear` integration module, so a push fails when `import linear` fails in the kernel.
 - Discover the current Linear tool schemas first, because field names differ between issues, milestones, and comments.
-- `push()` uploads images through `upload_image()`, which uses the attachment flow and returns the asset URL.
-- `push()` reads the issue back and returns any autolinked tokens; fix them and push again.
-- Linear autolinks file names and domains, so wrap them in backticks.
-- Linear renders Markdown tables and code fences but not Mermaid.
-- Call `linear_ticket.check()` without `await`.
+- `push()` uploads each `assets/` image through `upload_image()`, which uses the attachment upload flow and returns the asset URL.
+- `push()` reads the issue back and returns any autolinked tokens, and you fix them and push again.
+- Linear renders Markdown tables and code fences.
 
 ## Linked spec page
 

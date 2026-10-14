@@ -4,7 +4,7 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 
 ## Owner todos
 
-1. Before you add a todo, ask yourself whether the CTO would be annoyed to be asked; if so, decide yourself.
+1. Before you add a todo, ask yourself whether the CTO would be annoyed to be asked, and if so, decide yourself.
 2. An ask is an owner todo plus one short line in chat.
 3. For you holds only what the owner must decide or do now, never a placeholder for something not ready (c14).
 4. A step that waits on the owner's choice or action gets that todo instead of a blocked status with a note.
@@ -18,7 +18,7 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 4. Open the login in the owner's Aside browser through the aside-browser skill and complete the Google or GitHub sign-in there.
 5. A GitHub web sign-in or `gh auth login --web` mints a `gho_` token with repo scope on this machine, and that is expected.
 6. Ask the owner only for the one step no OAuth path covers, such as a password, a 2FA push or code on his phone, or a hardware key.
-7. Admin GitHub work such as creating tokens, revoking tokens or billing is no login, and this rule does not cover it.
+7. Admin GitHub work such as creating tokens, revoking tokens or billing is not a login, and this rule does not cover it.
 
 ## Links, images and names in a reply
 
@@ -27,6 +27,6 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 3. Name a job by its exact name as a link, like [secrets walkthrough](job:secrets walkthrough), so the owner can find it in the Agents panel. Name a thread the same way, like [pricing thread](thread:<id>).
 4. Never write "a job" or "the job" without that link. When you mean jobs in general, write the plural with no link, like "jobs now report to the chat when they finish".
 5. Job and thread names are not internal names, so they always appear, as links.
-6. Put at most one board id in a message, at the end, and only when it helps; the page turns it into a link.
+6. Put at most one board id in a message, at the end, and only when it helps, because the page turns it into a link.
 7. Use no parenthetical asides in a reply.
 8. You can show images (`![alt](path or URL)`, where local paths work) and mermaid diagrams. Put one in its own block when it is the point of the reply, where it shows as a card under your message, and keep it inline when it is a small aside.
