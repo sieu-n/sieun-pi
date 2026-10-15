@@ -71,16 +71,11 @@ function deps(over: { health?: string | Error; files?: Record<string, string | u
   const files: Record<string, string | undefined> = { "/c.json": JSON.stringify(CORRECTIONS), "/h.json": JSON.stringify(HARNESS), "/l.json": JSON.stringify(LEDGER), ...over.files };
   const exec: Exec = async (file, args, options) => {
     calls.push({ file, args, cwd: options.cwd });
-    if (file === "/bin/node") { const health = over.health ?? JSON.stringify(HEALTH); if (health instanceof Error) throw health; return health; }
+    if (file === "/bin/node") { const health = over.health ?? JSON.stringify({ ...HEALTH, stale: over.stale ?? STALE }); if (health instanceof Error) throw health; return health; }
     if (file === "git") { if (over.git) throw over.git; if (args.includes("--format=%x1e%ct")) return GIT_REFS; return args[1] === "/wiki" ? GIT_WIKI : GIT_PI; }
     throw new Error(`unexpected ${file}`);
   };
-  const getJson = async (url: string): Promise<unknown> => {
-    calls.push({ file: "GET", args: [url], cwd: "" });
-    if (over.stale instanceof Error) throw over.stale;
-    return over.stale ?? STALE;
-  };
-  return { now: NOW, exec, node: "/bin/node", calls, getJson, wikiUrl: "http://wiki", repos: { wiki: "/wiki", pi: "/pi" }, files: { corrections: "/c.json", harness: "/h.json", ledger: "/l.json" },
+  return { now: NOW, exec, node: "/bin/node", calls, repos: { wiki: "/wiki", pi: "/pi" }, files: { corrections: "/c.json", harness: "/h.json", ledger: "/l.json" },
     readText: async path => { const text = files[path]; if (text === undefined) throw new Error(`ENOENT ${path}`); return text; } };
 }
 const run = (at: number, verdict: DutyRunRecord["verdict"]): DutyRunRecord => ({ duty: "d4", at, trigger: "schedule", ms: 1, verdict, metrics: {}, summary: "" });
@@ -154,7 +149,6 @@ test("wiki dream: measures every contract metric from the inputs", async () => {
   const health = d.calls.find(call => call.file === "/bin/node")!;
   assert.deepEqual([health.cwd, health.args], ["/wiki", ["apps/llm-wiki/scripts/wiki-health.mjs", "--since", new Date(NOW - DAY).toISOString()]]);
   assert.deepEqual(d.calls.filter(call => call.file === "git").map(call => call.args[1]), ["/wiki", "/pi", "/wiki"]);
-  assert.deepEqual(d.calls.find(call => call.file === "GET")!.args, ["http://wiki/api/agent/stale"]);
   const plans = { lint: glide(LINT_GLIDE, NOW), memory: glide(MEMORY_GLIDE, NOW) };
   assert.deepEqual(plans, { lint: 235, memory: 276 });
   assert.deepEqual(result.metrics, {
@@ -181,12 +175,12 @@ test("wiki dream: an unreadable input counts in source_errors and writes 999999 
   const noGit = await measureDream(deps({ git: new Error("not a git repository") }), []);
   assert.deepEqual([noGit.metrics.dream_reverts, noGit.metrics.pages_retouched, noGit.metrics.pages_behind_code, noGit.metrics.wiki_problems, noGit.metrics.source_errors],
     [UNMEASURED, UNMEASURED, UNMEASURED, UNMEASURED, 3]);
-  const noStale = await measureDream(deps({ stale: new Error("/api/agent/stale answered 502") }), []);
+  const noStale = await measureDream(deps({ stale: {} }), []);
   assert.deepEqual([noStale.metrics.pages_behind_code, noStale.metrics.wiki_problems, noStale.metrics.dead_links, noStale.metrics.source_errors], [UNMEASURED, UNMEASURED, 4, 1]);
-  const partial = await measureDream(deps({ health: JSON.stringify({ ...HEALTH, facts: { dead_links: 1 } }) }), []);
+  const partial = await measureDream(deps({ health: JSON.stringify({ ...HEALTH, stale: STALE, facts: { dead_links: 1 } }) }), []);
   assert.deepEqual([partial.metrics.dead_links, partial.metrics.hub_orphans, partial.metrics.lint_over_glide], [1, UNMEASURED, UNMEASURED]);
   assert.equal(partial.metrics.source_errors, 6);
-  const lintDown = await measureDream(deps({ health: JSON.stringify({ ...HEALTH, errors: ["prose-lint"], facts: { ...HEALTH.facts, lint_failing_pages: null, lint_errors: null } }) }), []);
+  const lintDown = await measureDream(deps({ health: JSON.stringify({ ...HEALTH, stale: STALE, errors: ["prose-lint"], facts: { ...HEALTH.facts, lint_failing_pages: null, lint_errors: null } }) }), []);
   assert.deepEqual([lintDown.metrics.lint_over_glide, lintDown.metrics.dead_links, lintDown.metrics.source_errors], [UNMEASURED, 4, 1], "a null fact is unmeasured; the named input is the one error");
   assert.match(lintDown.flagged![0]!.excerpt, /could not read prose-lint/);
 });
@@ -207,9 +201,9 @@ test("wiki dream: the checked-in duty file parses, and its metrics are the ones 
 test("wiki dream: a judged metric left unmeasured fails the run with the inputs that failed; the duty judges exactly JUDGED_METRICS", async () => {
   const ok = await measureDream(deps(), []);
   assert.equal(unmeasuredReason(ok), null);
-  const down = await measureDream(deps({ health: new Error("timed out after 100 s"), stale: new Error("The operation was aborted due to timeout") }), []);
+  const down = await measureDream(deps({ health: new Error("timed out after 100 s") }), []);
   assert.equal(down.metrics.wiki_problems, UNMEASURED);
-  assert.match(unmeasuredReason(down) ?? "", /^could not measure wiki_problems, dup_unjudged: wiki-health\.mjs: timed out after 100 s; \/api\/agent\/stale: The operation was aborted/);
+  assert.match(unmeasuredReason(down) ?? "", /^could not measure wiki_problems, dup_unjudged: wiki-health\.mjs: timed out after 100 s$/);
   const file = JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/wiki-dream.duty.json"), "utf8")) as { metrics: { key: string }[] };
   assert.deepEqual(file.metrics.map(metric => metric.key).sort(), [...JUDGED_METRICS].sort());
 });

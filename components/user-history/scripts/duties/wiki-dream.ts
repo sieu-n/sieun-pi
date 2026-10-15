@@ -11,7 +11,8 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
  * - the mistake signal comes from the owner corrections ledger and the continual-harness memories and refinements made since the last run;
  * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back;
  * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which files the dream edited twice in 7 days;
- * - the wiki's `/api/agent/stale` list plus `git log` in auto-sns-agent say which pages are behind their code (pagesBehindCode).
+ * - wiki-health's stale list plus `git log` in auto-sns-agent say which pages are behind their code (pagesBehindCode).
+ * wiki-health judges the pages as committed at HEAD, so an uncommitted page edit in the shared checkout neither hides nor adds a problem.
  * The headline `wiki_problems` adds up the sync problems the owner asked to keep at 0; the run detail file keeps every other number.
  * An input it cannot read counts in `source_errors` and writes 999999 for the metrics that input feeds, so the run misses and says why.
  */
@@ -37,10 +38,6 @@ export interface DreamDeps {
   readText: (path: string) => Promise<string>;
   /** The node binary that runs wiki-health.mjs. */
   node: string;
-  /** GETs a URL and parses its JSON; throws on a non-2xx answer. */
-  getJson: (url: string) => Promise<unknown>;
-  /** The wiki server, http://localhost:5176 unless WIKI_URL says otherwise. */
-  wikiUrl: string;
   repos: { wiki: string; pi: string };
   files: { corrections: string; harness: string; ledger: string };
 }
@@ -55,6 +52,8 @@ export interface Health {
   errors: string[];
   dupPairs: { a: string; b: string; score: number }[];
   signals: { path: string; phrase: string; excerpt?: string }[];
+  /** The engine's stale report over the committed pages, read by parseStale. */
+  stale: unknown;
 }
 export interface LedgerClass {
   title?: string; skill?: string; gap?: string; status?: string; firstSeen?: string; fixCommit?: string; fixedAt?: string;
@@ -103,6 +102,7 @@ export function parseHealth(text: string): Health {
     items: list<HealthItem>(value.items, row => typeof row.kind === "string" && typeof row.path === "string"),
     dupPairs: list<Health["dupPairs"][number]>(value.dupPairs, row => typeof row.a === "string" && typeof row.b === "string" && typeof row.score === "number"),
     signals: list<Health["signals"][number]>(value.signals, row => typeof row.path === "string" && typeof row.phrase === "string"),
+    stale: value.stale,
   };
 }
 
@@ -152,10 +152,10 @@ export function churn(commits: readonly DreamCommit[]): { reverts: DreamCommit[]
   return { reverts, retouched };
 }
 
-/** One page of `GET /api/agent/stale`: the engine lists a page when a `source_refs` file's mtime is after its `last_verified` day. */
+/** One page of wiki-health's `stale` report: the engine lists a page when a `source_refs` file's mtime is after its `last_verified` day. */
 export interface StalePage { path: string; last_verified: string; staleRefs: { ref: string; modified: string }[] }
 export function parseStale(value: unknown): StalePage[] {
-  if (!isRecord(value) || !Array.isArray(value.stale)) throw new Error("/api/agent/stale gave no stale list");
+  if (!isRecord(value) || !Array.isArray(value.stale)) throw new Error("wiki-health gave no stale list");
   return value.stale.filter(isRecord).filter(row => typeof row.path === "string" && typeof row.last_verified === "string" && Array.isArray(row.staleRefs))
     .map(row => ({ path: row.path as string, last_verified: row.last_verified as string,
       staleRefs: (row.staleRefs as unknown[]).filter(isRecord).filter(ref => typeof ref.ref === "string").map(ref => ({ ref: ref.ref as string, modified: String(ref.modified ?? "") })) }));
@@ -289,7 +289,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
       { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }, error => { gitOk = false; fail(`git log ${name}`, error); });
   }
 
-  const stalePages = await deps.getJson(`${deps.wikiUrl}/api/agent/stale`).then(parseStale, error => fail("/api/agent/stale", error));
+  const stalePages = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
   let behind: ReturnType<typeof pagesBehindCode> | undefined;
   if (stalePages) {
     const refs = [...new Set(stalePages.flatMap(page => page.staleRefs.map(ref => ref.ref)))];
@@ -379,20 +379,13 @@ const execNoShell: Exec = (file, args, options) => new Promise((done, failed) =>
   });
 });
 
-const getJsonOnce = async (url: string): Promise<unknown> => {
-  const response = await fetch(url, { signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`${url} answered ${response.status}`);
-  return response.json() as Promise<unknown>;
-};
-
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("wiki-dream: OUTPUT_FILE is not set\n"); process.exit(2); }
   const home = homedir();
   const lastRuns = await readFile(process.env.LAST_RUNS_FILE ?? "", "utf8").then(text => JSON.parse(text) as unknown, () => []);
   const deps: DreamDeps = {
-    now: Date.now(), exec: execNoShell, readText: path => readFile(path, "utf8"), node: process.execPath, getJson: getJsonOnce,
-    wikiUrl: process.env.WIKI_URL || "http://localhost:5176",
+    now: Date.now(), exec: execNoShell, readText: path => readFile(path, "utf8"), node: process.execPath,
     repos: { wiki: process.env.LLM_WIKI_REPO || join(home, "Documents/Github/auto-sns-agent"), pi: process.env.SIEUN_PI_REPO || join(home, "Documents/Github/sieun-pi") },
     files: {
       corrections: join(home, ".prime/agent/browser-chat/corrections.json"),
