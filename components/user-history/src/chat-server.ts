@@ -800,7 +800,7 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
         case "older": await backend.threads.older(id); break;
         case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;
         case "board": {
-          // The owner's side of the chat board: todo and scratchpad ops. The chat then gets a steer that says in plain words what the owner did.
+          // The owner's side of the chat board: todo ops. The chat then gets a steer that says in plain words what the owner did.
           if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");
           let applied: Awaited<ReturnType<typeof backend.boards.apply>>;
           try {

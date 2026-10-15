@@ -135,8 +135,6 @@ export interface Requirement { text: string; status: RequirementStatus; evidence
  * (`.../#<sessionId>@<timestamp>`) is stored as its `thread:` form.
  */
 export interface ArtifactLink { label: string; target: string }
-/** One scratchpad note: short text, optionally with links to what it is about, and notes nested under it to any depth. */
-export interface ScratchItem { id: string; text: string; links: ArtifactLink[]; at: string; children: ScratchItem[] }
 /**
  * Something only the owner can give: a decision, a login, an approval. `choices` are the answers the agent offers (first one is its
  * recommendation); the owner taps one or writes `reply`.
@@ -150,7 +148,7 @@ export interface OwnerTodo {
   /** The pages the owner opens to answer it; a review ask needs one here or an http URL in its text (`reviewAskWithoutLink`). */
   links?: ArtifactLink[];
 }
-export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; scratch: ScratchItem[]; todos: OwnerTodo[]; updatedAt: string }
+export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; todos: OwnerTodo[]; updatedAt: string }
 export type BoardActor = "agent" | "owner";
 /** The gate fields a plan op can set: `go` only to "needed" (it never clears), `kind` and `requirements` (null clears them on plan_update). */
 type GateInput = { go?: "needed"; kind?: "build"; requirements?: Requirement[] };
@@ -162,9 +160,6 @@ export type BoardOp =
   | { op: "plan_update"; id: string; parent?: string | null; text?: string; status?: PlanStatus; job?: string | null; sessionId?: string | null; note?: string | null; waitUntil?: string | null;
       waitFor?: string | null; go?: "needed"; kind?: "build" | null; requirements?: Requirement[] | null; target?: GoalTarget | null; duty?: string | null }
   | { op: "plan_remove"; id: string }
-  | { op: "scratch_add"; parent?: string; text: string; links?: ArtifactLink[] }
-  | { op: "scratch_update"; id: string; text?: string; links?: ArtifactLink[] }
-  | { op: "scratch_remove"; id: string }
   | { op: "todo_add"; text: string; choices?: string[]; step?: string; links?: ArtifactLink[] }
   | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null; links?: ArtifactLink[] }
   | { op: "todo_remove"; id: string };

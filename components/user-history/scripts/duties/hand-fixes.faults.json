@@ -45,8 +45,7 @@
       "owner": "metal (01a11d24) and each lane owner; the 10-14 20:19Z slice stop (s224) came from prod IO, which the census gauge Index Only Scan fix 98c14dbd1a removes",
       "match": {
         "config_reason_regex": "^watch_proxy abort|watch --act|box stop|left on with no owner",
-        "mac_process_regex": "(guard|watch|stop_loop|monitor|back_\\d+_after).*\\.py",
-        "note_regex": "stopped the (CI )?slice|started it by hand"
+        "mac_process_regex": "(guard|watch|stop_loop|monitor|back_\\d+_after).*\\.py"
       }
     },
     {
@@ -60,8 +59,7 @@
         "box_exec_regex": "acquisition-writer",
         "config_key_prefixes": [
           "throttle.watch_claims_per_tick"
-        ],
-        "note_regex": "hand-started.{0,40}writer|writers?.{0,60}hand-started|second (prod )?acquisition.writer"
+        ]
       }
     },
     {
@@ -77,8 +75,7 @@
           "watch.",
           "pause.watch",
           "pause.jobs"
-        ],
-        "note_regex": "Check now|operator refresh|re-queued|priority 9"
+        ]
       }
     },
     {
@@ -99,8 +96,7 @@
         "config_key_prefixes": [
           "pause.engage",
           "proxy_endpoints.gateway"
-        ],
-        "note_regex": "thaw|rebind|re-bind|bind pass|set to (disabled|challenged)"
+        ]
       }
     },
     {
@@ -111,7 +107,6 @@
       ],
       "owner": "VP of CI (01a1180e), CI keeper Fable (01a0cc5e)",
       "match": {
-        "note_regex": "cancell?(ed)? \\d+ runs|ghost|re-?push|\\brerun|\\breran\\b|\\bhold\\d+\\b",
         "mac_process_regex": "prio_loop|rwd\\d"
       },
       "done_at": "2026-10-14T22:06:26Z"
@@ -127,8 +122,7 @@
       "owner": "metal (01a11d24), release owner (01a10810)",
       "match": {
         "config_reason_regex": "docker update|deploy recreates",
-        "box_container_regex": "oneoff|one-off|copy",
-        "note_regex": "back .{0,40}by hand|config hash"
+        "box_container_regex": "oneoff|one-off|copy"
       }
     },
     {
@@ -140,9 +134,7 @@
         "p90"
       ],
       "owner": "Instagram Main, watchlist all green",
-      "match": {
-        "note_regex": "false gone|false profile_not_found|recheck"
-      }
+      "match": {}
     },
     {
       "id": "F9",
@@ -179,9 +171,7 @@
         "01a1180e-6567-747f-bf44-452520ebdd1b/p156"
       ],
       "owner": "VP of CI",
-      "match": {
-        "note_regex": "rotate|clear text|printed .* key"
-      }
+      "match": {}
     },
     {
       "id": "F12",
@@ -190,9 +180,7 @@
         "p98"
       ],
       "owner": "Instagram Main, duty d1",
-      "match": {
-        "note_regex": "staging read nothing|queued staging"
-      }
+      "match": {}
     },
     {
       "id": "F13",
@@ -224,7 +212,6 @@
   "exempt": {
     "config_reason_regex": "^owner: \"|A/B|^Owner order",
     "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec is the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, daily timer 02:30Z), so it is not a hand-started process. A board note on a d3 run or the d3 precheck reports this duty's own work, not a hand fix.",
-    "note_regex": "self-heal|hand fix audit|design job|Durable software|\\bd3('s)? (first )?run\\b|\\bd3 precheck\\b",
     "box_exec_regex": "\\.venv/bin/python - 3600 8$"
   }
 }

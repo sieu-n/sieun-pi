@@ -157,16 +157,15 @@ test("staging needs no go: a step whose only target is staging moves without the
 
 test("merge gate: the owner's own board actions are never refused", () => {
   const board = run(merges(), [{ op: "todo_add", text: "Merge PR #123?", choices: ["Go", "Not yet"], step: "p2" }]);
-  const owner = run(board, [{ op: "todo_add", text: "merge #124 too" }, { op: "scratch_add", text: "merges wait for me" }, { op: "todo_update", id: "t1", reply: "Not yet", done: true },
+  const owner = run(board, [{ op: "todo_add", text: "merge #124 too" }, { op: "todo_update", id: "t1", reply: "Not yet", done: true },
     { op: "todo_remove", id: "t2" }], "owner");
   assert.equal(owner.todos.length, 1);
-  assert.equal(owner.scratch.length, 1);
 });
 
 test("merge gate: the check-in lists a merge step done without the owner's go as merges_without_go, a repo rule breach", async () => {
   const NOW = Date.parse("2026-10-12T12:00:00Z");
   const step = (id: string, text: string, status: PlanItem["status"]): PlanItem => ({ id, text, status, children: [] });
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW - 3_600_000).toISOString(), scratch: [], plan: [{ ...step("p1", "Ship the scheduler", "doing"), children: [
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW - 3_600_000).toISOString(), plan: [{ ...step("p1", "Ship the scheduler", "doing"), children: [
     step("p2", "Merge PR #123", "done"), step("p3", "Land PR #124", "done"), step("p4", "Fix merge conflicts on PR #125", "done"), step("p5", "Merge PR #126", "todo")] }],
     todos: [{ id: "t1", text: "Land PR #124?", done: true, from: "agent", at: "", choices: ["Go", "Not yet"], step: "p3", reply: "Go", answeredBy: "owner" },
       { id: "t2", text: "Merge once checks pass?", done: true, from: "agent", at: "", step: "p2", reply: "yes", answeredBy: "owner" }] };

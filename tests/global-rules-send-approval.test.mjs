@@ -26,7 +26,7 @@ test.after(() => {
 const CHAT = "01a00000-0000-7000-8000-0000000000c3";
 const at = "2026-10-10T00:00:00.000Z";
 const todo = (id, extra) => ({ id, text: "Send this reply to support@vendor.example?", choices: ["Send it", "Not yet"], from: "agent", at, ...extra });
-writeFileSync(join(data, "boards", `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], scratch: [], updatedAt: at, todos: [
+writeFileSync(join(data, "boards", `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], updatedAt: at, todos: [
   todo("t1", { done: true, reply: "Send it", answeredBy: "owner" }),
   todo("t2", { done: true, reply: "Not yet", answeredBy: "owner" }),
   todo("t3", { done: false }),

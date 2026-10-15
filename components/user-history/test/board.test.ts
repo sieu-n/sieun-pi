@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardActionText, countItems, rowDetails, focusPlan, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, openAgentTodos, parentIds, planProgress, planTotals, planWait, ROOT, shortTitle, stepAgent, stepAgentTitle, treeRows, type TreeRow } from "../src/client/board.ts";
-import type { ChatAgent, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../src/shared/types.ts";
+import { boardActionText, rowDetails, focusPlan, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, openAgentTodos, parentIds, planProgress, planTotals, planWait, ROOT, shortTitle, stepAgent, stepAgentTitle, treeRows, type TreeRow } from "../src/client/board.ts";
+import type { ChatAgent, ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
 
 const item = (id: string, status: PlanItem["status"], children: PlanItem[] = []): PlanItem => ({ id, text: id, status, children });
-const note = (id: string, children: ScratchItem[] = []): ScratchItem => ({ id, text: id, links: [], at: "2026-10-06T00:00:00Z", children });
 const line = (row: TreeRow<{ id: string }>): string => row.kind === "item" ? `${"  ".repeat(row.depth)}${row.item.id}` : `${"  ".repeat(row.depth)}[${row.shown ? "hide" : "show"} done ${row.count} of ${row.parent}]`;
 
 test("treeRows: every parent starts folded; an opened parent shows its children; done and dropped steps hide until Show done is on for their parent", () => {
@@ -29,11 +28,7 @@ test("treeRows: every parent starts folded; an opened parent shows its children;
   assert.deepEqual(treeRows([], { open: () => true, showDone: () => true }, isFinished), []);
 });
 
-test("treeRows over notes never hides anything; countItems and planTotals count the whole tree", () => {
-  const notes = [note("s1", [note("s2", [note("s3")])]), note("s4")];
-  const open = new Set(["s1"]);
-  assert.deepEqual(treeRows(notes, { open: id => open.has(id), showDone: () => false }).map(line), ["s1", "  s2", "s4"]);
-  assert.equal(countItems(notes), 4);
+test("planTotals counts the whole tree", () => {
   assert.deepEqual(planTotals([item("p1", "done", [item("p2", "dropped"), item("p3", "todo")]), item("p4", "done")]), { done: 2, total: 3 });
   assert.deepEqual(planTotals([]), { done: 0, total: 0 });
 });
@@ -67,7 +62,7 @@ test("groupTodos splits open from done, newest first in each", () => {
 });
 
 test("openAgentTodos counts only open asks from the agent, and an empty board is one with nothing on it", () => {
-  const board: ChatBoard = { v: 2, rev: 3, plan: [], scratch: [], updatedAt: "2026-10-06T00:00:00Z", todos: [
+  const board: ChatBoard = { v: 2, rev: 3, plan: [], updatedAt: "2026-10-06T00:00:00Z", todos: [
     { id: "t1", text: "a", done: false, from: "agent", at: "2026-10-06T00:00:00Z" },
     { id: "t2", text: "b", done: true, from: "agent", at: "2026-10-06T00:00:00Z" },
     { id: "t3", text: "c", done: false, from: "owner", at: "2026-10-06T00:00:00Z" },
@@ -76,7 +71,6 @@ test("openAgentTodos counts only open asks from the agent, and an empty board is
   assert.equal(openAgentTodos(null), 0);
   assert.equal(isEmptyBoard(null), true);
   assert.equal(isEmptyBoard({ ...board, todos: [] }), true);
-  assert.equal(isEmptyBoard({ ...board, todos: [], scratch: [{ id: "s1", text: "note", links: [], at: "2026-10-06T00:00:00Z", children: [] }] }), false);
   assert.equal(isEmptyBoard(board), false);
 });
 
@@ -99,25 +93,14 @@ test("linkLabel falls back to the raw target when it does not parse", () => {
   assert.equal(linkLabel("nothing"), "nothing");
 });
 
-test("offeredLink takes the last word of a draft that is a link target and leaves the rest as the note", () => {
-  assert.deepEqual(offeredLink("see http://127.0.0.1:5182/x/#01a112e2-f720-75db-b51a-84cfbdbcffa0@1759780000000 later"),
-    { text: "see later", target: "thread:01a112e2-f720-75db-b51a-84cfbdbcffa0@1759780000000" });
-  assert.deepEqual(offeredLink("/Users/me/notes.md"), { text: "", target: "file:/Users/me/notes.md" });
-  assert.deepEqual(offeredLink("http://localhost:5176/page/sessions/2026/10/06/audit"), { text: "", target: "wiki:sessions/2026/10/06/audit" });
-  assert.equal(offeredLink("plain words only"), null);
-});
-
-test("parentIds and focusPlan: collapse-all folds every parent; a focus unfolds its ancestors, shows done when it or one above it is finished, and names its section", () => {
+test("parentIds and focusPlan: collapse-all folds every parent; a focus unfolds its ancestors and shows done when it or one above it is finished", () => {
   const plan = [item("p1", "doing", [item("p2", "done", [item("p3", "done")]), item("p4", "todo", [item("p5", "todo")])]), item("p6", "dropped", [item("p7", "todo")])];
-  const scratch = [note("s1", [note("s2", [note("s3")])]), note("s4")];
-  const board: ChatBoard = { v: 2, rev: 1, plan, scratch, todos: [], updatedAt: "" };
+  const board: ChatBoard = { v: 2, rev: 1, plan, todos: [], updatedAt: "" };
   assert.deepEqual(parentIds(plan), ["p1", "p2", "p4", "p6"]);
-  assert.deepEqual(parentIds(scratch), ["s1", "s2"]);
-  assert.deepEqual(focusPlan(board, "p5"), { section: "plan", unfold: ["p1", "p4"], showDone: false });
-  assert.deepEqual(focusPlan(board, "p3"), { section: "plan", unfold: ["p1", "p2"], showDone: true }, "a done step shows the done items");
-  assert.deepEqual(focusPlan(board, "p7"), { section: "plan", unfold: ["p6"], showDone: true }, "an open step under a dropped goal needs the done items shown");
-  assert.deepEqual(focusPlan(board, "p1"), { section: "plan", unfold: [], showDone: false });
-  assert.deepEqual(focusPlan(board, "s3"), { section: "notes", unfold: ["s1", "s2"], showDone: false });
+  assert.deepEqual(focusPlan(board, "p5"), { unfold: ["p1", "p4"], showDone: false });
+  assert.deepEqual(focusPlan(board, "p3"), { unfold: ["p1", "p2"], showDone: true }, "a done step shows the done items");
+  assert.deepEqual(focusPlan(board, "p7"), { unfold: ["p6"], showDone: true }, "an open step under a dropped goal needs the done items shown");
+  assert.deepEqual(focusPlan(board, "p1"), { unfold: [], showDone: false });
   assert.equal(focusPlan(board, "p99"), null);
   assert.equal(shortTitle("short"), "short");
   assert.equal(shortTitle("a".repeat(60)), "a".repeat(60));

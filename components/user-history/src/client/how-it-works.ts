@@ -72,8 +72,6 @@ const CHAT_RULES: Rule[] = [
     text: "The most top-level goals a plan holds open. New work goes under the goal it belongs to.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.openGoals" } },
   { id: "plan-items", title: "Plan size", value: q(BOARD_LIMITS.planItems, "count"), setting: CODE,
     text: "The most goals and steps one plan holds.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.planItems" } },
-  { id: "notes", title: "Notes", value: q(BOARD_LIMITS.scratch, "count"), setting: CODE,
-    text: "The most notes on one board.", source: { file: USER_HISTORY + "shared/chat-board.ts", symbol: "BOARD_LIMITS.scratch" } },
   { id: "step-stale", title: "Stale wait", value: q(STEP_STALE_MS, "ms"), setting: CODE,
     text: "A step that waits on another thread or an event with no progress for this long is flagged for the check-in to chase.", source: { file: USER_HISTORY + "checkin-steps.ts", symbol: "STEP_STALE_MS" } },
   { id: "no-report", title: "Job ended with no report", value: q(NO_REPORT_GRACE_MS, "ms"), setting: CODE,
@@ -148,7 +146,7 @@ export function howTopics(config: PoolConfig | null): Topic[] {
   check(["Check-in<br>every ${minutes(CHECK_IN_MS)}"]) --> chat`,
     steps: [
       { title: "You send a message", text: "The chat answers in a few lines. It does only quick look-ups itself." },
-      { title: "The board", text: "Plan holds goals and their steps. For you holds the questions only you can answer. Notes hold short bullets with links." },
+      { title: "The board", text: "Plan holds goals and their steps, with the chat's decisions in each step's note. For you holds the questions only you can answer." },
       { title: "Jobs", text: "Real work goes to a job: a subagent, or a thread in another folder. A job reports back to the chat when it ends, fails or gets stuck." },
       { title: "Check-in", text: "On a timer, code lists every open step and what it waits on, with no model call. Then one check-in job reads that list, fixes the plan and restarts stuck work." },
       { title: "Duties", text: "A duty is a standing goal with a schedule. Each run works like a check-in: a code check first, then one job with the result." },

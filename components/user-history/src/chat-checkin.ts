@@ -125,7 +125,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
   const queued = context.queued ?? new Map<string, unknown>();
-  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, board?.scratch, context.train, queued, context.asleep);
+  const blocked = context.boardError ? [] : blockedOnOthers(goaled, context.rows ?? [], self, now, context.train, queued, context.asleep);
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));

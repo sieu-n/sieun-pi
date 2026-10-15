@@ -1,8 +1,8 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import { needsGo, stepGo } from "../shared/chat-board.ts";
-  import type { ChatAgent, ChatBoard, PlanItem, ScratchItem } from "../shared/types.ts";
-  import { focusPlan, isFinished, linkChip, parentIds, planProgress, planTotals, treeRows, type TreeRow, type TreeView } from "./board.ts";
+  import type { ChatAgent, ChatBoard, PlanItem } from "../shared/types.ts";
+  import { focusPlan, isFinished, parentIds, planProgress, planTotals, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
@@ -14,7 +14,7 @@
 
   /**
    * The whole board of a chat in one large modal: the plan as a tree with every level open, each step with its status mark, id chip, agent
-   * (AgentChip: it closes the view and opens the job drawer or the agent's thread) and note; then the notes tree with its link chips. Done and dropped
+   * (AgentChip: it closes the view and opens the job drawer or the agent's thread) and note. Done and dropped
    * steps stay hidden until "Show done" is on; one control folds or unfolds every parent. `focus` is the item the view opened on: its
    * parents unfold, done items show when it is one, and the row scrolls into view and lights up for 2 s. The board prop is live.
    */
@@ -24,9 +24,7 @@
   } = $props();
 
   const EMPTY_PLAN: PlanItem[] = [];
-  const EMPTY_NOTES: ScratchItem[] = [];
   const plan = $derived(board?.plan ?? EMPTY_PLAN);
-  const scratch = $derived(board?.scratch ?? EMPTY_NOTES);
   const totals = $derived(planTotals(plan));
   const hiddenCount = $derived(treeRows(plan, { open: () => true, showDone: () => true }, isFinished).filter(row => row.kind === "item" && isFinished(row.item)).length);
   let showDone = $state(false);
@@ -35,8 +33,7 @@
   const view: TreeView = { open: id => folded[id] !== true, showDone: () => showDone };
   const items = <T,>(rows: TreeRow<T>[]) => rows.filter((row): row is Extract<TreeRow<T>, { kind: "item" }> => row.kind === "item");
   const planRows = $derived(items(treeRows(plan, view, isFinished)));
-  const noteRows = $derived(items(treeRows(scratch, view)));
-  const parents = $derived([...parentIds(plan), ...parentIds(scratch)]);
+  const parents = $derived(parentIds(plan));
   const anyFolded = $derived(parents.some(id => folded[id]));
   function fold(id: string, open: boolean): void {
     const { [id]: _was, ...rest } = folded;
@@ -108,37 +105,6 @@
       {:else if plan.length}<p class="none">Every step is done. Turn on Show done to see them.</p>
       {:else}<p class="none">No plan yet.</p>{/if}
     </section>
-    <section class="section">
-      <h3>Notes</h3>
-      {#if noteRows.length}
-        <ul class="tree">
-          {#each noteRows as row (row.item.id)}
-            {@const item = row.item}
-            <li class="row" class:lit={lit === item.id} data-item={item.id} style:--depth={row.depth}>
-              <p class="line">
-                {@render foldButton(item, view.open(item.id))}
-                <IdChip {chat} id={item.id} />
-                <span class="text">{item.text}</span>
-                {#if item.children.length && !view.open(item.id)}<span class="progress">{item.children.length} under it</span>{/if}
-              </p>
-              {#if item.links.length}
-                <div class="chips">
-                  {#each item.links as link, index (link.target + index)}
-                    {@const chip = linkChip(link)}
-                    {#if chip.target}
-                      {@const target = chip.target}
-                      <button type="button" class="link-chip {chip.kind}" title={target.kind === "job" ? undefined : link.target} data-preview-chat={chat} data-preview-job={target.kind === "job" ? target.name : undefined} onclick={() => store.openArtifact(target, chat)}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></button>
-                    {:else}
-                      <span class="link-chip broken" title="This link cannot be opened: {link.target}"><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span></span>
-                    {/if}
-                  {/each}
-                </div>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {:else}<p class="none">No notes yet.</p>{/if}
-    </section>
   </div>
 </Modal>
 
@@ -149,7 +115,6 @@
   .show-done:hover { background: var(--bg-hover); color: var(--text); }
   .tools .button { display: inline-flex; align-items: center; gap: 5px; }
   .view { padding: 8px 24px 40px; font-size: 14px; }
-  .section + .section { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--border); }
   h3 { margin: 0 0 6px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .none { margin: 0; padding: 6px 0; color: var(--text-faint); font-size: 13px; }
   .tree { list-style: none; margin: 0; padding: 0; }
@@ -174,7 +139,6 @@
   .req-status { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
   .req.met .req-status { color: var(--text-muted); }
   .req.unmet .req-status, .req.open .req-status { color: var(--accent-bold); }
-  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: -2px 0 6px; padding-left: calc(18px + 4px); }
   @container app (max-width: 899px) {
     .view { padding: 6px 12px 40px; }
     .count { display: none; }

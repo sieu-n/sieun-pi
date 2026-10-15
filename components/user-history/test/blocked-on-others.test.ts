@@ -12,7 +12,7 @@ const iso = (at: number) => new Date(at).toISOString();
 const step = (id: string, text: string, extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "todo", children: [], ...extra });
 /** A board last changed `minutes` ago, so a step the check-in has not seen before waits since then. */
 const boardOf = (minutes: number, ...steps: PlanItem[]): ChatBoard =>
-  ({ v: 2, rev: 1, updatedAt: iso(NOW - minutes * MIN), scratch: [], todos: [], plan: [step("p1", "Ship the concierge DM", { status: "doing", children: steps })] });
+  ({ v: 2, rev: 1, updatedAt: iso(NOW - minutes * MIN), todos: [], plan: [step("p1", "Ship the concierge DM", { status: "doing", children: steps })] });
 const ROWS = [{ id: "s-release", name: "release owner", archived: false }, { id: "s-crawler", name: "Crawler VP", archived: false }];
 const blocked = (board: ChatBoard, facts: JobFact[] = []) => {
   const precheck = checkInPrecheck(undefined, facts, board, NOW, { self: ["c1", "Concierge"], rows: ROWS, everyMs: EVERY });

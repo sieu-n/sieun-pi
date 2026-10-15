@@ -9,7 +9,7 @@ const child = (over: Partial<ChildAgent> & { id: string }): ChildAgent => ({ lab
 const received = (from: string, text: string, at: number): ThreadMessage => ({ role: "custom", customType: "agent_message", content: `[agent-message from ${from}]\n\n${text}`, timestamp: at });
 const receipt = (sessionId: string, name: string | undefined, at: number): ThreadMessage => ({ role: "toolResult", toolCallId: "t", toolName: "ipython", isError: false, timestamp: at,
   content: [{ type: "text", text: `{'id': 'agentmsg_1', 'source': 'agent_message', 'target': {'activeSessionId': 'abc', 'sessionId': '${sessionId}'${name ? `, 'sessionName': '${name}'` : ""}, 'runtimeKind': 'top-level'}, 'from': {'activeSessionId': 'x'}}` }] });
-const board = (plan: ChatBoard["plan"]): ChatBoard => ({ v: 2, rev: 1, plan, scratch: [], todos: [], updatedAt: "2026-10-08T06:00:00Z" });
+const board = (plan: ChatBoard["plan"]): ChatBoard => ({ v: 2, rev: 1, plan, todos: [], updatedAt: "2026-10-08T06:00:00Z" });
 const step = (id: string, job: string, status: ChatBoard["plan"][number]["status"] = "doing") => ({ id, text: id, status, job, children: [] });
 
 test("agentContacts reads received headers and sent receipts since a time", () => {

@@ -14,7 +14,7 @@ import { chatLines, turnStarter } from "../src/shared/chat-feed.ts";
 import type { ChatBoard, ChildAgent, OwnerTodo, PlanItem, PlanStatus, SessionRow, ThreadMessage } from "../src/shared/types.ts";
 
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
-const board = (plan: PlanItem[], todos: ChatBoard["todos"] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", scratch: [], todos, plan });
+const board = (plan: PlanItem[], todos: ChatBoard["todos"] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos, plan });
 const row = (id: string, name: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name, cwd: "/repo", kind: "live", status: "idle", archived: false, messageCount: 1,
   working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", ...extra });
 
@@ -317,7 +317,7 @@ test("check-in setting: the interval range, the pause ends, the next run, the bo
   assert.equal(checkInLine({ everyMs: 60 * 60_000, pausedUntil: new Date(2026, 9, 9, 9, 0).getTime() }, now), "Check-in: paused until 2026-10-09 09:00");
   assert.equal(checkInLine({ ...every5, pausedUntil: "forever" }, now), "Check-in: paused until the owner resumes it");
   assert.equal(checkInLine({ ...every5, pausedUntil: now - 1 }, now), "Check-in: every 5 min");
-  assert.equal(renderOpenPlan(null, "s-1", "Check-in: every 5 min").split("\n").join("|"), "This chat: thread:s-1|Check-in: every 5 min|The board is empty: no plan, no todos, no scratchpad.");
+  assert.equal(renderOpenPlan(null, "s-1", "Check-in: every 5 min").split("\n").join("|"), "This chat: thread:s-1|Check-in: every 5 min|The board is empty: no plan, no todos.");
 
   const path = join(await mkdtemp(join(tmpdir(), "check-in-settings-")), "check-in-settings.json");
   const settings = checkInSettings(path);

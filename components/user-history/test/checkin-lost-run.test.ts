@@ -26,7 +26,7 @@ const LAST_RUN = { duty: "checkin", at: 1792051760924, slot: 1792051760924, trig
   metrics: { loose_goals: { value: 1, target: 0, op: "<=", met: false } },
   after: { at: 1792058978724, verdict: "missed", summary: "stuck_steps 2 (target at most 0)", metrics: {} } };
 const MEASURED_AT = 1792058978724;
-const BOARD: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p447", text: "Every duty green", status: "doing", children: [] }] };
+const BOARD: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p447", text: "Every duty green", status: "doing", children: [] }] };
 
 async function liveState() {
   const dir = await mkdtemp(join(tmpdir(), "checkin-lost-run-"));

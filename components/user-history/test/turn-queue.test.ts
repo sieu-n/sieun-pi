@@ -82,7 +82,7 @@ test("check-in facts: a thread by its id and a subagent by the session id the da
 
 const step = (id: string, text: string, extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "todo", children: [], ...extra });
 const boardOf = (minutes: number, ...steps: PlanItem[]): ChatBoard =>
-  ({ v: 2, rev: 1, updatedAt: new Date(NOW - minutes * MIN).toISOString(), scratch: [], todos: [], plan: [step("p1", "Ship the queue", { status: "doing", children: steps })] });
+  ({ v: 2, rev: 1, updatedAt: new Date(NOW - minutes * MIN).toISOString(), todos: [], plan: [step("p1", "Ship the queue", { status: "doing", children: steps })] });
 const ROWS = [{ id: "s-crawler", name: "Crawler VP", archived: false }];
 const SELF = ["c1", "Concierge"];
 

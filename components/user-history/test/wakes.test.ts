@@ -186,7 +186,7 @@ test("wakes: a finished job that set a board.wake is kept by the cleanup, and de
   const wakeDir = join(dir, "wakes");
   await mkdir(wakeDir);
   await writeFile(join(wakeDir, `${SESSION_A}-run-38556270524.json`), JSON.stringify({ session: SESSION_A, on: { kind: "run", run: 38556270524 }, note: "", since: NOW }));
-  const plan: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [] };
+  const plan: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
     { ...source(dir, { c1: plan }, () => NOW), waking: session => waking(wakeDir, session) }, line => lines.push(line));
   await chats.adopt();

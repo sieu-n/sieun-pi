@@ -33,7 +33,7 @@ const CHAT = "01a00000-0000-7000-8000-0000000000c4";
 const at = "2026-10-12T00:00:00.000Z";
 const todo = (id, text, extra) => ({ id, text, choices: ["Merge it", "Not yet"], from: "agent", at, ...extra });
 const go = { done: true, reply: "Merge it", answeredBy: "owner" };
-writeFileSync(join(data, "boards", `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], scratch: [], updatedAt: at, todos: [
+writeFileSync(join(data, "boards", `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], updatedAt: at, todos: [
   todo("t1", "Merge PR #123 (fix login) into main?", go),
   todo("t2", "Merge PR #1234 into main?", go),
   todo("t3", "Merge the release PRs once checks pass?", go),

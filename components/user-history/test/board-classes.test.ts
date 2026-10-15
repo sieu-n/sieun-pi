@@ -20,7 +20,7 @@ const step = (id: string, text: string, status: PlanItem["status"], extra: Parti
 async function fixture(): Promise<{ dir: string; sessions: string }> {
   const dir = await mkdtemp(join(tmpdir(), "board-classes-"));
   await mkdir(join(dir, "boards"), { recursive: true });
-  const board: ChatBoard = { v: 2, rev: 3, updatedAt: new Date(NOW - 40 * HOUR).toISOString(), scratch: [], plan: [step("p1", "Goal", "doing", { requirements: [{ text: "\"a bridge\"", status: "met", evidence: "design doc" }], children: [
+  const board: ChatBoard = { v: 2, rev: 3, updatedAt: new Date(NOW - 40 * HOUR).toISOString(), plan: [step("p1", "Goal", "doing", { requirements: [{ text: "\"a bridge\"", status: "met", evidence: "design doc" }], children: [
     step("p2", "Write the docs", "todo"),
     step("p3", "Check the load", "doing", { job: "c1", waitUntil: new Date(NOW - HOUR).toISOString() }),
     step("p4", "Revoke the old app", "blocked", { job: "c1", waitFor: "Promote 5 green" }),

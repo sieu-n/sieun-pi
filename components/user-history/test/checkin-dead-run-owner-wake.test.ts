@@ -19,7 +19,7 @@ const train = parseTrain({ fetchedAt: new Date(NOW).toISOString(), runs: { "3869
   status: "completed", conclusion: "cancelled" } } } })!;
 const p192: PlanItem = { id: "p192", text: "Land all of this chat's ready work as one stack with one CI run", status: "doing", children: [], job: "ops train",
   sessionId: SESSION, waitFor: "the 9 per-app stack runs on tip 1dcf498bdb (38698956563 to 38699005536) go green, then land each" };
-const board: ChatBoard = { v: 2, rev: 1, plan: [{ id: "p45", text: "Ops ships", status: "doing", children: [p192] }], scratch: [], todos: [],
+const board: ChatBoard = { v: 2, rev: 1, plan: [{ id: "p45", text: "Ops ships", status: "doing", children: [p192] }], todos: [],
   updatedAt: "2026-10-15T08:05:00Z" };
 const idle: JobFact = { key: "sub-ops-train", name: "ops train", state: "ended", sessionId: SESSION, activityAt: Date.parse("2026-10-15T08:06:29Z") };
 const wake: Wake = { session: SESSION, on: { kind: "time", at: Date.parse("2026-10-15T08:40:00Z") }, note: "After hold AA: ci-run-status on stacks",

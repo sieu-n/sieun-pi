@@ -39,7 +39,7 @@ async function setup(agents: ChatAgent[], plan: PlanItem[] = [], duty: string[] 
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   let now = START;
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan };
   const rows = (): SessionRow[] => [row("c1", new Date(START).toISOString(), { chat: true, agents })];
   const chats = new Chats(index, threads, async id => ({ lifecycle: "live", sessionFile: join(dir, "sessions", `${id}.jsonl`) }), "b2", loads,
     { ...source(dir, { c1: board }, () => now, rows), dutyJobs: async () => duty,

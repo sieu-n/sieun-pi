@@ -34,7 +34,7 @@ function cacheAt(now: number): Train {
   return parseTrain({ fetchedAt: new Date(now).toISOString(), runs })!;
 }
 const item = (id: string, text: string, rest: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "todo", children: [], ...rest });
-const boardOf = (plan: PlanItem[], updatedAt: number): ChatBoard => ({ v: 2, rev: 1, plan, scratch: [], todos: [], updatedAt: new Date(updatedAt).toISOString() });
+const boardOf = (plan: PlanItem[], updatedAt: number): ChatBoard => ({ v: 2, rev: 1, plan, todos: [], updatedAt: new Date(updatedAt).toISOString() });
 
 /** api portal vp p9 as it stood at 23:07 KST: blocked on its batch run, which Fable's land-34 loop cancelled at 13:55:56Z, unchanged for 4 h. */
 const API_PORTAL = ["01a1301d-18de-7129-a559-cfb92f9b5fb1", "api portal vp"];

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { checkInPrecheck, convergenceMisses } from "../src/chat-checkin.ts";
-import { plannedEnd, trainMoves } from "../src/checkin-findings.ts";
+import { trainMoves } from "../src/checkin-findings.ts";
 import type { Train } from "../src/checkin-load.ts";
 import type { JobFact, StepMemo } from "../src/checkin-steps.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
@@ -12,8 +12,7 @@ import { trainAt as cacheAt } from "./train-at.ts";
  * VP of CI's real board (chat 01a1180e, rev 3289, before its 06:12 KST check-in set waitUntil 22:30Z) with p25, p26, p30, p110 and p134
  * waiting for "Fable's 'released'; then promote gates rework pushes ... fresh and lands it", unchanged since 19:12:03Z. Their job, promote gates
  * rework, went idle at 20:07:01Z. The check-ins at 20:42Z and 21:12Z (05:42 and 06:12 KST) flagged all five as blocked_on_others "on promote"
- * and as stale_steps. Scratch note s250 (19:36Z) says Fable holds every runner for the land 34 critical set "until 'released', ETA about
- * 22:00Z". The fixture holds the service's step memos from the 21:12Z run and the CI cache (~/.cache/virev/ci-runs.json, read 21:20Z) trimmed to
+ * and as stale_steps. The fixture holds the service's step memos from the 21:12Z run and the CI cache (~/.cache/virev/ci-runs.json, read 21:20Z) trimmed to
  * its land and promote runs and the runs on ci/ branches that GitHub updated after 18:00Z.
  */
 const CHAT = "01a1180e-6567-747f-bf44-452520ebdd1b";
@@ -54,22 +53,11 @@ test("VP of CI p25, p26, p30, p110 and p134: a wait on Fable's 'released' is not
 test("VP of CI controls: no CI cache and a hold idle past 110 min still flag both; a promote wait with no hold is parked the same way", () => {
   const all = { blocked: HOLD, stale: HOLD };
   for (const [slot, now] of Object.entries(SLOTS)) {
-    assert.deepEqual(flagsAt(now), all, `${slot}, no CI cache: no step names s250, so nothing names an end`);
+    assert.deepEqual(flagsAt(now), all, `${slot}, no CI cache: nothing names an end`);
     assert.deepEqual(flagsAt(now, { train: trainAt(now, 3 * 60 * MIN) }), all, `${slot}: a hold whose runs last moved over TRAIN_IDLE_MS before does not move`);
     assert.deepEqual(flagsAt(now, { train: trainAt(now), waitFor: "promote 10; then promote gates rework pushes the promote gates stack fresh and lands it" }),
       { blocked: [], stale: [] }, `${slot}: a promote wait that names no hold is on the same release path, which the critical set's ci/ runs move`);
   }
-});
-
-test("a released wait that names s250 is not blocked until its \"ETA about 22:00Z\" plus the grace, and flags once it passes with the hold idle", () => {
-  const waitFor = "Fable's 'released' (s250); then promote gates rework pushes the promote gates stack fresh and lands it";
-  const item = { id: "p25", text: "", status: "doing", children: [], waitFor } as unknown as PlanItem;
-  assert.equal(new Date(plannedEnd(item, Date.parse("2026-10-13T19:12:03.536Z"), FIXTURE.board.scratch)!).toISOString(), "2026-10-13T22:00:00.000Z");
-  assert.deepEqual(flagsAt(SLOTS["21:12"], { waitFor }), { blocked: [], stale: HOLD },
-    "21:12Z, no CI cache: 22:00Z plus the grace is ahead, which parks the blocker; the idle job still owes a record unless the path moves");
-  const late = Date.parse("2026-10-13T22:31:00Z");
-  assert.deepEqual(flagsAt(late, { waitFor }), { blocked: HOLD, stale: HOLD }, "22:31Z, no CI cache: the ETA passed");
-  assert.deepEqual(flagsAt(late, { waitFor, train: trainAt(late, 4 * 60 * MIN) }), { blocked: HOLD, stale: HOLD }, "22:31Z: the ETA passed and the hold is idle");
 });
 
 test("the release owner's release word and a promote number put a wait on the release path; a plain \"released\" does not", () => {

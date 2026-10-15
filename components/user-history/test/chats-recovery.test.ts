@@ -24,7 +24,7 @@ test("chats: a chat whose last turn failed gets a new turn 5, 10, then every 20 
   let now = 1_000_000_000;
   const lines: string[] = [];
   const memory = checkInRecord(join(dir, "check-ins.json"));
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [] }] };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [] }] };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now), line => lines.push(line));
   await chats.adopt();
   threads.transcripts.set("c1", [ownerAsks("[check-in] What changed: p1 finished", now), reply("error", now, "Provider rate limit exceeded (rate_limit_error, 429)")]);
@@ -201,7 +201,7 @@ test("chats: a step-owner thread whose last turn failed with input queued gets a
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   let now = 1_000_000_000;
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Ship it", status: "doing", job: "thread:t1", children: [] }] };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p1", text: "Ship it", status: "doing", job: "thread:t1", children: [] }] };
   const rows = (): SessionRow[] => [{ id: "t1", name: "TPS thread", cwd: "/r", kind: "live", status: "idle", archived: false, messageCount: 9, failure: "429", lastActivityAt: new Date(now - 60_000).toISOString() } as SessionRow];
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, { c1: board }, () => now, rows));
   await chats.adopt();

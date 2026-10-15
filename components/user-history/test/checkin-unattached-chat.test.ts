@@ -277,7 +277,7 @@ test("check-in of a chat that is not attached finds its subagent jobs through th
   const dir = await mkdtemp(join(tmpdir(), "checkin-unattached-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add(CHAT);
-  const board: ChatBoard = { plan: [P103], scratch: [], todos: [] } as unknown as ChatBoard;
+  const board: ChatBoard = { plan: [P103], todos: [] } as unknown as ChatBoard;
   const threads = {
     state: () => undefined, async view() { return null; }, busy: () => false, running: () => false, setWait() {},
     async restart() {}, async prompt() {}, async notice() {}, async deleteSubagent() {}, pin: () => true, unpin() {}, async setSteeringMode() {},
@@ -313,7 +313,7 @@ test("check-in waits while the catalog has no rows and the hub has not attached 
   const dir = await mkdtemp(join(tmpdir(), "checkin-blind-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add(CHAT);
-  const board: ChatBoard = { plan: [P103], scratch: [], todos: [] } as unknown as ChatBoard;
+  const board: ChatBoard = { plan: [P103], todos: [] } as unknown as ChatBoard;
   const threads = {
     state: () => undefined, async view() { return null; }, busy: () => false, running: () => false, setWait() {},
     async restart() {}, async prompt() {}, async notice() {}, async deleteSubagent() {}, pin: () => true, unpin() {}, async setSteeringMode() {},

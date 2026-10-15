@@ -34,7 +34,7 @@ const TODOS: OwnerTodo[] = [
   {"id": "t19", "text": "New test for setup is ready (#250). Today 33 of every 100 people who click Add to Chrome never come back. With this test, the Chrome store opens in a small window, setup remembers where they were, and they see 'Welcome back' with one button to go on. It stays off until you say to start it. Merge #250 once its checks pass?", "done": false, "choices": ["Go: merge after the Air checks pass", "Not yet"], "step": "p130", "from": "agent", "at": "2026-10-14T01:37:12.021Z"},
 ];
 const board = (plan: PlanItem[] = STEPS, todos: OwnerTodo[] = TODOS): ChatBoard =>
-  ({ v: 2, rev: 827, plan: [{ id: "p48", text: "Ship the slack-green changes", status: "doing", children: plan }], scratch: [], todos, updatedAt: "2026-10-14T03:18:21.746Z" }) as ChatBoard;
+  ({ v: 2, rev: 827, plan: [{ id: "p48", text: "Ship the slack-green changes", status: "doing", children: plan }], todos, updatedAt: "2026-10-14T03:18:21.746Z" }) as ChatBoard;
 const stepOf = (id: string): PlanItem => STEPS.find(step => step.id === id)!;
 const SIGNUP_EMAILS: JobFact = { key: "thread:01a137fe-8e8b-71c2-9dcb-f6c317084c69", name: "signup emails on", state: "working", sessionId: "01a137fe-8e8b-71c2-9dcb-f6c317084c69" };
 

@@ -5,7 +5,7 @@ description: Read a browser chat's board, corrections and the log of outside sen
 
 # Board
 
-A chat's board holds the plan of goals and steps, the owner's todos and the scratchpad. The chat server keeps it in `~/.prime/agent/browser-chat/boards/<chat session id>.json`. The `chat_board` tool shows only the open checklist, so read the rest with this module.
+A chat's board holds the plan of goals and steps and the owner's todos. The chat server keeps it in `~/.prime/agent/browser-chat/boards/<chat session id>.json`. The `chat_board` tool shows only the open checklist, so read the rest with this module.
 
 ## Read the board
 
@@ -14,9 +14,7 @@ Call the pre-imported `board` module in the Python REPL. Each call returns plain
 ```python
 board.open()               # open goals and steps, open todos, and a count of the rest
 board.get("p220")          # one item in full: note, requirements, target JSON, linked todos, every step under it
-board.get("t43")           # one todo, or board.get("s12") for one note and the notes under it
-board.notes()              # the scratchpad with links
-board.notes("cache")       # notes, step notes and requirements that name "cache"
+board.get("t43")           # one todo
 board.done(since="p250")   # done and dropped steps from p250 on, with their notes
 board.todos(all=True)      # every todo with its answer
 board.corrections()        # every owner correction in force, in full
@@ -70,13 +68,12 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 2. When a step's waitUntil passes or its job ends, act on it in that turn: record the job's result, do the next action, or close it done or dropped. Never leave an old wait showing (c44), and never wait again, because the board refuses a later waitUntil (c47).
 3. When plan_add says an open goal covers the same area, put the work under that goal unless it is a separate area (c44).
 4. When this chat's duty runs a goal's work, or every open step of a goal rides another goal's job, fold the goal in the same turn (c46). Move each open step under the goal or job that ships it with plan_update `parent`, then close the goal with a note that names the duty or goal holding its work.
-5. When a step moves to another thread for good, remove it with plan_remove and add one scratch note naming its new owner, because that thread tracks it on its own board (c8).
+5. When a step moves to another thread for good, remove it with plan_remove and name its new owner in its goal's note, because that thread tracks it on its own board (c8).
 6. A step that waits on another thread stays, with waitFor, only while more work of this chat comes after it.
 7. A goal whose own work is done and whose last steps only wait on another thread (its release, its land, a check it owns) does not stay open (c45). Check the wait against the real state and close the goal on that evidence, or send that thread the leftover in one message and close the goal with a note naming the thread.
 8. Send a job only its own plan item, never the whole board.
-9. Keep the scratchpad a short bullet list with one finding or decision per bullet and links to what it is about, such as `job:<name>` for a job's report. Long detail such as findings, options and file paths goes there as bullets, never as long prose.
-10. Put each decision the chat makes itself (a ruling between threads, a land order, a skipped re-probe, a kept or dropped limit) in the scratchpad as a dated note in the same turn, besides any step note or job message (c76). On 10-15 ops guy made a land order (05:41Z), a kept SUMMARY_MAX_KEYS limit (07:20Z), a "won't land" ruling on three runs (07:43Z) and a skipped re-probe (07:50Z) only in job and thread messages, and wrote dated notes only at 08:27Z, after the owner asked why it does not use the scratchpad. The chat server now sends a `[board] Decisions not on the scratchpad:` steer after a turn that sent a ruling and added no scratch note.
-11. Write board notes and todos as plain sentences a person reads once, with no all-caps labels (SECURITY:, URGENT:), no slash-joined names, and no repo jargon (origin/main, xoxb, HEAD) when a plain word works. Say what it is and what happens next.
+9. Put each decision the chat makes itself, such as a ruling between threads, a land order or a kept limit, in the note of the step it concerns in the same turn. The board has no scratchpad: the owner removed it on 10-15, and a `scratch_add`, `scratch_update` or `scratch_remove` op is refused.
+10. Write step notes and todos as plain sentences a person reads once, with no all-caps labels (SECURITY:, URGENT:), no slash-joined names, and no repo jargon (origin/main, xoxb, HEAD) when a plain word works. Say what it is and what happens next.
 
 ## chat_board ops
 
@@ -86,11 +83,10 @@ Ops apply in order, all or none. A refused op returns the reason and the fix.
 2. `plan_add {text,parent?,status?,job?,sessionId?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` adds a goal, or a step under `parent`. The plan holds at most 6 open goals, so new work goes under the goal it belongs to.
 3. `plan_update {id,parent?,text?,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` changes an item. `null` clears job, sessionId, note, waitUntil, waitFor, kind, requirements, target or duty. `parent` moves the item with its steps to the end of that item's steps, and `parent: null` moves it to the top level.
 4. `plan_remove {id}` removes an item and its steps.
-5. `scratch_add {text,parent?,links?}`, `scratch_update {id,text?,links?}` and `scratch_remove {id}` edit the scratchpad. In `scratch_update`, `links` replaces the list and `[]` clears it.
-6. `todo_add {text,choices?,step?,links?}` asks the owner one short question in plain words. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks about. A todo that asks him to review, look at or pick something needs `links` to each exact page, or the URL in its text, and the board refuses it otherwise (c32).
-7. `todo_update {id,text?,done?,links?}` edits a todo, and its `links` replaces the list. Only the owner answers a todo. `todo_remove {id}` removes it.
+5. `todo_add {text,choices?,step?,links?}` asks the owner one short question in plain words. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks about. A todo that asks him to review, look at or pick something needs `links` to each exact page, or the URL in its text, and the board refuses it otherwise (c32).
+6. `todo_update {id,text?,done?,links?}` edits a todo, and its `links` replaces the list. Only the owner answers a todo. `todo_remove {id}` removes it.
 
-A link is `{label,target}`, up to 5 per note. The target is `job:<name>`, `thread:<session id>`, `thread:<session id>@<message timestamp ms>`, `wiki:<path under the llm-wiki content>`, `file:<absolute path>` or an http(s) URL.
+A link is `{label,target}`, up to 5 per todo. The target is `job:<name>`, `thread:<session id>`, `thread:<session id>@<message timestamp ms>`, `wiki:<path under the llm-wiki content>`, `file:<absolute path>` or an http(s) URL.
 
 A step keeps its agent's thread id in `sessionId`, so the link survives when the job is deleted or renamed. Set it to a session id, `thread:<id>` or a chat URL. A `job` that names a thread sets it too, and a new job clears the old one. The checklist and `board.get(id)` show it as `thread:<id>` next to the job.
 

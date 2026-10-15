@@ -20,7 +20,7 @@ const OPS = "ops guy (+observability)";
 const TOPICS = ["M1 Air", "M2 Air", "Mac load", "load average", "swap", "memory pressure", "launchd"];
 const RULE: HandoffRule = { correction: "c7", to: OPS, topics: TOPICS };
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
-const board = (plan: PlanItem[], todos: OwnerTodo[] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", scratch: [], todos, plan });
+const board = (plan: PlanItem[], todos: OwnerTodo[] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos, plan });
 const todo = (id: string, text: string, extra: Partial<OwnerTodo> = {}): OwnerTodo => ({ id, text, done: false, from: "agent", at: "", ...extra });
 
 test("ledger handoff: an add and a fix carry it, the file round-trips it, a bad one is dropped alone, the prompt names it, a retired entry has none", async () => {

@@ -11,7 +11,7 @@ import { readWikiPage, wikiTitle } from "../src/chat-wiki.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 
-test("POST api/threads/:id/board: owner todo and scratch ops apply, a tapped choice steers 'chose', the board is broadcast, the chat gets a [board] steer; non-chats 404, plan ops 403", async () => {
+test("POST api/threads/:id/board: owner todo ops apply, a scratch op is refused, a tapped choice steers 'chose', the board is broadcast, the chat gets a [board] steer; non-chats 404, plan ops 403", async () => {
   const boards = new BoardStore(await mkdtemp(join(tmpdir(), "board-route-")));
   await boards.apply("chat1", [{ op: "plan_add", text: "Goal" }, { op: "todo_add", text: "Approve the Email picks" },
     { op: "todo_add", text: "Deploy now?", choices: ["Yes", "Wait for QA"] }], "agent");
@@ -47,17 +47,17 @@ test("POST api/threads/:id/board: owner todo and scratch ops apply, a tapped cho
     assert.deepEqual((added.body.board as ChatBoard).todos.map(todo => [todo.id, todo.from]), [["t2", "agent"], ["t3", "owner"]]);
     await post("chat1", { ops: [{ op: "todo_update", id: "t2", reply: "Wait for QA", done: true }] });
     assert.equal(prompts[2]!.message, '[board] Owner chose "Wait for QA" for "Deploy now?"');
-    const noted = await post("chat1", { ops: [{ op: "scratch_add", text: "Read this first", links: [{ label: "report", target: "/Users/me/w8-report.md" }] }] });
-    assert.equal(noted.status, 200, JSON.stringify(noted.body));
-    assert.equal(prompts[3]!.message, '[board] Owner added a note: "Read this first" with links [report](file:/Users/me/w8-report.md)');
+    const noted = await post("chat1", { ops: [{ op: "scratch_add", text: "Read this first" }] });
+    assert.equal(noted.status, 400);
+    assert.match(JSON.stringify(noted.body), /no scratchpad any more/);
     assert.equal((await post("plain", { ops: [{ op: "todo_add", text: "x" }] })).status, 404);
     assert.equal((await post("chat1", { ops: [{ op: "plan_update", id: "p1", status: "done" }] })).status, 403);
     assert.equal((await post("chat1", { ops: [{ op: "todo_update", id: "t9", done: true }] })).status, 409);
     assert.equal((await post("chat1", { ops: [] })).status, 400);
     assert.equal((await post("chat1", { ops: [{ op: "todo_add" }] })).status, 400);
-    assert.equal((await post("chat1", { ops: [{ op: "scratch_add", text: "x", links: [{ target: "ftp://x" }] }] })).status, 400);
-    assert.equal(prompts.length, 4, "refused ops send nothing");
-    assert.equal((await boards.read("chat1"))?.rev, 8);
+    assert.equal((await post("chat1", { ops: [{ op: "todo_add", text: "x", links: [{ target: "ftp://x" }] }] })).status, 400);
+    assert.equal(prompts.length, 3, "refused ops send nothing");
+    assert.equal((await boards.read("chat1"))?.rev, 7);
   } finally { await server.close(); }
 });
 

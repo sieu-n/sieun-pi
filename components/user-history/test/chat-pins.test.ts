@@ -72,7 +72,7 @@ test("chats: replay of Crawler VP 10-13 10:06Z: the 9th chat in the index is pin
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   for (const id of CHATS) await index.add(id);
   let now = Date.parse("2026-10-13T10:09:03.186Z");
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [] };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
   const source: CheckInSource = { board: async () => board, rows: async () => CHATS.map(id => ({ id, name: id }) as SessionRow), home: dir,
     memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
     tickMs: 0, now: () => now, noReportGraceMs: 0 };

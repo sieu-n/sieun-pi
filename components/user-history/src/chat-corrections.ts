@@ -61,8 +61,8 @@ export function themeTokens(theme: string | readonly string[]): string[] {
 }
 
 /**
- * Words that name the surfaces every kind of rule touches, so sharing one says nothing about meaning. On 10-15 ops guy filed "each decision goes
- * into the board scratchpad as a dated note" with theme "board", and the ledger reopened c61 (plain board titles).
+ * Words that name the surfaces every kind of rule touches, so sharing one says nothing about meaning. On 10-15 ops guy filed a rule about
+ * where each decision goes on the board with theme "board", and the ledger reopened c61 (plain board titles).
  */
 const GENERIC = new Set(["board", "plan", "title", "note", "step", "goal", "todo", "thread", "job", "rule", "agent", "ci", "repo", "code"]);
 const FILLER = new Set(["like", "use", "one", "you", "his", "him", "he", "they", "them", "their", "then", "than", "so", "but", "if", "all", "any", "also"]);

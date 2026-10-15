@@ -20,7 +20,7 @@ const job = (id: string, name: string, extra: Partial<ChildAgent> = {}): ChildAg
   ({ id, label: name, sessionName: name, status: "done", repliedSinceTask: true, lastActivityAt: NOW - 60_000, ...extra });
 const report = (name: string, body: string, at = NOW - 60_000): ThreadMessage =>
   ({ role: "custom", customType: "agent_message", content: `[agent-message from child:${name}]\n${body}`, display: true, timestamp: at }) as ThreadMessage;
-const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan });
+const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan });
 
 async function chat(plan: PlanItem[], messages: ThreadMessage[]) {
   const dir = await mkdtemp(join(tmpdir(), "job-cleanup-now-"));

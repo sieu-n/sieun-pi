@@ -9,7 +9,7 @@ import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
  */
 const p135Wait = "run 38414179195 (queue cuts t9 on f0a8ed462f) green; then the release owner CASes its 4 shas (gate files)";
 const answered = (id: string): OwnerTodo => ({ id, text: `Todo ${id}`, done: true, reply: "Go", answeredBy: "owner", from: "agent", at: "" }) as OwnerTodo;
-const vpOfCi = (waitFor: string): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", scratch: [], todos: ["t9", "t10", "t17", "t18"].map(answered), plan: [{
+const vpOfCi = (waitFor: string): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos: ["t9", "t10", "t17", "t18"].map(answered), plan: [{
   id: "p135", status: "doing", children: [], job: "ci queue demand", waitFor,
   text: "Cut queue demand: 124 runs (about 25 h of heavy runner time) were queued at 17:56Z against 2 heavy runners",
 }] satisfies PlanItem[] });

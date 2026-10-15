@@ -73,4 +73,4 @@ The owner wants every made-up safety limit in auto-sns-agent found and removed, 
 1. Set `unbacked` with the commit for each limit you removed and `kept` or `not_limit` with evidence, then move each `unbacked` entry whose key left the candidate list to `removed`.
 2. Append one run record with the unbacked limits found, removed, kept and left for the owner.
 3. Commit the ledger with `node scripts/repo/agent/commit.mjs -m "docs(limits): ledger <date>" apps/llm-wiki/content/domains/devops/limits-ledger.json`.
-4. Send this chat one `scratch_add` op with the counts and a `wiki:domains/devops/limits-ledger.json` link.
+4. Send this chat one `plan_update` op that puts the counts and `wiki:domains/devops/limits-ledger.json` in the note of the duty's board goal.

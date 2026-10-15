@@ -31,7 +31,7 @@ const STEPS: PlanItem[] = [
     waitFor: "Fable's 'released' after land 34's re-run is green (re-dispatch due about 04:40Z after the nightly split); then gone-UI r9 pushes, green, CAS",
     note: "04:1xZ check-in: the job release driver (session 01a1389b) watches land 34's re-dispatch, promote 10 and land 35 and has the chat wake watchlist all green for the push at each point; watchlist all green still builds and pushes this step's commits.", children: [] },
 ];
-const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-14T04:11:30.000Z", scratch: [], todos: [],
+const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-14T04:11:30.000Z", todos: [],
   plan: [{ id: "p82", text: "Crawler queue and year-deep walks: fair claims, walk handoffs, capacity dashboard", status: "doing", children: plan }] });
 const BOARD_0411 = board(STEPS.map(step => ({ ...step, sessionId: RELEASE_DRIVER })));
 /** The same steps with notes that name no build job, as a relink that lost them would leave the board. */

@@ -16,7 +16,7 @@ import { fakeThreads, source } from "./chats-helpers.ts";
  * a delete_rlm_subagent for it at 04:5xZ answered `{"success":true,"data":{"deleted":false}}`: the chat no longer holds it. The cleanup
  * remembered its deletes only in memory and read every success as a delete.
  */
-const BOARD: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [] };
+const BOARD: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
 const NOW = Date.parse("2026-10-14T03:11:07Z");
 const EMAIL: ChildAgent = { id: "sub-9b3a7eaa", label: "email app outside in", sessionName: "email app outside in", status: "done", repliedSinceTask: true,
   lastActivityAt: Date.parse("2026-10-14T00:16:22Z") };

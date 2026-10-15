@@ -39,7 +39,7 @@ async function setup(agents: ChatAgent[]) {
     await loads.set(id, "b1");
   }
   const state = { agents, lifecycle: new Map<string, string>(Object.keys(NAMES).map(id => [id, "live"])), now: 0 };
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [] };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add(CHAT);
   const calls: string[] = [];

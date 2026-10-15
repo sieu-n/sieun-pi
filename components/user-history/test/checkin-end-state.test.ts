@@ -54,7 +54,7 @@ test("end state: a todo that only shares a word with the step does not hold it, 
 });
 
 test("end state KPI: the check-in brief opens with the share and lists every stuck step, and stuck_steps counts them", () => {
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "2026-10-14T02:00:00Z", scratch: [], todos: [todo("t7", "Go on the proxy plan?", { step: "p4" })],
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "2026-10-14T02:00:00Z", todos: [todo("t7", "Go on the proxy plan?", { step: "p4" })],
     plan: [{ id: "p0", text: "Ship the crawler fix", status: "doing", children: [step("p1", { job: "crawler fix", waitFor: "land 34 released" }), step("p4", { waitFor: "the owner's go" }),
       step("p3", { job: "crawler watch", status: "doing" })] }] } as unknown as ChatBoard;
   const precheck = checkInPrecheck(undefined, [idle, working], board, NOW, { self: [...self] });

@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { type DutyMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import { UNMEASURED } from "../scripts/duties/estate-reads.ts";
 import {
-  type AuditRow, type HandData, type RefState, type Registry, BOX_SCRIPT, HAND_FIX_WORDS, WRITES, auditSql, classifyConfig, classifyEvent, classifyNote,
+  type AuditRow, type HandData, type RefState, type Registry, BOX_SCRIPT, WRITES, auditSql, classifyConfig, classifyEvent,
   groupAudit, handExecs, isSessionProcess, measure, nextState, oneOffs, parseBox, parseRegistry, report, scriptOf, stepRefs, stepState,
 } from "../scripts/duties/hand-fixes.ts";
 
@@ -18,7 +18,7 @@ let nextId = 1;
 const row = (key: string, reason: string, fields: Partial<AuditRow> = {}): AuditRow => ({ id: nextId++, ts: NOW - 3_600_000, actor: "api-key", key, reason, source: "ops-api", ...fields });
 const steps = (entries: [string, string | null][]): Map<string, RefState> => new Map(entries.map(([ref, status]) => [ref, { kind: "step", status }]));
 const allLive = (): Map<string, RefState> => steps([["p97", "doing"], ["p98", "doing"], ["p100", "doing"], ["p77", "doing"]]);
-const clean = async (): Promise<HandData> => ({ now: NOW, registry: await registry(), refs: allLive(), notes: [], audit: { prod: [], staging: [] }, events: { prod: [], staging: [] },
+const clean = async (): Promise<HandData> => ({ now: NOW, registry: await registry(), refs: allLive(), audit: { prod: [], staging: [] }, events: { prod: [], staging: [] },
   box: { containers: [{ name: "virev-prod-crawler-worker", status: "running", service: "crawler-worker" }], execs: [] }, mac: [], errors: [] });
 
 test("hand fixes: the duty file has one headline and 3 more metrics, and the precheck writes them plus the detail counts", async () => {
@@ -78,19 +78,11 @@ test("hand fixes: config rows written together count once, and each is skipped, 
   assert.equal(verdict("brand_new.knob", "set by hand").kind, "undesigned");
 });
 
-test("hand fixes: engage status writes and board notes count only when a fault or the hand-fix words name them", async () => {
+test("hand fixes: engage status writes count only when a fault names them", async () => {
   const reg = await registry();
   const thaw = classifyEvent({ accountId: 31, at: NOW, outcome: "active", errorCode: "" }, reg);
   assert.equal(thaw?.kind === "fault" && thaw.fault.id, "F5");
   assert.equal(classifyEvent({ accountId: 75, at: NOW, outcome: "parked", errorCode: "" }, reg), null, "a park is the product's own status write");
-  assert.equal(classifyNote({ id: "s1", at: NOW, text: "prod Watchlist is 85.2% green" }, reg), null);
-  const writer = classifyNote({ id: "s164", at: NOW, text: "both writers alive (supervised 3537013 and hand-started 3502926)" }, reg);
-  assert.equal(writer?.kind === "fault" && writer.fault.id, "F3");
-  const ci = classifyNote({ id: "s150", at: NOW, text: "41 runs are ghosts; ours are re-pushed fresh by their jobs" }, reg);
-  assert.equal(ci?.kind === "fault" && ci.fault.id, "F6");
-  assert.equal(classifyNote({ id: "s9", at: NOW, text: "metal restarted the signer by hand" }, reg)?.kind, "undesigned");
-  assert.equal(classifyNote({ id: "s10", at: NOW, text: "Durable software: every fault we fixed by hand becomes a design" }, reg)?.kind, "exempt");
-  assert.ok(HAND_FIX_WORDS.test("Check now on 5,752 rows"));
 });
 
 test("hand fixes: a fault whose design steps are all done turns its hand fixes into repeats; no live ref means no job", async () => {
@@ -182,7 +174,7 @@ test("hand fixes: measure reads every source through its deps, and no Grafana lo
   const data = await measure({ now: NOW, state: {}, query: null, authError: "GRAFANA_ADMIN_PASSWORD is missing",
     registry: async () => JSON.parse(await readFile(join(DIR, "hand-fixes.faults.json"), "utf8")),
     board: async chat => chat === "01a11bd7-072f-7591-ad1d-f123c276cde5"
-      ? { plan: [{ id: "p96", status: "doing", children: [{ id: "p97", status: "doing" }] }], scratch: [{ id: "s1", text: "thawed 31 by hand", at: new Date(NOW - 1000).toISOString() }, { id: "s0", text: "old", at: "2026-10-01T00:00:00Z" }] }
+      ? { plan: [{ id: "p96", status: "doing", children: [{ id: "p97", status: "doing" }] }] }
       : { plan: [{ id: "p170", status: "doing" }] },
     gitRef: async ref => ref === "branch:sieun/box-selfheal",
     box: async () => "C\tvirev-prod-crawler-worker\trunning|crawler-worker|",
@@ -192,7 +184,6 @@ test("hand fixes: measure reads every source through its deps, and no Grafana lo
   assert.deepEqual(data.refs?.get("01a115e2-9544-7204-b8db-8ce4d5319048/p170"), { kind: "step", status: "doing" });
   assert.deepEqual(data.refs?.get("branch:sieun/box-selfheal"), { kind: "git", exists: true });
   assert.deepEqual(data.refs?.get("commit:477ed1034f"), { kind: "git", exists: false });
-  assert.deepEqual(data.notes?.map(note => note.id), ["s1"], "a note older than 24 h is not read on the first run");
   const output = report(data, await dutyMetrics());
   assert.equal(output.metrics.undesigned_hand_fixes, UNMEASURED);
   assert.equal(output.metrics.session_loops_writing, 0);
@@ -207,30 +198,23 @@ test("hand fixes: a fix before a fault's done_at is no repeat, and the 10-14 mis
   assert.equal(kafka.kind === "fault" && kafka.fault.id, "F13");
   const mirror = verdict("media.mirror_kinds", "revert 10:1xZ change: fix the live refresh instead (Crawler ops)");
   assert.equal(mirror.kind === "fault" && mirror.fault.id, "F14");
-  const slice = classifyNote({ id: "s224", at: NOW, text: "The old rule stopped the slice again at 20:19Z (prod-driven IO), and metal started it by hand at 20:27Z." }, reg);
-  assert.equal(slice?.kind === "fault" && slice.fault.id, "F2");
-  const staging = classifyNote({ id: "s231", at: NOW, text: "staging is back at 21:21Z by hand on land 34's image. Cause: compose's config hash depends on the project path" }, reg);
-  assert.equal(staging?.kind === "fault" && staging.fault.id, "F7");
-  const f6 = reg.faults.find(fault => fault.id === "F6")!;
+  const f4 = reg.faults.find(fault => fault.id === "F4")!;
   const metrics = await dutyMetrics();
   const data = await clean();
-  data.registry = { ...reg, faults: [{ ...f6, done_at: new Date(NOW).toISOString() }] };
-  data.refs = steps([[f6.designs[0]!, "done"]]);
-  data.notes = [{ id: "s1", at: NOW - 60_000, text: "we reran 38618401570" }, { id: "s2", at: NOW + 60_000, text: "we reran 38618401571" }];
+  data.registry = { ...reg, faults: [{ ...f4, done_at: new Date(NOW).toISOString() }] };
+  data.refs = steps([["p97", "done"]]);
+  data.audit.prod = [row("watch.deep_walk_slot_share", "share 50 -> 20 by hand", { ts: NOW - 60_000 }), row("watch.deep_walk_slot_share", "share 20 -> 10 by hand", { ts: NOW + 60_000 })];
   const output = report(data, metrics);
-  assert.equal(output.metrics.repeats_after_design, 1, "only the rerun after done_at is a repeat");
-  assert.throws(() => parseRegistry({ ...reg, faults: [{ ...f6, done_at: "yesterday" }] }), /done_at/);
+  assert.equal(output.metrics.repeats_after_design, 1, "only the change after done_at is a repeat");
+  assert.throws(() => parseRegistry({ ...reg, faults: [{ ...f4, done_at: "yesterday" }] }), /done_at/);
 });
 
-test("hand fixes: a declared box unit's exec and a d3 run note are exempt, while a hand-started writer still counts", async () => {
+test("hand fixes: a declared box unit's exec is exempt, while a hand-started writer still counts", async () => {
   const reg = await registry();
   const exec = (command: string) => ({ container: "virev-staging-crawler-api", service: "crawler-api", running: true, command });
   const inventory = exec('sh -c cd /app/apps/crawler-v3 && nice -n 10 dotenvx run -q -f "$DOTENV_FILE" -- .venv/bin/python - 3600 8');
   const writer = exec("sh -c exec dotenvx-start.sh uv run --no-sync python -m src.run.run acquisition-writer > /tmp/acq-writer-2.log 2>&1");
   assert.deepEqual(handExecs([inventory, writer], reg.exempt.box_exec_regex), [writer]);
   assert.deepEqual(handExecs([inventory, writer]), [inventory, writer]);
-  assert.deepEqual(classifyNote({ id: "s235", at: NOW, text: "d3 run 1 (sieun-pi 049b270): Live rerun: undesigned 0, repeats 0" }, reg), { kind: "exempt" });
-  assert.deepEqual(classifyNote({ id: "s236", at: NOW, text: "d3's first run fixed its precheck. A live rerun shows 0 undesigned" }, reg), { kind: "exempt" });
-  assert.deepEqual(classifyNote({ id: "s238", at: NOW, text: "the d3 precheck changes are live. The open items left: one session loop (ladder22.py in Crawler VP's census canary rerun)" }, reg), { kind: "exempt" });
   assert.ok(reg.faults.find(fault => fault.id === "F2")!.designs.includes("commit:98c14dbd1a"));
 });

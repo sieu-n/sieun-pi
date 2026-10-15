@@ -3,19 +3,23 @@ import { DUTY_LINK_SHAPE, parseDutyLink } from "./duty-fixes.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
-  type Requirement, type RequirementStatus, type ScratchItem } from "./types.ts";
+  type Requirement, type RequirementStatus } from "./types.ts";
 
 /** The chat board reducer, shared by the `chat_board` tool (agent) and `POST api/threads/<id>/board` (owner). Pure and browser-safe. */
 
 /** A user message that starts with this is the owner acting on the board (the server's steer); the client shows it as a small action line. */
 export const BOARD_PREFIX = "[board] ";
 export const PLAN_STATUSES: readonly PlanStatus[] = ["todo", "doing", "done", "blocked", "dropped"];
-const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove", "scratch_add", "scratch_update", "scratch_remove"]);
+const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove"]);
+export const BOARD_OP_NAMES: readonly BoardOp["op"][] = ["plan_set", "plan_add", "plan_update", "plan_remove", "todo_add", "todo_update", "todo_remove"];
+/** The refusal for a scratch op: the owner removed the scratchpad on 10-15 ("remove the notepad feature completely"). */
+export const SCRATCHPAD_REMOVED = "The board has no scratchpad any more; the owner removed it on 2026-10-15. Put the decision in the note of the step it concerns " +
+  "(plan_update {id, note}).";
 /**
  * `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. `openGoals` caps the open goals (c44,
  * owner 10-12: "a few area goals with their open steps under them"): past it new work goes under the goal it belongs to.
  */
-export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openAsks: 3, openGoals: 6, scratch: 200, links: 5, label: 120,
+export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openAsks: 3, openGoals: 6, links: 5, label: 120,
   requirements: 30, choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
 const OPEN_STATUSES: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 /** The open goals: top-level plan items that are todo, doing or blocked. */
@@ -29,44 +33,31 @@ export class BoardError extends Error {
   constructor(kind: BoardErrorKind, message: string) { super(message); this.kind = kind; }
 }
 
-export function emptyBoard(now: string): ChatBoard { return { v: 2, rev: 0, plan: [], scratch: [], todos: [], updatedAt: now }; }
+export function emptyBoard(now: string): ChatBoard { return { v: 2, rev: 0, plan: [], todos: [], updatedAt: now }; }
 
-export type IdKind = "p" | "t" | "s";
-/** A `newId` that continues after the highest `p<n>` (plan) / `t<n>` (todo) / `s<n>` (scratch) already on the board. */
+export type IdKind = "p" | "t";
+/** A `newId` that continues after the highest `p<n>` (plan) / `t<n>` (todo) already on the board. */
 export function nextIds(board: ChatBoard): (kind: IdKind) => string {
-  const top = { p: 0, t: 0, s: 0 };
+  const top = { p: 0, t: 0 };
   const see = (id: string) => {
-    const match = /^([pts])(\d+)$/.exec(id);
+    const match = /^([pt])(\d+)$/.exec(id);
     if (match) top[match[1] as IdKind] = Math.max(top[match[1] as IdKind], Number(match[2]));
   };
   walk(board.plan, item => see(item.id));
   for (const todo of board.todos) see(todo.id);
-  walk(board.scratch, item => see(item.id));
   return kind => `${kind}${++top[kind]}`;
 }
 
-/**
- * A board file's content as v2. A v1 file kept the scratchpad as one string; each non-empty line becomes a note (a leading "- " or "* " is
- * dropped), with no links. A v2 file written before notes nested gets `children: []` on each note. Throws on anything else.
- */
-export function migrateBoard(value: unknown): ChatBoard {
+/** A board file's content as a `ChatBoard`. Throws on anything that is not a v2 board. */
+export function parseBoard(value: unknown): ChatBoard {
   const board = value as Record<string, unknown>;
-  if (!isRecord(value) || typeof board.rev !== "number" || !Array.isArray(board.plan) || !Array.isArray(board.todos) || typeof board.updatedAt !== "string") {
+  if (!isRecord(value) || board.v !== 2 || typeof board.rev !== "number" || !Array.isArray(board.plan) || !Array.isArray(board.todos) || typeof board.updatedAt !== "string") {
     throw new Error("Chat board file is malformed.");
   }
-  if (board.v === 2 && Array.isArray(board.scratch)) {
-    const scratch = board.scratch as ScratchItem[];
-    return scratch.every(item => Array.isArray(item.children)) ? value as unknown as ChatBoard : { ...(value as unknown as ChatBoard), scratch: withChildren(scratch) };
-  }
-  if (board.v !== 1 || typeof board.scratchpad !== "string") throw new Error("Chat board file is malformed.");
-  const { scratchpad, ...rest } = board;
-  const lines = (scratchpad as string).split("\n").map(line => line.replace(/^\s*[-*]\s+/, "").trim()).filter(Boolean);
-  const scratch: ScratchItem[] = lines.map((text, index) => ({ id: `s${index + 1}`, text: text.slice(0, BOARD_LIMITS.text), links: [], at: board.updatedAt as string, children: [] }));
-  return { ...(rest as unknown as Omit<ChatBoard, "v" | "scratch">), v: 2, scratch };
+  return value as unknown as ChatBoard;
 }
-const withChildren = (items: readonly ScratchItem[]): ScratchItem[] => items.map(item => ({ ...item, children: withChildren(item.children ?? []) }));
 
-/** The plan and the scratchpad are both trees of items with an id; these helpers walk, count, find and rewrite either. */
+/** The plan is a tree of items with an id; these helpers walk, count, find and rewrite it. */
 interface Tree<T> { id: string; children: T[] }
 function walk<T extends Tree<T>>(items: readonly T[], visit: (item: T, depth: number) => void, depth = 0): void {
   for (const item of items) { visit(item, depth); walk(item.children, visit, depth + 1); }
@@ -392,19 +383,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       return Object.assign(op, set, value.kind === null ? { kind: null } : {}, value.requirements === null ? { requirements: null } : {});
     }
     case "plan_remove": return { op: "plan_remove", id: id(value.id) };
-    case "scratch_add": {
-      const op: BoardOp = { op: "scratch_add", text: str(value.text, "text", BOARD_LIMITS.text) };
-      if (value.parent !== undefined && value.parent !== null) op.parent = id(value.parent, "parent");
-      const list = links(value.links); if (list) op.links = list;
-      return op;
-    }
-    case "scratch_update": {
-      const op: BoardOp = { op: "scratch_update", id: id(value.id) };
-      const text = optStr(value.text, "text", BOARD_LIMITS.text); if (text !== undefined) op.text = text;
-      const list = links(value.links); if (list) op.links = list;
-      return op;
-    }
-    case "scratch_remove": return { op: "scratch_remove", id: id(value.id) };
+    case "scratch_add": case "scratch_update": case "scratch_remove": return invalid(SCRATCHPAD_REMOVED);
     case "todo_add": {
       const op: BoardOp = { op: "todo_add", text: str(value.text, "text", BOARD_LIMITS.text) };
       if (value.choices !== undefined) op.choices = choices(value.choices);
@@ -422,7 +401,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       return op;
     }
     case "todo_remove": return { op: "todo_remove", id: id(value.id) };
-    default: return invalid("op must be one of plan_set, plan_add, plan_update, plan_remove, scratch_add, scratch_update, scratch_remove, todo_add, todo_update, todo_remove.");
+    default: return invalid(`op must be one of ${BOARD_OP_NAMES.join(", ")}.`);
   }
 }
 
@@ -432,15 +411,13 @@ export function parseBoardOps(value: unknown): BoardOp[] {
 }
 
 const quote = (text: string) => `"${text.length > 80 ? text.slice(0, 79) + "…" : text}"`;
-const markdownLink = (link: ArtifactLink) => `[${link.label}](${link.target})`;
-const linkText = (list: readonly ArtifactLink[]) => list.length ? ` with links ${list.map(markdownLink).join(" ")}` : "";
 
 /**
  * Applies one op. The board is not mutated; the result has `rev + 1` and `updatedAt: now`. `summary` is one plain sentence in the actor's
  * voice ("Owner checked ..." for the owner, "Added p3 ..." for the agent), used as the steer text and the tool result.
  */
 export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: IdKind) => string): { board: ChatBoard; summary: string } {
-  if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos and the scratchpad; the agent keeps the plan.");
+  if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos; the agent keeps the plan.");
   // Summaries are written lowercase ("checked ...") and voiced here: "Owner checked ..." for the owner, "Checked ..." for the agent.
   const voice = (sentence: string) => actor === "owner" ? `Owner ${sentence}` : sentence[0]!.toUpperCase() + sentence.slice(1);
   const done = (next: Partial<ChatBoard>, summary: string) => {
@@ -560,35 +537,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       return done({ plan: map(board.plan, op.id, () => null) },
         `removed ${item.id} ${quote(item.text)}${removed > 1 ? ` and its ${removed - 1} ${removed === 2 ? "step" : "steps"}` : ""}`);
     }
-    case "scratch_add": {
-      if (count(board.scratch) >= BOARD_LIMITS.scratch) invalid(`The scratchpad holds at most ${BOARD_LIMITS.scratch} notes; remove old ones first.`);
-      const item: ScratchItem = { id: newId("s"), text: op.text, links: op.links ?? [], at: now, children: [] };
-      const added = `added a note${actor === "owner" ? "" : " " + item.id}: ${quote(item.text)}${linkText(item.links)}`;
-      if (op.parent === undefined) return done({ scratch: [...board.scratch, item] }, added);
-      const parent = find(board.scratch, op.parent) ?? unknown("note", op.parent);
-      return done({ scratch: map(board.scratch, op.parent, p => ({ ...p, children: [...p.children, item] })) }, `${added} under ${parent.item.id}`);
-    }
-    case "scratch_update": {
-      const { item } = find(board.scratch, op.id) ?? unknown("note", op.id);
-      const next: ScratchItem = { ...item };
-      const parts: string[] = [];
-      if (op.text !== undefined && op.text !== item.text) { next.text = op.text; parts.push(`rewrote it to ${quote(op.text)}`); }
-      if (op.links !== undefined && JSON.stringify(op.links) !== JSON.stringify(item.links)) {
-        next.links = op.links; parts.push(op.links.length ? `set its links to ${op.links.map(markdownLink).join(" ")}` : "cleared its links");
-      }
-      return done({ scratch: map(board.scratch, op.id, () => next) },
-        `edited the note${actor === "owner" ? "" : " " + item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
-    }
-    case "scratch_remove": {
-      const { item } = find(board.scratch, op.id) ?? unknown("note", op.id);
-      const removed = count([item]);
-      return done({ scratch: map(board.scratch, op.id, () => null) },
-        `removed the note ${quote(item.text)}${removed > 1 ? ` and the ${removed - 1} under it` : ""}`);
-    }
     case "todo_add": {
       if (board.todos.length >= BOARD_LIMITS.todos) invalid(`The todo list holds at most ${BOARD_LIMITS.todos} items; remove done ones first.`);
       if (actor === "agent" && board.todos.filter(todo => todo.from === "agent" && !todo.done).length >= BOARD_LIMITS.openAsks) {
-        invalid(`The owner already has ${BOARD_LIMITS.openAsks} open asks. Decide this yourself and note it in the scratchpad, or remove an ask first.`);
+        invalid(`The owner already has ${BOARD_LIMITS.openAsks} open asks. Decide this yourself and put it in the step's note, or remove an ask first.`);
       }
       if (actor === "agent" && op.step !== undefined && !find(board.plan, op.step)) unknown("plan item", op.step);
       const todo: OwnerTodo = { id: newId("t"), text: op.text, done: false, ...(op.choices ? { choices: op.choices } : {}), ...(op.step ? { step: op.step } : {}),
@@ -1035,18 +987,18 @@ function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInpu
 }
 
 /** Where the agent reads what the open checklist leaves out: the board Python skill. */
-export const BOARD_PY_CALLS = "board.get(id), board.notes(), board.done(), board.todos(all=True)";
+export const BOARD_PY_CALLS = "board.get(id), board.done(), board.todos(all=True)";
 const clip = (text: string, max: number): string => text.length > max ? text.slice(0, max - 1) + "…" : text;
 const MARKS: Record<PlanStatus, string> = { todo: "[ ]", doing: "[~]", done: "[x]", blocked: "[!]", dropped: "[-]" };
 
 /**
  * The board as the agent reads it from chat_board: this chat's link target and check-in line, the goals and steps that are open or hold an open
- * step, one line each, then the open owner todos, then one line counting what it left out. Notes, requirements, done items, answered todos and the
- * scratchpad stay in the board file, read on demand through the board Python skill.
+ * step, one line each, then the open owner todos, then one line counting what it left out. Step notes, requirements, done items and answered
+ * todos stay in the board file, read on demand through the board Python skill.
  */
 export function renderOpenPlan(board: ChatBoard | null, sessionId?: string, checkIn?: string): string {
   const lines = [...(sessionId ? [`This chat: thread:${sessionId}`] : []), ...(checkIn ? [checkIn] : [])];
-  if (!board) return [...lines, "The board is empty: no plan, no todos, no scratchpad."].join("\n");
+  if (!board) return [...lines, "The board is empty: no plan, no todos."].join("\n");
   lines.push(`Board rev ${board.rev}. Open plan (goals and steps not done):`);
   const hidden = { steps: 0, notes: 0 };
   const hasOpen = (item: PlanItem): boolean => OPEN_STATUSES.has(item.status) || item.children.some(hasOpen);
@@ -1077,7 +1029,7 @@ export function renderOpenPlan(board: ChatBoard | null, sessionId?: string, chec
     const linked = todo.links?.length ? `, links: ${todo.links.map(link => link.target).join(" ")}` : "";
     lines.push(`  [ ] ${todo.id} ${clip(todo.text, 160)} (from ${todo.from}${todo.step ? `, for ${todo.step}` : ""})${offered}${linked}`);
   }
-  const left = [`${hidden.steps} done or dropped steps`, `${board.todos.length - open.length} answered todos`, `${count(board.scratch)} notes`,
+  const left = [`${hidden.steps} done or dropped steps`, `${board.todos.length - open.length} answered todos`,
     `${hidden.notes} step notes and requirements`];
   lines.push(`Not shown: ${left.join(", ")}. Read them with ${BOARD_PY_CALLS} in Python.`);
   return lines.join("\n");

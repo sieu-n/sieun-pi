@@ -8,7 +8,7 @@ import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, create
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
 import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "../src/chats.ts";
-import { boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
+import { BOARD_OP_NAMES, boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
@@ -37,7 +37,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
   const boardTool = (brief: readonly string[]) => { boardBrief = brief; pi.registerTool({
     name: CHAT_BOARD_TOOL,
     label: "Chat board",
-    description: "Read or change this chat's board: plan, owner todos, scratchpad. No ops returns the open checklist with ids; ops return their " +
+    description: "Read or change this chat's board: plan and owner todos. No ops returns the open checklist with ids; ops return their " +
       "summaries. The board skill's SKILL.md explains each op and field.",
     promptGuidelines: [...brief],
     parameters: {
@@ -51,7 +51,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
             "links [{label,target}]; null clears a field.",
           items: {
             type: "object",
-            properties: { op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratch_add", "scratch_update", "scratch_remove", "todo_add", "todo_update", "todo_remove"] } },
+            properties: { op: { type: "string", description: BOARD_OP_NAMES.join("|") } },
             required: ["op"],
           },
         },

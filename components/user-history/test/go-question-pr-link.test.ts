@@ -41,7 +41,7 @@ const TODOS: OwnerTodo[] = [
     {"id": "t18", "text": "Fifteen changes are ready, each merging only after its checks pass on the M1 Air: the switch moving checks onto the Air (#234, the rest wait on it), blog category names (#235), signup rate on real readers (#236), phone 'finish on your computer' screen (#237), free plan cut to 30 minutes (#238), subscribe popup (#239), every merge asks you first (#240), test visits out (#241), signup tests #214, #213, #245, #246, and sign-in routing #242, #243, #244 in order. Merge after the Air checks pass?", "done": false, "choices": ["Go: merge after the Air checks pass", "Hold some (tell me which)", "Not yet"], "step": "p109", "from": "agent", "at": "2026-10-12T07:45:18.331Z"},
 ];
 const board = (plan: PlanItem[] = STEPS, todos: OwnerTodo[] = TODOS): ChatBoard =>
-  ({ v: 2, rev: 1, plan: [{ id: "p48", text: "Ship the slack-green changes", status: "doing", children: plan }], scratch: [], todos, updatedAt: "2026-10-12T20:16:00.000Z" }) as ChatBoard;
+  ({ v: 2, rev: 1, plan: [{ id: "p48", text: "Ship the slack-green changes", status: "doing", children: plan }], todos, updatedAt: "2026-10-12T20:16:00.000Z" }) as ChatBoard;
 const stepOf = (id: string): PlanItem => STEPS.find(step => step.id === id)!;
 
 test("go question: a todo that names a step's PR asks about that step, though its step field links another one", () => {

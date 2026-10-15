@@ -43,7 +43,7 @@ const row = (id: string, name: string, extra: Partial<SessionRow> = {}): Session
   working: false, subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", lastActivityAt: "2026-10-14T09:40:00Z", ...extra });
 const ROWS = [row(CHAT, NAME, { working: true }), row(RULES.sessionId, RULES.job), row(GUARD.sessionId, GUARD.job), row(REWRITE.sessionId, REWRITE.job)];
 const held = (jobs: string[]): string[] => {
-  const chat: ChatBoard = { v: 2, rev: 2620, updatedAt: "2026-10-14T09:50:00Z", scratch: [], todos: [], plan: PLAN };
+  const chat: ChatBoard = { v: 2, rev: 2620, updatedAt: "2026-10-14T09:50:00Z", todos: [], plan: PLAN };
   const result = checkInPrecheck(undefined, jobFacts([], chat, ROWS, CHAT), chat, NOW, { self: [CHAT, NAME], rows: ROWS, jobs });
   return convergenceMisses(CHAT, result.steps, result, {}, 15 * 60_000, NOW).flagged.filter(slice => slice.kind === "held_elsewhere").map(slice => slice.item!);
 };

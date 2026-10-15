@@ -6,14 +6,14 @@ import { test } from "node:test";
 import { chatAgents, stepSessions } from "../src/chat-agents.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { jobFacts } from "../src/checkin-steps.ts";
-import { applyBoardOp, migrateBoard, nextIds, parseBoardOps } from "../src/shared/chat-board.ts";
+import { applyBoardOp, nextIds, parseBoard, parseBoardOps } from "../src/shared/chat-board.ts";
 import type { BoardOp, ChatBoard, ChildAgent, PlanItem, SessionRow } from "../src/shared/types.ts";
 
 const T0 = "2026-10-12T00:00:00.000Z";
 const NOW = Date.parse("2026-10-12T07:00:00Z");
 const ID = "01a00000-0000-7000-8000-000000000011";
 const OTHER = "01a00000-0000-7000-8000-000000000013";
-const empty = (): ChatBoard => ({ v: 2, rev: 0, plan: [], scratch: [], todos: [], updatedAt: T0 });
+const empty = (): ChatBoard => ({ v: 2, rev: 0, plan: [], todos: [], updatedAt: T0 });
 const run = (board: ChatBoard, ops: unknown[]): { board: ChatBoard; summaries: string[] } => {
   const summaries: string[] = [];
   for (const op of parseBoardOps(ops) as BoardOp[]) { const next = applyBoardOp(board, op, "agent", T0, nextIds(board)); board = next.board; summaries.push(next.summary); }
@@ -60,8 +60,8 @@ test("plan sessions: plan_set keeps a kept item's id while its job stays, and dr
 });
 
 test("plan sessions: an old board with no sessionId loads unchanged", () => {
-  const old = { v: 2, rev: 3, plan: [{ id: "p1", text: "a", status: "doing", job: "index-job", children: [] }], scratch: [], todos: [], updatedAt: T0 };
-  assert.deepEqual(migrateBoard(structuredClone(old)), old);
+  const old = { v: 2, rev: 3, plan: [{ id: "p1", text: "a", status: "doing", job: "index-job", children: [] }], todos: [], updatedAt: T0 };
+  assert.deepEqual(parseBoard(structuredClone(old)), old);
 });
 
 test("plan sessions: the server stores a named job's session id once, quietly, and only while the step still names that job", async () => {

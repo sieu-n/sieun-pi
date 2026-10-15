@@ -102,7 +102,7 @@ test("c47: the check-in lists an open step written before the check that waits f
     { id: "p2", text: "Re-push the combined run", status: "doing", waitFor: "Fable's 'on staging' word", children: [] },
     { id: "p3", text: "Ship: promote land 33 to prod", status: "blocked", waitFor: "Fable's go", children: [] },
   ] }];
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: T1, scratch: [], todos: [], plan };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: T1, todos: [], plan };
   assert.deepEqual(stepGoWait(plan[0]!.children[0]!), { kind: "thread", phrase: "Fable's 'on staging' word" });
   const precheck = checkInPrecheck(undefined, [], board, Date.parse(T1));
   assert.deepEqual(precheck.facts.filter(fact => fact.includes("c47")), [`p2 "Re-push the combined run" waits for another thread's go, word or slot ("Fable's 'on staging' word"), ` +

@@ -50,7 +50,7 @@ export const CHAT_BRIEF: readonly string[] = [
   "Nothing goes outside (an email, a ticket or support reply, a customer message, a post) until the owner approves the draft on a For you todo (c37).",
   "Flag a goal days or weeks away or blocked on capacity in For you at once, with options and your pick (c42). Base limits (c43) and any " +
     "'target does not fit' or hardware ask (c17) on measured evidence, and show what you tried.",
-  "Decide wording, small fixes and code choices yourself and note them in the scratchpad; ask the owner only about product direction, money, " +
+  "Decide wording, small fixes and code choices yourself and put each decision in the note of the step it concerns; ask the owner only about product direction, money, " +
     "irreversible or outside actions, and credentials. A step waiting on the owner gets one short plain For you todo at once, " +
     "at most 3 open (c32).",
   "Agents decide the control flow, not code loops: a duty runs a code precheck, then one job that decides its own fan-out (c22).",

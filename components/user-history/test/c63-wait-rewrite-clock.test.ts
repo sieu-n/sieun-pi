@@ -44,7 +44,7 @@ const REWRITES: [string, string][] = [
 ];
 const P39: PlanItem = { id: "p39", text: "Build image serving: which images to keep, a resolver for the rest, and a cache of fresh links", status: "blocked",
   job: "media serving build", children: [] };
-const board = (waitFor: string): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-13T09:58:14.901Z", scratch: [], todos: [],
+const board = (waitFor: string): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-13T09:58:14.901Z", todos: [],
   plan: [{ id: "p30", text: "Images load on the search app", status: "doing", children: [{ ...P39, waitFor }] }] }) as unknown as ChatBoard;
 const self = ["01a115e2-9544-7204-b8db-8ce4d5319048", "Crawler VP"];
 

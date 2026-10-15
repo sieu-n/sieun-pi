@@ -21,7 +21,7 @@ const CHECK_IN = "01a13111-fc7c-724b-ab0c-01a763447729";
 const NOW = Date.parse("2026-10-12T17:39:00.000Z");
 const T0 = "2026-10-12T15:00:00.000Z";
 
-const board: ChatBoard = { v: 2, rev: 1, scratch: [], todos: [], updatedAt: T0, plan: [{ id: "p1", text: "Chat system", status: "doing", children: [
+const board: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: T0, plan: [{ id: "p1", text: "Chat system", status: "doing", children: [
   { id: "p86", text: "Chat service bugs", status: "doing", children: [
     { id: "p334", text: "send_message to a busy chat's worker times out at 30 s (Crawler VP 10-12 from 15:07Z)", status: "doing", children: [],
       job: "busy chat inbox", sessionId: "01a13117-6864-773c-91a8-0235380b9402" },
@@ -92,7 +92,7 @@ test("check-in owners: a step owned by a subagent of the chat's check-in job res
  */
 const FRONTEND = "01a11ba8-9d2c-727c-8ded-38f819ca9f29";
 const FRONTEND_NOW = Date.parse("2026-10-12T18:03:15.000Z");
-const frontendBoard: ChatBoard = { v: 2, rev: 1, scratch: [], todos: [], updatedAt: T0, plan: [{ id: "p103", text: "Demo work in flight on 5180", status: "doing", children: [
+const frontendBoard: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: T0, plan: [{ id: "p103", text: "Demo work in flight on 5180", status: "doing", children: [
   { id: "p92", text: "Connections from the shipped screen: delete every old version, then polish the shipped Connections screen part by part (list, connect flow including connecting mid-task, choosing a sender, health and reconnect and disconnect) until it covers every connection the product supports, each part built for Jiwon's task with the Watchlist patterns you liked",
     status: "doing", job: "connections from scratch", sessionId: "01a1301b-e144-7579-b2fc-e399d201140a", children: [] },
   { id: "p93", text: "Email from the current Staging screen: polish 5 parts one at a time (template list, new template flow, editor, sending, A/B testing), each built for Jiwon's canonical task and the Watchlist patterns you liked",

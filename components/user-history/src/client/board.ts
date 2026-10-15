@@ -1,4 +1,4 @@
-import { parseArtifactTarget, normalizeArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
+import { parseArtifactTarget, type ArtifactTarget } from "../shared/artifact-link.ts";
 import { findItem, walkItems } from "../shared/chat-board.ts";
 import { ARTIFACT_ICON, type IconName } from "./icons.ts";
 import type { AgentLink, AgentState, ArtifactLink, ChatAgent, ChatBoard, OwnerTodo, PlanItem, PlanStatus, QueuePlace } from "../shared/types.ts";
@@ -71,9 +71,6 @@ export function planWait(item: PlanItem, now = Date.now()): string | null {
   return `waits${text ? ` for ${text}` : ""}${when ? ` until ${when}` : ""}`;
 }
 
-/** Every item in a tree, nested ones included. */
-export const countItems = <T extends { children: T[] }>(items: readonly T[]): number => items.reduce((total, item) => total + 1 + countItems(item.children), 0);
-
 /** A plan step the owner is done with: the chat marked it done, or dropped it. Hidden unless "Show done" is on for its parent. */
 export const isFinished = (item: PlanItem): boolean => item.status === "done" || item.status === "dropped";
 
@@ -87,7 +84,7 @@ export type TreeRow<T> = { kind: "item"; item: T; depth: number; parent: string 
 export interface TreeView { open: (id: string) => boolean; showDone: (parent: string) => boolean }
 /**
  * The rows a tree card shows. Every item with children starts folded and opens when `open(id)` says so; finished items (per `finished`) stay off
- * the list until `showDone(parent)` is on for their parent. Notes pass no `finished` and never hide.
+ * the list until `showDone(parent)` is on for their parent.
  */
 export function treeRows<T extends { id: string; children: T[] }>(items: readonly T[], view: TreeView, finished: (item: T) => boolean = () => false): TreeRow<T>[] {
   const rows: TreeRow<T>[] = [];
@@ -106,7 +103,7 @@ export function treeRows<T extends { id: string; children: T[] }>(items: readonl
 }
 
 /**
- * What a chat's text turns into chips: the board's ids with a short title each (`p<n>` plan steps, `s<n>` notes) and the names of its jobs.
+ * What a chat's text turns into chips: the board's plan ids (`p<n>`) with a short title each and the names of its jobs.
  * `jobs` matches one job name written as a whole word (`at` at the start of the text, `start` anywhere; neither matches inside a word or
  * a hyphenated word). `key` changes with every board op and every new job, so a render cache can key on it. Null when the chat has
  * neither a board nor a job.
@@ -119,7 +116,6 @@ export function mentionIndex(chatId: string, board: ChatBoard | null | undefined
   const titles = new Map<string, string>();
   const add = (item: { id: string; text: string }) => titles.set(item.id, shortTitle(item.text));
   walkItems(board?.plan ?? [], add);
-  walkItems(board?.scratch ?? [], add);
   const alternatives = names.map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
   const jobs = names.length ? { at: new RegExp(`^(?:${alternatives})(?![\\w-])`), start: new RegExp(`(^|[^\\w-])(?:${alternatives})(?![\\w-])`) } : null;
   return { chatId, key: `${chatId}:${board?.rev ?? 0}:${names.join("\0")}`, titles, jobs };
@@ -134,15 +130,13 @@ export function parentIds<T extends { id: string; children: T[] }>(items: readon
   return ids;
 }
 /**
- * What the plan view does to show `focus`: the parents to unfold (its ancestors), whether done items must show (the step or one above it is
- * done or dropped), and which section holds it. Null when neither tree has the id.
+ * What the plan view does to show `focus`: the parents to unfold (its ancestors) and whether done items must show (the step or one above it
+ * is done or dropped). Null when the plan has no such id.
  */
-export interface FocusPlan { section: "plan" | "notes"; unfold: string[]; showDone: boolean }
+export interface FocusPlan { unfold: string[]; showDone: boolean }
 export function focusPlan(board: ChatBoard, focus: string): FocusPlan | null {
   const step = findItem(board.plan, focus);
-  if (step) return { section: "plan", unfold: step.ancestors.map(item => item.id), showDone: [...step.ancestors, step.item].some(isFinished) };
-  const note = findItem(board.scratch, focus);
-  return note ? { section: "notes", unfold: note.ancestors.map(item => item.id), showDone: false } : null;
+  return step ? { unfold: step.ancestors.map(item => item.id), showDone: [...step.ancestors, step.item].some(isFinished) } : null;
 }
 
 /**
@@ -167,7 +161,7 @@ export function groupTodos(todos: readonly OwnerTodo[]): { open: OwnerTodo[]; do
 /** Asks from the agent the owner has not handled; the dot on the Board tab. */
 export const openAgentTodos = (board: ChatBoard | null | undefined): number => board?.todos.filter(todo => !todo.done && todo.from === "agent").length ?? 0;
 
-export const isEmptyBoard = (board: ChatBoard | null | undefined): boolean => !board || (!board.plan.length && !board.todos.length && !board.scratch.length);
+export const isEmptyBoard = (board: ChatBoard | null | undefined): boolean => !board || (!board.plan.length && !board.todos.length);
 
 /** A user message the owner's board action sent; the feed shows it as one small line, not a bubble. */
 export const BOARD_PREFIX = "[board] ";
@@ -182,7 +176,7 @@ export function linkChip(link: ArtifactLink): LinkChip {
   return { kind, icon: ARTIFACT_ICON[kind], label: link.label.trim() || linkLabel(link.target), target };
 }
 
-/** A label for a link the owner pasted: the job name, the file or page name, the site, or a short thread id. */
+/** A label for a link: the job name, the file or page name, the site, or a short thread id. */
 export function linkLabel(target: string): string {
   const parsed = parseArtifactTarget(target);
   if (!parsed) return target;
@@ -197,19 +191,6 @@ export function linkLabel(target: string): string {
       return url.hostname.replace(/^www\./, "") + (path.length > 1 && path.length <= 40 ? path : "");
     }
   }
-}
-
-/**
- * The link offer under the "Add a note" field: the last word of the draft that is a link target (a pasted URL, chat link, wiki page or
- * absolute path), with the draft text left without it. Null when no word is one.
- */
-export function offeredLink(draft: string): { text: string; target: string } | null {
-  const words = draft.trim().split(/\s+/).filter(Boolean);
-  for (let index = words.length - 1; index >= 0; index--) {
-    const target = normalizeArtifactTarget(words[index]!);
-    if (target) return { text: [...words.slice(0, index), ...words.slice(index + 1)].join(" "), target };
-  }
-  return null;
 }
 
 /**

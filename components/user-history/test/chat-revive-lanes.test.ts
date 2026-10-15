@@ -19,7 +19,7 @@ import type { ChatBoard, SessionRow, ThreadMessage } from "../src/shared/types.t
 
 process.env.TZ = "Asia/Seoul";
 
-const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [] }] };
+const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [] }] };
 const aborted = (at: number): ThreadMessage[] => [
   { role: "user", content: "continue", timestamp: at - 1000 },
   { role: "assistant", content: [], provider: "anthropic", model: "m", stopReason: "aborted", errorMessage: "Request was aborted", timestamp: at } as ThreadMessage,

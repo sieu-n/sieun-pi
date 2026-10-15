@@ -88,7 +88,7 @@ test("send log: the tool_call guard and the kernel check write one line per send
     process.env.GLOBAL_RULES_SEND_LOG = join(dir, "sends.jsonl");
     process.env.AGENT_CHAT_DATA_DIR = join(dir, "chat");
     await mkdir(join(dir, "chat", "boards"), { recursive: true });
-    await writeFile(join(dir, "chat", "boards", `${chat}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], scratch: [], updatedAt: "2026-10-12T00:00:00Z", todos: [
+    await writeFile(join(dir, "chat", "boards", `${chat}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], updatedAt: "2026-10-12T00:00:00Z", todos: [
       { id: "t1", text: "Send this reply to support@vendor.example?", done: true, choices: ["Send it", "Not yet"], from: "agent", at: "2026-10-12T00:00:00Z", reply: "Send it", answeredBy: "owner" },
     ] }));
     assert.equal(sendLogPath(), join(dir, "sends.jsonl"));

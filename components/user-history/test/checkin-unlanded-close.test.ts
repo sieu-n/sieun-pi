@@ -57,7 +57,7 @@ const OPS = [{"op": "plan_update", "id": "p389", "status": "done", "waitFor": nu
 async function board(plan: PlanItem[] = PLAN): Promise<string> {
   const dataDir = await mkdtemp(join(tmpdir(), "unlanded-close-"));
   await mkdir(join(dataDir, "boards"));
-  const value: ChatBoard = { v: 2, rev: 2556, plan, scratch: [], todos: [], updatedAt: "2026-10-14T08:02:43.000Z" };
+  const value: ChatBoard = { v: 2, rev: 2556, plan, todos: [], updatedAt: "2026-10-14T08:02:43.000Z" };
   await writeFile(join(dataDir, "boards", CHAT + ".json"), JSON.stringify(value));
   return dataDir;
 }

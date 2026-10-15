@@ -29,7 +29,7 @@ const STEPS = (): PlanItem[] => [
 const P14: PlanItem = { id: "p14", text: "Each Prospect app reaches Staging through flows, variant sets and picks merged one at a time", status: "done", children: [],
   note: "Folded into the duty Apps reach staging, at 3 of 6 apps picked on 15:33Z. Its open steps moved to the app builds goal." };
 const P102 = (): PlanItem => ({ id: "p102", text: "This round's app builds reach Staging: Connections, Email, Inbox, Home and the Creators demos", status: "doing", children: STEPS() });
-const board = (plan: PlanItem[]): ChatBoard => ({ v: 1, rev: 1190, plan, scratch: [], todos: [], updatedAt: "2026-10-12T15:44:56.000Z" }) as unknown as ChatBoard;
+const board = (plan: PlanItem[]): ChatBoard => ({ v: 1, rev: 1190, plan, todos: [], updatedAt: "2026-10-12T15:44:56.000Z" }) as unknown as ChatBoard;
 
 test("goals to fold: p102, which holds the open steps of p14 after p14 folded into its duty d2, is not folded into d2 again", () => {
   assert.deepEqual(goalsToFold(board([P14, P102()]), [], SELF, DUTIES).map(fold => `${fold.goal.id}>${fold.duty?.id}`), []);

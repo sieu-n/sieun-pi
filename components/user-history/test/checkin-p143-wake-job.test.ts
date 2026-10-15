@@ -41,7 +41,7 @@ async function setup() {
     note: "7-day recheck of PR #257", since: Date.parse("2026-10-15T10:01:46Z") }));
   const boards = new BoardStore(dir);
   await mkdir(boards.dir, { recursive: true });
-  await writeFile(join(boards.dir, `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [P143] }));
+  await writeFile(join(boards.dir, `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, updatedAt: "", todos: [], plan: [P143] }));
   let now = REPORTED;
   const calls: string[] = [];
   const lines: string[] = [];

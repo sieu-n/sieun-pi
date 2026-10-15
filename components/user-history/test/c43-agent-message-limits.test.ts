@@ -54,8 +54,7 @@ test("c43: board step text, notes and waitFor with an unbacked limit are refused
   assert.equal(boardLimitClaims([{ op: "plan_add", text: STEP_P118 }]).length, 1);
   assert.equal(boardLimitClaims([{ op: "plan_update", id: "p23", waitFor: "metal's +15 read: NVMe under 75 MB/s line" }]).length, 1);
   assert.equal(boardLimitClaims([{ op: "plan_set", items: [{ text: "Census ramp", children: [{ text: "canary", note: NOTE_P23 }] }] }]).length, 1);
-  assert.deepEqual(boardLimitClaims([{ op: "plan_update", id: "p23", status: "done" }, { op: "scratch_add", text: NOTE_P23 }]), [],
-    "a status change carries no text, and scratch notes record what others said");
+  assert.deepEqual(boardLimitClaims([{ op: "plan_update", id: "p23", status: "done" }]), [], "a status change carries no text");
 });
 
 test("c43: an order or condition with a threshold is a limit even with no line word (the 10-10 03:40Z order)", () => {

@@ -23,7 +23,7 @@ const CHAT = "01a11bd7-072f-7591-ad1d-f123c276cde5";
 const JOB = "collab backfill";
 const START = Date.parse("2026-10-13T10:00:00Z");
 const MIN = 60_000;
-const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(START).toISOString(), scratch: [], todos: [], plan: [
+const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(START).toISOString(), todos: [], plan: [
   { id: "p1", text: "Collab posts on staging", status: "doing", children: [{ id: "p2", text: "Copy collab posts to staging", status: "doing", job: JOB, children: [] }] }] };
 const working: ChildAgent = { id: "sub-5f2c", label: JOB, sessionName: JOB, status: "running", lastActivityAt: START };
 const report = (text: string, at: number): ThreadMessage => ({ role: "custom", customType: "agent_message", content: `[agent-message from child:${JOB}]\n\n${text}`, timestamp: at }) as ThreadMessage;

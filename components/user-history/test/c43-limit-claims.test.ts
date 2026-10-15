@@ -49,8 +49,7 @@ test("c43: a measurement counts only in the sentence that states the limit, and 
 test("c43: a For you todo that states an unmeasured limit is refused; t28 is the 10-12 text the owner answered", () => {
   assert.deepEqual(boardLimitClaims([{ op: "todo_add", text: TODO_T28 }]), ['"caps new profiles near 2,200 a minute."']);
   assert.deepEqual(boardLimitClaims([{ op: "todo_update", id: "t28", text: TODO_T28 }]).length, 1);
-  assert.deepEqual(boardLimitClaims([{ op: "todo_add", text: "OK to switch census to us-08 now?" }, { op: "scratch_add", text: TODO_T28 }]), [],
-    "scratch notes record what others said");
+  assert.deepEqual(boardLimitClaims([{ op: "todo_add", text: "OK to switch census to us-08 now?" }]), []);
 });
 
 test("c43: the chat_board tool refuses todo_add t28 and writes nothing; a plain todo goes on the board", async () => {

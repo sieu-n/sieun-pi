@@ -159,7 +159,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
       "at once to check the number moved."] : []),
     "## How to work",
     [
-      `The chat's board is the JSON file ${chat.board}: the plan, the scratch notes with the owner's rulings, and the For you todos. Read it, then ` +
+      `The chat's board is the JSON file ${chat.board}: the plan with its step notes and the For you todos with the owner's answers. Read it, then ` +
         "check the real state behind it: the jobs (`await agent_observe.list_agents()`, `await agent_observe.recent_messages(name)`), the commits, " +
         "the live pages, and other threads' last messages.",
       "Fix the issues you find and check what the duty specifies. You decide what to check and what to start from what you find: control flow " +

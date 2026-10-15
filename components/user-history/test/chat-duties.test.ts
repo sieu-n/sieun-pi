@@ -91,7 +91,7 @@ Measured against the targets: all 2 on target. This is information, not a verdic
 
 ## How to work
 
-- The chat's board is the JSON file /data/boards/c1.json: the plan, the scratch notes with the owner's rulings, and the For you todos. Read it, then check the real state behind it: the jobs (\`await agent_observe.list_agents()\`, \`await agent_observe.recent_messages(name)\`), the commits, the live pages, and other threads' last messages.
+- The chat's board is the JSON file /data/boards/c1.json: the plan with its step notes and the For you todos with the owner's answers. Read it, then check the real state behind it: the jobs (\`await agent_observe.list_agents()\`, \`await agent_observe.recent_messages(name)\`), the commits, the live pages, and other threads' last messages.
 - Fix the issues you find and check what the duty specifies. You decide what to check and what to start from what you find: control flow is decided by agents, not by loops in code.
 - Look for open goals with no live job.
 - Split work by the job rules: one goal per job, one subagent per unit of output, and work of 1 to 3 tool calls stays inline. Start subagents with \`await rlm.spawn(brief, name=...)\`, all at once, each brief ending with \`await agent_message.send(report, receiver_role="parent")\`; end your turn, read each reply as it comes, and delete each subagent after its report. Work for another repository goes to \`await rlm.create_session(brief, name=..., cwd=...)\`.

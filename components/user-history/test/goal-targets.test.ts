@@ -49,7 +49,7 @@ test("goal target: the reducer refuses a bad target and a target on a step", () 
 });
 
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
-const boardOf = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: iso(NOW - 3 * HOUR), scratch: [], todos: [], plan });
+const boardOf = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: iso(NOW - 3 * HOUR), todos: [], plan });
 
 test("goal gaps: 8 of 200 Mbps with no live job is a 96% gap and counts; a goal at 90% is listed, not counted; a missing or stale measurement is listed", () => {
   const board = boardOf([

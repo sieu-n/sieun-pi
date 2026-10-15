@@ -23,8 +23,11 @@ export const BRIEF_CHECK_PREFIX = "[brief check] ";
  * `[board]` actions, the turn it starts is not the owner's.
  */
 export const OPS_STEER_PREFIX = "[board] Ops not applied: ";
-/** The server's `[board]` line when a chat's turn sent a ruling to a job or thread and added no scratch note (src/decision-notes.ts, c76). */
-export const DECISION_STEER_PREFIX = "[board] Decisions not on the scratchpad: ";
+/**
+ * The server's `[board]` line after a chat's turn sent a ruling and added no scratchpad note. The server sent it on 10-15 until the owner removed
+ * the scratchpad; the feed still reads it in older transcripts as a note the owner did not type.
+ */
+const DECISION_STEER_PREFIX = "[board] Decisions not on the scratchpad: ";
 const SERVER_NOTES: readonly [string, string][] = [[CHECK_IN_PREFIX, "check-in"], [JOB_NOTICE_PREFIX, "jobs"], [REPLY_CHECK_PREFIX, "reply check"], [BRIEF_CHECK_PREFIX, "brief check"],
   [OPS_STEER_PREFIX, "board"], [DECISION_STEER_PREFIX, "board"]];
 /** In a server note that restarts a failed owner turn: the turn it starts stays the owner's, so the chat's answer is a bubble. */

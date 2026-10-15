@@ -12,7 +12,7 @@ const MIN = 60_000;
 const EVERY = 15 * MIN;
 const iso = (at: number) => new Date(at).toISOString();
 const item = (id: string, text: string, extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "todo", children: [], ...extra });
-const boardOf = (updatedAt: number, ...plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: iso(updatedAt), scratch: [], todos: [], plan });
+const boardOf = (updatedAt: number, ...plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: iso(updatedAt), todos: [], plan });
 const check = (board: ChatBoard, facts: JobFact[] = []) => {
   const precheck = checkInPrecheck(undefined, facts, board, NOW, { self: ["01a00000-0000-7000-8000-000000000004", "Index VP"], rows: [], everyMs: EVERY });
   const output = convergenceMisses("c1", precheck.steps, precheck, {}, EVERY, NOW);

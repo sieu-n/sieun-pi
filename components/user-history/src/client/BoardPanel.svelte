@@ -1,10 +1,10 @@
 <script lang="ts">
   import { untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, needsGo, nextIds, stepGo } from "../shared/chat-board.ts";
-  import type { ArtifactLink, BoardOp, ChatAgent, ChatBoard, OwnerTodo, PlanItem, ScratchItem } from "../shared/types.ts";
+  import type { ArtifactLink, BoardOp, ChatAgent, ChatBoard, OwnerTodo, PlanItem } from "../shared/types.ts";
   import { AGENT_LINK_LABEL, AGENT_STATE_LABEL, agentSubagents, queueText, rowDetails } from "./board.ts";
   import { elapsed } from "./organize.ts";
-  import { countItems, groupTodos, isEmptyBoard, isFinished, linkChip, linkLabel, offeredLink, planProgress, planTotals, planWait, treeRows, type TreeRow, type TreeView } from "./board.ts";
+  import { groupTodos, isEmptyBoard, isFinished, linkChip, planProgress, planTotals, planWait, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
   import { ui } from "./ui.svelte.ts";
   import { ChatDuties, dutiesCount } from "./duties.svelte.ts";
@@ -23,14 +23,13 @@
    * choices in a row under it, answered by a tap on a choice or a typed reply; owner notes look the same), Duties (DutyList), Agents (every
    * thread the server links to the chat, `SessionRow.agents`: a status dot, the name, one line of activity (or its place in the Mac-wide turn queue,
    * "Queued 3 of 7, waiting 4 min"), the running subagent count, the output rate and the age; a click opens the job
-   * drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card), and Notes (nested notes with links to
-   * jobs, messages, wiki pages, files and web pages; the owner adds and removes notes).
-   * Plan steps and notes are trees: everything with children starts folded, done and dropped steps hide behind "Show done" per parent, and
+   * drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card).
+   * Plan steps are a tree: everything with children starts folded, done and dropped steps hide behind "Show done" per parent, and
    * each item carries its id chip (the id the chat uses, with a color hashed from the chat and item ids; a click copies the id).
    * A row is a fixed lead (the fold, the status mark and the chip) and a text block beside it, so a wrapped line, a counter, a wait and a note
-   * line up under the start of the text (a hanging indent at every depth). A note's link opens through `store.openArtifact` (the reader, the
-   * thread, or a tab); a plan step with an agent carries its AgentChip after the text (status dot and name; a click opens the job drawer or the thread). The Plan and Notes headers carry an "Open plan"
-   * button, and a double click on a row or its hover "open" button opens the plan view (`store.openPlan`) on that item. `checkIn` is the
+   * line up under the start of the text (a hanging indent at every depth). A todo's link opens through `store.openArtifact` (the reader, the
+   * thread, or a tab); a plan step with an agent carries its AgentChip after the text (status dot and name; a click opens the job drawer or the
+   * thread). The Plan header carries an "Open plan" button, and a double click on a row or its hover "open" button opens the plan view (`store.openPlan`) on that item. `checkIn` is the
    * server's 5-minute tick line under the cards. `apply` gets the board after the owner's ops and the ops themselves; it resolves false when
    * the server refused them.
    */
@@ -59,13 +58,10 @@
 
   const todos = $derived(groupTodos(board?.todos ?? []));
   const openCount = $derived(todos.open.length);
-  const scratch = $derived(board?.scratch ?? []);
-  const noteCount = $derived(countItems(scratch));
   const totals = $derived(planTotals(board?.plan ?? []));
   /** Folds and "Show done" are the owner's per chat, kept in the browser (ui.boardItemsOpen, ui.boardShowDone). */
   const view: TreeView = { open: itemId => ui.boardItemsOpen[`${id}/${itemId}`] === true, showDone: parent => ui.boardShowDone[`${id}/${parent}`] === true };
   const planRows = $derived(treeRows(board?.plan ?? [], view, isFinished));
-  const noteRows = $derived(treeRows(scratch, view));
   const fold = (itemId: string) => ui.setBoardItemOpen(id, itemId, !view.open(itemId));
   const openPlan = (focus: string | null = null) => store.openPlan(id, focus);
   /** A double click on a row opens the plan view on it; one that lands on a control (the chip, the fold, a link) is that control's own. */
@@ -78,9 +74,8 @@
     return apply(next, ops);
   }
 
-  /** Plan and Notes keep the owner's fold across chats; For you opens whenever something waits on the owner. */
+  /** Plan keeps the owner's fold across chats; For you opens whenever something waits on the owner. */
   const planOpen = $derived(ui.boardCards.plan ?? true);
-  const notesOpen = $derived(ui.boardCards.notes ?? true);
   let forYouOpen = $state(false);
   $effect(() => { if (openCount) untrack(() => { forYouOpen = true; }); });
   let doneOpen = $state(false);
@@ -110,32 +105,6 @@
   };
   function focusEnd(node: HTMLInputElement | HTMLTextAreaElement): void { node.focus(); node.setSelectionRange(node.value.length, node.value.length); }
 
-  let noteDraft = $state("");
-  let noteLinks = $state<ArtifactLink[]>([]);
-  /** The note the next note goes under, picked with a note's + button; cleared by its chip's x, Escape, or the save. */
-  let noteParent = $state<ScratchItem | null>(null);
-  let noteField: HTMLInputElement | undefined = $state();
-  function addUnder(item: ScratchItem): void { noteParent = item; noteField?.focus(); }
-  const offer = $derived(offeredLink(noteDraft));
-  function attachOffer(): void {
-    if (!offer) return;
-    noteLinks = [...noteLinks, { label: linkLabel(offer.target), target: offer.target }];
-    noteDraft = offer.text;
-  }
-  function addNote(): void {
-    const text = noteDraft.trim() || noteLinks[0]?.label || "";
-    if (!text) return;
-    const links = noteLinks;
-    const parent = noteParent;
-    noteDraft = "";
-    noteLinks = [];
-    noteParent = null;
-    if (parent) ui.setBoardItemOpen(id, parent.id, true);
-    void send([{ op: "scratch_add", text, links, ...(parent ? { parent: parent.id } : {}) }])
-      .then(ok => { if (!ok && !noteDraft.trim() && !noteLinks.length) { noteDraft = text; noteLinks = links; noteParent = parent; } });
-  }
-  function clearNote(): void { noteDraft = ""; noteLinks = []; noteParent = null; }
-
   const todoLabel = (todo: OwnerTodo) => todo.from === "owner" ? "Your note" : "Ask from the chat";
   /** A link in a todo (a wiki page, a file, a job, a thread, a web URL) opens like it does in a chat bubble; editing is the pencil button. */
   function onTodoClick(event: MouseEvent): void {
@@ -146,7 +115,7 @@
   }
 </script>
 
-{#snippet card(key: "plan" | "foryou" | "agents" | "duties" | "notes", title: string, count: string, open: boolean, toggle: () => void, body: Snippet, expandable = false)}
+{#snippet card(key: "plan" | "foryou" | "agents" | "duties", title: string, count: string, open: boolean, toggle: () => void, body: Snippet, expandable = false)}
   <section class="island" data-card={key} class:open>
     <div class="island-head">
       <button type="button" class="island-toggle" aria-expanded={open} onclick={toggle}>
@@ -267,52 +236,6 @@
   </div>
 {/snippet}
 
-{#snippet noteRow(row: TreeRow<ScratchItem>)}
-  {#if row.kind === "item"}
-    {@const item = row.item}
-    {@const open = view.open(item.id)}
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <li class="note" style:--depth={row.depth} ondblclick={onRowDblClick(item.id)}>
-      <span class="row-lead">
-        {@render foldButton(item, open)}
-        <IdChip chat={id} id={item.id} />
-      </span>
-      <div class="note-body">
-        <p class="note-text">{item.text}{#if item.children.length && !open}<span class="progress">{item.children.length} under it</span>{/if}</p>
-        {#if item.links.length}{@render linkChips(item.links)}{/if}
-      </div>
-      <span class="note-actions">
-        {@render openRow(item.id)}
-        <button type="button" class="icon-button small" aria-label="Add a note under {item.text}" use:tooltip={"Add a note under this"} onclick={() => addUnder(item)}><Icon name="plus" /></button>
-        <button type="button" class="icon-button small" aria-label="Remove note {item.text}" onclick={() => void send([{ op: "scratch_remove", id: item.id }])}><Icon name="x" /></button>
-      </span>
-    </li>
-  {/if}
-{/snippet}
-
-{#snippet addNoteField()}
-  <div class="add-note">
-    {#if noteParent || noteLinks.length}
-      <div class="chips pending">
-        {#if noteParent}
-          <span class="link-chip under" title="The new note goes under {noteParent.id}">under <IdChip chat={id} id={noteParent.id} />
-            <button type="button" class="chip-x" aria-label="Add at the top level instead" onclick={() => { noteParent = null; }}><Icon name="x" size={10} /></button></span>
-        {/if}
-        {#each noteLinks as link, index (link.target + index)}
-          {@const chip = linkChip(link)}
-          <span class="link-chip {chip.kind}" title={link.target}><Icon name={chip.icon} size={11} /><span class="chip-label">{chip.label}</span>
-            <button type="button" class="chip-x" aria-label="Drop link {chip.label}" onclick={() => { noteLinks = noteLinks.filter((_, at) => at !== index); }}><Icon name="x" size={10} /></button></span>
-        {/each}
-      </div>
-    {/if}
-    <input class="field add" bind:this={noteField} bind:value={noteDraft} placeholder={noteLinks.length || noteParent ? "Note text, Enter saves" : "Add a note, paste a link or a path to attach it"} aria-label="Add a note" enterkeyhint="send"
-      onkeydown={onKey(addNote, clearNote)} />
-    {#if offer}
-      <button type="button" class="offer" onclick={attachOffer}><Icon name="link" size={12} />Attach <span class="offer-target">{linkLabel(offer.target)}</span> as a link</button>
-    {/if}
-  </div>
-{/snippet}
-
 {#snippet planBody()}
   {#if board?.plan.length}
     <ul class="plan-list">{#each planRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render planRow(row)}{/each}</ul>
@@ -348,11 +271,6 @@
     </ul>
   {:else}<p class="none">No agents yet.</p>{/if}
 {/snippet}
-{#snippet notesBody()}
-  {#if scratch.length}<ul class="note-list">{#each noteRows as row (row.kind === "item" ? row.item.id : `${row.parent}/done`)}{@render noteRow(row)}{/each}</ul>{/if}
-  {@render addNoteField()}
-{/snippet}
-
 {#snippet dutiesBody()}<DutyList chat={id} {duties} {now} {agents} />{/snippet}
 {#snippet dutiesCard()}
   {#if duties.views.length}{@render card("duties", "Duties", dutiesCount(duties.views), dutiesOpen, () => ui.setBoardCard("duties", !dutiesOpen), dutiesBody)}{/if}
@@ -360,16 +278,14 @@
 
 <div class="board">
   {#if isEmptyBoard(board)}
-    <p class="empty">The plan, the chat's questions and its notes show up here once it starts work.</p>
+    <p class="empty">The plan and the chat's questions show up here once it starts work.</p>
     {@render dutiesCard()}
     {#if agents.length}{@render card("agents", "Agents", agentsCount, agentsOpen, () => ui.setBoardCard("agents", !agentsOpen), agentsBody)}{/if}
-    {@render addNoteField()}
   {:else}
     {@render card("plan", "Plan", totals.total ? `${totals.done} of ${totals.total} done` : "", planOpen, () => ui.setBoardCard("plan", !planOpen), planBody, true)}
     {@render card("foryou", "For you", openCount ? `${openCount} open` : "", forYouOpen, () => { forYouOpen = !forYouOpen; }, forYouBody)}
     {@render dutiesCard()}
     {@render card("agents", "Agents", agentsCount, agentsOpen, () => ui.setBoardCard("agents", !agentsOpen), agentsBody)}
-    {@render card("notes", "Notes", noteCount ? String(noteCount) : "", notesOpen, () => ui.setBoardCard("notes", !notesOpen), notesBody, true)}
   {/if}
   <p class="check-in" class:on={checkIn.on}><Icon name="bolt" size={12} /><span>{checkIn.text}</span></p>
 </div>
@@ -399,13 +315,12 @@
   .chev.open { transform: none; }
   .empty, .none { margin: 0; padding: 4px 0; color: var(--text-faint); font-size: 12.5px; line-height: 1.5; }
   .empty { padding: 24px 8px; text-align: center; }
-  .plan-list, .note-list { list-style: none; margin: 0; padding: 0; }
-  .note-list { margin-bottom: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .plan-list { list-style: none; margin: 0; padding: 0; }
   /*
    * A row: a fixed lead (the fold, the status mark, the id chip; 18 px inline boxes) and the text block beside it, so a wrapped line and the
    * note under it start where the text starts. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
    */
-  .plan-item, .note { position: relative; display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
+  .plan-item { position: relative; display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
   .plan-item { padding-top: 3px; padding-bottom: 3px; }
   .row-lead { display: inline-flex; flex: none; align-items: center; height: 18px; gap: 2px; }
   .row-body { flex: 1; min-width: 0; }
@@ -423,15 +338,13 @@
   .req.met .req-status { color: var(--text-muted); }
   .req.unmet .req-status, .req.open .req-status { color: var(--accent-bold); }
   /*
-   * The row's buttons (open in plan view; on a note also add under and remove) sit over the row's top right corner, out of the text flow, with
-   * a fade so they read over a long first line. They show on hover and focus.
+   * The row's "open in plan view" button sits over the row's top right corner, out of the text flow, with a fade so it reads over a long
+   * first line. It shows on hover and focus.
    */
-  .plan-item > .row-open, .note-actions { position: absolute; top: 3px; right: -4px; height: 18px; border-radius: 4px; color: var(--text-faint); background: var(--bg-elevated); box-shadow: -8px 0 6px -2px var(--bg-elevated); opacity: 0; }
+  .plan-item > .row-open { position: absolute; top: 3px; right: -4px; height: 18px; border-radius: 4px; color: var(--text-faint); background: var(--bg-elevated); box-shadow: -8px 0 6px -2px var(--bg-elevated); opacity: 0; }
   .plan-item > .row-open { width: 20px; padding-left: 2px; }
   .icon-button.row-open :global(svg) { width: 12px; height: 12px; }
-  .note-actions { top: 0; display: inline-flex; align-items: center; }
-  .note-actions .icon-button { height: 18px; }
-  .plan-item:hover > .row-open, .plan-item > .row-open:focus-visible, .note:hover > .note-actions, .note-actions:focus-within { opacity: 1; }
+  .plan-item:hover > .row-open, .plan-item > .row-open:focus-visible { opacity: 1; }
   .finished { list-style: none; padding-left: calc(min(calc(var(--depth) * 14px), 25%) + 14px); }
   .finished .done-fold { margin-top: 2px; }
   .plan-note { margin: 0; padding: 0 0 2px; font-size: 12px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
@@ -486,19 +399,7 @@
   .agent-subs.running::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: var(--accent-bold); vertical-align: 1px; }
   .agent-subs + .agent-rate, .agent-subs + .agent-age, .agent-rate + .agent-age { margin-left: 0; }
   .agent-age { flex: none; margin-left: auto; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-  .link-chip.under { gap: 2px; padding-right: 4px; }
-  .link-chip.under :global(.id-chip) { opacity: 1; }
-  .note-body { flex: 1; min-width: 0; }
-  .note-text { margin: 0; line-height: 18px; overflow-wrap: anywhere; }
   .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
-  .chip-x { display: inline-flex; margin: 0 -3px 0 0; padding: 2px; border-radius: 50%; color: var(--text-faint); }
-  .chip-x:hover { color: var(--danger); background: var(--bg-hover); }
-  .add-note { display: flex; flex-direction: column; gap: 5px; }
-  .chips.pending { margin: 0; }
-  .field.add { width: 100%; height: 30px; font-size: 13px; }
-  .offer { display: inline-flex; align-items: center; gap: 5px; align-self: flex-start; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-strong); font-size: 12px; color: var(--text-muted); }
-  .offer:hover { color: var(--accent-bold); border-color: var(--accent); background: var(--accent-soft); }
-  .offer-target { font-weight: 600; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .check-in { display: flex; align-items: center; gap: 6px; margin: 0; padding: 2px 4px; font-size: 11.5px; color: var(--text-faint); }
   .check-in.on { color: var(--text-muted); }
   @container app (max-width: 899px) {

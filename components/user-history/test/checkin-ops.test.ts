@@ -125,7 +125,7 @@ test("check-in ops: the turn still running gets no line, and an op the board alr
   const [report, ...turn] = FIXTURE.checkin0612;
   assert.equal(opsSteer(said([report!, ...turn.slice(0, 2)]), null), undefined, "the turn has not ended");
   const p21 = reportOps(report!).find(op => op.id === "p21")!;
-  const board: ChatBoard = { v: 2, rev: 3315, updatedAt: "2026-10-13T21:20:00Z", scratch: [], todos: [], plan: [{ id: "p20", text: "Land 33", status: "doing", children: [
+  const board: ChatBoard = { v: 2, rev: 3315, updatedAt: "2026-10-13T21:20:00Z", todos: [], plan: [{ id: "p20", text: "Land 33", status: "doing", children: [
     { id: "p21", text: "Probe overlap", status: "blocked", waitFor: p21.waitFor as string, waitUntil: "2026-10-13T22:30:00.000Z", note: p21.note as string, children: [] }] }] };
   assert.ok(onBoard(p21 as Parameters<typeof onBoard>[0], board), "same wait, note and waitUntil written another way");
   assert.ok(!onBoard({ ...p21, op: "plan_update", parent: "p1" }, board), "a move the board does not show");

@@ -35,7 +35,7 @@ async function setup(spawn: { prompt?: string } | null, sessionLines: string[] =
   if (sessionLines.length) await writeFile(join(childDir, "01a13a00-0000-7000-8000-000000000000.jsonl"), sessionLines.join("\n") + "\n");
   const boards = new BoardStore(dir);
   await mkdir(boards.dir, { recursive: true });
-  await writeFile(join(boards.dir, "c1.json"), JSON.stringify({ v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [STEP] }));
+  await writeFile(join(boards.dir, "c1.json"), JSON.stringify({ v: 2, rev: 1, updatedAt: "", todos: [], plan: [STEP] }));
   let now = START;
   const calls: string[] = [];
   const lines: string[] = [];

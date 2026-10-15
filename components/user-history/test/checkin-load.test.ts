@@ -20,7 +20,7 @@ const step = (id: string, text: string, status: PlanItem["status"], job?: string
 const thread = (id: string, name: string): JobFact => ({ key: `thread:${id}`, name, state: "working", activityAt: NOW - 60_000 });
 /** A launch chat's goal p1: 4 of its 12 open steps on the release owner thread, 2 on another root, 6 on its own jobs. */
 function launchMain(): ChatBoard {
-  return { v: 2, rev: 1, updatedAt: new Date(NOW - 3_600_000).toISOString(), scratch: [], todos: [], plan: [
+  return { v: 2, rev: 1, updatedAt: new Date(NOW - 3_600_000).toISOString(), todos: [], plan: [
     { ...step("p1", "Sync on staging and prod: reliable signed-in reads including deep pagination, 100k pages a day, without clients failing", "doing"), children: [
       step("p4", "Verify: authed crawls succeed on staging and prod for a day", "todo", RELEASE),
       step("p14", "Build: once the upstream is back, confirm renewal restores about 33 bound", "doing", RELEASE),

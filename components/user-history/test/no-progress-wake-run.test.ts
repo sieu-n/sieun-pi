@@ -9,7 +9,7 @@ import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 // read no_progress 1 with p145 as the one moving step, while the run's guards and lint on macOS jobs waited for pool-light and m1-air runners.
 
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
-const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan });
+const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan });
 const NOW = Date.parse("2026-10-15T11:31:09Z");
 const RUN = "38724412490";
 const plan = board([step("p142", "Both daily checks pass again", "doing", { children: [

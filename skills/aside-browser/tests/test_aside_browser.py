@@ -254,7 +254,7 @@ CHAT = "01a00000-0000-7000-8000-000000000001"
 class BoardBase(Base):
     def setUp(self):
         super().setUp()
-        board = {"v": 2, "rev": 1, "plan": [], "scratch": [], "updatedAt": "2026-10-10T00:00:00Z", "todos": [
+        board = {"v": 2, "rev": 1, "plan": [], "updatedAt": "2026-10-10T00:00:00Z", "todos": [
             {"id": "t1", "text": "Send this reply to support@vendor.example?", "done": True, "choices": ["Send it", "Not yet"],
              "from": "agent", "at": "2026-10-10T00:00:00Z", "reply": "Send it", "answeredBy": "owner"},
             {"id": "t2", "text": "Send this reply?", "done": True, "choices": ["Send it", "Not yet"],

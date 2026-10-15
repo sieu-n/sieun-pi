@@ -21,7 +21,7 @@ import type { ChatBoard, ChildAgent, SessionRow } from "../src/shared/types.ts";
 const CHAT = "01a1180e-6567-747f-bf44-452520ebdd1b";
 const NOW = Date.parse("2026-10-15T13:50:29.000Z");
 
-const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW - 3_600_000).toISOString(), scratch: [], todos: [], plan: [
+const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW - 3_600_000).toISOString(), todos: [], plan: [
   { id: "p1", text: "Top priority: every CI run takes about 6 to 8 minutes", status: "doing", children: [
     { id: "p2", text: "The small gate jobs that start every test run finish in seconds", status: "doing", job: "ci train", children: [] },
   ] },

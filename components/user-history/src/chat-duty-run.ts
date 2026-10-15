@@ -74,7 +74,7 @@ export const CHECK_IN_FOCUS: readonly string[] = [
     "todo that links it when only the owner can unblock it, or a close on evidence. A chase message, a new wait text or a later waitUntil " +
     "leaves it stuck. Report the stuck count before and after your run.",
   "Organize the plan first, in every run, with board ops: close or fold what shipped (name the evidence), move a loose step under its goal with " +
-    "plan_update parent, remove a step another thread now owns (one scratch note names the new owner), close a step a duty now covers, and fix " +
+    "plan_update parent, remove a step another thread now owns (its goal's note names the new owner), close a step a duty now covers, and fix " +
     "stale notes. A run that only rewrites notes and wait times while Plan shape or Look done lists items has not done its job: the owner should " +
     "never have to ask a chat to tidy its plan (c44, owner 10-12).",
   "A goal held only by other threads (Plan shape lists it) or a step whose wait is over is finished work behind a wait: check the wait " +

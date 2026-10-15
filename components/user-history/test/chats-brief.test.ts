@@ -51,7 +51,7 @@ test("brief: every rule that left the prompt sits in the board skill file the br
     ["SKILL.md", "A goal that is a feature of one app goes under that app's goal as a child, not as a new top-level goal.", "app features nest"],
     ["SKILL.md", "act on it in that turn: record the job's result, do the next action, or close it done or dropped", "plan upkeep (c44)"],
     ["SKILL.md", "fold the goal in the same turn (c46)", "fold a goal (c46)"],
-    ["SKILL.md", "remove it with plan_remove and add one scratch note naming its new owner", "hand-off (c8)"],
+    ["SKILL.md", "remove it with plan_remove and name its new owner in its goal's note", "hand-off (c8)"],
     ["SKILL.md", "does not stay open (c45)", "a goal that only waits closes (c45)"],
     ["SKILL.md", "Send a job only its own plan item, never the whole board.", "a job gets its own item"],
     ["SKILL.md", "no all-caps labels (SECURITY:, URGENT:), no slash-joined names, and no repo jargon (origin/main, xoxb, HEAD)", "plain board notes"],

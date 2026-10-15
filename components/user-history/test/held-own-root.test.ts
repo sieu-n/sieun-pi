@@ -48,7 +48,7 @@ const WAITS: PlanItem[] = [
   step("p93", "Waits on our root", "doing", { children: [step("p94", "Build", "done"), step("p95", "Recheck after the release", "todo", { waitFor: "release driver reports promote 10 read back" })] }),
   step("p96", "Waits on Fable", "doing", { children: [step("p98", "Build", "done"), step("p99", "Recheck after the promote", "todo", { waitFor: "Fable release owner says promote 10 is on prod" })] }),
 ];
-const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-14T03:00:00Z", scratch: [], todos: [], plan });
+const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-14T03:00:00Z", todos: [], plan });
 const ROWS: SessionRow[] = [row(CHAT, NAME, { working: true, lastActivityAt: "2026-10-14T04:23:00Z" }),
   row(DRIVER, "release driver", { lastActivityAt: "2026-10-14T04:05:00Z" }),
   row("01a0cc5e-0000-7000-8000-000000000000", "Fable release owner", { lastActivityAt: "2026-10-14T04:20:00Z" })];

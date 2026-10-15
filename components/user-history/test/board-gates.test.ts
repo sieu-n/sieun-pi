@@ -137,7 +137,7 @@ test("hard gates: the board skill the brief points to and the duty job brief car
 
 const NOW = Date.parse("2026-10-09T12:00:00Z");
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
-const boardOf = (plan: PlanItem[], todos: ChatBoard["todos"] = [], updatedAt = new Date(NOW - 3 * HOUR).toISOString()): ChatBoard => ({ v: 2, rev: 1, updatedAt, scratch: [], todos, plan });
+const boardOf = (plan: PlanItem[], todos: ChatBoard["todos"] = [], updatedAt = new Date(NOW - 3 * HOUR).toISOString()): ChatBoard => ({ v: 2, rev: 1, updatedAt, todos, plan });
 
 test("check-in precheck: go-needed steps waiting for a go are facts; one at work without a go and a Build step with no requirements are flagged", () => {
   const working: JobFact = { key: "k1", name: "porter", state: "working" };

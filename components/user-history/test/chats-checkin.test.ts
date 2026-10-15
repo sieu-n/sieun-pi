@@ -24,7 +24,7 @@ test("chats: every scheduled check-in hands one run with the precheck to the dut
   const threads = fakeThreads(calls);
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Reach chats from Slack", status: "doing", children: [
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p1", text: "Reach chats from Slack", status: "doing", children: [
     { id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] },
     { id: "p3", text: "Build", status: "blocked", waitUntil: new Date(1_000_000 + 86_400_000).toISOString(), children: [] }] }] };
   let now = 1_000_000;
@@ -77,7 +77,7 @@ test("chats: the check-in reads the ledger's handoffs: a step on another thread'
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   const now = 100_000_000;
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [],
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [],
     plan: [{ id: "p1", text: "Find what eats swap on this Mac", status: "doing", job: "c1", note: "at 12 GB", children: [] }] };
   const ledger: Ledger = { corrections: [{ id: "c7", at: "", chat: { id: "vp", name: "dev VP" }, words: "w", rule: "Machine work goes to ops guy.", enforcedBy: "code",
     ref: "pending commit", status: "reopened", theme: ["mac"], repeats: [], handoff: { to: "ops guy (+observability)", topics: ["swap", "M1 Air"] } }] };
@@ -161,7 +161,7 @@ test("chats: a check-in whose job could not start runs again 5 min later, not a 
   const dir = await mkdtemp(join(tmpdir(), "chats-"));
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("sg");
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
     { id: "p2", text: "Build", status: "doing", children: [] }] }] };
   let now = 10 * 60 * 60_000;
   const starts: string[] = [];
@@ -182,7 +182,7 @@ test("chats: a service restart keeps each chat's check-in schedule from its memo
   const calls: string[] = [];
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   for (const id of ["vp", "fresh"]) await index.add(id);
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
     { id: "p7", text: "Check the load", status: "doing", job: "vp", waitUntil: new Date(1_000_000).toISOString(), children: [] }] }] };
   let now = 10 * 60 * 60_000;
   await checkInRecord(join(dir, "check-ins.json")).set("vp", { at: now - 20 * 60_000, steps: { p7: { sig: JSON.stringify(["doing", "Check the load", "vp", new Date(1_000_000).toISOString(), ""]), at: 0 } } });

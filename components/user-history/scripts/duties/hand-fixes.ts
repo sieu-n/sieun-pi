@@ -13,7 +13,7 @@ import { type DsQuery, DAY, PG, REPO, SOURCE_DEADLINE_MS, grafanaClient, num, re
  * a design job the same turn. This check finds the hand fixes made since its last run and matches each to a fault in hand-fixes.faults.json:
  * - config_audit on prod and staging Postgres through Grafana (estate_pg_prod, estate_pg_stg, user grafana_ro); /ops/controls writes land there;
  * - ig_engage_account_events of kind status on prod and staging (grafana_ro reads kind, outcome, error_code, account_id and at, not the actor);
- * - launch main bro's board notes, and each fault's design refs: board steps in any chat, or a branch or commit in the auto-sns-agent checkout;
+ * - each fault's design refs: board steps in any chat, or a branch or commit in the auto-sns-agent checkout;
  * - us-metal01 over one read-only ssh: containers with no compose service (one-off containers) and running docker exec sessions in app containers;
  * - this Mac's processes started from an agent session folder whose script writes to prod or staging config.
  * The fault list and the audit behind it: auto-sns-agent sessions/2026/10/14/1044-self-healing-audit (findings.html, duty-spec.html).
@@ -40,7 +40,7 @@ const BOX = "root@64.34.205.243";
  */
 
 export interface FaultMatch {
-  config_key_prefixes?: string[]; config_reason_regex?: string; note_regex?: string;
+  config_key_prefixes?: string[]; config_reason_regex?: string;
   engage_event?: { kind: string; outcomes: string[] }; mac_process_regex?: string; box_exec_regex?: string; box_container_regex?: string;
 }
 /**
@@ -51,14 +51,13 @@ export interface FaultMatch {
 export interface Fault { id: string; title: string; designs: string[]; owner: string; match: FaultMatch; done_at?: string }
 export interface Registry {
   automatic_writers: { config_actors: string[] };
-  exempt: { config_reason_regex: string; note_regex?: string; box_exec_regex?: string };
+  exempt: { config_reason_regex: string; box_exec_regex?: string };
   faults: Fault[];
 }
 
 export type World = "prod" | "staging";
 export interface AuditRow { id: number; ts: number; actor: string; key: string; reason: string; source: string }
 export interface StatusEvent { accountId: number; at: number; outcome: string; errorCode: string }
-export interface Note { id: string; at: number; text: string }
 export interface BoardStep { id: string; status: string; job?: string }
 /** What a design ref resolves to: a board step's status, or whether a branch or commit exists. */
 export type RefState = { kind: "step"; status: string | null } | { kind: "git"; exists: boolean };
@@ -73,13 +72,11 @@ export type StepState = "none" | "live" | "done";
 
 export type Source = "grafana auth" | "registry" | "board" | "box" | "mac" | `${World} config` | `${World} engage`;
 const WORLDS: readonly World[] = ["prod", "staging"];
-const READS: readonly Source[] = ["registry", "board", "prod config", "staging config", "prod engage", "staging engage"];
+const READS: readonly Source[] = ["registry", "prod config", "staging config", "prod engage", "staging engage"];
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
-  faults_without_job: ["registry", "board"], undesigned_hand_fixes: READS, repeats_after_design: READS, hand_run_processes: ["mac", "box"],
+  faults_without_job: ["registry", "board"], undesigned_hand_fixes: READS, repeats_after_design: [...READS, "board"], hand_run_processes: ["mac", "box"],
 };
 
-/** Words that mark a board note as a report of a hand fix. */
-export const HAND_FIX_WORDS = /\bby hand\b|hand-started|\bthaw(?:ed|s)?\b|\bre-?queued?\b|\breran\b|\brerun\b|\bre-?push(?:ed)?\b|\bcancell?ed \d+ runs\b|\bset (?:to )?(?:disabled|challenged)\b|operator refresh|\bCheck now\b/i;
 /** A script that changes prod or staging control state: /ops writes, the set_controls API, config table writes, Check now, proxy or engage account rows. */
 export const WRITES = /\/ops\/(?:controls|config)\b|\bset_controls\(|\bUPDATE\s+config\b|\bINSERT\s+INTO\s+config(?:_audit)?\b|watchTargets:refresh|\bUPDATE\s+(?:proxy_endpoints|ig_engage_accounts)\b/i;
 /** Data stores where other duties' read-only psql runs through docker exec; an exec there is not a hand-started worker. */
@@ -94,7 +91,7 @@ export function parseRegistry(value: unknown): Registry {
     if (fault.done_at !== undefined && Number.isNaN(Date.parse(fault.done_at))) throw new Error(`fault ${fault.id}: done_at ${fault.done_at} is not a time`);
     for (const ref of fault.designs) if (!/^(?:branch:\S+|commit:[0-9a-f]{7,40}|(?:[0-9a-f-]{36}\/)?p\d+)$/.test(ref)) throw new Error(`fault ${fault.id}: design ref ${ref} is not pN, <chat id>/pN, branch:<name> or commit:<sha>`);
     if (registry.exempt.box_exec_regex) new RegExp(registry.exempt.box_exec_regex);
-    for (const pattern of [fault.match.config_reason_regex, fault.match.note_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
+    for (const pattern of [fault.match.config_reason_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
       if (pattern) new RegExp(pattern);
   }
   return registry;
@@ -125,14 +122,6 @@ export function classifyConfig(fix: { actor: string; keys: readonly string[]; te
 export function classifyEvent(event: StatusEvent, registry: Registry): Verdict | null {
   const fault = registry.faults.find(item => item.match.engage_event?.kind === "status" && item.match.engage_event.outcomes.includes(event.outcome));
   return fault ? { kind: "fault", fault } : null;
-}
-
-/** A board note is a hand fix only when it says so in HAND_FIX_WORDS; then it matches a fault by its words, or it is undesigned. */
-export function classifyNote(note: Note, registry: Registry): Verdict | null {
-  if (!HAND_FIX_WORDS.test(note.text)) return null;
-  if (registry.exempt.note_regex && new RegExp(registry.exempt.note_regex, "i").test(note.text)) return { kind: "exempt" };
-  const fault = registry.faults.find(item => item.match.note_regex && new RegExp(item.match.note_regex, "i").test(note.text));
-  return fault ? { kind: "fault", fault } : { kind: "undesigned" };
 }
 
 /**
@@ -195,7 +184,7 @@ export const isSessionProcess = (command: string): boolean =>
 
 export interface HandData {
   now: number;
-  registry?: Registry; refs?: Map<string, RefState>; notes?: Note[];
+  registry?: Registry; refs?: Map<string, RefState>;
   audit: Partial<Record<World, AuditRow[]>>; events: Partial<Record<World, StatusEvent[]>>;
   box?: { containers: BoxContainer[]; execs: BoxExec[] }; mac?: MacProcess[];
   errors: { source: Source; message: string }[];
@@ -217,10 +206,6 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
         const verdict = classifyEvent(event, registry);
         if (verdict) fixes.push({ verdict, fix: { source: `${world} engage`, at: event.at, what: `account ${event.accountId}`, text: `set ${event.outcome}${event.errorCode ? ` (${event.errorCode})` : ""}` } });
       }
-    }
-    for (const note of data.notes ?? []) {
-      const verdict = classifyNote(note, registry);
-      if (verdict) fixes.push({ verdict, fix: { source: "board", at: note.at, what: note.id, text: note.text } });
     }
     const counted = fixes.filter(item => item.verdict.kind === "fault" || item.verdict.kind === "undesigned");
     const undesigned = counted.filter(item => item.verdict.kind === "undesigned");
@@ -262,17 +247,16 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
 }
 
 /** Where the last run stopped, per source; a source that failed keeps its old mark. The first run reads the last 24 h. */
-export interface HandState { audit?: Partial<Record<World, number>>; events?: Partial<Record<World, number>>; notesAt?: number }
+export interface HandState { audit?: Partial<Record<World, number>>; events?: Partial<Record<World, number>> }
 
 export function nextState(state: HandState, data: HandData): HandState {
-  const next: HandState = { audit: { ...state.audit }, events: { ...state.events }, ...(state.notesAt !== undefined ? { notesAt: state.notesAt } : {}) };
+  const next: HandState = { audit: { ...state.audit }, events: { ...state.events } };
   for (const world of WORLDS) {
     const rows = data.audit[world];
     if (rows) next.audit![world] = Math.max(state.audit?.[world] ?? 0, ...rows.map(row => row.id));
     const events = data.events[world];
     if (events) next.events![world] = Math.max(state.events?.[world] ?? data.now - DAY, ...events.map(event => event.at));
   }
-  if (data.notes) next.notesAt = Math.max(state.notesAt ?? data.now - DAY, ...data.notes.map(note => note.at));
   return next;
 }
 
@@ -344,19 +328,12 @@ function flattenSteps(items: readonly { id: string; status?: string; job?: strin
   }
   return into;
 }
-function flattenNotes(items: readonly { id: string; text?: string; at?: string; children?: unknown[] }[], into: Note[] = []): Note[] {
-  for (const item of items) {
-    if (item.at) into.push({ id: item.id, at: Date.parse(item.at), text: item.text ?? "" });
-    flattenNotes((item.children ?? []) as typeof items, into);
-  }
-  return into;
-}
 
 export interface HandDeps {
   now: number; state: HandState; query: DsQuery | null; authError: string | null;
   registry: () => Promise<unknown>;
   /** One chat's board, or null when it has none. */
-  board: (chat: string) => Promise<{ plan?: unknown[]; scratch?: unknown[] } | null>;
+  board: (chat: string) => Promise<{ plan?: unknown[] } | null>;
   /** Whether a `branch:<name>` or `commit:<sha>` ref exists in the auto-sns-agent checkout. */
   gitRef: (ref: string) => Promise<boolean>;
   box: () => Promise<string>; mac: () => Promise<MacProcess[]>;
@@ -387,10 +364,6 @@ export async function measure(deps: HandDeps): Promise<HandData> {
   if (box && !box.containers.length) data.errors.push({ source: "box", message: "the ssh read listed no container" });
   else if (box) data.box = box;
   if (registry) data.registry = registry;
-  if (board) {
-    const since = deps.state.notesAt ?? deps.now - DAY;
-    data.notes = flattenNotes((board.scratch ?? []) as never[]).filter(note => note.at > since);
-  }
   if (registry && board) {
     const refs = await step("board", async () => {
       const chats = new Set(registry.faults.flatMap(fault => fault.designs).filter(ref => /^[0-9a-f-]{36}\//.test(ref)).map(ref => ref.split("/")[0]!));

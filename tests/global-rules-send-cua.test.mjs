@@ -28,7 +28,7 @@ test.after(() => {
 
 const CHAT = "01a00000-0000-7000-8000-0000000000c4";
 const at = "2026-10-10T00:00:00.000Z";
-writeFileSync(join(data, "boards", `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], scratch: [], updatedAt: at, todos: [
+writeFileSync(join(data, "boards", `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], updatedAt: at, todos: [
   { id: "t1", text: "Send this reply?", choices: ["Send it", "Not yet"], from: "agent", at, done: true, reply: "Send it", answeredBy: "owner" },
   { id: "t2", text: "Send this reply?", choices: ["Send it", "Not yet"], from: "agent", at, done: true, reply: "Not yet", answeredBy: "owner" },
 ] }));

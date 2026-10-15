@@ -81,7 +81,7 @@ test("bare link targets in prose open like a markdown link: wiki:, file:, job:, 
   assert.match(renderMarkdown("the page is `wiki:sessions/a/b.html`"), /<a class="artifact-link" role="link" tabindex="0" data-target="wiki:sessions\/a\/b.html"[^>]*><svg [^>]+><path d="[^"]+"\/><\/svg><code>wiki:sessions\/a\/b.html<\/code><\/a>/);
   assert.match(renderMarkdown("open https://example.com/a now"), /<a href="https:\/\/example.com\/a"[^>]*target="_blank"/);
   assert.match(renderInline("my note wiki:sessions/a/b.html"), /data-target="wiki:sessions\/a\/b.html"/);
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], scratch: [], plan: [{ id: "p7", text: "Ship it", status: "doing", children: [] }] };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p7", text: "Ship it", status: "doing", children: [] }] };
   assert.match(renderMarkdown("next is p7 wiki:sessions/a/b.html", "", mentionIndex("c1", board)), /data-mention="p7"[\s\S]*data-target="wiki:sessions\/a\/b.html"/);
   for (const text of ["and/or 1/2", "xwiki:a/b.html", "`/Users/me/x y`", "wiki:a/../b.html", "~/Documents/x.md", "a /tmp path", "http://x/wiki:a/b.html", "[label](https://x.com) /a"]) {
     assert.doesNotMatch(renderMarkdown(text), /artifact-link/, text);
@@ -101,19 +101,20 @@ test("markdown links: artifact targets and chat permalinks become reader buttons
 
 test("board mentions: a whole-word id on the board becomes a chip in prose, lists, tables and bold; code, links, unknown ids and ids inside words stay text", () => {
   const board: ChatBoard = { v: 2, rev: 5, updatedAt: "", todos: [],
-    plan: [{ id: "p1", text: "Goal one", status: "doing", children: [{ id: "p7", text: "Build: " + "x".repeat(80), status: "todo", children: [] }] }],
-    scratch: [{ id: "s3", text: "Note three", links: [], at: "", children: [] }] };
+    plan: [{ id: "p1", text: "Goal one", status: "doing", children: [{ id: "p7", text: "Build: " + "x".repeat(80), status: "todo", children: [] },
+      { id: "p3", text: "Step three", status: "todo", children: [] }] }] };
   const index = mentionIndex("chat-1", board)!;
   const chips = (html: string): string[] => [...html.matchAll(/data-mention="([^"]+)"/g)].map(match => match[1]!);
   const chip = (id: string) => `<button type="button" class="mention-chip ${idClass("chat-1", id)}" data-mention="${id}" title="${index.titles.get(id)}"><span class="dot" aria-hidden="true"></span>${id}</button>`;
-  assert.equal(renderMarkdown("p7 is done, see s3 and p99.", "", index), `<p>${chip("p7")} is done, see ${chip("s3")} and p99.</p>\n`);
+  assert.equal(renderMarkdown("p7 is done, see p3 and p99.", "", index), `<p>${chip("p7")} is done, see ${chip("p3")} and p99.</p>\n`);
   assert.equal(index.titles.get("p7"), "Build: " + "x".repeat(52) + "\u2026", "a title is cut at 60 characters");
-  assert.deepEqual(chips(renderMarkdown("- p7 in a list\n- **p1 bold** and *s3*\n\n| id | state |\n|---|---|\n| p7 | done |\n| s3 | ok |", "", index)), ["p7", "p1", "s3", "p7", "s3"]);
+  assert.deepEqual(chips(renderMarkdown("- p7 in a list\n- **p1 bold** and *p3*\n\n| id | state |\n|---|---|\n| p7 | done |\n| p3 | ok |", "", index)), ["p7", "p1", "p3", "p7", "p3"]);
   assert.deepEqual(chips(renderMarkdown("`p7` in code, and\n```\np7 block\n```\n[p7 link](https://x.com/p7) https://x.com/p7 [p7](job:p7)", "", index)), [], "code spans, code blocks, link text and URLs keep their ids");
   assert.deepEqual(chips(renderMarkdown("xp7 sp7 p7a 3p7 p7's (p7) p7. ~~p7~~ p7: end", "", index)), ["p7", "p7", "p7", "p7", "p7"], "only whole words");
-  assert.deepEqual(chips(renderInline("hi p7 and s3\nnext line p1", index)), ["p7", "s3", "p1"], "the owner's bubble gets chips too");
-  assert.deepEqual(chips(renderMarkdown("p7 s3")), [], "no board, no chips");
-  assert.deepEqual(chips(renderMarkdown("p7 s3", "", mentionIndex("chat-1", { ...board, rev: 6, scratch: [] }))), ["p7"], "a new board rev renders again without the removed note");
+  assert.deepEqual(chips(renderInline("hi p7 and p3\nnext line p1", index)), ["p7", "p3", "p1"], "the owner's bubble gets chips too");
+  assert.deepEqual(chips(renderMarkdown("p7 p3")), [], "no board, no chips");
+  assert.deepEqual(chips(renderMarkdown("p7 p3", "", mentionIndex("chat-1", { ...board, rev: 6, plan: [{ ...board.plan[0]!, children: [board.plan[0]!.children[0]!] }] }))), ["p7"],
+    "a new board rev renders again without the removed step");
   assert.equal(mentionIndex("chat-1", null), null);
   assert.equal(mentionIndex("chat-1", null, []), null);
 });

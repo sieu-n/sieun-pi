@@ -178,7 +178,7 @@ class KernelGuardBase(unittest.TestCase):
         def todo(id, **extra):
             return {"id": id, "text": "Send this reply?", "choices": ["Send it", "Not yet"], "from": "agent", "at": AT, **extra}
 
-        (boards / f"{CHAT}.json").write_text(json.dumps({"v": 2, "rev": 1, "plan": [], "scratch": [], "updatedAt": AT, "todos": [
+        (boards / f"{CHAT}.json").write_text(json.dumps({"v": 2, "rev": 1, "plan": [], "updatedAt": AT, "todos": [
             todo("t1", done=True, reply="Send it", answeredBy="owner"),
             todo("t2", done=True, reply="Not yet", answeredBy="owner"),
         ]}))

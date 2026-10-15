@@ -230,7 +230,7 @@ test("thread hub and chats: reads and ticks do not attach a dormant chat, and a 
   const fake = await attached(hub());
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [] };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
   const source: CheckInSource = { board: async () => board, rows: async () => [{ id: "c1", name: "c1" } as SessionRow], home: dir,
     memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
     tickMs: 0, now: fake.now, noReportGraceMs: 0 };
@@ -268,7 +268,7 @@ test("chats: replay of a daemon restart with Crawler VP's failed turn 2 h old: t
   for (const id of ["crawler", "quiet", "busy"]) delete fake.summary(id).activeSessionId;
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   for (const id of ["crawler", "quiet", "busy"]) await index.add(id);
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [] };
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [] };
   const source: CheckInSource = { board: async () => board, rows: async () => ["crawler", "quiet", "busy"].map(id => ({ id, name: id }) as SessionRow), home: dir,
     memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")), settings: checkInSettings(join(dir, "check-in-settings.json")),
     tickMs: 0, now: fake.now, noReportGraceMs: 0 };

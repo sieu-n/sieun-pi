@@ -4,7 +4,7 @@ import { checkInPrecheck } from "../src/chat-checkin.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
-const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan });
+const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan });
 const met = (plan: ChatBoard): string[] => checkInPrecheck(undefined, [], plan, Date.parse("2026-10-13T02:05:00Z"), { self: ["chat"] }).waitsMet.map(({ view }) => view.item.id);
 
 /*

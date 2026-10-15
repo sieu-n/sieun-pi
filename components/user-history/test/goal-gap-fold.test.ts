@@ -32,7 +32,7 @@ const STEPS: PlanItem[] = [
     {"id": "p120", "text": "Ship: merge the subscribe popup (#239) after the owner's approval", "status": "todo", "children": [], "waitFor": "the owner's answer on t18, which now names #239, then the M1 Air checks", "go": "needed"},
     {"id": "p121", "text": "Ship: merge the blog Google button test (#246) and launch experiment 479904 after the owner's approval", "status": "todo", "children": [], "waitFor": "the owner's answer on t18, which now names #246, then the M1 Air checks", "go": "needed"},
 ];
-const board = (): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-12T14:00:00.000Z", scratch: [],
+const board = (): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-12T14:00:00.000Z",
   todos: [{ id: "t18", text: "Approve these PRs to merge", done: false, from: "agent", at: "2026-10-12T05:00:00.000Z" }],
   plan: [{ id: "p48", text: "Visitor to signup 2% (now 0.59%), signup to workspace 60% (now 32%), signup to paid 10% (now 6%)", status: "doing",
     target: {"metric": "visitor-to-signup conversion rate", "target": 2, "unit": "%", "current": 0.5, "measuredAt": "2026-10-12T09:15:00.000Z", "source": "PostHog HogQL, 28 days, QA, preview and Lighthouse excluded: 60 of 11,948; on-topic visitors per #236: 58 of 4,131 = 1.40%"},

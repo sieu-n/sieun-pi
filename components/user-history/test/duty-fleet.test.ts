@@ -45,7 +45,7 @@ test("duty fleet: the green share and the stuck duties of the real slice match t
 test("duty fleet: a duty with a live linked fix step is not stuck, one whose fix job is idle is", async () => {
   const dir = await copy();
   await mkdir(join(dir, "boards"), { recursive: true });
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW).toISOString(), scratch: [], todos: [], plan: [step("p1", { text: "Crawler", children: [
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW).toISOString(), todos: [], plan: [step("p1", { text: "Crawler", children: [
     step("p2", { job: "reads fix", duty: "d1/ig_reads_per_s" }),
     step("p3", { job: "proxy fix", duty: "d2/geonode_mbps_avg" }),
     step("p4", { job: "limits fix", duty: "d3/no_such_metric" })] })] };
@@ -112,7 +112,7 @@ test("duty fleet: a fix job that sleeps on a board.wake is live though the daemo
   await mkdir(join(dir, "boards"), { recursive: true });
   await mkdir(join(dir, "wakes"), { recursive: true });
   const root = "01a13fd8-608f-7509-b85b-efe3cfe6b63e";
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW).toISOString(), scratch: [], todos: [], plan: [step("p56", { text: "SEO duties green", children: [
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW).toISOString(), todos: [], plan: [step("p56", { text: "SEO duties green", children: [
     step("p61", { job: "fix search visits grow SEO guy 22:53", sessionId: root, duty: "d1/goal_visits_d7" })] })] };
   await writeFile(join(dir, "boards", `${SEO}.json`), JSON.stringify(board));
   // `prime-agent sessions --json` lists the loaded sessions only (128 of the catalog's 2,480 rows at 14:57Z), and the job had unloaded asleep.

@@ -366,7 +366,7 @@ test("chats: a finished job (reported, done, its report in the chat, no open ste
   const index = new IdIndex(join(dir, "chats.json"), "Chat index");
   await index.add("c1");
   let now = 10_000_000;
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [
     { id: "p1", text: "Build", status: "doing", job: "builder", children: [] },
     { id: "p2", text: "Ship", status: "blocked", waitFor: "reviewer's go on PR 12", children: [] },
     { id: "p3", text: "Audit", status: "done", job: "auditor", children: [] }] };
@@ -460,7 +460,7 @@ test("chats: a job that ends on a provider error, an abort, a stop mid-tool or t
     agent("rep1", "reporter", "subagent", "sub-rep"), agent("can1", "cancelled one", "subagent", "sub-can"), agent("r2", "talker", "root"),
     agent("old1", "old one", "subagent", "sub-old")];
   const rows = (): SessionRow[] => [row("c1", new Date(now).toISOString(), { chat: true, agents }), row("r1", new Date(endAt).toISOString(), { name: "root work", messageCount: 9 })];
-  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", scratch: [], todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: "", todos: [], plan: [{ id: "p1", text: "Goal", status: "doing", children: [
     { id: "p2", text: "Build the API", status: "doing", job: "api audit", note: "started 10:00", children: [] },
     { id: "p3", text: "Root work", status: "todo", job: "thread:r1", children: [] }] }] };
   const make = () => new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),

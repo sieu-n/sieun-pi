@@ -4,7 +4,7 @@ import { checkInPrecheck } from "../src/chat-checkin.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
 
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
-const board = (plan: PlanItem[], todos: ChatBoard["todos"] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", scratch: [], todos, plan });
+const board = (plan: PlanItem[], todos: ChatBoard["todos"] = []): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos, plan });
 
 /*
  * slack green guy 10-13: before the 05:13 KST check-in, p57, p85, p82, p83 and p86 each waited for "#226 and #234 merged (see p74), then a green

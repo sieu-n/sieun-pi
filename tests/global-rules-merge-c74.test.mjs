@@ -29,7 +29,7 @@ test.after(() => {
 });
 
 const CHAT = "01a00000-0000-7000-8000-0000000000c7";
-writeFileSync(join(data, "boards", `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], scratch: [], updatedAt: "2026-10-15T00:00:00.000Z", todos: [
+writeFileSync(join(data, "boards", `${CHAT}.json`), JSON.stringify({ v: 2, rev: 1, plan: [], updatedAt: "2026-10-15T00:00:00.000Z", todos: [
   { id: "t1", text: "Send this reply to support@vendor.example?", choices: ["Send it", "Not yet"], from: "agent", at: "2026-10-15T00:00:00.000Z", done: true, reply: "Send it", answeredBy: "owner" },
 ] }));
 const PI = join(root, "pi");
