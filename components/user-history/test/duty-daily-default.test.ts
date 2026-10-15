@@ -9,6 +9,7 @@ import type { DutyChat, DutyJobHost } from "../src/chat-duty-job.ts";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { chatPoolPriority, poolPriorities } from "../src/chat-pool-priority.ts";
+import type { TurnClass } from "../src/chat-pool.ts";
 import { dutyAdmitter } from "../src/chat-turn-queue.ts";
 import { AGENT_EVERY_MIN_MINUTES, agentScheduleProblem, type Duty, type DutyJobRef, MORNING_BANDS, morningTime, parseDutyInput, upsertDuty } from "../src/shared/chat-duties.ts";
 import type { ChatAgent, PoolPriority, Priority, SessionRow } from "../src/shared/types.ts";
@@ -141,13 +142,13 @@ const row = (id: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, 
   subagentsRunning: 0, unread: false, tags: [], priority: 0, progress: "none", origin: "agent", ...extra });
 const root = (sessionId: string): ChatAgent => ({ key: "thread:" + sessionId, sessionId, name: sessionId, job: sessionId, sender: sessionId, link: "root", state: "idle", steps: [] });
 
-test("a duty job stays low when its chat is labelled High and links it as root, and the duty admitter asks for the low class", async () => {
+test("a duty job stays low when its chat is labelled High and links it as root, and the duty admitter asks for the low class, a check-in for its own", async () => {
   const rows = [row("vp", { chat: true, origin: "user", priority: 3, agents: [root("duty"), root("job")] }), row("duty"), row("job")];
   assert.deepEqual(Object.fromEntries(poolPriorities(rows, new Set(["duty"]))), { vp: "high", duty: "low", job: "high" });
   const asked: string[] = [];
-  const admitter = dutyAdmitter({ log: () => {}, pool: { admit: async (session: string, _tree: string, priority: PoolPriority) => { asked.push(`${session} ${priority}`); return "admitted"; },
+  const admitter = dutyAdmitter({ log: () => {}, pool: { admit: async (session: string, _tree: string, priority: TurnClass) => { asked.push(`${session} ${priority}`); return "admitted"; },
     release: async () => {}, read: async () => ({ working: [], queued: [] }) as never } });
   await admitter.admit("vp", "d1");
   await admitter.admit("vp", "checkin");
-  assert.deepEqual(asked, ["duty:vp:d1 low", "duty:vp:checkin low"]);
+  assert.deepEqual(asked, ["duty:vp:d1 low", "duty:vp:checkin checkin"]);
 });

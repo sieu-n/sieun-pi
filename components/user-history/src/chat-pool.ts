@@ -73,6 +73,11 @@ export function parsePoolConfig(value: unknown): PoolConfig | null {
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
 }
 
+/**
+ * The class a turn asks the queue for: a pool priority, or `checkin`, which pi-pool takes only for a chat's check-in key (`duty:<chat>:checkin`)
+ * and queues above every class, aging included, with no pressure hold (components/pi-pool/pool/turns.py, CHECKIN).
+ */
+export type TurnClass = PoolPriority | "checkin";
 /** A tree's pool class from `pi-pool who --json` or `ls --json`; null when absent or unknown. */
 export const parsePoolPriority = (value: unknown): PoolPriority | null => (POOL_PRIORITIES as readonly unknown[]).includes(value) ? value as PoolPriority : null;
 
@@ -188,7 +193,7 @@ export const poolCommand = {
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
   queue: () => ["queue", "--json"],
   set: (key: string, value: number) => ["set", key, String(value), "--by", "the Settings pane"],
-  admit: (sessionId: string, tree: string, priority: PoolPriority) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
+  admit: (sessionId: string, tree: string, priority: TurnClass) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
   release: (sessionId: string) => ["release", sessionId],
   ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
 };
@@ -284,7 +289,7 @@ export async function markOwnerTurn(sessionId: string): Promise<void> {
  * Waits until the pool admits a turn of `sessionId` (`pi-pool admit --wait`, with no deadline: the turn keeps its place however long the queue
  * is) and returns the pool's state: "admitted", or "off" when the queue is off. Rejects when the pool fails, and the caller then runs unqueued.
  */
-export async function admitTurn(sessionId: string, tree: string, priority: PoolPriority): Promise<"admitted" | "off"> {
+export async function admitTurn(sessionId: string, tree: string, priority: TurnClass): Promise<"admitted" | "off"> {
   // The last line is the answer, in case the wait prints its queued place first.
   const said: unknown = JSON.parse((await run(poolCommand.admit(sessionId, tree, priority), 0)).trim().split("\n").at(-1) ?? "");
   const state = isRecord(said) ? said.state : undefined;

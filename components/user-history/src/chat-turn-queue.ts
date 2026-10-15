@@ -1,4 +1,5 @@
-import { admitTurn, readAgentQueue, releaseTurn } from "./chat-pool.ts";
+import { admitTurn, readAgentQueue, releaseTurn, type TurnClass } from "./chat-pool.ts";
+import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import type { JobFact } from "./checkin-steps.ts";
 import type { AgentQueueReading, ChildAgent, QueuePlace } from "./shared/types.ts";
 
@@ -63,11 +64,19 @@ export interface DutyAdmitter {
 }
 
 /**
- * The duty runner's side of the Mac-wide turn queue: before it creates a duty or check-in job it asks `pi-pool admit --class low --wait` under
- * the duty's key, so a queued duty holds no worker (312 to 360 MB fresh on 10-14) until its turn, and its scheduled run still happens. The
- * runner releases the key once the job's session exists or its start failed; the job's own turns then admit under its real session id
- * through pi-pool's extension.
+ * The duty runner's side of the Mac-wide turn queue: before it creates a duty or check-in job it asks `pi-pool admit --wait` under the duty's
+ * key, so a queued duty holds no worker (312 to 360 MB fresh on 10-14) until its turn, and its scheduled run still happens. The runner
+ * releases the key once the job's session exists or its start failed; the job's own turns then admit under its real session id through
+ * pi-pool's extension. A duty asks as `low`, and a chat's check-in as `checkin` (`dutyClass`).
  */
+/**
+ * The class a duty's run asks the queue for. A check-in, one key per chat, goes ahead of every queued turn and is never held under memory
+ * pressure: on 10-15 at the critical limit of 12 with 60 to 77 turns queued, every turn aged to high within 36 s and the check-in keys,
+ * asked as low, waited 49 s at p50, 179 s at p90 and 381 s at most (23 waits in this service's log); the check-in job's own first run then
+ * waited 0 s at p90 over 282 jobs (pi-pool.log), so only the key needs the class. Every other duty stays low.
+ */
+export const dutyClass = (dutyId: string): TurnClass => dutyId === CHECK_IN_DUTY_ID ? "checkin" : "low";
+
 export function dutyAdmitter(input: { log: (line: string) => void; now?: () => number;
   pool?: { admit: typeof admitTurn; release: typeof releaseTurn; read: () => Promise<AgentQueueReading> } }): DutyAdmitter {
   const pool = input.pool ?? { admit: admitTurn, release: releaseTurn, read: readAgentQueue };
@@ -78,7 +87,7 @@ export function dutyAdmitter(input: { log: (line: string) => void; now?: () => n
       const key = dutyQueueKey(chatId, dutyId);
       const asked = now();
       let state: "admitted" | "off";
-      try { state = await pool.admit(key, key, "low"); }
+      try { state = await pool.admit(key, key, dutyClass(dutyId)); }
       catch (error) {
         input.log(`duty ${chatId.slice(0, 8)}/${dutyId}: the turn queue did not answer, so its job starts unqueued: ${reason(error)}`);
         await pool.release(key).catch(() => {});

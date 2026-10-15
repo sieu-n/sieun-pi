@@ -145,7 +145,7 @@ test("duty admitter: admitted returns a release, off and a failing pool start th
   const lines: string[] = [];
   const admitter = dutyAdmitter({ log: line => lines.push(line), pool: fakePool });
   const release = await admitter.admit("c1", "checkin");
-  assert.deepEqual(pool, ["admit duty:c1:checkin duty:c1:checkin low"]);
+  assert.deepEqual(pool, ["admit duty:c1:checkin duty:c1:checkin checkin"], "a check-in asks for the check-in class (10-15: check-in keys asked as low waited up to 381 s)");
   await release!();
   assert.deepEqual(pool.slice(1), ["release duty:c1:checkin"]);
   answer = "off";
@@ -153,6 +153,10 @@ test("duty admitter: admitted returns a release, off and a failing pool start th
   answer = new Error("pi-pool failed: usage");
   assert.equal(await admitter.admit("c1", "checkin"), null);
   assert.match(lines.at(-1)!, /the turn queue did not answer, so its job starts unqueued: pi-pool failed: usage/);
+  answer = "admitted";
+  pool.length = 0;
+  await admitter.admit("c1", "d4");
+  assert.deepEqual(pool.slice(0, 1), ["admit duty:c1:d4 duty:c1:d4 low"], "every other duty stays low");
   pool.length = 0;
   await admitter.sweep(async chat => chat === "c1");
   assert.deepEqual(pool, ["release duty:c1:checkin"]);
