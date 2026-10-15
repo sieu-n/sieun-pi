@@ -8,7 +8,7 @@ import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { applyBoardOp, emptyBoard, nextIds } from "../src/shared/chat-board.ts";
 import { type DutyJobRef, type DutyRunRecord, parseDutyInput } from "../src/shared/chat-duties.ts";
-import { fixJobLive } from "../src/shared/duty-fixes.ts";
+import { fixJobLive, sessionBornAt, UNLISTED_LIVE_MS } from "../src/shared/duty-fixes.ts";
 import type { BoardOp, ChatAgent, ChatBoard, PlanItem, SessionRow } from "../src/shared/types.ts";
 
 // api portal vp's "Portal matches crawler" duty (d2) after the owner's restart on 10-15. The server opened "fix portal matches crawler api
@@ -97,4 +97,21 @@ test("a fix job with a turn queue place is live, and one with no place and no wo
   const rows = (extra: Partial<ChatAgent>) => [{ id: CHAT, agents: [{ ...agent, ...extra }] } as unknown as SessionRow, { id: "fix1", archived: false, working: false } as unknown as SessionRow];
   assert.equal(fixJobLive(item, CHAT, rows({}), new Set()), false, "an ended job with nothing pending gets sent back or replaced");
   assert.equal(fixJobLive(item, CHAT, rows({ queued: { position: 46, total: 46, since: at(14, 1, 17) } }), new Set()), true, "46th of 46 at 14:01:17Z");
+});
+
+// After 8e2d2db went live (15:21Z) the server still opened "fix check-in launch main bro" at 16:09:25Z and again at 16:09:46Z. A fix job is a
+// root session, not an agent of the chat, so its queue place shows only in pi-pool, and a session the daemon just made may not be in the
+// catalog rows yet. The id below is the 01:09 job's session, which p128 to p130 name; the daemon made it at 16:09:49Z.
+test("a root fix job with a pi-pool place, or one the catalog does not list yet, is live; an old unlisted one is not", () => {
+  const first = "01a14053-b42b-723b-8ae3-1b13b72d392e";
+  const born = sessionBornAt(first)!;
+  assert.equal(new Date(born).toISOString(), "2026-10-15T16:09:49.867Z");
+  const item = { id: "p128", job: "fix check-in launch main bro 01:09", sessionId: first };
+  const chat = { id: CHAT, agents: [] } as unknown as SessionRow;
+  const idleRow = { id: first, archived: false, working: false } as unknown as SessionRow;
+  assert.equal(fixJobLive(item, CHAT, [chat, idleRow], new Set(), new Set([first]), born + 21_000), true, "queued in pi-pool 21 s after its create");
+  assert.equal(fixJobLive(item, CHAT, [chat, idleRow], new Set(), new Set(), born + 21_000), false, "listed, idle and in no queue: ended");
+  assert.equal(fixJobLive(item, CHAT, [chat], new Set(), new Set(), born + 21_000), true, "not in the catalog rows yet");
+  assert.equal(fixJobLive(item, CHAT, [chat], new Set(), new Set(), born + UNLISTED_LIVE_MS), false, "gone from the catalog past the list's worst lag");
+  assert.equal(sessionBornAt("fix1"), null);
 });

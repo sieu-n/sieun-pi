@@ -152,18 +152,40 @@ export function closedFixes(before: ChatBoard | null, after: ChatBoard): { step:
 }
 
 /**
- * Whether a fix step's job is at work, from the catalog rows: the chat's agent that owns the step (or carries its job's name or session) is
- * working or waits in the Mac-wide turn queue (`queued`), its session row works, or it sleeps on a pending board.wake (`asleep`, session ids).
- * A job that ended its turn and waits for nothing is not live. A queued job reads idle everywhere else: after the 10-15 13:49Z restart the
- * server opened "fix portal matches crawler api portal vp" 7 times in 39 min, each while the one before waited for a slot.
+ * How long a fix job's session counts as live while the catalog does not list it yet. The catalog's full daemon list answered in 77 s at p99
+ * and 1,249 s at most over 2,995 lists on 10-15 (service.log), so a job the server just created can be missing from the rows for minutes.
  */
-export function fixJobLive(item: Pick<PlanItem, "id" | "job" | "sessionId">, chatId: string, rows: readonly SessionRow[], asleep: ReadonlySet<string>): boolean {
+export const UNLISTED_LIVE_MS = 1_250_000;
+
+/** When a UUIDv7 session id was made (its first 48 bits are Unix ms); null for any other id. */
+export function sessionBornAt(id: string): number | null {
+  const hex = id.replace(/-/g, "");
+  if (!/^[0-9a-f]{32}$/i.test(hex) || hex[12] !== "7") return null;
+  return parseInt(hex.slice(0, 12), 16);
+}
+
+/**
+ * Whether a fix step's job is at work, from the catalog rows: the chat's agent that owns the step (or carries its job's name or session) is
+ * working or waits in the Mac-wide turn queue (`queued`), its session row works, it sleeps on a pending board.wake (`asleep`, session ids), its
+ * session has a place or a slot in pi-pool's queue (`waiting`, session ids), or the catalog does not list its session yet and the session is
+ * under UNLISTED_LIVE_MS old. A job that ended its turn and waits for nothing is not live. A queued job reads idle everywhere else: after the
+ * 10-15 13:49Z restart the server opened "fix portal matches crawler api portal vp" 7 times in 39 min, each while the one before waited for a
+ * slot. A fix job is a root, not an agent of the chat, so its queue place shows only in pi-pool: after 8e2d2db the server still opened "fix
+ * check-in launch main bro" at 16:09:25Z and again at 16:09:46Z, and "fix portal stays up api portal vp" at 15:28Z, 15:32Z and 16:08Z.
+ */
+export function fixJobLive(item: Pick<PlanItem, "id" | "job" | "sessionId">, chatId: string, rows: readonly SessionRow[], asleep: ReadonlySet<string>,
+  waiting: ReadonlySet<string> = new Set(), now: number = Date.now()): boolean {
   const agents = rows.find(row => row.id === chatId)?.agents ?? [];
   const agent = agents.find(entry => entry.steps.includes(item.id)) ??
     agents.find(entry => (item.sessionId !== undefined && entry.sessionId === item.sessionId) || (item.job !== undefined && (entry.sender === item.job || entry.name === item.job)));
   if (agent?.state === "working" || agent?.queued !== undefined) return true;
   const session = agent?.sessionId ?? item.sessionId ?? rows.find(row => row.name === item.job && !row.archived)?.id;
   if (session === undefined) return false;
+  if (asleep.has(session) || waiting.has(session)) return true;
   const row = rows.find(candidate => candidate.id === session);
-  return (row !== undefined && !row.archived && row.working) || asleep.has(session);
+  if (row === undefined) {
+    const born = sessionBornAt(session);
+    return born !== null && now - born < UNLISTED_LIVE_MS;
+  }
+  return !row.archived && row.working;
 }

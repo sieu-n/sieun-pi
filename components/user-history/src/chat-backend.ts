@@ -159,7 +159,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     fixLive: async (id, item) => {
       const now = Date.now();
       const asleep = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));
-      return fixJobLive(item, id, await catalog.rows(), asleep);
+      const pool = await queueReading().catch(() => null);
+      const waiting = new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
+      return fixJobLive(item, id, await catalog.rows(), asleep, waiting, now);
     },
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
     jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
