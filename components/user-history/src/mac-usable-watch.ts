@@ -12,6 +12,8 @@ import type { AgentQueueReading } from "./shared/types.ts";
  * TARGET.idleMinutes by job, with the tool call it sits in), the finished jobs nobody deleted, and the Mac-wide turn queue. The owner (10-14
  * 09:15Z): "look it's you and ops guys responsibility that this machine is usable", so a minute is judged on the Mac being usable (`USABLE`), and the worker footprint is a detail with no target (c67, the VP's ask of 10-14 20:2xZ).
  * The hourly "Mac stays usable" duty (scripts/duties/mac-stays-usable.ts) reads these lines and judges each minute with `misses`.
+ * A quiet session whose kernel moved (MOTION) since the last sample works and counts in `active`, not `idleOver`; one whose kernel stayed still
+ * for HUNG_MINUTES is hung, and the watch tells its chat, then interrupts the call a sample later (`interruptHung`).
  */
 
 const GB = 1024 ** 3;
@@ -25,6 +27,22 @@ export const QUIET_MS = 15 * MINUTE;
  * `queueWaitS`: the 99th percentile of the 4,811 slot admits pi-pool logged on 10-14 from 08:06 to 18:24 KST waited 706 s.
  */
 export const TARGET = { idleMinutes: 30, queueWaitS: 706 } as const;
+
+/**
+ * A kernel moved in a minute when its subtree's CPU changed by MOTION.cpuMs or more, a process in its subtree started or ended, or a socket of
+ * its subtree moved bytes (nettop's per-socket counts). Six one-minute reads of about 30 kernels on 10-15 at 03:41 to 03:48Z: a still kernel
+ * used 1.6 to 3.7 ms (5 ms over one 65 s read at 03:37Z), a kernel held in a socket read that never returns 1.6 to 2.7 ms, the smallest
+ * reading of a kernel at work 17.5 ms, and wp-engage-crawl's paging pull (kernel 62440, a new TLS connection every 5 s, 167 to 456 KB in per
+ * 10 s) 5.0 to 24.7 s. A reading older than `freshMs` (two skipped samples) is no baseline.
+ */
+export const MOTION = { cpuMs: 10, freshMs: 3 * MINUTE } as const;
+/**
+ * A session is hung when it has made no model call for over TARGET.idleMinutes and its kernel has not moved (MOTION) in any sample for
+ * TARGET.idleMinutes. 30 min is past the p99.9 of ipython cells: 372,332 calls in the session files of 10-08 to 10-15 ran a median under 0.1 s,
+ * p99 1.9 min and p99.9 19.1 min. Its chat is told when the service will interrupt the call, and the next sample interrupts it if the kernel
+ * still has not moved: main dev thread acted on the watch's 02:56:58Z ask on 10-15 at 02:57:03Z, 5 s later.
+ */
+export const HUNG_MINUTES = TARGET.idleMinutes;
 
 /**
  * A usable minute, from ops guy's feed: the kernel's pressure level under critical (4), swapouts under 6,000 a second, and kernel_task under
@@ -84,6 +102,8 @@ export interface WatchLine {
   idleOver: number; idleTrees: TreeCount[];
   /** Each session counted in `idleOver`, by job and tree, with the tool call its last entry left open; absent on older lines. */
   quiet?: QuietLine[];
+  /** Sessions with no model call for over TARGET.idleMinutes whose kernel moved (MOTION) since the last sample: they work, so `idleOver` leaves them out; absent on older lines. */
+  active?: QuietLine[];
   /** Live sessions that ended their task (`taskState` needs_input) and sit idle, chats left out. */
   finished: number; finishedTrees: TreeCount[];
   queue: QueueLine | null;
@@ -118,8 +138,11 @@ export interface Footprints { workers: Record<string, { pids: number; bytes: num
   swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
 /** One process the helper names: its footprint, its start time in epoch seconds (null when unreadable) and its command's first 200 characters. */
 export interface RawProcess { pid: number; bytes: number; started: number | null; command: string }
-/** A `python -m rlm.repl` kernel with the root and session its RLM_HARNESS_STATE_DIR names, its subtree, and its largest descendant that is no Prime process. */
-export interface RawKernel { pid: number; root: string; session: string; pids: number; bytes: number; biggest: RawProcess | null }
+/**
+ * A `python -m rlm.repl` kernel with the root and session its RLM_HARNESS_STATE_DIR names, its subtree, and its largest descendant that is no
+ * Prime process; `cpu_ms` is the subtree's CPU since each process started and `members` its pids (absent from helpers before 10-15).
+ */
+export interface RawKernel { pid: number; root: string; session: string; pids: number; bytes: number; biggest: RawProcess | null; cpu_ms?: number; members?: number[] }
 /** A process with RLM_HARNESS_STATE_DIR under no kernel and no Prime process (a deleted job's nohup'd runner), with the root and session the path names. */
 export interface RawOrphan extends RawProcess { root: string; session: string }
 /** A chat tree's footprint (its kernels' subtrees and its orphans) and its largest process that is no Prime process, `started` kept to catch pid reuse. */
@@ -136,7 +159,51 @@ export interface OpenCall { id: string; tool: string; at: string; code: string }
  * A session counted in `idleOver`: its id, job and chat tree, how long it has been quiet, the kernel that serves it (null when the helper named
  * none), the call its last entry left open (null when the last entry is no open tool call), and the command of a bash() handle its kernel holds.
  */
-export interface QuietLine { session: string; job: string; root: string; tree: string; quietMin: number; kernel: number | null; call: OpenCall | null; handle?: string }
+export interface QuietLine { session: string; job: string; root: string; tree: string; quietMin: number; kernel: number | null; call: OpenCall | null; handle?: string;
+  /** How long the kernel has not moved (MOTION), by the watch's own samples; absent when the watch has no reading of it yet. */
+  stillMin?: number }
+
+/**
+ * What the watch knows of a session's kernel at its last sample: the subtree's CPU in ms and pids, the socket counts nettop gave (null when it
+ * was not read), whether it moved since the sample before (null with no fresh baseline), and since when it has not moved.
+ */
+export interface KernelMotion { kernel: number; at: number; cpuMs: number; members: number[]; net: string | null; moved: boolean | null; stillSince: number }
+export type Motion = Record<string, KernelMotion>;
+
+/** Each kernel's motion at `now` from the last sample's `prev`, its helper reading and its sockets (`nets`, by session, read only for quiet sessions). */
+export function advanceMotion(prev: Readonly<Motion>, kernels: readonly RawKernel[], nets: ReadonlyMap<string, string>, now: number): Motion {
+  const next: Motion = {};
+  for (const kernel of kernels) {
+    if (!kernel.session || kernel.cpu_ms === undefined) continue;
+    const members = [...kernel.members ?? []].sort((a, b) => a - b);
+    const net = nets.get(kernel.session) ?? null;
+    const last = prev[kernel.session];
+    const base = last && last.kernel === kernel.pid && now > last.at && now - last.at <= MOTION.freshMs ? last : null;
+    const moved = base ? Math.abs(kernel.cpu_ms - base.cpuMs) >= MOTION.cpuMs || members.join(",") !== base.members.join(",") ||
+      (net !== null && base.net !== null && net !== base.net) : null;
+    next[kernel.session] = { kernel: kernel.pid, at: now, cpuMs: kernel.cpu_ms, members, net, moved, stillSince: base && moved === false ? base.stillSince : now };
+  }
+  return next;
+}
+
+/** Each pid's open sockets with their byte counts, one `tcp4 a<->b,in,out` line each, from one nettop read; an empty map when nettop fails. */
+export function readSockets(pids: readonly number[]): Promise<Map<number, string[]>> {
+  return new Promise(resolve => {
+    execFile("/usr/bin/nettop", ["-L", "1", "-x", "-n", "-J", "bytes_in,bytes_out", ...pids.flatMap(pid => ["-p", String(pid)])], { timeout: 10_000, maxBuffer: 1024 * 1024 },
+      (error, stdout) => resolve(error ? new Map() : parseNettop(stdout)));
+  });
+}
+/** nettop's logging output: a `<name>.<pid>,in,out,` line per process, then one line per socket. */
+export function parseNettop(text: string): Map<number, string[]> {
+  const found = new Map<number, string[]>();
+  let current: string[] | null = null;
+  for (const line of text.split("\n")) {
+    if (/^(tcp|udp)\d /.test(line)) { current?.push(line.replace(/,$/, "")); continue; }
+    const owner = /^.+\.(\d+),\d+,\d+,$/.exec(line);
+    if (owner) { current = []; found.set(Number(owner[1]), current); }
+  }
+  return found;
+}
 
 /** The tool call the last entry of a session file leaves open, read back from the file's end; null when the last entry is no assistant message with a tool call, or the file is unreadable. */
 export async function openCall(file: string): Promise<OpenCall | null> {
@@ -215,14 +282,16 @@ function topTrees(rows: readonly Row[], tree: (row: Row) => { root: string; tree
  * `title` names a chat tree's root.
  */
 export function watchLine(input: { now: number; rows: readonly unknown[]; footprints: Footprints; queue: QueueReading | null; chats: ReadonlySet<string>;
-  title: (id: string) => string | null; cpuMs: number; usable?: UsableReading | null; calls?: ReadonlyMap<string, OpenCall | null> }): WatchLine {
+  title: (id: string) => string | null; cpuMs: number; usable?: UsableReading | null; calls?: ReadonlyMap<string, OpenCall | null>; motion?: Readonly<Motion> }): WatchLine {
   const rows = input.rows.map(parseRow).filter((row): row is Row => row !== null);
   const byId = new Map(rows.map(row => [row.id, row]));
   const tree = treeOf(byId, input.title);
   const live = rows.filter(row => row.live);
   const working = live.filter(row => row.working);
   const quiet = (ms: number) => working.filter(row => input.now - row.lastAt > ms);
-  const idleOver = working.filter(row => quietOver(row, input.now));
+  const moving = (row: Row): boolean => input.motion?.[row.id]?.moved === true;
+  const idleOver = working.filter(row => quietOver(row, input.now) && !moving(row));
+  const activeOver = working.filter(row => quietOver(row, input.now) && moving(row));
   const finished = live.filter(row => row.ended && !input.chats.has(row.id));
   const top = Object.entries(input.footprints.workers).map(([pid, tree_]) => ({ pid: Number(pid), bytes: tree_.bytes }))
     .sort((a, b) => b.bytes - a.bytes).slice(0, 5).map(({ pid, bytes }): WorkerLine => {
@@ -246,19 +315,21 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
   const waitKernels = new Set((input.footprints.waiters ?? []).map(waiter => waiter.kernel));
   const held = (input.footprints.handles ?? []).filter(handle => quietIds.has(handle.session) && !waitKernels.has(handle.kernel));
   const kernelOf = new Map((input.footprints.kernels ?? []).map(kernel => [kernel.session, kernel.pid]));
-  const quietLines = idleOver.map((row): QuietLine => {
+  const quietLine = (row: Row): QuietLine => {
     const left = call(row.id);
     const handle = left && (input.footprints.handles ?? []).find(item => item.session === row.id);
+    const motion = input.motion?.[row.id];
     return { session: row.id, job: row.name ?? input.title(row.id) ?? row.id.slice(0, 8), ...tree(row), quietMin: Math.round((input.now - row.lastAt) / MINUTE),
-      kernel: kernelOf.get(row.id) ?? null, call: left, ...handle ? { handle: handle.command } : {} };
-  });
+      kernel: kernelOf.get(row.id) ?? null, call: left, ...handle ? { handle: handle.command } : {},
+      ...motion ? { stillMin: Math.round((input.now - motion.stillSince) / MINUTE) } : {} };
+  };
   return {
     at: new Date(input.now).toISOString(),
     usable: input.usable ?? null, chatsLive,
     workers: Object.keys(input.footprints.workers).length,
     workerGb: round(Object.values(input.footprints.workers).reduce((sum, worker) => sum + worker.bytes, 0) / GB),
     top, live: live.length, working: working.length, idle15: quiet(QUIET_MS).length,
-    idleOver: idleOver.length, idleTrees: topTrees(idleOver, tree), quiet: quietLines,
+    idleOver: idleOver.length, idleTrees: topTrees(idleOver, tree), quiet: idleOver.map(quietLine), active: activeOver.map(quietLine),
     finished: finished.length, finishedTrees: topTrees(finished, tree),
     queue,
     waiters: [...(input.footprints.waiters ?? []), ...held].map(waiter => {
@@ -389,6 +460,10 @@ export interface WatchSource {
   processStart?: (pid: number) => Promise<number | null>;
   /** Runs `run` after `ms` without holding the minute timer; absent, an unref'd setTimeout. */
   later?: (run: () => void, ms: number) => void;
+  /** Aborts a job session's turn, which interrupts its running cell, and starts a new turn with `line`; absent, no hung call is interrupted. */
+  interrupt?: (session: string, line: string) => Promise<void>;
+  /** Each pid's open sockets with byte counts; absent, `readSockets`. */
+  sockets?: (pids: readonly number[]) => Promise<Map<number, string[]>>;
 }
 
 /** Ask keys whose ask failed and was logged, so a retry each minute logs nothing new. */
@@ -415,6 +490,28 @@ export function openCallLine(quiet: QuietLine & { call: OpenCall }): string {
     "as a detached script that writes its result to a file (nohup <command> > <file> 2>&1 &) and set board.wake(at=<its end>), so it ends its turn and its worker can rest.";
 }
 
+/** Whether a quiet session is hung: an open call, a kernel, and no motion (MOTION) for HUNG_MINUTES. */
+export const isHung = (quiet: QuietLine): quiet is QuietLine & { call: OpenCall; kernel: number } =>
+  quiet.call !== null && quiet.kernel !== null && (quiet.stillMin ?? 0) >= HUNG_MINUTES;
+
+const clock = (at: number): string => `${new Date(at).toISOString().slice(11, 16)}Z`;
+
+/** The line that tells a chat or thread its job's call is hung and when the service interrupts it: the next sample, one minute after the line's `at`. */
+export function hungLine(quiet: QuietLine & { call: OpenCall; kernel: number }, at: number): string {
+  return `${JOB_NOTICE_PREFIX}${quiet.job} (session ${quiet.session.slice(0, 8)}) has been in one ${quiet.call.tool} call since ${quiet.call.at.slice(11, 16)}Z ` +
+    `(\`${quiet.call.code}\`) with no model call for ${quiet.quietMin} min, and its kernel (pid ${quiet.kernel}) has used no CPU, started or ended no process and ` +
+    `moved no socket bytes for ${quiet.stillMin} min, so the call is hung. The service interrupts it at ${clock(at + MINUTE)} if the kernel still has not moved, ` +
+    "and tells the job to rerun the work as a detached script with board.wake.";
+}
+
+/** The message the service sends a job whose hung call it interrupted. */
+export function interruptLine(quiet: QuietLine & { call: OpenCall; kernel: number }): string {
+  return `The chat service interrupted your ${quiet.call.tool} call from ${quiet.call.at.slice(11, 16)}Z (\`${quiet.call.code}\`): for ${quiet.stillMin} min your kernel ` +
+    "used no CPU, started or ended no process and moved no socket bytes, so it was hung, most likely on a network read with no timeout. " +
+    "Rerun that work as a detached script that writes its result to a file (nohup <command> > <file> 2>&1 &), with a timeout on every network call, " +
+    "and set board.wake(at=<its end>), so your turn ends and your worker can rest while it runs.";
+}
+
 /** One line to send a tree's root once: `key` marks it asked in waiters-asked.json, `pid` names it in a failure log. */
 export interface Ask { key: string; root: string; pid: number | null; line: string }
 
@@ -423,12 +520,15 @@ export interface Ask { key: string; root: string; pid: number | null; line: stri
  * per call (`call:<id>`) unless a waiter of the same session is asked already. A cell is keyed by its call, not its kernel, since the next long
  * cell in the same kernel is a new ask: wp-engage-crawl ran one cell from 00:55 to 01:27Z on 10-15 and sat in the next from 01:27:59Z on.
  */
-export function asksOf(line: Pick<WatchLine, "waiters" | "quiet">): Ask[] {
+export function asksOf(line: Pick<WatchLine, "waiters" | "quiet" | "active"> & { at?: string }): Ask[] {
   const waiters = line.waiters ?? [];
   const waiting = new Set(waiters.map(waiter => waiter.session));
   return [...waiters.map(waiter => ({ key: String(waiter.kernel ?? waiter.pid), root: waiter.root, pid: waiter.pid, line: waiterLine(waiter) })),
-    ...(line.quiet ?? []).flatMap(quiet => quiet.call && !waiting.has(quiet.session)
-      ? [{ key: `call:${quiet.call.id}`, root: quiet.root, pid: quiet.kernel, line: openCallLine({ ...quiet, call: quiet.call }) }] : [])];
+    ...[...line.quiet ?? [], ...line.active ?? []].flatMap((quiet): Ask[] => {
+      if (!quiet.call || waiting.has(quiet.session)) return [];
+      if (isHung(quiet)) return [{ key: `hung:${quiet.call.id}`, root: quiet.root, pid: quiet.kernel, line: hungLine(quiet, line.at ? Date.parse(line.at) : Date.now()) }];
+      return [{ key: `call:${quiet.call.id}`, root: quiet.root, pid: quiet.kernel, line: openCallLine({ ...quiet, call: quiet.call }) }];
+    })];
 }
 
 /** How long an asked key stays asked after its last sighting: a sleep loop starts a new pid each round and can miss a minute's sample. */
@@ -464,6 +564,37 @@ export async function askChats(source: Pick<WatchSource, "dataDir" | "notify" | 
   await writeFile(file + ".tmp", JSON.stringify(kept));
   await rename(file + ".tmp", file);
   return sent;
+}
+
+/**
+ * Interrupts each hung call (`isHung`) whose `hung:<call id>` line went out in an earlier sample, once per call (`stop:<call id>` in
+ * waiters-asked.json): `interrupt` aborts the job's turn, which sends its kernel an interrupt request, and starts a new turn with
+ * `interruptLine`. A raw SIGINT does nothing here, since rlm.repl's handler drops a signal its worker did not request. A failed interrupt is
+ * logged once and tried again next sample.
+ */
+export async function interruptHung(source: Pick<WatchSource, "dataDir" | "interrupt" | "log">, line: Pick<WatchLine, "at" | "quiet">): Promise<string[]> {
+  if (!source.interrupt) return [];
+  const file = join(source.dataDir, "mac-usable", "waiters-asked.json");
+  const asked: Record<string, { asked: number; seen: number }> = await readFile(file, "utf8").then(text => JSON.parse(text) as Record<string, { asked: number; seen: number }>).catch(() => ({}));
+  const at = Date.parse(line.at);
+  const stopped: string[] = [];
+  for (const quiet of line.quiet ?? []) {
+    if (!isHung(quiet)) continue;
+    const told = asked[`hung:${quiet.call.id}`];
+    const key = `stop:${quiet.call.id}`;
+    if (!told || told.asked >= at || asked[key]) continue;
+    try {
+      await source.interrupt(quiet.session, interruptLine(quiet));
+      asked[key] = { asked: at, seen: at };
+      stopped.push(quiet.session);
+      source.log(`mac usable watch: interrupted ${quiet.job} (${quiet.session.slice(0, 8)}): its ${quiet.call.tool} call since ${quiet.call.at.slice(11, 16)}Z, kernel ${quiet.kernel} still ${quiet.stillMin} min`);
+    } catch (error) {
+      if (!failedAsks.has(key)) source.log(`mac usable watch: interrupt ${quiet.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
+      failedAsks.add(key);
+    }
+  }
+  if (stopped.length) await writeAtomic(file, JSON.stringify(asked));
+  return stopped;
 }
 
 /**
@@ -623,8 +754,14 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const at = now();
   const [footprints, queue, chats, usable, calls] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), source.chats(),
     (source.feed ?? readPressureFeed)(at), Promise.all([...quietFiles(rows, at)].map(async ([id, file]) => [id, await openCall(file)] as const)).then(found => new Map(found))]);
+  const motionFile = join(source.dataDir, "mac-usable", "kernel-motion.json");
+  const quietKernels = (footprints.kernels ?? []).filter(kernel => calls.has(kernel.session) && kernel.members?.length);
+  const sockets = quietKernels.length ? await (source.sockets ?? readSockets)(quietKernels.flatMap(kernel => kernel.members!)) : new Map<number, string[]>();
+  const nets = new Map(quietKernels.map(kernel => [kernel.session, kernel.members!.flatMap(pid => sockets.get(pid) ?? []).sort().join("\n")]));
+  const prev = await readFile(motionFile, "utf8").then(text => JSON.parse(text) as Motion).catch((): Motion => ({}));
+  const motion = advanceMotion(isRecord(prev) ? prev : {}, footprints.kernels ?? [], nets, at);
   const resumed = process.cpuUsage();
-  const line = watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, calls });
+  const line = watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, calls, motion });
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };
@@ -640,7 +777,9 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   });
   const written = stops.length ? { ...measured, stops } : measured;
   await appendFile(file, JSON.stringify(written) + "\n");
+  await writeAtomic(motionFile, JSON.stringify(motion)).catch(error => source.log(`mac usable watch: kernel motion file: ${error instanceof Error ? error.message : String(error)}`));
   await askChats(source, asksOf(written), chats, now());
+  await interruptHung(source, written);
   return written;
 }
 

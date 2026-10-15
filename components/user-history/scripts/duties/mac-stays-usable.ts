@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { misses, readWatch, TARGET, unusable, USABLE, type QuietLine, type TargetPart, type UsableMiss, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { isHung, misses, readWatch, TARGET, unusable, USABLE, type QuietLine, type TargetPart, type UsableMiss, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -82,10 +82,11 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
   for (const line of hour) for (const waiter of line.waiters ?? []) waiters.set(waiter.pid, waiter);
   metrics.kernel_waiters_1h = waiters.size;
   const calls = new Map<string, QuietLine & { call: NonNullable<QuietLine["call"]> }>();
-  for (const line of hour) for (const quiet of line.quiet ?? []) if (quiet.call) calls.set(quiet.call.id, { ...quiet, call: quiet.call });
+  for (const line of hour) for (const quiet of [...line.quiet ?? [], ...line.active ?? []]) if (quiet.call) calls.set(quiet.call.id, { ...quiet, call: quiet.call });
   for (const quiet of calls.values()) {
+    const what = isHung(quiet) ? `its kernel still ${quiet.stillMin} min, so the chat was told and the service interrupts the call` : "the chat was asked to run it detached with board.wake";
     flagged.push({ kind: "open_call", item: quiet.session, excerpt: `${quiet.tree}, job ${quiet.job} (session ${quiet.session.slice(0, 8)}): one ${quiet.call.tool} call since ` +
-      `${quiet.call.at.slice(11, 16)}Z with no model call for ${quiet.quietMin} min, \`${quiet.call.code}\`; the chat was asked to run it detached with board.wake.` });
+      `${quiet.call.at.slice(11, 16)}Z with no model call for ${quiet.quietMin} min, \`${quiet.call.code}\`; ${what}.` });
   }
   for (const waiter of waiters.values()) {
     flagged.push({ kind: "kernel_waiter", item: String(waiter.pid), excerpt: `${waiter.tree}, job ${waiter.job}, pid ${waiter.pid}, \`${waiter.command}\`, ` +

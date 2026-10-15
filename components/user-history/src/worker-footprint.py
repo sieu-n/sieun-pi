@@ -4,8 +4,8 @@ Reads worker pids, one per line, on stdin. Prints one JSON object: each worker's
 proc_listchildpids) with its pid count and summed phys_footprint in bytes (the memory macOS counts, compressed and swapped pages
 included), every waiter (`WAITER`) and every bash() handle (`HANDLE`, with the command it runs) under a job's kernel with the kernel's session and the process's age, the Mac's swap use and memory pressure level, and this process's own CPU seconds. It uses libproc and sysctl through ctypes
 and starts no other process, so one call costs well under a second of CPU at 1,000 processes.
-Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes and its
-largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
+Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes, CPU
+milliseconds since each process started and pids (`members`), and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
 `--session <id>` prints the processes a session's kernel left detached (`strays`), for the notice of a deleted or archived job; `--started <pid>`
@@ -33,8 +33,26 @@ class SwapUsage(ctypes.Structure):
     _fields_ = [("total", ctypes.c_uint64), ("avail", ctypes.c_uint64), ("used", ctypes.c_uint64), ("pagesize", ctypes.c_uint32), ("encrypted", ctypes.c_uint32)]
 
 
-def footprint(pid, info=RusageInfo()):
-    return info.phys_footprint if lib.proc_pid_rusage(pid, RUSAGE_INFO_V4, ctypes.byref(info)) == 0 else None
+class Timebase(ctypes.Structure):
+    _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+
+TIMEBASE = Timebase()
+libc.mach_timebase_info(ctypes.byref(TIMEBASE))
+# rusage_info's user_time and system_time are mach ticks on Apple silicon (125/3 ns a tick), not nanoseconds.
+TICK_MS = TIMEBASE.numer / TIMEBASE.denom / 1e6 if TIMEBASE.denom else 1e-6
+
+
+def usage(pid, info=RusageInfo()):
+    """(phys_footprint in bytes, CPU in ms) of a process, or None when it is gone."""
+    if lib.proc_pid_rusage(pid, RUSAGE_INFO_V4, ctypes.byref(info)) != 0:
+        return None
+    return info.phys_footprint, (info.user_time + info.system_time) * TICK_MS
+
+
+def footprint(pid):
+    found = usage(pid)
+    return None if found is None else found[0]
 
 
 def children(pid, buffer=(ctypes.c_int * 4096)()):
@@ -121,14 +139,15 @@ def tree(root, waiters, now, handles, kernels, seen):
         if pid in seen:
             continue
         seen.add(pid)
-        bytes_ = footprint(pid)
-        if bytes_ is None:
+        found = usage(pid)
+        if found is None:
             continue
+        bytes_, cpu_ms = found
         pids.append(bytes_)
         if kernel is None and pid != root:
             owner = kernel_of(pid, procargs(pid))
             if owner is not None:
-                kernel = {"pid": pid, "root": owner[0], "session": owner[1], "pids": 0, "bytes": 0, "biggest": None}
+                kernel = {"pid": pid, "root": owner[0], "session": owner[1], "pids": 0, "bytes": 0, "biggest": None, "cpu_ms": 0.0, "members": []}
                 kernels.append(kernel)
         elif kernel:
             args = procargs(pid)
@@ -146,6 +165,8 @@ def tree(root, waiters, now, handles, kernels, seen):
         if kernel:
             kernel["pids"] += 1
             kernel["bytes"] += bytes_
+            kernel["cpu_ms"] = round(kernel["cpu_ms"] + cpu_ms, 1)
+            kernel["members"].append(pid)
         stack.extend((child, kernel) for child in children(pid))
     return {"pids": len(pids), "bytes": sum(pids)}
 

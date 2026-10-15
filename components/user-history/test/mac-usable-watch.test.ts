@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
-import { askChats, asksOf, type Footprints, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { advanceMotion, askChats, asksOf, type Footprints, MOTION, parseNettop, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import { longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
@@ -346,4 +346,101 @@ test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics th
   for (const metric of duty.metrics) assert.ok(given.includes(metric.key), metric.key);
   assert.equal(duty.metrics.find(metric => metric.headline)?.key, "usable_pct_1h");
   assert.equal(duty.metrics.some(metric => /gb|footprint|budget/.test(metric.key)), false, "the worker footprint has no target");
+});
+
+
+// 10-15: wp-engage-crawl (01a0f7cb, kernel 62440) sat in one ipython cell from 01:27:59Z to 02:26:27Z and in the next from 02:26:36Z to 03:26:08Z.
+// Both were slow paging pulls, not hangs: at 03:23-03:24Z the kernel opened a new TLS connection to 64.34.205.245 every 5 s and used 22 to 27 s
+// of CPU a minute, and both cells returned their results. A kernel held in a read that never returns used 2.0 ms a minute.
+const PULL_CELLS = [{ id: "toolu_01Qmnyp3Gp6NjqY7sAmrtRXM", at: "2026-10-15T01:27:59.784Z", code: "async def batch_item_ids(bid, index=None):" },
+  { id: "toolu_01HYopDK8S7Wjt4BHASMiU5s", at: "2026-10-15T02:26:36.327Z", code: "for t in ['lysbeautyofficial', 'houseofhur_official', 'tooq.official', 'laka.official', 'therealreal', 'erborian']:" }];
+const PULL_PORTS = [56640, 56761, 56779, 56787, 56793, 56795, 56810];
+const HUNG_SOCKET = "tcp4 127.0.0.1:57498<->127.0.0.1:57497,0,149";
+
+async function crawlWatch(cell: (typeof PULL_CELLS)[number], kernelAt: (minute: number) => { cpuMs: number; sockets: string[] }) {
+  const dir = await mkdtemp(join(tmpdir(), "mac-usable-motion-"));
+  const file = join(dir, "crawl.jsonl");
+  await writeFile(file, toolCall(cell.id, cell.at, cell.code) + "\n");
+  const sent: [string, string][] = [];
+  const interrupted: [string, string][] = [];
+  const logs: string[] = [];
+  let minute = 0;
+  const start = Date.parse(cell.at) + 1_000;
+  const rows = () => [row(DEV, { sessionName: "**** main dev thread ***", workerPid: 48062 }),
+    row(CRAWL, { parentSessionId: DEV, sessionName: "wp-engage-crawl", activity: "working", workerPid: 48062, lastActivityAt: cell.at, sessionFile: file })];
+  const source = { dataDir: join(dir, "data"), rows, chats: async () => new Set([DEV]), title: () => null, queue: async () => QUEUE, log: (text: string) => { logs.push(text); },
+    footprints: async (): Promise<Footprints> => ({ ...FOOTPRINTS, kernels: [{ pid: 62440, root: DEV, session: CRAWL, pids: 1, bytes: GB, biggest: null, cpu_ms: kernelAt(minute).cpuMs, members: [62440] }] }),
+    sockets: async (pids: readonly number[]) => new Map(pids.map(pid => [pid, kernelAt(minute).sockets])),
+    feed: async () => null, now: () => start + minute * MIN,
+    notify: async (chat: string, text: string) => { sent.push([chat, text]); },
+    interrupt: async (session: string, text: string) => { interrupted.push([session, text]); } };
+  const lines: WatchLine[] = [];
+  const run = async (until: number) => { for (; minute <= until; minute++) lines.push((await sample(source))!); };
+  return { run, lines, sent, interrupted, logs, dataDir: source.dataDir, at: (m: number) => start + m * MIN };
+}
+
+test("motion: a kernel moved when its CPU changed by MOTION.cpuMs, a process started or ended, or a socket moved bytes; the first or a stale reading is no baseline", () => {
+  const kernel = (cpu_ms: number, members = [62440]) => [{ pid: 62440, root: DEV, session: CRAWL, pids: members.length, bytes: GB, biggest: null, cpu_ms, members }];
+  const first = advanceMotion({}, kernel(1000), new Map(), NOW);
+  assert.deepEqual(first[CRAWL], { kernel: 62440, at: NOW, cpuMs: 1000, members: [62440], net: null, moved: null, stillSince: NOW });
+  const hung = advanceMotion(first, kernel(1002), new Map([[CRAWL, HUNG_SOCKET]]), NOW + MIN);
+  assert.deepEqual([hung[CRAWL]!.moved, hung[CRAWL]!.stillSince], [false, NOW], "2.0 ms a minute, the measured hung read, is still");
+  assert.equal(advanceMotion(hung, kernel(1004), new Map([[CRAWL, HUNG_SOCKET]]), NOW + 2 * MIN)[CRAWL]!.stillSince, NOW, "the same socket with the same bytes is still");
+  assert.equal(advanceMotion(hung, kernel(1004), new Map([[CRAWL, HUNG_SOCKET.replace(",0,149", ",512,149")]]), NOW + 2 * MIN)[CRAWL]!.moved, true, "bytes on the socket");
+  assert.equal(advanceMotion(hung, kernel(1004, [62440, 70001]), new Map(), NOW + 2 * MIN)[CRAWL]!.moved, true, "a process started");
+  assert.equal(advanceMotion(first, kernel(1000 + 22_376), new Map(), NOW + MIN)[CRAWL]!.moved, true, "the 03:24Z pull's 22 s a minute");
+  assert.deepEqual([3.7, 5, 17.5].map(ms => advanceMotion(first, kernel(1000 + ms), new Map(), NOW + MIN)[CRAWL]!.moved), [false, false, true],
+    "the most a still kernel used in a minute on 10-15, and the least a kernel at work used");
+  assert.equal(advanceMotion(first, kernel(1002), new Map(), NOW + MOTION.freshMs + 1)[CRAWL]!.moved, null, "a stale reading is no baseline");
+  assert.deepEqual(advanceMotion(first, [{ ...kernel(5)[0]!, pid: 99 }], new Map(), NOW + MIN)[CRAWL]!.moved, null, "a new kernel for the session is no baseline");
+  assert.deepEqual(advanceMotion(first, [{ pid: 1, root: DEV, session: CRAWL, pids: 1, bytes: GB, biggest: null }], new Map(), NOW + MIN), {}, "an older helper gives no CPU");
+  assert.deepEqual(parseNettop(",bytes_in,bytes_out,\npython3.11.62440,5028,1981,\ntcp4 192.168.0.3:56640<->64.34.205.245:443,5028,1981,\nGoogle Chrome H.812,9,9,\nudp4 *:5353<->*:*,9,9,\n"),
+    new Map([[62440, ["tcp4 192.168.0.3:56640<->64.34.205.245:443,5028,1981"]], [812, ["udp4 *:5353<->*:*,9,9"]]]));
+});
+
+test("slow but active: both wp-engage-crawl pulls of 10-15 count as working, not quiet; the chat gets the one 451be57 ask per call, and the service never interrupts them", async () => {
+  for (const cell of PULL_CELLS) {
+    const watch = await crawlWatch(cell, minute => ({ cpuMs: 1_000 + minute * 22_376, sockets: [`tcp4 192.168.0.3:${PULL_PORTS[minute % PULL_PORTS.length]}<->64.34.205.245:443,5028,1981`] }));
+    await watch.run(58);
+    const late = watch.lines.slice(31);
+    assert.ok(late.every(line => line.idleOver === 0 && line.quiet!.length === 0 && line.active!.length === 1), "no idle minute past 30 min");
+    assert.deepEqual(late.filter(line => misses(line).includes("idle")), [], "no idle miss for d6");
+    assert.equal(late.at(-1)!.active![0]!.stillMin, 0);
+    assert.deepEqual(watch.sent.map(([chat, text]) => [chat, text.includes("Do not interrupt the call")]), [[DEV, true]], "one ask per call, and it is the 451be57 ask");
+    assert.deepEqual(watch.interrupted, []);
+    const { flagged } = measure(await readWatch(watch.dataDir, watch.at(0), watch.at(58)), watch.at(58));
+    assert.match(flagged!.find(item => item.kind === "open_call")!.excerpt, /the chat was asked to run it detached with board\.wake\.$/);
+  }
+  const quiet = await crawlWatch(PULL_CELLS[0]!, minute => ({ cpuMs: 1_000 + minute * 2, sockets: [HUNG_SOCKET] }));
+  await quiet.run(31);
+  assert.equal(quiet.lines.at(-1)!.idleOver, 1, "the same cell with a still kernel counts as quiet");
+});
+
+test("hung: a cell whose kernel used no CPU, no new process and no socket bytes for HUNG_MINUTES gets one line to its chat naming the interrupt time, then one interrupt a sample later and one message to the job", async () => {
+  const watch = await crawlWatch(PULL_CELLS[1]!, minute => ({ cpuMs: 1_000 + minute * 2, sockets: [HUNG_SOCKET] }));
+  await watch.run(29);
+  assert.deepEqual([watch.sent.length, watch.lines.at(-1)!.idleOver], [0, 0], "under TARGET.idleMinutes: no ask, no idle minute");
+  await watch.run(30);
+  const hungAt = watch.lines.at(-1)!;
+  assert.deepEqual([hungAt.idleOver, hungAt.quiet![0]!.stillMin, hungAt.quiet![0]!.quietMin], [1, 30, 30]);
+  assert.equal(watch.sent.length, 1, "a hung call gets the hung line in place of the 451be57 ask, which says not to interrupt");
+  assert.equal(watch.sent[0]![1], "[job] wp-engage-crawl (session 01a0f7cb) has been in one ipython call since 02:26Z (`" + PULL_CELLS[1]!.code + "`) with no model call for 30 min, " +
+    "and its kernel (pid 62440) has used no CPU, started or ended no process and moved no socket bytes for 30 min, so the call is hung. " +
+    `The service interrupts it at ${new Date(watch.at(31)).toISOString().slice(11, 16)}Z if the kernel still has not moved, and tells the job to rerun the work as a detached script with board.wake.`);
+  assert.deepEqual(watch.interrupted, [], "never in the sample that asks");
+  await watch.run(33);
+  assert.equal(watch.interrupted.length, 1, "once, one sample after the ask");
+  assert.equal(watch.interrupted[0]![0], CRAWL);
+  assert.match(watch.interrupted[0]![1], /^The chat service interrupted your ipython call from 02:26Z \(`for t in .*`\): for 31 min your kernel used no CPU, started or ended no process and moved no socket bytes, .* set board\.wake\(at=<its end>\)/);
+  assert.equal(watch.sent.length, 1, "no second line to the chat");
+  assert.match(watch.logs.join("\n"), /interrupted wp-engage-crawl \(01a0f7cb\): its ipython call since 02:26Z, kernel 62440 still 31 min/);
+  const { flagged } = measure(await readWatch(watch.dataDir, watch.at(0), watch.at(33)), watch.at(33));
+  assert.match(flagged!.find(item => item.kind === "open_call")!.excerpt, /its kernel still 33 min, so the chat was told and the service interrupts the call\.$/);
+
+  const woke = await crawlWatch(PULL_CELLS[1]!, minute => ({ cpuMs: 1_000 + minute * 2, sockets: [minute >= 31 ? HUNG_SOCKET.replace(",0,149", ",4096,149") : HUNG_SOCKET] }));
+  await woke.run(31);
+  assert.deepEqual([woke.sent.length, woke.interrupted.length, woke.lines.at(-1)!.idleOver], [2, 0, 0], "bytes after the ask: nothing is interrupted and the minute counts as working");
+  assert.match(woke.sent[1]![1], /Do not interrupt the call\./, "a call that works gets the 451be57 ask");
+  await woke.run(32);
+  assert.deepEqual([woke.interrupted.length, woke.lines.at(-1)!.quiet![0]!.stillMin], [0, 1], "still again from 31: a new spell, far from HUNG_MINUTES");
 });

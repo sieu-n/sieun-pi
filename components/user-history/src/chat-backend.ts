@@ -192,7 +192,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       await catalog.connect();
       const response = await catalog.client.request({ type: "send_message", targetActiveSessionId: active, message: line }, 30_000, { recoverable: false });
       if (!response.success) throw new Error(response.error);
-    } });
+    },
+    interrupt: async (session, line) => { await threads.restart(session, line, true); } });
   const agentMessage = {
     deliver: async (session: string, text: string): Promise<"sent" | "gone"> => {
       await catalog.connect();
