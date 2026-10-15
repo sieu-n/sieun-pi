@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readAgentQueue } from "./chat-pool.ts";
@@ -24,6 +25,27 @@ export const FLEET_READ_MS = 15_000;
  */
 export const FIX_UNLISTED_MS = 200_000;
 
+/**
+ * The stop switch: while this file exists in the chat service's data folder, the budget admits no non-owner start at all, and the service holds
+ * every message it would send on its own (wakes, notices, continues, non-prod alerts). The owner asked on 10-16 at about 04:00 KST to "FIRST KILL
+ * EVERYTHING FOR NOW UNTIL EVERYTHING IS FIXED", after the 03:55 KST batch started 6 check-ins and 8 fix jobs within 1 min of a daemon restart.
+ * Owner sends and prod turns never read it. Delete the file to open the budget again; it is read on every check.
+ */
+export const FLEET_STOP_FILE = "fleet-stop.json";
+
+/** Whether an alert text names a prod alert and no staging or dev one, the same rule pi-pool's prod turns use (pool/prod.py). */
+export const isProdAlert = (text: string): boolean => /\b(prod|production)\b/i.test(text) && !/\b(staging|stg|dev)\b/i.test(text);
+
+/**
+ * Why the Mac as a whole has no room, from pi-pool's memory governor: high or critical shuts the budget even with the workers under FLEET_GB,
+ * as FLEET_GB counts only the Prime workers. At 04:00 KST on 10-16 the workers held 11.8 GB while the owner's browsers held about 19 GB, the
+ * governor read critical with 16 GB compressed and load 46, and the budget still let 4 fix jobs start.
+ */
+export function pressured(reading: AgentQueueReading | null): string | null {
+  const level = reading?.governor?.level;
+  return level === "high" || level === "critical" ? `pi-pool reads memory pressure ${level}` : null;
+}
+
 /** The non-owner starts the budget orders. An owner message, a chat's own wake and a prod turn never ask it. */
 export type FleetKind = "duty" | "checkin" | "fix" | "sendback" | "continue" | "wake";
 export interface FleetAsk { kind: FleetKind; label: string; chat?: string }
@@ -39,6 +61,8 @@ export interface FleetDeps {
   live: (session: string) => Promise<boolean>;
   /** Whether a fix job of the chat that this process did not start is live (after a service restart). */
   fixLive?: (chat: string) => Promise<boolean>;
+  /** The stop switch file (FLEET_STOP_FILE); absent: never stopped. */
+  stopFile?: string;
   log: (line: string) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -94,6 +118,16 @@ export class FleetBudget {
     return this.closed();
   }
 
+  /** Why the stop switch is on (its file's `why`, or a plain line), or null when it is off. */
+  async switchedOff(): Promise<string | null> {
+    if (!this.deps.stopFile) return null;
+    const text = await readFile(this.deps.stopFile, "utf8").catch(() => null);
+    if (text === null) return null;
+    let why = "";
+    try { const value: unknown = JSON.parse(text); if (typeof value === "object" && value && "why" in value && typeof value.why === "string") why = value.why; } catch {}
+    return `the fleet stop switch is on${why ? ` (${why})` : ""}`;
+  }
+
   /** The starts waiting now, oldest first. */
   queued(): readonly FleetAsk[] { return this.waiting.map(entry => entry.ask); }
 
@@ -103,7 +137,7 @@ export class FleetBudget {
   private async read(): Promise<{ gb: number | null; long: string | null }> {
     if (!this.reading || this.now() - this.reading.at >= this.readMs) {
       const [gb, queue] = await Promise.all([this.deps.gb().catch(() => null), this.deps.queue ? this.deps.queue().catch(() => null) : Promise.resolve(null)]);
-      this.reading = { at: this.now(), gb, long: queueLong(queue) };
+      this.reading = { at: this.now(), gb, long: queueLong(queue) ?? pressured(queue) };
       this.sinceRead = 0;
     }
     return this.reading;
@@ -111,6 +145,8 @@ export class FleetBudget {
 
   /** Why the budget is shut now, counting the starts let through since the last read at WORKER_GB each. */
   private async closed(): Promise<string | null> {
+    const stop = await this.switchedOff();
+    if (stop) return stop;
     const { gb, long } = await this.read();
     const projected = gb === null ? null : gb + WORKER_GB * this.sinceRead;
     if (projected !== null && projected >= FLEET_GB) return `the Prime workers hold ${projected.toFixed(1)} GB (budget ${FLEET_GB} GB)`;

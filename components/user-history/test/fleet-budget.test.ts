@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { dutyJobHost, dutyJobKind } from "../src/chat-duty-job.ts";
-import { FIX_UNLISTED_MS, FLEET_GB, FleetBudget, type FleetAsk, WORKER_GB } from "../src/fleet-budget.ts";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FIX_UNLISTED_MS, FLEET_GB, FleetBudget, type FleetAsk, isProdAlert, WORKER_GB } from "../src/fleet-budget.ts";
 import type { AgentQueueReading } from "../src/shared/types.ts";
 
 // The reboot at 13:48:58Z on 10-15 (kern.boottime), from the session files and browser-chat/service.log: in the 57 min to 14:46Z the server
@@ -167,4 +170,46 @@ test("a duty job's create and send-back wait for the fleet budget outside the on
   gates.get("x")!();
   await back;
   assert.equal(prompts.includes("id-x"), true);
+});
+
+// 10-16 at about 04:00 KST the owner said "FIRST KILL EVERYTHING FOR NOW UNTIL EVERYTHING IS FIXED"; the 03:55 KST batch had started 6
+// check-ins and 8 fix jobs within 1 min of a daemon restart, all under 16 GB (service.log 18:56:03Z to 18:57:24Z).
+test("the stop switch admits nothing while its file exists, at any memory, and lets the waiting starts go once it is deleted", async () => {
+  const time = clock();
+  const dir = await mkdtemp(join(tmpdir(), "fleet-stop-"));
+  const stopFile = join(dir, "fleet-stop.json");
+  await writeFile(stopFile, JSON.stringify({ why: "owner: kill everything until fixed" }));
+  const budget = new FleetBudget({ gb: async () => 2.0, live: async () => false, log: () => {}, stopFile, readMs: 15_000, ...time });
+  assert.match(await budget.switchedOff() ?? "", /stop switch is on \(owner: kill everything until fixed\)/);
+  assert.equal(await budget.tryAdmit({ kind: "wake", label: "w" }), null);
+  assert.equal(await budget.tryAdmit({ kind: "continue", label: "c" }), null);
+  const started: string[] = [];
+  const asks: FleetAsk[] = [{ kind: "checkin", label: "check-in launch main bro 03:55" }, { kind: "fix", chat: "c1", label: "fix limits rest on evidence ops guy 03:55" },
+    { kind: "sendback", label: "fix arbitrary limits Crawler VP 22:59" }, { kind: "duty", label: "mac stays usable 03:55" }];
+  const all = asks.map(ask => budget.admit(ask).then(done => { started.push(ask.label); done("s"); }));
+  for (let i = 0; i < 20; i++) await time.sleep(15_000);
+  assert.deepEqual(started, [], "nothing starts in 5 min with the switch on");
+  await rm(stopFile);
+  await Promise.all(all);
+  assert.deepEqual(started, asks.map(ask => ask.label));
+  assert.equal(await budget.switchedOff(), null);
+});
+
+test("prod alerts pass the stop switch and other alerts wait, by pi-pool's prod rule", () => {
+  assert.equal(isProdAlert("[alert] A Grafana alert you own started firing: \"prod [no value]: Postgres WAL archive failing\""), true);
+  assert.equal(isProdAlert("virev-prod-media-10 on us-metal01 is over 85% of its mem_limit"), true);
+  assert.equal(isProdAlert("staging [no value]: Postgres WAL archive failing"), false);
+  assert.equal(isProdAlert("us-metal01 CPU >85% for 30m"), false);
+});
+
+test("memory pressure high or critical shuts the budget with the workers under 16 GB (10-16 04:00 KST: 11.8 GB of workers, browsers about 19 GB)", async () => {
+  const time = clock();
+  const at = (level: string) => async () => ({ ...queue(4, 8), governor: { limit: 8, level } }) as unknown as AgentQueueReading;
+  for (const level of ["high", "critical"]) {
+    const budget = new FleetBudget({ gb: async () => 11.8, queue: at(level), live: async () => false, log: () => {}, ...time });
+    assert.equal(await budget.held(), `pi-pool reads memory pressure ${level}`);
+    assert.equal(await budget.tryAdmit({ kind: "fix", chat: "c", label: "fix x" }), null);
+  }
+  const ok = new FleetBudget({ gb: async () => 11.8, queue: at("ok"), live: async () => false, log: () => {}, ...time });
+  assert.equal(await ok.held(), null);
 });
