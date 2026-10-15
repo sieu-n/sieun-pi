@@ -28,7 +28,7 @@ one-per-tree pass and no borrow, until the tree leaves the file or the level is 
 runs so the chat can read the service's notice and stop its job.
 
 Order: an owner turn runs at once and never waits. Then queued turns take free slots
-by class, high before normal before low, longest wait first inside a class, while the
+by class, a chat's check-in key (CHECKIN) first and never held, then high before normal before low, longest wait first inside a class, while the
 Mac has under mac_working_max slots in use and the tree under tree_working_max. A
 queued entry moves up one class for every queue_aging_s it has waited. A child whose
 parent's turn is in flight and that finds no slot borrows the parent's slot: a parent
@@ -51,11 +51,20 @@ worker that asked) is gone, is dropped, and so is a queue entry whose `admit --w
 process (`waiter`) is gone, so an abort with no agent_end, a hung tool or a crash
 cannot hold a slot.
 """
-import json, os, sys, time
+import json, os, re, sys, time
 
 from . import base, pressure, registry
 
 CLASSES = ("low", "normal", "high")
+# A chat's check-in run waits in the queue under the key `duty:<chat id>:checkin` before its job's
+# session exists, so one chat has at most one such entry. It queues above every class, aging included,
+# and pressure never holds it: on 10-15, with 60 to 77 turns queued at the critical limit of 12 and
+# every entry aged to high within 36 s, check-in keys waited 49 s at p50, 179 s at p90 and 381 s at
+# most (chat service log, 23 waits that day), so the check-in that keeps every chat's plan moving ran
+# last. The check-in job's own first run waited 0 s at p90 over 282 jobs that day (pi-pool.log), so
+# only the key needs it. Shown as high in `queue --json`, which older readers parse.
+CHECKIN = "checkin"
+CHECKIN_KEY = re.compile(r"^duty:[\w-]+:checkin$")
 # An owner-turn mark that no admit consumed (a failed send) is dropped after this long.
 # A mark waits for the session's next turn, which starts after the turn in flight ends:
 # the 99th percentile turn was 2,956 s over the 22,675 turns of 10-11 to 10-14
@@ -119,8 +128,15 @@ def alive(pid):
 
 def rank(entry, now, aging):
     """The class an entry queues in now: its own, one step up per aging period waited."""
+    if entry["class"] == CHECKIN:
+        return len(CLASSES)
     steps = int(max(0.0, now - entry["since"]) // aging)
     return min(len(CLASSES) - 1, CLASSES.index(entry["class"]) + steps)
+
+
+def shown(klass):
+    """A class as `queue --json` names it: a check-in key reads as high."""
+    return "high" if klass == CHECKIN else klass
 
 
 def order(queued, now, aging):
@@ -215,7 +231,7 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None, firm
 def holds(entry, sessions, now=None):
     """Whether pressure holds a queued turn: its own class and its tree's class are both below high, and it
     has waited under HOLD_MAX_S."""
-    if now is not None and now - entry["since"] >= HOLD_MAX_S:
+    if entry["class"] == CHECKIN or (now is not None and now - entry["since"] >= HOLD_MAX_S):
         return False
     rec = sessions.get(entry["tree"]) or {}
     tree = "high" if rec.get("priority_label") == "high" else rec.get("priority") or entry["class"]
@@ -307,10 +323,11 @@ def view(turns, now, cfg, sessions=None):
     mac, tree_max, aging = limits(cfg)
     aging = aging or max(1, int(cfg["queue_aging_s"]))
     queue = order(turns["queued"], now, aging)
-    working = [{"session": s, "tree": e["tree"], "parent": e.get("parent"), "class": e["class"], "kind": e["kind"],
+    working = [{"session": s, "tree": e["tree"], "parent": e.get("parent"), "class": shown(e["class"]), "kind": e["kind"],
                 "since": e["since"]} for s, e in sorted(turns["working"].items(), key=lambda kv: kv[1]["since"])]
     queued = [{"session": s, "tree": turns["queued"][s]["tree"], "parent": turns["queued"][s].get("parent"),
-               "class": CLASSES[rank(turns["queued"][s], now, aging)], "base_class": turns["queued"][s]["class"],
+               "class": shown(CLASSES[min(rank(turns["queued"][s], now, aging), len(CLASSES) - 1)]), "base_class": shown(turns["queued"][s]["class"]),
+               **({"checkin": True} if turns["queued"][s]["class"] == CHECKIN else {}),
                "position": i + 1, "total": len(queue), "since": turns["queued"][s]["since"],
                "wait_s": round(now - turns["queued"][s]["since"])} for i, s in enumerate(queue)]
     return {"enabled": mac is not None, "mac_working_max": int(cfg["mac_working_max"]),
@@ -341,7 +358,7 @@ def last_set(key):
 # --------------------------------------------------------------------- the CLI
 def parse(rest):
     usage = ("usage: pi-pool admit <session> [--tree <root session>] [--parent <session>] "
-             "[--class high|normal|low] [--pid <n>] [--wait | --renew]")
+             "[--class high|normal|low|checkin] [--pid <n>] [--wait | --renew]; --class checkin takes only a duty:<chat>:checkin key")
     out = {"session": None, "tree": None, "parent": None, "class": None, "pid": None, "wait": False, "renew": False}
     i = 0
     while i < len(rest):
@@ -358,7 +375,8 @@ def parse(rest):
         else:
             raise SystemExit(usage)
         i += 1
-    if (not out["session"] or (out["class"] is not None and out["class"] not in CLASSES)
+    checkin = out["class"] == CHECKIN and CHECKIN_KEY.match(out["session"] or "") is not None
+    if (not out["session"] or (out["class"] is not None and out["class"] not in CLASSES and not checkin)
             or (out["wait"] and out["renew"])):
         raise SystemExit(usage)
     out["pid"] = int(out["pid"]) if out["pid"] is not None else os.getppid()

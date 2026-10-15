@@ -275,6 +275,39 @@ class Class(unittest.TestCase):
         self.assertEqual(self.cls({"T": {"priority_label": "high"}}, parent="chat", klass="low"), "low")
 
 
+class CheckIn(unittest.TestCase):
+    """A chat's check-in key queues above every class and is never held. 10-15: at the
+    critical limit of 12 with 60 to 77 turns queued, every entry aged to high within 36 s and
+    check-in keys waited up to 381 s behind them."""
+    KEY = "duty:01a11bd7-072f-7591-ad1d-f123c276cde5:checkin"
+
+    def test_a_check_in_key_goes_first_and_aging_never_reaches_it(self):
+        q = {"old": entry(klass="normal", since=0, tree="a"), self.KEY: entry(klass=turns.CHECKIN, since=900, tree=self.KEY)}
+        self.assertEqual(turns.order(q, 1000, 18), [self.KEY, "old"], "a normal turn aged to high for 1,000 s still queues behind it")
+        self.assertGreater(turns.rank(q[self.KEY], 1000, 18), turns.rank(q["old"], 10 ** 6, 18))
+
+    def test_pressure_never_holds_a_check_in_key(self):
+        self.assertFalse(turns.holds(entry(klass=turns.CHECKIN, since=0, tree=self.KEY), {}, 1))
+        self.assertTrue(turns.holds(entry(klass="low", since=0, tree="duty:c:d4"), {}, 1), "another duty's key is held as before")
+        t = turns.empty()
+        fill(t, 11)
+        t["queued"].update({"aged": entry(klass="high", since=0, tree="a"), self.KEY: entry(klass=turns.CHECKIN, since=50, tree=self.KEY)})
+        hold = lambda e: turns.holds(e, {}, 60)
+        self.assertEqual(turns.admit_pass(t, 60, 12, 8, 18, hold=hold), [(self.KEY, "slot")], "the one free slot under the limit of 12")
+
+    def test_only_a_check_in_key_may_ask_for_the_class(self):
+        self.assertEqual(turns.parse([self.KEY, "--tree", self.KEY, "--class", "checkin", "--wait"])["class"], turns.CHECKIN)
+        for session in ("01a13f01-43ec-7528-bb71-4382a7c6d730", "duty:01a11bd7:d1", "duty:a:checkin:x"):
+            with self.assertRaises(SystemExit):
+                turns.parse([session, "--class", "checkin"])
+
+    def test_queue_json_shows_a_check_in_key_as_high_with_a_flag(self):
+        t = turns.empty()
+        t["queued"][self.KEY] = entry(klass=turns.CHECKIN, since=0, tree=self.KEY)
+        shown = turns.view(t, 5, dict(base.DEFAULTS, memory_governor_on=0))["queued"][0]
+        self.assertEqual((shown["class"], shown["base_class"], shown.get("checkin")), ("high", "high", True))
+
+
 GB = 10 ** 9
 RAM = 34359738368
 # 10-14 18:20 KST on the owner's Mac: the kernel said warn, the compressor held 17.1 GB
