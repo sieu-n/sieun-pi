@@ -5,6 +5,7 @@ import type { Ledger } from "./chat-corrections.ts";
 import type { CheckInRecord } from "./chat-checkin.ts";
 import type { CheckInSettings } from "./checkin-settings.ts";
 import type { DutyRef } from "./checkin-findings.ts";
+import type { HeldSpawn } from "./checkin-steps.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { JobResumes } from "./job-resume.ts";
@@ -230,6 +231,8 @@ export interface CheckInSource {
   claude?: () => Promise<ClaudeState | null>;
   /** The sessions the Mac-wide turn queue holds (`queueReader`), which the check-in reads as queued, not stalled; absent or failing: none. */
   queue?: () => Promise<ReadonlyMap<string, QueuePlace>>;
+  /** The rlm.spawn calls pi-pool's spawn gate holds (`readHeldSpawns`), whose steps the check-in reads as queued (`withHeldSpawns`); absent or failing: none. */
+  spawns?: () => Promise<readonly HeldSpawn[]>;
   /** Told at each wake whether any chat or any of its jobs works now; the service holds the Mac awake while it does (src/chat-awake.ts). */
   awake?: (working: boolean) => void;
   /** The last owner reply each chat's `[reply check]` looked at (`<data dir>/reply-checks.json`). */

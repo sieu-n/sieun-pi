@@ -15,6 +15,7 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { childrenByParent, isListed, isTopLevel, parseSummaries, projectRow, rosterChildren, subtreeOf } from "../src/chat-catalog.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
+import { readHeldSpawns } from "../src/chat-pool.ts";
 import { historyMessages } from "../src/chat-threads.ts";
 import { CorrectionLedger } from "../src/chat-corrections.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
@@ -65,7 +66,7 @@ const source: CheckInSource = {
   memory: checkInRecord(await copy("check-ins.json")), replyChecks: replyCheckRecord(await copy("reply-checks.json")),
   settings: checkInSettings(await copy("check-in-settings.json")), tickMs: 0, noReportGraceMs: 60 * 60_000,
   corrections: () => corrections.read(), duties: id => duties.list(id), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-  dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
+  dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []), spawns: () => readHeldSpawns(),
   duty: { async lastCheckIn() { return undefined; }, async checkIn(_id, run) {
     printed = true;
     process.stdout.write(`classes ${JSON.stringify(run.classes)}\n`);

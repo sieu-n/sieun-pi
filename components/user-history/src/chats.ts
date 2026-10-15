@@ -6,7 +6,7 @@ import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, with
 import { flagStreaks } from "./checkin-repeats.ts";
 import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, withHeldSpawns } from "./checkin-steps.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
@@ -16,6 +16,7 @@ import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
 import { newestReportAt, opsSteer, tailMessages } from "./checkin-ops.ts";
+import { deadOwnerNotice, deadOwnerSteps, jobStateMap, jobStopped } from "./step-scan.ts";
 import { previousSpawn, spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
@@ -190,6 +191,11 @@ export class Chats {
   private readonly spawnTimes = new Map<string, number>();
   /** Each chat's newest duty report with board ops that `opsCheck` judged after its turn ended, by its time. */
   private readonly opsJudged = new Map<string, number>();
+  /** The agent states each chat's row last listed for its jobs (subagents and roots), by session id, so a job that stops working is seen. */
+  private readonly jobStates = new Map<string, Map<string, string>>();
+  /** Chats with a step scan queued or waiting (`scanSoon`), and per chat the dead-owner steps the last scans told, with the owner and end told. */
+  private readonly scanning = new Set<string>();
+  private readonly scanTold = new Map<string, Map<string, string>>();
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
@@ -235,6 +241,53 @@ export class Chats {
     if (before) for (const child of endedJobs(before, children)) this.laterOpenSteps(id, child.id);
     for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
     if (before?.some(was => childWorking(was) && children.some(child => child.id === was.id && !childWorking(child)))) this.cleanSoon(id);
+  }
+
+  /** The board watch: a chat's board changed, so its step scan runs (`scanSoon`). */
+  boardChanged(id: string): void { this.scanSoon(id); }
+
+  /**
+   * Queues one step scan of the chat (`scanSteps`) after `waitMs`, unless one is queued or waiting already. The service calls it when a job of
+   * the chat stops working (its turn ends, it fails or it is archived) and when the chat's board changes, as well as on the check-in schedule.
+   */
+  scanSoon(id: string, waitMs = 0): void {
+    if (this.scanning.has(id)) return;
+    this.scanning.add(id);
+    const run = () => this.queue(id, () => this.scanSteps(id).finally(() => this.scanning.delete(id)));
+    if (waitMs <= 0) { run(); return; }
+    const timer = setTimeout(run, waitMs);
+    timer.unref?.();
+  }
+
+  /**
+   * The cheap dead-owner scan: the check-in's measure with no duty job, which tells the chat at once each open step whose owner job failed, is
+   * gone, or is a root that ended over the no-report grace ago (`deadOwnerSteps`), once per owner end. A subagent that ended is the open-steps
+   * notice's (`openSteps`). ops guy 10-15: universal debug layer failed at about 17:15Z and nobody saw it until the owner asked at 18:07Z; the
+   * owner's words, "THEN WHY THE HELL DIDN"T CHECK IN FIX THIS??" and "OR WHENEVER UPDATE HAPPENS??". It runs while a relief or the daemon
+   * gate pauses check-ins, and not for a chat the owner paused or whose last turn failed.
+   */
+  private async scanSteps(id: string): Promise<void> {
+    await this.load();
+    if (!this.chatIds.has(id) || this.stall(id)) return;
+    const setting = await this.source.settings.get(id);
+    const now = this.now();
+    if (activePause(setting, now) !== null && ownerPause(setting)) return;
+    const gathered = await this.gather(id);
+    if (!gathered.rows.length && !this.children.has(id)) return;
+    const { precheck } = await this.measure(id, gathered, await this.source.memory.get(id), setting.everyMs, now);
+    const roots = new Set(this.source.registry ? await this.source.registry.rootsOf(gathered.name ? [id, gathered.name] : [id]).catch(() => []) : []);
+    const dead = deadOwnerSteps(precheck.end, roots, this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS, now);
+    const before = this.scanTold.get(id);
+    this.scanTold.set(id, new Map(dead.map(({ entry, end }) => [entry.view.item.id, end])));
+    const fresh = dead.filter(({ entry, end }) => before?.get(entry.view.item.id) !== end);
+    if (!fresh.length) return;
+    try {
+      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + deadOwnerNotice(fresh.map(({ entry }) => entry), now), images: [], mode: "steer" });
+      this.log(`chat ${id.slice(0, 8)}: step scan told the chat ${fresh.map(({ entry }) => entry.view.item.id).join(", ")} have no live owner`);
+    } catch (error) {
+      for (const { entry } of fresh) this.scanTold.get(id)?.delete(entry.view.item.id);
+      this.log(`chat ${id.slice(0, 8)}: step scan: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** A job of the chat just ended its turn, or the chat went idle with its reports in: its finished jobs are deleted now, not at the next sweep. */
@@ -586,6 +639,7 @@ export class Chats {
     catch (error) { this.log(`chats: jobs: ${error instanceof Error ? error.message : String(error)}`); return; }
     const chatRows = rows.filter(row => this.chatIds.has(row.id));
     this.refreshJobs(chatRows);
+    for (const row of chatRows) if (jobStopped(this.jobStates.get(row.id), this.jobStates.set(row.id, jobStateMap(row)).get(row.id)!)) this.scanSoon(row.id, this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
     if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS) {
       this.rootsSweptAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
@@ -989,8 +1043,9 @@ export class Chats {
     const sessions = new Map([...this.subagents.values()].flat().concat(children, nested).flatMap(child => child.sessionId ? [[child.id, child.sessionId] as const] : []));
     const asleep = new Set(wakes.map(wake => wake.session));
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs), asleep);
-    const threads = withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
-      wakes, key => sessions.get(key));
+    const spawns = await this.source.spawns?.().catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in spawns: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
+    const threads = withHeldSpawns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
+      wakes, key => sessions.get(key)), board, spawns, new Set([id, ...dutyJobs]));
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
     const facts = withQueuePlaces(threads.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);

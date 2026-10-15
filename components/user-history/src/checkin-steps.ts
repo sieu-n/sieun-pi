@@ -199,12 +199,38 @@ export function stepOwner(item: PlanItem): string | undefined {
   return planJob(item.job) ?? item.sessionId ?? /\bthread:([a-zA-Z0-9_-]{1,128})/.exec(item.note ?? "")?.[1];
 }
 export const owns = (fact: JobFact, owner: string): boolean => fact.key === owner || fact.name === owner || fact.key === "thread:" + owner;
-/** The fact that owns a step: the thread its stored session id names first, so a renamed thread keeps its steps, else the one its job names. */
+/**
+ * The fact that owns a step: the thread its stored session id names first, so a renamed thread keeps its steps, else the one its job names, a
+ * working one first, so a job the chat started again under the same name owns the steps, not its ended first run.
+ */
 export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | undefined => {
   const owner = stepOwner(item);
   return (item.sessionId ? facts.find(fact => fact.key === "thread:" + item.sessionId || fact.sessionId === item.sessionId) : undefined) ??
-    (owner === undefined ? undefined : facts.find(fact => owns(fact, owner)));
+    (owner === undefined ? undefined : facts.find(fact => owns(fact, owner) && fact.state === "working") ?? facts.find(fact => owns(fact, owner)));
 };
+
+/** An rlm.spawn that pi-pool's spawn gate holds (`pi-pool spawn-gate status`): the session that called it, the name it gave, and its place. */
+export interface HeldSpawn { ticket: string; parent: string; name: string; position: number; total: number; since: number }
+/**
+ * The facts plus one working fact, with its queue place, for each open step whose job no fact owns and that names a spawn the gate holds for
+ * `parents` (the chat and its duty jobs): the spawn starts by itself in order. Crawler VP 10-15: the chat called rlm.spawn("alert bridge
+ * dedupe") at 12:47Z, the gate held it at 40.87 GiB as 4th in line, and the chat linked 80 alert steps to that job. A check-in in that window
+ * read each one as "alert bridge dedupe not found" and its job gone.
+ */
+export function withHeldSpawns(facts: readonly JobFact[], board: ChatBoard | null, spawns: readonly HeldSpawn[], parents: ReadonlySet<string>): JobFact[] {
+  const held = spawns.filter(spawn => parents.has(spawn.parent));
+  if (!held.length) return [...facts];
+  const out = [...facts];
+  walk(board?.plan ?? [], item => {
+    const owner = planJob(item.job);
+    if (owner === undefined || !OPEN.has(item.status) || ownerOf(item, out)) return;
+    const spawn = held.find(candidate => candidate.name === owner);
+    if (!spawn) return;
+    out.push({ key: `queued-${spawn.ticket}`, name: spawn.name, state: "working", queued: { position: spawn.position, total: spawn.total, since: spawn.since },
+      item: { id: item.id, text: item.text, status: item.status } });
+  });
+  return out;
+}
 
 /**
  * The chat's jobs now: every subagent directly under it (one whose parent is not another listed subagent), plus every thread an open plan step

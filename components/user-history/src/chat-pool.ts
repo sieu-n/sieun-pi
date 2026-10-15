@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
+import type { HeldSpawn } from "./checkin-steps.ts";
 import { POOL_PRIORITIES, type AccountAction, type AgentQueueGovernor, type AgentQueueReading, type AgentQueueSession, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
   type PressureChange, type PressureLevel, type PressureReading, type PoolResolution, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
@@ -196,6 +197,7 @@ export const poolCommand = {
   admit: (sessionId: string, tree: string, priority: TurnClass) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
   release: (sessionId: string) => ["release", sessionId],
   ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
+  spawnGate: () => ["spawn-gate", "status"],
 };
 
 /** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
@@ -261,6 +263,20 @@ function setRecord(value: unknown): PoolSetRecord | null {
 
 export async function readAgentQueue(): Promise<AgentQueueReading> {
   return parseAgentQueue(JSON.parse(await run(poolCommand.queue())));
+}
+
+/** The spawns the gate holds, from `spawn-gate status` (pool/spawns.py `view`); an entry with no parent, name or ticket is left out. */
+export function parseHeldSpawns(value: unknown, now: number): HeldSpawn[] {
+  const queued = isRecord(value) && Array.isArray(value.queued) ? value.queued : [];
+  const entries = queued.filter(isRecord).flatMap(entry => {
+    const ticket = text(entry.ticket), parent = text(entry.parent), name = text(entry.name);
+    const wait = typeof entry.wait_s === "number" && Number.isFinite(entry.wait_s) ? entry.wait_s : 0;
+    return ticket && parent && name ? [{ ticket, parent, name, since: now - wait * 1000 }] : [];
+  });
+  return entries.map((entry, index) => ({ ...entry, position: index + 1, total: entries.length }));
+}
+export async function readHeldSpawns(now = Date.now()): Promise<HeldSpawn[]> {
+  return parseHeldSpawns(JSON.parse(await run(poolCommand.spawnGate())), now);
 }
 
 /** One `pi-pool set`; the value goes over as text, the way the CLI takes it. */

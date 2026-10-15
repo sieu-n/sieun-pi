@@ -31,8 +31,15 @@ export function openUnderClosed(board: ChatBoard | null): { item: PlanItem; pare
 export const underClosedLine = ({ item, parent }: { item: PlanItem; parent: PlanItem }): string =>
   `${item.id} ${quote(item.text)} is open under closed ${parent.id}: close it, or reopen ${parent.id} if the work is real`;
 export const lookDoneLine = ({ item, reason }: { item: PlanItem; reason: string }): string => `${item.id} ${quote(item.text)} ${item.status}, looks done: ${reason}`;
-export const looseGoalLine = (goal: PlanItem): string => `${goal.id} ${quote(goal.text)} is a top-level item with no steps: move it under the goal it belongs to with ` +
-  "plan_update parent, give it steps, or close it if its work shipped";
+/**
+ * A goal with a target never moves under another item, since board-apply refuses a target below the top level (`GOAL_ONLY`): launch main bro
+ * 10-15 14:08Z was told to move p125 and p126, its top-level d1 and d2 duty metric items, "with plan_update parent", and p126 carries d2's target.
+ */
+export const looseGoalLine = (goal: PlanItem): string => goal.target
+  ? `${goal.id} ${quote(goal.text)} is a goal with a target and no steps: add a step under it (plan_add with parent ${goal.id}) whose job moves ` +
+    "its number, or close it if its work shipped"
+  : `${goal.id} ${quote(goal.text)} is a top-level item with no steps: move it under the goal it belongs to with plan_update parent, give it ` +
+    "steps, or close it if its work shipped";
 export const extraGoalsLine = (goals: readonly PlanItem[]): string => `${goals.length} open goals, the limit is ${BOARD_LIMITS.openGoals}: fold goals of one area under one ` +
   `area goal (${goals.map(goal => `${goal.id} ${quote(goal.text)}`).join(", ")})`;
 
@@ -239,7 +246,12 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
   };
   const folds: FoldGoal[] = [];
   const homeGoals = new Set<string>();
+  // A duty metric's fix step filed at the top level with its job at work is that job's work, not a goal the duty runs: the AI harness chat's
+  // 10-15 14:02Z, 16:02Z and 16:45Z check-ins said to close p478 and p479 (d6 metrics) while their jobs (mac usable resident workers, then fix
+  // mac stays usable 23:35) worked on them.
+  const fixing = (goal: PlanItem): boolean => goal.duty !== undefined && ownerOf(goal, facts)?.state === "working";
   for (const goal of goals) {
+    if (fixing(goal)) continue;
     const duty = byDuty.get(goal.id);
     if (!duty && homeGoals.has(goal.id)) continue;
     // A home is an open goal, never a step: on ops guy's board (10-16 01:08) p259 and p260 were to fold under p138 "Fix: the M1 Air's Docker

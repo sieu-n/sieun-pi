@@ -12,7 +12,7 @@ import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
+import { claudeReader, markOwnerTurn, readHeldSpawns, setPoolPriority } from "./chat-pool.ts";
 import { dutyAdmitter, queueLong, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
 import { readStrays, startMacUsableWatch, TREE_MEMORY_FILE } from "./mac-usable-watch.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
@@ -206,7 +206,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       interrupted: isJob => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet),
-      settings, claude: claudeReader(), queue: queued,
+      settings, claude: claudeReader(), queue: queued, spawns: () => readHeldSpawns(),
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"),
@@ -215,6 +215,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   const unwatchBoards = boards.watch((id, board) => {
     threads.setBoard(id, board);
+    chats.boardChanged(id);
     void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
   },
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));

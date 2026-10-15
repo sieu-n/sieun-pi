@@ -1,0 +1,943 @@
+{
+ "launchMainBroRuns": [
+  {
+   "duty": "checkin",
+   "at": 1792080818216,
+   "slot": 1792080818216,
+   "trigger": "schedule",
+   "ms": 23339,
+   "verdict": "missed",
+   "metrics": {
+    "stuck_steps": {
+     "value": 10,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "stuck_steps 10 (target at most 0), no_progress 1 (target at most 0)",
+   "fixes": {
+    "stuck_steps": {
+     "step": "p128",
+     "job": "fix check-in launch main bro 01:09",
+     "live": true
+    },
+    "no_progress": {
+     "step": "p130",
+     "job": "fix check-in launch main bro 01:09",
+     "live": true
+    }
+   }
+  },
+  {
+   "duty": "checkin",
+   "at": 1792079852468,
+   "slot": 1792079852468,
+   "trigger": "schedule",
+   "ms": 1076,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 3,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 23:54)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792078911868,
+   "slot": 1792078911868,
+   "trigger": "schedule",
+   "ms": 3387,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 4,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 23:54)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792077920793,
+   "slot": 1792077920793,
+   "trigger": "schedule",
+   "ms": 1632,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 4,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 23:54)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792077001006,
+   "slot": 1792077001006,
+   "trigger": "schedule",
+   "ms": 1321,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 10,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 23:54)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792076086619,
+   "slot": 1792076086619,
+   "trigger": "schedule",
+   "ms": 18335,
+   "verdict": "missed",
+   "metrics": {
+    "stuck_steps": {
+     "value": 10,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "stuck_steps 10 (target at most 0), no_progress 1 (target at most 0)",
+   "after": {
+    "at": 1792080518222,
+    "verdict": "missed",
+    "metrics": {
+     "stuck_steps": {
+      "value": 15,
+      "target": 0,
+      "op": "<=",
+      "met": false
+     },
+     "finished_open": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     },
+     "stalled_steps": {
+      "value": 1,
+      "target": 0,
+      "op": "<=",
+      "met": false
+     },
+     "no_progress": {
+      "value": 1,
+      "target": 0,
+      "op": "<=",
+      "met": false
+     }
+    },
+    "summary": "stuck_steps 15 (target at most 0), stalled_steps 1 (target at most 0), no_progress 1 (target at most 0)"
+   }
+  },
+  {
+   "duty": "checkin",
+   "at": 1792075186429,
+   "slot": 1792075186429,
+   "trigger": "schedule",
+   "ms": 1532,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 10-15 22:50)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792074266454,
+   "slot": 1792074266454,
+   "trigger": "schedule",
+   "ms": 14407,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 4,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 10-15 22:50)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792073332060,
+   "slot": 1792073332060,
+   "trigger": "schedule",
+   "ms": 4722,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 2,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 10-15 22:50)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792072229772,
+   "slot": 1792072229772,
+   "trigger": "schedule",
+   "ms": 854240,
+   "verdict": "missed",
+   "metrics": {
+    "stuck_steps": {
+     "value": 9,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "stuck_steps 9 (target at most 0)",
+   "after": {
+    "at": 1792075606647,
+    "verdict": "missed",
+    "metrics": {
+     "stuck_steps": {
+      "value": 15,
+      "target": 0,
+      "op": "<=",
+      "met": false
+     },
+     "finished_open": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     },
+     "stalled_steps": {
+      "value": 1,
+      "target": 0,
+      "op": "<=",
+      "met": false
+     },
+     "no_progress": {
+      "value": 1,
+      "target": 0,
+      "op": "<=",
+      "met": false
+     }
+    },
+    "summary": "stuck_steps 15 (target at most 0), stalled_steps 1 (target at most 0), no_progress 1 (target at most 0)"
+   }
+  },
+  {
+   "duty": "checkin",
+   "at": 1792070997746,
+   "slot": 1792070997746,
+   "trigger": "schedule",
+   "ms": 22306,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 21:02)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792067749130,
+   "slot": 1792067749130,
+   "trigger": "schedule",
+   "ms": 34947,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 21:02)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792066693443,
+   "slot": 1792066693443,
+   "trigger": "schedule",
+   "ms": 25540,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 21:02)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792065727042,
+   "slot": 1792065727042,
+   "trigger": "schedule",
+   "ms": 113932,
+   "verdict": "met",
+   "metrics": {
+    "stuck_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "stuck_steps 0 (on target); all 4 on target",
+   "after": {
+    "at": 1792072229154,
+    "verdict": "missed",
+    "metrics": {
+     "stuck_steps": {
+      "value": 9,
+      "target": 0,
+      "op": "<=",
+      "met": false
+     },
+     "finished_open": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     },
+     "stalled_steps": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     },
+     "no_progress": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     }
+    },
+    "summary": "stuck_steps 9 (target at most 0)"
+   }
+  },
+  {
+   "duty": "checkin",
+   "at": 1792064784892,
+   "slot": 1792064784892,
+   "trigger": "schedule",
+   "ms": 1533,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "finished_open": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 20:00)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792063869175,
+   "slot": 1792063869175,
+   "trigger": "schedule",
+   "ms": 3430,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "finished_open": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 20:00)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792062962532,
+   "slot": 1792062962532,
+   "trigger": "schedule",
+   "ms": 4906,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 20:00)"
+  },
+  {
+   "duty": "checkin",
+   "at": 1792062011783,
+   "slot": 1792062011783,
+   "trigger": "schedule",
+   "ms": 85822,
+   "verdict": "met",
+   "metrics": {
+    "stuck_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "stuck_steps 0 (on target); all 4 on target",
+   "after": {
+    "at": 1792065625787,
+    "verdict": "met",
+    "metrics": {
+     "stuck_steps": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     },
+     "finished_open": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     },
+     "stalled_steps": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     },
+     "no_progress": {
+      "value": 0,
+      "target": 0,
+      "op": "<=",
+      "met": true
+     }
+    },
+    "summary": "stuck_steps 0 (on target); all 4 on target"
+   }
+  },
+  {
+   "duty": "checkin",
+   "at": 1792061112983,
+   "slot": 1792061112983,
+   "trigger": "schedule",
+   "ms": 3628,
+   "verdict": "skipped",
+   "metrics": {
+    "stuck_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "finished_open": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "stalled_steps": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "no_progress": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "skipped: previous run still working (job check-in launch main bro 19:29)"
+  }
+ ],
+ "crawlerVp": {
+  "chat": "01a115e2-9544-7204-b8db-8ce4d5319048",
+  "items": {
+   "p92": {
+    "id": "p92",
+    "text": "Add an alert when the snapshot counts view refresh is slow or fails",
+    "status": "doing",
+    "waitFor": "land 37 (sieun/dev 355c4f6eba) (row 11) landed; now its staging deploy and prod promote",
+    "note": "Saved state: job a1 snapshot rebuild ended at 00:56 while it was quiet; its brief, last report and wait are in /Users/sieunpark/.prime/agent/browser-chat/job-resumes/01a115e2-9544-7204-b8db-8ce4d5319048/sub-88134167.json.\nRun 38435690606 was cancelled at 19:36Z by Hold B with nothing red; the grafana alert-rule tests had passed. a1 snapshot rebuild pushes v12 on 'released' for land 35. Owner from 04:15Z: crawler release driver watches land 34, 'released' and each CI run, and wakes build job 'a1 snapshot rebuild' through the chat.",
+    "job": "index land follow through",
+    "sessionId": "01a13e9a-4883-77bc-988f-378a324fc68f",
+    "children": []
+   },
+   "p107": {
+    "id": "p107",
+    "text": "Count image upload bytes in the per-read storage cost",
+    "status": "doing",
+    "job": "index land follow through",
+    "waitFor": "land 37 (sieun/dev 355c4f6eba) landed; now its staging deploy and prod promote (b2 meter inside the lab chain, row 10)",
+    "note": "Saved state: job b2 media upload meter ended at 23:28 while it was quiet; its brief, last report and wait are in /Users/sieunpark/.prime/agent/browser-chat/job-resumes/01a115e2-9544-7204-b8db-8ce4d5319048/sub-1e152214.json.\nRun 38435686149 (r9) ended cancelled by the land 34 hold, nothing red. b2 media upload meter pushes r10 fresh for land 35 when Fable says 'released'. PromQL for the duty: sum(increase(crawler_v3_b2_upload_bytes_total[24h])), with {kind!=\"raw\"} for media. Owner from 04:15Z: crawler release driver watches land 34, 'released' and each CI run, and wakes build job 'b2 media upload meter' through the chat.",
+    "sessionId": "01a13e9a-4883-77bc-988f-378a324fc68f",
+    "children": []
+   },
+   "p110": {
+    "id": "p110",
+    "text": "Move the crawler's queues off Redis",
+    "status": "doing",
+    "job": "index land follow through",
+    "waitFor": "the train with the Redis phase-out chain (row 27) green and landed",
+    "note": "Saved state: job redis streams phase out ended at 23:35 while it was quiet; its brief, last report and wait are in /Users/sieunpark/.prime/agent/browser-chat/job-resumes/01a115e2-9544-7204-b8db-8ce4d5319048/sub-93487470.json.\nrpo-stack-r7 8cb44cf9bc (eight layers: steps 1, skill, 1b, 3, 4, 5, 5b and 6) on 12d85fcb9e: verify-dev 38435777753 queued since 17:05Z, not started. r4's mdt 38379676487 green covers the unchanged metal files. CAS of the eight layers in order on green. Step 2 (deleting dead Redis keys) waits for metal's go. Owner from 04:15Z: crawler release driver watches land 34, 'released' and each CI run, and wakes build job 'redis streams phase out' through the chat.",
+    "sessionId": "01a13e9a-4883-77bc-988f-378a324fc68f",
+    "children": []
+   },
+   "p178": {
+    "id": "p178",
+    "text": "Stop Instagram post reads from holding crawl slots after Instagram refuses them",
+    "status": "doing",
+    "job": "index land follow through",
+    "waitFor": "land 37 (sieun/dev 355c4f6eba) (its row) landed; now its staging deploy and prod promote",
+    "note": "Saved state: job posts slot leak ended at 23:10 while it was quiet; its brief, last report and wait are in /Users/sieunpark/.prime/agent/browser-chat/job-resumes/01a115e2-9544-7204-b8db-8ce4d5319048/sub-0ce60d8e.json.\nObject 94884c15d3, 12 files: release rules, a reaper, a walled ceiling, gauges, and staging and prod alerts. Read-only checks find 737 of staging's 757 open claims and 423 of prod's 465, which clear in about 4 ticks after deploy. Plan: sessions/2026/10/14/1529-posts-slot-leak/. Owner from 06:59Z: crawler release driver watches 'released' and wakes build job 'posts slot leak' (session 01a13918) to push ci/posts-slot-leak, watches that run and lands it for land 35.",
+    "sessionId": "01a13e9a-4883-77bc-988f-378a324fc68f",
+    "children": []
+   },
+   "p185": {
+    "id": "p185",
+    "text": "Fix the census priority ranking, which fails every step on prod, so census reads referred handles first",
+    "status": "doing",
+    "job": "index land follow through",
+    "note": "Train-6 run 38602570995 was cancelled when train-8 superseded it, nothing red. Both fixes ride train-8 8140387ec1 as 33b7df6c09 (f45b9ea228, heavy owners as external data) and 41abef7392 (1c50d0c733, 2e9 memory line), checked by subject in git log at the 03:23 check-in. The crawler ops train sleeps on verify-dev 38614009234. After the land, the census priority fix thread (session 01a13b16) reads the scheduler logs.",
+    "waitFor": "land 37 (sieun/dev 355c4f6eba) landed; now its staging deploy and prod promote, then census priority fix reads the us-metal01 scheduler logs for the first good priority step",
+    "sessionId": "01a13e9a-4883-77bc-988f-378a324fc68f",
+    "children": []
+   },
+   "p18": {
+    "id": "p18",
+    "text": "Verify census, TikTok Shop and Meta Ads run cleanly in a lab window",
+    "status": "blocked",
+    "note": "13:58Z: crawler lab window holds wakes at 14:00Z and 16:00Z. Host setup is done; the only blocker is land 37 reaching staging, since the bundle job uses the crawler image metal-deploy tags for the landed sha.",
+    "job": "crawler lab window",
+    "waitFor": "land 37 on staging (its red has fix d3d933398d in a probe slot); then crawler lab window builds the three bundles on that staging sha before Fable's 04:30Z Air cutoff and runs the lane window",
+    "sessionId": "01a13e6a-735d-7259-a08c-604163b7dc05",
+    "children": []
+   }
+  },
+  "p410": {
+   "id": "p410",
+   "text": "The alert bridge files each firing alert once, not every few minutes",
+   "status": "doing",
+   "job": "alert bridge dedupe",
+   "note": "On 10-15 the same firing was filed 4 times in about 15 min (p402-p409, p395-p398), each with an open step and a job, which inflates stuck-step counts.",
+   "children": []
+  },
+  "heldSpawn": {
+   "ticket": "3762062247d5",
+   "parent": "01a115e2-9544-7204-b8db-8ce4d5319048",
+   "name": "alert bridge dedupe",
+   "wait_s": 660
+  }
+ },
+ "aiHarness": {
+  "chat": "01a1164b-4a2d-742d-b27a-82f086ed0200",
+  "items": [
+   {
+    "id": "p478",
+    "text": "Usable minutes in the Mac stays usable duty reach 100% of the last hour: a session that is not running a turn keeps no Prime worker",
+    "status": "doing",
+    "job": "mac usable resident workers",
+    "duty": "d6/usable_pct_1h",
+    "sessionId": "01a13fd6-f2c1-7778-9345-1c09f25face3",
+    "children": []
+   },
+   {
+    "id": "p479",
+    "text": "Harness unusable minutes in the Mac stays usable duty reach 0: Prime workers stay under 16 GB while 14 turns run",
+    "status": "doing",
+    "job": "mac usable resident workers",
+    "duty": "d6/harness_unusable_min_1h",
+    "sessionId": "01a13fd6-f2c1-7778-9345-1c09f25face3",
+    "children": []
+   }
+  ],
+  "duty": {
+   "id": "d6",
+   "name": "Mac stays usable",
+   "goal": "No minute of the hour reads unusable in ops guy's pressure feed (pressure critical, 6,000+ swapouts a second, or kernel_task over one core). A minute is the harness's with over 14 agent turns working or over 16 GB in Prime workers: under both, 0 of 337 measured minutes on 10-14 and 10-15 were unusable.",
+   "status": "active"
+  }
+ },
+ "launchMainBro": {
+  "chat": "01a11bd7-072f-7591-ad1d-f123c276cde5",
+  "items": [
+   {
+    "id": "p125",
+    "text": "Logged-in walks back 365 days that reached the end, last 24 h in the Engage reads scale safely duty reaches at least 99%, from 90% on the last run",
+    "status": "doing",
+    "job": "fix engage reads scale safely launch main bro 04:10",
+    "duty": "d1/deep_walk_ok_pct",
+    "children": []
+   },
+   {
+    "id": "p126",
+    "text": "Owner's prod Watchlist accounts with posts and collabs read ok in 24 h in the Watchlist shows green duty reaches at least 100%, from 5.4% on the last run",
+    "status": "doing",
+    "job": "fix watchlist shows green launch main bro 02:35",
+    "duty": "d2/owner_green_pct",
+    "target": {
+     "metric": "owner prod Watchlist accounts with posts and collabs read ok in 24 h",
+     "target": 100,
+     "unit": "%",
+     "current": 64.6,
+     "measuredAt": "2026-10-15T15:11:52.000Z",
+     "source": "d2 precheck watchlist-green.ts, 6,368 of 9,855 accounts"
+    },
+    "sessionId": "01a140ab-bfb0-721d-a24e-fe41d07897c1",
+    "children": []
+   }
+  ]
+ }
+}

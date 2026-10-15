@@ -19,7 +19,10 @@ export interface MetricStreak {
   value: number; target: number; op: MetricResult["op"];
   /** The fix step the newest run of the streak found, if any. */
   fix?: FixLink;
-  /** CHANGE_APPROACH_MISSES or more misses and no move toward the target. */
+  /**
+   * CHANGE_APPROACH_MISSES or more misses and no move toward the target. With a fix step, only the misses its run records name the same fix
+   * for count (`fixMisses`): a fix job younger than the misses has not had them yet.
+   */
   stuck: boolean;
 }
 
@@ -38,6 +41,14 @@ export function missStreak(runs: readonly DutyRunRecord[]): number {
   return at < 0 ? ordered.length : at;
 }
 
+/**
+ * The runs of a streak that name `fix` as the metric's fix: the same step, and the same job when it has one. launch main bro 10-15: the 16:13:38Z
+ * check-in run missed stuck_steps for the third measured run in a row and named p128 with job "fix check-in launch main bro 01:09", started at
+ * 16:09Z; the 13:50Z and 14:54Z misses had no fix at all, yet the run told the check-in to change approach because p128 "did not move it".
+ */
+export const fixMisses = (streak: readonly DutyRunRecord[], key: string, fix: FixLink): number =>
+  streak.filter(run => { const named = run.fixes?.[key]; return named?.step === fix.step && named.job === fix.job; }).length;
+
 /** The current miss streak of every metric the newest measured run missed, from runs newest first. */
 export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
   const ordered = runs.filter(measured);
@@ -48,17 +59,20 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
     if (result.met) continue;
     let oldest = result;
     let since = newest.at;
-    let misses = 0;
+    const streak: DutyRunRecord[] = [];
     for (const run of ordered) {
       const found = effectiveRun(run).metrics[key];
       if (!found || found.met) break;
-      misses += 1;
+      streak.push(run);
       oldest = found;
       since = run.at;
     }
+    const misses = streak.length;
     const moved = gap(result) < gap(oldest);
-    streaks.push({ key, misses, moved, since, value: result.value, target: result.target, op: result.op, ...(newest.fixes?.[key] ? { fix: newest.fixes[key] } : {}),
-      stuck: misses >= CHANGE_APPROACH_MISSES && !moved });
+    const fix = newest.fixes?.[key];
+    const judged = fix ? fixMisses(streak, key, fix) : misses;
+    streaks.push({ key, misses, moved, since, value: result.value, target: result.target, op: result.op, ...(fix ? { fix } : {}),
+      stuck: judged >= CHANGE_APPROACH_MISSES && !moved });
   }
   return streaks;
 }
