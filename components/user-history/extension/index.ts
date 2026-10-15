@@ -2,22 +2,21 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-agent";
 import { agentLines } from "../src/chat-agents.ts";
-import { BoardStore } from "../src/chat-board-store.ts";
+import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { ensureChatService } from "../src/chat-service.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobPersonaGuideline, jobReplyGuideline, pinnedBrief } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
 import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "../src/chats.ts";
-import { boardRevLine, parseBoardOps, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
+import { boardRevLine, PLAN_STATUSES, renderOpenPlan } from "../src/shared/chat-board.ts";
 import { ImageFitter } from "../src/context-images.ts";
 import { shortNotices } from "../src/prime-notices.ts";
 import { chatCheckIn, checkInLine, checkInSettings, parseChatCheckIn } from "../src/checkin-settings.ts";
 import { CORRECTION_TOOL, CorrectionLedger, correctionResult, ENFORCEMENTS, type Ledger, ownerWordsRefusal, parseCorrectionCall } from "../src/chat-corrections.ts";
 import { ownerTexts } from "../src/shared/brief-check.ts";
 import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-delivery.ts";
-import { boardLimitRefusal, lastOwnerText } from "../src/shared/reply-lint.ts";
+import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
-import { jobNames } from "../src/limit-names.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { loadWaitGuard } from "../src/load-wait.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
@@ -59,18 +58,18 @@ export default function historyExtension(pi: ExtensionAPI): void {
         check_in: { type: "object", description: "pause (\"1h\", \"tomorrow\", null resumes) and/or every_minutes (1 to 240)." },
       },
     },
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const input = params as { ops?: unknown; check_in?: unknown };
-      const ops = parseBoardOps(input.ops ?? []);
-      const refusal = boardLimitRefusal(ops) && boardLimitRefusal(ops, await jobNames(dataDir()));
-      if (refusal) throw new Error(refusal);
+      const raw = input.ops ?? [];
+      const writes = Array.isArray(raw) && raw.length > 0;
       const change = input.check_in === undefined ? undefined : parseChatCheckIn(input.check_in);
       const sessionId = ctx.sessionManager.getSessionId();
+      // The live chat service runs the gates for a write (agentOpsViaService), so this session's loaded copy judges only while no service answers.
+      const { board, summaries } = (writes ? await agentOpsViaService(dataDir(), sessionId, raw, signal) : null) ?? await applyAgentOps(dataDir(), sessionId, raw);
       const settings = checkInSettings(join(dataDir(), "check-in-settings.json"));
       const now = Date.now();
       const changed = change ? [await chatCheckIn(settings, sessionId, change, now)] : [];
-      const { board, summaries } = await boards().apply(sessionId, ops, "agent");
-      if (ops.length && board) return { content: [{ type: "text", text: [...changed, ...summaries, boardRevLine(board)].join("\n") }], details: undefined };
+      if (writes && board) return { content: [{ type: "text", text: [...changed, ...summaries, boardRevLine(board)].join("\n") }], details: undefined };
       const checkIn = checkInLine(await settings.get(sessionId), now);
       const agents = agentLines(await chatAgentsOf(sessionId), now);
       return { content: [{ type: "text", text: [...changed, renderOpenPlan(board, sessionId, checkIn), ...agents].join("\n") }], details: undefined };
@@ -109,7 +108,6 @@ export default function historyExtension(pi: ExtensionAPI): void {
     const flag = pi.getFlag("agent-chat-data-dir");
     return typeof flag === "string" && flag ? resolve(flag) : join(getAgentDir(), "browser-chat");
   };
-  const boards = () => new BoardStore(dataDir());
   // The chat server computes the agents list (subagents, roots, step owners, message partners) and serves it under its capability URL,
   // recorded in <data dir>/instance.json. No server, no section.
   const chatAgentsOf = async (sessionId: string): Promise<ChatAgent[]> => {

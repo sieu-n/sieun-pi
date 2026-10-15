@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { dirname } from "node:path";
 import type { Duplex } from "node:stream";
 import { createGzip, type Gzip } from "node:zlib";
+import { applyAgentOps } from "./agent-board.ts";
 import type { ChatBackend } from "./chat-backend.ts";
 import type { ClientBundle, Asset } from "./chat-assets.ts";
 import { parseChatImages } from "./chat-images.ts";
@@ -816,6 +818,14 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           try { await backend.ownerTurn?.(id); await backend.threads.prompt(id, { message: BOARD_PREFIX + applied.summaries.join("; "), images: [], mode: "steer" }); }
           catch (failure) { sent = false; error = failure instanceof Error ? failure.message : String(failure); }
           json(res, 200, { board, sent, ...(error ? { error } : {}) }); return;
+        }
+        case "agent-board": {
+          // A session's chat_board write (agentOpsViaService): this release's gates judge it, whatever extension build the session loaded.
+          try { json(res, 200, await applyAgentOps(dirname(backend.boards.dir), id, body.ops)); return; }
+          catch (error) {
+            if (error instanceof BoardError) throw new RequestError(error.kind === "forbidden" ? 403 : error.kind === "unknown" ? 409 : 400, error.message);
+            throw error;
+          }
         }
         case "duties": {
           // The owner's Run now, Pause, Resume and cadence on the Duties card; the reply is the chat's duties after the change. The check-in duty's

@@ -158,7 +158,7 @@ export function briefNote(before: readonly string[], after: readonly string[]): 
 const BUILD_FILES = ["../extension/index.ts", "chats.ts", "chat-agents.ts", "chat-checkin.ts", "chat-guard.ts", "chat-brief.ts", "chat-sources.ts",
   "checkin-settings.ts", "checkin-steps.ts", "checkin-findings.ts", "shared/chat-board.ts", "shared/chat-feed.ts", "chat-corrections.ts",
   "correction-delivery.ts", "context-images.ts", "prime-notices.ts", "shared/reply-lint.ts", "shared/turns.ts", "shared/types.ts", "message-limit-check.ts",
-  "message-limit-check.py", "../../global-rules/index.ts"];
+  "message-limit-check.py", "agent-board.ts", "shared/release-go.ts", "../../global-rules/index.ts"];
 /** A short hash of the extension sources on disk now. */
 export function extensionBuild(dir: string = import.meta.dirname): string {
   const hash = createHash("sha256");
