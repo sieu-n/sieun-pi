@@ -154,6 +154,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const queued = queueReader(queueReading);
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
     board: id => boards.read(id),
+    applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
     fixLive: async (id, item) => {
       const now = Date.now();
       const asleep = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));

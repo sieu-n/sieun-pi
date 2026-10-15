@@ -31,6 +31,13 @@ export function effectiveRun(run: DutyRunRecord): Pick<DutyRunRecord, "verdict" 
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
 const gap = (result: MetricResult): number => Math.abs(result.value - result.target);
 
+/** How many measured runs in a row, newest first, missed (`effectiveRun`); skipped and error runs neither extend nor break it. */
+export function missStreak(runs: readonly DutyRunRecord[]): number {
+  const ordered = runs.filter(measured);
+  const at = ordered.findIndex(run => effectiveRun(run).verdict !== "missed");
+  return at < 0 ? ordered.length : at;
+}
+
 /** The current miss streak of every metric the newest measured run missed, from runs newest first. */
 export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
   const ordered = runs.filter(measured);

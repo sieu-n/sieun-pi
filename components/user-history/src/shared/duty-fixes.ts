@@ -1,5 +1,5 @@
 import type { DutyRunRecord, FixLink } from "./chat-duties.ts";
-import type { ChatBoard, PlanItem, SessionRow } from "./types.ts";
+import type { BoardOp, ChatBoard, PlanItem, SessionRow } from "./types.ts";
 
 /**
  * Fix steps: a plan step whose `duty` is `<dutyId>/<metricKey>` is the chat's fix for that duty metric. A duty run reads them for its missed
@@ -54,6 +54,28 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
     if (pick) fixes[metric] = { step: pick.item.id, ...(pick.item.job ? { job: pick.item.job } : {}), live: pick.live };
   }
   return fixes;
+}
+
+/**
+ * The board ops that make `job` the owner of each missed metric's fix step (`Duties.ownFixes`): an open step linked `<duty>/<metric>` gets the
+ * job and its session, and a metric with no open step gets a new doing step under the duty's board goal when that goal is open. Read from the
+ * board inside the write's lock, so a step the chat added meanwhile is reused rather than doubled.
+ */
+export function fixStepOps(board: ChatBoard, duty: { id: string; name: string; boardGoal?: string; metrics: readonly { key: string; label: string; unit?: string }[] },
+  misses: readonly { key: string; value: number; target: number; op: "<=" | ">=" }[], job: { id: string; name: string }): BoardOp[] {
+  const steps = linked(board, duty.id);
+  let goal: PlanItem | undefined;
+  const visit = (items: readonly PlanItem[]) => { for (const item of items) { if (item.id === duty.boardGoal) goal = item; visit(item.children); } };
+  visit(board.plan);
+  const parent = goal && OPEN.has(goal.status) ? { parent: goal.id } : {};
+  return misses.map((miss): BoardOp => {
+    const open = (steps.get(miss.key) ?? []).find(item => OPEN.has(item.status));
+    if (open) return { op: "plan_update", id: open.id, job: job.name, sessionId: job.id };
+    const metric = duty.metrics.find(entry => entry.key === miss.key);
+    const unit = metric?.unit ?? "";
+    const text = `${metric?.label ?? miss.key} in the ${duty.name} duty reaches ${miss.op === "<=" ? "at most" : "at least"} ${miss.target}${unit}, from ${miss.value}${unit} on the last run`;
+    return { op: "plan_add", ...parent, text: text.slice(0, 500), status: "doing", job: job.name, sessionId: job.id, duty: dutyLink(duty.id, miss.key) };
+  });
 }
 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);

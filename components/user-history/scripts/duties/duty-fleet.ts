@@ -8,7 +8,7 @@ import { withWakes } from "../../src/checkin-load.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { jobFacts, liveJobs, liveWindowMs, ownerOf, OPEN, walk } from "../../src/checkin-steps.ts";
 import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
-import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, type MetricStreak } from "../../src/shared/duty-streak.ts";
+import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, type MetricStreak } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { pendingWakes } from "../../src/wakes.ts";
 import { chatChildren, daemonSessions, parseLooseJson, sessionRows, subagentsByParent, type DaemonSession } from "./board-classes.ts";
@@ -78,8 +78,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
       const own = runs.filter(run => run.duty === duty.id && measured(run));
       const newest = own[0];
       const green = newest !== undefined && effectiveRun(newest).verdict === "met";
-      const misses = own.findIndex(run => effectiveRun(run).verdict !== "missed");
-      const streak = misses < 0 ? own.length : misses;
+      const streak = missStreak(own);
       const streaks = newest ? metricStreaks(own) : [];
       const entry: FleetDuty = { chat: id, duty: duty.id, name: duty.name, green, misses: streak, stuck: false };
       const metric = leadMetric(duty.metrics, streaks);

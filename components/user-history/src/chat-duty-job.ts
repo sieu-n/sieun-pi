@@ -5,7 +5,7 @@ import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
 import { type DutyCard, type DutyJobRef, headlineMetric, verdictMetrics } from "./shared/chat-duties.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
-import type { MetricStreak } from "./shared/duty-streak.ts";
+import { CHANGE_APPROACH_MISSES, type MetricStreak } from "./shared/duty-streak.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /**
@@ -92,17 +92,50 @@ export function missLine(dutyId: string, streak: MetricStreak, label: string, un
     `${fix ? `set that job on ${fix.step} if it is still open, else add a plan step` : "add a plan step"} with duty ${link} and that job.`;
 }
 
+/** The rules every job the server starts for a chat follows (duty jobs and fix jobs), in brief order. */
+function chatJobRules(): string[] {
+  return [
+    "Two hard gates hold for every chat. A step marked as needing the owner's go moves only after the owner answers its For you todo with a go " +
+      "(a step whose only target is staging never needs one): " +
+      "never start, steer or report work on it as approved before that, and stop a job that started without it. A Build step starts only after " +
+      "its goal's requirements check: a plan or design job's report quotes the original owner request and checks each line of it against the " +
+      "design before build.",
+    releaseGo.preapproval ? MERGE_RULE : `${MERGE_RULE} A merge step done without that go is a repo rule breach: report it to the owner in your report, with the PR.`,
+    "A goal can carry a target: when you measure it, apply plan_update with its whole target, like " +
+      "`{\"op\":\"plan_update\",\"id\":\"p1\",\"target\":{\"metric\":\"proxy bandwidth used\",\"target\":200,\"unit\":\"Mbps\",\"current\":8,\"measuredAt\":\"2026-10-09T21:00:00+09:00\",\"source\":\"proxy dashboard, 24 h average\"}}`. " +
+      "Close the largest gap first: start or steer the job that moves the number.",
+    "Never push a ci/ branch or use --push-ci: build the commit object for auto-sns-agent " +
+      "(`node scripts/repo/agent/commit.mjs --object-only -m \"<type>(<scope>): <what>\" <files>`) and send it to the chat, which asks Fable for a probe slot; " +
+      "code reaches the shared tip only after its own green probe. Every file you touch stays " +
+      "under its light-guard line limit (1,000 lines for most source files); split a file before it would cross it.",
+    "Never cancel or rerun an auto-sns-agent CI run (`gh run cancel`, `gh run rerun` or their API calls), yours included; a superseded run is cancelled by " +
+      "Fable's loop or its own probe family, so send Fable its id through the chat, and push a fresh run for a new attempt.",
+    "Do what you can reach yourself: Convex data is read or written with `npx convex run` or a query using the deploy key and an identity; " +
+      "never ask the owner for his browser or to act as him, and turn such a For you todo into a job.",
+    "Never send anything outside on your own: an email, a vendor or support ticket reply, a customer message or a public post is drafted and " +
+      "put in For you with the draft and choices; it goes out only after the owner approves it there.",
+    "Act directly and ship: do not invent waiting rules, extra review rounds or safety gates of your own; keep only the gates the owner asked for.",
+    "No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.",
+  ];
+}
+
+/** The board-apply call a job the server starts runs for its board ops, as Python. */
+const boardApplyCall = (chat: Pick<DutyChat, "id" | "board">): string =>
+  `await bash("cd ${USER_HISTORY} && node --import tsx scripts/board-apply.ts ${chat.id} " + shlex.quote(json.dumps(ops)) + " --data-dir ${dirname(dirname(chat.board))}")`;
+/** The report call a job the server starts ends with. */
+const reportCall = (chat: Pick<DutyChat, "name">): string => `await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
+
 /**
  * The duty job's brief (owner 10-09: "every (n min/h/day) -> code precheck -> run job with that context to 'fix issues, check what duty
  * specifies, be a VP, report to user what needed'"; "control flow should be dynamically defined by agent"): the duty in the owner's words, the
  * precheck as information, and how a chat job works. It names no fixed list of checks and no verdict; a quiet run ends in one short turn.
  */
 export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [] }: DutyJobInput): string {
-  const send = `await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
+  const send = reportCall(chat);
   const headline = headlineMetric(duty.metrics);
   const counted = verdictMetrics(duty.metrics);
   const shown = misses.filter(streak => counted.some(metric => metric.key === streak.key));
-  const apply = `await bash("cd ${USER_HISTORY} && node --import tsx scripts/board-apply.ts ${chat.id} " + shlex.quote(json.dumps(ops)) + " --data-dir ${dirname(dirname(chat.board))}")`;
+  const apply = boardApplyCall(chat);
   return [
     `# ${job}: the ${duty.name} duty of the chat "${chat.name}"`,
     `You are the duty job "${job}" of the chat "${chat.name}" (session id ${chat.id}), started ${localTime(at)}. The server starts one duty job ` +
@@ -146,32 +179,67 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
       "Every stuck step needs a live owner, a For you todo, or a close in this run. Give a step an owner that outlives this run with " +
         "`await rlm.create_session(brief, name=..., cwd=...)`, which registers the session as a job of the chat, and set the step's job to that " +
         "name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.",
-      "Two hard gates hold for every chat. A step marked as needing the owner's go moves only after the owner answers its For you todo with a go " +
-        "(a step whose only target is staging never needs one): " +
-        "never start, steer or report work on it as approved before that, and stop a job that started without it. A Build step starts only after " +
-        "its goal's requirements check: a plan or design job's report quotes the original owner request and checks each line of it against the " +
-        "design before build.",
-      releaseGo.preapproval ? MERGE_RULE : `${MERGE_RULE} A merge step done without that go is a repo rule breach: report it to the owner in your report, with the PR.`,
-      "A goal can carry a target: when you measure it, apply plan_update with its whole target, like " +
-        "`{\"op\":\"plan_update\",\"id\":\"p1\",\"target\":{\"metric\":\"proxy bandwidth used\",\"target\":200,\"unit\":\"Mbps\",\"current\":8,\"measuredAt\":\"2026-10-09T21:00:00+09:00\",\"source\":\"proxy dashboard, 24 h average\"}}`. " +
-        "Close the largest gap first: start or steer the job that moves the number.",
-      "Never push a ci/ branch or use --push-ci: build the commit object for auto-sns-agent " +
-        "(`node scripts/repo/agent/commit.mjs --object-only -m \"<type>(<scope>): <what>\" <files>`) and send it to the chat, which asks Fable for a probe slot; " +
-        "code reaches the shared tip only after its own green probe. Every file you touch stays " +
-        "under its light-guard line limit (1,000 lines for most source files); split a file before it would cross it.",
-      "Never cancel or rerun an auto-sns-agent CI run (`gh run cancel`, `gh run rerun` or their API calls), yours included; a superseded run is cancelled by " +
-        "Fable's loop or its own probe family, so send Fable its id through the chat, and push a fresh run for a new attempt.",
-      "Do what you can reach yourself: Convex data is read or written with `npx convex run` or a query using the deploy key and an identity; " +
-        "never ask the owner for his browser or to act as him, and turn such a For you todo into a job.",
-      "Never send anything outside on your own: an email, a vendor or support ticket reply, a customer message or a public post is drafted and " +
-        "put in For you with the draft and choices; it goes out only after the owner approves it there.",
-      "Act directly and ship: do not invent waiting rules, extra review rounds or safety gates of your own; keep only the gates the owner asked for.",
-      "No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.",
+      ...chatJobRules(),
       "When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.",
       `Otherwise send the chat one report when your work is done, with only what it and the owner need: the board ops you applied, then at most 3 short ` +
         `plain lines the owner should hear, or "nothing for the owner". Send it with \`${send}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].filter(part => part !== "").join("\n\n") + "\n";
+}
+
+/** A fix job's name: `fix <duty>` with the chat and start time, like `fix ci system VP of CI 20:41`. */
+export const fixJobName = (duty: string, chat: string, at: number): string => dutyJobName(`fix ${duty}`, chat, at);
+
+/** What the brief of a fix job the server opens holds: the duty, the chat, the job, and each missed metric with no live fix job. */
+export interface FixJobInput {
+  duty: Pick<DutyCard, "name" | "goal" | "metrics"> & { id: string };
+  chat: Pick<DutyChat, "id" | "name" | "board">;
+  job: string; at: number; misses: readonly MetricStreak[];
+}
+
+const bound = (op: string, value: number, unit = ""): string => `${op === "<=" ? "at most" : "at least"} ${value}${unit}`;
+
+/**
+ * The brief of the fix job the server opens for a duty that missed CHANGE_APPROACH_MISSES runs in a row while some missed metric had no fix step
+ * with a live job (`Duties.ownFixes`): the job is the root-cause owner of those metrics, and the server links it on their plan steps.
+ */
+export function fixJobBrief({ duty, chat, job, at, misses }: FixJobInput): string {
+  const metric = (key: string) => duty.metrics.find(entry => entry.key === key);
+  const lines = misses.map(streak => {
+    const found = metric(streak.key);
+    const unit = found?.unit ?? "";
+    return `- ${streak.key} (${found?.label ?? streak.key}) is ${streak.value}${unit}, target ${bound(streak.op, streak.target, unit)}, missed ${streak.misses} ` +
+      `${streak.misses === 1 ? "run" : "runs"} in a row${streak.misses > 1 ? streak.moved ? ", moving toward the target" : ", not moving toward the target" : ""}` +
+      `${streak.fix ? `. The last fix step ${streak.fix.step}${streak.fix.job ? ` (${streak.fix.job})` : ""} has no live job` : ""}. Its step: duty ${JSON.stringify(dutyLink(duty.id, streak.key))}.`;
+  });
+  return [
+    `# ${job}: the root-cause fix for the ${duty.name} duty of the chat "${chat.name}"`,
+    `You are the fix job "${job}" of the chat "${chat.name}" (session id ${chat.id}), started ${localTime(at)}. The chat server opened you because ` +
+      `the ${duty.name} duty missed ${CHANGE_APPROACH_MISSES} or more runs in a row and these metrics had no fix step with a live job. The server ` +
+      "set you as the job of each metric's plan step on the chat's board (the step whose `duty` field is named below), so you own them now.",
+    `Duty goal: ${duty.goal}`,
+    `## Missed metrics\n${lines.join("\n")}`,
+    "## Your task",
+    [
+      "Find why each number misses: read the duty's precheck output and the code behind the number, and check the real state. A note, a later " +
+        "wait or a lower target is not a fix, and an off-target metric is never fine as it stands (c75).",
+      "Land the code change that moves the number, ship it the way the repo ships, and measure the number again. Close the step only on that " +
+        "evidence, named in its note; the close starts a verify run of the duty.",
+      "While you wait for a CI run or a time, set `board.wake(run=<id>)` or `board.wake(at=<time>)` before your turn ends, so the server reads you " +
+        "as live. A turn that ends with no wake while a metric still misses brings a message back from the server.",
+      `Apply each board change with \`import json, shlex\` and \`${boardApplyCall(chat)}\`, where ops is a list of chat_board ops.`,
+      ...chatJobRules(),
+      `Send the chat one report when the number moved or you are blocked, with the commit, the release and the number before and after. Send it with \`${reportCall(chat)}\`.`,
+    ].map(line => `- ${line}`).join("\n"),
+  ].join("\n\n") + "\n";
+}
+
+/** What the server sends a fix job whose turn ended with no wake while its metrics still miss and no other job works on them (`Duties.ownFixes`). */
+export function fixMessage(duty: string, steps: readonly string[], misses: readonly MetricStreak[]): string {
+  return `[duty] ${duty} still misses ${misses.map(streak => `${streak.key} (${streak.value}, target ${bound(streak.op, streak.target)})`).join(", ")}, ` +
+    `and your step${steps.length === 1 ? "" : "s"} ${steps.join(", ")} ${steps.length === 1 ? "has" : "have"} no live job. Go on with the root cause and the code ` +
+    "fix. While you wait for a CI run or a time, set board.wake before your turn ends. If your turn ends again with no board change, the server " +
+    "opens a new fix job for these steps.";
 }
 
 /** The parts of the thread hub a duty job host uses. */
