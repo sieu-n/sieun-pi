@@ -19,7 +19,7 @@ export const PARK_CONTINUE = "[queue] Your turn waited for a working slot, so th
 
 export interface QueueEntry { session: string; tree: string; parent: string | null; class: string; position: number; waitS: number }
 export interface QueueView { working: readonly { session: string; tree: string }[]; queued: readonly QueueEntry[]; limit: number }
-export interface Parked { session: string; at: number; position: number }
+export interface Parked { session: string; at: number; position: number; resumedAt?: number }
 
 /** A Prime session id; a duty run's key (`duty:<chat>:<duty>`) waits in the queue with no session to abort. */
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-/;
@@ -28,20 +28,31 @@ const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-/;
 const NEVER = new Set(["owner", "prod", "ahead", "checkin"]);
 
 /**
- * What to park and what to let go now. A queued turn parks when its session is a root alone in its tree (no subagent waits or works under it),
- * not a chat, not an owner, prod or check-in turn, it waited PARK_AFTER_S, and more turns wait ahead of it than pi-pool runs at once. Parked
- * sessions go back oldest first, one per free slot: a slot is free while fewer turns wait than pi-pool's limit.
+ * What to park, what to let go, and which list entries are done. A queued turn parks when its session is a root alone in its tree (no
+ * subagent waits or works under it), not a chat, not an owner, prod or check-in turn, it waited PARK_AFTER_S, and more turns wait ahead of it
+ * than pi-pool runs at once. A parked session goes back, oldest first, once fewer turns that asked before it parked still wait than pi-pool's
+ * limit, so it keeps its place: with "fewer than the limit wait at all", 14 jobs parked from 20:08Z to 20:57Z on 10-15 and none went back,
+ * because 19 to 41 turns waited for 12 slots the whole hour. A resumed session is not parked again while its resumed turn waits, and an entry
+ * ends once its session works, or, resumed, has left the queue; a parked session that something else woke (it works or waits again) is dropped.
  */
-export function parkPlan(view: QueueView, parked: readonly Parked[], chats: ReadonlySet<string>): { park: QueueEntry[]; unpark: Parked[] } {
+export function parkPlan(view: QueueView, parked: readonly Parked[], chats: ReadonlySet<string>, now: number): { park: QueueEntry[]; unpark: Parked[]; drop: Parked[] } {
   const working = new Set(view.working.map(entry => entry.tree));
+  const workingSessions = new Set(view.working.map(entry => entry.session));
+  const queuedSessions = new Set(view.queued.map(entry => entry.session));
   const perTree = new Map<string, number>();
   for (const entry of view.queued) perTree.set(entry.tree, (perTree.get(entry.tree) ?? 0) + 1);
-  const already = new Set(parked.map(entry => entry.session));
+  const drop = parked.filter(entry => workingSessions.has(entry.session) || (entry.resumedAt === undefined ? queuedSessions.has(entry.session) : !queuedSessions.has(entry.session)));
+  const known = new Set(parked.map(entry => entry.session));
   const park = view.queued.filter(entry => SESSION_ID.test(entry.session) && entry.parent === null && entry.tree === entry.session && !working.has(entry.tree) && perTree.get(entry.tree) === 1 &&
-    !chats.has(entry.session) && !NEVER.has(entry.class) && entry.waitS >= PARK_AFTER_S && entry.position > view.limit && !already.has(entry.session));
-  const room = Math.max(0, view.limit - (view.queued.length - park.length));
-  const unpark = [...parked].sort((a, b) => a.at - b.at).slice(0, room);
-  return { park, unpark };
+    !chats.has(entry.session) && !NEVER.has(entry.class) && entry.waitS >= PARK_AFTER_S && entry.position > view.limit && !known.has(entry.session));
+  const waiting = parked.filter(entry => entry.resumedAt === undefined && !drop.includes(entry)).sort((a, b) => a.at - b.at);
+  const unpark: Parked[] = [];
+  for (const entry of waiting) {
+    const ahead = view.queued.filter(queued => !park.includes(queued) && now - queued.waitS * 1000 < entry.at).length;
+    if (ahead + unpark.length >= view.limit) break;
+    unpark.push(entry);
+  }
+  return { park, unpark, drop };
 }
 
 export interface ParkDeps {
@@ -65,7 +76,8 @@ export async function parkTick(deps: ParkDeps): Promise<{ parked: number; resume
   const view = await deps.queue().catch(() => null);
   if (!view) return { parked: 0, resumed: 0 };
   let list = await readParked(deps.file);
-  const { park, unpark } = parkPlan(view, list, await deps.chats());
+  const { park, unpark, drop } = parkPlan(view, list, await deps.chats(), now());
+  list = list.filter(entry => !drop.includes(entry));
   let parked = 0, resumed = 0;
   for (const entry of park) {
     try { await deps.abort(entry.session); list.push({ session: entry.session, at: now(), position: entry.position }); parked++; }
@@ -75,11 +87,12 @@ export async function parkTick(deps: ParkDeps): Promise<{ parked: number; resume
   for (const entry of unpark) {
     const done = await deps.fleet.tryAdmit({ kind: "continue", label: `parked ${entry.session.slice(0, 8)}` });
     if (!done) break;
-    try { await deps.resume(entry.session, PARK_CONTINUE); done(entry.session); resumed++; list = list.filter(item => item.session !== entry.session); }
+    try { await deps.resume(entry.session, PARK_CONTINUE); done(entry.session); resumed++; entry.resumedAt = now(); }
     catch (error) { done(); deps.log(`queue park: resume ${entry.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }
   }
-  if (parked || resumed) {
-    deps.log(`queue park: parked ${parked}, resumed ${resumed}; ${list.length} parked, ${view.queued.length - parked} queued for ${view.limit} slots`);
+  if (parked || resumed || drop.length) {
+    const held = list.filter(entry => entry.resumedAt === undefined).length;
+    deps.log(`queue park: parked ${parked}, resumed ${resumed}, done ${drop.length}; ${held} parked, ${view.queued.length - parked} queued for ${view.limit} slots`);
     await writeParked(deps.file, list);
   }
   return { parked, resumed };
