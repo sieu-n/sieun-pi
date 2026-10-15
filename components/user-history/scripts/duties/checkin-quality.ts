@@ -1,7 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { localTime } from "../../src/checkin-settings.ts";
+import { activePause, type CheckInSetting, localTime } from "../../src/checkin-settings.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
+
+const HOUR = 60 * 60_000;
 
 /** A check-in finding still flagged after this many check-in runs in a row was seen and not fixed (owner, 10-12: remove the odd leftover steps). */
 export const UNFIXED_RUNS = 4;
@@ -40,6 +42,97 @@ export async function unfixedFlags(dataDir: string, chat: string, start: number,
   }
   return [...worst.entries()].sort(([, a], [, b]) => b.count - a.count).map(([key, { since, count, last, at }]) => ({ chat, at, kind: "unfixed_flags", ...(last.item ? { item: last.item } : {}),
     excerpt: `${key} flagged in ${count} check-ins in a row since ${localTime(since)}: ${last.excerpt}` }));
+}
+
+/**
+ * A check-in's slack past two intervals before the Chat system calls it not running. Measured 10-13 to 10-15 over 8 chats: the gap between
+ * measured check-in runs is one interval at p50 and two at p90 (a run skips while the last check-in job still works), 30 min on a 15 min chat.
+ */
+export const CHECK_IN_LATE_MS = 15 * 60_000;
+/** Where a chat's check-in stands for its stuck steps: paused by the owner, not running for over two intervals, or running. */
+export type CheckInStand = "owner_paused" | "not_running" | "running";
+/** A stuck step a check-in already had a turn on: flagged stuck in every measured check-in run since `since`, `runs` of them. */
+export interface StuckLeft { item: string; since: number; runs: number }
+
+/** The chat's measured check-in runs up to `now`, oldest first: a skipped or failed run did not look at the board. A missing file is none. */
+async function checkInRuns(dataDir: string, chat: string, now: number): Promise<DutyRunRecord[]> {
+  let text = "";
+  try { text = await readFile(join(dataDir, "duties", `${chat}.runs.jsonl`), "utf8"); } catch { return []; }
+  const runs: DutyRunRecord[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const run = JSON.parse(line) as DutyRunRecord;
+      if (run.duty === CHECK_IN_DUTY_ID && run.verdict !== "skipped" && run.verdict !== "error" && Number.isFinite(run.at) && run.at <= now) runs.push(run);
+    } catch { continue; }
+  }
+  return runs.sort((a, b) => a.at - b.at);
+}
+const stuckItems = (run: DutyRunRecord): string[] => (run.flagged ?? []).flatMap(slice => slice.kind === "stuck_steps" && slice.item ? [slice.item] : []);
+const ownerPaused = (setting: CheckInSetting, now: number): boolean => activePause(setting, now) !== null && setting.pausedBy === "owner";
+
+/**
+ * Left stuck by a check-in (owner 10-14 c64: every open step is moved by a live owner, in For you or parked, judged on stuck steps and stuck
+ * step-hours; 10-15 c75: the duty pushes until green). A step counts from the second measured check-in run in a row that flags it as
+ * `stuck_steps`: the first run's job had its turn and ended (a run skips while it works), and the step is still stuck. A step that went stuck
+ * since the last check-in is the next check-in's work: on 10-15 the owner answered t28 at 08:40Z, and at 08:50Z the 14 steps of launch main bro
+ * that waited on it read as stuck, 6 min before its next check-in.
+ *
+ * `stuckPastCheckIn` is the board now: each stuck step (`stuck`, from the board classes) that the latest measured runs flagged twice or more in a
+ * row. When the check-in has not measured the board for two intervals plus CHECK_IN_LATE_MS, nobody pushes, so every stuck step counts. When the
+ * owner paused the check-in (the Check-in card's pause), the chat's steps are his to hold and count nowhere; a pause by an agent or the server does.
+ */
+export async function stuckPastCheckIn(dataDir: string, chat: string, stuck: readonly string[], setting: CheckInSetting, now: number):
+  Promise<{ stand: CheckInStand; lastAt?: number; left: StuckLeft[] }> {
+  if (ownerPaused(setting, now)) return { stand: "owner_paused", left: [] };
+  const runs = await checkInRuns(dataDir, chat, now);
+  const lastAt = runs.at(-1)?.at;
+  if (lastAt === undefined || now - lastAt > 2 * setting.everyMs + CHECK_IN_LATE_MS) {
+    return { stand: "not_running", ...(lastAt !== undefined ? { lastAt } : {}), left: stuck.map(item => ({ item, since: lastAt ?? now, runs: 0 })) };
+  }
+  const left: StuckLeft[] = [];
+  for (const item of stuck) {
+    let since = now;
+    let count = 0;
+    for (let index = runs.length - 1; index >= 0 && stuckItems(runs[index]!).includes(item); index--) { since = runs[index]!.at; count++; }
+    if (count >= 2) left.push({ item, since, runs: count });
+  }
+  return { stand: "running", lastAt, left };
+}
+
+/** One step's time left stuck by a check-in in the window: hours, when it first counted, and the last run's line for it. */
+export interface StuckHours { item: string; hours: number; since: number; excerpt: string }
+/**
+ * The chat's step-hours in [start, now] from its measured check-in runs: each run holds from its time to the next run (or `now`), with its open
+ * steps (the sum of its `classes`) and the steps left stuck by a check-in (`stuckPastCheckIn`'s rule: flagged in this run and the one before).
+ * An owner-paused chat has no step-hours, like a chat with no runs.
+ */
+export async function stuckStepHours(dataDir: string, chat: string, setting: CheckInSetting, start: number, now: number):
+  Promise<{ openHours: number; stuckHours: number; steps: StuckHours[] }> {
+  const empty = { openHours: 0, stuckHours: 0, steps: [] };
+  if (ownerPaused(setting, now)) return empty;
+  const runs = await checkInRuns(dataDir, chat, now);
+  const steps = new Map<string, StuckHours>();
+  let openHours = 0;
+  let stuckHours = 0;
+  let before = new Set<string>();
+  runs.forEach((run, index) => {
+    const flagged = stuckItems(run);
+    const from = Math.max(run.at, start);
+    const to = Math.min(runs[index + 1]?.at ?? now, now);
+    if (to > from) {
+      const hours = (to - from) / HOUR;
+      openHours += hours * Object.values(run.classes ?? {}).reduce((sum, count) => sum + (Number(count) || 0), 0);
+      for (const item of flagged.filter(item => before.has(item))) {
+        stuckHours += hours;
+        const excerpt = run.flagged?.find(slice => slice.kind === "stuck_steps" && slice.item === item)?.excerpt ?? item;
+        const seen = steps.get(item);
+        steps.set(item, { item, hours: (seen?.hours ?? 0) + hours, since: seen?.since ?? from, excerpt });
+      }
+    }
+    before = new Set(flagged);
+  });
+  return { openHours, stuckHours, steps: [...steps.values()].sort((a, b) => b.hours - a.hours) };
 }
 
 /**

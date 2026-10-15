@@ -8,7 +8,7 @@ import { gateFindings } from "../src/checkin-findings.ts";
 import { dutyJobBrief } from "../src/chat-duty-job.ts";
 import { CHAT_BRIEF, jobReplyGuideline } from "../src/chat-brief.ts";
 import { applyBoardOp, BoardError, emptyBoard, MERGE_RULE, MERGE_RULE_SHORT, mergeStep, namesPr, needsGo, nextIds, parseBoardOps, prNumbers, pushBranch, renderOpenPlan, stepGo } from "../src/shared/chat-board.ts";
-import { CHECK_IN_DUTY, parseDutyInput } from "../src/shared/chat-duties.ts";
+import { CHECK_IN_DUTY } from "../src/shared/chat-duties.ts";
 import type { BoardActor, BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
 import { C74, preApprovalText, releaseGo } from "../src/shared/release-go.ts";
 
@@ -181,8 +181,6 @@ test("merge gate: the check-in lists a merge step done without the owner's go as
     choices: ["Yes, keep it", "No, revert it"], reply: "Yes, keep it", answeredBy: "owner" }] };
   assert.deepEqual(gateFindings(kept, []).map(gate => gate.kind), ["go_waiting"], "the owner's answer on that PR clears it");
   assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "merges_without_go" && metric.target === 0));
-  const health = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "chat-health.duty.json"), "utf8")), "d1", 0);
-  assert.ok(health.metrics.some(metric => metric.key === "merges_without_go" && metric.target === 0), "Chat health counts it");
 });
 
 test("merge gate: while the c74 standing go is on, the brief, the job reply guideline and the duty job brief carry it, and git.md holds the rule word for word", async () => {

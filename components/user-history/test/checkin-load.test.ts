@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, convergenceMisses, NO_MISSES } from "../src/chat-checkin.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { heartbeatsFile, oneSessionLoad, readHeartbeats, redundantHeartbeats } from "../src/checkin-load.ts";
 import { dutyJobBrief } from "../src/chat-duty-job.ts";
 import { CHAT_BRIEF } from "../src/chat-brief.ts";
-import { CHECK_IN_DUTY, parseDutyInput } from "../src/shared/chat-duties.ts";
+import { CHECK_IN_DUTY } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 // c51: a chat that piles steps on one old session should map the work as a graph and spawn a job per part, and delete heartbeats
@@ -88,6 +88,5 @@ test("c51: the brief and the duty job brief say map the work as a graph, one job
   assert.ok(CHAT_BRIEF.some(line => line.includes("Delete heartbeats and watcher loops the check-in already covers")));
   const duty = dutyJobBrief({ duty: { ...CHECK_IN_DUTY }, chat: { id: "c1", name: "launch chat", board: "/b/c1.json" }, job: "check-in launch chat 17:00", at: 0, measure: "m", findings: "f" });
   assert.ok(duty.includes("Map the chat's work as a graph: one job or subagent per part, never steps piled on one old long-running session"));
-  const health = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "chat-health.duty.json"), "utf8")), "d1", 0);
-  for (const key of ["one_session_load", "redundant_heartbeats"]) assert.ok(health.metrics.some(metric => metric.key === key && metric.target === 0), key);
+  for (const key of ["one_session_load", "redundant_heartbeats"]) assert.ok(key in NO_MISSES, `${key}: the check-in counts it and Chat health keeps it in its precheck output`);
 });

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { type ConvergenceMisses, NO_MISSES } from "../../src/chat-checkin.ts";
-import { localTime } from "../../src/checkin-settings.ts";
+import { checkInSettings, localTime } from "../../src/checkin-settings.ts";
 import { CorrectionLedger, repeatsBetween } from "../../src/chat-corrections.ts";
 import { fileOwnerTexts } from "../../src/owner-history.ts";
 import { placeholderTodo } from "../../src/shared/chat-board.ts";
@@ -16,9 +16,9 @@ import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
 import { boardClasses, daemonSessions } from "./board-classes.ts";
-import { endStateKpi, endStateLine } from "../../src/checkin-end-state.ts";
+import { endStateKpi, endStateLine, OK_STATES, stuckLine } from "../../src/checkin-end-state.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
-import { noProgressHours, ownerBoardAsk, unfixedFlags } from "./checkin-quality.ts";
+import { noProgressHours, ownerBoardAsk, stuckPastCheckIn, stuckStepHours, unfixedFlags } from "./checkin-quality.ts";
 import { unlinkedJobSentence } from "../../src/shared/job-mentions.ts";
 import { OpsReader, unapplied } from "../../src/checkin-ops.ts";
 
@@ -45,7 +45,8 @@ const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 
-type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number; checkin_ops_dropped: number; end_state_pct: number } & ConvergenceMisses;
+type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number; checkin_ops_dropped: number; end_state_pct: number;
+  steps_moving_pct: number; stuck_step_hours: number; open_step_hours: number; stuck_after_checkin: number; owner_paused_stuck: number; checkin_not_running: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -263,13 +264,19 @@ async function readWatch(file: string | undefined): Promise<Watch> {
   catch { return {}; }
 }
 
-/** Yesterday's fixes to recheck, recurrences, merges without the owner's go, check-in findings left unfixed (the longest streaks, up to FEW), corrections, owner board asks and chats with goals and no duty first, then one slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED. */
+/**
+ * The declared metrics first: the steps left stuck longest by a check-in today and the ones stuck now (up to 2 FEW each), corrections given again, sieun-pi breaks (up to FEW) and
+ * recurrences; then the per-chat end state lines, chats whose check-in the owner paused, yesterday's fixes to recheck, merges without the owner's
+ * go, check-in findings left unfixed (the longest streaks, up to FEW), corrections, owner board asks and chats with goals and no duty; then one
+ * slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED.
+ */
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
-  // goals_without_duty, target 0 in chat-health.duty.json: the duty proposals review of 10-12 found 5 chats with open goals and no duty.
-  const picked = [...newest("end_state_pct"), ...newest("stuck_steps", FEW), ...newest("recheck"), ...newest("repeat_corrections"), ...newest("recurred"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("checkin_ops_dropped", FEW), ...newest("corrections"),
+  // goals_without_duty: the duty proposals review of 10-12 found 5 chats with open goals and no duty.
+  const picked = [...(flagged.get("stuck_step_hours") ?? []).slice(0, FEW * 2), ...newest("stuck_after_checkin", FEW * 2), ...newest("repeat_corrections"), ...newest("sieun_pi_breaks", FEW), ...newest("recurred"), ...newest("end_state_pct"),
+    ...newest("owner_paused_stuck"), ...newest("recheck"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("checkin_ops_dropped", FEW), ...newest("corrections"),
     ...newest("owner_board_asks"), ...newest("goals_without_duty")].slice(0, MAX_FLAGGED);
-  const queues = [newest("sieun_pi_breaks", FEW), newest("unretried_errors"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
+  const queues = [newest("stuck_steps", FEW), newest("unretried_errors"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
     newest("orphan_steps", FEW), newest("due_late", FEW), newest("stale_chase_24h", FEW), newest("job_end_unrecorded", FEW), newest("job_end_silent", FEW), newest("scope_misses", FEW), newest("idle_goals", FEW), newest("goal_gaps", FEW), newest("blocked_on_others", FEW),
     newest("finished_open", FEW), newest("loose_goals", FEW), newest("extra_goals", FEW), newest("open_under_closed", FEW), newest("held_elsewhere", FEW), newest("wait_met", FEW), newest("stale_steps", FEW), newest("goals_to_fold", FEW), newest("one_session_load", FEW), newest("redundant_heartbeats", FEW),
     newest("placeholder_todos", FEW), newest("unlinked_job_mentions", FEW)];
@@ -289,7 +296,7 @@ async function main(): Promise<void> {
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
   const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0,
-    no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, ...NO_MISSES },
+    no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   await countPlaceholderTodos(new BoardStore(dataDir), ids, now, tally);
@@ -315,6 +322,44 @@ async function main(): Promise<void> {
   tally.metrics.end_state_pct = endStateKpi(chats.flatMap(chat => chat.end)).pct;
   tally.flagged.set("end_state_pct", chats.filter(chat => chat.kpi.stuck).sort((a, b) => b.kpi.stuck - a.kpi.stuck)
     .map(chat => ({ chat: chat.id, at: now, kind: "end_state_pct", excerpt: `${chat.name}: ${endStateLine(chat.kpi)}` })));
+  // The headline (c64, c75): the share of the day's open step-hours not left stuck by a check-in (`stuckStepHours`), over the chats whose
+  // check-in the owner did not pause. end_state_pct above stays the plain snapshot of every chat; stuck_after_checkin is the board now.
+  const settings = checkInSettings(join(dataDir, "check-in-settings.json"));
+  let openHours = 0;
+  let stuckHours = 0;
+  const hours: { hours: number; slice: FlaggedSlice }[] = [];
+  const left: FlaggedSlice[] = [];
+  const paused: FlaggedSlice[] = [];
+  for (const chat of chats) {
+    const setting = await settings.get(chat.id);
+    const day = await stuckStepHours(dataDir, chat.id, setting, now - WINDOW_MS, now);
+    openHours += day.openHours;
+    stuckHours += day.stuckHours;
+    for (const step of day.steps) hours.push({ hours: step.hours, slice: { chat: chat.id, at: step.since, kind: "stuck_step_hours", item: step.item,
+      excerpt: clip(`${chat.name}: ${step.hours.toFixed(1)} h left stuck by a check-in since ${localTime(step.since)}. ${step.excerpt}`) } });
+    const stuck = chat.end.filter(entry => !OK_STATES.has(entry.state));
+    const past = await stuckPastCheckIn(dataDir, chat.id, stuck.map(entry => entry.view.item.id), setting, now);
+    if (past.stand === "owner_paused") {
+      tally.metrics.owner_paused_stuck += stuck.length;
+      if (stuck.length) paused.push({ chat: chat.id, at: now, kind: "owner_paused_stuck", excerpt: clip(`${chat.name}: the owner paused its check-in; ${endStateLine(chat.kpi)}`) });
+      continue;
+    }
+    if (past.stand === "not_running" && chat.end.length) tally.metrics.checkin_not_running++;
+    for (const { item, since, runs } of past.left) {
+      const entry = stuck.find(candidate => candidate.view.item.id === item)!;
+      const why = past.stand === "not_running" ? `its check-in has not run since ${past.lastAt !== undefined ? localTime(past.lastAt) : "it was set up"}`
+        : `${runs} check-ins in a row since ${localTime(since)} left it stuck`;
+      left.push({ chat: chat.id, at: since, kind: "stuck_after_checkin", item, excerpt: clip(`${chat.name}: ${why}. ${stuckLine(entry, now)}`) });
+    }
+  }
+  // Floored to a tenth, so any step-hour left stuck reads under 100%.
+  tally.metrics.steps_moving_pct = openHours ? Math.floor(1000 * (1 - stuckHours / openHours)) / 10 : 100;
+  tally.metrics.stuck_step_hours = tenth(stuckHours);
+  tally.metrics.open_step_hours = Math.round(openHours);
+  tally.metrics.stuck_after_checkin = left.length;
+  tally.flagged.set("stuck_step_hours", hours.sort((a, b) => b.hours - a.hours).map(entry => entry.slice));
+  tally.flagged.set("stuck_after_checkin", left);
+  tally.flagged.set("owner_paused_stuck", paused);
   tally.metrics.long_replies = tally.ownerTurns ? tenth(100 * tally.longTurns / tally.ownerTurns) : 0;
   const watch = watchRecurrences(tally.seen, await readWatch(process.env.STATE_FILE), now, tally);
   const fixes = fixCommits(process.env.CHAT_HEALTH_GIT_DIR || join(import.meta.dirname, "..", ".."), now - 2 * WINDOW_MS, now - WINDOW_MS);
