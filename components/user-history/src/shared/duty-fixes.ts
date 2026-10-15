@@ -1,3 +1,4 @@
+import { BOARD_LIMITS, nextIds, openGoals, sameAreaGoal, titleDetail } from "./chat-board.ts";
 import type { DutyRunRecord, FixLink } from "./chat-duties.ts";
 import type { BoardOp, ChatBoard, PlanItem, SessionRow } from "./types.ts";
 
@@ -57,26 +58,78 @@ export async function dutyFixes(board: ChatBoard | null, duty: string, metrics: 
 }
 
 /**
- * The board ops that make `job` the owner of each missed metric's fix step (`Duties.ownFixes`): an open step linked `<duty>/<metric>` gets the
- * job and its session when it has one, and a metric with no open step gets a new doing step under the duty's board goal when that goal is open. Read from the
- * board inside the write's lock, so a step the chat added meanwhile is reused rather than doubled.
+ * A step title with the internal detail the board refuses (c61, `titleDetail`) cut to its plain stem, so "land.yml runs that passed" reads
+ * "land runs that passed" and a sha or run id goes. Each pass makes the text shorter, so it ends.
  */
-export function fixStepOps(board: ChatBoard, duty: { id: string; name: string; boardGoal?: string; metrics: readonly { key: string; label: string; unit?: string }[] },
-  misses: readonly { key: string; value: number; target: number; op: "<=" | ">=" }[], job: { id?: string; name: string }): BoardOp[] {
+export function plainStepTitle(text: string): string {
+  let out = text;
+  for (let detail = titleDetail(out); detail; detail = titleDetail(out)) {
+    const stem = detail.split("/").filter(Boolean).at(-1)?.replace(/\.[\w-]+$/, "") ?? "";
+    out = out.replace(detail, stem && stem !== detail && !titleDetail(stem) ? stem : "").replace(/\s{2,}/g, " ").trim();
+  }
+  return out;
+}
+
+type FixDutyShape = { id: string; name: string; goal?: string; boardGoal?: string; metrics: readonly { key: string; label: string; unit?: string }[] };
+
+/** An item with the top-level goal above it, or the item itself when it is a goal. */
+function located(plan: readonly PlanItem[], id: string): { item: PlanItem; path: PlanItem[] } | undefined {
+  for (const goal of plan) {
+    if (goal.id === id) return { item: goal, path: [goal] };
+    const below = located(goal.children, id);
+    if (below) return { item: below.item, path: [goal, ...below.path] };
+  }
+  return undefined;
+}
+const subtreeTop = (item: PlanItem): number => Math.max(stepNumber(item.id), ...item.children.map(subtreeTop));
+
+/**
+ * Where a duty's new fix steps go, so the add never trips the board's goal limit (`BOARD_LIMITS.openGoals`, c44): the duty's board goal when
+ * adding under it opens no goal past the limit (a done goal reopens), else the open goal that holds the duty's newest linked step, else one new
+ * goal for the duty while the limit has room, else the open goal of the same area, else the open goal with the newest step. On 10-15 from
+ * 14:38Z the server's write was refused every 30 s for 01a115e2 d2, 01a11ba8 d2 (board goal done, 3 misses as 3 new goals past the limit)
+ * and 01a11bd7's check-in (no board goal, 6 goals open), so those duties never got a fix job.
+ */
+function fixParent(board: ChatBoard, duty: FixDutyShape): { parent: string; ops: BoardOp[] } {
+  const goals = openGoals(board.plan);
+  const room = goals.length < BOARD_LIMITS.openGoals;
+  const home = duty.boardGoal ? located(board.plan, duty.boardGoal) : undefined;
+  if (home && home.path.every(item => item.status !== "dropped") && (OPEN.has(home.path[0]!.status) || room)) return { parent: home.item.id, ops: [] };
+  const newest = [...linked(board, duty.id).values()].flat().sort((a, b) => stepNumber(b.id) - stepNumber(a.id))
+    .map(item => located(board.plan, item.id)!.path[0]!).find(goal => OPEN.has(goal.status));
+  if (newest) return { parent: newest.id, ops: [] };
+  if (room) {
+    const id = nextIds(board)("p");
+    return { parent: id, ops: [{ op: "plan_add", text: plainStepTitle(`${duty.name} duty meets every target`).slice(0, BOARD_LIMITS.text), status: "doing" }] };
+  }
+  const area = sameAreaGoal(board.plan, `${duty.name} ${duty.goal ?? ""}`) ?? [...goals].sort((a, b) => subtreeTop(b) - subtreeTop(a))[0]!;
+  return { parent: area.id, ops: [] };
+}
+
+/**
+ * The board ops that make `job` the owner of each missed metric's fix step (`Duties.ownFixes`): an open step linked `<duty>/<metric>` gets the
+ * job and its session when it has one, and a metric with no open step gets a new doing step with a plain title (`plainStepTitle`) under its
+ * home (`fixParent`). Read from the board inside the write's lock, so a step the chat added meanwhile is reused rather than doubled.
+ */
+export function fixStepOps(board: ChatBoard, duty: FixDutyShape, misses: readonly { key: string; value: number; target: number; op: "<=" | ">=" }[],
+  job: { id?: string; name: string }): BoardOp[] {
   const steps = linked(board, duty.id);
-  let goal: PlanItem | undefined;
-  const visit = (items: readonly PlanItem[]) => { for (const item of items) { if (item.id === duty.boardGoal) goal = item; visit(item.children); } };
-  visit(board.plan);
-  const parent = goal && OPEN.has(goal.status) ? { parent: goal.id } : {};
-  return misses.map((miss): BoardOp => {
+  const session = job.id ? { sessionId: job.id } : {};
+  const updates: BoardOp[] = [];
+  const fresh: typeof misses[number][] = [];
+  for (const miss of misses) {
     const open = (steps.get(miss.key) ?? []).find(item => OPEN.has(item.status));
-    const session = job.id ? { sessionId: job.id } : {};
-    if (open) return { op: "plan_update", id: open.id, job: job.name, sessionId: job.id ?? null };
+    if (open) updates.push({ op: "plan_update", id: open.id, job: job.name, sessionId: job.id ?? null });
+    else fresh.push(miss);
+  }
+  if (!fresh.length) return updates;
+  const home = fixParent(board, duty);
+  return [...updates, ...home.ops, ...fresh.map((miss): BoardOp => {
     const metric = duty.metrics.find(entry => entry.key === miss.key);
     const unit = metric?.unit ?? "";
-    const text = `${metric?.label ?? miss.key} in the ${duty.name} duty reaches ${miss.op === "<=" ? "at most" : "at least"} ${miss.target}${unit}, from ${miss.value}${unit} on the last run`;
-    return { op: "plan_add", ...parent, text: text.slice(0, 500), status: "doing", job: job.name, ...session, duty: dutyLink(duty.id, miss.key) };
-  });
+    const text = plainStepTitle(`${metric?.label ?? miss.key} in the ${duty.name} duty reaches ${miss.op === "<=" ? "at most" : "at least"} ${miss.target}${unit}, from ${miss.value}${unit} on the last run`);
+    return { op: "plan_add", parent: home.parent, text: text.slice(0, BOARD_LIMITS.text), status: "doing", job: job.name, ...session, duty: dutyLink(duty.id, miss.key) };
+  })];
 }
 
 export const missedKeys = (run: Pick<DutyRunRecord, "metrics">): string[] => Object.entries(run.metrics).filter(([, result]) => !result.met).map(([key]) => key);

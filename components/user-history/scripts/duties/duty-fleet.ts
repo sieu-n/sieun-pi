@@ -10,6 +10,7 @@ import { jobFacts, liveJobs, liveWindowMs, ownerOf, OPEN, walk } from "../../src
 import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
 import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, type MetricStreak } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import { fixJobLive } from "../../src/shared/duty-fixes.ts";
 import { pendingWakes } from "../../src/wakes.ts";
 import { chatChildren, daemonSessions, parseLooseJson, sessionRows, subagentsByParent, type DaemonSession } from "./board-classes.ts";
 
@@ -97,7 +98,10 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
               const children = chatChildren(all, id);
               const facts = withWakes(jobFacts(children, board, sessionRows(all), id, [], liveJobs(children, subagentsByParent(all), now, liveWindowMs(setting.everyMs), asleep)),
                 wakes, key => children.find(child => child.id === key)?.sessionId);
-              return (item: PlanItem) => ownerOf(item, facts)?.state === "working";
+              // The server's own test (`fixJobLive`) too: a fix job asleep on a board.wake is live though `prime-agent sessions` no longer lists it
+              // (loaded sessions only); on 10-15 at 23:55 KST SEO guy's d1 read stuck here while its fix job slept on a 01:10Z wake.
+              const rows = sessionRows(all);
+              return (item: PlanItem) => ownerOf(item, facts)?.state === "working" || fixJobLive(item, id, rows, asleep);
             })();
             fix = candidates.find(live)?.id;
           }

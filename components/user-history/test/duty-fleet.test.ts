@@ -91,3 +91,23 @@ test("duty fleet: the daemon is not asked when no duty is red long enough", asyn
   const fleet = await dutyFleet({ dataDir: dir, now: NOW, sessions: () => { throw new Error("no daemon"); } });
   assert.deepEqual(fleet.metrics, { duties_green_pct: 0, stuck_duties: 0 }, "a chat's check-in with no measured run is red");
 });
+
+test("duty fleet: a fix job that sleeps on a board.wake is live though the daemon no longer lists it, as the server reads it (SEO d1, 10-15 23:55 KST)", async () => {
+  const dir = await copy();
+  await mkdir(join(dir, "boards"), { recursive: true });
+  await mkdir(join(dir, "wakes"), { recursive: true });
+  const root = "01a13fd8-608f-7509-b85b-efe3cfe6b63e";
+  const board: ChatBoard = { v: 2, rev: 1, updatedAt: new Date(NOW).toISOString(), scratch: [], todos: [], plan: [step("p56", { text: "SEO duties green", children: [
+    step("p61", { job: "fix search visits grow SEO guy 22:53", sessionId: root, duty: "d1/goal_visits_d7" })] })] };
+  await writeFile(join(dir, "boards", `${SEO}.json`), JSON.stringify(board));
+  // `prime-agent sessions --json` lists the loaded sessions only (128 of the catalog's 2,480 rows at 14:57Z), and the job had unloaded asleep.
+  const sessions = SESSIONS;
+  const before = await dutyFleet({ dataDir: dir, now: NOW, sessions: () => sessions });
+  assert.ok(before.duties.find(duty => duty.chat === SEO && duty.duty === "d1")!.stuck, "an idle root job with no wake is no fix");
+  await writeFile(join(dir, "wakes", ".ticked"), new Date(NOW - 10_000).toISOString());
+  await writeFile(join(dir, "wakes", `${root}-time-${NOW / 1000 + 3600}.json`), JSON.stringify({ session: root, on: { kind: "time", at: NOW + 3_600_000 }, note: "remeasure", since: NOW - 60_000 }));
+  const after = await dutyFleet({ dataDir: dir, now: NOW, sessions: () => sessions });
+  const seo = after.duties.find(duty => duty.chat === SEO && duty.duty === "d1")!;
+  assert.deepEqual([seo.stuck, seo.fix], [false, "p61"]);
+  assert.equal(after.metrics.stuck_duties, before.metrics.stuck_duties - 1);
+});
