@@ -117,6 +117,14 @@ test("engage reads: deep walks count error stops against walks that reached thei
   assert.match(output.flagged!.find(item => item.kind === "deep_walks")!.excerpt, /847 reached their end, 17 stopped on an error/);
 });
 
+test("engage reads: a walk on a deleted profile or one with no free reader is left out of deep_walk_ok_pct, as its line says", async () => {
+  // Prod 10-15 11:3xZ: 139 reached, permanent_error 3, scrape_blocked 2, and vivliv_official ended profile_not_found ("does not exist").
+  const deepWalks = deepWalksOf("reached\t\t139\nerror\tpermanent_error\t3\nerror\tscrape_blocked\t2\nerror\tprofile_not_found\t1\nerror\tfleet_exhausted\t2\n");
+  const output = report(data({ deepWalks }), await dutyMetrics());
+  assert.equal(output.metrics.deep_walk_ok_pct, 96.5, "139 of 144, not 139 of 147");
+  assert.match(output.flagged!.find(item => item.kind === "deep_walks")!.excerpt, /139 reached their end, 5 stopped on an error \(permanent_error 3, scrape_blocked 2\); .*left out \(profile_not_found 1, fleet_exhausted 2\)/);
+});
+
 test("engage reads: a due staging read waiting past the target names each staging pause row on and its last writer, and marks a deploy's leftover", async () => {
   const metrics = await dutyMetrics();
   const stagingPauses = stagingPausesOf([

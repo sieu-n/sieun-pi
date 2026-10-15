@@ -152,6 +152,13 @@ export const canaryWant = (active: number): number => active ? Math.max(1, Math.
 const nextDay = (day: string): string => new Date(Date.parse(`${day}T00:00:00Z`) + DAY).toISOString().slice(0, 10);
 
 /**
+ * Walk stops that say nothing about pagination, left out of deep_walk_ok_pct as its line says: profile_not_found is a handle Instagram no longer
+ * has (prod vivliv_official on 10-15, "Instagram profile @vivliv_official does not exist"), and fleet_exhausted is no free reader, which the
+ * capacity metric measures. Until 10-15 the line said both were left out while the count still held them.
+ */
+export const NOT_PAGINATION: ReadonlySet<string> = new Set(["profile_not_found", "fleet_exhausted"]);
+
+/**
  * The highest pages a day one account is proven to read safely. A rate R is proven over PROOF_DAYS consecutive full UTC days when on each of
  * them at least `cohort` accounts (a canary's worth) read R pages or more, and every Instagram verdict from the first of those days on hit an
  * account that read more than R in the 24 h before it: a verdict at v pages unproves every rate of v or more, so a canary death at a higher
@@ -250,10 +257,14 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       + (data.lapsed.blocked ? `${data.lapsed.blocked} have a blocked renewal row that nothing retries and are left out of capacity: clear them through the shipped rotation path.` : "")).slice(0, 600) });
   }
   if (data.deepWalks) {
-    const errorStops = Object.values(data.deepWalks.errors).reduce((sum, count) => sum + count, 0);
+    const stops = Object.entries(data.deepWalks.errors).filter(([code]) => !NOT_PAGINATION.has(code));
+    const left = Object.entries(data.deepWalks.errors).filter(([code]) => NOT_PAGINATION.has(code));
+    const errorStops = stops.reduce((sum, [, count]) => sum + count, 0);
     const total = data.deepWalks.reached + errorStops;
     metrics.deep_walk_ok_pct = total ? round1(100 * data.deepWalks.reached / total) : 100;
-    flagged.push({ at, kind: "deep_walks", excerpt: `365-day logged-in collab walks in the last 24 h: ${fmt(data.deepWalks.reached)} reached their end, ${errorStops} stopped on an error${errorStops ? ` (${Object.entries(data.deepWalks.errors).map(([code, count]) => `${code} ${count}`).join(", ")})` : ""}; profile_not_found and fleet_exhausted are not pagination errors and are left out` });
+    const list = (entries: [string, number][]): string => entries.map(([code, count]) => `${code} ${count}`).join(", ");
+    flagged.push({ at, kind: "deep_walks", excerpt: `365-day logged-in collab walks in the last 24 h: ${fmt(data.deepWalks.reached)} reached their end, ${errorStops} stopped on an error${errorStops ? ` (${list(stops)})` : ""}; `
+      + `profile_not_found and fleet_exhausted are not pagination errors and are left out${left.length ? ` (${list(left)})` : ""}` });
   }
   metrics.source_errors = data.errors.length;
   const failed = new Set(data.errors.flatMap(error => FEEDS[error.source]));
