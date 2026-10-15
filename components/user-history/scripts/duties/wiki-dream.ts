@@ -360,6 +360,17 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   return { metrics: { ...metrics }, flagged: pickFlagged(slices), info };
 }
 
+/** The metrics the duty judges (wiki-dream.duty.json). A run that cannot measure one of them fails, so the runner records an error, not 999999. */
+export const JUDGED_METRICS = ["wiki_problems", "open_mistakes", "mistakes_back", "dup_unjudged"] as const;
+
+/** Why this measure cannot be judged: the judged metrics left unmeasured and the inputs that failed; null when all are measured. */
+export function unmeasuredReason(result: PrecheckOutput): string | null {
+  const missing = JUDGED_METRICS.filter(key => result.metrics[key] === UNMEASURED);
+  if (!missing.length) return null;
+  const inputs = (result.flagged ?? []).filter(slice => slice.kind === "source_error").map(slice => slice.excerpt);
+  return clip(`could not measure ${missing.join(", ")}: ${inputs.join("; ") || "no input named"}`, 290);
+}
+
 const execNoShell: Exec = (file, args, options) => new Promise((done, failed) => {
   execFile(file, args, { cwd: options.cwd, timeout: options.timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 << 20 }, (error, stdout, stderr) => {
     if (!error) { done(String(stdout)); return; }
@@ -392,6 +403,8 @@ async function main(): Promise<void> {
   };
   const result = await measureDream(deps, Array.isArray(lastRuns) ? lastRuns as DutyRunRecord[] : []);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
+  const reason = unmeasuredReason(result);
+  if (reason) { process.stderr.write(`wiki-dream: ${reason}\n`); process.exit(1); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

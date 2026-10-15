@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { parseDutyInput, type DutyRunRecord } from "../src/shared/chat-duties.ts";
 import {
   churn, classStates, type DreamDeps, type Exec, freshCorrections, glide, GLIDE_START, harnessSignal, lastChanged, LINT_GLIDE, measureDream, MEMORY_GLIDE,
-  pagesBehindCode, parseGitLog, parseStale, pickFlagged, sinceFrom, UNMEASURED, unjudgedPairs,
+  JUDGED_METRICS, pagesBehindCode, parseGitLog, parseStale, pickFlagged, sinceFrom, UNMEASURED, unjudgedPairs, unmeasuredReason,
 } from "../scripts/duties/wiki-dream.ts";
 
 const DAY = 24 * 60 * 60_000;
@@ -202,4 +202,14 @@ test("wiki dream: the checked-in duty file parses, and its metrics are the ones 
   assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["wiki_problems"]);
   assert.ok(duty.metrics.length <= 4, "one headline and at most 3 supporting metrics");
   assert.doesNotMatch(JSON.stringify(file), /\b(words|lines)\b.*\b(skill|SKILL\.md)\b|\b(skill|SKILL\.md)\b.*\bover \d+ (words|lines)/i, "no skill size counts (owner c39)");
+});
+
+test("wiki dream: a judged metric left unmeasured fails the run with the inputs that failed; the duty judges exactly JUDGED_METRICS", async () => {
+  const ok = await measureDream(deps(), []);
+  assert.equal(unmeasuredReason(ok), null);
+  const down = await measureDream(deps({ health: new Error("timed out after 100 s"), stale: new Error("The operation was aborted due to timeout") }), []);
+  assert.equal(down.metrics.wiki_problems, UNMEASURED);
+  assert.match(unmeasuredReason(down) ?? "", /^could not measure wiki_problems, dup_unjudged: wiki-health\.mjs: timed out after 100 s; \/api\/agent\/stale: The operation was aborted/);
+  const file = JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/wiki-dream.duty.json"), "utf8")) as { metrics: { key: string }[] };
+  assert.deepEqual(file.metrics.map(metric => metric.key).sort(), [...JUDGED_METRICS].sort());
 });
