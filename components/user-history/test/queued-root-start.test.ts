@@ -71,7 +71,8 @@ test("the check-in reads a held start as a start of the chat the registry names,
   await writeFile(join(dir, "held-starts", "last-start"), "x");
   const starts = await readHeldStarts(dir, pid => pid === process.pid);
   assert.deepEqual(starts.map(start => start.name), ["crawler duty fixes", "own start"]);
-  const registry = { chatOf: async (name: string) => name === "crawler duty fixes" ? "01a115e2" : undefined };
-  assert.deepEqual(await heldStartsOf(starts, registry, "01a115e2"), ["crawler duty fixes", "own start"]);
-  assert.deepEqual(await heldStartsOf(starts, registry, "01a11bd7"), []);
+  // chat-jobs.json files a job under the chat's name ("limits pass": { chat: "Crawler VP" } at 21:4xZ on 10-15), and a start's parent is an id.
+  const registry = { chatOf: async (name: string) => name === "crawler duty fixes" ? "Crawler VP" : undefined };
+  assert.deepEqual(await heldStartsOf(starts, registry, ["01a115e2", "Crawler VP"]), ["crawler duty fixes", "own start"]);
+  assert.deepEqual(await heldStartsOf(starts, registry, ["01a11bd7", "launch main bro"]), []);
 });

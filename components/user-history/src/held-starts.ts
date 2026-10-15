@@ -28,9 +28,16 @@ export async function readHeldStarts(dataDir: string, isAlive: (pid: number) => 
   return found.sort((a, b) => a.at - b.at);
 }
 
-/** The names of `chat`'s held starts. */
-export async function heldStartsOf(starts: readonly HeldStart[], registry: Pick<JobRegistry, "chatOf"> | undefined, chat: string): Promise<string[]> {
+/**
+ * The names of a chat's held starts. `chat` holds every name the chat goes by, its session id and its name, as in `JobRegistry.rootsOf`: the
+ * registry files a job under the chat's name and a start's parent is a session id. At 21:4xZ on 10-15 the Crawler VP check-in queued "limits
+ * pass", the registry filed it under "Crawler VP", and the check-in, which passed only the id, counted p157 stuck as job_ended.
+ */
+export async function heldStartsOf(starts: readonly HeldStart[], registry: Pick<JobRegistry, "chatOf"> | undefined, chat: readonly string[]): Promise<string[]> {
   const names: string[] = [];
-  for (const start of starts) if ((await registry?.chatOf(start.name).catch(() => undefined) ?? start.parent) === chat) names.push(start.name);
+  for (const start of starts) {
+    const owner = await registry?.chatOf(start.name).catch(() => undefined) ?? start.parent;
+    if (owner !== undefined && chat.includes(owner)) names.push(start.name);
+  }
   return names;
 }

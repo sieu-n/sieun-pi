@@ -77,7 +77,7 @@ const source: CheckInSource = {
   dutyRuns: id => duties.runs(id), prs: prStates(), held: now => readHeldTurns(dataDir, now),
   // pi-pool's queue and the starts the service's fleet budget holds (its fleet-state.json), as the service's check-in reads them.
   queue: queueReader(), starting: async id => [...fleet && Date.now() - fleet.at <= FLEET_STATE_FRESH_MS ? startsOf(fleet.waiting ?? [], id) : [],
-    ...await heldStartsOf(await readHeldStarts(dataDir), jobRegistry(join(dataDir, "chat-jobs.json")), id)],
+    ...await heldStartsOf(await readHeldStarts(dataDir), jobRegistry(join(dataDir, "chat-jobs.json")), [id, rows.find(row => row.id === id)?.name.trim() ?? ""].filter(Boolean))],
   duty: { async lastCheckIn() { return undefined; }, async checkIn(_id, run) {
     printed = true;
     process.stdout.write(`classes ${JSON.stringify(run.classes)}\n`);

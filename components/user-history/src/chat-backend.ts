@@ -214,7 +214,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
       strays: readStrays,
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-      starting: async chat => [...startsOf(fleet.queued(), chat), ...await heldStartsOf(await readHeldStarts(dataDir), registry, chat)],
+      starting: async chat => {
+        const name = (await catalog.rows()).find(row => row.id === chat)?.name.trim();
+        return [...startsOf(fleet.queued(), chat), ...await heldStartsOf(await readHeldStarts(dataDir), registry, name ? [chat, name] : [chat])];
+      },
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       interrupted: (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet, owners, cut => writeResumePending(dataDir, cut, Date.now())),
       held: now => readHeldTurns(dataDir, now),
