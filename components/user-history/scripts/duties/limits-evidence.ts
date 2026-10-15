@@ -162,6 +162,11 @@ export function ownDefinitions(hits: readonly Leftover[]): Set<string> {
   return new Set(hits.filter(hit => new RegExp(String.raw`(^|[^.\w])${hit.name}\s*(:[^=]+)?=(?![=>])`).test(hit.text)).map(hit => `${hit.file}#${hit.name}`));
 }
 
+/** True when a file outside `dropFiles` still defines `name`: a whole-word search cannot tell which limit a line uses, so the name is checked by hand. */
+export function definedElsewhere(live: ReadonlySet<string>, name: string, dropFiles: ReadonlySet<string>): boolean {
+  return [...live].some(entry => entry.endsWith(`#${name}`) && !dropFiles.has(entry.slice(0, -name.length - 1)));
+}
+
 /** The leftover lines of one drop: hits on its name, less the files that define their own limit of that name, unless the drop's own files do. */
 export function dropLeftovers(hits: readonly Leftover[], name: string, dropFiles: ReadonlySet<string>, elsewhere: ReadonlySet<string>): Leftover[] {
   return hits.filter(hit => hit.name === name && (dropFiles.has(hit.file) || !elsewhere.has(`${hit.file}#${name}`)));
@@ -186,8 +191,8 @@ async function stackRef(repo: string, commit: string | undefined): Promise<strin
 
 /**
  * The dropped limits whose name a tree still uses. A `removed` entry is searched on `tip`, an `unbacked` one on the ci/ ref of its stack.
- * Only TRACEABLE names are searched. A file that defines its own limit of the same name, as `defined` (`file#NAME` from the scan) or another
- * ledger key shows, uses that one, so its lines do not count.
+ * Only TRACEABLE names are searched, and a name another file of that tree still defines is skipped (`definedElsewhere`). A file that defines
+ * its own limit of the same name, as `defined` (`file#NAME` from the scan) or another ledger key shows, uses that one, so its lines do not count.
  */
 export async function findLeftovers(repo: string, ledger: Ledger, defined: ReadonlySet<string>, tip = "sieun/dev"): Promise<LeftoverFinding[]> {
   const byRev = new Map<string, { name: string; key: string }[]>();
@@ -200,8 +205,10 @@ export async function findLeftovers(repo: string, ledger: Ledger, defined: Reado
   const findings: LeftoverFinding[] = [];
   for (const [rev, dropped] of byRev) {
     const hits = await leftovers(repo, rev, [...new Set(dropped.map(drop => drop.name))]);
-    const elsewhere = new Set([...ownDefinitions(hits), ...defined, ...Object.keys(ledger.limits)]);
+    const live = ownDefinitions(hits);
+    const elsewhere = new Set([...live, ...defined, ...Object.keys(ledger.limits)]);
     for (const { name, key } of dropped) {
+      if (definedElsewhere(live, name, new Set([key.split("#")[0]!]))) continue;
       const mine = dropLeftovers(hits, name, new Set([key.split("#")[0]!]), elsewhere);
       if (mine.length) findings.push({ key, rev: rev.replace(/^refs\/(remotes\/origin|heads)\//, ""), hits: mine });
     }
@@ -216,10 +223,15 @@ async function checkStack(base: string, tip: string): Promise<void> {
   const hits = await leftovers(REPO, tip, [...new Set(traced.map(drop => drop.name))]);
   const elsewhere = ownDefinitions(hits);
   const left = new Map<string, Leftover>();
-  for (const drop of traced) for (const hit of dropLeftovers(hits, drop.name, drop.files, elsewhere)) left.set(`${hit.file}:${hit.line}:${hit.name}`, hit);
+  const shared = new Set<string>();
+  for (const drop of traced) {
+    if (definedElsewhere(elsewhere, drop.name, drop.files)) { shared.add(drop.name); continue; }
+    for (const hit of dropLeftovers(hits, drop.name, drop.files, elsewhere)) left.set(`${hit.file}:${hit.line}:${hit.name}`, hit);
+  }
   for (const hit of left.values()) process.stdout.write(`${hit.name}\t${hit.file}:${hit.line}\t${hit.text}\n`);
-  const untraced = [...new Set(stack.filter(drop => !TRACEABLE.test(drop.name)).map(drop => drop.name))];
-  process.stdout.write(`${left.size} leftover lines for ${traced.length} dropped names in ${tip}${untraced.length ? `; rg these by hand: ${untraced.join(", ")}` : ""}\n`);
+  const untraced = [...new Set([...stack.filter(drop => !TRACEABLE.test(drop.name)).map(drop => drop.name), ...shared])];
+  process.stdout.write(`${left.size} leftover lines for ${traced.length - shared.size} dropped names in ${tip}` +
+    `${untraced.length ? `; rg these by hand, since they are lowercase or another file still defines them: ${untraced.join(", ")}` : ""}\n`);
   process.exit(left.size ? 1 : 0);
 }
 

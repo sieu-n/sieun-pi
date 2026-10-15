@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { appOf, dropLeftovers, drops, findLeftovers, type Ledger, leftovers, measureLimits, ownDefinitions, parseLedger, parseRg, scan, withKeys }
+import { appOf, definedElsewhere, dropLeftovers, drops, findLeftovers, type Ledger, leftovers, measureLimits, ownDefinitions, parseLedger, parseRg, scan, withKeys }
   from "../scripts/duties/limits-evidence.ts";
 
 const NOW = Date.parse("2026-10-12T18:30:00Z");
@@ -111,7 +111,11 @@ test("limits evidence: a drop commit that leaves a reference to the dropped name
     assert.deepEqual(left.map(hit => `${hit.file}:${hit.line}`), ["apps/search/src/routes/deliver.ts:1", "apps/search/src/routes/deliver.ts:2"],
       "the route still imports the dropped name; the admin file's own limit of that name does not count");
 
+    assert.ok(definedElsewhere(ownDefinitions(hits), "CH_INSERT_TIMEOUT_MS", stack[0]!.files), "the admin file still defines the name");
     const ledger: Ledger = { limits: { "apps/search/src/lib/clickhouse.ts#CH_INSERT_TIMEOUT_MS": { verdict: "removed" } }, runs: [] };
+    assert.deepEqual(await findLeftovers(repo, ledger, new Set(), "dev"), [], "a name another file still defines is checked by hand");
+    git("rm", "-q", "apps/admin/src/other.ts");
+    git("commit", "-q", "-m", "chore(admin): drop the other file");
     const found = await findLeftovers(repo, ledger, new Set(), "dev");
     assert.deepEqual(found.map(finding => [finding.key, finding.rev, finding.hits.length]), [["apps/search/src/lib/clickhouse.ts#CH_INSERT_TIMEOUT_MS", "dev", 2]]);
     const { output } = measureLimits([], { keys: [] }, ledger, NOW, found);
