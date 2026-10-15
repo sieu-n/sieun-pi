@@ -7,6 +7,7 @@ and starts no other process, so one call costs well under a second of CPU at 1,0
 Each `python -m rlm.repl` kernel in a worker tree is reported with its session and root (from RLM_HARNESS_STATE_DIR), its subtree's bytes and its
 largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
+A shared service (`SHARED`) and every process under it belong to no tree.
 `--session <id>` prints the processes a session's kernel left detached (`strays`), for the notice of a deleted or archived job; `--started <pid>`
 prints a process's start time.
 """
@@ -57,6 +58,10 @@ HANDLE = re.compile(r"\{\n(.*?)\n\} 8>&- 9>&-\n.*prime-agent-complete", re.S)
 WAITER = re.compile(r"(^|/)gh run watch\b|(^|/)gh pr checks\b.*--watch|ci-run-status(\.sh)? \S+ .*--wait|ci-run-status(\.sh)? --wait|(^|/)sleep (\d{3,}|[6-9]\d)(\.\d+)?$")
 # Prime's own processes, which the guard never names or stops: a kernel, a prime-agent binary (the daemon and its workers), pi-pool's token helper.
 PRIME = re.compile(r"rlm\.repl|(^|/)prime-agent( |$)|pi-pool-token")
+# Services a session once started that every tree shares, so they count toward no tree and are never stopped, with every process under them. On
+# 10-15 they carried a session's RLM_HARNESS_STATE_DIR: two PM2 God Daemons (~/.pm2, and auto-sns-agent/.cache/pm2-dev with the virev-demo vite
+# at 1.77 GiB, dev-guard and devstack-sync under it), Aside (/Applications/Aside.app, its helpers and the Aside Daemon) and cua-driver serve.
+SHARED = re.compile(r"^PM2 v[\d.]+: God Daemon|/Aside\.app/|^Aside Daemon|(^|/)cua-driver( |$)")
 CTL_KERN, KERN_PROCARGS2, PROC_PIDTBSDINFO = 1, 49, 3
 ARGS = ctypes.create_string_buffer(1 << 18)
 
@@ -125,9 +130,12 @@ def tree(root, waiters, now, handles, kernels, seen):
             if owner is not None:
                 kernel = {"pid": pid, "root": owner[0], "session": owner[1], "pids": 0, "bytes": 0, "biggest": None}
                 kernels.append(kernel)
-        elif kernel is not None:
+        elif kernel:
             args = procargs(pid)
             text = " ".join(args[0]) if args else ""
+            if SHARED.search(text):
+                stack.extend((child, False) for child in children(pid))
+                continue
             handle = HANDLE.search(text)
             if handle or WAITER.search(text):
                 at = started(pid)
@@ -135,7 +143,7 @@ def tree(root, waiters, now, handles, kernels, seen):
                                                          "command": (handle.group(1) if handle else text)[:200], "age_s": None if at is None else max(0, now - at)})
             if not PRIME.search(text) and (kernel["biggest"] is None or bytes_ > kernel["biggest"]["bytes"]):
                 kernel["biggest"] = {"pid": pid, "bytes": bytes_, "started": started(pid), "command": command(args)}
-        if kernel is not None:
+        if kernel:
             kernel["pids"] += 1
             kernel["bytes"] += bytes_
         stack.extend((child, kernel) for child in children(pid))
@@ -163,6 +171,19 @@ def detached(table, pid, inside=frozenset()):
     return True
 
 
+def shared(table, pid):
+    """Whether `pid` or an ancestor is a shared service (`SHARED`)."""
+    hops = 0
+    while pid > 1 and hops < 64:
+        entry = table.get(pid)
+        if entry is None:
+            return False
+        if entry[3] and SHARED.search(" ".join(entry[3][0])):
+            return True
+        pid, hops = entry[0], hops + 1
+    return False
+
+
 def tagged(table):
     """Each process with RLM_HARNESS_STATE_DIR that is no Prime process: pid -> (root, session)."""
     found = {}
@@ -182,7 +203,7 @@ def process(table, pid, extra):
 def orphans(table, inside):
     """Processes with RLM_HARNESS_STATE_DIR under no kernel, no Prime process and none of the measured worker trees, with the root and session it names."""
     found = (process(table, pid, {"root": root, "session": session}) for pid, (root, session) in tagged(table).items()
-             if pid not in inside and detached(table, pid, inside))
+             if pid not in inside and detached(table, pid, inside) and not shared(table, pid))
     return [entry for entry in found if entry]
 
 
@@ -190,7 +211,7 @@ def strays(table, session):
     """The processes a session's kernel left detached: its RLM_HARNESS_STATE_DIR names `session`, or it sits in the kernel's process group, and no kernel or Prime process is above it."""
     groups = {table[pid][1] for pid in table if (owner := kernel_of(pid, table[pid][3])) and owner[1] == session}
     found = (process(table, pid, {}) for pid, (_, pgid, _, args) in table.items()
-             if args and not PRIME.search(" ".join(args[0])) and ((harness(args[1]) or ("", ""))[1] == session or pgid in groups) and detached(table, pid))
+             if args and not PRIME.search(" ".join(args[0])) and ((harness(args[1]) or ("", ""))[1] == session or pgid in groups) and detached(table, pid) and not shared(table, pid))
     return [entry for entry in found if entry]
 
 

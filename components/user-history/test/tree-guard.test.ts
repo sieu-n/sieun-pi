@@ -147,6 +147,20 @@ test("an orphan with the SEO env counts against the SEO tree: a real detached pr
     "the deleted job's session is no row, so its env root names the tree");
 });
 
+test("a shared service is in no tree: a PM2 God Daemon with the SEO env and the app under it are no orphans, while a dev server the session nohup'd itself still counts", async () => {
+  const job = `01a1fffe-0000-7000-8000-${String(process.pid).padStart(12, "0")}`;
+  const state = join(homedir(), ".prime", "agent", "session-artifacts", SEO, "sub-test", "session-artifacts", job, "harness");
+  const daemon = "process.title = 'PM2 v7.0.3: God Daemon (/tmp/tree-guard-pm2)'; require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 6001)'], { stdio: 'ignore' }); setTimeout(() => {}, 6000)";
+  const shell = spawn("/bin/sh", ["-c", `"$0" -e "${daemon}" & "$0" -e "setTimeout(() => {}, 6002)" & exit 0`, process.execPath],
+    { env: { ...process.env, RLM_HARNESS_STATE_DIR: state }, stdio: "ignore" });
+  await new Promise(resolve => shell.once("exit", resolve));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const measured = await readFootprints([process.pid]);
+  assert.deepEqual(measured.orphans!.filter(entry => entry.session === job).map(entry => entry.command), [`${process.execPath} -e setTimeout(() => {}, 6002)`],
+    "the PM2 daemon and its app count toward no tree");
+  assert.deepEqual((await readStrays(job)).map(stray => stray.command), [`${process.execPath} -e setTimeout(() => {}, 6002)`]);
+});
+
 test("a deleted job's notice names the processes its kernel started detached, with pid, command and GiB, and kills nothing", async () => {
   const NOW = Date.parse("2026-10-15T00:45:00Z");
   const dir = await mkdtemp(join(tmpdir(), "tree-guard-delete-"));
