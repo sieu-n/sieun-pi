@@ -29,7 +29,7 @@ const missed = (h: number): DutyRunRecord => ({ duty: "d2", at: at(h, 0), slot: 
   metrics: { retry_extra_s: { value: 41, target: 5, op: "<=", met: false }, supply_hold_minutes: { value: 38, target: 0, op: "<=", met: false },
     working_exits_dropped: { value: 7, target: 0, op: "<=", met: false } }, job: { id: `d2-${h}`, name: `geonode proxy use Crawler VP ${h}:00` } });
 
-async function setup(input: { admit?: (chat: string, duty: string) => Promise<(() => Promise<void>) | null>; queueLong?: () => Promise<string | null> } = {}) {
+async function setup(input: { admit?: (chat: string, duty: string) => Promise<(() => Promise<void>) | null>; queueLong?: () => Promise<string | null>; stopped?: () => Promise<string | null> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "duty-fix-behind-queue-"));
   const store = new DutyStore(dir);
   for (const record of [missed(9), missed(11), missed(13)]) await store.appendRun(CHAT, record);
@@ -64,7 +64,7 @@ async function setup(input: { admit?: (chat: string, duty: string) => Promise<((
   };
   const lines: string[] = [];
   const duties = new Duties(store, { isChat: async id => id === CHAT, jobs, now: () => now.at, tickMs: 0, log: line => lines.push(line),
-    ...(input.admit ? { admit: input.admit } : {}), ...(input.queueLong ? { queueLong: input.queueLong } : {}),
+    ...(input.admit ? { admit: input.admit } : {}), ...(input.queueLong ? { queueLong: input.queueLong } : {}), ...(input.stopped ? { stopped: input.stopped } : {}),
     board: async () => state.board,
     applyBoard: async (_chat, ops: (board: ChatBoard) => readonly BoardOp[]) => {
       let board = state.board;
@@ -118,6 +118,26 @@ test("an idle fix job is not sent back while the turn queue is long, and goes ba
   now.at = at(15, 10, 0);
   await settle();
   assert.deepEqual(steers, ["fix1"]);
+});
+
+// 10-16 about 04:00 KST: the owner had every job stopped, and the server opened slack green guy d1's fix again at 03:55 and 03:58 KST on p150
+// and p151, each one minutes after the one before was stopped. While the fleet stop switch is on no fix job opens, replaces a stopped one, or
+// goes back, and no step gets a new job name.
+test("while the fleet stop switch is on no fix job opens or goes back, and a stopped one is not replaced", async () => {
+  let stop: string | null = null;
+  const { starts, steers, ended, now, settle, lines } = await setup({ stopped: async () => stop });
+  await settle();
+  assert.equal(starts.length, 1, "the switch off: the miss streak opens one fix job");
+  stop = "the fleet stop switch is on";
+  ended.add("fix1");
+  for (const minute of [9, 10, 12, 20, 40]) { now.at = at(15, minute, 0); await settle(); }
+  assert.equal(starts.length, 1, "no replacement for the stopped job");
+  assert.deepEqual(steers, [], "and no send-back");
+  assert.equal(lines.filter(line => line.startsWith("duties: no fix job opens")).length, 1, lines.join("\n"));
+  stop = null;
+  now.at = at(15, 41, 0);
+  await settle();
+  assert.deepEqual(steers, ["fix1"], "the switch off: the stopped job goes back on its steps");
 });
 
 // The AI harness chat's d6 fixture of duty-persistence.test.ts: its job ends with 2 unowned misses, which sends it back while the queue is short.

@@ -184,6 +184,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return fixJobLive(item, id, await catalog.rows(), asleep, waiting, now);
     },
     queueLong: async () => queueLong(await queueReading().catch(() => null)),
+    stopped: () => fleet.switchedOff(),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
     jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog, fleet,
       started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) }),

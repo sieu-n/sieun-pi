@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FLEET_STATE_FILE, FLEET_STOP_FILE, FleetBudget } from "../src/fleet-budget.ts";
-import { FLEET_STATE_FRESH_MS, fleetGuard, parseFleetState } from "../src/fleet-guard.ts";
+import { FLEET_STATE_FRESH_MS, fleetGuard, fleetStopGuard, parseFleetState } from "../src/fleet-guard.ts";
 
 const now = Date.UTC(2026, 9, 15, 19, 4, 0);
 // The cell that started "5180 restart cause fix" at 19:04Z on 10-16 KST, with the budget shut at 17.9 GB.
@@ -42,4 +42,17 @@ test("a budget with a stop file publishes its state next to it, and stop() ends 
     budget.stop();
     assert.equal(state?.closed, "the Prime workers hold 17.9 GB (budget 16 GB)");
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// 10-16 about 04:10 KST: with the stop switch on, duty runs of launch main bro and frontend bro still opened jobs through their own agent tools.
+test("while the stop switch is on a duty or fix job's spawn and create_session cells are blocked, and nothing else is", () => {
+  const stop = "the fleet stop switch is on";
+  const spawn = { code: "h = await rlm.spawn('look at p150', name='p150-probe')" };
+  assert.equal(fleetStopGuard("ipython", spawn, stop, true)?.block, true);
+  assert.equal(fleetStopGuard("ipython", cell, stop, true)?.block, true);
+  assert.match(fleetStopGuard("ipython", spawn, stop, true)!.reason, /stop switch is on/);
+  assert.equal(fleetStopGuard("ipython", spawn, null, true), undefined, "switch off");
+  assert.equal(fleetStopGuard("ipython", spawn, stop, false), undefined, "a chat or the owner's job");
+  assert.equal(fleetStopGuard("ipython", { code: "print(1)" }, stop, true), undefined);
+  assert.equal(fleetStopGuard("bash", { command: "rlm.spawn(" }, stop, true), undefined);
 });

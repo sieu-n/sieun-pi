@@ -61,6 +61,12 @@ export interface DutyHost {
    * waits for a later tick. Absent: never held.
    */
   queueLong?: () => Promise<string | null>;
+  /**
+   * Why the fleet stop switch holds every server-started job (src/fleet-budget.ts FLEET_STOP_FILE), or null. While it says why, a due run
+   * records its measure with no job, no fix job opens or replaces a stopped one, and no ended job is sent back; ended jobs still get archived.
+   * On 10-16 the owner had every job stopped, and the server opened slack green guy d1's fix again at 03:55 and 03:58 KST on p150 and p151.
+   */
+  stopped?: () => Promise<string | null>;
 }
 
 /** The part of a duty, the check-in included, its fix job needs. */
@@ -213,6 +219,8 @@ export class Duties {
   private readonly fixSentBack = new Map<string, number>();
   /** Fix jobs whose send-back waits for a shorter turn queue, so each logs the hold once. */
   private readonly fixHeld = new Set<string>();
+  /** The stop switch's reason at the last tick (`DutyHost.stopped`), so its change is logged once. */
+  private stopWhy: string | null = null;
   /** The last board each chat's watch showed, to find the fix steps a change closed (`boardChanged`). */
   private readonly boards = new Map<string, ChatBoard>();
   /** Each ended last job's after-job measure and then its archive (`stopEnded`), kept off the tick so a slow precheck holds up no due duty. */
@@ -258,7 +266,10 @@ export class Duties {
     const runs = new Map<string, DutyRunRecord[]>();
     for (const chatId of chats) runs.set(chatId, await this.store.runs(chatId));
     await this.stopEnded(runs);
-    await this.ownFixes(runs);
+    const stop = await this.host.stopped?.().catch(() => null) ?? null;
+    if (stop !== this.stopWhy) this.log(stop ? `duties: no fix job opens or goes back while ${stop}` : "duties: the fleet stop switch is off; fix jobs open again");
+    this.stopWhy = stop;
+    if (!stop) await this.ownFixes(runs);
   }
 
   /**
@@ -367,7 +378,7 @@ export class Duties {
       this.log(`duty job ${job.name}: ended again with ${misses.map(miss => miss.key).join(", ")} unowned and no board change since it was sent back`);
       return false;
     }
-    const long = await this.host.queueLong?.().catch(() => null) ?? null;
+    const long = await this.host.stopped?.().catch(() => null) ?? await this.host.queueLong?.().catch(() => null) ?? null;
     if (long) {
       this.log(`duty job ${job.name}: ended with ${misses.map(miss => miss.key).join(", ")} unowned; not sent back, because ${long}, so it stops like any ended job`);
       return false;
@@ -768,6 +779,8 @@ export class Duties {
       await this.store.updateRun(chatId, dutyId, lastRun.at, record => { record.after ??= measured; })
         .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: after-job measure of ${lastRun.job?.name ?? "the last run"}: ${message(error)}`));
     }
+    const stop = await this.host.stopped?.().catch(() => null);
+    if (stop) return { skipped: `skipped: ${stop}` };
     const name = dutyJobName(brief.duty.name, chat.name, at);
     // The wait runs here, outside the job host's one start lane, so a queued duty never holds up another chat's start.
     const key = `${chatId}/${dutyId}`;

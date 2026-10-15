@@ -19,8 +19,8 @@ import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { loadWaitGuard } from "../src/load-wait.ts";
-import { FLEET_STATE_FILE } from "../src/fleet-budget.ts";
-import { fleetGuard, parseFleetState } from "../src/fleet-guard.ts";
+import { FLEET_STATE_FILE, FLEET_STOP_FILE } from "../src/fleet-budget.ts";
+import { fleetGuard, fleetStopGuard, parseFleetState } from "../src/fleet-guard.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -246,6 +246,11 @@ export default function historyExtension(pi: ExtensionAPI): void {
           const state = parseFleetState(await readFile(join(dataDir(), FLEET_STATE_FILE), "utf8").catch(() => null));
           const held = fleetGuard(event.toolName, event.input, state, Date.now());
           if (held) return held;
+          if (dutyJob) {
+            const stop = await readFile(join(dataDir(), FLEET_STOP_FILE), "utf8").then(() => "the fleet stop switch is on", () => null);
+            const stopped = fleetStopGuard(event.toolName, event.input, stop, dutyJob);
+            if (stopped) return stopped;
+          }
         }
       }
       const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });

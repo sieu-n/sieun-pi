@@ -32,3 +32,16 @@ export function fleetGuard(toolName: string, input: Record<string, unknown>, sta
   if (!state?.closed || now - state.at > FLEET_STATE_FRESH_MS) return undefined;
   return { block: true, reason: fleetHeldReason(state.closed) };
 }
+
+/** An rlm.spawn or create_session call in a kernel cell. */
+const STARTS_AGENT = /\b(spawn|create_session)\s*\(/;
+
+/**
+ * While the fleet stop switch is on (FLEET_STOP_FILE exists, `stop` is its reason), a duty, check-in or fix job the server registered starts no
+ * subagent and no root of its own. On 10-16 at about 04:10 KST, with the switch on, duty runs of launch main bro and frontend bro still opened
+ * jobs through their own agent tools. A chat and the owner's own jobs are not held.
+ */
+export function fleetStopGuard(toolName: string, input: Record<string, unknown>, stop: string | null, dutyJob: boolean): { block: true; reason: string } | undefined {
+  if (!stop || !dutyJob || toolName !== "ipython" || typeof input.code !== "string" || !STARTS_AGENT.test(input.code)) return undefined;
+  return { block: true, reason: `Not started: ${stop}, so a duty or fix job starts no subagent and no job. Note on your step what you would start, and end this turn.` };
+}
