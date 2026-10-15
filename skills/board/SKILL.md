@@ -40,6 +40,8 @@ Never end a turn with `bash("ci-run-status <id> --wait")`, `gh run watch`, or a 
 
 The same holds for any `bash()` handle that outlives its turn, such as a 3 h sampler. Run that command detached with `nohup <command> > <file> 2>&1 &` and set `board.wake(at=<its end>)`. The Mac usable watch asks the chat about every handle still held 30 min after its job's turn ended.
 
+A single cell that pages an API or awaits a command for 30 min holds the kernel and worker the same way, and the job takes no message until it ends. On 10-15 wp-engage-crawl sat 32 min in one cell that paged the staging crawler API and lost the pull to a 502 at the end. Run such a pull as a detached script that writes its result to a file, set `board.wake(at=<its end>)`, and read the file when the wake comes. The Mac usable watch asks the chat about every session that has sat 30 min in one open tool call.
+
 A chat and every job under it find the chat from `RLM_SESSION_DIR`. A root job that a chat started with `rlm.create_session` has its own id, so it passes `chat="<chat session id>"`.
 
 ## Rules a VP chat reads on demand

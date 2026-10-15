@@ -1,14 +1,14 @@
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { misses, readWatch, TARGET, unusable, USABLE, type TargetPart, type UsableMiss, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { misses, readWatch, TARGET, unusable, USABLE, type QuietLine, type TargetPart, type UsableMiss, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
  * The Mac stays usable duty's precheck (`node --import tsx scripts/duties/mac-stays-usable.ts`): reads the chat service's Mac usable watch
  * (src/mac-usable-watch.ts, one line a minute) and reports the share of minutes the Mac was usable (`USABLE`, from ops guy's pressure feed) over
  * the last hour and the last 24 h, the minutes each harness part missed, the top miss with the chat trees behind it, and the longest run of
- * unusable minutes in the last hour. A run of OFF_STREAK_ALERT or more is flagged as an alert for the duty job to tell the chat. The Prime
+ * unusable minutes in the last hour, the quiet sessions behind an idle miss, and each tool call a quiet session sat in. A run of OFF_STREAK_ALERT or more is flagged as an alert for the duty job to tell the chat. The Prime
  * worker footprint is a detail line with no target. No model call.
  */
 
@@ -28,6 +28,9 @@ const USABLE_WORDS: Record<UsableMiss, string> = { pressure: "pressure critical"
 const pct = (on: number, of: number): number => of ? Math.round(on / of * 1000) / 10 : 0;
 const clock = (at: string): string => new Date(at).toTimeString().slice(0, 5);
 const isUnusable = (line: WatchLine): boolean => misses(line).includes("usable");
+/** A quiet session in words: its job, short id and tree, its quiet minutes, and the tool call its last entry left open. */
+export const quietWords = (quiet: QuietLine): string => `${quiet.job} (${quiet.session.slice(0, 8)}, ${quiet.tree}) quiet ${quiet.quietMin} min, ` +
+  (quiet.call ? `open ${quiet.call.tool} call since ${quiet.call.at.slice(11, 16)}Z` : "no open tool call");
 
 /** The longest run of consecutive unusable lines, with its first and last line; a gap of more than 2 minutes between lines ends a run. */
 export function longestOffStreak(lines: readonly WatchLine[]): { minutes: number; from?: string; to?: string } {
@@ -78,6 +81,12 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
   const waiters = new Map<number, WaiterLine>();
   for (const line of hour) for (const waiter of line.waiters ?? []) waiters.set(waiter.pid, waiter);
   metrics.kernel_waiters_1h = waiters.size;
+  const calls = new Map<string, QuietLine & { call: NonNullable<QuietLine["call"]> }>();
+  for (const line of hour) for (const quiet of line.quiet ?? []) if (quiet.call) calls.set(quiet.call.id, { ...quiet, call: quiet.call });
+  for (const quiet of calls.values()) {
+    flagged.push({ kind: "open_call", item: quiet.session, excerpt: `${quiet.tree}, job ${quiet.job} (session ${quiet.session.slice(0, 8)}): one ${quiet.call.tool} call since ` +
+      `${quiet.call.at.slice(11, 16)}Z with no model call for ${quiet.quietMin} min, \`${quiet.call.code}\`; the chat was asked to run it detached with board.wake.` });
+  }
   for (const waiter of waiters.values()) {
     flagged.push({ kind: "kernel_waiter", item: String(waiter.pid), excerpt: `${waiter.tree}, job ${waiter.job}, pid ${waiter.pid}, \`${waiter.command}\`, ` +
       `${waiter.ageMin ?? "?"} min: ${waiter.quietMin === undefined ? "a background wait in a kernel" : `a bash() handle held ${waiter.quietMin} min past its turn end`}; ` +
@@ -88,10 +97,12 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
     flagged.push({ kind: "usable", excerpt: `The Mac was usable in ${fed(hour).length - missMinutes.usable.length} of the ${fed(hour).length} minutes with a feed reading in the last hour ` +
       `(${hour.length} watched)${missMinutes.usable.length ? `; unusable minutes by cause: ${why.filter(([, count]) => count).map(([miss, count]) => `${USABLE_WORDS[miss]} ${count}`).join(", ")}` : ""}.` });
   }
+  const named = missMinutes.idle.findLast(line => line.quiet?.length);
   const top = PARTS.reduce<TargetPart | null>((best, part) => missMinutes[part].length > (best ? missMinutes[best].length : 0) ? part : best, null);
   if (top) {
     flagged.push({ kind: "top_miss", item: top, excerpt: `Top miss: ${PART_WORDS[top]} in ${missMinutes[top].length} of ${hour.length} minutes. ` +
-      `Chat trees behind it${top === "usable" ? ", by Prime worker footprint in those minutes" : ""}: ${treesBehind(top, missMinutes[top]) || "none named"}.` });
+      `Chat trees behind it${top === "usable" ? ", by Prime worker footprint in those minutes" : ""}: ${treesBehind(top, missMinutes[top]) || "none named"}.` +
+      (top === "idle" && named?.quiet?.length ? ` Quiet sessions at ${clock(named.at)}: ${named.quiet.map(quietWords).join("; ")}.` : "") });
   }
   if (streak.minutes >= OFF_STREAK_ALERT) {
     flagged.push({ kind: "alert", excerpt: `The Mac was unusable ${streak.minutes} minutes in a row, ${clock(streak.from!)} to ${clock(streak.to!)}.` });
@@ -101,7 +112,8 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
   if (latest) {
     const reading = latest.usable ? `pressure level ${latest.usable.pressureLevel}, ${latest.usable.swapoutsPerS} swapouts a second, kernel_task ${latest.usable.kernelTaskPct}%` : "no fresh feed reading";
     flagged.push({ kind: "now", at: Date.parse(latest.at), excerpt: `At ${clock(latest.at)}: ${reading}. Detail with no target: ${latest.workers} Prime workers hold ${latest.workerGb} GB (top: ${latest.top.map(worker =>
-      `${worker.tree} ${worker.gb} GB`).join(", ")}); ${latest.live} live sessions, ${latest.working} working, ${latest.idleOver} quiet over ${TARGET.idleMinutes} min; ` +
+      `${worker.tree} ${worker.gb} GB`).join(", ")}); ${latest.live} live sessions, ${latest.working} working, ${latest.idleOver} quiet over ${TARGET.idleMinutes} min` +
+      `${latest.quiet?.length ? ` (${latest.quiet.map(quietWords).join("; ")})` : ""}; ` +
       `${latest.finished} finished jobs not deleted (${latest.finishedTrees.map(tree => `${tree.tree} ${tree.count}`).join(", ") || "none"}); ` +
       `queue ${latest.queue ? `${latest.queue.working} working, ${latest.queue.queued} queued, oldest ${latest.queue.oldestWaitS} s` : "unread"}; swap ${latest.mac.swapGb ?? "?"} GB.` });
   }

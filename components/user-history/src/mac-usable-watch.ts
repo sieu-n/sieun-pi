@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { JOB_NOTICE_PREFIX } from "./shared/chat-feed.ts";
@@ -8,9 +8,9 @@ import type { AgentQueueReading } from "./shared/types.ts";
 /**
  * The Mac usable watch: once a minute the chat service appends one line to `<dataDir>/mac-usable/<local date>.jsonl` with the Mac's usability
  * from ops guy's pressure feed (memory pressure level, swapouts a second, kernel_task CPU) and the harness numbers behind it: the Prime workers'
- * memory footprint and the top workers by it with their chat tree, the live, working and quietly "working" sessions, the finished jobs nobody
- * deleted, and the Mac-wide turn queue. The owner (10-14 09:15Z): "look it's you and ops guys responsibility that this machine is usable", so a
- * minute is judged on the Mac being usable (`USABLE`), and the worker footprint is a detail with no target (c67, the VP's ask of 10-14 20:2xZ).
+ * memory footprint and the top workers by it with their chat tree, the live, working and quietly "working" sessions (each one past
+ * TARGET.idleMinutes by job, with the tool call it sits in), the finished jobs nobody deleted, and the Mac-wide turn queue. The owner (10-14
+ * 09:15Z): "look it's you and ops guys responsibility that this machine is usable", so a minute is judged on the Mac being usable (`USABLE`), and the worker footprint is a detail with no target (c67, the VP's ask of 10-14 20:2xZ).
  * The hourly "Mac stays usable" duty (scripts/duties/mac-stays-usable.ts) reads these lines and judges each minute with `misses`.
  */
 
@@ -82,10 +82,12 @@ export interface WatchLine {
   live: number; working: number; idle15: number;
   /** Working sessions with no activity for over TARGET.idleMinutes, and the trees that hold the most of them. */
   idleOver: number; idleTrees: TreeCount[];
+  /** Each session counted in `idleOver`, by job and tree, with the tool call its last entry left open; absent on older lines. */
+  quiet?: QuietLine[];
   /** Live sessions that ended their task (`taskState` needs_input) and sit idle, chats left out. */
   finished: number; finishedTrees: TreeCount[];
   queue: QueueLine | null;
-  /** Background waiters in job kernels that board.wake would replace: gh run watch, ci-run-status --wait and long sleeps, and any bash() handle of a session in `idleOver`; absent on older lines. */
+  /** Background waiters in job kernels that board.wake would replace: gh run watch, ci-run-status --wait and long sleeps, and any bash() handle of a session in `idleOver` whose last entry is no open tool call (`quiet` names that call and its handle); absent on older lines. */
   waiters?: WaiterLine[];
   /** The chat trees with the largest footprint, kernel subtrees plus orphans, at most 5; absent on older lines. */
   trees?: TreeLine[];
@@ -98,7 +100,8 @@ export interface WatchLine {
 }
 
 /** The daemon row fields the watch reads, parsed at the boundary from the catalog's raw rows. */
-interface Row { id: string; parent: string | undefined; name: string | undefined; live: boolean; hosted: boolean; working: boolean; lastAt: number; worker: number | undefined; ended: boolean }
+interface Row { id: string; parent: string | undefined; name: string | undefined; live: boolean; hosted: boolean; working: boolean; lastAt: number; worker: number | undefined; ended: boolean;
+  file: string | undefined }
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 function parseRow(value: unknown): Row | null {
   if (!isRecord(value) || typeof value.sessionId !== "string") return null;
@@ -106,7 +109,8 @@ function parseRow(value: unknown): Row | null {
     name: typeof value.sessionName === "string" && value.sessionName ? value.sessionName : undefined, live: value.lifecycle === "live" && typeof value.activeSessionId === "string",
     hosted: value.lifecycle === "live" && typeof value.workerPid === "number",
     working: value.activity === "working", lastAt: typeof value.lastActivityAt === "string" ? Date.parse(value.lastActivityAt) : NaN,
-    worker: typeof value.workerPid === "number" ? value.workerPid : undefined, ended: value.activity === "idle" && value.taskState === "needs_input" };
+    worker: typeof value.workerPid === "number" ? value.workerPid : undefined, ended: value.activity === "idle" && value.taskState === "needs_input",
+    file: typeof value.sessionFile === "string" ? value.sessionFile : undefined };
 }
 
 /** What the footprint helper (src/worker-footprint.py) prints. */
@@ -126,6 +130,58 @@ export interface StopLine { root: string; tree: string; pid: number; gb: number;
 export interface RawWaiter { pid: number; kernel: number; session: string; command: string; age_s: number | null }
 /** A waiter with the job and chat tree that own it; `quietMin`, set on a held bash() handle, is how long ago its session's turn ended. */
 export interface WaiterLine { pid: number; kernel?: number; command: string; ageMin: number | null; session: string; job: string; root: string; tree: string; quietMin?: number }
+/** A tool call a session's last entry left with no result: the call's id, its tool, when the model sent it, and its code's first line, cut to 200 characters as worker-footprint.py cuts a command. */
+export interface OpenCall { id: string; tool: string; at: string; code: string }
+/**
+ * A session counted in `idleOver`: its id, job and chat tree, how long it has been quiet, the kernel that serves it (null when the helper named
+ * none), the call its last entry left open (null when the last entry is no open tool call), and the command of a bash() handle its kernel holds.
+ */
+export interface QuietLine { session: string; job: string; root: string; tree: string; quietMin: number; kernel: number | null; call: OpenCall | null; handle?: string }
+
+/** The tool call the last entry of a session file leaves open, read back from the file's end; null when the last entry is no assistant message with a tool call, or the file is unreadable. */
+export async function openCall(file: string): Promise<OpenCall | null> {
+  const last = await lastLine(file).catch(() => null);
+  if (!last) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(last); } catch { return null; }
+  const entry = isRecord(parsed) ? parsed : {};
+  const message = entry.type === "message" && isRecord(entry.message) ? entry.message : null;
+  if (!message || message.role !== "assistant" || !Array.isArray(message.content) || typeof entry.timestamp !== "string") return null;
+  const call = message.content.find((part): part is Record<string, unknown> => isRecord(part) && part.type === "toolCall" && typeof part.id === "string");
+  if (!call) return null;
+  const args = isRecord(call.arguments) ? call.arguments : {};
+  const code = typeof args.code === "string" ? args.code : typeof args.command === "string" ? args.command : "";
+  return { id: String(call.id), tool: typeof call.name === "string" ? call.name : "tool", at: entry.timestamp,
+    code: (code.split("\n").find(text => text.trim()) ?? "").trim().slice(0, 200) };
+}
+
+/** The last non-empty line of a file, read back from its end a block at a time so a large session file costs only its tail. */
+async function lastLine(file: string, block = 64 * 1024): Promise<string | null> {
+  const handle = await open(file, "r");
+  try {
+    const { size } = await handle.stat();
+    let end = size, tail = Buffer.alloc(0);
+    while (end > 0) {
+      const start = Math.max(0, end - block);
+      const chunk = Buffer.alloc(end - start);
+      await handle.read(chunk, 0, chunk.length, start);
+      tail = Buffer.concat([chunk, tail]);
+      end = start;
+      const text = tail.toString("utf8").replace(/\n+$/, "");
+      const cut = text.lastIndexOf("\n");
+      if (cut >= 0) return text.slice(cut + 1);
+      if (end === 0) return text || null;
+    }
+    return null;
+  } finally { await handle.close(); }
+}
+
+/** A live working session with no activity for over TARGET.idleMinutes at `now`, one that `idleOver` counts. */
+const quietOver = (row: Row, now: number): boolean => row.live && row.working && now - row.lastAt > TARGET.idleMinutes * MINUTE;
+/** The session file of each session `idleOver` counts at `now`, by session id. */
+export function quietFiles(rows: readonly unknown[], now: number): Map<string, string> {
+  return new Map(rows.map(parseRow).flatMap(row => row && quietOver(row, now) && row.file ? [[row.id, row.file] as const] : []));
+}
 
 const round = (value: number, places = 2): number => Math.round(value * 10 ** places) / 10 ** places;
 
@@ -159,14 +215,14 @@ function topTrees(rows: readonly Row[], tree: (row: Row) => { root: string; tree
  * `title` names a chat tree's root.
  */
 export function watchLine(input: { now: number; rows: readonly unknown[]; footprints: Footprints; queue: QueueReading | null; chats: ReadonlySet<string>;
-  title: (id: string) => string | null; cpuMs: number; usable?: UsableReading | null }): WatchLine {
+  title: (id: string) => string | null; cpuMs: number; usable?: UsableReading | null; calls?: ReadonlyMap<string, OpenCall | null> }): WatchLine {
   const rows = input.rows.map(parseRow).filter((row): row is Row => row !== null);
   const byId = new Map(rows.map(row => [row.id, row]));
   const tree = treeOf(byId, input.title);
   const live = rows.filter(row => row.live);
   const working = live.filter(row => row.working);
   const quiet = (ms: number) => working.filter(row => input.now - row.lastAt > ms);
-  const idleOver = quiet(TARGET.idleMinutes * MINUTE);
+  const idleOver = working.filter(row => quietOver(row, input.now));
   const finished = live.filter(row => row.ended && !input.chats.has(row.id));
   const top = Object.entries(input.footprints.workers).map(([pid, tree_]) => ({ pid: Number(pid), bytes: tree_.bytes }))
     .sort((a, b) => b.bytes - a.bytes).slice(0, 5).map(({ pid, bytes }): WorkerLine => {
@@ -185,16 +241,24 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     const id = root || session;
     return { root: id, tree: input.title(id) ?? id.slice(0, 8) };
   };
-  const quietIds = new Set(idleOver.map(row => row.id));
+  const call = (id: string): OpenCall | null => input.calls?.get(id) ?? null;
+  const quietIds = new Set(idleOver.filter(row => !call(row.id)).map(row => row.id));
   const waitKernels = new Set((input.footprints.waiters ?? []).map(waiter => waiter.kernel));
   const held = (input.footprints.handles ?? []).filter(handle => quietIds.has(handle.session) && !waitKernels.has(handle.kernel));
+  const kernelOf = new Map((input.footprints.kernels ?? []).map(kernel => [kernel.session, kernel.pid]));
+  const quietLines = idleOver.map((row): QuietLine => {
+    const left = call(row.id);
+    const handle = left && (input.footprints.handles ?? []).find(item => item.session === row.id);
+    return { session: row.id, job: row.name ?? input.title(row.id) ?? row.id.slice(0, 8), ...tree(row), quietMin: Math.round((input.now - row.lastAt) / MINUTE),
+      kernel: kernelOf.get(row.id) ?? null, call: left, ...handle ? { handle: handle.command } : {} };
+  });
   return {
     at: new Date(input.now).toISOString(),
     usable: input.usable ?? null, chatsLive,
     workers: Object.keys(input.footprints.workers).length,
     workerGb: round(Object.values(input.footprints.workers).reduce((sum, worker) => sum + worker.bytes, 0) / GB),
     top, live: live.length, working: working.length, idle15: quiet(QUIET_MS).length,
-    idleOver: idleOver.length, idleTrees: topTrees(idleOver, tree),
+    idleOver: idleOver.length, idleTrees: topTrees(idleOver, tree), quiet: quietLines,
     finished: finished.length, finishedTrees: topTrees(finished, tree),
     queue,
     waiters: [...(input.footprints.waiters ?? []), ...held].map(waiter => {
@@ -327,7 +391,7 @@ export interface WatchSource {
   later?: (run: () => void, ms: number) => void;
 }
 
-/** Waiter pids whose ask failed and was logged, so a retry each minute logs nothing new. */
+/** Ask keys whose ask failed and was logged, so a retry each minute logs nothing new. */
 const failedAsks = new Set<string>();
 
 /** The line that asks a chat or thread to move its job's background wait, or its held bash() handle, to board.wake. */
@@ -342,34 +406,58 @@ export function waiterLine(waiter: WaiterLine): string {
     "Tell it to end that wait and set board.wake for the CI run or time instead, so the service wakes it and its worker can rest.";
 }
 
-/** How long an asked kernel stays asked after its last waiter: a sleep loop starts a new pid each round and can miss a minute's sample. */
+/** The line that asks a chat or thread to have a job run the tool call it has been quiet in for over TARGET.idleMinutes as a detached script with board.wake. */
+export function openCallLine(quiet: QuietLine & { call: OpenCall }): string {
+  const since = `${quiet.call.at.slice(11, 16)}Z`;
+  const waits = quiet.handle ? ` The call waits on a bash() handle running \`${quiet.handle}\`.` : "";
+  return `${JOB_NOTICE_PREFIX}${quiet.job} (session ${quiet.session.slice(0, 8)}) has been in one ${quiet.call.tool} call since ${since} with no model call for ${quiet.quietMin} min ` +
+    `(\`${quiet.call.code}\`), so it counts as working and holds its kernel and worker.${waits} Do not interrupt the call. Tell the job to run a pull or wait this long ` +
+    "as a detached script that writes its result to a file (nohup <command> > <file> 2>&1 &) and set board.wake(at=<its end>), so it ends its turn and its worker can rest.";
+}
+
+/** One line to send a tree's root once: `key` marks it asked in waiters-asked.json, `pid` names it in a failure log. */
+export interface Ask { key: string; root: string; pid: number | null; line: string }
+
+/**
+ * The asks a watch line holds: each background waiter or held bash() handle once per kernel, and each tool call a quiet session left open once
+ * per call (`call:<id>`) unless a waiter of the same session is asked already. A cell is keyed by its call, not its kernel, since the next long
+ * cell in the same kernel is a new ask: wp-engage-crawl ran one cell from 00:55 to 01:27Z on 10-15 and sat in the next from 01:27:59Z on.
+ */
+export function asksOf(line: Pick<WatchLine, "waiters" | "quiet">): Ask[] {
+  const waiters = line.waiters ?? [];
+  const waiting = new Set(waiters.map(waiter => waiter.session));
+  return [...waiters.map(waiter => ({ key: String(waiter.kernel ?? waiter.pid), root: waiter.root, pid: waiter.pid, line: waiterLine(waiter) })),
+    ...(line.quiet ?? []).flatMap(quiet => quiet.call && !waiting.has(quiet.session)
+      ? [{ key: `call:${quiet.call.id}`, root: quiet.root, pid: quiet.kernel, line: openCallLine({ ...quiet, call: quiet.call }) }] : [])];
+}
+
+/** How long an asked key stays asked after its last sighting: a sleep loop starts a new pid each round and can miss a minute's sample. */
 const ASKED_KEEP_MS = 60 * MINUTE;
 
 /**
- * Asks each waiter's tree once per kernel (`<dataDir>/mac-usable/waiters-asked.json`, `{ [kernel]: { asked, seen } }`, kept ASKED_KEEP_MS past
- * the kernel's last waiter): a chat by a notice line (`notify`), a plain thread's root by a daemon message (`message`), since its waiter pins
- * its worker the same. A waiter whose ask fails is asked again next minute, and its failure is logged once.
+ * Sends each ask's root its line once (`<dataDir>/mac-usable/waiters-asked.json`, `{ [key]: { asked, seen } }`, kept ASKED_KEEP_MS past the
+ * key's last sighting): a chat by a notice line (`notify`), a plain thread's root by a daemon message (`message`), since its job pins its worker
+ * the same. An ask that fails is sent again next minute, and its failure is logged once.
  */
-export async function askWaiters(source: Pick<WatchSource, "dataDir" | "notify" | "message" | "log">, waiters: readonly WaiterLine[], chats: ReadonlySet<string>, now: number): Promise<string[]> {
+export async function askChats(source: Pick<WatchSource, "dataDir" | "notify" | "message" | "log">, asks: readonly Ask[], chats: ReadonlySet<string>, now: number): Promise<string[]> {
   if (!source.notify && !source.message) return [];
   const file = join(source.dataDir, "mac-usable", "waiters-asked.json");
   const read: unknown = JSON.parse(await readFile(file, "utf8").catch(() => "{}"));
   const asked = new Map(Object.entries(typeof read === "object" && read !== null ? read : {}).flatMap(([key, value]): [string, { asked: number; seen: number }][] =>
     typeof value === "object" && value !== null && typeof value.asked === "number" && typeof value.seen === "number" ? [[key, { asked: value.asked, seen: value.seen }]] : []));
   const sent: string[] = [];
-  for (const waiter of waiters) {
-    const key = String(waiter.kernel ?? waiter.pid);
-    const known = asked.get(key);
+  for (const ask of asks) {
+    const known = asked.get(ask.key);
     if (known) { known.seen = now; continue; }
-    const send = chats.has(waiter.root) ? source.notify : source.message;
+    const send = chats.has(ask.root) ? source.notify : source.message;
     if (!send) continue;
     try {
-      await send(waiter.root, waiterLine(waiter));
-      asked.set(key, { asked: now, seen: now });
-      sent.push(key);
+      await send(ask.root, ask.line);
+      asked.set(ask.key, { asked: now, seen: now });
+      sent.push(ask.key);
     } catch (error) {
-      if (!failedAsks.has(key)) source.log(`mac usable watch: ask ${waiter.root.slice(0, 8)} about pid ${waiter.pid}: ${error instanceof Error ? error.message : String(error)}`);
-      failedAsks.add(key);
+      if (!failedAsks.has(ask.key)) source.log(`mac usable watch: ask ${ask.root.slice(0, 8)} about ${ask.pid === null ? ask.key : `pid ${ask.pid}`}: ${error instanceof Error ? error.message : String(error)}`);
+      failedAsks.add(ask.key);
     }
   }
   const kept = Object.fromEntries([...asked].filter(([, value]) => now - value.seen < ASKED_KEEP_MS));
@@ -532,10 +620,11 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   if (!rows.length) return null;
   const pids = [...new Set(rows.map(parseRow).flatMap(row => row?.hosted && row.worker !== undefined ? [row.worker] : []))];
   let own = process.cpuUsage(started);
-  const [footprints, queue, chats, usable] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), source.chats(),
-    (source.feed ?? readPressureFeed)(now())]);
+  const at = now();
+  const [footprints, queue, chats, usable, calls] = await Promise.all([(source.footprints ?? readFootprints)(pids), source.queue().catch(() => null), source.chats(),
+    (source.feed ?? readPressureFeed)(at), Promise.all([...quietFiles(rows, at)].map(async ([id, file]) => [id, await openCall(file)] as const)).then(found => new Map(found))]);
   const resumed = process.cpuUsage();
-  const line = watchLine({ now: now(), rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable });
+  const line = watchLine({ now: at, rows, footprints, queue, chats, title: source.title, cpuMs: 0, usable, calls });
   const after = process.cpuUsage(resumed);
   own = { user: own.user + after.user, system: own.system + after.system };
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };
@@ -551,7 +640,7 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   });
   const written = stops.length ? { ...measured, stops } : measured;
   await appendFile(file, JSON.stringify(written) + "\n");
-  await askWaiters(source, written.waiters ?? [], chats, now());
+  await askChats(source, asksOf(written), chats, now());
   return written;
 }
 

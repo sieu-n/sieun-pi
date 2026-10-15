@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
-import { askWaiters, type Footprints, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { askChats, asksOf, type Footprints, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import { longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
@@ -196,12 +196,12 @@ print(json.dumps([bool(m.WAITER.search(c)) for c in json.loads(sys.argv[2])]))`,
   await mkdir(join(dir, "mac-usable"), { recursive: true });
   const sent: [string, string][] = [];
   const source = { dataDir: dir, log: () => {}, notify: async (chat: string, text: string) => { sent.push([chat, text]); } };
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW), ["64730"], "with no thread sender only launch main bro is asked, keyed by the kernel");
+  assert.deepEqual(await askChats(source, asksOf({ waiters: line.waiters! }), new Set(["lmb"]), NOW), ["64730"], "with no thread sender only launch main bro is asked, keyed by the kernel");
   assert.match(sent[0]![1], /^\[job\] watch read errors \(session 01a13918\) holds its kernel and worker in `.*gh run watch 38589314491 --interval 180` \(pid 12634\) for 6 min\. .*board\.wake/);
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + MIN), [], "asked once per kernel");
+  assert.deepEqual(await askChats(source, asksOf({ waiters: line.waiters! }), new Set(["lmb"]), NOW + MIN), [], "asked once per kernel");
   const nextRound = line.waiters!.map(waiter => ({ ...waiter, pid: waiter.pid + 1 }));
-  assert.deepEqual(await askWaiters(source, nextRound, new Set(["lmb"]), NOW + 2 * MIN), [], "a loop's next sleep in the same kernel is not asked again");
-  assert.deepEqual(await askWaiters(source, [], new Set(["lmb"]), NOW + 63 * MIN), []);
+  assert.deepEqual(await askChats(source, asksOf({ waiters: nextRound }), new Set(["lmb"]), NOW + 2 * MIN), [], "a loop's next sleep in the same kernel is not asked again");
+  assert.deepEqual(await askChats(source, asksOf({ waiters: [] }), new Set(["lmb"]), NOW + 63 * MIN), []);
   assert.deepEqual(JSON.parse(await readFile(join(dir, "mac-usable", "waiters-asked.json"), "utf8")), {}, "a kernel with no waiter for an hour leaves the record");
   const { metrics, flagged } = measure([watch(59, { waiters: line.waiters! })], NOW);
   assert.equal(metrics.kernel_waiters_1h, 2);
@@ -221,12 +221,12 @@ test("waiters: a plain thread's waiter pins its worker too, so its root gets the
   const logs: string[] = [];
   const source = { dataDir: dir, log: (text: string) => { logs.push(text); }, notify: async (chat: string) => { noticed.push(chat); },
     message: async (root: string, text: string) => { if (fail) throw new Error("the thread is not loaded"); messaged.push([root, text]); } };
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW), [], "a failed ask is not marked asked");
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + MIN), []);
+  assert.deepEqual(await askChats(source, asksOf({ waiters: line.waiters! }), new Set(["lmb"]), NOW), [], "a failed ask is not marked asked");
+  assert.deepEqual(await askChats(source, asksOf({ waiters: line.waiters! }), new Set(["lmb"]), NOW + MIN), []);
   assert.equal(logs.length, 1, "its failure is logged once");
   fail = false;
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + 2 * MIN), ["9001"]);
-  assert.deepEqual(await askWaiters(source, line.waiters!, new Set(["lmb"]), NOW + 3 * MIN), [], "asked once per kernel");
+  assert.deepEqual(await askChats(source, asksOf({ waiters: line.waiters! }), new Set(["lmb"]), NOW + 2 * MIN), ["9001"]);
+  assert.deepEqual(await askChats(source, asksOf({ waiters: line.waiters! }), new Set(["lmb"]), NOW + 3 * MIN), [], "asked once per kernel");
   assert.deepEqual(noticed, [], "a thread gets no chat notice");
   assert.equal(messaged.length, 1);
   assert.equal(messaged[0]![0], "01a0f6ae-849d-76ed-9889-ffc86a5d4de1");
@@ -258,9 +258,83 @@ print(json.dumps([(h.group(1) if (h := m.HANDLE.search(c)) else None) for c in s
   const dir = await mkdtemp(join(tmpdir(), "mac-usable-held-"));
   await mkdir(join(dir, "mac-usable"), { recursive: true });
   const sent: [string, string][] = [];
-  assert.deepEqual(await askWaiters({ dataDir: dir, log: () => {}, notify: async (chat, text) => { sent.push([chat, text]); } }, line.waiters!, new Set(["ops"]), NOW), ["8", "41785"]);
+  assert.deepEqual(await askChats({ dataDir: dir, log: () => {}, notify: async (chat, text) => { sent.push([chat, text]); } }, asksOf(line), new Set(["ops"]), NOW), ["8", "41785"]);
   assert.match(sent[1]![1], /^\[job\] m2 air docker swap \(session 01a13c3d\) ended its turn 51 min ago and still holds its kernel and worker in a bash\(\) handle running `nice -n 20 python3 evidence\/sampler\.py .*` \(pid 78004\) for 55 min\. .*nohup .*board\.wake\(at=/);
   assert.match(measure([watch(59, { waiters: line.waiters! })], NOW).flagged!.find(item => item.item === "78004")!.excerpt, /a bash\(\) handle held 51 min past its turn end; the chat was asked/);
+});
+
+// 10-15 02:23Z: wp-engage-crawl under the main dev thread sat in one ipython cell from 01:27:59Z (it pages the staging crawler API, kernel 62440 on
+// worker 48062, 0.01 s of CPU a minute), and air boot daemons sat in one cell from 01:53:55Z that awaits a bash() handle. Both counted in idleOver,
+// the line named only their trees, and air boot daemons was told it had ended its turn.
+const DEV = "01a0e0ca-ee06-776f-b18d-cbdffca4c85c";
+const CRAWL = "01a0f7cb-3ae2-71ae-8656-c20e725a3599";
+const BOOT = "01a13b45-d0b1-71ef-8077-4c346a2187fc";
+const entry = (id: string, at: string, message: Record<string, unknown>) => JSON.stringify({ type: "message", id, parentId: "p", timestamp: at, message });
+const toolCall = (id: string, at: string, code: string) => entry(id, at, { role: "assistant", content: [{ type: "thinking", thinking: "x" },
+  { type: "toolCall", id, name: "ipython", arguments: { code } }] });
+const toolResult = (id: string, at: string) => entry(`r-${id}`, at, { role: "toolResult", toolCallId: id, toolName: "ipython", content: [{ type: "text", text: "x".repeat(200_000) }] });
+
+test("quiet sessions: each line names every session quiet past TARGET.idleMinutes with the tool call its last entry left open; the chat is asked once per call to run it detached with board.wake, and the duty names them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mac-usable-quiet-"));
+  await mkdir(join(dir, "mac-usable"), { recursive: true });
+  const crawlFile = join(dir, "crawl.jsonl");
+  await writeFile(crawlFile, [toolCall("toolu_01Gb", "2026-10-15T00:55:00.148Z", "from datetime import date"), toolResult("toolu_01Gb", "2026-10-15T01:27:48.657Z"),
+    toolCall("toolu_01Pa", "2026-10-15T01:27:59.784Z", "\nasync def batch_item_ids(bid, index=None):\n    ids, cur, n = [], None, 0")].join("\n") + "\n");
+  const bootFile = join(dir, "boot.jsonl");
+  await writeFile(bootFile, toolCall("toolu_011c", "2026-10-15T01:53:55.285Z", "r=await bash(f'cd {Q} && bash -e step.sh')") + "\n");
+  const doneFile = join(dir, "done.jsonl");
+  await writeFile(doneFile, [toolCall("toolu_x", "2026-10-15T01:00:00.000Z", "print(1)"), toolResult("toolu_x", "2026-10-15T01:00:01.000Z")].join("\n") + "\n");
+  assert.deepEqual(await openCall(crawlFile), { id: "toolu_01Pa", tool: "ipython", at: "2026-10-15T01:27:59.784Z", code: "async def batch_item_ids(bid, index=None):" },
+    "read back from the end past a 200 KB result line");
+  assert.equal(await openCall(doneFile), null, "a call with its result is no open call");
+  assert.equal(await openCall(join(dir, "gone.jsonl")), null);
+
+  const now = Date.parse("2026-10-15T02:24:10Z");
+  const since = (minutes: number) => new Date(now - minutes * MIN).toISOString();
+  const rows = [row(DEV, { sessionName: "**** main dev thread ***", workerPid: 48062 }),
+    row(CRAWL, { parentSessionId: DEV, sessionName: "wp-engage-crawl", activity: "working", workerPid: 48062, lastActivityAt: "2026-10-15T01:27:59.784Z", sessionFile: crawlFile }),
+    row(BOOT, { sessionName: "air boot daemons", activity: "working", workerPid: 88000, lastActivityAt: "2026-10-15T01:53:55.285Z", sessionFile: bootFile }),
+    row("held", { parentSessionId: DEV, sessionName: "m2 air docker swap", activity: "working", workerPid: 48062, lastActivityAt: since(51), sessionFile: doneFile }),
+    row("fresh", { parentSessionId: DEV, sessionName: "fresh", activity: "working", workerPid: 48062, lastActivityAt: since(5), sessionFile: crawlFile })];
+  assert.deepEqual([...quietFiles(rows, now).keys()], [CRAWL, BOOT, "held"], "only sessions quiet past the target are read");
+  const footprints: Footprints = { ...FOOTPRINTS, kernels: [{ pid: 62440, root: DEV, session: CRAWL, pids: 1, bytes: GB, biggest: null }, { pid: 88454, root: BOOT, session: BOOT, pids: 2, bytes: GB, biggest: null },
+    { pid: 41785, root: DEV, session: "held", pids: 2, bytes: GB, biggest: null }],
+    handles: [{ pid: 99165, kernel: 88454, session: BOOT, command: "cd rulefix/chk9/ && bash -e step.sh", age_s: 1800 }, { pid: 78004, kernel: 41785, session: "held", command: "python3 sampler.py", age_s: 3300 }] };
+  const dataDir = join(dir, "data");
+  const sent: [string, string][] = [];
+  const messaged: [string, string][] = [];
+  const source = { dataDir, rows: () => rows, chats: async () => new Set([DEV]), title: () => null, queue: async () => QUEUE, log: () => {}, footprints: async () => footprints,
+    feed: async () => null, now: () => now, notify: async (chat: string, text: string) => { sent.push([chat, text]); }, message: async (root: string, text: string) => { messaged.push([root, text]); } };
+  const line = (await sample(source))!;
+  assert.equal(line.idleOver, 3, "a session in one long call still counts as quiet: its kernel and worker stay pinned and pi-pool frees only its slot");
+  assert.deepEqual(line.quiet, [
+    { session: CRAWL, job: "wp-engage-crawl", root: DEV, tree: "**** main dev thread ***", quietMin: 56, kernel: 62440,
+      call: { id: "toolu_01Pa", tool: "ipython", at: "2026-10-15T01:27:59.784Z", code: "async def batch_item_ids(bid, index=None):" } },
+    { session: BOOT, job: "air boot daemons", root: BOOT, tree: "air boot daemons", quietMin: 30, kernel: 88454,
+      call: { id: "toolu_011c", tool: "ipython", at: "2026-10-15T01:53:55.285Z", code: "r=await bash(f'cd {Q} && bash -e step.sh')" }, handle: "cd rulefix/chk9/ && bash -e step.sh" },
+    { session: "held", job: "m2 air docker swap", root: DEV, tree: "**** main dev thread ***", quietMin: 51, kernel: 41785, call: null }]);
+  assert.deepEqual(line.waiters!.map(waiter => [waiter.pid, waiter.quietMin]), [[78004, 51]], "a handle a running call awaits is no turn-end handle; the call's ask names it");
+  assert.deepEqual(asksOf(line).map(ask => ask.key), ["41785", "call:toolu_01Pa", "call:toolu_011c"]);
+  assert.equal(sent.length, 2, "the chat gets the held handle and the crawl call");
+  assert.equal(sent[1]![1], "[job] wp-engage-crawl (session 01a0f7cb) has been in one ipython call since 01:27Z with no model call for 56 min " +
+    "(`async def batch_item_ids(bid, index=None):`), so it counts as working and holds its kernel and worker. Do not interrupt the call. Tell the job to run a pull or wait this long " +
+    "as a detached script that writes its result to a file (nohup <command> > <file> 2>&1 &) and set board.wake(at=<its end>), so it ends its turn and its worker can rest.");
+  assert.equal(messaged.length, 1, "the plain thread gets its line as a daemon message");
+  assert.match(messaged[0]![1], /^\[job\] air boot daemons \(session 01a13b45\) has been in one ipython call since 01:53Z .* The call waits on a bash\(\) handle running `cd rulefix\/chk9\/ && bash -e step\.sh`\. /);
+  await sample({ ...source, now: () => now + MIN });
+  assert.deepEqual([sent.length, messaged.length], [2, 1], "each call is asked once");
+  await writeFile(crawlFile, toolCall("toolu_02Nx", "2026-10-15T01:58:00.000Z", "await pull(next_brand)") + "\n", { flag: "a" });
+  await sample({ ...source, now: () => now + 2 * MIN });
+  assert.deepEqual(sent.map(([, text]) => text.match(/since (\d\d:\d\dZ)/)?.[1] ?? "held"), ["held", "01:27Z", "01:58Z"], "the next long call in the same kernel is a new ask");
+
+  const { flagged } = measure(await readWatch(dataDir, now - 60 * MIN, now + 3 * MIN), now + 3 * MIN);
+  const calls = flagged!.filter(item => item.kind === "open_call");
+  assert.deepEqual(calls.map(item => [item.item, item.excerpt.match(/since (\d\d:\d\dZ) with no model call for (\d+) min/)?.slice(1)]),
+    [[CRAWL, ["01:27Z", "57"]], [BOOT, ["01:53Z", "32"]], [CRAWL, ["01:58Z", "58"]]], "one flag per call, at its last sighting");
+  assert.equal(calls[0]!.excerpt, "**** main dev thread ***, job wp-engage-crawl (session 01a0f7cb): one ipython call since 01:27Z with no model call for 57 min, " +
+    "`async def batch_item_ids(bid, index=None):`; the chat was asked to run it detached with board.wake.");
+  assert.match(flagged!.find(item => item.kind === "top_miss")!.excerpt, /^Top miss: working sessions quiet over 30 min in 3 of 3 minutes\. .* Quiet sessions at \d\d:\d\d: wp-engage-crawl \(01a0f7cb, \*\*\*\* main dev thread \*\*\*\) quiet 58 min, open ipython call since 01:58Z; air boot daemons \(01a13b45, air boot daemons\) quiet 32 min, open ipython call since 01:53Z; m2 air docker swap \(held, \*\*\*\* main dev thread \*\*\*\) quiet 53 min, no open tool call\.$/);
+  assert.match(flagged!.find(item => item.kind === "now")!.excerpt, /3 quiet over 30 min \(wp-engage-crawl \(01a0f7cb, .*\) quiet 58 min, open ipython call since 01:58Z; /);
 });
 
 test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics the precheck gives, with the owner's words verbatim", async () => {
