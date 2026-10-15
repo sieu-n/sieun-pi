@@ -21,6 +21,7 @@ import { jobResumes } from "./job-resume.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import { FLEET_STOP_FILE, FleetBudget, isProdAlert, readWorkersGb, startsOf } from "./fleet-budget.ts";
 import { parkTick, queueView } from "./queue-park.ts";
+import { unloadPlan } from "./idle-unload.ts";
 import { QUEUE_PARKED_FILE, readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
@@ -292,6 +293,16 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // A root job whose turn only waits in pi-pool's queue is parked so Prime can unload its worker, and goes back through the fleet budget once a
   // slot is free (src/queue-park.ts).
   let parking = false;
+  // An idle root job's worker stops a minute after its last activity rather than at Prime's idle sweep (src/idle-unload.ts).
+  const unloadIdle = async (): Promise<void> => {
+    const stopped: string[] = [];
+    for (const row of unloadPlan(catalog.daemonRows(), { chats: await chats.ids(), pool: await poolWaiting(), now: Date.now() })) {
+      const response = await catalog.client.request({ type: "kill", activeSessionId: row.activeSessionId! }, 30_000, { recoverable: false }).catch(error => ({ success: false as const, error: String(error) }));
+      if (response.success) stopped.push(row.sessionName?.trim() || row.sessionId.slice(0, 8));
+      else dutyLog(`idle unload: ${row.sessionId.slice(0, 8)}: ${response.error}`);
+    }
+    if (stopped.length) dutyLog(`idle unload: stopped the workers of ${stopped.length} idle root jobs: ${stopped.join(", ")}`);
+  };
   const parker = options.ownChatsOnly ? undefined : setInterval(() => {
     if (parking) return;
     parking = true;
@@ -310,6 +321,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
         if (!response.success) throw new Error(response.error);
       },
       resume: (session, text) => threads.restart(session, text, false) })
+      .then(unloadIdle)
       .catch(error => dutyLog(`queue park: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { parking = false; });
   }, 60_000);
   parker?.unref();
