@@ -1,0 +1,14 @@
+[Unit]
+Description=llm-wiki dev server on 127.0.0.1:5176
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=.ts.net
+WorkingDirectory=%h/src/auto-sns-agent/apps/llm-wiki
+ExecStart=%h/.local/node/bin/pnpm run dev
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

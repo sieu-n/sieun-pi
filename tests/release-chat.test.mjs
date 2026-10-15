@@ -47,7 +47,7 @@ function fixture(t) {
   git("checkout", "-q", "-b", "side", c1);
   const side = commit("side");
   git("checkout", "-q", "main");
-  const env = (extra = {}) => ({ ...cleanEnv, SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_LAUNCHCTL: launchctl, ...extra });
+  const env = (extra = {}) => ({ ...cleanEnv, SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_LAUNCHCTL: launchctl, SIEUN_PI_CHAT_SYSTEMCTL: launchctl, SIEUN_PI_CHAT_SERVICE_MANAGER: "launchd", ...extra });
   const release = (args, extra) => spawnSync(process.execPath, [script, ...args, "--repo", repo], { encoding: "utf8", env: env(extra) });
   const releaseAsync = (args, extra) => new Promise((done) => {
     const child = spawn(process.execPath, [script, ...args, "--repo", repo], { env: env(extra) });
@@ -80,6 +80,14 @@ test("a release builds the folder, flips current and kickstarts the chat", (t) =
   assert.equal(f.current(), id(f.c3));
   assert.equal(f.kicked().length, 1);
   assert.equal(existsSync(path.join(f.home, "release.lock")), false);
+});
+
+test("on a Linux host the release restarts the systemd user unit instead", (t) => {
+  const f = fixture(t);
+  const result = f.release([f.c1], { SIEUN_PI_CHAT_SERVICE_MANAGER: "systemd" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(f.current(), id(f.c1));
+  assert.deepEqual(f.kicked(), ["--user restart sieun-pi-chat.service"]);
 });
 
 test("an older release that waited on the lock behind a newer one is refused", async (t) => {

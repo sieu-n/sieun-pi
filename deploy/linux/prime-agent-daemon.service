@@ -1,0 +1,18 @@
+[Unit]
+Description=Prime Agent daemon for the sieun-pi chat
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=NO_COLOR=1
+EnvironmentFile=-%h/.config/sieun-pi/agent.env
+ExecStartPre=/bin/mkdir -p -m 0700 /tmp/prime-agent-%U
+ExecStart=%h/.local/bin/prime-agent --mode daemon --daemon-socket /tmp/prime-agent-%U/daemon.sock
+Restart=always
+RestartSec=5
+UMask=0077
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const USAGE = `usage: node scripts/release-chat.mjs <commit|release-id> [--rollback] [--test <file>]... [--no-kickstart] [--repo <dir>]
 
-Builds ~/.local/share/sieun-pi-chat/release-<sha7> from the commit, points current at it and kickstarts com.sieun.agent-chat (:5182).
+Builds ~/.local/share/sieun-pi-chat/release-<sha7> from the commit, points current at it and kickstarts com.sieun.agent-chat (:5182),
+or on Linux restarts the systemd user unit sieun-pi-chat.service.
 One release runs at a time: a second command waits for the first one's lock, then checks again.
 A commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
 --test runs that test file (relative to components/user-history) inside the release before the flip. --no-kickstart flips current only,
@@ -15,6 +16,7 @@ for a release whose diff touches only scripts/duties or tests.
 Prints the live release id on the last line. Exit 1 on a failed build step, 2 on bad usage, 3 on a refused rollback.`;
 
 const LABEL = "com.sieun.agent-chat";
+const UNIT = "sieun-pi-chat.service";
 const RELEASE_NAME = /^release-([0-9a-f]{7,40})(?:-.+)?$/;
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"].includes(key)));
 
@@ -146,6 +148,10 @@ function flip(home, id) {
 }
 
 function kickstart() {
+  if ((process.env.SIEUN_PI_CHAT_SERVICE_MANAGER || (process.platform === "linux" ? "systemd" : "launchd")) === "systemd") {
+    run(process.env.SIEUN_PI_CHAT_SYSTEMCTL || "systemctl", ["--user", "restart", UNIT], process.cwd());
+    return;
+  }
   const launchctl = process.env.SIEUN_PI_CHAT_LAUNCHCTL || "/bin/launchctl";
   run(launchctl, ["kickstart", "-k", `gui/${userInfo().uid}/${LABEL}`], process.cwd());
 }
