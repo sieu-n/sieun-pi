@@ -21,7 +21,7 @@ class Wiring(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="pi-pool-ext-queue-")
         self.env = dict(os.environ, PI_POOL_DIR=self.dir)
-        for key in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL"):
+        for key in ("PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID", "PRIME_AGENT_INTERNAL_DAEMON_WORKER_RECOVERY_JOURNAL", "RLM_SESSION_DIR"):
             self.env.pop(key, None)
         self.cli("set", "mac_working_max", "1")
         self.cli("set", "memory_governor_on", "0")
