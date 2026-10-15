@@ -19,7 +19,7 @@ import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-que
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { interruptedRuns } from "./chat-resume.ts";
-import { FLEET_STOP_FILE, FleetBudget, isProdAlert, readWorkersGb } from "./fleet-budget.ts";
+import { FLEET_STOP_FILE, FleetBudget, isProdAlert, readWorkersGb, startsOf } from "./fleet-budget.ts";
 import { parkTick, queueView } from "./queue-park.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
@@ -207,6 +207,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
       strays: readStrays,
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
+      starting: chat => startsOf(fleet.queued(), chat),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       interrupted: isJob => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet),
       settings, claude: claudeReader(), queue: queued, spawns: () => readHeldSpawns(),

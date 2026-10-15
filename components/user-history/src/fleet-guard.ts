@@ -1,4 +1,4 @@
-import type { FleetState } from "./fleet-budget.ts";
+import type { FleetAsk, FleetState } from "./fleet-budget.ts";
 
 /** A state older than this reads as open: the chat service is down or stopped publishing, and a stale "closed" must not hold every job forever. */
 export const FLEET_STATE_FRESH_MS = 120_000;
@@ -17,9 +17,11 @@ export function parseFleetState(text: string | null): FleetState | null {
   try {
     const value: unknown = JSON.parse(text);
     if (typeof value !== "object" || value === null) return null;
-    const { at, closed } = value as { at?: unknown; closed?: unknown };
+    const { at, closed, waiting } = value as { at?: unknown; closed?: unknown; waiting?: unknown };
     if (typeof at !== "number" || !(closed === null || typeof closed === "string")) return null;
-    return { at, closed };
+    const asks = Array.isArray(waiting) ? waiting.filter((ask): ask is FleetAsk => typeof ask === "object" && ask !== null && typeof ask.kind === "string" &&
+      typeof ask.label === "string" && (ask.chat === undefined || typeof ask.chat === "string")) : [];
+    return { at, closed, ...(asks.length ? { waiting: asks } : {}) };
   } catch { return null; }
 }
 

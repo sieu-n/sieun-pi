@@ -39,7 +39,8 @@ export const FLEET_STOP_FILE = "fleet-stop.json";
  * KST on 10-16, with the budget shut at 17.9 GB, jobs started "5180 comes back after daemon stop fix" and "5180 restart cause fix" themselves.
  */
 export const FLEET_STATE_FILE = "fleet-state.json";
-export interface FleetState { at: number; closed: string | null }
+/** `waiting`: the starts that wait now, oldest first (`FleetBudget.queued`), so a check-in run outside the service reads them too. */
+export interface FleetState { at: number; closed: string | null; waiting?: readonly FleetAsk[] }
 
 /** Whether an alert text names a prod alert and no staging or dev one, the same rule pi-pool's prod turns use (pool/prod.py). */
 export const isProdAlert = (text: string): boolean => /\b(prod|production)\b/i.test(text) && !/\b(staging|stg|dev)\b/i.test(text);
@@ -53,6 +54,10 @@ export function pressured(reading: AgentQueueReading | null): string | null {
   const level = reading?.governor?.level;
   return level === "high" || level === "critical" ? `pi-pool reads memory pressure ${level}` : null;
 }
+
+/** The job names of `chat` whose start waits in the budget: its own starts, and the send-backs and continues, which name no chat. */
+export const startsOf = (waiting: readonly FleetAsk[], chat: string): string[] =>
+  waiting.filter(ask => ask.chat === chat || ask.chat === undefined).map(ask => ask.label);
 
 /** The non-owner starts the budget orders. An owner message, a chat's own wake and a prod turn never ask it. */
 export type FleetKind = "duty" | "checkin" | "fix" | "sendback" | "continue" | "wake";
@@ -115,7 +120,7 @@ export class FleetBudget {
   /** Writes FLEET_STATE_FILE (FleetState) through a temp file, so a reader never sees half of it. A failed write is left for the next one. */
   private async publish(file: string): Promise<void> {
     const why = this.waiting.length ? await this.held().catch(() => null) : await this.closed().catch(() => null);
-    const state: FleetState = { at: this.now(), closed: why };
+    const state: FleetState = { at: this.now(), closed: why, waiting: this.queued() };
     const temp = `${file}.${process.pid}.tmp`;
     await writeFile(temp, JSON.stringify(state)).then(() => rename(temp, file)).catch(() => {});
   }

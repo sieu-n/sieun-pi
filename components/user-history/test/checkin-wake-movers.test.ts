@@ -42,8 +42,8 @@ const wakes: Wake[] = [wake(RELEASE_OWNER, 38790378691), wake(TRAIN_JOB, 3879049
 const train: Train = { readAt: NOW, runs: [{ id: "38790378691", key: "37", running: true, conclusion: null, createdAt: NOW - 70 * 60_000, updatedAt: NOW - 60_000 },
   { id: "38724863673", key: "37", running: false, conclusion: "failure", createdAt: NOW - 7 * 3_600_000, updatedAt: NOW - 6 * 3_600_000 }] };
 const rows = [{ id: RELEASE_OWNER, name: "Fable", archived: false }];
-const end = (item: PlanItem, watched = wakeWatches(wakes, train)) =>
-  endState(stepView(item, NOW - 30 * 60_000, self, facts, [], rows, NOW), [], rows, self, NOW, facts, watched);
+const end = (item: PlanItem, watches = wakeWatches(wakes, train)) =>
+  endState(stepView(item, NOW - 30 * 60_000, self, facts, [], rows, NOW), [], rows, self, NOW, facts, { watches });
 
 test("end state: a step whose owner session sleeps on a board.wake, or whose wait names a run, land or thread a session sleeps on, is moving", () => {
   assert.deepEqual(Object.values(items).map(item => [item.id, end(item).state]), [

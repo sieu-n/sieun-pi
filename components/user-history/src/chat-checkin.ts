@@ -68,6 +68,8 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   asleep?: ReadonlySet<string>;
   /** The board.wakes the service still owes (`pendingWakes`): a step whose owner session, run, land or thread one of them watches is moving (`wakeMover`). Not given: none. */
   wakes?: readonly Wake[];
+  /** The job names of this chat whose start or send-back waits in the fleet budget (`FleetBudget.queued`): their steps are moving. Not given: none. */
+  starting?: readonly string[];
   /** What the owner wrote in the chat (`ownerSaid`), for when he last ruled on a review (`readyReviews`); none when not given. */
   owner?: readonly OwnerMessage[] }
 
@@ -133,9 +135,9 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
-  const watches = wakeWatches(context.wakes ?? [], context.train);
+  const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, starting: new Set(context.starting ?? []) };
   return { memory: { at: now, steps, since }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
-    stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train).filter(stall => !onOthers.has(stall.view.item.id)),
+    stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),
     goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board, now),
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs),
@@ -145,7 +147,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
       context.rows ?? [], context.train),
     fold: context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []), load: oneSessionLoad(goaled, context.jobs),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes,
-    end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, watches)) };
+    end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)) };
 }
 
 /**

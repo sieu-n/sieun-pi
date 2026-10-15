@@ -7,6 +7,7 @@ import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, SessionRow } 
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
+import { type Movers, outsideMover } from "./checkin-end-state.ts";
 import { localTime } from "./checkin-settings.ts";
 
 /** The check-in's board findings: the plan's shape, goals to fold, held and stalled steps, scope misses, owner gates and goal gaps, each with the line the duty job reads. */
@@ -517,7 +518,8 @@ export const STALL_MS = 2 * 60 * 60_000;
  * waits on a thread or on CI, a land, a release or a pin; `rows` and `self` find a thread its waitFor names (`waitTarget`). A step that waits on a
  * release `train` that moves (`trainMoves`, no thread named) is not stalled, as it is not blocked_on_others (Crawler VP 10-13, p47 "land 34 on
  * staging ..." read "act on it in this run" at 19:38, 20:12 and 20:59 while land 33 and promote 9 ran). The check-in precheck also drops each
- * step `blockedOnOthers` flags: that line names the blocker and the action, and one step gets one finding.
+ * step `blockedOnOthers` flags: that line names the blocker and the action, and one step gets one finding. A step that someone moves from
+ * outside the chat's jobs (`outsideMover`: a board.wake, a turn in pi-pool's queue, a start in the fleet budget) is not stalled either.
  */
 export interface StalledStep { view: StepView; why: string }
 /**
@@ -529,13 +531,13 @@ const RUN_ID = /\b\d{9,}\b/;
 const HOLD = /\b(?:hold|holds|held|holding|queued\s+behind|cancell?ed\s+by)\b|(?<!\bin\s)\border\b/i;
 const heldRun = (item: PlanItem): boolean => RUN_ID.test(item.waitFor ?? "") && HOLD.test(item.note ?? "");
 export function stalledSteps(views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
-  self: ReadonlySet<string>, now: number, train?: Train): StalledStep[] {
+  self: ReadonlySet<string>, now: number, train?: Train, movers: Movers = {}): StalledStep[] {
   return views.flatMap(view => {
     const { item } = view;
     const waits = item.waitFor !== undefined || item.waitUntil !== undefined || view.owner?.key.startsWith("thread:") === true;
     // A wait the CI cache shows over (`greenLater`) is wait_met's to act on, so the step gets one finding.
     if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked" || heldRun(item) || greenLater(item, train)) return [];
-    if (movesOnPath(item, train, rows, self, now)) return [];
+    if (movesOnPath(item, train, rows, self, now) || outsideMover(view, movers, rows, self)) return [];
     const memo = memos[item.id];
     const untils = memo?.untils ?? [];
     const pushes = untils.filter((until, index) => index > 0 && Date.parse(until) > Date.parse(untils[index - 1]!)).length;
