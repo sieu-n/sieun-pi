@@ -1,0 +1,312 @@
+{
+"source": "browser-chat/mac-usable/2026-10-15.jsonl, one row a feed minute",
+"windows": {
+"0842": [
+{
+"at": "2026-10-15T08:37",
+"unusable": false,
+"workers_gb": 17,
+"live": 66,
+"kernel_task_pct": 72.6
+},
+{
+"at": "2026-10-15T08:38",
+"unusable": true,
+"workers_gb": 16.82,
+"live": 66,
+"kernel_task_pct": 112.3
+},
+{
+"at": "2026-10-15T08:40",
+"unusable": true,
+"workers_gb": 17.47,
+"live": 69,
+"kernel_task_pct": 167.6
+},
+{
+"at": "2026-10-15T08:41",
+"unusable": false,
+"workers_gb": 20.61,
+"live": 78,
+"kernel_task_pct": 89.4
+},
+{
+"at": "2026-10-15T08:42",
+"unusable": true,
+"workers_gb": 20.7,
+"live": 85,
+"kernel_task_pct": 142.2
+},
+{
+"at": "2026-10-15T08:43",
+"unusable": true,
+"workers_gb": 21.93,
+"live": 94,
+"kernel_task_pct": 189
+},
+{
+"at": "2026-10-15T08:44",
+"unusable": true,
+"workers_gb": 22.83,
+"live": 100,
+"kernel_task_pct": 168.7
+},
+{
+"at": "2026-10-15T08:45",
+"unusable": true,
+"workers_gb": 23.47,
+"live": 101,
+"kernel_task_pct": 120
+},
+{
+"at": "2026-10-15T08:46",
+"unusable": false,
+"workers_gb": 23.27,
+"live": 99,
+"kernel_task_pct": 45.3
+},
+{
+"at": "2026-10-15T08:47",
+"unusable": false,
+"workers_gb": 23.89,
+"live": 102,
+"kernel_task_pct": 85.7
+},
+{
+"at": "2026-10-15T08:48",
+"unusable": false,
+"workers_gb": 23.78,
+"live": 104,
+"kernel_task_pct": 39.6
+},
+{
+"at": "2026-10-15T08:49",
+"unusable": false,
+"workers_gb": 22.66,
+"live": 100,
+"kernel_task_pct": 84.7
+},
+{
+"at": "2026-10-15T08:50",
+"unusable": true,
+"workers_gb": 22.54,
+"live": 103,
+"kernel_task_pct": 109.2
+},
+{
+"at": "2026-10-15T08:51",
+"unusable": false,
+"workers_gb": 22.68,
+"live": 104,
+"kernel_task_pct": 48
+},
+{
+"at": "2026-10-15T08:52",
+"unusable": true,
+"workers_gb": 24.03,
+"live": 102,
+"kernel_task_pct": 113.6
+},
+{
+"at": "2026-10-15T08:53",
+"unusable": false,
+"workers_gb": 21.67,
+"live": 98,
+"kernel_task_pct": 32
+},
+{
+"at": "2026-10-15T08:54",
+"unusable": false,
+"workers_gb": 22.39,
+"live": 108,
+"kernel_task_pct": 65.8
+},
+{
+"at": "2026-10-15T08:55",
+"unusable": false,
+"workers_gb": 23.18,
+"live": 113,
+"kernel_task_pct": 52.6
+},
+{
+"at": "2026-10-15T08:56",
+"unusable": false,
+"workers_gb": 21.63,
+"live": 106,
+"kernel_task_pct": 63.6
+}
+],
+"0910": [
+{
+"at": "2026-10-15T09:05",
+"unusable": false,
+"workers_gb": 23.26,
+"live": 102,
+"kernel_task_pct": 37.7
+},
+{
+"at": "2026-10-15T09:06",
+"unusable": false,
+"workers_gb": 23.57,
+"live": 102,
+"kernel_task_pct": 68.1
+},
+{
+"at": "2026-10-15T09:07",
+"unusable": true,
+"workers_gb": 23.97,
+"live": 101,
+"kernel_task_pct": 116.3
+},
+{
+"at": "2026-10-15T09:09",
+"unusable": true,
+"workers_gb": 25.18,
+"live": 103,
+"kernel_task_pct": 205.9
+},
+{
+"at": "2026-10-15T09:10",
+"unusable": true,
+"workers_gb": 26.8,
+"live": 117,
+"kernel_task_pct": 154.6
+},
+{
+"at": "2026-10-15T09:11",
+"unusable": true,
+"workers_gb": 25.37,
+"live": 117,
+"kernel_task_pct": 118.8
+},
+{
+"at": "2026-10-15T09:13",
+"unusable": true,
+"workers_gb": 26.22,
+"live": 111,
+"kernel_task_pct": 168.4
+},
+{
+"at": "2026-10-15T09:14",
+"unusable": false,
+"workers_gb": 26.2,
+"live": 114,
+"kernel_task_pct": 51.7
+},
+{
+"at": "2026-10-15T09:15",
+"unusable": true,
+"workers_gb": 26.45,
+"live": 115,
+"kernel_task_pct": 201
+},
+{
+"at": "2026-10-15T09:16",
+"unusable": true,
+"workers_gb": 26.33,
+"live": 115,
+"kernel_task_pct": 142
+},
+{
+"at": "2026-10-15T09:17",
+"unusable": true,
+"workers_gb": 26.06,
+"live": 115,
+"kernel_task_pct": 129
+},
+{
+"at": "2026-10-15T09:18",
+"unusable": true,
+"workers_gb": 27.32,
+"live": 115,
+"kernel_task_pct": 146.1
+},
+{
+"at": "2026-10-15T09:19",
+"unusable": false,
+"workers_gb": 27.02,
+"live": 115,
+"kernel_task_pct": 80.2
+},
+{
+"at": "2026-10-15T09:20",
+"unusable": false,
+"workers_gb": 26.45,
+"live": 111,
+"kernel_task_pct": 50.4
+}
+],
+"0930": [
+{
+"at": "2026-10-15T09:26",
+"unusable": false,
+"workers_gb": 25.45,
+"live": 115,
+"kernel_task_pct": 72.4
+},
+{
+"at": "2026-10-15T09:27",
+"unusable": false,
+"workers_gb": 24.53,
+"live": 108,
+"kernel_task_pct": 54
+},
+{
+"at": "2026-10-15T09:28",
+"unusable": false,
+"workers_gb": 25.04,
+"live": 108,
+"kernel_task_pct": 54.1
+},
+{
+"at": "2026-10-15T09:30",
+"unusable": true,
+"workers_gb": 25.88,
+"live": 126,
+"kernel_task_pct": 168
+},
+{
+"at": "2026-10-15T09:32",
+"unusable": false,
+"workers_gb": 25.79,
+"live": 132,
+"kernel_task_pct": 65.2
+},
+{
+"at": "2026-10-15T09:34",
+"unusable": false,
+"workers_gb": 25.39,
+"live": 133,
+"kernel_task_pct": 82
+},
+{
+"at": "2026-10-15T09:35",
+"unusable": false,
+"workers_gb": 26,
+"live": 128,
+"kernel_task_pct": 38.1
+},
+{
+"at": "2026-10-15T09:36",
+"unusable": false,
+"workers_gb": 25.24,
+"live": 129,
+"kernel_task_pct": 65.7
+},
+{
+"at": "2026-10-15T09:37",
+"unusable": false,
+"workers_gb": 23.83,
+"live": 126,
+"kernel_task_pct": 34.3
+},
+{
+"at": "2026-10-15T09:38",
+"unusable": false,
+"workers_gb": 23.52,
+"live": 122,
+"kernel_task_pct": 46.6
+}
+]
+}
+}

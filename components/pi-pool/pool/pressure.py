@@ -160,3 +160,48 @@ def read_kernel():
                 "compressor": vm.compressor_pages * page, "ram": ram}
     except Exception:
         return None
+
+
+# The Prime daemon with its workers and every process under them (kernels, bash() handles): the memory a new child
+# session adds to, read for the spawn gate (pool/spawns.py). The workers' part is the chat service's Mac usable watch
+# sum (`workerGb`, src/worker-footprint.py): at 19:22 KST on 10-15 the workers read 36.28 GiB here in 6 ms where the
+# watch read 35.58 GiB. The daemon process itself held 0.66 GiB at 19:50 KST.
+PROC_PIDTBSDINFO = 3
+
+
+def read_workers_gb():
+    """GiB of phys_footprint in every prime-agent process whose parent is not one (the daemon) and all its
+    descendants, or None when libproc is not there (another OS)."""
+    try:
+        import ctypes
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib")
+
+        class Rusage(ctypes.Structure):
+            _fields_ = ([("uuid", ctypes.c_uint8 * 16)] + [(k, ctypes.c_uint64) for k in (
+                "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size", "resident_size",
+                "phys_footprint")] + [("rest", ctypes.c_uint64 * 64)])
+
+        class BsdInfo(ctypes.Structure):
+            _fields_ = [(k, ctypes.c_uint32) for k in ("flags", "status", "xstatus", "pid", "ppid")] + [("rest", ctypes.c_uint8 * 116)]
+
+        buf = (ctypes.c_int * 16384)()
+        count = lib.proc_listallpids(buf, ctypes.sizeof(buf))
+        if count <= 0:
+            return None
+        name, bsd, usage = ctypes.create_string_buffer(64), BsdInfo(), Rusage()
+        names, kids, parent = {}, {}, {}
+        for pid in (p for p in buf[:count] if p > 0):
+            if lib.proc_name(pid, name, 64) > 0:
+                names[pid] = name.value
+            if lib.proc_pidinfo(pid, PROC_PIDTBSDINFO, ctypes.c_uint64(0), ctypes.byref(bsd), ctypes.sizeof(bsd)) > 0:
+                parent[pid] = bsd.ppid
+                kids.setdefault(bsd.ppid, []).append(pid)
+        total, stack = 0, [p for p, n in names.items() if n == b"prime-agent" and names.get(parent.get(p)) == b"prime-agent"]
+        while stack:
+            pid = stack.pop()
+            if lib.proc_pid_rusage(pid, 4, ctypes.byref(usage)) == 0:
+                total += usage.phys_footprint
+            stack += kids.get(pid, [])
+        return round(total / 2 ** 30, 2)
+    except Exception:
+        return None

@@ -115,6 +115,8 @@ DEFAULTS = {
     "lease_s": 1800,
     # The memory governor (turns.governor): 0 leaves the limits above as they are under any pressure.
     "memory_governor_on": 1,
+    # The spawn gate (pool/spawns.py): 0 lets every rlm.spawn child start at once whatever Prime's workers hold.
+    "spawn_hold_on": 1,
     # The working limit while memory pressure is high or critical, when below mac_working_max.
     # High is the 16 that fit in the 6.9 GB free at 07:38 KST on 10-14 (426 MB per working
     # session at p90). Critical is 12: over the 721 Mac usable watch minutes from 10-14 20:31Z

@@ -554,6 +554,17 @@ The file is read with the level, once every 30 s, and a missing, malformed or 18
 `queue --json`'s `pressure` lists the held root session ids in `memory_trees` and counts their turns in `held`, and pi-pool.log gets a `tree_memory_held` line when a tree starts being held and a `tree_memory_released` line when it stops (`tests/test_tree_memory.py`).
 `pi-pool set memory_governor_on 0` keeps the limits as set under any pressure.
 
+### The spawn gate
+
+A child that `rlm.spawn` starts costs memory in the Prime daemon at once, before its first turn asks for a slot: from 08:37Z to 09:37Z on 10-15 live sessions went from 66 to 133, the workers from 17 to 27 GiB, and 21 of 53 feed minutes were unusable.
+The chat service's kernel wrapper (`components/user-history/src/message-limit-check.py`) runs `pi-pool spawn-gate enter --parent <s> --name <n> --pid <kernel pid>` before each spawn, and `pool/spawns.py` answers go or held.
+`pressure.read_workers_gb` sums the footprint of the Prime daemon, its workers and every process under them, at most once every 30 s.
+New spawns are held from 20 GiB (`spawns.HOLD_ON_GB`) until the sum falls to 16 GiB (`spawns.HOLD_OFF_GB`), and between the two the hold keeps its last state: on 10-15, 0 of 364 feed minutes at 16 GiB or less in the workers were unusable, against 5 of 42 at 20 to 22 GiB and 54 of 98 over 24.
+While the hold is off, each read lets (20 - GiB) / 0.15 spawns start, the 0.15 GiB one live session added on 10-15, so a fan-out fills the room under 20 GiB and the rest wait for the next read.
+A held spawn returns the parent a handle whose `rlm_child_id` starts with `queued-` at once, its kernel runs `pi-pool spawn-gate wait <ticket>` in the background, and the spawn goes out in queue order when the wait prints go; `rlm.held_spawns[name]` then holds the real handle.
+Roots (`rlm.create_session`) and owner turns never pass the gate, a gate that fails lets the spawn go, an entry whose kernel is gone is dropped with a `spawn_dropped` line, and `pi-pool set spawn_hold_on 0` lets every spawn go.
+`pi-pool spawn-gate status` prints the hold, the GiB and the held spawns, and pi-pool.log gets `spawn_hold`, `spawn_held` and `spawn_started` lines (`tests/test_spawns.py` replays the 08:42Z, 09:10Z and 09:30Z fan-outs).
+
 Rollout: `install.py` runs the Python tests and checks only the token hooks, and a running session keeps the extension code it loaded until the session is rebuilt, so the queue reaches each session at its next load, reload or worker restart.
 
 ## Config

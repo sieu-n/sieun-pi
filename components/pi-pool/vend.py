@@ -110,6 +110,11 @@ USAGE = """usage: pi-pool [command]
   release <session>              free the turn's slot or drop its queue entry
   owner-turn <session>           the session's next admit is the owner's and runs at once
   queue [--json]                 working and queued turns
+  spawn-gate enter --parent <s> --name <n> --pid <kernel pid>
+                                 ask whether an rlm.spawn child may start now; prints go, or held
+                                 with a ticket while Prime's workers hold too much memory
+  spawn-gate wait <ticket>       block until a held child may start, then print go
+  spawn-gate status              the hold, the workers' GiB and the held spawns
   config                         print the merged config
   set <key> <value>              persist a config override
   log [n]                        last n pool events (default 20)
@@ -133,6 +138,7 @@ def cli(args):
         "unlimited": pool.session_cmds.cmd_unlimited, "priority": pool.commands.cmd_priority,
         "admit": pool.turns.cmd_admit, "release": pool.turns.cmd_release,
         "owner-turn": pool.turns.cmd_owner_turn, "queue": pool.turns.cmd_queue,
+        "spawn-gate": pool.spawns.cmd_spawn_gate,
     }
     if cmd in handlers:
         return handlers[cmd](rest)
