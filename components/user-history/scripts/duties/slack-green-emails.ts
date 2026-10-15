@@ -22,8 +22,11 @@ const PROJECT = "pcpcicvhrcazmlpjrqho";
 export const DAY_MS = 24 * 60 * 60_000;
 /**
  * The duty JSON's targets and where each comes from (JSON has no comments):
- * - false_positive_sends, users_over_cap, repeat_sends_24h, unsubscribes_24h and source_errors <= 0: the owner asked that no wrong or annoying
- *   email goes out (2026-10-14), so each one is a miss.
+ * - bad_sends_24h <= 0 is the headline: the owner asked that no false-positive or annoying email goes out (2026-10-14). It counts each send in
+ *   the last 24 h that is a false positive or annoying, once, plus 1 for each data source that failed, since an unread source cannot show a clean day.
+ * - false_positive_sends <= 0 and annoying_sends_24h <= 0 split the headline into his two words. Annoying is a repeat of the same email within
+ *   24 h or a connect nudge past NUDGE_CAP for that person, sent in the last 24 h.
+ * - users_over_cap (the whole Resend log), repeat_sends_24h, unsubscribes_24h and source_errors are run detail: written to the output, not judged.
  * - users_over_cap counts connect nudges above NUDGE_CAP. PR #247 (packages/frontend/src/lib/setup-link-email.ts) sets MAX_SETUP_EMAILS = 2
  *   for the setup link and the 24 h connect reminder together.
  * - bounce_or_complaint_pct <= 4: Resend's warm-up guide (https://resend.com/docs/knowledge-base/warming-up.md) says to keep the bounce rate
@@ -84,8 +87,10 @@ export function wrongSend(send: Send, recipient: Recipient | undefined, previous
 }
 
 export function emailMetrics(sources: Sources, now: number, previous: EmailState | undefined): { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
-  const metrics: Record<string, number> = { false_positive_sends: 0, users_over_cap: 0, repeat_sends_24h: 0, bounce_or_complaint_pct: 0, unsubscribes_24h: 0,
-    source_errors: sources.errors.length };
+  const metrics: Record<string, number> = { bad_sends_24h: 0, false_positive_sends: 0, annoying_sends_24h: 0, bounce_or_complaint_pct: 0,
+    users_over_cap: 0, repeat_sends_24h: 0, unsubscribes_24h: 0, source_errors: sources.errors.length };
+  const wrong = new Set<Send>();
+  const annoying = new Set<Send>();
   const flagged: FlaggedSlice[] = sources.errors.map(excerpt => ({ at: now, kind: "source_error", excerpt, item: "p68" }));
   const recipients = sources.recipients ?? {};
   const all = (sources.sends ?? []).filter(send => !QA_EMAIL.test(send.to));
@@ -104,7 +109,7 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
     for (const send of day) {
       const why = wrongSend(send, recipients[send.to], previous);
       if (!why) continue;
-      metrics.false_positive_sends! += 1;
+      wrong.add(send);
       flagged.push({ at: send.at, kind: "false_positive", item: "p68", excerpt: `${send.template} to user ${who(send, recipients)} at ${iso(send.at)} (Resend ${send.id}): ${why}` });
     }
     const nudges = new Map<string, Send[]>();
@@ -112,6 +117,7 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
     for (const sends of nudges.values()) {
       if (sends.length <= NUDGE_CAP) continue;
       metrics.users_over_cap! += 1;
+      for (const extra of [...sends].sort((a, b) => a.at - b.at).slice(NUDGE_CAP)) if (extra.at > now - DAY_MS) annoying.add(extra);
       flagged.push({ at: sends[0]!.at, kind: "over_cap", item: "p68", excerpt: `user ${who(sends[0]!, recipients)} got ${sends.length} connect nudges ` +
         `(${sends.map(send => `${send.template} ${iso(send.at)}`).join(", ")}), over the cap of ${NUDGE_CAP}` });
     }
@@ -120,10 +126,14 @@ export function emailMetrics(sources: Sources, now: number, previous: EmailState
     for (const sends of groups.values()) {
       if (sends.length < 2) continue;
       metrics.repeat_sends_24h! += sends.length - 1;
+      for (const extra of [...sends].sort((a, b) => a.at - b.at).slice(1)) annoying.add(extra);
       flagged.push({ at: sends[0]!.at, kind: "repeat", item: "p68", excerpt: `${sends[0]!.template} went to user ${who(sends[0]!, recipients)} ${sends.length} times in 24 h ` +
         `(${sends.map(send => iso(send.at)).join(", ")})` });
     }
+    metrics.false_positive_sends = wrong.size;
+    metrics.annoying_sends_24h = annoying.size;
   }
+  metrics.bad_sends_24h = new Set([...wrong, ...annoying]).size + sources.errors.length;
   if (sources.sends) {
     const bad = day.filter(send => BAD_EVENTS.includes(send.lastEvent));
     metrics.bounce_or_complaint_pct = day.length ? Math.round(10000 * bad.length / day.length) / 100 : 0;

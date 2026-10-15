@@ -1,8 +1,15 @@
 {
   "name": "Slack green emails",
   "ownerWords": "also your duty is to keep monitor Resend if there are no false-positive emails being sent or we're being annoying.",
-  "goal": "Every email Slack Green sends through Resend still fits the person who gets it. No connect nudge after a workspace is connected, no email to a deleted account, no removed email, at most 2 connect nudges per person, one email per kind per day, and bounces plus complaints under Resend's 4% bounce guide (resend.com/docs/knowledge-base/warming-up).",
+  "goal": "No Slack Green email is wrong or annoying. Wrong is a connect nudge after a workspace is connected, an email to a deleted account, a removed email, or marketing after an opt-out. Annoying is the same email twice in a day or over 2 connect nudges per person. Bounces plus complaints stay under Resend's 4% guide.",
   "metrics": [
+    {
+      "key": "bad_sends_24h",
+      "label": "Wrong or annoying emails sent, last 24 h",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
     {
       "key": "false_positive_sends",
       "label": "Emails sent to someone they no longer fit, last 24 h",
@@ -10,15 +17,8 @@
       "target": 0
     },
     {
-      "key": "users_over_cap",
-      "label": "People who got more than 2 connect nudges, Resend log",
-      "op": "<=",
-      "target": 0,
-      "unit": " people"
-    },
-    {
-      "key": "repeat_sends_24h",
-      "label": "Same email to the same person again within 24 h",
+      "key": "annoying_sends_24h",
+      "label": "Repeat emails or connect nudges past 2 per person, last 24 h",
       "op": "<=",
       "target": 0
     },
@@ -28,19 +28,6 @@
       "op": "<=",
       "target": 4,
       "unit": "%"
-    },
-    {
-      "key": "unsubscribes_24h",
-      "label": "People who turned marketing email off since the last run",
-      "op": "<=",
-      "target": 0,
-      "unit": " people"
-    },
-    {
-      "key": "source_errors",
-      "label": "Data sources that failed in this check",
-      "op": "<=",
-      "target": 0
     }
   ],
   "schedule": {
@@ -56,6 +43,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "source_errors: fix the precheck or its key first. For each bad send, write on p68 the template, the recipient's user id (never the address) and why it was wrong, then find the code path that sent it in slack-green and start one fix job that opens a draft PR. If one template floods (many wrong sends in a day), turn its flag off at once, CONNECT_REMINDER_ENABLED on Railway slack-green-backend or PHONE_SETUP_EMAIL_AUTO_ENABLED on Vercel, and tell the chat. The flag change is the only prod change this job makes; never email users or merge.",
+  "onMiss": "A failed source counts in the headline: fix the precheck or its key first. For each wrong or annoying send flagged, write on p68 the template, the user id (never the address) and why, find the slack-green code path that sent it, and start one fix job that opens a PR, or message the live job that owns that cause. A run with a miss ends with a job on each cause. If one template floods, turn its flag off at once (CONNECT_REMINDER_ENABLED on Railway slack-green-backend or PHONE_SETUP_EMAIL_AUTO_ENABLED on Vercel) and tell the chat. Bounces or complaints over 4%: start one fix job on the cause. The flag change is the only prod change; never email users or merge.",
   "boardGoal": "p68"
 }

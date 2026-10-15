@@ -8,7 +8,8 @@
       "label": "Review posts over 24 h old with no trial decision",
       "op": "<=",
       "target": 0,
-      "unit": " posts"
+      "unit": " posts",
+      "headline": true
     },
     {
       "key": "source_errors",

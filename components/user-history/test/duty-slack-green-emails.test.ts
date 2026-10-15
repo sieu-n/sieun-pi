@@ -47,6 +47,8 @@ test("emails: nudges over the cap, repeats within 24 h and the bounce rate", () 
   });
   assert.equal(metrics.users_over_cap, 1);
   assert.equal(metrics.repeat_sends_24h, 1, "a second signup email is the person's own retry");
+  assert.equal(metrics.annoying_sends_24h, 2, "the third nudge to a sent today and the second trial_d2 to b");
+  assert.equal(metrics.bad_sends_24h, 2);
   assert.equal(metrics.bounce_or_complaint_pct, 40);
   assert.deepEqual(kinds(flagged).filter(kind => kind !== "sends_24h").sort(), ["bounced", "complained", "over_cap", "repeat"]);
 });
@@ -69,10 +71,19 @@ test("emails: opt-outs count against the last run, and a marketing send after an
   assert.equal(later.metrics.false_positive_sends, 1);
 });
 
-test("emails: a failed source is counted, and the duty file parses", async () => {
+test("emails: a send that is both wrong and annoying counts once in the headline", () => {
+  const { metrics } = run({ sends: [send("connect_reminder", "a@x.com", 1), send("connect_reminder", "a@x.com", 2)],
+    recipients: { "a@x.com": user("ua", { firstWorkspaceAt: NOW - 10 * HOUR }) } });
+  assert.deepEqual([metrics.false_positive_sends, metrics.annoying_sends_24h, metrics.bad_sends_24h], [2, 1, 2]);
+});
+
+test("emails: a failed source makes the headline a miss, and the duty file declares one headline and at most 3 more", async () => {
   const { metrics } = run({ errors: ["Resend send log: HTTP 401"] });
   assert.equal(metrics.source_errors, 1);
+  assert.equal(metrics.bad_sends_24h, 1);
   const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/slack-green-emails.duty.json"), "utf8")), "d1", NOW);
   assert.equal(duty.name, "Slack green emails");
-  assert.deepEqual(duty.metrics.map(metric => metric.key), Object.keys(metrics));
+  assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["bad_sends_24h"]);
+  assert.ok(duty.metrics.length <= 4);
+  for (const metric of duty.metrics) assert.ok(metric.key in metrics, metric.key);
 });
