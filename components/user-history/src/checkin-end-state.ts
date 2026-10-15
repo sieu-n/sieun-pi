@@ -1,12 +1,14 @@
 import { bridgeHolds, ESCALATE_MS } from "./alert-bridge.ts";
 import { coversStep } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
-import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS, type StepView, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
+import type { WakeWatch } from "./checkin-load.ts";
+import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
 /**
  * The owner's end state for a board (owner 10-14: "all the PLAN list should clear or be stuck in FOR YOU right? check in duty should push forward
  * the agent swarm"): every open leaf step is moved by a live owner now, or held by an open For you todo, or parked by an owner correction in
- * force. Every other open step is stuck. A wait on CI, a release, another thread, an event or a time is stuck: nobody of this chat is moving it.
+ * force. Every other open step is stuck. A wait on CI, a release, another thread, an event or a time is stuck when nobody is moving it: no job of
+ * this chat, and no session asleep on a board.wake for that run, that land or that thread (`wakeMover`).
  * The stuck count and the share of open steps in the end state are the headline KPI of the check-in and of the Chat system duty.
  *
  * On 10-14 at 03:11Z the rules below (measured by the KPI job, session 1108-checkin-swarm-kpi) found 102 of 179 open leaf steps stuck: 84 on a
@@ -44,7 +46,7 @@ export interface EndStateView { view: StepView; state: EndState; reason: string 
  * a time; else its job ended or is gone, else it has no owner.
  */
 export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
-  self: ReadonlySet<string>, now: number, facts: readonly JobFact[] = []): EndStateView {
+  self: ReadonlySet<string>, now: number, facts: readonly JobFact[] = [], watches: ReadonlyMap<string, WakeWatch> = new Map()): EndStateView {
   const { item, owner, mine, cls } = view;
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
   if (cls === "parked") return out("parked", `parked by ${view.parked ?? "an owner correction"}`);
@@ -52,6 +54,8 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   const wait = item.waitFor ?? "";
   const carrier = waitCarrier(wait, facts);
   if (carrier) return out("moving", `its wait is on ${ownerLabel(carrier)}, which ${carrier.wake ? `sleeps on ${carrier.wake}` : "works on it"}`);
+  const mover = wakeMover(item, watches, rows, self);
+  if (mover) return out("moving", mover);
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
   if (bridgeHolds(item, view.changedAt, now)) return out("moving", `the alert bridge added it ${ago(now - view.changedAt)} ago and escalates it at ${ESCALATE_MS / 60_000} min`);
   if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");
@@ -66,6 +70,38 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   if (owner) return out("job_ended", `${ownerLabel(owner)} ${owner.cancelled ? "was cancelled" : owner.state === "failed" ? "failed" : "ended"} and the step is open`);
   if (item.job && !mine) return out("job_ended", `its job ${item.job} is gone`);
   return out("no_owner", mine ? `the chat owns it and it has not moved for ${ago(now - view.changedAt)}` : "no job, todo or wait");
+}
+
+/** "land 37", "promote 11", "train 12b", "run 38790378691": the work a wait names by number, lower case. */
+const NAMED_WORK = /\b(land|promote|train)[\s-]*(\d+[a-z]?)\b|\b(\d{9,})\b/gi;
+const SESSION_PREFIX = /\b[0-9a-f]{8}\b/g;
+/**
+ * Who moves a step from another session, by the pending board.wakes (`wakeWatches`): the session the step names as its owner sleeps on one, or
+ * the first clause of its wait names a run or a land that a session sleeps on, or a thread asleep on one (by name, id, or an 8-character id).
+ * Crawler VP 10-15 19:10Z, after a daemon restart left the chat's jobs unlisted: 117 steps were stuck, 77 of them owned by crawler ops train,
+ * asleep on its run wakes, and 29 more waiting on land 37, whose run 38790378691 the release owner 01a10810 slept on.
+ */
+export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" | "note">, watches: ReadonlyMap<string, WakeWatch>,
+  rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>): string | undefined {
+  if (!watches.size) return undefined;
+  const name = (session: string): string => rows.find(row => row.id === session)?.name ?? session.slice(0, 8);
+  for (const session of new Set([item.sessionId, stepOwner(item as PlanItem)])) {
+    const watch = session === undefined ? undefined : watches.get(session);
+    if (watch) return `its owner ${rows.some(row => row.id === session) ? name(session!) : item.job ?? name(session!)} sleeps on ${watch.label}`;
+  }
+  const head = firstClause(item.waitFor ?? "");
+  if (!head) return undefined;
+  const works = [...head.matchAll(NAMED_WORK)].map(([, kind, n, run]) => run ? `run ${run}` : `${kind!.toLowerCase()} ${n!.toLowerCase()}`);
+  for (const [session, watch] of watches) {
+    const work = works.find(candidate => watch.works.has(candidate));
+    if (work) return `its wait is on ${work}, which ${name(session)} sleeps on (${watch.label})`;
+  }
+  const thread = waitTarget(item.waitFor, rows, self)?.id;
+  const prefixes = head.match(SESSION_PREFIX) ?? [];
+  for (const [session, watch] of watches) {
+    if (session === thread || prefixes.some(prefix => session.startsWith(prefix))) return `its wait is on ${name(session)}, which sleeps on ${watch.label}`;
+  }
+  return undefined;
 }
 
 /** The KPI of a set of end states: open steps, how many are in the end state, how many are stuck and by what, and the share in the end state. */

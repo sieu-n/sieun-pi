@@ -1,6 +1,6 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { finishedOpen, looksDone } from "./checkin-done.ts";
-import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad, type Train } from "./checkin-load.ts";
+import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad, type Train, wakeWatches } from "./checkin-load.ts";
 import { flagKey, REPEAT_HEAD, REPEAT_RUNS, repeatLines } from "./checkin-repeats.ts";
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
@@ -17,6 +17,7 @@ import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, deadRunWait
   staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet } from "./checkin-findings.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, OK_STATES, stuckLine } from "./checkin-end-state.ts";
+import type { Wake } from "./wakes.ts";
 export { finishedOpen, looksDone };
 
 /**
@@ -65,6 +66,8 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   queued?: ReadonlyMap<string, unknown>;
   /** The sessions asleep on a board.wake the service still owes (`pendingWakes`): a blocker thread among them is not blocked on. Not given: none. */
   asleep?: ReadonlySet<string>;
+  /** The board.wakes the service still owes (`pendingWakes`): a step whose owner session, run, land or thread one of them watches is moving (`wakeMover`). Not given: none. */
+  wakes?: readonly Wake[];
   /** What the owner wrote in the chat (`ownerSaid`), for when he last ruled on a review (`readyReviews`); none when not given. */
   owner?: readonly OwnerMessage[] }
 
@@ -130,6 +133,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // A step blocked on others gets that one finding, which names the blocker and the action; stalled_steps' "act on it" on the same step gave
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
+  const watches = wakeWatches(context.wakes ?? [], context.train);
   return { memory: { at: now, steps, since }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train).filter(stall => !onOthers.has(stall.view.item.id)),
     goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board, now),
@@ -141,7 +145,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
       context.rows ?? [], context.train),
     fold: context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []), load: oneSessionLoad(goaled, context.jobs),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes,
-    end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts)) };
+    end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, watches)) };
 }
 
 /**

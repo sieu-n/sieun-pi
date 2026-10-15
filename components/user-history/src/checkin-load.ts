@@ -145,6 +145,23 @@ export function withWakes(facts: readonly JobFact[], wakes: readonly Wake[], ses
     return owed ? { ...fact, state: "working", wake: wakeLabel(owed) } : fact;
   });
 }
+/** What one session asleep on pending board.wakes watches: its wake label (`wakeLabel`), and the work its run wakes are on ("run 38790378691", "land 37"). */
+export interface WakeWatch { label: string; works: ReadonlySet<string> }
+/**
+ * Each session with a pending board.wake (`pendingWakes`), by session id, with the work it watches: each run it waits on, and the land the CI
+ * cache files that run under (`Train`). A step that waits on that run or land, or that this session owns, has a live owner in another session.
+ */
+export function wakeWatches(wakes: readonly Wake[], train?: Train): Map<string, WakeWatch> {
+  const bySession = new Map<string, Wake[]>();
+  for (const wake of wakes) bySession.set(wake.session, [...bySession.get(wake.session) ?? [], wake]);
+  const works = ({ on }: Wake): string[] => {
+    if (on.kind !== "run") return [];
+    const id = String(on.run);
+    const land = train?.runs.find(run => run.id === id)?.key;
+    return [`run ${id}`, ...(land !== undefined && land !== "land" && land !== "promote" ? [`land ${land}`] : [])];
+  };
+  return new Map([...bySession].map(([session, owed]) => [session, { label: wakeLabel(owed), works: new Set(owed.flatMap(works)) }]));
+}
 /** Words in a heartbeat's label or prompt that name work the check-in already does: a check-in, the board, watching, monitoring, status, nudging. */
 const CHECK_IN_WORK = /\bcheck[- ]?ins?\b|\bboard\b|\bwatch(?:er|ers|es|ing)?\b|\bmonitor(?:s|ing)?\b|\bstatus\b|\bnudge[sd]?\b|\bguides?\b|\bstall(?:s|ed)?\b|\bprogress\b/i;
 /** A heartbeat prompt that starts a job: its work is that job's, and its "update the board" or "send the owner the status" is the job's report. */

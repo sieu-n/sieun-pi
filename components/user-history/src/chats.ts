@@ -7,6 +7,7 @@ import { flagStreaks } from "./checkin-repeats.ts";
 import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, withHeldSpawns } from "./checkin-steps.ts";
+import type { Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
@@ -107,7 +108,7 @@ interface ChatJob { chat: string; agent: ChatAgent }
 /** What `gather` read for one check-in measure. */
 interface Gathered {
   board: ChatBoard | null; boardError?: string; rows: readonly SessionRow[]; facts: ReturnType<typeof jobFacts>;
-  queued: ReadonlyMap<string, QueuePlace>; asleep: ReadonlySet<string>; name?: string;
+  queued: ReadonlyMap<string, QueuePlace>; asleep: ReadonlySet<string>; wakes: readonly Wake[]; name?: string;
 }
 
 /**
@@ -1025,14 +1026,14 @@ export class Chats {
   }
 
   /** One check-in measure from what `gather` read: the precheck and its misses against the check-in duty's targets. */
-  private async measure(id: string, { board, boardError, rows, facts, queued, asleep, name }: Gathered, previous: CheckInMemory | undefined, everyMs: number, at: number) {
+  private async measure(id: string, { board, boardError, rows, facts, queued, asleep, wakes, name }: Gathered, previous: CheckInMemory | undefined, everyMs: number, at: number) {
     const self = name ? [id, name] : [id];
     const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
     const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
     const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
     const train = await readTrain(trainFile(this.source.home));
     const precheck = checkInPrecheck(previous, facts, board, at,
-      { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+      { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
   }
@@ -1064,7 +1065,7 @@ export class Chats {
       return lastMessage ? { ...fact, lastMessage } : fact;
     }), queued, [...this.subagents.values()].flat().concat(children, nested));
     const name = rows.find(row => row.id === id)?.name;
-    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, queued, asleep, ...(name ? { name } : {}) };
+    return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, queued, asleep, wakes, ...(name ? { name } : {}) };
   }
 
   /**
