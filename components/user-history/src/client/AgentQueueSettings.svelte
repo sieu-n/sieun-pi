@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { api } from "./api.ts";
+  import { clock } from "./clock.svelte.ts";
+  import { duration } from "./format.ts";
   import Checkbox from "./ui/Checkbox.svelte";
-  import type { AgentQueueInput, AgentQueueView } from "../shared/types.ts";
-  import { pressureChangeLine, pressureLine, queueLine, setLine } from "./agent-queue.ts";
-  import { POOL_DEFAULTS } from "./pool-config.ts";
+  import QueueHistory from "./QueueHistory.svelte";
+  import type { AgentQueueInput, AgentQueueRow, AgentQueueView } from "../shared/types.ts";
+  import { statusLine, whyLines } from "./agent-queue.ts";
 
   const POLL_MS = 5000;
   type Field = "mac" | "tree" | "aging" | "lease" | "idle";
@@ -41,6 +43,8 @@
     const value = drafts[field];
     return value !== null && Number.isInteger(value) && value >= 1 && value !== saved[field];
   };
+  const working = $derived(pool?.rows.filter(row => row.state === "working") ?? []);
+  const waiting = $derived(pool?.rows.filter(row => row.state === "waiting") ?? []);
 
   function submit(event: SubmitEvent, field: Field): void {
     event.preventDefault();
@@ -49,20 +53,33 @@
   }
 </script>
 
-{#snippet limit(field: Field, label: string, unit: string, max: number, enabled: boolean, notes: string[])}
+{#snippet limit(field: Field, label: string, unit: string, max: number, enabled: boolean)}
   <form class="limit" onsubmit={event => submit(event, field)}>
     <label class="label" for="queue-{field}">{label}</label>
     <div class="field-row">
       <input id="queue-{field}" class="field" type="number" inputmode="numeric" min="1" {max} step="1" disabled={!enabled || saving !== null}
         placeholder={field === "idle" && view?.idleEvictionMinutes === "off" ? "Off" : ""}
         value={shown(field)} oninput={event => { drafts[field] = Number.isNaN(event.currentTarget.valueAsNumber) ? null : event.currentTarget.valueAsNumber; }} />
-      {#if unit}<span class="unit">{unit}</span>{/if}
+      <span class="unit">{unit}</span>
       <button type="submit" class="button small" disabled={!enabled || saving !== null || !changed(field)}>
         {#if saving === field}<span class="spinner tiny"></span>{:else}Set{/if}
       </button>
     </div>
-    {#each notes as note (note)}<p class="note">{note}</p>{/each}
   </form>
+{/snippet}
+
+{#snippet group(title: string, rows: AgentQueueRow[])}
+  <div class="group-head">{title} <span class="count">{rows.length}</span></div>
+  {#each rows as row (row.session)}
+    <div class="qrow" class:owner={row.owner}>
+      <span class="chat" title={row.chat}>{row.chat}</span>
+      <span class="job" class:none={!row.job} title={row.job ?? ""}>{row.job ?? "chat"}</span>
+      <span class="who">{row.owner ? "owner" : "background"}</span>
+      <span class="time">{duration(Math.max(0, clock.now - row.since))}</span>
+    </div>
+  {:else}
+    <div class="qrow empty">None</div>
+  {/each}
 {/snippet}
 
 <section class="queue" aria-label="Agent queue">
@@ -70,34 +87,38 @@
   {#if !view}
     <p class="note">{error ? `The agent queue is unavailable. ${error}` : "Reading the agent queue"}</p>
   {:else}
-    <p class="live" class:problem={view.pool.state === "unread"} aria-live="polite">{queueLine(view.pool)}</p>
+    <p class="live" class:problem={view.pool.state === "unread"} aria-live="polite">{statusLine(view.pool)}</p>
     {#if view.pool.state === "unread"}<p class="note">{view.pool.error}</p>{/if}
-    {#if pool && pressureLine(pool.governor, pool.macWorkingMax)}<p class="note" class:problem={pool.governor?.level === "critical"}>{pressureLine(pool.governor, pool.macWorkingMax)}</p>{/if}
+
+    {#if pool?.enabled}
+      <div class="list" aria-label="Working and waiting agents">
+        {@render group("Working", working)}
+        {@render group("Waiting", waiting)}
+      </div>
+    {/if}
+
+    <QueueHistory hours={view.history} />
 
     <button type="button" class="toggle" role="switch" aria-checked={pool?.enabled ?? false} aria-busy={saving === "queue"} disabled={!pool || saving !== null}
       onclick={() => { if (pool) void apply({ action: "queue", on: !pool.enabled }); }}>
       {#if saving === "queue"}<span class="spinner tiny"></span>{:else}<Checkbox visual checked={pool?.enabled ?? false} />{/if}
-      <span class="text">
-        <span class="label">Queue agent turns</span>
-        <span class="note">A job or subagent turn waits for a working slot while the limits below are full. Your own messages never wait. Off lets every turn start at once and keeps both numbers.</span>
-      </span>
+      <span class="label">Queue agent turns</span>
+      <span class="note">Jobs and subagents wait for a free slot. Your own messages never wait.</span>
     </button>
 
-    {@render limit("mac", "Working sessions on this Mac", "", 999, pool !== null,
-      [...(pool ? [setLine(pool.macWorkingMax, pool.macWorkingMaxSet, POOL_DEFAULTS.mac_working_max)] : []),
-        ...(pool?.governor?.changed ? [pressureChangeLine(pool.governor.changed) ?? ""] : []),
-        `The default ${POOL_DEFAULTS.mac_working_max} is measured: a p90 working session uses 426 MB, and ${POOL_DEFAULTS.mac_working_max} fit in the 6.9 GB free (10-14 07:38 KST).`])}
-    {@render limit("tree", "Working sessions per chat", "", 999, pool !== null,
-      ["Half of 16, so two chats at full fan-out fit, above the 7 working sessions VP of CI held at once on 10-14."])}
-    {@render limit("aging", "Move a waiting turn up a class every", "s", 86400, pool !== null,
-      ["The median turn ran 18.1 s over 27,578 turns in the 4 days to 10-14 08 KST, so a low turn passes a fresh normal one after about one turn."])}
-    {@render limit("lease", "Free a silent working slot after", "s", 86400, pool !== null,
-      ["Inside one turn, gaps between model calls were 157 s at p99 and 1,508 s at p99.9 over 174,119 gaps in the 3 days to 10-14 08 KST, so a slot this quiet belongs to a turn that ended with no release."])}
-    {@render limit("idle", "Unload idle sessions after", "min", 1440, true, [
-      "90 min is the daemon's own default, kept until reload gaps are measured; 10 timed reloads on 10-13 took 1.1 to 6.2 s. The daemon rereads it within 5 minutes, with no restart.",
-      "Pinned chats stay loaded until the harness VP's detach fix lands, so for now this unloads idle jobs and threads only.",
-    ])}
+    <div class="limits">
+      {@render limit("mac", "Agents working on this Mac", "", 999, pool !== null)}
+      {@render limit("tree", "Agents working per chat", "", 999, pool !== null)}
+      {@render limit("aging", "Move a waiting turn up a class every", "s", 86400, pool !== null)}
+      {@render limit("lease", "Free a silent slot after", "s", 86400, pool !== null)}
+      {@render limit("idle", "Unload idle sessions after", "min", 1440, true)}
+    </div>
     {#if error}<p class="note problem">The last change failed. {error}</p>{/if}
+
+    <details class="why">
+      <summary>Why these numbers</summary>
+      <ul>{#each whyLines(view) as line (line)}<li>{line}</li>{/each}</ul>
+    </details>
   {/if}
 </section>
 
@@ -107,16 +128,28 @@
   .live { margin: 0; font-size: 14px; font-weight: 500; line-height: 1.4; font-variant-numeric: tabular-nums; }
   .live.problem, .note.problem { color: var(--danger); }
   .note { margin: 0; color: var(--text-muted); line-height: 1.45; }
-  .toggle { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); }
+  .list { max-height: 248px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-small); font-size: 12px; }
+  .group-head { position: sticky; top: 0; padding: 4px 10px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 600; }
+  .count { font-weight: 400; font-variant-numeric: tabular-nums; }
+  .qrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 76px 56px; gap: 10px; align-items: center; padding: 3px 10px; line-height: 18px; }
+  .qrow + .qrow { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+  .qrow.empty { display: block; color: var(--text-faint); }
+  .chat, .job { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat { font-weight: 500; }
+  .job.none { color: var(--text-faint); }
+  .who { color: var(--text-faint); }
+  .qrow.owner .who { color: var(--accent); font-weight: 500; }
+  .time { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+  .toggle { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; padding: 8px 12px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elevated); }
   .toggle:hover:not(:disabled) { background: var(--bg-hover); }
   .toggle:disabled { cursor: default; opacity: 0.75; }
-  .toggle :global(.box), .toggle .spinner { margin-top: 2px; }
-  .text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .label { font-weight: 500; }
-  .limit { display: grid; grid-template-columns: 220px auto; align-items: center; gap: 4px 16px; }
-  .limit .note { grid-column: 1 / -1; }
+  .limits { display: flex; flex-direction: column; gap: 6px; }
+  .limit { display: grid; grid-template-columns: 250px auto; align-items: center; gap: 16px; }
   .field-row { display: flex; align-items: center; gap: 8px; }
-  .field-row .field { width: 88px; font-variant-numeric: tabular-nums; }
-  .unit { color: var(--text-muted); }
+  .field-row .field { width: 80px; font-variant-numeric: tabular-nums; }
+  .unit { width: 24px; color: var(--text-muted); }
   .field:disabled { opacity: 0.6; }
+  .why summary { cursor: pointer; color: var(--text-muted); font-size: 12px; }
+  .why ul { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
 </style>

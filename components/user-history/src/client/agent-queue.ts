@@ -1,18 +1,18 @@
-import type { AgentQueueGovernor, AgentQueuePool, PoolSetRecord, PressureChange, PressureReading } from "../shared/types.ts";
-import { duration } from "./format.ts";
+import type { AgentQueueGovernor, AgentQueuePool, AgentQueueView, PoolSetRecord, PressureChange, PressureReading, TurnHour } from "../shared/types.ts";
+import { POOL_DEFAULTS } from "./pool-config.ts";
 
 export const POOL_SILENT = "The pool did not answer. The queue is off until it does.";
 
-/** The live line of Settings > This Mac > Agent queue: how many turns work and wait, and which one goes next. */
-export function queueLine(pool: AgentQueuePool): string {
+const agents = (count: number): string => `${count} ${count === 1 ? "agent" : "agents"}`;
+
+/** The one status line of Settings > This Mac > Agent queue: how many agents work and wait, and whether memory holds some back. */
+export function statusLine(pool: AgentQueuePool): string {
   if (pool.state === "unread") return POOL_SILENT;
-  if (!pool.enabled) return "The queue is off, so every turn starts at once.";
-  const head = `${pool.working.length} working, ${pool.queued.length} queued.`;
-  const next = pool.queued[0];
-  if (!next) return head;
-  const name = pool.nextTitle ?? next.session.slice(0, 8);
-  const kind = next.basePriority === next.priority ? `a ${next.priority} turn` : `a ${next.basePriority} turn moved up to ${next.priority}`;
-  return `${head} Next: ${name}, ${kind}, queued for ${duration(next.waitMs)}.`;
+  if (!pool.enabled) return "The queue is off, so every agent starts at once.";
+  const head = `${agents(pool.working.length)} working, ${pool.queued.length} waiting.`;
+  const governor = pool.governor;
+  if (!governor?.on || governor.level === "ok") return head;
+  return governor.limit < pool.macWorkingMax ? `${head} Memory is tight, so fewer run at once.` : `${head} Memory is tight, so jobs of normal and low chats wait.`;
 }
 
 const KST = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
@@ -23,9 +23,9 @@ const kst = (ms: number): string => {
 
 /** Who last set a pool limit and when, from `pi-pool set`'s record; `fallback` is the default the limit holds with no record. */
 export function setLine(value: number, record: PoolSetRecord | null, fallback: number): string {
-  if (!record) return `Holds the default ${fallback}; nobody has set it.`;
-  if (!record.by) return `Set to ${value} at ${kst(record.at)}, the file time of config.json, by a writer pi-pool did not record then.`;
-  return `Set to ${value} by ${record.by} at ${kst(record.at)}.`;
+  if (!record) return `The Mac limit holds the default ${fallback}, and nobody has set it.`;
+  if (!record.by) return `The Mac limit was set to ${value} at ${kst(record.at)}, the file time of config.json, by a writer pi-pool did not record then.`;
+  return `The Mac limit was set to ${value} by ${record.by} at ${kst(record.at)}.`;
 }
 
 const KERNEL: Readonly<Record<number, string>> = { 1: "normal", 2: "warn", 4: "critical" };
@@ -33,19 +33,54 @@ const gb = (bytes: number): string => (bytes / 1e9).toFixed(1);
 const readingText = (r: PressureReading): string =>
   `kernel ${KERNEL[r.kernel] ?? r.kernel}, compressor ${gb(r.compressorBytes)} of ${gb(r.ramBytes)} GB, swap ${gb(r.swapUsedBytes)} of ${gb(r.swapTotalBytes)} GB`;
 
-/** The governor's line under the live line: the level, the limit it allows and the turns it holds, with the reading behind it. Null with no governor. */
+/** The governor's level, the limit it allows and the turns it holds, with the reading behind it. Null with no governor. */
 export function pressureLine(governor: AgentQueueGovernor | null, macWorkingMax: number): string | null {
   if (!governor) return null;
   if (!governor.on) return "The memory governor is off, so the limit holds under any memory pressure.";
   const reading = governor.reading ? ` (${readingText(governor.reading)})` : "";
-  if (governor.level === "ok") return `Memory pressure ok${reading}.`;
-  return `Memory pressure ${governor.level}${reading}: up to ${governor.limit} of ${macWorkingMax} working, ${governor.held} low turns held.`;
+  if (governor.level === "ok") return `Memory pressure is ok${reading}.`;
+  return `Memory pressure is ${governor.level}${reading}, so up to ${governor.limit} of ${macWorkingMax} work and ${governor.held} waiting turns are held.`;
 }
 
-/** The governor's last limit change on the Mac limit's row, with the reading that made it. */
+/** The governor's last limit change, with the reading that made it. */
 export function pressureChangeLine(change: PressureChange | null): string | null {
   if (!change) return null;
   const why = `memory pressure went ${change.to}${change.reading ? ` (${readingText(change.reading)})` : ""}`;
   if (change.limitFrom === change.limitTo) return `At ${kst(change.at)} ${why}, and the limit stayed ${change.limitTo}.`;
-  return `${change.limitTo < change.limitFrom ? "Lowered" : "Raised"} from ${change.limitFrom} to ${change.limitTo} at ${kst(change.at)}: ${why}.`;
+  return `At ${kst(change.at)} ${why}, and the limit went from ${change.limitFrom} to ${change.limitTo}.`;
+}
+
+/** Everything behind "Why these numbers": the live reading, who set the limit, and the measurements behind each default. */
+export function whyLines(view: AgentQueueView): string[] {
+  const pool = view.pool.state === "read" ? view.pool : null;
+  const live = pool ? [pressureLine(pool.governor, pool.macWorkingMax), pressureChangeLine(pool.governor?.changed ?? null),
+    setLine(pool.macWorkingMax, pool.macWorkingMaxSet, POOL_DEFAULTS.mac_working_max)] : [];
+  return [
+    ...live.filter((line): line is string => line !== null),
+    "Under memory pressure the Mac limit drops to 16 at high and 12 at critical, and the first calm read puts it back to the number you set. It never goes above that number.",
+    "Your own messages and prod work never wait in the queue.",
+    `The default Mac limit of ${POOL_DEFAULTS.mac_working_max} comes from 10-14 07:38 KST, when 6.9 GB was free and a p90 working session used 426 MB.`,
+    `The default of ${POOL_DEFAULTS.tree_working_max} per chat is half of ${POOL_DEFAULTS.mac_working_max}, so two chats at full fan-out fit. VP of CI held 7 working sessions at once on 10-14.`,
+    `The median turn ran 18.1 s over 27,578 turns in the 4 days to 10-14 08 KST, so with a ${POOL_DEFAULTS.queue_aging_s} s step a low turn passes a fresh normal one after about one turn.`,
+    "Inside one turn, gaps between model calls were 157 s at p99 and 1,508 s at p99.9 over 174,119 gaps in the 3 days to 10-14 08 KST. A slot quiet for longer belongs to a turn that ended with no release.",
+    "90 min is the daemon's own idle unload default. 10 timed reloads on 10-13 took 1.1 to 6.2 s, and the daemon rereads the setting within 5 minutes with no restart.",
+    "Pinned chats stay loaded until the harness VP's detach fix lands, so the idle unload covers idle jobs and threads only.",
+    "The chart counts turn_released lines in pi-pool.log per hour. Its median wait leaves out owner and prod turns, which never wait.",
+  ];
+}
+
+/** A wait in seconds as the chart's hover reads it. */
+export function waitText(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)} s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  return `${(seconds / 3600).toFixed(1)} h`;
+}
+
+/** The hours where a new local day starts, for the chart's day labels: index into `hours` and the "10-15" label. */
+export function dayTicks(hours: TurnHour[]): Array<{ index: number; label: string }> {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return hours.flatMap((hour, index) => {
+    const date = new Date(hour.at);
+    return date.getHours() === 0 ? [{ index, label: `${pad(date.getMonth() + 1)}-${pad(date.getDate())}` }] : [];
+  });
 }

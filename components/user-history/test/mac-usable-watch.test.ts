@@ -30,7 +30,7 @@ const ROWS = [
   row("passivated", { parentSessionId: "chatB", workerPid: 22, activeSessionId: undefined, activity: "idle", taskState: "needs_input" }),
 ];
 const FOOTPRINTS: Footprints = { workers: { 11: { pids: 4, bytes: 6 * GB }, 22: { pids: 2, bytes: 1.5 * GB } }, swap_used_bytes: 41.5 * GB, pressure_level: 2, cpu_s: 0.21 };
-const QUEUE = { working: [{ session: "chatA", tree: "chatA", parent: null, priority: "high" as const, since: NOW - 60_000 }],
+const QUEUE = { working: [{ session: "chatA", tree: "chatA", parent: null, priority: "high" as const, kind: "slot" as const, since: NOW - 60_000 }],
   queued: [{ session: "jobB1", tree: "chatB", parent: "chatB", priority: "low" as const, basePriority: "low" as const, since: NOW - 800_000, position: 1, total: 1, waitMs: 800_000 }], governor: { level: "high", held: 2 } };
 
 test("watchLine: worker footprint and the top workers with their chat tree, quiet and finished sessions by tree, the queue, and the Mac as context", () => {

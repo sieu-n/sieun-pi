@@ -22,7 +22,8 @@ process.env.PI_POOL_BIN = fake;
 const { parseAgentQueue, readAgentQueue, readQueueTimers, setPoolKey } = await import("../src/chat-pool.ts");
 const { agentQueue, parseAgentQueueInput } = await import("../src/chat-agent-queue.ts");
 const { chatDefaultsStore } = await import("../src/chat-backend.ts");
-const { pressureChangeLine, pressureLine, queueLine, setLine, POOL_SILENT } = await import("../src/client/agent-queue.ts");
+const { pressureChangeLine, pressureLine, setLine, statusLine, whyLines, POOL_SILENT } = await import("../src/client/agent-queue.ts");
+const { queueRows, rowNames } = await import("../src/chat-agent-queue.ts");
 
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 const raw = () => JSON.parse(readFileSync(fixture, "utf8")) as Record<string, unknown>;
@@ -32,7 +33,7 @@ test("the queue fixture parses into epoch ms, queued in position order", async (
   assert.equal(reading.enabled, true);
   assert.equal(reading.macWorkingMax, 16);
   assert.equal(reading.treeWorkingMax, 8);
-  assert.deepEqual(reading.working.map(entry => [entry.session, entry.priority, entry.since]), [["s-work-1", "high", 1792000000000], ["s-work-2", "normal", 1792000030000]]);
+  assert.deepEqual(reading.working.map(entry => [entry.session, entry.priority, entry.kind, entry.since]), [["s-work-1", "high", "owner", 1792000000000], ["s-work-2", "normal", "slot", 1792000030000]]);
   assert.deepEqual(reading.queued.map(entry => [entry.session, entry.position, entry.basePriority, entry.priority, entry.waitMs]), [["s-q-1", 1, "low", "normal", 245000], ["s-q-2", 2, "normal", "normal", 60000]]);
 });
 
@@ -46,6 +47,7 @@ test("both limits must be whole numbers, and a bad shape throws", () => {
   assert.throws(() => parseAgentQueue({ ...raw(), tree_working_max: 0 }));
   assert.throws(() => parseAgentQueue({ ...raw(), queued: [{ session: "x", tree: "t", class: "normal", since: 1 }] }));
   assert.throws(() => parseAgentQueue(null));
+  assert.throws(() => parseAgentQueue({ ...raw(), working: [{ session: "x", tree: "t", parent: null, class: "normal", kind: "lent", since: 1 }] }), /kind/);
 });
 
 test("the Mac limit carries who last set it and when, and the Settings row says so next to the measured default", () => {
@@ -54,10 +56,10 @@ test("the Mac limit carries who last set it and when, and the Settings row says 
     { by: "the Settings pane", at: 1791942343000 });
   assert.throws(() => parseAgentQueue({ ...raw(), mac_working_max_set: { by: "", at: 1791942343 } }));
   assert.throws(() => parseAgentQueue({ ...raw(), mac_working_max_set: { by: null } }));
-  assert.equal(setLine(16, null, 16), "Holds the default 16; nobody has set it.");
-  assert.equal(setLine(30, { by: "the Settings pane", at: 1791942343000 }, 16), "Set to 30 by the Settings pane at 10-14 10:45 KST.");
+  assert.equal(setLine(16, null, 16), "The Mac limit holds the default 16, and nobody has set it.");
+  assert.equal(setLine(30, { by: "the Settings pane", at: 1791942343000 }, 16), "The Mac limit was set to 30 by the Settings pane at 10-14 10:45 KST.");
   assert.equal(setLine(30, { by: null, at: 1791942343000 }, 16),
-    "Set to 30 at 10-14 10:45 KST, the file time of config.json, by a writer pi-pool did not record then.");
+    "The Mac limit was set to 30 at 10-14 10:45 KST, the file time of config.json, by a writer pi-pool did not record then.");
 });
 
 test("the memory governor's record parses, and the Settings row shows its level, its limit, its held turns and its last limit change with the reading", () => {
@@ -69,12 +71,12 @@ test("the memory governor's record parses, and the Settings row shows its level,
   assert.throws(() => parseAgentQueue({ ...raw(), pressure: { ...raw().pressure as object, level: "warn" } }));
   assert.throws(() => parseAgentQueue({ ...raw(), pressure: { ...raw().pressure as object, reading: { kernel: 2 } } }));
   assert.equal(pressureLine(governor, 30),
-    "Memory pressure high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB): up to 16 of 30 working, 2 low turns held.");
+    "Memory pressure is high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB), so up to 16 of 30 work and 2 waiting turns are held.");
   assert.equal(pressureChangeLine(governor!.changed),
-    "Lowered from 30 to 16 at 10-15 02:51 KST: memory pressure went high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB).");
-  assert.equal(pressureChangeLine({ ...governor!.changed!, from: "high", to: "ok", limitFrom: 16, limitTo: 30, reading: null }), "Raised from 16 to 30 at 10-15 02:51 KST: memory pressure went ok.");
+    "At 10-15 02:51 KST memory pressure went high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB), and the limit went from 30 to 16.");
+  assert.equal(pressureChangeLine({ ...governor!.changed!, from: "high", to: "ok", limitFrom: 16, limitTo: 30, reading: null }), "At 10-15 02:51 KST memory pressure went ok, and the limit went from 16 to 30.");
   assert.equal(pressureChangeLine({ ...governor!.changed!, limitFrom: 12, limitTo: 12, reading: null }), "At 10-15 02:51 KST memory pressure went high, and the limit stayed 12.");
-  assert.equal(pressureLine({ ...governor!, level: "ok", limit: 30, held: 0, reading: null }, 30), "Memory pressure ok.");
+  assert.equal(pressureLine({ ...governor!, level: "ok", limit: 30, held: 0, reading: null }, 30), "Memory pressure is ok.");
   assert.equal(pressureLine({ ...governor!, on: false }, 30), "The memory governor is off, so the limit holds under any memory pressure.");
   assert.equal(pressureLine(null, 30), null);
 });
@@ -100,7 +102,8 @@ function harness(initial: AgentQueueReading) {
       if (key === "agent_queue_on") reading = { ...reading, enabled: value === 1 };
       if (key === "mac_working_max") reading = { ...reading, macWorkingMax: value };
       if (key === "tree_working_max") reading = { ...reading, treeWorkingMax: value };
-    });
+    },
+    async () => [{ at: 1792000000000, finished: 40, medianWaitS: 12 }]);
   return { queue, writes, fail: () => { reading = null; } };
 }
 
@@ -128,17 +131,46 @@ test("the per-chat limit, the two timers and the idle unload time are their own 
   assert.deepEqual(writes, [["tree_working_max", 6], ["queue_aging_s", 30], ["lease_s", 900], ["idleEvictionMinutes", 45]]);
 });
 
-test("the live line counts working and queued turns and names the next one", async () => {
+test("the status line counts working and waiting agents and says when memory holds some back", async () => {
   const { queue, fail } = harness(parseAgentQueue(raw()));
-  const { pool } = await queue.view();
-  assert.equal(queueLine(pool), "2 working, 2 queued. Next: Crawler VP, a low turn moved up to normal, queued for 4m 5s.");
+  const view = await queue.view();
+  const { pool } = view;
   assert.equal(pool.state, "read");
   if (pool.state !== "read") return;
-  assert.equal(queueLine({ ...pool, queued: [], nextTitle: null }), "2 working, 0 queued.");
-  assert.equal(queueLine({ ...pool, enabled: false }), "The queue is off, so every turn starts at once.");
+  assert.equal(statusLine(pool), "2 agents working, 2 waiting. Memory is tight, so jobs of normal and low chats wait.");
+  assert.equal(statusLine({ ...pool, macWorkingMax: 30 }), "2 agents working, 2 waiting. Memory is tight, so fewer run at once.");
+  assert.equal(statusLine({ ...pool, governor: { ...pool.governor!, level: "ok" } }), "2 agents working, 2 waiting.");
+  assert.equal(statusLine({ ...pool, governor: { ...pool.governor!, on: false } }), "2 agents working, 2 waiting.");
+  assert.equal(statusLine({ ...pool, working: pool.working.slice(0, 1), queued: [], governor: { ...pool.governor!, level: "ok" } }), "1 agent working, 0 waiting.");
+  assert.equal(statusLine({ ...pool, enabled: false }), "The queue is off, so every agent starts at once.");
+  assert.deepEqual(view.history, [{ at: 1792000000000, finished: 40, medianWaitS: 12 }]);
   fail();
-  assert.equal(queueLine((await queue.view()).pool), POOL_SILENT);
+  assert.equal(statusLine((await queue.view()).pool), POOL_SILENT);
   assert.equal(POOL_SILENT, "The pool did not answer. The queue is off until it does.");
+});
+
+test("the queue rows name each turn's chat and job, working longest first, then waiting in admission order", async () => {
+  const titles: Record<string, string> = { "t-root-1": "VP of CI", "s-work-2": "ci watcher", "t-root-3": "Crawler VP", "01a1": "ops guy" };
+  const title = (id: string): string | null => titles[id] ?? null;
+  const rows = queueRows(parseAgentQueue(raw()), title);
+  assert.deepEqual(rows.map(row => [row.state, row.chat, row.job, row.owner, row.since]), [
+    ["working", "VP of CI", "s-work-1", true, 1792000000000],
+    ["working", "VP of CI", "ci watcher", false, 1792000030000],
+    ["waiting", "Crawler VP", "s-q-1", false, 1792000000000],
+    ["waiting", "t-root-2", "s-q-2", false, 1792000100000],
+  ]);
+  assert.deepEqual(rowNames("duty:01a1:checkin", "duty:01a1:checkin", title), { chat: "ops guy", job: "check-in" });
+  assert.deepEqual(rowNames("duty:01a1:d3-fix", "duty:01a1:d3-fix", title), { chat: "ops guy", job: "duty d3 fix" });
+  assert.deepEqual(rowNames("duty:01a1:checkin-fix", "x", title), { chat: "ops guy", job: "check-in fix" });
+});
+
+test("why these numbers carries the live reading, who set the limit and every measured default", async () => {
+  const { queue } = harness(parseAgentQueue(raw()));
+  const lines = whyLines(await queue.view());
+  assert.equal(lines[0], "Memory pressure is high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB), so up to 16 of 16 work and 2 waiting turns are held.");
+  assert.ok(lines.includes("The Mac limit holds the default 16, and nobody has set it."));
+  assert.ok(lines.some(line => line.includes("never goes above that number")));
+  for (const line of lines) assert.ok(!line.includes("\u2014"), line);
 });
 
 test("an Agent queue write takes the switch, a whole limit from 1 to 999, a timer from 1 to 86,400 s, or 1 to 1440 idle minutes or off", () => {

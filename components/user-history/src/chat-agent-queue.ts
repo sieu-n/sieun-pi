@@ -1,5 +1,6 @@
 import { readAgentQueue, readQueueTimers, setPoolKey, type AgentQueueKey } from "./chat-pool.ts";
-import type { AgentQueueInput, AgentQueueReading, AgentQueueTimers, AgentQueueView, IdleEvictionMinutes } from "./shared/types.ts";
+import type { AgentQueueInput, AgentQueueReading, AgentQueueRow, AgentQueueTimers, AgentQueueView, IdleEvictionMinutes, TurnHour } from "./shared/types.ts";
+import { turnHistory } from "./turn-history.ts";
 
 /** Input bounds for the two limits. A limit above the measured 16 is the owner's call; 999 only catches a typo with extra digits. */
 const LIMIT_MAX = 999;
@@ -25,14 +26,41 @@ export function parseAgentQueueInput(body: unknown): AgentQueueInput {
   throw new Error(`Use action queue with on true or false, mac or tree with a whole number from 1 to ${LIMIT_MAX}, aging or lease with 1 to ${TIMER_MAX_S} seconds, or idle with 1 to ${IDLE_MAX_MINUTES} minutes or "off".`);
 }
 
-/** `title` names a session for the Next line; null when the catalog does not know it. `read` and `set` default to the installed pi-pool. */
-export function agentQueue(title: (sessionId: string) => string | null, idle: IdleEviction,
-  read: () => Promise<AgentQueueReading> = readAgentQueue, timers: () => Promise<AgentQueueTimers> = readQueueTimers, set: typeof setPoolKey = setPoolKey): AgentQueue {
+type Title = (sessionId: string) => string | null;
+const short = (id: string): string => id.slice(0, 8);
+/** The chat service's duty keys (chat-turn-queue.ts dutyQueueKey): `duty:<chat id>:<duty id>`, with `checkin` for the check-in and `-fix` on a fix job. */
+const DUTY_KEY = /^duty:([^:]+):(.+)$/;
+function dutyJob(id: string): string {
+  const base = id.endsWith("-fix") ? id.slice(0, -"-fix".length) : id;
+  const name = base === "checkin" ? "check-in" : `duty ${base}`;
+  return base === id ? name : `${name} fix`;
+}
+
+/** The chat and job names of one queue entry; an id the catalog does not know shows as its first 8 characters. */
+export function rowNames(session: string, tree: string, title: Title): Pick<AgentQueueRow, "chat" | "job"> {
+  const duty = DUTY_KEY.exec(session);
+  if (duty) return { chat: title(duty[1]!) ?? short(duty[1]!), job: dutyJob(duty[2]!) };
+  return { chat: title(tree) ?? short(tree), job: session === tree ? null : title(session) ?? short(session) };
+}
+
+/** The live queue's rows: working turns longest first, then waiting turns in the order pi-pool admits them. */
+export function queueRows(reading: Pick<AgentQueueReading, "working" | "queued">, title: Title): AgentQueueRow[] {
+  const working = [...reading.working].sort((a, b) => a.since - b.since)
+    .map((entry): AgentQueueRow => ({ session: entry.session, state: "working", ...rowNames(entry.session, entry.tree, title), owner: entry.kind === "owner", since: entry.since }));
+  const waiting = reading.queued
+    .map((entry): AgentQueueRow => ({ session: entry.session, state: "waiting", ...rowNames(entry.session, entry.tree, title), owner: false, since: entry.since }));
+  return [...working, ...waiting];
+}
+
+/** `title` names a session for the queue rows; null when the catalog does not know it. `read` and `set` default to the installed pi-pool, `history` to pi-pool.log. */
+export function agentQueue(title: Title, idle: IdleEviction,
+  read: () => Promise<AgentQueueReading> = readAgentQueue, timers: () => Promise<AgentQueueTimers> = readQueueTimers, set: typeof setPoolKey = setPoolKey,
+  history: () => Promise<TurnHour[]> = turnHistory()): AgentQueue {
   async function view(): Promise<AgentQueueView> {
-    const pool = await Promise.all([read(), timers()]).then(([reading, timing]) => ({ state: "read" as const, ...reading, ...timing,
-      nextTitle: reading.queued[0] ? title(reading.queued[0].session) : null }),
-      (error: unknown) => ({ state: "unread" as const, error: error instanceof Error ? error.message : String(error) }));
-    return { pool, idleEvictionMinutes: idle.idleEviction() };
+    const [pool, hours] = await Promise.all([Promise.all([read(), timers()]).then(([reading, timing]) => ({ state: "read" as const, ...reading, ...timing,
+      rows: queueRows(reading, title) }),
+      (error: unknown) => ({ state: "unread" as const, error: error instanceof Error ? error.message : String(error) })), history().catch(() => [])]);
+    return { pool, idleEvictionMinutes: idle.idleEviction(), history: hours };
   }
 
   async function apply(input: AgentQueueInput): Promise<AgentQueueView> {

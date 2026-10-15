@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { HeldSpawn } from "./checkin-steps.ts";
-import { POOL_PRIORITIES, type AccountAction, type AgentQueueGovernor, type AgentQueueReading, type AgentQueueSession, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
-  type PressureChange, type PressureLevel, type PressureReading, type PoolResolution, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
+import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueGovernor, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
+  type PressureChange, type PressureLevel, type PressureReading, type PoolResolution, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
  * The installed pi-pool CLI (`~/.local/bin/pi-pool`, a link into ~/.local/share/pi-pool/current), never the copy in this checkout: the chat
@@ -210,6 +210,14 @@ function queueSession(value: unknown): AgentQueueSession {
   return { session: value.session as string, tree: value.tree as string, parent: text(value.parent), priority, since };
 }
 
+const isTurnKind = (value: unknown): value is TurnKind => TURN_KINDS.some(kind => kind === value);
+function workingSession(value: unknown): AgentQueueWorking {
+  const session = queueSession(value);
+  const kind = isRecord(value) ? value.kind : null;
+  if (!isTurnKind(kind)) throw new Error("pi-pool returned an invalid working turn kind");
+  return { ...session, kind };
+}
+
 export function parseAgentQueue(value: unknown): AgentQueueReading {
   if (!isRecord(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.working) || !Array.isArray(value.queued)) throw new Error("pi-pool returned an invalid queue");
   const macWorkingMax = count(value.mac_working_max), treeWorkingMax = count(value.tree_working_max);
@@ -223,7 +231,7 @@ export function parseAgentQueue(value: unknown): AgentQueueReading {
     if (position === null || total === null || wait === null) throw new Error("pi-pool returned an invalid queue entry");
     return { ...session, basePriority, position, total, waitMs: wait * 1000 };
   }).sort((a, b) => a.position - b.position);
-  return { enabled: value.enabled, macWorkingMax, macWorkingMaxSet: setRecord(value.mac_working_max_set), treeWorkingMax, working: value.working.map(queueSession), queued,
+  return { enabled: value.enabled, macWorkingMax, macWorkingMaxSet: setRecord(value.mac_working_max_set), treeWorkingMax, working: value.working.map(workingSession), queued,
     governor: parseGovernor(value.pressure) };
 }
 
