@@ -597,6 +597,11 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           }
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
           if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
+          if (action === "prompt") {
+            const view = backend.prompt ? await backend.prompt(id) : null;
+            if (!view) throw new RequestError(404, "This thread has no session file.");
+            json(res, 200, view); return;
+          }
           if (action === "check-in") {
             const view = await backend.chats.checkInView(id);
             if (!view) throw new RequestError(404, "This thread is not a chat.");

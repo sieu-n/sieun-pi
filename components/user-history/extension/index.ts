@@ -21,6 +21,7 @@ import { withMessageCheck } from "../src/message-limit-check.ts";
 import { loadWaitGuard } from "../src/load-wait.ts";
 import { FLEET_STATE_FILE, FLEET_STOP_FILE } from "../src/fleet-budget.ts";
 import { fleetGuard, fleetStopGuard, parseFleetState } from "../src/fleet-guard.ts";
+import { recordPrompt } from "../src/prompt-capture.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -110,6 +111,15 @@ export default function historyExtension(pi: ExtensionAPI): void {
     const flag = pi.getFlag("agent-chat-data-dir");
     return typeof flag === "string" && flag ? resolve(flag) : join(getAgentDir(), "browser-chat");
   };
+  // Each session's last provider payload for the Prompt view (src/prompt-capture.ts). No other extension hooks this event and user-history
+  // loads last, so this is the request as sent. The JSON is built here; the file write runs after the request leaves.
+  pi.on("before_provider_request", (event, ctx) => {
+    try {
+      void recordPrompt(dataDir(), { capturedAt: new Date().toISOString(), sessionId: ctx.sessionManager.getSessionId(),
+        sessionFile: ctx.sessionManager.getSessionFile() ?? null, provider: ctx.model?.provider ?? "", model: ctx.model?.id ?? "", payload: event.payload });
+    } catch { /* no capture this call */ }
+    return undefined;
+  });
   // The chat server computes the agents list (subagents, roots, step owners, message partners) and serves it under its capability URL,
   // recorded in <data dir>/instance.json. No server, no section.
   const chatAgentsOf = async (sessionId: string): Promise<ChatAgent[]> => {
