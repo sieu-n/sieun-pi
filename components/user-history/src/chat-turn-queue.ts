@@ -1,5 +1,6 @@
 import { admitTurn, readAgentQueue, releaseTurn, type TurnClass } from "./chat-pool.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
+import { HARNESS_GB } from "./mac-usable-watch.ts";
 import type { JobFact } from "./checkin-steps.ts";
 import type { AgentQueueReading, ChildAgent, QueuePlace } from "./shared/types.ts";
 
@@ -77,15 +78,37 @@ export interface DutyAdmitter {
  */
 export const dutyClass = (dutyId: string): TurnClass => dutyId === CHECK_IN_DUTY_ID ? "checkin" : "low";
 
+/** How often a duty held for memory reads the workers' footprint again: the Mac usable watch writes one line a minute. */
+export const MEMORY_POLL_MS = 60_000;
+
+/**
+ * `memory` is the Prime workers' footprint in GB now (workerGbNow), null when unread. While it is over HARNESS_GB a duty other than the
+ * check-in waits before it asks the pool, because a queued job already holds its worker and kernel: at 09:5xZ on 10-15, 44 sessions sat queued
+ * that way while 26 workers held 26.5 GB. The check-in is never held, as pi-pool never holds its key under pressure.
+ */
 export function dutyAdmitter(input: { log: (line: string) => void; now?: () => number;
-  pool?: { admit: typeof admitTurn; release: typeof releaseTurn; read: () => Promise<AgentQueueReading> } }): DutyAdmitter {
+  pool?: { admit: typeof admitTurn; release: typeof releaseTurn; read: () => Promise<AgentQueueReading> };
+  memory?: () => Promise<number | null>; sleep?: (ms: number) => Promise<void> }): DutyAdmitter {
   const pool = input.pool ?? { admit: admitTurn, release: releaseTurn, read: readAgentQueue };
   const now = input.now ?? Date.now;
+  const sleep = input.sleep ?? (ms => new Promise<void>(resolve => { setTimeout(resolve, ms); }));
+  const overMemory = async (): Promise<number | null> => {
+    const gb = await (input.memory?.() ?? Promise.resolve(null)).catch(() => null);
+    return gb !== null && gb > HARNESS_GB ? gb : null;
+  };
   const reason = (error: unknown): string => error instanceof Error ? error.message : String(error);
   return {
     async admit(chatId, dutyId) {
       const key = dutyQueueKey(chatId, dutyId);
       const asked = now();
+      if (dutyId !== CHECK_IN_DUTY_ID) {
+        const first = await overMemory();
+        if (first !== null) {
+          input.log(`duty ${chatId.slice(0, 8)}/${dutyId}: Prime workers hold ${first} GB, over ${HARNESS_GB} GB, so its job waits before it starts`);
+          while (await overMemory() !== null) await sleep(MEMORY_POLL_MS);
+          input.log(`duty ${chatId.slice(0, 8)}/${dutyId}: Prime workers back at ${HARNESS_GB} GB or less after ${Math.round((now() - asked) / 60_000)} min`);
+        }
+      }
       let state: "admitted" | "off";
       try { state = await pool.admit(key, key, dutyClass(dutyId)); }
       catch (error) {

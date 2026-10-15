@@ -30,7 +30,7 @@ esac
 chmodSync(fake, 0o755);
 process.env.PI_POOL_BIN = fake;
 const { admitTurn, markOwnerTurn, releaseTurn } = await import("../src/chat-pool.ts");
-const { dutyAdmitter, dutyQueueKey, queuedPlaces, queueReader, withQueuePlaces } = await import("../src/chat-turn-queue.ts");
+const { dutyAdmitter, dutyQueueKey, MEMORY_POLL_MS, queuedPlaces, queueReader, withQueuePlaces } = await import("../src/chat-turn-queue.ts");
 const { checkInPrecheck, checkInPrecheckText, convergenceMisses } = await import("../src/chat-checkin.ts");
 const { blockedOnOthers, noProgress, staleSteps } = await import("../src/checkin-findings.ts");
 const { agentLines, withQueue } = await import("../src/chat-agents.ts");
@@ -160,6 +160,28 @@ test("duty admitter: admitted returns a release, off and a failing pool start th
   pool.length = 0;
   await admitter.sweep(async chat => chat === "c1");
   assert.deepEqual(pool, ["release duty:c1:checkin"]);
+});
+
+test("duty admitter: while the Prime workers hold over HARNESS_GB a duty waits a poll at a time before it asks the pool, the check-in never waits, and an unread footprint holds nothing", async () => {
+  const pool: string[] = [];
+  const fakePool = { admit: async (session: string) => { pool.push(`admit ${session}`); return "admitted" as const; }, release: async () => {}, read: async () => reading([], []) };
+  const readings = [26.5, 20, 16.1, 16];
+  const slept: number[] = [];
+  const lines: string[] = [];
+  const admitter = dutyAdmitter({ log: line => lines.push(line), pool: fakePool, memory: async () => readings.shift() ?? 16,
+    sleep: async ms => { slept.push(ms); pool.push("slept"); } });
+  await admitter.admit("c1", "d6");
+  assert.deepEqual(pool, ["slept", "slept", "admit duty:c1:d6"], "26.5 logs, 20 and 16.1 wait, 16 goes");
+  assert.deepEqual(slept, [MEMORY_POLL_MS, MEMORY_POLL_MS]);
+  assert.match(lines[0]!, /Prime workers hold 26\.5 GB, over 16 GB, so its job waits before it starts/);
+  pool.length = 0;
+  readings.push(40);
+  await admitter.admit("c1", "checkin");
+  assert.deepEqual(pool, ["admit duty:c1:checkin"], "a check-in is never held for memory");
+  const unread = dutyAdmitter({ log: () => {}, pool: fakePool, memory: async () => null, sleep: async () => { throw new Error("no wait"); } });
+  pool.length = 0;
+  await unread.admit("c1", "d6");
+  assert.deepEqual(pool, ["admit duty:c1:d6"]);
 });
 
 test("Duties: the job's session is created only after the queue admits its run, outside the start lane, and the key is released after the start", async () => {

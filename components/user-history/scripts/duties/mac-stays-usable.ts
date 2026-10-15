@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { isHarnessOwner, isHung, misses, readWatch, TARGET, unusable, USABLE, type QuietLine, type TargetPart, type UsableMiss, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
+import { HARNESS_GB, isHarnessOwner, isHung, misses, readWatch, TARGET, unusable, USABLE, type QuietLine, type TargetPart, type UsableMiss, type WaiterLine, type WatchLine } from "../../src/mac-usable-watch.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -25,7 +25,7 @@ export const OFF_STREAK_ALERT = 10;
  * 09:30Z on 10-15 the Mac read 168% kernel_task with 14 turns working and the workers at 25.9 GB.
  */
 export const HARNESS_TURNS = 14;
-export const HARNESS_GB = 16;
+export { HARNESS_GB };
 export const isHarnessMinute = (line: WatchLine): boolean => (line.queue?.working ?? 0) > HARNESS_TURNS || line.workerGb > HARNESS_GB;
 
 const PARTS: readonly TargetPart[] = ["usable", "idle", "queue"];

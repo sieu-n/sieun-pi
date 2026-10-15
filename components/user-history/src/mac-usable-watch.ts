@@ -51,6 +51,18 @@ export const HUNG_MINUTES = TARGET.idleMinutes;
  * line at one core; at 20:23Z on 10-14, with the Mac usable by the VP's read, it ran at 17.7%.
  */
 export const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100 } as const;
+/**
+ * The Prime workers' footprint over which a new duty job waits (dutyAdmitter) and an unusable minute is the harness's: over the 721 watch minutes
+ * with a feed reading from 10-14 20:31Z to 10-15 08:51Z, none of the 364 with the workers at 16 GB or less was unusable.
+ */
+export const HARNESS_GB = 16;
+/** A watch line older than this, three missed one-minute samples, is no reading of the workers now. */
+const FEED_LINE_FRESH_MS = 3 * MINUTE;
+/** The workers' footprint in GB from the newest watch line under `dataDir`, or null when no line is FEED_LINE_FRESH_MS old or newer. */
+export async function workerGbNow(dataDir: string, now = Date.now()): Promise<number | null> {
+  const line = (await readWatch(dataDir, now - FEED_LINE_FRESH_MS, now).catch(() => [])).at(-1);
+  return line && now - Date.parse(line.at) <= FEED_LINE_FRESH_MS ? line.workerGb : null;
+}
 /** ops guy's machine-wide feed, schema v1, rewritten every 10 s. A reading older than FEED_FRESH_MS (three missed writes) is stale, the feed contract pi-pool's pool/pressure.py and the devbox textfile script keep. */
 export const PRESSURE_FEED = join(homedir(), ".cache", "virev", "mac-pressure.json");
 const FEED_FRESH_MS = 30_000;

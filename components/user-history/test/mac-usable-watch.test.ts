@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
-import { advanceMotion, askChats, asksOf, type Footprints, MOTION, parseNettop, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
+import { advanceMotion, askChats, asksOf, type Footprints, MOTION, parseNettop, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, workerGbNow, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import { HARNESS_GB, HARNESS_TURNS, longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
@@ -353,6 +353,15 @@ test("measure: an unusable minute with more than 14 agent turns working or 16 GB
     "1 unusable minutes had 14 or fewer agent turns working and 16 GB or less in Prime workers; the feed's largest owners then: Google Chrome 6.5 GB (app or owner), AI harness 2.2 GB (harness), virev-demo 2.1 GB (app or owner).");
   const feed = parseFeed({ ...FEED, owners: Array.from({ length: 12 }, (_, i) => ({ owner: `other:p${i}`, label: `p${i}`, mem_gb: i, cpu_pct: 0, procs: 1 })) }, NOW)!;
   assert.deepEqual(feed.owners!.map(owner => owner.gb), [11, 10, 9, 8, 7, 6, 5, 4], "the feed's 8 largest owners, largest first");
+});
+
+test("workerGbNow: the newest watch line's worker footprint, null when the newest line is over 3 min old or none exists", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "worker-gb-"));
+  assert.equal(await workerGbNow(dataDir, NOW), null);
+  await mkdir(join(dataDir, "mac-usable"), { recursive: true });
+  await appendFile(watchFile(dataDir, NOW), JSON.stringify(watch(55, { workerGb: 26.5 })) + "\n" + JSON.stringify(watch(58, { workerGb: 25.9 })) + "\n");
+  assert.equal(await workerGbNow(dataDir, NOW), 25.9);
+  assert.equal(await workerGbNow(dataDir, NOW + 5 * MIN), null);
 });
 
 test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics the precheck gives, with the owner's words verbatim", async () => {
