@@ -10,16 +10,16 @@ the background, which exits when the child may start; then the wrapper sends the
 
 state.json keeps the gate under the pool flock in state["spawns"]:
 
-    queue    [{ticket, parent, name, pid, since}]  held spawns, first in first out
+    queue    [{ticket, parent, name, pid, since, waiter}]  held spawns, first in first out
     hold     whether new spawns queue: on at HOLD_ON_GB or more, off at HOLD_OFF_GB or less, unchanged between
     read     {at, gb}: the GiB the Prime daemon and its workers hold (pressure.read_workers_gb), read at most every READ_TTL_SEC
     granted  spawns started against this read
 
 While the hold is off, each read lets (HOLD_ON_GB - gb) / SESSION_GB spawns start, so a fan-out fills the room
 under HOLD_ON_GB and the rest wait for the next read. A held spawn starts in queue order. An entry whose kernel
-(`pid`) is gone is dropped. A read that fails holds nothing.
+(`pid`) or whose `wait` process (`waiter`) is gone is dropped. A read that fails holds nothing.
 """
-import math, time, uuid
+import math, os, time, uuid
 
 from . import base, pressure, registry, turns
 
@@ -69,9 +69,11 @@ def budget(sp):
 
 
 def sweep(sp, is_alive=turns.alive):
-    gone = [e for e in sp["queue"] if not is_alive(e["pid"])]
-    sp["queue"] = [e for e in sp["queue"] if is_alive(e["pid"])]
-    return [("spawn_dropped", {"ticket": e["ticket"], "name": e["name"], "why": "kernel gone"}) for e in gone]
+    """Drop entries whose kernel is gone, or whose `spawn-gate wait` process (`waiter`) is."""
+    why = lambda e: "kernel gone" if not is_alive(e["pid"]) else "waiter gone" if e.get("waiter") and not is_alive(e["waiter"]) else None
+    gone = [e for e in sp["queue"] if why(e)]
+    sp["queue"] = [e for e in sp["queue"] if not why(e)]
+    return [("spawn_dropped", {"ticket": e["ticket"], "name": e["name"], "why": why(e)}) for e in gone]
 
 
 def enter(sp, now, parent, name, pid, read=pressure.read_workers_gb, is_alive=turns.alive):
@@ -131,6 +133,8 @@ def cmd_enter(rest):
 
 def cmd_wait(ticket):
     """Block until the ticket may start; print go (or gone, when the entry was dropped) and exit 0."""
+    me = os.getpid()
+    locked(lambda sp, now: (None, [e.update(waiter=me) for e in sp["queue"] if e["ticket"] == ticket] and []))
     while True:
         if not int(base.config()["spawn_hold_on"]):
             locked(lambda sp, now: (None, [("spawn_started", {"ticket": ticket, "why": "gate off"})] if drop(sp, ticket) else []))

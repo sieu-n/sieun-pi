@@ -86,6 +86,9 @@ class Gate(unittest.TestCase):
         live = enter(sp, 1, gb, "live")
         self.assertEqual([e["name"] for e in sp["queue"]], ["live"])
         self.assertEqual(live["position"], 1)
+        sp["queue"][0]["waiter"] = DEAD
+        self.assertEqual(spawns.sweep(sp)[0][1]["why"], "waiter gone")
+        self.assertEqual(sp["queue"], [])
 
 
 class Fanouts1015(unittest.TestCase):
