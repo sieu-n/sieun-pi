@@ -1,4 +1,5 @@
 import { type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyView, headlineMetric } from "../shared/chat-duties.ts";
+import { effectiveRun } from "../shared/duty-streak.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES } from "../shared/types.ts";
 
 /** The Duties card's pure parts: the cadence editor's draft and its check, and what a check-in run found. */
@@ -26,11 +27,10 @@ export function classesLabel(run: DutyRunRecord | undefined): string {
   return Object.entries(run?.classes ?? {}).filter(([, count]) => count > 0).map(([cls, count]) => `${cls} ${count}`).join(" · ");
 }
 
-/** What the last run that measured flagged, by step, and the duty job the last run started. Empty parts are left out. */
-export function flaggedLabel(view: DutyView): { flagged: string; job: string } {
+/** What the last run that measured flagged, by step: "p56 orphan steps, p18 due late"; empty when it flagged nothing. */
+export function flaggedLabel(view: DutyView): string {
   const run = view.runs.find(entry => entry.verdict !== "skipped");
-  const job = view.runs.find(entry => entry.job)?.job?.name ?? "";
-  return { flagged: [...new Set((run?.flagged ?? []).map(slice => slice.item ? `${slice.item} ${slice.kind.replace(/_/g, " ")}` : slice.kind))].join(", "), job };
+  return [...new Set((run?.flagged ?? []).map(slice => slice.item ? `${slice.item} ${slice.kind.replace(/_/g, " ")}` : slice.kind))].join(", ");
 }
 
 /** The duty's metrics with its headline metric first. */
@@ -40,16 +40,16 @@ export const metricsHeadlineFirst = (metrics: readonly DutyMetric[]): DutyMetric
 };
 
 /** A metric's value with its unit, as the metric table shows it. */
-const value = (number: number, unit = ""): string => `${Math.round(number * 10) / 10}${unit}`;
+export const metricText = (number: number, unit = ""): string => `${Math.round(number * 10) / 10}${unit}`;
 
 /**
  * The headline line a duty row shows first: "Open steps in the owner's end state 43%, target at least 100%, off target", from the last run that
- * measured it; null for a duty with no headline metric. Before its first such run it reads "not measured yet".
+ * measured it, after its job when it has an after-job measure; null for a duty with no headline metric. Before its first such run it reads "not measured yet".
  */
 export function headlineLabel(view: DutyView): string | null {
   const metric = headlineMetric(view.duty.metrics);
   if (!metric) return null;
-  const result = view.runs.find(run => run.verdict !== "skipped" && run.metrics[metric.key] !== undefined)?.metrics[metric.key];
-  const target = `target ${metric.op === "<=" ? "at most" : "at least"} ${value(metric.target, metric.unit)}`;
-  return result ? `${metric.label} ${value(result.value, metric.unit)}, ${target}, ${result.met ? "met" : "off target"}` : `${metric.label}: not measured yet, ${target}`;
+  const result = view.runs.map(effectiveRun).find(run => run.verdict !== "skipped" && run.metrics[metric.key] !== undefined)?.metrics[metric.key];
+  const target = `target ${metric.op === "<=" ? "at most" : "at least"} ${metricText(metric.target, metric.unit)}`;
+  return result ? `${metric.label} ${metricText(result.value, metric.unit)}, ${target}, ${result.met ? "met" : "off target"}` : `${metric.label}: not measured yet, ${target}`;
 }

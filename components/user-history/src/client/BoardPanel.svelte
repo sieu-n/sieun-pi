@@ -353,7 +353,7 @@
   {@render addNoteField()}
 {/snippet}
 
-{#snippet dutiesBody()}<DutyList chat={id} {duties} {now} />{/snippet}
+{#snippet dutiesBody()}<DutyList chat={id} {duties} {now} {agents} />{/snippet}
 {#snippet dutiesCard()}
   {#if duties.views.length}{@render card("duties", "Duties", dutiesCount(duties.views), dutiesOpen, () => ui.setBoardCard("duties", !dutiesOpen), dutiesBody)}{/if}
 {/snippet}

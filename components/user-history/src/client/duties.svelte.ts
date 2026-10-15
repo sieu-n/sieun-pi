@@ -1,6 +1,8 @@
 import { get, OWNER_UI_HEADERS, post } from "./api.ts";
 import { clockTime } from "./format.ts";
 import type { DutyRunRecord, DutySchedule, DutyView } from "../shared/chat-duties.ts";
+import { effectiveRun } from "../shared/duty-streak.ts";
+import { missStreak } from "./duty-card.ts";
 
 export type DutyAction = "run" | "pause" | "resume" | "schedule";
 const route = (id: string) => "api/threads/" + encodeURIComponent(id) + "/duties";
@@ -9,13 +11,13 @@ export const dutiesApi = {
   act: (id: string, duty: string, action: DutyAction, schedule?: DutySchedule) => post<{ duties: DutyView[] }>(route(id), { duty, action, ...(schedule ? { schedule } : {}) }, undefined, OWNER_UI_HEADERS),
 };
 
-/** The dot a duty row shows: its last verdict, or running, paused, or new before its first run. */
+/** The dot a duty row shows: its last verdict after its job (`effectiveRun`), or running, paused, or new before its first run. */
 export type DutyState = "met" | "missed" | "error" | "paused" | "running" | "new";
 export function dutyState(view: DutyView): DutyState {
   if (view.running) return "running";
   if (view.paused) return "paused";
   const last = view.runs.find(run => run.verdict !== "skipped");
-  return last ? last.verdict as Exclude<DutyRunRecord["verdict"], "skipped"> : "new";
+  return last ? effectiveRun(last).verdict as Exclude<DutyRunRecord["verdict"], "skipped"> : "new";
 }
 
 /** "daily 23:07", "every 30 min". */
@@ -47,18 +49,18 @@ export function nextLabel(view: DutyView, now: number): string {
 export const VERDICT_WORDS = { met: "met", missed: "off target", error: "precheck failed", skipped: "missed" } as const;
 
 /**
- * The last run in words: "off target 2 of 7 · 23:07 yesterday", "met · 23:07", "no run yet". The latest slot that did not run reads "missed".
- * Slots that did not run count in neither number.
+ * The last run in words, judged after its job when it has an after-job measure: "off target 5 runs in a row · 23:07 yesterday", "met after its
+ * job · 23:40", "met · 23:07", "no run yet". The latest slot that did not run reads "missed". The streak counts measured runs only.
  */
 export function lastLabel(view: DutyView, now: number): string {
   const newest = view.runs[0];
-  const runs = view.runs.filter(run => run.verdict !== "skipped").slice(0, 7);
-  const last = runs[0];
+  const last = view.runs.find(run => run.verdict !== "skipped");
   if (newest && newest.verdict === "skipped" && (!last || newest.at > last.at)) return `${VERDICT_WORDS.skipped} · ${whenLabel(newest.at, now)}`;
   if (!last) return "no run yet";
-  const word = VERDICT_WORDS[last.verdict];
-  const misses = runs.filter(run => run.verdict === "missed").length;
-  return `${word}${misses ? ` ${misses} of ${runs.length}` : ""} · ${whenLabel(last.at, now)}`;
+  const judged = effectiveRun(last);
+  const streak = judged.verdict === "missed" ? missStreak(view.runs) : 0;
+  const word = `${VERDICT_WORDS[judged.verdict]}${last.after ? " after its job" : ""}${streak > 1 ? ` ${streak} runs in a row` : ""}`;
+  return `${word} · ${whenLabel(last.after?.at ?? last.at, now)}`;
 }
 
 /** The card header: "1 duty", "2 duties, 1 off target". */

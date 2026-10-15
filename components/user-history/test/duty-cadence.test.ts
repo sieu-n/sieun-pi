@@ -19,13 +19,13 @@ test("duty cadence editor: the draft starts from the schedule; the check-in save
   assert.deepEqual(cadenceSchedule({ kind: "daily", minutes: 0, at: "7:30" }, false), { error: "Give a time like 23:07." });
 });
 
-test("check-in card: the last run's classes, what it flagged by step, and the duty job the last run started", () => {
+test("check-in card: the last run's classes and what it flagged by step", () => {
   const run = record({ at: 10, classes: { live: 5, foryou: 7, waiting: 5, due: 0, "stale-chase": 0, orphan: 1 }, job: { id: "s1", name: "check-in 14:00" },
     flagged: [{ kind: "orphan_steps", excerpt: "x", item: "p56" }, { kind: "job_end_unrecorded", excerpt: "y", item: "p56" }, { kind: "due_late", excerpt: "z", item: "p18" }] });
   assert.equal(classesLabel(run), "live 5 · foryou 7 · waiting 5 · orphan 1");
   assert.equal(classesLabel(undefined), "");
-  assert.deepEqual(flaggedLabel(view([run])), { flagged: "p56 orphan steps, p56 job end unrecorded, p18 due late", job: "check-in 14:00" });
+  assert.equal(flaggedLabel(view([run])), "p56 orphan steps, p56 job end unrecorded, p18 due late");
   const skipped = record({ at: 20, verdict: "skipped", summary: "skipped: previous run still working" });
-  assert.deepEqual(flaggedLabel(view([skipped, run])), { flagged: "p56 orphan steps, p56 job end unrecorded, p18 due late", job: "check-in 14:00" }, "a skipped run measures nothing new");
-  assert.deepEqual(flaggedLabel(view([record({ at: 30 })])), { flagged: "", job: "" });
+  assert.equal(flaggedLabel(view([skipped, run])), "p56 orphan steps, p56 job end unrecorded, p18 due late", "a skipped run measures nothing new");
+  assert.equal(flaggedLabel(view([record({ at: 30 })])), "");
 });
