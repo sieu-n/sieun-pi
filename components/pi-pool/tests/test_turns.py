@@ -438,12 +438,29 @@ class Governor(unittest.TestCase):
         fill(t, 15)
         t["working"]["parent"] = dict(entry(tree="normal-job"), kind="slot")
         kid = self.ask(t, "kid", 0, read, tree="normal-job", parent="parent")
-        self.assertEqual((t["pressure"]["level"], kid["state"]), ("critical", "admitted"))
+        self.assertEqual((t["pressure"]["level"], kid["state"]), ("critical", "admitted"), "16 of 16 and no borrow yet")
         self.assertEqual(t["working"]["kid"]["kind"], "borrow", "16 of 16 in use, and the held child adds no slot")
         self.assertEqual(len(turns.in_slots(t["working"])), 16)
         self.assertEqual(self.ask(t, "kid2", 1, read, tree="normal-job", parent="parent")["state"], "queued", "a parent lends one slot")
         self.assertEqual(self.ask(t, "orphan", 2, read, tree="normal-job", parent="gone")["state"], "queued", "no parent in flight, no borrow")
         self.assertEqual(sorted(t["queued"]), ["kid2", "orphan"])
+
+    def test_at_critical_borrows_put_at_most_critical_borrows_turns_over_the_limit(self):
+        """10-15 08:15Z: the governor read critical with 16 slots and 6 borrows in use, and
+        kernel_task read 152.3%. At high every in-flight parent still lends its slot."""
+        t, read = turns.empty(), Readings(THRASH)
+        for i in range(16):
+            t["working"][f"p{i}"] = dict(entry(tree=f"T{i}"), kind="slot")
+        states = [self.ask(t, f"kid{i}", i, read, tree=f"T{i}", parent=f"p{i}")["state"] for i in range(6)]
+        self.assertEqual(states, ["admitted"] * turns.CRITICAL_BORROWS + ["queued"] * (6 - turns.CRITICAL_BORROWS))
+        self.assertEqual(len(t["working"]), 16 + turns.CRITICAL_BORROWS)
+        del t["working"]["kid0"]
+        self.assertEqual(turns.step(t, self.SESSIONS, 7, self.CFG, read)[2], [("kid2", "borrow")], "an ended borrow passes its place on")
+        read.reading = WARN
+        self.assertEqual(turns.step(t, self.SESSIONS, 40, self.CFG, read)[2], [("kid3", "borrow"), ("kid4", "borrow"), ("kid5", "borrow")])
+        turns.mark_owner(t, "boss", 41, 1800)
+        read.reading = THRASH
+        self.assertEqual(self.ask(t, "boss", 80, read, tree="boss")["kind"], "owner", "an owner turn never waits")
 
     def test_a_level_change_is_recorded_with_its_reading_and_logged(self):
         t, read = turns.empty(), Readings(CALM)
@@ -726,6 +743,22 @@ class Burst(unittest.TestCase):
         waits.sort()
         print(f"\nburst replay: {admitted} turns, peak {peak_working} working, {peak_borrows} borrows at once, "
               f"median wait {waits[len(waits) // 2]:.0f} s, p90 {waits[int(len(waits) * 0.9)]:.0f} s", file=sys.stderr)
+
+class CriticalMinutes(unittest.TestCase):
+    """The feed minutes the governor read critical from 10-14 20:31Z to 10-15 08:25Z, with the
+    most slots, borrows and working turns pi-pool.log shows in each."""
+
+    def test_no_minute_at_the_limit_plus_critical_borrows_read_over_a_core(self):
+        with open(os.path.join(os.path.dirname(__file__), "critical_minutes_1014_1015.json")) as f:
+            rows = json.load(f)["minutes"]
+        top = base.DEFAULTS["pressure_working_max"]["critical"] + turns.CRITICAL_BORROWS
+        within = [r for r in rows if r["total"] <= top]
+        hot = [r for r in rows if r["kernel_task_pct"] >= 100]
+        self.assertEqual((len(rows), len(within), len(hot)), (101, 39, 22))
+        self.assertEqual(max(r["kernel_task_pct"] for r in within), 92.2)
+        self.assertTrue(all(r["total"] > top and r["slots"] >= 15 and r["borrows"] >= 2 for r in hot))
+        self.assertIn({"at": "2026-10-15T08:15", "kernel_task_pct": 152.3, "slots": 16, "borrows": 6, "total": 22}, rows)
+
 
 class Replay1014Evening(unittest.TestCase):
     """The governor against the turns pi-pool logged on 10-14 from 21:07 to 22:48 KST, while
