@@ -1,51 +1,29 @@
 {
   "name": "New articles get indexed",
   "ownerWords": "keep publishing blog articles daily",
-  "goal": "A new blog article or language edition goes live on virev.ai about every day and answers 200, Google indexes each one within 3 days, IndexNow gets every new or changed blog URL, and every ledger check is scored on its date so we learn which articles earned search traffic.",
+  "goal": "A new blog article or language edition goes live on virev.ai every day and answers 200, and Google indexes each new one within 3 days. Every miss has a live fix job pushing changes; the older unindexed backlog, IndexNow and the ledger are detail lines.",
   "metrics": [
     {
       "key": "days_since_new_article",
       "label": "Days since a new blog article or edition went live and returned 200",
       "op": "<=",
-      "target": 2,
-      "unit": " days"
+      "target": 1,
+      "unit": " days",
+      "headline": true
     },
     {
-      "key": "unindexed_after_3d",
-      "label": "Articles live 3 or more days that Google has not indexed",
+      "key": "new_unindexed_3d",
+      "label": "Articles from the last 14 days still unindexed 3+ days after going live",
       "op": "<=",
       "target": 0
-    },
-    {
-      "key": "indexnow_unsent",
-      "label": "Blog sitemap URLs IndexNow has not got in their current version",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "ledger_overdue",
-      "label": "Ledger checks past their check date with no result",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "ledger_win_pct",
-      "label": "Ledger checks scored in the last 30 days that won",
-      "op": ">=",
-      "target": 50,
-      "unit": "%"
     },
     {
       "key": "source_errors",
-      "label": "Data sources that failed (sitemap, pages, Search Console, ledger)",
+      "label": "Data sources that failed (sitemap, pages, Search Console)",
       "op": "<=",
       "target": 0
     }
   ],
-  "schedule": {
-    "kind": "daily",
-    "at": "10:20"
-  },
   "precheck": {
     "command": [
       "node",
@@ -55,6 +33,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "Work in auto-sns-agent, program folder apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program. Fix a source_error first. No new article: find the land or CI run that holds the next built article and move it on a fresh ci/ branch (board s22); if none is in the pipeline, spawn the next one from p37's opportunities.md, one subagent per article. Unindexed: run the recrawl worker (workers/seo-recrawl/README.md) on sc-domain:virev.ai until Quota Exceeded. indexnow_unsent: run `uv run --project scripts/seo seo indexnow --new`. Overdue ledger check: score it with numbers; a loss gets a dated line in decisions.md (rewrite, merge or stop that topic). Staging lands are fine (c50); ask before a prod promote. No merge without the owner's go (c49) and nothing outside without his ok on a For you todo (c37). Do this on every run, met or missed, and tell the owner only what shipped or what needs him.",
+  "onMiss": "Every run works in auto-sns-agent's SEO program (apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program), under its brief.md rules. Each missed metric gets one live fix job with a board step under p40: days_since_new_article goes to \"daily articles ship\", which lands and promotes the next built article or writes the next one from opportunities.md, one subagent per article, and new_unindexed_3d goes to \"crawl demand fix\" (p60). A live job (agent_observe.list_agents) gets the new numbers and flagged lines by message; a missing one starts with await rlm.create_session(brief, name=...), and its step's job is set to it. Never start a second copy. source_errors: fix the read this run, or start \"seo sources fix\". Also run `seo indexnow --new` when the detail lists unsent URLs, and score each overdue ledger check. Never end a run with a missed metric and no live fix job. Nothing goes outside (c37), and prod promotes need no ask (c74).",
   "boardGoal": "p40"
 }

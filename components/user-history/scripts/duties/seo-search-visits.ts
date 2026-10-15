@@ -23,8 +23,9 @@ export const UNMEASURED = 999_999;
  */
 export const GSC_STALE_DAYS = 3;
 /**
- * The duty targets in seo-search-visits.duty.json and where they come from:
- * goal_visits_d28 and goal_visits_d7 >= 10000 are the owner's 10-12 words "our goal is 10,000 blog/tool visits/day".
+ * The duty targets in seo-search-visits.duty.json and where they come from (one headline plus 3 supporting metrics, c75):
+ * goal_visits_d7 >= 10000, the headline, is the owner's 10-12 words "our goal is 10,000 blog/tool visits/day". The 28-day average is a detail
+ * line in the visits slice, since it trails the 7-day one and a second visits target adds no new fact.
  * signups_goal_d28 >= 300 is his "300 sign ups from that" with his answer "300 a day" on SEO guy todo t9.
  * google_clicks_d7 >= 20 is the 2026-10-09 milestone of program/brief.md (clicks/day, 7d avg); the brief sets 500 for 11-01.
  * source_errors <= 0: every source is read each day.
@@ -47,24 +48,23 @@ const round = (value: number, places = 2): number => Math.round(value * 10 ** pl
 /** The metrics and flagged slices of one read. `at` is the run time for the slices. */
 export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
-  const metrics: Record<string, number> = { goal_visits_d28: -UNMEASURED, goal_visits_d7: -UNMEASURED, google_clicks_d7: -UNMEASURED, signups_goal_d28: -UNMEASURED, source_errors: 0 };
+  const metrics: Record<string, number> = { goal_visits_d7: -UNMEASURED, google_clicks_d7: -UNMEASURED, signups_goal_d28: -UNMEASURED, source_errors: 0 };
   const fail = (source: string, why: string, keys: string[]): void => {
     metrics.source_errors! += 1;
     flagged.push({ at, kind: "source_error", excerpt: `${source}: ${why}. Not measured this run, so ${keys.join(", ")} read -${UNMEASURED}.` });
   };
 
   const traffic = read.traffic;
-  if (!traffic || isErr(traffic)) fail("PostHog visits (virev_seo.traffic)", traffic?.error ?? "no answer", ["goal_visits_d28", "goal_visits_d7"]);
+  if (!traffic || isErr(traffic)) fail("PostHog visits (virev_seo.traffic)", traffic?.error ?? "no answer", ["goal_visits_d7"]);
   else {
     const day = traffic.last_day;
     const seen = ["blog", "tools", "landing", "app", "bot", "internal"].reduce((sum, key) => sum + (Number(day[key]) || 0), 0);
-    if (seen === 0) fail("PostHog visits (virev_seo.traffic)", `no session at all on virev.ai on ${day.date}, so PostHog events stopped arriving`, ["goal_visits_d28", "goal_visits_d7"]);
+    if (seen === 0) fail("PostHog visits (virev_seo.traffic)", `no session at all on virev.ai on ${day.date}, so PostHog events stopped arriving`, ["goal_visits_d7"]);
     else {
       const d7 = traffic.windows.d7!, d28 = traffic.windows.d28!;
-      metrics.goal_visits_d28 = d28.per_day.goal ?? 0;
       metrics.goal_visits_d7 = d7.per_day.goal ?? 0;
       const sources = Object.entries(d7.goal_by_source_per_day).filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]).map(([key, value]) => `${key} ${value}`);
-      flagged.push({ at, kind: "visits", excerpt: `Blog and tool visits a day: ${metrics.goal_visits_d7} over ${d7.start}..${d7.end}, ${metrics.goal_visits_d28} over ${d28.start}..${d28.end}. 7-day sources a day: ${sources.join(", ")}. ${day.date}: ${day.goal} visits.` });
+      flagged.push({ at, kind: "visits", excerpt: `Blog and tool visits a day: ${metrics.goal_visits_d7} over ${d7.start}..${d7.end}, ${d28.per_day.goal ?? 0} over ${d28.start}..${d28.end} (goal_visits_d28). 7-day sources a day: ${sources.join(", ")}. ${day.date}: ${day.goal} visits.` });
       const top = (traffic.top_goal_entries_d28 ?? []).slice(0, 5).map(entry => `${entry.path} ${entry.visits}`);
       if (top.length) flagged.push({ at, kind: "top_pages", excerpt: `Top blog and tool entry pages, 28 days: ${top.join(", ")}` });
     }

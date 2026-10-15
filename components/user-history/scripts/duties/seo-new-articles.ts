@@ -9,10 +9,10 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The SEO guy's New articles get indexed precheck (`node --import tsx scripts/duties/seo-new-articles.ts`). No model call. It reads:
  * 1. the live blog sitemap (https://virev.ai/blog/sitemap.xml lists every locale; an article is a <url> with a <lastmod>), and each
  *    article page it has not seen answer 200 yet, for its status and article:published_time;
- * 2. metrics/indexnow-sent.json of the SEO program, for sitemap URLs `seo indexnow --new` would still send;
- * 3. URL Inspection (seo-sources.py inspect, counted in metrics/inspect-quota.json) for articles live 3 or more days that no earlier
- *    inspection in metrics/*.json or this duty's state saw indexed;
- * 4. the program's ledger.jsonl, for checks past their date with no result and the share of the last 30 days' scored checks that won.
+ * 2. URL Inspection (seo-sources.py inspect, counted in metrics/inspect-quota.json) for articles that went live in the last 14 days, are live
+ *    3 or more days, and that no earlier inspection in metrics/*.json or this duty's state saw indexed;
+ * 3. for detail lines only: metrics/indexnow-sent.json of the SEO program, for sitemap URLs `seo indexnow --new` would still send, and the
+ *    program's ledger.jsonl, for checks past their date with no result and the share of the last 30 days' scored checks that won.
  * The state keeps each article's first-seen day, so the day an article went live is the day the sitemap first listed it. On the first run
  * (no state) that day is the page's published date. A source that fails counts in source_errors and gives its metrics the miss value.
  */
@@ -24,15 +24,24 @@ export const SITEMAP = "https://virev.ai/blog/sitemap.xml";
 /** The miss value of a metric whose source failed, the convention of auto-sns-agent scripts/duties/ci/duty-sources.mjs (UNMEASURED). */
 export const UNMEASURED = 999_999;
 /**
- * Where each number comes from. Duty targets (seo-new-articles.duty.json) are the ones on the 10-12 duty proposals page, section 3
- * (apps/llm-wiki/content/sessions/2026/10/12/2230-duty-proposals): days_since_new_article <= 2 because an article reaches virev.ai only
- * through a land and a promote; unindexed_after_3d, indexnow_unsent, ledger_overdue and source_errors <= 0; ledger_win_pct >= 50.
- * INDEX_AFTER_DAYS: the page's metric "Articles live 3 or more days that Google has not indexed"; the program ledger's seo-recrawl checks
- * measured 13 of 13 requested URLs indexed within 7 days (10-02 to 10-09) and 9 of 11 the same day on 10-12.
- * WIN_WINDOW_DAYS: the page's metric "Ledger checks scored in the last 30 days that won".
+ * Where each number comes from. The duty (seo-new-articles.duty.json) is one headline plus 2 supporting metrics (c75), each read from the
+ * owner's words "keep publishing blog articles daily":
+ * days_since_new_article <= 1, the headline: an article or edition went live today or yesterday.
+ * new_unindexed_3d <= 0: articles that went live in the last NEW_WINDOW_DAYS days, live INDEX_AFTER_DAYS or more days, that Google has not
+ * indexed. A published article that nobody can find is not published, and the older backlog (285 on 10-15) is a detail line, so a fixed
+ * new-article pipeline can turn this green while the crawl demand fix job works the backlog.
+ * source_errors <= 0: the sitemap, the pages and URL Inspection were read.
+ * Detail lines with no target: the older unindexed backlog, sitemap URLs IndexNow has not got, overdue ledger checks and the 30-day ledger
+ * win share.
+ * INDEX_AFTER_DAYS: the program ledger's seo-recrawl checks measured 13 of 13 requested URLs indexed within 7 days (10-02 to 10-09) and 9 of
+ * 11 the same day on 10-12.
+ * NEW_WINDOW_DAYS: the 10-15 brief for this duty, "count only articles published in the last 14 days, not the old backlog".
+ * Only new articles are inspected. Inspecting the backlog too took the 10-14 and 10-15 runs to 107 s and 74 s against the 120 s precheck
+ * timeout; the backlog line counts the older articles no inspection in metrics/*.json or this duty's state has seen indexed.
  * PAGE_CONCURRENCY: measured 10-12, 16 parallel GETs read all 376 article pages in 11 s.
  */
 export const INDEX_AFTER_DAYS = 3;
+export const NEW_WINDOW_DAYS = 14;
 export const WIN_WINDOW_DAYS = 30;
 const PAGE_CONCURRENCY = 16;
 
@@ -116,8 +125,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
   const at = deps.now();
   const today = seoulDay(at);
   const flagged: FlaggedSlice[] = [];
-  const metrics: Record<string, number> = { days_since_new_article: UNMEASURED, unindexed_after_3d: UNMEASURED, indexnow_unsent: UNMEASURED,
-    ledger_overdue: UNMEASURED, ledger_win_pct: -UNMEASURED, source_errors: 0 };
+  const metrics: Record<string, number> = { days_since_new_article: UNMEASURED, new_unindexed_3d: UNMEASURED, source_errors: 0 };
   const state: ArticlesState = { articles: { ...previous?.articles }, indexed: { ...previous?.indexed } };
   const fail = (source: string, why: string, keys: string[]): void => {
     metrics.source_errors! += 1;
@@ -132,7 +140,7 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     const parsed = parseSitemap(await response.text());
     if (!parsed.size) throw new Error("no <url> in the sitemap");
     sitemap = parsed;
-  } catch (error) { fail(`Blog sitemap ${SITEMAP}`, message(error), ["days_since_new_article", "unindexed_after_3d", "indexnow_unsent"]); }
+  } catch (error) { fail(`Blog sitemap ${SITEMAP}`, message(error), ["days_since_new_article", "new_unindexed_3d"]); }
 
   if (sitemap) {
     const articles = [...sitemap].filter(([, lastmod]) => lastmod).map(([url]) => url);
@@ -167,29 +175,33 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     try {
       const sent = JSON.parse(await deps.readProgram("metrics/indexnow-sent.json")) as Record<string, { lastmod?: string }>;
       const pending = indexNowPending(sitemap, sent);
-      metrics.indexnow_unsent = pending.length;
-      flagged.push(...listSlice("indexnow_unsent", `Sitemap URLs IndexNow has not got in their current version (${pending.length}):`, pending.map(path), at));
-    } catch (error) { fail("metrics/indexnow-sent.json", message(error), ["indexnow_unsent"]); }
+      flagged.push(...(pending.length ? listSlice("indexnow_unsent", `Detail: sitemap URLs IndexNow has not got in their current version (${pending.length}), sent by \`seo indexnow --new\`:`, pending.map(path), at)
+        : [{ at, kind: "indexnow_unsent", excerpt: `Detail: IndexNow has all ${sitemap.size} sitemap URLs in their current version (indexnow_unsent 0).` }]));
+    } catch (error) { flagged.push({ at, kind: "detail_error", excerpt: `metrics/indexnow-sent.json could not be read (${message(error)}), so the IndexNow detail line is missing` }); }
 
     const files = new Map<string, unknown>();
     for (const name of (await deps.listMetrics().catch(() => [] as string[])).filter(file => /^\d{4}-\d{2}-\d{2}\.json$/.test(file))) {
       files.set(name, await deps.readProgram(`metrics/${name}`).then(text => JSON.parse(text) as unknown, () => undefined));
     }
     for (const [url, day] of Object.entries(indexedFromMetrics(files))) state.indexed[url] ??= day;
-    const due = live.filter(url => { const age = daysBetween(state.articles[url]!.firstSeen, today); return age >= INDEX_AFTER_DAYS && !state.indexed[url]; });
+    const age = (url: string): number => daysBetween(state.articles[url]!.firstSeen, today);
+    const unseen = live.filter(url => age(url) >= INDEX_AFTER_DAYS && !state.indexed[url]);
+    const due = unseen.filter(url => age(url) <= NEW_WINDOW_DAYS);
+    const backlog = unseen.filter(url => age(url) > NEW_WINDOW_DAYS);
     try {
       const inspected = due.length ? await deps.inspect(due) : { rows: [], not_asked: [] };
       const failed = [...inspected.rows.filter(row => row.http !== 200 || row.error).map(row => `${path(row.url)} (${row.error ?? `HTTP ${row.http}`})`), ...inspected.not_asked.map(url => `${path(url)} (quota)`)];
       const unindexed = inspected.rows.filter(row => row.http === 200 && !row.error && row.verdict !== "PASS");
       for (const row of inspected.rows) if (row.http === 200 && row.verdict === "PASS") state.indexed[row.url] = today;
-      metrics.unindexed_after_3d = unindexed.length + failed.length;
+      metrics.new_unindexed_3d = unindexed.length + failed.length;
       if (failed.length) {
         metrics.source_errors! += 1;
         flagged.push(...listSlice("source_error", `URL Inspection failed for ${failed.length} of ${due.length}; they count as not indexed:`, failed, at));
       }
-      flagged.push(...listSlice("unindexed", `Articles live ${INDEX_AFTER_DAYS} or more days that Google has not indexed (${unindexed.length} of ${due.length} inspected; articles an earlier inspection saw indexed are not asked again):`,
-        unindexed.map(row => `${path(row.url)} (${row.coverage_state ?? row.verdict ?? "?"})`), at));
-    } catch (error) { fail("Search Console URL Inspection (seo-sources.py inspect)", message(error), ["unindexed_after_3d"]); }
+      flagged.push(...listSlice("unindexed", `Articles that went live in the last ${NEW_WINDOW_DAYS} days, live ${INDEX_AFTER_DAYS} or more days, that Google has not indexed (${unindexed.length} of ${due.length} inspected):`,
+        unindexed.map(row => `${path(row.url)} (live ${age(row.url)} days, ${row.coverage_state ?? row.verdict ?? "?"})`), at));
+    } catch (error) { fail("Search Console URL Inspection (seo-sources.py inspect)", message(error), ["new_unindexed_3d"]); }
+    flagged.push(...listSlice("backlog", `Detail: older articles (live over ${NEW_WINDOW_DAYS} days) no inspection has seen indexed (${backlog.length}), the crawl demand fix job's work, not re-inspected here:`, backlog.map(path), at));
   }
 
   try {
@@ -198,13 +210,11 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
     let bad = 0;
     for (const line of lines) { try { entries.push(JSON.parse(line) as LedgerEntry); } catch { bad++; } }
     const stats = ledgerStats(entries, today);
-    metrics.ledger_overdue = stats.overdue.length;
-    metrics.ledger_win_pct = stats.scored ? Math.round(stats.wins / stats.scored * 100) : 0;
-    flagged.push({ at, kind: "ledger", excerpt: `ledger.jsonl: ${entries.length} checks, ${stats.scored} scored in the last ${WIN_WINDOW_DAYS} days, ${stats.wins} won.` +
-      (stats.scored ? "" : " None scored, so ledger_win_pct reads 0.") });
+    const winPct = stats.scored ? Math.round(stats.wins / stats.scored * 100) : 0;
+    flagged.push({ at, kind: "ledger", excerpt: `Detail: ledger.jsonl has ${entries.length} checks, ${stats.overdue.length} overdue (ledger_overdue), ${stats.scored} scored in the last ${WIN_WINDOW_DAYS} days, ${stats.wins} won (ledger_win_pct ${winPct}%).` +
+      (bad ? ` ${bad} lines are not JSON and are left out.` : "") });
     for (const entry of stats.overdue) flagged.push({ at, kind: "ledger_overdue", excerpt: `${entry.worker ?? "?"}: ${entry.url ?? "?"} was due ${entry.check_date} and has no result` });
-    if (bad) { metrics.source_errors! += 1; flagged.push({ at, kind: "source_error", excerpt: `ledger.jsonl: ${bad} lines are not JSON, so the ledger metrics leave them out` }); }
-  } catch (error) { fail("ledger.jsonl", message(error), ["ledger_overdue", "ledger_win_pct"]); }
+  } catch (error) { flagged.push({ at, kind: "detail_error", excerpt: `ledger.jsonl could not be read (${message(error)}), so the ledger detail line is missing` }); }
 
   return { output: { metrics, flagged }, state };
 }

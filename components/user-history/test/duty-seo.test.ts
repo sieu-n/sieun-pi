@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { judge, parseDutyInput } from "../src/shared/chat-duties.ts";
+import { type DutySchedule, headlineMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import { type ArticlesDeps, type ArticlesState, daysBetween, indexedFromMetrics, indexNowPending, type InspectRead, ledgerStats, measureArticles, listSlice,
   parseSitemap, publishedDay, seoulDay, SITEMAP, UNMEASURED } from "../scripts/duties/seo-new-articles.ts";
 import { type TrafficRead, visitsOutput, type VisitsRead } from "../scripts/duties/seo-search-visits.ts";
 
 const NOW = Date.parse("2026-10-12T01:20:00Z");
+/** The duty files leave out schedule (c66), so add.ts keeps the live schedule; parseDutyInput takes it from the caller. */
+const SCHEDULE: DutySchedule = { kind: "daily", at: "09:00" };
 const dutyFile = async (slug: string): Promise<unknown> => JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", `${slug}.duty.json`), "utf8"));
 
 const READ: VisitsRead = {
@@ -25,12 +27,15 @@ const READ: VisitsRead = {
 
 test("search visits: the 10-12 reads give the owner's goal metrics, and every metric of the duty file has a value", async () => {
   const output = visitsOutput(READ, NOW);
-  assert.deepEqual(output.metrics, { goal_visits_d28: 61.8, goal_visits_d7: 247, google_clicks_d7: 8.1, signups_goal_d28: 0.18, source_errors: 0 });
-  const duty = parseDutyInput(await dutyFile("seo-search-visits"), "d1", NOW);
-  assert.deepEqual(duty.schedule, { kind: "daily", at: "09:00" });
+  assert.deepEqual(output.metrics, { goal_visits_d7: 247, google_clicks_d7: 8.1, signups_goal_d28: 0.18, source_errors: 0 });
+  const duty = parseDutyInput(await dutyFile("seo-search-visits"), "d1", NOW, SCHEDULE);
   assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), Object.keys(output.metrics).sort());
-  assert.equal(judge(duty.metrics, output).verdict, "missed");
-  assert.ok(output.flagged?.some(item => item.kind === "visits" && item.excerpt.includes("social 136.4")));
+  assert.deepEqual(headlineMetric(duty.metrics)?.key, "goal_visits_d7");
+  assert.ok(duty.metrics.length <= 4, "one headline plus at most 3 supporting metrics (c75)");
+  const verdict = judge(duty.metrics, output);
+  assert.equal(verdict.verdict, "missed");
+  assert.ok(verdict.summary.startsWith("goal_visits_d7 247"));
+  assert.ok(output.flagged?.some(item => item.kind === "visits" && item.excerpt.includes("social 136.4") && item.excerpt.includes("61.8 over 2026-09-14..2026-10-11")));
 });
 
 test("search visits: a failed, stale or silent source is a source error with the miss value, never a good number", () => {
@@ -82,13 +87,20 @@ test("new articles: first run dates articles by their published day, inspects on
   });
   const { output, state } = await measureArticles(run, undefined);
   assert.equal(run.fetched.length, 4, "only the articles, the ones with a lastmod, are fetched");
-  assert.deepEqual(run.inspected, [[`${B}b`, `${B}old`]], "a is under 3 days, c was indexed before");
-  assert.deepEqual(output.metrics, { days_since_new_article: 2, unindexed_after_3d: 2, indexnow_unsent: 4, ledger_overdue: 1, ledger_win_pct: 50, source_errors: 0 });
+  assert.deepEqual(run.inspected, [[`${B}b`]], "a is under 3 days, c was indexed before, old went live over 14 days ago");
+  assert.deepEqual(output.metrics, { days_since_new_article: 2, new_unindexed_3d: 1, source_errors: 0 });
+  const detail = (kind: string): string => output.flagged?.find(item => item.kind === kind)?.excerpt ?? "";
+  assert.match(detail("backlog"), /\(1\)[^]*\/blog\/old/);
+  assert.match(detail("indexnow_unsent"), /\(4\)/);
+  assert.match(detail("ledger"), /1 overdue \(ledger_overdue\), 2 scored in the last 30 days, 1 won \(ledger_win_pct 50%\)/);
+  assert.match(detail("unindexed"), /\/blog\/b \(live 4 days, Discovered - currently not indexed\)/);
   assert.equal(state.articles[`${B}a`]?.firstSeen, "2026-10-10");
   assert.equal(state.indexed[`${B}c`], "2026-10-09");
-  const duty = parseDutyInput(await dutyFile("seo-new-articles"), "d2", NOW);
-  assert.deepEqual(duty.schedule, { kind: "daily", at: "10:20" });
+  const duty = parseDutyInput(await dutyFile("seo-new-articles"), "d2", NOW, SCHEDULE);
   assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), Object.keys(output.metrics).sort());
+  assert.equal(headlineMetric(duty.metrics)?.key, "days_since_new_article");
+  assert.ok(duty.metrics.length <= 4, "one headline plus at most 3 supporting metrics (c75)");
+  assert.ok(judge(duty.metrics, output).summary.startsWith("days_since_new_article 2 days (target at most 1 days)"));
 });
 
 test("new articles: a later run dates a new URL by the day it first appears, skips pages that answered 200, and keeps indexed URLs", async () => {
@@ -107,15 +119,21 @@ test("new articles: a sitemap or inspection failure is a source error with the m
   const run = deps({ sitemap: [] });
   const { output } = await measureArticles(run, undefined);
   assert.equal(output.metrics.days_since_new_article, UNMEASURED);
-  assert.equal(output.metrics.indexnow_unsent, UNMEASURED);
+  assert.equal(output.metrics.new_unindexed_3d, UNMEASURED);
   assert.equal(output.metrics.source_errors, 1);
-  assert.equal(output.metrics.ledger_win_pct, 0, "no scored check reads 0, not a pass");
 
   const failing = deps({ sitemap: [[`${B}x`, "2026-10-01"]] });
   failing.inspect = async () => { throw new Error("GscError: quota used up"); };
   const second = await measureArticles(failing, undefined);
-  assert.equal(second.output.metrics.unindexed_after_3d, UNMEASURED);
+  assert.equal(second.output.metrics.new_unindexed_3d, UNMEASURED);
   assert.equal(second.output.metrics.source_errors, 1);
+
+  const quota = deps({ sitemap: [[`${B}y`, "2026-10-05"]] });
+  quota.inspect = async urls => ({ rows: [], not_asked: urls });
+  const third = await measureArticles(quota, undefined);
+  assert.equal(third.output.metrics.new_unindexed_3d, 1, "a new article the quota left out counts as not indexed");
+  assert.equal(third.output.metrics.source_errors, 1);
+  assert.equal(third.output.metrics.days_since_new_article, 11, "dated by the page's 10-01 published day on a first run");
 });
 
 test("new articles: pure helpers", () => {
