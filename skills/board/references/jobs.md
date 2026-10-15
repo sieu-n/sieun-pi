@@ -41,6 +41,7 @@ Everything you send another agent (briefs, relays, answers) is in English. After
 6. Replace a stuck owner whose last turn ended in an error with a job.
 7. When a job reports, add the decision or next step to your message if one is needed, because the report itself stays folded in the feed.
 8. After you read a job's final report and record it on the board, delete the job with `await rlm.delete_subagent(name)` unless a step keeps it waiting on purpose, because finished jobs hold memory.
+9. A step that changes the harness, a skill or a tool closes only with the path of its clean-room pass file in its note, made as in [clean-room.md](clean-room.md).
 
 ## Wiki page jobs
 

@@ -51,6 +51,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 3. `references/git.md` covers sieun-pi commits, merges, pushes and promotes.
 4. `references/owner.md` covers owner todos, review asks, logins, and links, images and diagrams in a reply.
 5. `references/corrections.md` covers what to do when the owner corrects how a chat works.
+6. `references/clean-room.md` covers the clean-room run that closes a harness, skill or tool change.
 
 ## Plan shape
 
