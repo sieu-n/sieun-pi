@@ -7,6 +7,7 @@
  *
  *   node --import tsx scripts/clean-room/clean-room.ts setup --scenario checkin-real-task --criteria <file> --cwd <repo> --name <chat name> --every-min <n> --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
+ *   node --import tsx scripts/clean-room/clean-room.ts say --run <dir> --message <text>
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts teardown --run <dir>
@@ -22,11 +23,12 @@ import { parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
+import { correctionRefine } from "./correction-refine.ts";
 import type { RunState, Scenario } from "./session-read.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
-const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask };
+const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask, "correction-refine": correctionRefine };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -223,6 +225,17 @@ async function collect(flags: Record<string, string>): Promise<void> {
   log(run, "collect done");
 }
 
+/** The owner's next message in a scenario that has one, sent through the composer's route and recorded as a seed, so the judge counts it as his. */
+async function say(flags: Record<string, string>): Promise<void> {
+  const run = need(flags, "run");
+  const message = need(flags, "message");
+  const state = readJson<RunState>(join(run, "run.json"));
+  state.seeds.push(message);
+  writeJson(join(run, "run.json"), state);
+  await call(await server(), "POST", `api/threads/${state.chat.id}/prompt`, { message, images: [], mode: "steer", requestId: requestId() });
+  log(run, `sent the owner's message: ${message}`);
+}
+
 async function evaluate(flags: Record<string, string>): Promise<void> {
   const run = need(flags, "run");
   const state = readJson<RunState>(join(run, "run.json"));
@@ -262,6 +275,7 @@ async function main(): Promise<void> {
   const { command, flags } = args(process.argv.slice(2));
   if (command === "setup") return setup(flags);
   if (command === "collect") return collect(flags);
+  if (command === "say") return say(flags);
   if (command === "reseed") return reseed(flags);
   if (command === "evaluate") return evaluate(flags);
   if (command === "teardown") return teardown(flags);
