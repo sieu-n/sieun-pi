@@ -312,8 +312,8 @@ async function serve(options: Options): Promise<void> {
   const keeper = startsDaemon(service.primary)
     ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   void keeper?.start();
-  const [{ buildClientBundle }, { createChatBackend }, { startChatServer }, { SdkSync, loadedClientVersion }] = await Promise.all([
-    import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts"), import("./chat-sdk.ts")]);
+  const [{ buildClientBundle }, { createChatBackend }, { startChatServer }, { SdkSync, loadedClientVersion }, { startPromptPrune }, { getAgentDir }] = await Promise.all([
+    import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts"), import("./chat-sdk.ts"), import("./prompt-prune.ts"), import("prime-agent")]);
   // The page bundle is the slowest start step (a Svelte compile of the client, 17 s at a load of 90). It builds in a worker while the server
   // listens; the page and app.js wait for it, the API answers at once.
   const bundle = buildClientBundle();
@@ -327,8 +327,16 @@ async function serve(options: Options): Promise<void> {
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   void slack?.start().catch(error => { process.stderr.write(`slack: ${error instanceof Error ? error.message : String(error)}\n`); });
   // Every chat in the index is pinned again, so a saved one resumes on the first catalog update. The daemon may be down here; the pin waits for it.
-  void backend.chats.adopt().then(({ pinned, forgotten }) => { if (pinned.length || forgotten.length) process.stderr.write(`chats: pinned ${pinned.length}, forgot ${forgotten.length}\n`); },
+  const adopted = backend.chats.adopt().then(({ pinned, forgotten }) => { if (pinned.length || forgotten.length) process.stderr.write(`chats: pinned ${pinned.length}, forgot ${forgotten.length}\n`); },
     error => { process.stderr.write(`chats: ${error instanceof Error ? error.message : String(error)}\n`); });
+  // The prompt captures of ended sessions go once the adopt pass has the daemon's list, then once a day (src/prompt-prune.ts). A serve that
+  // does not own the live chats leaves the folder alone.
+  let stopPromptPrune: () => void = () => {};
+  if (adopt === "live") void adopted.then(() => {
+    if (closing) return;
+    stopPromptPrune = startPromptPrune({ dataDir: service.directory, agentDir: getAgentDir(), log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`),
+      rows: async () => { if (!backend.catalog.daemonRows().length) await backend.catalog.refresh(); return backend.catalog.daemonRows(); } });
+  });
   // Exit 75 after an SDK update: launchd's KeepAlive starts a crashed (non-zero) login item again, now on the new packages.
   const sdk = new SdkSync(join(service.directory, "sdk.json"), { client: loadedClientVersion(), build: bundle.then(built => built.version, () => "build failed"),
     canRestart: options.supervised === true && service.primary, restart: () => { process.exitCode = 75; stop(); } });
@@ -341,7 +349,7 @@ async function serve(options: Options): Promise<void> {
     closing = (async () => {
       try { if (instance(await readJson(instancePath)).instanceId === identity.instanceId) await unlink(instancePath); }
       catch (error) { if (!hasCode(error, "ENOENT")) throw error; }
-      finally { keeper?.close(); remote.stop(); slack?.close(); await server.close(); }
+      finally { stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close(); await server.close(); }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
   }
