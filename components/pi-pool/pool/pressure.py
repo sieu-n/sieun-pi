@@ -39,8 +39,8 @@ SWAPOUTS_CRITICAL = 6000
 # at p99, and each of the 5 samples at 48 or more had the governor at memory critical already, so 4 a core (48 here) acts
 # only when CPU is pinned while memory reads clean.
 LOAD_CRITICAL_PER_CPU = 4
-# For this long after boot (kern.boottime) every read is critical, so the limit sits at pressure_working_max["critical"] and
-# climbs by turns.LIMIT_STEP a read only after it. On 10-15 the Mac booted at 13:48:58Z, the chat service started the daemon
+# For this long after boot (kern.boottime) every read is critical, so the limit sits at pressure_working_max["critical"] until
+# the first ok read after it. On 10-15 the Mac booted at 13:48:58Z, the chat service started the daemon
 # at 13:50:00Z (62 s), the daemon started 22 workers in 13:50Z and 10 in 13:51Z (31 of them recovered from before the
 # restart), and memory read high at 13:52:53Z (235 s) and critical at 13:54:31Z (333 s). The 1-minute load average lags a
 # burst by about a minute, and a record from before the boot can hold the ok limit of 30.

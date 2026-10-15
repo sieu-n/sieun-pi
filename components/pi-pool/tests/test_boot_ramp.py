@@ -67,15 +67,15 @@ class Replay(unittest.TestCase):
 
     def test_a_chat_service_restart_long_after_boot_is_held_by_the_load_alone(self):
         limits, working = self.replay([(9000 + uptime, load) for uptime, load in BOOT_READS])
-        self.assertEqual(limits, [16, 12, 12, 12, 12])
-        self.assertEqual(max(working), 16, "the first read opened 16 before the load average caught up; none opened after")
+        self.assertEqual(limits, [30, 12, 12, 12, 12])
+        self.assertEqual(max(working), 30, "the first read is ok, so the limit is the set 30 until the load average catches up")
 
-    def test_the_limit_reaches_30_two_and_a_half_minutes_after_the_boot_window_and_the_load_clear(self):
+    def test_the_first_ok_read_after_the_boot_window_puts_the_limit_back_to_the_set_30(self):
         later = [(uptime, 30) for uptime in range(230, 900, 30)]
         limits, _ = self.replay(BOOT_READS + later)
         reads = BOOT_READS + later
         first_ok = next(i for i, (uptime, _) in enumerate(reads) if uptime >= pressure.BOOT_CRITICAL_SEC)
-        self.assertEqual(limits[first_ok - 1:first_ok + 5], [12, 16, 20, 24, 28, 30])
+        self.assertEqual(limits[first_ok - 1:first_ok + 2], [12, 30, 30])
 
 
 if __name__ == "__main__":

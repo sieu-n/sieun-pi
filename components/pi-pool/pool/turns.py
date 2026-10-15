@@ -20,7 +20,8 @@ parent's lent slot, so a parent waiting on it in a cell does not sit on its slot
 level is high or critical, a borrow starts only while slots and borrows in use are under the
 limit plus PRESSURE_BORROWS, so borrows put at most that many turns over the limit. The level is
 read again every PRESSURE_TTL_SEC, and the record holds only what the next read recomputes. A read at high
-or critical drops the limit at once, and each ok read raises it by at most LIMIT_STEP.
+or critical drops the limit at once, and an ok read puts it back to mac_working_max. The limit is never above
+mac_working_max, the number the owner set.
 
 While the level is high or critical, a tree that the chat service's tree-memory.json lists
 over its share of RAM (pressure.read_tree_memory, read with the level) is held firmly: every
@@ -80,14 +81,6 @@ LOCK_TIMEOUT = 6.0
 # The governor reads memory pressure at most this often and keeps the reading in
 # state["turns"]["pressure"] between reads.
 PRESSURE_TTL_SEC = 30
-# After a read at high or critical the limit climbs back toward mac_working_max at most this
-# many slots a read, so one ok read between two critical ones opens 4 slots. On 10-15 a
-# single ok read at 09:17:28 KST opened 16 to 30 at once, 11 queued turns started in that
-# second, and kernel_task read 146% and 120% of a core in the next two minutes. Over the
-# 235 minutes of the Mac usable watch feed from 10-14 20:31Z to 10-15 00:27Z, the 33 where
-# working turns grew by 3 to 8 peaked at 83.5% kernel_task, and the one that grew by 12 read
-# 146% (browser-chat/mac-usable/2026-10-1{4,5}.jsonl). Two reads a minute at 4 is 8.
-LIMIT_STEP = 4
 # While the level is high or critical, borrows start only while slots and borrows in use are
 # under the limit plus this many. Over the 721 Mac usable watch minutes from 10-14 20:31Z to
 # 10-15 08:51Z, none of the 100 high minutes with 18 or fewer turns working (16 plus 2) was
@@ -250,11 +243,6 @@ def working_limit(cfg, level):
     return mac if level == "ok" else max(1, min(mac, int(cfg["pressure_working_max"][level])))
 
 
-def stepped(target, last):
-    """The limit after one read: down to `target` at once, up from `last` by at most LIMIT_STEP."""
-    return target if last is None or last >= target else min(target, last + LIMIT_STEP)
-
-
 def memory_events(last, held, now, level, over=None):
     """The tree_memory_held and tree_memory_released log lines between the trees `last` held and `held`."""
     was = set(last.get("memory_trees") or [])
@@ -281,7 +269,7 @@ def governor(turns, now, cfg, read=pressure.read, trees=pressure.read_tree_memor
     level, was = pressure.level(reading), last.get("level", "ok")
     over = trees() if level != "ok" else {}
     rec = {"level": level, "at": now, "since": last.get("since", now) if level == was else now, "reading": reading,
-           "limit": stepped(working_limit(cfg, level), last.get("limit")), "changed": last.get("changed"), "on": True,
+           "limit": working_limit(cfg, level), "changed": last.get("changed"), "on": True,
            "memory_trees": sorted(over)}
     events = []
     if level != was:
