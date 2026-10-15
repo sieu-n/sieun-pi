@@ -436,10 +436,11 @@ export class Duties {
     if (!chat) return;
     const at = this.now();
     const name = fixJobName(duty.name, chat.name, at);
-    const release = await this.host.admit?.(chatId, `${duty.id}-fix`) ?? null;
-    let job: DutyJobRef;
-    try { job = await jobs.start(chat, name, fixJobBrief({ duty, chat, job: name, at, misses })); }
-    finally { await release?.().catch(error => this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: release its fix job's turn queue key: ${message(error)}`)); }
+    // The steps name the job before its create, which took up to 197 s on 10-15, so a restart in between leaves steps the next tick reuses.
+    // The create does not wait in the turn queue: the job's own turns queue in pi-pool under its session id, and that queue outlives a server
+    // restart. On 10-15 the 01a115e2 d2 and d3 opens waited 1816 s and 1912 s as low and the 12:34Z restart cut both before their create.
+    await this.host.applyBoard!(chatId, current => fixStepOps(current, duty, misses, { name }));
+    const job = await jobs.start(chat, name, fixJobBrief({ duty, chat, job: name, at, misses }));
     await this.host.applyBoard!(chatId, current => fixStepOps(current, duty, misses, job));
     this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: ${misses.map(miss => miss.key).join(", ")} had no fix step with a live job after ` +
       `${CHANGE_APPROACH_MISSES} or more missed runs; opened ${job.name}`);

@@ -12,7 +12,7 @@ import type { BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 // VP of CI's CI system duty (d1, daily at 07:39) on 10-15: its 07:39 job ended at 07:44 KST with every metric missed and no fix step, the
 // send-back shipped at 18:22 KST, and at 20:25 KST the duty had missed 45 runs with no linked step on the board. 11 of the 12 stuck duties
-// were like it. The server now opens the fix job and its step itself.
+// were like it. The server now opens the fix job and its step itself, with no turn queue wait before the create.
 
 const CHAT = "01a1180e-6567-747f-bf44-452520ebdd1b";
 const day = (date: number, hours: number, minutes = 0): number => new Date(2026, 9, date, hours, minutes).getTime();
@@ -40,12 +40,16 @@ async function setup(input: { runs: DutyRunRecord[]; working?: Set<string> }) {
   const working = input.working ?? new Set<string>();
   const ended = new Set<string>();
   const starts: { name: string; brief: string }[] = [];
+  const stepsAtStart: string[][] = [];
+  const admits: string[] = [];
   const steers: { job: string; text: string }[] = [];
   let next = 0;
   const jobs: DutyJobHost = {
     async chat(chatId): Promise<DutyChat> { return { id: chatId, name: "VP of CI", cwd: "/repo", board: `/data/boards/${chatId}.json` }; },
     async working(job) { return working.has(job.id); },
-    async start(_chat, name, brief): Promise<DutyJobRef> { starts.push({ name, brief }); const id = `fix${++next}`; working.add(id); return { id, name }; },
+    async start(_chat, name, brief): Promise<DutyJobRef> {
+      starts.push({ name, brief });
+      stepsAtStart.push(steps(state.board).filter(item => item.job === name).map(item => `${item.duty} ${item.sessionId ?? "no session"}`)); const id = `fix${++next}`; working.add(id); return { id, name }; },
     async retire() {},
     async ended(last, older = []) { return [...last, ...older].filter(job => ended.has(job.id)); },
     async stop() {},
@@ -54,6 +58,7 @@ async function setup(input: { runs: DutyRunRecord[]; working?: Set<string> }) {
   const lines: string[] = [];
   const now = { at: day(15, 20, 25) };
   const duties = new Duties(store, { isChat: async id => id === CHAT, jobs, now: () => now.at, tickMs: 0, log: line => lines.push(line),
+    admit: async (_chat, duty) => { admits.push(duty); return null; },
     board: async () => state.board,
     applyBoard: async (_chat, ops: (board: ChatBoard) => readonly BoardOp[]) => {
       let board = state.board;
@@ -63,15 +68,17 @@ async function setup(input: { runs: DutyRunRecord[]; working?: Set<string> }) {
     fixLive: async (_chat, item) => item.sessionId !== undefined && working.has(item.sessionId) });
   /** The job's turn ends: it is idle and listed, not working. */
   const end = (id: string) => { working.delete(id); ended.add(id); };
-  return { duties, state, starts, steers, lines, end, working, now };
+  return { duties, state, starts, steers, lines, end, working, now, stepsAtStart, admits };
 }
 
 const steps = (board: ChatBoard): PlanItem[] => board.plan.flatMap(item => [item, ...item.children]).filter(item => item.duty);
 
 test("a daily duty stuck 3 runs with its last job ended and no fix step gets a fix job and a linked step from the server on the next tick", async () => {
-  const { duties, state, starts, lines } = await setup({ runs: [run(13, [130, 57], "j13"), run(14, [294, 50], "j14"), run(15, [110, 28], "j15")] });
+  const { duties, state, starts, lines, stepsAtStart, admits } = await setup({ runs: [run(13, [130, 57], "j13"), run(14, [294, 50], "j14"), run(15, [110, 28], "j15")] });
   await duties.tick();
   assert.equal(starts.length, 1, lines.join("\n"));
+  assert.deepEqual(admits, [], "the create does not wait in the turn queue, so a server restart cannot cut it (01a115e2 d2 and d3, 10-15 12:34Z)");
+  assert.deepEqual(stepsAtStart[0], ["d1/verify_dev_p90_min no session", "d1/land_success_pct no session"], "the steps name the job before its create");
   assert.match(starts[0]!.name, /^fix ci system VP of CI \d\d:\d\d$/);
   assert.match(starts[0]!.brief, /- verify_dev_p90_min \(Dev verify p90\) is 110 min, target at most 10 min, missed 3 runs in a row, moving toward the target\./);
   assert.match(starts[0]!.brief, /- land_success_pct \(Lands that pass\) is 28%, target at least 80%, missed 3 runs in a row, not moving toward the target\./);
