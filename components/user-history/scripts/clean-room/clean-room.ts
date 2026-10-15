@@ -5,7 +5,7 @@
  * the server runs the chat on its own clock, `collect` saves the evidence, `evaluate` judges it against the criteria written before the run,
  * and `teardown` archives the chat and its jobs.
  *
- *   node --import tsx scripts/clean-room/clean-room.ts setup --scenario checkin-goal-push --criteria <file> --board <file> --name <chat name> --every-min <n> --run <dir>
+ *   node --import tsx scripts/clean-room/clean-room.ts setup --scenario checkin-real-task --criteria <file> --cwd <repo> --name <chat name> --every-min <n> --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts reseed --run <dir>
  *   node --import tsx scripts/clean-room/clean-room.ts collect --run <dir> --until <ISO time>
  *   node --import tsx scripts/clean-room/clean-room.ts evaluate --run <dir>
@@ -13,7 +13,7 @@
  *   node --import tsx scripts/clean-room/clean-room.ts baseline --scenario checkin-goal-push --before <dir> --out <file>
  */
 import { randomBytes } from "node:crypto";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { jobRegistry } from "../../src/chat-sources.ts";
@@ -21,11 +21,12 @@ import { transactJsonFile } from "../../src/locked-json.ts";
 import { parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
+import { checkinRealTask } from "./checkin-real-task.ts";
 import type { RunState, Scenario } from "./session-read.ts";
 
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(homedir(), ".prime/agent/browser-chat");
 const RELEASES = join(homedir(), ".local/share/sieun-pi-chat");
-const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush };
+const SCENARIOS: Record<string, Scenario> = { "checkin-goal-push": checkinGoalPush, "checkin-real-task": checkinRealTask };
 
 function args(argv: readonly string[]): { command: string; flags: Record<string, string> } {
   const [command = "", ...rest] = argv;
@@ -94,41 +95,44 @@ async function setup(flags: Record<string, string>): Promise<void> {
   if (existsSync(join(run, "run.json"))) throw new Error(`${run} already holds a run`);
   mkdirSync(run, { recursive: true });
   copyFileSync(criteria, join(run, "criteria.md"));
-  const sandbox = join(run, "sandbox");
-  mkdirSync(sandbox, { recursive: true });
-  writeFileSync(join(sandbox, "AGENTS.md"), scenario.agentsMd(sandbox));
+  const sandbox = scenario.agentsMd ? join(run, "sandbox") : need(flags, "cwd");
+  if (scenario.agentsMd) { mkdirSync(sandbox, { recursive: true }); writeFileSync(join(sandbox, "AGENTS.md"), scenario.agentsMd(sandbox)); }
   const everyMin = Number(need(flags, "every-min"));
   const name = need(flags, "name");
   const srv = await server();
   const headMessage = scenario.headMessage(name);
   const chat = await createThread(srv, "chat", name, sandbox, headMessage);
-  log(run, `created test chat ${chat} "${name}" in ${sandbox}`);
-  await setCheckIn(srv, chat, { pause: "forever" });
-  log(run, "paused its check-in while the board is seeded");
-  const registry = jobRegistry(join(DATA, "chat-jobs.json"));
+  log(run, `created chat ${chat} "${name}" in ${sandbox}`);
   const fixtures: Record<string, string> = {};
   const fixtureBriefs: string[] = [];
-  for (const fixture of scenario.fixtures) {
-    const logFile = join(run, `fixture-${fixture.name.replace(/\W+/g, "-")}.jsonl`);
-    const brief = fixture.brief({ chat, chatName: name, logFile, sandbox });
-    const id = await createThread(srv, "thread", fixture.name, sandbox, brief);
-    await registry.add([fixture.name, id], name);
-    fixtures[fixture.name] = id;
-    fixtureBriefs.push(brief);
-    log(run, `created fixture ${id} "${fixture.name}", filed under the test chat in chat-jobs.json`);
-  }
-  const copy = parseBoard(readJson(need(flags, "board")));
-  const { board, changes } = scenario.board(copy, { fixtures, sandbox });
-  await seedBoard(chat, board);
-  log(run, `seeded board rev ${board.rev} from ${flags.board}`);
+  let changes: string[] = [];
   const state: RunState = { scenario: scenario.name, chat: { id: chat, name }, fixtures, sandbox, everyMs: everyMin * 60_000, release: liveRelease(),
-    board: need(flags, "board"), seeds: [headMessage, ...fixtureBriefs], setupAt: Date.now(), windowStart: 0 };
+    board: flags.board ?? "", seeds: [headMessage], setupAt: Date.now(), windowStart: 0 };
+  if (scenario.board) {
+    await setCheckIn(srv, chat, { pause: "forever" });
+    log(run, "paused its check-in while the board is seeded");
+    const registry = jobRegistry(join(DATA, "chat-jobs.json"));
+    for (const fixture of scenario.fixtures) {
+      const logFile = join(run, `fixture-${fixture.name.replace(/\W+/g, "-")}.jsonl`);
+      const brief = fixture.brief({ chat, chatName: name, logFile, sandbox });
+      const id = await createThread(srv, "thread", fixture.name, sandbox, brief);
+      await registry.add([fixture.name, id], name);
+      fixtures[fixture.name] = id;
+      fixtureBriefs.push(brief);
+      log(run, `created fixture ${id} "${fixture.name}", filed under the chat in chat-jobs.json`);
+    }
+    const seeded = scenario.board(parseBoard(readJson(need(flags, "board"))), { fixtures, sandbox });
+    changes = seeded.changes;
+    await seedBoard(chat, seeded.board);
+    log(run, `seeded board rev ${seeded.board.rev} from ${flags.board}`);
+    state.seeds.push(...fixtureBriefs);
+  }
   writeJson(join(run, "run.json"), state);
   writeFileSync(join(run, "setup.md"), scenario.setupNotes(state, changes));
-  await setCheckIn(srv, chat, { everyMs: state.everyMs, pause: null });
-  state.windowStart = Date.now();
+  await setCheckIn(srv, chat, { everyMs: state.everyMs, ...(scenario.board ? { pause: null } : {}) });
+  state.windowStart = state.setupAt;
   writeJson(join(run, "run.json"), state);
-  log(run, `check-in resumed every ${everyMin} min on ${state.release}; the measured window starts now and nobody steps in`);
+  log(run, `check-in every ${everyMin} min on ${state.release}; the measured window started at ${new Date(state.windowStart).toISOString()} and nobody steps in`);
 }
 
 /** Seeds the board again from the run's copy and opens a new window: for a setup whose seed failed, with the check-in paused around it. */
@@ -138,6 +142,7 @@ async function reseed(flags: Record<string, string>): Promise<void> {
   const scenario = SCENARIOS[state.scenario]!;
   const srv = await server();
   await setCheckIn(srv, state.chat.id, { pause: "forever" });
+  if (!scenario.board) throw new Error(`${state.scenario} seeds no board`);
   const { board } = scenario.board(parseBoard(readJson(state.board)), { fixtures: state.fixtures, sandbox: state.sandbox });
   await seedBoard(state.chat.id, board);
   log(run, `seeded board rev ${board.rev} again from ${state.board}`);
@@ -239,11 +244,17 @@ async function teardown(flags: Record<string, string>): Promise<void> {
   for (const id of jobs) {
     await call(srv, "POST", `api/threads/${id}/archive`, {}).then(() => log(run, `archived job ${id}`), error => log(run, `archive ${id}: ${error instanceof Error ? error.message : String(error)}`));
   }
+  const boardFile = join(DATA, "boards", `${state.chat.id}.json`);
+  if (existsSync(boardFile)) {
+    await transactJsonFile({ path: boardFile, label: "Chat board", parse: parseBoard, initial: () => { throw new Error("no board"); } }, board => { board.todos = []; });
+    log(run, "removed the test chat's todos, so the owner's For you does not count them");
+  }
   await call(srv, "POST", `api/threads/${state.chat.id}/archive`, {});
   log(run, `archived test chat ${state.chat.id}`);
   await jobRegistry(join(DATA, "chat-jobs.json")).remove(Object.keys(state.fixtures).concat(Object.values(state.fixtures)));
-  for (const file of existsSync(join(DATA, "wakes")) ? readdirSync(join(DATA, "wakes")) : []) {
-    if (Object.values(state.fixtures).some(id => file.startsWith(id))) log(run, `fixture wake left for the service to drop: ${file}`);
+  const wakes = join(DATA, "wakes");
+  for (const file of existsSync(wakes) ? readdirSync(wakes) : []) {
+    if ([state.chat.id, ...jobs].some(id => file.startsWith(id))) { rmSync(join(wakes, file), { force: true }); log(run, `dropped wake ${file}`); }
   }
 }
 

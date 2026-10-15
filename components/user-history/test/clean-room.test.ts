@@ -14,7 +14,7 @@ const board: ChatBoard = {
 } as unknown as ChatBoard;
 
 test("the twin board points every owner at the fixture, reopens p28 with a push step, and leaves ownerless steps alone", () => {
-  const { board: twin, changes } = checkinGoalPush.board(board, { fixtures: { [FIXTURE]: "fixture-session" }, sandbox: "/tmp/sandbox" });
+  const { board: twin, changes } = checkinGoalPush.board!(board, { fixtures: { [FIXTURE]: "fixture-session" }, sandbox: "/tmp/sandbox" });
   const p23 = twin.plan[0]!.children[0]!;
   assert.equal(p23.job, FIXTURE);
   assert.equal(p23.sessionId, "fixture-session");

@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { nextIds } from "../../src/shared/chat-board.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import { flagHits, names, reportShape as shape, stepIdLists } from "./text-checks.ts";
 import { readSession, readSessionFile, type RunState, type Scenario, type SessionEvent, sessionFiles, type Verdict } from "./session-read.ts";
 
 /**
@@ -15,33 +16,9 @@ export const GOAL_B = { id: "p28", value: "17.95", target: "99", gap: ["81.05", 
 export const FIXTURE = "crawler ops train twin";
 const PUSH_LINK = "checkin/goal_gaps";
 
-/** The finding keys the check-in code names (`rg -o 'kind: "[a-z_]+"' src/chat-checkin.ts src/checkin-*.ts src/shared/chat-duties.ts` in release-293f722). */
-export const FLAG_KINDS = ["stuck_steps", "stalled_steps", "finished_open", "no_progress", "goal_gaps", "loose_goals", "orphan_steps", "stale_steps", "idle_goals",
-  "blocked_on_others", "due_late", "extra_goals", "goals_to_fold", "goals_without_duty", "held_elsewhere", "open_under_closed", "scope_misses", "wait_met",
-  "go_missing", "go_waiting", "job_end_silent", "job_end_unrecorded", "job_ended", "no_owner", "owner_no_todo", "merges_without_go", "requirements_missing",
-  "one_session_load", "redundant_heartbeats", "startup_failure"];
-
-/** Flag kinds named in a text, leaving out a duty link such as `checkin/goal_gaps` or `d1/ig_reads_per_s`. */
-export function flagHits(text: string): string[] {
-  const hits = new Set<string>();
-  for (const kind of FLAG_KINDS) {
-    for (const match of text.matchAll(new RegExp(`(^|[^A-Za-z0-9_/])${kind}(?![A-Za-z0-9_])`, "g"))) if (match) hits.add(kind);
-  }
-  return [...hits];
-}
-/** Paragraphs (blocks between blank lines) that name 4 or more distinct step ids, each with its ids. */
-export function stepIdLists(text: string): string[][] {
-  return text.split(/\n\s*\n/).map(block => [...new Set(block.match(/\bp\d{1,4}\b/g) ?? [])]).filter(ids => ids.length >= 4);
-}
-/** Whether a text names a number as a whole token: 14.9 matches "14.9%" but not "114.9" or "14.95". */
-export const names = (text: string, value: string): boolean => new RegExp(`(^|[^0-9.])${value.replace(".", "\\.")}(?![0-9]|\\.[0-9])`).test(text);
-/** A check-in report's shape (criterion e): its non-empty lines past one line that holds only a detail file path, and whether it names goal A's number. */
-export function reportShape(text: string): { lines: number; ok: boolean; namesGoal: boolean } {
-  const lines = text.split("\n").map(line => line.trim()).filter(Boolean).filter(line => !/^\[agent-message from [^\]]*\]$/.test(line));
-  const pathLine = lines.findIndex(line => /^(detail:?\s*)?[`]?[~/][^\s`]+[`]?\.?$/i.test(line));
-  const counted = pathLine >= 0 ? lines.length - 1 : lines.length;
-  return { lines: counted, ok: counted <= 3, namesGoal: names(text, GOAL_A.value) };
-}
+export { FLAG_KINDS, flagHits, names, stepIdLists } from "./text-checks.ts";
+/** A report's shape against goal A's number (criterion e). */
+export const reportShape = (text: string): ReturnType<typeof shape> => shape(text, GOAL_A.value);
 
 const twinNote = (sandbox: string): string => `Clean-room twin of Crawler VP's board, copied 10-15 22:00Z for a test of the check-in. Jobs for this board work in ${sandbox} ` +
   "as a dry run: they read code, data and logs freely, write only under that folder, and report what they would change and what number it would move. " +

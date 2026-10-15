@@ -11,19 +11,22 @@ export interface RunState {
 /** A clean-room scenario: how it seeds the test chat, and how it judges the evidence against the criteria written before the run. */
 export interface Scenario {
   name: string;
-  agentsMd(sandbox: string): string;
+  /** The AGENTS.md of a sandbox folder the chat works in; absent: the chat works in `--cwd` like a chat the owner opens there. */
+  agentsMd?(sandbox: string): string;
   headMessage(chatName: string): string;
   fixtures: { name: string; brief(context: { chat: string; chatName: string; logFile: string; sandbox: string }): string }[];
-  board(copy: ChatBoard, context: { fixtures: Record<string, string>; sandbox: string }): { board: ChatBoard; changes: string[] };
+  /** The board seeded from `--board`; absent: the chat makes its own board. */
+  board?(copy: ChatBoard, context: { fixtures: Record<string, string>; sandbox: string }): { board: ChatBoard; changes: string[] };
   setupNotes(state: RunState, changes: readonly string[]): string;
   evaluate(run: string, state: RunState): { verdict: Verdict; text: string };
   baseline(before: string): { verdict: Verdict; text: string };
 }
-export type Verdict = "pass" | "fail" | "void";
+/** `open`: the run has not yet reached a state a criterion needs, so it runs more cycles before a verdict. */
+export type Verdict = "pass" | "fail" | "void" | "open";
 
 /** One thing a session saw or did, read from its session file. */
 export type SessionEvent =
-  | { kind: "text"; at: number; role: "user" | "custom"; customType?: string; from?: string; fromId?: string; text: string }
+  | { kind: "text"; at: number; role: "user" | "custom"; customType?: string; from?: string; fromId?: string; relation?: string; text: string }
   | { kind: "assistant"; at: number; text: string }
   | { kind: "call"; at: number; tool: string; input: string }
   | { kind: "sent"; at: number; to: string; toName: string; text: string };
@@ -44,9 +47,10 @@ export function readSessionFile(file: string): SessionEvent[] {
     try { entry = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
     const at = Date.parse(String(entry.timestamp ?? "")) || 0;
     if (entry.type === "custom_message") {
-      const details = (entry.details ?? {}) as { from?: { sessionId?: string; sessionName?: string } };
+      const details = (entry.details ?? {}) as { from?: { sessionId?: string; sessionName?: string }; fromRelationship?: string };
       events.push({ kind: "text", at, role: "custom", customType: String(entry.customType ?? ""), text: blockText(entry.content),
-        ...(details.from?.sessionName ? { from: details.from.sessionName } : {}), ...(details.from?.sessionId ? { fromId: details.from.sessionId } : {}) });
+        ...(details.from?.sessionName ? { from: details.from.sessionName } : {}), ...(details.from?.sessionId ? { fromId: details.from.sessionId } : {}),
+        ...(details.fromRelationship ? { relation: details.fromRelationship } : {}) });
       continue;
     }
     if (entry.type !== "message") continue;
