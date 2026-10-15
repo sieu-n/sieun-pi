@@ -281,7 +281,10 @@ export const PROGRESS_MS = 60 * 60_000;
  * verify-dev run while the M1 Air runners slept (10:30Z to 13:35Z), such as p84 on 38378436903 and p75 on 38378422183. A goal moved when, in the last PROGRESS_MS, an open step's note under it gained a fact (`noteFacts`) or a step's job
  * sent the chat a message with a fact (`factsAt`, so an answer to a status ask with no fact is no move); its steps are not counted (launch main bro 10-12: p56's copy and p57's lane reads reported every 30 min with new page
  * and run counts, and three check-ins in a row flagged them). No verdict (null) until the chat's memory spans PROGRESS_MS. `moving` are the open
- * steps that are not held and whose goal did not move. A step whose work waits in the Mac-wide turn queue is held (`queueHolds`).
+ * steps that are not held and whose goal did not move. A step whose work waits in the Mac-wide turn queue is held (`queueHolds`), and so is a
+ * step whose owner sleeps on a board.wake for a run that is queued or running (`JobFact.wake`), as a waitFor naming that run is. Frontend bro
+ * 10-15: the 20:31, 20:46 and 21:02 KST check-ins read no_progress 1 for p145 alone, whose job slept on a wake for verify-dev run 38724412490
+ * from 20:01 KST while the run's jobs waited for pool-light and m1-air runners; the step's waitFor named no run.
  */
 export interface NoProgress { moving: StepView[] }
 export function noProgress(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, since: number,
@@ -293,7 +296,8 @@ export function noProgress(board: ChatBoard | null, views: readonly StepView[], 
   if (done) return null;
   const held = (view: StepView): boolean => view.item.status === "blocked" || view.cls === "foryou" || Date.parse(view.item.waitUntil ?? "") > now ||
     (!view.mine && view.owner?.key.startsWith("thread:") === true) || waitTarget(view.item.waitFor, rows, self) !== undefined ||
-    namedRuns(view.item, train).some(run => run.running) || (train !== undefined && trainMoves(view.item, train, now)) || queueHolds(view, queued, rows, self);
+    [...namedRuns(view.item, train), ...namedRuns({ waitFor: view.owner?.wake ?? "" }, train)].some(run => run.running) ||
+    (train !== undefined && trainMoves(view.item, train, now)) || queueHolds(view, queued, rows, self);
   const recent = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
   const goalOf = (view: StepView): string => view.goal?.id ?? view.item.id;
   const moved = new Set(views.filter(view => recent(memos[view.item.id]?.factsAt) || recent(view.owner?.lastMessage?.factsAt)).map(goalOf));
