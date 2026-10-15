@@ -14,8 +14,10 @@ import {
  * - estate_pg_prod and estate_pg_stg through Grafana (grafana_ro): ig_engage_read_log, ig_engage_accounts, ig_engage_account_events, the
  *   config keys engage.rate_test_arms, engage.rate_test_started_at and pause.engage*, and on staging every pause.* row that reads 'true'
  *   with its last config_audit writer;
- * - estate_prometheus: crawler_v3_engage_admissible_now{world="prod"} (the healthy accounts: active, bound and passing egress admission, GET
- *   /ops/engage/health admissible_now), and crawler_v3_engage_deaths_24h{cause} to cross-check the death count;
+ * - estate_prometheus: crawler_v3_engage_admissible_now{world="prod"} (the accounts that can read now: active, bound and passing egress admission,
+ *   GET /ops/engage/health admissible_now), and crawler_v3_engage_deaths_24h{cause} to cross-check the death count;
+ * - prod ig_engage_session_bindings and ig_engage_session_renewals through the same ssh as owner_ro (grafana_ro cannot read the renewals), for
+ *   the active accounts whose proxy session binding ran out and that the renewal loop retries (LAPSED_REMOTE below);
  * - prod watch_targets through one ssh to us-metal01 as owner_ro (grafana_ro cannot read watch_targets), for the deep collab walks, and
  *   staging watch_targets the same way, for the oldest due staging collab read.
  * grafana_ro cannot read the actor, transition and from_status columns of ig_engage_account_events, so a death here is a dead-outcome event, and
@@ -26,7 +28,10 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
 
 /*
  * Targets in engage-reads.duty.json and their sources:
- * - prod_capacity_pages_day >= 100000: the owner, 10-09, "read 100k pages/day". Capacity is the healthy prod accounts times provenRate().
+ * - prod_capacity_pages_day >= 100000: the owner, 10-09, "read 100k pages/day". Capacity is the healthy prod accounts times provenRate(). Healthy is
+ *   admissible_now plus the active accounts whose proxy session binding ran out while the renewal loop retries it: Instagram did nothing to
+ *   them, and they read again on their own once the proxy gives them an exit. A GeoNode outage from 23:05Z on 10-14 let 20 bindings lapse
+ *   and dropped admissible_now from 122 to 106 with 0 Instagram verdicts; the proxy outage is the proxy's alert, not lost account capacity.
  * - fleet_ig_killed_pct <= 2 and canary_ig_deaths_1h <= 3: the owner's own numbers, 10-14 02:13Z.
  * - deep_walk_ok_pct >= 99: the owner, 10-09, "reliable logged-in apis including pagination api for up to years". Measured 10-14 02:30Z on
  *   prod: of the 365-day collab walks, 8,960 of 8,978 in the last 72 h reached their end (99.8%), by UTC day 10-12 5,259 of 5,259 and 10-13
@@ -59,13 +64,13 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
 };
 /** The data each metric reads; a metric whose source failed is not measured. */
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
-  prod_capacity_pages_day: ["prod read log", "prod accounts", "prod healthy gauge"],
+  prod_capacity_pages_day: ["prod read log", "prod accounts", "prod healthy gauge", "prod lapsed bindings"],
   staging_due_wait_min: ["staging due reads"],
   fleet_ig_killed_pct: ["prod accounts", "prod config"], canary_ig_deaths_1h: ["prod accounts", "prod config"],
   canary_accounts_short: ["prod accounts", "prod config"],
   deep_walk_ok_pct: ["prod deep walks"],
 };
-export type Source = "grafana auth" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod death gauge" | "prod deep walks";
+export type Source = "grafana auth" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks";
 
 /** Pages one prod account read on one full UTC day (YYYY-MM-DD). */
 export interface DayPages { day: string; accountId: number; pages: number }
@@ -76,12 +81,18 @@ export interface Account { id: number; status: string; reason?: string }
 export interface StagingDue { due: number; waitMin: number }
 /** A staging pause row that reads 'true', with the config_audit row that last wrote its key (null fields when none did). */
 export interface StagingPause { key: string; auditId: number | null; at: number | null; actor: string | null; reason: string | null }
+/**
+ * Active prod accounts whose current proxy session binding has run out (or runs out inside one page's timeout, as the egress admission
+ * refuses it): `waiting` have a renewal row that is not blocked, so the renewal loop retries them; `blocked` wait for an operator.
+ * `oldestAt` is when the oldest of them ran out, null when none has.
+ */
+export interface Lapsed { waiting: number; blocked: number; oldestAt: number | null }
 /** The 365-day collab walks of the last 24 h: walks that reached their end (since or exhausted), and error stops by code. */
 export interface DeepWalks { reached: number; errors: Record<string, number> }
 export interface EngageData {
   now: number;
   days?: DayPages[]; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
-  healthy?: number; deepWalks?: DeepWalks;
+  healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks;
   /** crawler_v3_engage_deaths_24h by cause. */
   deathGauge?: Record<string, number>;
   errors: { source: Source; message: string }[];
@@ -211,18 +222,23 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       flagged.push({ at, kind: "death_gauge", excerpt: `crawler_v3_engage_deaths_24h{cause="instagram"} reads ${data.deathGauge.instagram ?? "none"} while this precheck counts ${instagram}; the gauge sees the actor and from_status columns grafana_ro cannot, so trust the gauge and fix this precheck` });
     const pauses = Object.entries(data.config).filter(([key, value]) => key.startsWith("pause.engage") && value === "true").map(([key]) => key);
     if (pauses.length) flagged.push({ at, kind: "pause", excerpt: `prod pause keys on: ${pauses.join(", ")}` });
-    if (data.days && data.healthy !== undefined) {
+    if (data.days && data.healthy !== undefined && data.lapsed) {
       const proof = provenRate(data.days, data.deaths, want);
       const rate = proof?.rate ?? 0;
-      metrics.prod_capacity_pages_day = data.healthy * rate;
+      const healthy = data.healthy + data.lapsed.waiting;
+      const counted = `${healthy} healthy prod accounts (${data.healthy} admissible now${data.lapsed.waiting ? `, ${data.lapsed.waiting} waiting on a proxy session renewal` : ""})`;
+      metrics.prod_capacity_pages_day = healthy * rate;
       const onHand = data.accounts.filter(account => !(DEAD as readonly string[]).includes(account.status)).length;
       const need = rate ? Math.ceil(PAGES_A_DAY_GOAL / rate) : null;
       flagged.push({ at, kind: "capacity", excerpt: (proof
-        ? `${data.healthy} healthy prod accounts (crawler_v3_engage_admissible_now) x ${fmt(rate)} pages a day per account, proven on ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day, 0 Instagram verdicts at or under it) = ${fmt(data.healthy * rate)} pages a day. `
-          + `${need! > data.healthy ? `${need! - data.healthy} more healthy accounts at that rate reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
+        ? `${counted} x ${fmt(rate)} pages a day per account, proven on ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day, 0 Instagram verdicts at or under it) = ${fmt(healthy * rate)} pages a day. `
+          + `${need! > healthy ? `${need! - healthy} more healthy accounts at that rate reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
           + `${onHand} prod accounts on hand (not dead) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}: only more accounts or a higher proven rate reach it` : ", enough once they are healthy"}.`
-        : `${data.healthy} healthy prod accounts, and no rate is proven: no ${PROOF_DAYS} consecutive full UTC days had ${want} accounts read at one rate with 0 Instagram verdicts at or under it.`).slice(0, 600) });
+        : `${counted}, and no rate is proven: no ${PROOF_DAYS} consecutive full UTC days had ${want} accounts read at one rate with 0 Instagram verdicts at or under it.`).slice(0, 600) });
     }
+    if (data.lapsed && (data.lapsed.waiting || data.lapsed.blocked)) flagged.push({ at, kind: "lapsed_bindings", excerpt: (`${data.lapsed.waiting + data.lapsed.blocked} active prod accounts have no live proxy session binding, the oldest since ${utc(data.lapsed.oldestAt!)}. `
+      + `${data.lapsed.waiting} wait on the renewal loop and count as capacity: they read again once the proxy answers (a GeoNode supply hold or neutral_address_unresolved renewals point at the proxy). `
+      + (data.lapsed.blocked ? `${data.lapsed.blocked} have a blocked renewal row that nothing retries and are left out of capacity: clear them through the shipped rotation path.` : "")).slice(0, 600) });
   }
   if (data.deepWalks) {
     const errorStops = Object.values(data.deepWalks.errors).reduce((sum, count) => sum + count, 0);
@@ -250,6 +266,26 @@ const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, 
   exists (select 1 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at < e.at) as read_before,
   (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h
 from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.outcome in ${DEAD_SQL} order by e.at`;
+/** The lapsed session bindings, as lapsedOf parses them; the 60 s is READ_PAGE_TIMEOUT_SECONDS, the margin the egress admission keeps. */
+export const LAPSED_REMOTE = `set -u
+PW=$(tr -d '\\n' < /root/prod-pg-owner-ro.txt)
+docker exec -i -e PGAPPNAME=engage-reads-duty -e PGPASSWORD="$PW" virev-prod-postgres psql -X -h 127.0.0.1 -U owner_ro -d crawler_v3 -q -t -A -F '\t' -v ON_ERROR_STOP=1 <<'SQL'
+set default_transaction_read_only = on;
+select count(*) filter (where r.status is distinct from 'blocked'), count(*) filter (where r.status = 'blocked'),
+  coalesce(round(extract(epoch from min(b.expires_at)) * 1000), 0)
+from ig_engage_accounts a join ig_engage_session_bindings b on b.account_id = a.id and b.credential_generation = a.credential_generation
+left join ig_engage_session_renewals r on r.account_id = a.id
+where a.world = 'prod' and a.status = 'active' and b.expires_at <= now() + interval '60 seconds';
+SQL
+`;
+
+export function lapsedOf(tsv: string): Lapsed {
+  const [waiting, blocked, oldest, ...rest] = tsv.trim().split("\t").map(Number);
+  if (waiting === undefined || blocked === undefined || oldest === undefined || rest.length || ![waiting, blocked, oldest].every(Number.isFinite))
+    throw new Error(`lapsed bindings: unexpected answer ${tsv.slice(0, 80)}`);
+  return { waiting, blocked, oldestAt: waiting + blocked ? oldest : null };
+}
+
 const CONFIG_SQL = "select key, value from config where key like 'engage.rate_test%' or key like 'pause.engage%'";
 /** The deep collab walks on prod: watch_targets kind tagged (the logged-in usertags route) at depth 365, the 24 h window of the duty. */
 export const DEEP_WALKS_REMOTE = `set -u
@@ -302,22 +338,25 @@ export function deepWalksOf(tsv: string): DeepWalks {
   return walks;
 }
 
-export async function measure(query: DsQuery | null, authError: string | null, now: number, remote: () => Promise<string>, stagingRemote: () => Promise<string>): Promise<EngageData> {
+export async function measure(query: DsQuery | null, authError: string | null, now: number, remote: () => Promise<string>, stagingRemote: () => Promise<string>,
+  lapsedRemote: () => Promise<string>): Promise<EngageData> {
   const data: EngageData = { now, errors: [] };
   const step = async <T>(source: Source, read: () => Promise<T>): Promise<T | undefined> => {
     try { return await read(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
   const deepWalks = step("prod deep walks", async () => deepWalksOf(await remote()));
   const stagingDue = step("staging due reads", async () => stagingDueOf(await stagingRemote()));
+  const lapsedBindings = step("prod lapsed bindings", async () => lapsedOf(await lapsedRemote()));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
     for (const source of ["prod read log", "staging read log", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
-    const [walks, due] = await Promise.all([deepWalks, stagingDue]);
+    const [walks, due, lapsed] = await Promise.all([deepWalks, stagingDue, lapsedBindings]);
     if (walks) data.deepWalks = walks;
     if (due) data.stagingDue = due;
+    if (lapsed) data.lapsed = lapsed;
     return data;
   }
-  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due] = await Promise.all([
+  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed] = await Promise.all([
     step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL))),
     step("staging read log", async () => num((await sqlRows(query, PG.staging, STAGING_SQL))[0]?.last_read_at)),
     step("staging config", async () => stagingPausesOf(await sqlRows(query, PG.staging, STAGING_PAUSES_SQL))),
@@ -332,9 +371,10 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     step("prod death gauge", async () => Object.fromEntries((await promInstant(query, PROM.prod, 'max by (cause)(crawler_v3_engage_deaths_24h{world="prod"})')).map(series => [series.labels.cause ?? "?", series.value]))),
     deepWalks,
     stagingDue,
+    lapsedBindings,
   ]);
   Object.assign(data, days && { days }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
-    healthy !== undefined && { healthy }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due });
+    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due });
   return data;
 }
 
@@ -347,7 +387,7 @@ async function main(): Promise<void> {
   let query: DsQuery | null = null;
   let authError: string | null = null;
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
-  const result = report(await measure(query, authError, now, () => ssh(DEEP_WALKS_REMOTE, signal), () => ssh(STAGING_DUE_REMOTE, signal)), dutyMetrics);
+  const result = report(await measure(query, authError, now, () => ssh(DEEP_WALKS_REMOTE, signal), () => ssh(STAGING_DUE_REMOTE, signal), () => ssh(LAPSED_REMOTE, signal)), dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`engage-reads: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
 }

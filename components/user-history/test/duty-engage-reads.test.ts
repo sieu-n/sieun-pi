@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { type DutyMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import {
-  type Account, type DayPages, type Death, type EngageData, canaryRoster, causeOf, deepWalksOf, measure, parseArms, provenRate, report, stagingDueOf, stagingPausesOf,
+  type Account, type DayPages, type Death, type EngageData, canaryRoster, causeOf, deepWalksOf, lapsedOf, measure, parseArms, provenRate, report, stagingDueOf, stagingPausesOf,
 } from "../scripts/duties/engage-reads.ts";
 import { UNMEASURED, frameRows, frameSeries, grafanaAuth, missValue } from "../scripts/duties/estate-reads.ts";
 
@@ -25,7 +25,7 @@ const reads = (days: string[], count: number, pages: number, firstId = 1): DayPa
 
 function data(fields: Partial<EngageData> = {}): EngageData {
   return { now: NOW, errors: [], stagingLastReadAt: NOW - 5 * MIN, stagingDue: { due: 0, waitMin: 0 }, accounts: Array.from({ length: 100 }, (_, index) => account(index + 1)), deaths: [],
-    days: reads(["2026-10-12", "2026-10-13"], 100, 1000), healthy: 100, deepWalks: { reached: 995, errors: { invalid_request: 5 } },
+    days: reads(["2026-10-12", "2026-10-13"], 100, 1000), healthy: 100, lapsed: { waiting: 0, blocked: 0, oldestAt: null }, deepWalks: { reached: 995, errors: { invalid_request: 5 } },
     config: { "engage.rate_test_arms": "2000:1,2,3,4,5,6,7,8,9,10", "engage.rate_test_started_at": "2026-10-12T03:00:00+00:00" }, ...fields };
 }
 
@@ -53,6 +53,20 @@ test("engage reads: capacity is healthy accounts times the proven rate, and its 
   assert.match(line, /95 healthy prod accounts .* x 962 pages a day per account, proven on 2026-10-12 and 2026-10-13/);
   assert.match(line, /9 more healthy accounts at that rate reach 100,000/);
   assert.match(line, /100 prod accounts on hand \(not dead\) x 962 = 96,200, short of 100,000/);
+});
+
+test("engage reads: an account whose proxy session binding lapsed while the renewal loop retries it is capacity, a blocked one is not", async () => {
+  const lapsed = lapsedOf("20\t1\t1791971068811\n");
+  assert.deepEqual(lapsed, { waiting: 20, blocked: 1, oldestAt: 1791971068811 });
+  assert.deepEqual(lapsedOf("0\t0\t0\n"), { waiting: 0, blocked: 0, oldestAt: null });
+  assert.throws(() => lapsedOf("20\t1\n"), /unexpected answer/);
+  const output = report(data({ healthy: 106, lapsed, days: reads(["2026-10-12", "2026-10-13"], 100, 930) }), await dutyMetrics());
+  assert.equal(output.metrics.prod_capacity_pages_day, 126 * 930, "GeoNode down on 10-15: 106 admissible plus 20 waiting on a renewal");
+  assert.match(output.flagged!.find(item => item.kind === "capacity")!.excerpt, /126 healthy prod accounts \(106 admissible now, 20 waiting on a proxy session renewal\)/);
+  const line = output.flagged!.find(item => item.kind === "lapsed_bindings")!.excerpt;
+  assert.match(line, /21 active prod accounts have no live proxy session binding, the oldest since 10-14 09:44Z/);
+  assert.match(line, /1 have a blocked renewal row/);
+  assert.equal(report(data(), await dutyMetrics()).flagged!.some(item => item.kind === "lapsed_bindings"), false);
 });
 
 test("engage reads: a rate is proven by a canary's worth of accounts on 2 consecutive full UTC days with no Instagram verdict at or under it", () => {
@@ -137,7 +151,7 @@ test("engage reads: a failed source reports source_errors and a value that misse
 
 test("engage reads: no Grafana login still gives a value for every metric, and the deep walks still read", async () => {
   const metrics = await dutyMetrics();
-  const output = report(await measure(null, "GRAFANA_ADMIN_PASSWORD is missing", NOW, async () => "reached\t\t10\n", async () => "2\t15\n"), metrics);
+  const output = report(await measure(null, "GRAFANA_ADMIN_PASSWORD is missing", NOW, async () => "reached\t\t10\n", async () => "2\t15\n", async () => "0\t0\t0\n"), metrics);
   assert.deepEqual(Object.keys(output.metrics).sort(), metrics.map(metric => metric.key).sort());
   assert.equal(output.metrics.source_errors, 7);
   assert.equal(output.metrics.deep_walk_ok_pct, 100);
