@@ -16,7 +16,9 @@ import {
  *   read-only transaction (grafana_ro cannot read watch_targets), and staging watch_targets monitor rows the same way from virev-staging-postgres;
  * - the prod watch gauges of estate_prometheus through Grafana (detail and the loop age), and pause.watch from estate_pg_prod.
  * Green follows sessions/2026/10/10/1026-prod-watchlist-readback/findings.md in auto-sns-agent: an unpaused monitor row whose last_outcome is
- * ok and whose last_run_at is inside 24 h. An owner account is green when every watch the org has on it (posts and collab) is green.
+ * ok and whose last_run_at is inside 24 h. An unpaused row on an account the platform removed or holds private is green at any age, as the
+ * Watchlist reads it checked ("Removed on Instagram", "Private on Instagram", apps/search/src/lib/watchlist/words.ts walkGone and walkPrivate):
+ * the crawler reads it again only on its weekly recheck. An owner account is green when every watch the org has on it (posts and collab) is green.
  */
 
 const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green.duty.json");
@@ -60,8 +62,12 @@ export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
   prod_read_error_pct: ["prod rows", "grafana auth", "prod gauges", "prod config"],
 };
 
-/** One watch_targets monitor row: platform, kind (posts, tagged, post, ads), lower-case target. */
-export interface WatchRow { platform: string; kind: string; target: string; paused: boolean; lastOutcome: string; lastRunAt: number | null }
+/** One watch_targets monitor row: platform, kind (posts, tagged, post, ads), lower-case target, its last run, and whether the crawler holds
+ *  the Instagram account as private (instagram_accounts.is_private). */
+export interface WatchRow {
+  platform: string; kind: string; target: string; paused: boolean; lastOutcome: string; lastRunAt: number | null;
+  lastStopReason: string; lastErrorCode: string; isPrivate: boolean;
+}
 export interface Gauges { rows: Record<string, number>; overdue: Record<string, number>; loopAge?: number }
 export interface WatchData {
   now: number;
@@ -76,8 +82,14 @@ export function rowKeyOf(key: string): { platform: string; kind: string; target:
   return { platform, kind: kind === "account" ? "posts" : kind, target: rest.join(":").toLowerCase() };
 }
 const id = (row: { platform: string; kind: string; target: string }): string => `${row.platform}:${row.kind}:${row.target}`;
+/** The not-found codes words.ts reads as a removed account (NOT_FOUND_CODES). */
+const NOT_FOUND_CODES = new Set(["profile_not_found", "post_not_found", "advertiser_not_found", "not_found"]);
+/** A row whose account the platform removed, or holds private: words.ts walkGone and walkPrivate, which read it checked. */
+export const isClosed = (row: WatchRow): boolean =>
+  row.lastOutcome === "gone" || (row.lastOutcome === "error" && NOT_FOUND_CODES.has(row.lastErrorCode))
+  || row.isPrivate || (row.lastOutcome === "ok" && row.lastStopReason === "private");
 export const isGreen = (row: WatchRow | undefined, now: number): boolean =>
-  !!row && !row.paused && row.lastOutcome === "ok" && row.lastRunAt !== null && now - row.lastRunAt <= DAY;
+  !!row && !row.paused && (isClosed(row) || (row.lastOutcome === "ok" && row.lastRunAt !== null && now - row.lastRunAt <= DAY));
 /** Why a watch is not green, as a flag phrase. */
 const notGreen = (kind: string, row: WatchRow | undefined): string => !row ? `${kind} no monitor row` : row.paused ? `${kind} paused`
   : !row.lastOutcome ? `${kind} never ran` : row.lastOutcome !== "ok" ? `${kind} last ${row.lastOutcome}` : `${kind} ok but older than 24 h`;
@@ -181,14 +193,17 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   return { metrics: { ...metrics, ...detail }, flagged };
 }
 
-/** The tab-separated monitor rows the remote psql prints: platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty. */
+/** The tab-separated monitor rows the remote psql prints: platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
+ *  last_stop_reason, last_error_code, and the account's is_private (t or f). */
 export function parseRows(text: string): WatchRow[] {
   const rows: WatchRow[] = [];
   for (const line of text.split("\n")) {
     const cells = line.split("\t");
-    if (cells.length !== 6) continue;
-    const [platform, kind, target, paused, lastOutcome, lastRunAt] = cells as [string, string, string, string, string, string];
-    rows.push({ platform, kind, target, paused: paused === "t", lastOutcome, lastRunAt: lastRunAt ? Number(lastRunAt) : null });
+    if (cells.length !== 9) continue;
+    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate] = cells as
+      [string, string, string, string, string, string, string, string, string];
+    rows.push({ platform, kind, target, paused: paused === "t", lastOutcome, lastRunAt: lastRunAt ? Number(lastRunAt) : null,
+      lastStopReason, lastErrorCode, isPrivate: isPrivate === "t" });
   }
   return rows;
 }
@@ -239,7 +254,10 @@ export async function convexKeys(fetcher: typeof fetch, accessToken: string, sig
   }
 }
 
-const ROWS_SQL = "select platform, kind, lower(target), case when paused then 't' else 'f' end, coalesce(last_outcome, ''), coalesce((extract(epoch from last_run_at) * 1000)::bigint::text, '') from watch_targets where tier = 'monitor';";
+const ROWS_SQL = "select w.platform, w.kind, lower(w.target), case when w.paused then 't' else 'f' end, coalesce(w.last_outcome, ''), " +
+  "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, ''), coalesce(w.last_stop_reason, ''), coalesce(w.last_error_code, ''), " +
+  "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private) then 't' else 'f' end " +
+  "from watch_targets w where w.tier = 'monitor';";
 const RECEIPTS_SQL = "select 'receipt', outcome, count(*) from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome;";
 
 /** A read of one world's crawler_v3 on us-metal01 as owner_ro in a read-only transaction, the path crawler-pipeline.mjs uses. */

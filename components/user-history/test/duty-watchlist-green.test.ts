@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { type DutyMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import { UNMEASURED } from "../scripts/duties/estate-reads.ts";
 import {
-  type Gauges, type WatchData, type WatchRow, freshPct, isGreen, measure, ownerGreen, parseReceipts, parseRows, report, rowKeyOf, rowsGreen,
+  type Gauges, type WatchData, type WatchRow, freshPct, isClosed, isGreen, measure, ownerGreen, parseReceipts, parseRows, report, rowKeyOf, rowsGreen,
 } from "../scripts/duties/watchlist-green.ts";
 
 const NOW = Date.parse("2026-10-12T14:00:00Z");
@@ -13,7 +13,8 @@ const HOUR = 3_600_000;
 const FILE = join(import.meta.dirname, "..", "scripts", "duties", "watchlist-green.duty.json");
 const dutyMetrics = async (): Promise<DutyMetric[]> => parseDutyInput(JSON.parse(await readFile(FILE, "utf8")), "d", NOW).metrics;
 const row = (kind: string, target: string, fields: Partial<WatchRow> = {}): WatchRow =>
-  ({ platform: "instagram", kind, target, paused: false, lastOutcome: "ok", lastRunAt: NOW - HOUR, ...fields });
+  ({ platform: "instagram", kind, target, paused: false, lastOutcome: "ok", lastRunAt: NOW - HOUR, lastStopReason: "", lastErrorCode: "", isPrivate: false,
+    ...fields });
 const gauges = (fields: Partial<Gauges> = {}): Gauges => ({ rows: { "posts/monitor": 200, "tagged/monitor": 100 }, overdue: { "posts/monitor": 0, "tagged/monitor": 0 },
   loopAge: 20, ...fields });
 const green = (): WatchData => ({ now: NOW, errors: [], keys: ["instagram:account:Brand_A", "instagram:tagged:brand_a", "instagram:tagged:brand_b"],
@@ -54,6 +55,26 @@ test("watchlist green: an account is green only when every watch on it is, and e
   assert.deepEqual(Object.fromEntries(owner.why), { "tagged never ran": 1, "tagged paused": 1, "tagged ok but older than 24 h": 1, "tagged last error": 1, "tagged no monitor row": 1 });
   assert.deepEqual(rowKeyOf("instagram:account:Foo.Bar"), { platform: "instagram", kind: "posts", target: "foo.bar" });
   assert.equal(isGreen(undefined, NOW), false);
+});
+
+test("watchlist green: a removed or private account is green at any age, as the Watchlist reads it checked", () => {
+  const old = NOW - 6 * 24 * HOUR;
+  const closed = [
+    row("posts", "private_ok", { lastStopReason: "private", lastRunAt: old }),
+    row("tagged", "private_flag", { lastStopReason: "exhausted", isPrivate: true, lastRunAt: old }),
+    row("posts", "gone", { lastOutcome: "gone", lastRunAt: old }),
+    row("tagged", "not_found", { lastOutcome: "error", lastErrorCode: "profile_not_found", lastRunAt: old }),
+  ];
+  for (const watch of closed) {
+    assert.equal(isClosed(watch), true, watch.target);
+    assert.equal(isGreen(watch, NOW), true, watch.target);
+  }
+  assert.equal(isGreen(row("posts", "paused_private", { isPrivate: true, paused: true }), NOW), false, "a paused row is never green");
+  assert.equal(isGreen(row("posts", "blocked", { lastOutcome: "error", lastErrorCode: "scrape_blocked" }), NOW), false);
+  assert.equal(isGreen(row("posts", "hidden", { lastStopReason: "hidden", lastRunAt: old }), NOW), false, "a hidden account still reads Stopped");
+  assert.equal(isGreen(row("posts", "private_error", { lastOutcome: "error", lastStopReason: "private", lastRunAt: old }), NOW), false);
+  const owner = ownerGreen(["instagram:account:private_ok", "instagram:tagged:private_flag", "instagram:account:gone", "instagram:tagged:not_found"], closed, NOW);
+  assert.equal(owner.green, owner.accounts);
 });
 
 test("watchlist green: staging counts unpaused posts and collab rows, and a row whose reads fail is not green", async () => {
@@ -104,10 +125,11 @@ test("watchlist green: failed sources count in source_errors and miss every metr
 });
 
 test("watchlist green: the remote psql rows and receipts parse", () => {
-  const text = "instagram\ttagged\tbrand_a\tf\t\t\ninstagram\tposts\tbrand_a\tt\tok\t1791774513000\n\njunk\nreceipt\tok\t120\nreceipt\terror\t3\n";
+  const text = "instagram\ttagged\tbrand_a\tf\t\t\t\t\tf\ninstagram\tposts\tbrand_a\tt\tok\t1791774513000\tprivate\t\tt\n\njunk\nreceipt\tok\t120\nreceipt\terror\t3\n";
   assert.deepEqual(parseRows(text), [
-    { platform: "instagram", kind: "tagged", target: "brand_a", paused: false, lastOutcome: "", lastRunAt: null },
-    { platform: "instagram", kind: "posts", target: "brand_a", paused: true, lastOutcome: "ok", lastRunAt: 1791774513000 },
+    { platform: "instagram", kind: "tagged", target: "brand_a", paused: false, lastOutcome: "", lastRunAt: null, lastStopReason: "", lastErrorCode: "", isPrivate: false },
+    { platform: "instagram", kind: "posts", target: "brand_a", paused: true, lastOutcome: "ok", lastRunAt: 1791774513000, lastStopReason: "private", lastErrorCode: "",
+      isPrivate: true },
   ]);
   assert.deepEqual(parseReceipts(text), { ok: 120, error: 3 });
 });
