@@ -19,6 +19,7 @@ import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priori
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
+import { interruptedRuns } from "./chat-resume.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
@@ -172,6 +173,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       strays: readStrays,
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
+      interrupted: isJob => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }),
       settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),

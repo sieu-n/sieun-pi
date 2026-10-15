@@ -8,6 +8,7 @@ import type { DutyRef } from "./checkin-findings.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { JobResumes } from "./job-resume.ts";
+import type { InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 import type { BoardOp, ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
@@ -252,6 +253,11 @@ export interface CheckInSource {
    * note (the board store's apply). Absent: such a job is kept.
    */
   resumes?: { store: JobResumes; applyBoard(id: string, ops: readonly BoardOp[]): Promise<unknown> };
+  /**
+   * Sends "continue" to each interrupted run that `isJob` keeps, as the resume script finds them at any depth (`InterruptedRuns.resumeJobs`).
+   * Absent (tests): the job sweep resumes nothing.
+   */
+  interrupted?: (isJob: (run: InterruptedRun) => boolean) => Promise<InterruptedReport | null>;
   /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
   corrections?: () => Promise<Ledger>;
   /**

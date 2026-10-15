@@ -38,6 +38,9 @@ class ResumePausedTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.sessions = []
         self.sent = []
+        logs = patch.object(resume_paused, "LOG_DIR", self.root / "no-logs", create=True)
+        logs.start()
+        self.addCleanup(logs.stop)
 
     def session(self, sid, entries, parent=None, activity="idle", **flags):
         path = self.root / f"{sid}.jsonl"
@@ -203,6 +206,75 @@ class ResumePausedTests(unittest.TestCase):
     def test_old_interruptions_are_ignored(self):
         self.session("aaaaaaaaaaaa", [assistant(3000, "error", "Connection error.")], lastActivityAt=at(3000))
         self.assertEqual(self.run_resume(dry_run=True)["paused"], [])
+
+    def run_direct(self, only=None, dry_run=False):
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=dry_run, include_children=False, direct=True,
+                                  only=",".join(only) if only else "", state=str(self.root / "state.json"))
+        with patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}), \
+                patch.object(resume_paused, "pool_bin", return_value=None):
+            return resume_paused.resume(self.sessions, args, NOW)
+
+    def test_direct_messages_each_stopped_job_itself_even_after_its_chat_got_a_message(self):
+        # Crawler VP 10-15: alert follow through stopped mid-tool at 13:29Z and curl-multi-gate, a job two levels down, on a token hook
+        # failure at 13:48Z. The chat took check-in and alert messages after both, so neither counted, and both sat until a check-in found them.
+        self.session("chatchatchat", [assistant(50, "stop"), role(10, "user"), assistant(9, "stop")])
+        self.session("alertfollowt", [assistant(41, "toolUse"), role(40, "toolResult")], parent="chatchatchat")
+        self.session("tunnelbudget", [assistant(31, "toolUse")], parent="chatchatchat", activity="working", hasRunningRlmChildren=True)
+        self.session("curlmultigat", [assistant(30, "error", 'Failed to resolve API key for provider "anthropic" from shell command: pi-pool-token')],
+                     parent="tunnelbudget")
+        report = self.run_direct()
+        self.assertEqual(sorted((p["id"], p["reason"], p["head_session_id"]) for p in report["paused"]),
+                         [("alertfollowt", "cut_off", "0" * 24 + "chatchatchat"), ("curlmultigat", "error", "0" * 24 + "chatchatchat")])
+        self.assertEqual(sorted(self.sent), [("alertfollowt", "continue"), ("curlmultigat", "continue")])
+        self.assertEqual(report["heads"], [])
+        self.assertEqual(self.run_direct(dry_run=True)["paused"], [], "each interruption is resumed once")
+
+    def test_direct_only_acts_on_the_runs_it_names(self):
+        self.session("chatchatchat", [assistant(30, "error", "Connection error.")])
+        self.session("jobjobjobjob", [assistant(30, "error", "Connection error.")], parent="chatchatchat")
+        report = self.run_direct(only=["0" * 24 + "jobjobjobjob"])
+        self.assertEqual([p["id"] for p in report["paused"]], ["jobjobjobjob"])
+        self.assertEqual(self.sent, [("jobjobjobjob", "continue")])
+
+    def test_direct_never_messages_a_hung_or_dead_worker_run(self):
+        self.session("hunghunghung", [assistant(80, "toolUse"), role(79, "toolResult")], activity="working", isStreaming=True, lastActivityAt=at(79))
+        self.session("deaddeaddead", [assistant(80, "toolUse")], workerState="failed")
+        os.utime(self.sessions[0]["sessionFile"], (NOW.timestamp() - 79 * 60,) * 2)
+        report = self.run_direct()
+        self.assertEqual(sorted(p["reason"] for p in report["paused"]), ["hung", "worker_failed"])
+        self.assertEqual(self.sent, [])
+
+    def test_an_abort_that_ended_a_retry_of_an_interruption_counts_as_that_interruption(self):
+        # 10-15: checkin job end handoff failed on the token hook at 13:48:20Z and its retry was aborted at 13:48:36Z; it sat on the abort.
+        error = 'Failed to resolve API key for provider "anthropic" from shell command: pi-pool-token pi-pool: the token hook gave no token'
+        self.session("retryaborted", [assistant(31, "error", error), assistant(30, "aborted", "Request was aborted")])
+        self.session("ownerstopped", [role(31, "toolResult"), assistant(30, "aborted", "Request was aborted")])
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            report = self.run_resume(dry_run=True)
+        self.assertEqual([(p["id"], p["reason"], p["error"]) for p in report["paused"]], [("retryaborted", "error", error)])
+
+    def test_an_abort_written_when_the_daemon_shut_its_worker_down_counts(self):
+        # 10-15 16:06:56Z: the daemon sent SIGTERM to 92 session workers; ops land follow through and posts-release-requeue-r2 got
+        # "Request was aborted" within 0.05 s of their worker's SIGTERM and sat on it.
+        self.session("workerkilled", [role(31, "toolResult"), assistant(30, "aborted", "Request was aborted")])
+        self.session("ownerstopped", [role(21, "toolResult"), assistant(20, "aborted", "Request was aborted")])
+        shutdown = NOW - dt.timedelta(minutes=30, seconds=-0.05)
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[shutdown]):
+            report = self.run_resume(dry_run=True)
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("workerkilled", "worker_stopped")])
+
+    def test_worker_shutdowns_reads_the_sigterm_lines_of_the_daemon_logs(self):
+        logs = self.root / "logs"
+        logs.mkdir()
+        (logs / "daemon.sock.abc.log.old").write_text(
+            "[2026-10-15T14:35:39.152Z] supervisor: Session worker 5ede7cd5adb3 stderr: received SIGTERM; shutting down\n"
+            "[2026-10-15T14:35:39.200Z] supervisor: Session worker 5ede7cd5adb3 stderr: shutting down (exit 143); closing 1 active session(s)\n")
+        (logs / "daemon.sock.abc.log").write_text(
+            "[2026-10-15T16:06:56.136Z] supervisor: Session worker c43b4216dc75 stderr: received SIGTERM; shutting down\n"
+            "[2026-10-15T16:07:43.843Z] supervisor: Prime Agent daemon supervisor 748e listening on /tmp/daemon.sock\n")
+        with patch.object(resume_paused, "LOG_DIR", logs):
+            found = resume_paused.worker_shutdowns()
+        self.assertEqual([stamp.isoformat() for stamp in found], ["2026-10-15T14:35:39.152000+00:00", "2026-10-15T16:06:56.136000+00:00"])
 
 
 if __name__ == "__main__":

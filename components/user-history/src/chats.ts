@@ -11,6 +11,7 @@ import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
+import { resumeChatJobs } from "./chat-resume.ts";
 import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
@@ -592,6 +593,7 @@ export class Chats {
     if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS) {
       this.rootsSweptAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
+      if (this.source.interrupted) { const resume = this.source.interrupted; this.queue("#interrupted", () => resumeChatJobs(chatRows.filter(row => active.has(row.id)), this.chatIds, resume, line => this.log(line))); }
     }
     this.source.awake?.(chatRows.some(row => row.working || (row.agents ?? []).some(agent => agent.state === "working")));
     const now = this.now();

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { InterruptedReport } from "./shared/interrupted.ts";
+import type { InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
+import type { SessionRow } from "./shared/types.ts";
 
 /** The resume-paused-sessions skill owns the rule for which runs count as interrupted; the chat only runs it. */
 const script = fileURLToPath(new URL("../../../skills/resume-paused-sessions/scripts/resume_paused.py", import.meta.url));
@@ -61,6 +62,25 @@ export class InterruptedRuns {
     return report;
   }
 
+  /**
+   * The server's own pass over the jobs of its chats (`Chats`, once per job sweep): each interrupted run `isJob` keeps gets "continue" itself
+   * (`--direct`), after the head of a dead worker among them is reopened. A hung job is left to Resume and the Mac usable watch: an abort drops
+   * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. Null when no job of a chat is interrupted.
+   */
+  resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>): Promise<InterruptedReport | null> {
+    const report = this.serial(async () => {
+      const jobs = (await this.run(["--dry-run", "--direct"])).paused.filter(run => run.session_id !== undefined && run.reason !== "hung" && isJob(run));
+      if (!jobs.length) return null;
+      for (const head of new Set(jobs.flatMap(run => run.reason === "worker_failed" && run.head_session_id ? [run.head_session_id] : []))) {
+        try { await reopen(head); }
+        catch (error) { process.stderr.write(`resume: could not reopen ${head}: ${error instanceof Error ? error.message : String(error)}\n`); }
+      }
+      return this.run(["--direct", "--only", jobs.map(run => run.session_id).join(",")]);
+    });
+    this.last = null;
+    return report;
+  }
+
   private serial<T>(work: () => Promise<T>): Promise<T> {
     const next = this.queue.then(work, work);
     this.queue = next.catch(() => undefined);
@@ -69,3 +89,20 @@ export class InterruptedRuns {
 }
 
 export const interruptedRuns = new InterruptedRuns();
+
+/**
+ * Each interrupted run under one of `chatRows` at any depth, or under one of their root jobs, gets "continue" itself (`interrupted`). Never a
+ * chat: `Chats.revive` restarts those. On 10-15 nothing restarted alert follow through after its mid-tool stop at 13:29Z or the jobs a token
+ * hook failure and a worker stop ended at 13:48Z, two of them two levels under Crawler VP, and their steps stalled over 2 h.
+ */
+export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: ReadonlySet<string>,
+  interrupted: (isJob: (run: InterruptedRun) => boolean) => Promise<InterruptedReport | null>, log: (line: string) => void): Promise<void> {
+  const owned = new Set(chatRows.flatMap(row => [row.id, ...(row.agents ?? []).flatMap(agent => agent.link === "root" && agent.sessionId ? [agent.sessionId] : [])]));
+  try {
+    const report = await interrupted(run => !chats.has(run.session_id ?? "") && owned.has(run.head_session_id ?? ""));
+    for (const job of report?.children ?? []) {
+      const run = report!.paused.find(entry => entry.id === job.id);
+      log(`job ${job.name}: interrupted (${run?.reason ?? "?"} at ${run?.errored_at ?? "?"}); continue: ${typeof job.result === "string" ? job.result : JSON.stringify(job.result)}`);
+    }
+  } catch (error) { log(`chats: interrupted jobs: ${error instanceof Error ? error.message : String(error)}`); }
+}

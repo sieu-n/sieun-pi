@@ -22,7 +22,10 @@ or a message; every command answers "Session worker is failed". It is listed as
 head from its saved file first, which starts it on a new worker.
 
 Runs that were aborted ("Request was aborted") or archived, for example a
-helper its parent deleted, do not count. Rate limits (429), overloaded (529),
+helper its parent deleted, do not count, with two exceptions: an abort that
+ended the retry of an interruption error counts as that error, and an abort
+written when the daemon shut the run's worker down (a "received SIGTERM" line
+in the daemon log at that moment) counts as "worker_stopped". Rate limits (429), overloaded (529),
 5xx errors and a model refusal (often a false positive that passes on retry;
 the head decides) count too, but a run is listed only once pi-pool says the
 account its next request gets can serve; resuming earlier fails again at once.
@@ -35,12 +38,17 @@ the head re-drives them.
 A run stops counting once its head got a user message after the interruption,
 or once this script resumed it (the state file remembers the error time).
 
+With --direct each interrupted run gets the message itself and no head gets a
+list, and a message to the head no longer hides a run below it. The chat
+server runs it that way for the jobs of its chats, naming them with --only.
+
 Usage:
   python3 resume_paused.py                  # find and resume heads
   python3 resume_paused.py --dry-run        # show what would be sent
   python3 resume_paused.py --since-minutes 60
   python3 resume_paused.py --message "continue"
   python3 resume_paused.py --include-children   # also message the interrupted children
+  python3 resume_paused.py --direct --only <session id>,<session id>
   python3 resume_paused.py --json
 """
 import argparse
@@ -72,6 +80,11 @@ CUT_OFF_GRACE_MIN = 2.0
 # Full session ids the caller aborted because they were hung; their "aborted" last message still counts.
 UNSTUCK = set()
 DEFAULT_STATE = Path.home() / ".prime" / "agent" / "resume-paused-sessions.json"
+LOG_DIR = Path.home() / ".prime" / "agent" / "logs"
+SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: received SIGTERM", re.MULTILINE)
+# A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
+# came 0.002 s before to 0.049 s after their worker's SIGTERM line, so an abort this close to one is the shutdown's.
+SHUTDOWN_MATCH_S = 1.0
 
 
 def prime_agent_bin():
@@ -249,12 +262,40 @@ def hung_since(session, now):
     return idle if idle >= limit else None
 
 
-def classify(last, now):
-    """("error" | "cut_off" | "empty_reply", text) when the last message shows the run stopped mid-work, else None."""
+def worker_shutdowns():
+    """Each time the daemon sent a session worker SIGTERM, from its logs and their rotated .old files, oldest first."""
+    stamps = []
+    for path in sorted(LOG_DIR.glob("daemon.sock.*.log*")):
+        try:
+            text = path.read_text(errors="ignore")
+        except OSError:
+            continue
+        stamps += [stamp for stamp in map(parse_ts, SHUTDOWN_LINE.findall(text)) if stamp]
+    return sorted(stamps)
+
+
+def aborted_verdict(last, entries, shutdowns):
+    """("error", text) for an abort that ended the retry of an interruption error, ("worker_stopped", text) for one the
+    daemon wrote when it shut the run's worker down, else None: the user or a parent stopped the run."""
+    before = last_message(entries[:entries.index(last)]) if last in entries else None
+    msg = (before or {}).get("message") or {}
+    err = str(msg.get("errorMessage") or "")
+    if msg.get("role") == "assistant" and msg.get("stopReason") == "error" and INTERRUPTION_ERROR.search(err):
+        return ("error", err)
+    ts = parse_ts(last.get("timestamp"))
+    if ts and any(abs((ts - stamp).total_seconds()) <= SHUTDOWN_MATCH_S for stamp in shutdowns()):
+        return ("worker_stopped", f"The daemon shut its worker down at {last.get('timestamp')} in the middle of the turn.")
+    return None
+
+
+def classify(last, now, entries=(), shutdowns=list):
+    """("error" | "cut_off" | "empty_reply" | "worker_stopped", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
         return None
     msg = last.get("message") or {}
     role, stop = msg.get("role"), msg.get("stopReason")
+    if role == "assistant" and stop == "aborted":
+        return aborted_verdict(last, list(entries), shutdowns)
     if role == "assistant" and stop == "toolUse" and not msg.get("content"):
         ts = parse_ts(last.get("timestamp"))
         if ts is None or (now - ts).total_seconds() / 60 < CUT_OFF_GRACE_MIN:
@@ -290,10 +331,20 @@ def save_state(path, state, now, keep_minutes):
     tmp.replace(path)
 
 
-def find_paused(sessions, since_minutes, state, now):
+def find_paused(sessions, since_minutes, state, now, direct=False):
     by_id = {short_id(s): s for s in sessions}
     tails = {}
     accounts = {}
+    stops = []
+
+    def shutdowns():
+        if not stops:
+            stops.append(worker_shutdowns())
+        return stops[0]
+
+    def head_session(head, s):
+        row = by_id.get(head, s)
+        return row.get("sessionId") or row["id"]
 
     def entries_of(sid):
         if sid not in tails:
@@ -321,7 +372,8 @@ def find_paused(sessions, since_minutes, state, now):
             paused.append({"id": sid, "session_id": s.get("sessionId") or s["id"], "name": s.get("sessionName") or "(unnamed)",
                            "kind": s.get("runtimeKind"), "reason": "hung", "error": (f"Stuck in one tool call for {hung:.0f} min." if any(s.get(flag) for flag in TOOL_FLAGS)
                                      else f"Shows working but did nothing for {hung:.0f} min."),
-                           "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head})
+                           "errored_at": s.get("lastActivityAt") or s.get("modified"), "age_min": round(hung, 1), "head": head,
+                           "head_session_id": head_session(head, s)})
             continue
         seen_at = parse_ts(s.get("lastActivityAt") or s.get("modified"))
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
@@ -332,7 +384,7 @@ def find_paused(sessions, since_minutes, state, now):
         unstuck = (s.get("sessionId") or s["id"]) in UNSTUCK
         if not unstuck and stopped_on_purpose(entries_of(sid), last):
             continue
-        verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now)
+        verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns)
         if not verdict:
             continue
         ts = parse_ts(last.get("timestamp"))
@@ -342,7 +394,7 @@ def find_paused(sessions, since_minutes, state, now):
         if state.get(s.get("sessionId") or s["id"]) == last.get("timestamp"):
             continue  # this script already resumed this interruption
         head = head_of(sid, by_id)
-        if head != sid and head in by_id and ts:
+        if not direct and head != sid and head in by_id and ts:
             redriven = last_user_at(entries_of(head))
             if redriven and redriven > ts:
                 continue  # someone sent the head a message after the interruption
@@ -361,6 +413,7 @@ def find_paused(sessions, since_minutes, state, now):
             "errored_at": last.get("timestamp"),
             "age_min": round(age_min, 1) if age_min is not None else None,
             "head": head,
+            "head_session_id": head_session(head, s),
             **({"aborted": True} if unstuck else {}),
         })
     return paused
@@ -386,10 +439,41 @@ def send(target, message):
     return {"deliveryStatus": j.get("deliveryStatus"), "deliveryMode": j.get("deliveryMode")}
 
 
+def direct_resume(paused, args, state, now):
+    """--direct: each interrupted run gets the message itself, and no head gets a list. A hung run takes no message until
+    it is aborted, and a run in a dead worker takes none at all."""
+    actions = []
+    sent_any = False
+    for p in paused:
+        if p["reason"] in ("hung", "worker_failed") and not p.get("aborted"):
+            res = f"skipped: {p['reason']}"
+        elif args.dry_run:
+            res = "dry-run"
+        else:
+            try:
+                res = send(p["id"], args.message)
+            except CommandError as error:
+                res = {"error": str(error)[:300]}
+            else:
+                state[p["session_id"]] = p["errored_at"]
+                sent_any = True
+        actions.append({"id": p["id"], "name": p["name"], "head": p["head"], "result": res})
+    if sent_any:
+        save_state(args.state, state, now, args.since_minutes)
+    return {"paused": paused, "heads": [], "children": actions, "message": args.message,
+            "since_minutes": args.since_minutes, "checked_at": now.isoformat()}
+
+
 def resume(sessions, args, now):
     by_id = {short_id(s): s for s in sessions}
     state = load_state(args.state)
-    paused = find_paused(sessions, args.since_minutes, state, now)
+    direct = getattr(args, "direct", False)
+    only = set(filter(None, getattr(args, "only", "").split(",")))
+    paused = find_paused(sessions, args.since_minutes, state, now, direct)
+    if only:
+        paused = [p for p in paused if p["session_id"] in only]
+    if direct:
+        return direct_resume(paused, args, state, now)
 
     heads = {}
     for p in paused:
@@ -461,6 +545,8 @@ def main():
     ap.add_argument("--state", default=str(DEFAULT_STATE), help="file that remembers resumed interruptions")
     ap.add_argument("--json", action="store_true", help="print JSON")
     ap.add_argument("--unstuck", default="", help="comma-separated full session ids the caller aborted because they were hung")
+    ap.add_argument("--direct", action="store_true", help="message each interrupted run itself and send no head a list")
+    ap.add_argument("--only", default="", help="comma-separated full session ids: act only on these interrupted runs")
     args = ap.parse_args()
     UNSTUCK.update(filter(None, args.unstuck.split(",")))
 
