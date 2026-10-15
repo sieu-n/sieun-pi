@@ -109,7 +109,8 @@ test("chat health: each metric over two fixture chats in the last 24 h; a missin
     const result = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(result.status, 0, result.stderr);
     const health = JSON.parse(await readFile(output, "utf8")) as PrecheckOutput;
-    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, slop_replies: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES });
+    assert.deepEqual(health.metrics, { corrections: 3, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 3.5, unretried_errors: 2, long_replies: 28.6, slop_replies: 2, off_brief: 2, sieun_pi_breaks: 1, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 0, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
+      "3 chats' check-ins with no measured run are not green");
     const flagged = health.flagged ?? [];
     assert.deepEqual(flagged.slice(0, 4).map(slice => [slice.chat, slice.excerpt]), [["chat-a", API_KEY_ERROR], ["chat-b", "stop doing that"], ["chat-a", "that is wrong"], ["chat-a", "you didn't commit it, i told you"]],
       "a judged metric's lines (sieun_pi_breaks) come before the context ones");
@@ -216,7 +217,7 @@ test("chat health: no owner turns gives long_replies 0; no OUTPUT_FILE exits non
     const output = join(dir, "health.json");
     const empty = run({ OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW), CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.equal(empty.status, 0, empty.stderr);
-    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES }, flagged: [] });
+    assert.deepEqual(JSON.parse(await readFile(output, "utf8")), { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0, no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 100, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES }, flagged: [] });
     const missing = run({ CHAT_HEALTH_DATA_DIR: dir, CHAT_HEALTH_SESSIONS_DIR: dir });
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /OUTPUT_FILE/);
@@ -454,11 +455,11 @@ test("chat health recheck: the run lists yesterday's fix(user-history) commits f
   }
 });
 
-test("chat health duty: the definition parses as a duty with one headline and two judged supporting metrics, and the precheck keeps every other number", async () => {
+test("chat health duty: the definition parses as a duty with one headline and three judged supporting metrics, and the precheck keeps every other number", async () => {
   const definition: unknown = JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "chat-health.duty.json"), "utf8"));
   const duty = parseDutyInput(definition, "d1", 0);
   assert.deepEqual(duty.metrics.map(metric => [metric.key, metric.op, metric.target, metric.headline ?? false]),
-    [["steps_moving_pct", ">=", 100, true], ["repeat_corrections", "<=", 0, false], ["sieun_pi_breaks", "<=", 0, false]], "c75: one headline and at most 3 supporting");
+    [["duties_green_pct", ">=", 100, true], ["stuck_duties", "<=", 0, false], ["repeat_corrections", "<=", 0, false], ["sieun_pi_breaks", "<=", 0, false]], "c75: one headline and at most 3 supporting");
   for (const key of ["scope_misses", "idle_goals", "goals_to_fold", "merges_without_go", "one_session_load", "redundant_heartbeats", "stuck_steps"]) assert.ok(key in NO_MISSES, `${key} stays in the precheck output`);
 });
 

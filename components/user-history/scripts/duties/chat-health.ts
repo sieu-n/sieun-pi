@@ -15,7 +15,8 @@ import { agentMessageSender } from "../../src/no-report.ts";
 import { findingsLine, lintOwnerReply } from "../../src/shared/reply-lint.ts";
 import { isPromptCustom, messageText } from "../../src/shared/turns.ts";
 import type { ThreadMessage } from "../../src/shared/types.ts";
-import { boardClasses, daemonSessions } from "./board-classes.ts";
+import { boardClasses, daemonSessions, type DaemonSession } from "./board-classes.ts";
+import { dutyFleet } from "./duty-fleet.ts";
 import { endStateKpi, endStateLine, OK_STATES, stuckLine } from "../../src/checkin-end-state.ts";
 import { fixCommits, recheckSlices } from "./chat-health-recheck.ts";
 import { noProgressHours, ownerBoardAsk, stuckPastCheckIn, stuckStepHours, unfixedFlags } from "./checkin-quality.ts";
@@ -46,7 +47,7 @@ const SIEUN_PI = /pi-pool|sieun-pi|user-history/i;
 const WATCH_MS = 7 * WINDOW_MS;
 
 type Metrics = { corrections: number; repeat_corrections: number; unlinked_job_mentions: number; placeholder_todos: number; dead_hours: number; unretried_errors: number; long_replies: number; slop_replies: number; off_brief: number; sieun_pi_breaks: number; recurred: number; unfixed_flags: number; owner_board_asks: number; no_progress_hours: number; checkin_ops_dropped: number; end_state_pct: number;
-  steps_moving_pct: number; stuck_step_hours: number; open_step_hours: number; stuck_after_checkin: number; owner_paused_stuck: number; checkin_not_running: number } & ConvergenceMisses;
+  duties_green_pct: number; stuck_duties: number; steps_moving_pct: number; stuck_step_hours: number; open_step_hours: number; stuck_after_checkin: number; owner_paused_stuck: number; checkin_not_running: number } & ConvergenceMisses;
 type Kind = keyof Metrics | "recheck";
 /** A problem the run saw, by a signature that stays the same when it happens again; the next runs watch for it. */
 interface Seen { signature: string; slice: FlaggedSlice }
@@ -265,7 +266,7 @@ async function readWatch(file: string | undefined): Promise<Watch> {
 }
 
 /**
- * The declared metrics first: the steps left stuck longest by a check-in today and the ones stuck now (up to 2 FEW each), corrections given again, sieun-pi breaks (up to FEW) and
+ * The declared metrics first: stuck duties, then the steps left stuck longest by a check-in today and the ones stuck now (up to 2 FEW each), corrections given again, sieun-pi breaks (up to FEW) and
  * recurrences; then the per-chat end state lines, chats whose check-in the owner paused, yesterday's fixes to recheck, merges without the owner's
  * go, check-in findings left unfixed (the longest streaks, up to FEW), corrections, owner board asks and chats with goals and no duty; then one
  * slice of each other kind in turn, newest first within a kind, up to MAX_FLAGGED.
@@ -273,7 +274,7 @@ async function readWatch(file: string | undefined): Promise<Watch> {
 function pickFlagged(flagged: Map<Kind, FlaggedSlice[]>): FlaggedSlice[] {
   const newest = (kind: Kind, limit = Infinity) => [...(flagged.get(kind) ?? [])].sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
   // goals_without_duty: the duty proposals review of 10-12 found 5 chats with open goals and no duty.
-  const picked = [...(flagged.get("stuck_step_hours") ?? []).slice(0, FEW * 2), ...newest("stuck_after_checkin", FEW * 2), ...newest("repeat_corrections"), ...newest("sieun_pi_breaks", FEW), ...newest("recurred"), ...newest("end_state_pct"),
+  const picked = [...newest("stuck_duties"), ...(flagged.get("stuck_step_hours") ?? []).slice(0, FEW * 2), ...newest("stuck_after_checkin", FEW * 2), ...newest("repeat_corrections"), ...newest("sieun_pi_breaks", FEW), ...newest("recurred"), ...newest("end_state_pct"),
     ...newest("owner_paused_stuck"), ...newest("recheck"), ...newest("merges_without_go"), ...newest("unfixed_flags", FEW), ...newest("no_progress_hours", FEW), ...newest("checkin_ops_dropped", FEW), ...newest("corrections"),
     ...newest("owner_board_asks"), ...newest("goals_without_duty")].slice(0, MAX_FLAGGED);
   const queues = [newest("stuck_steps", FEW), newest("unretried_errors"), newest("long_replies"), newest("slop_replies", FEW), newest("off_brief", 2 * FEW),
@@ -296,7 +297,7 @@ async function main(): Promise<void> {
   const listed = JSON.parse(await readFile(join(dataDir, "chats.json"), "utf8")) as { ids?: unknown };
   const ids = Array.isArray(listed.ids) ? listed.ids.filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id)) : [];
   const tally: Tally = { metrics: { corrections: 0, repeat_corrections: 0, unlinked_job_mentions: 0, placeholder_todos: 0, dead_hours: 0, unretried_errors: 0, long_replies: 0, slop_replies: 0, off_brief: 0, sieun_pi_breaks: 0, recurred: 0, unfixed_flags: 0, owner_board_asks: 0,
-    no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
+    no_progress_hours: 0, checkin_ops_dropped: 0, end_state_pct: 100, duties_green_pct: 100, stuck_duties: 0, steps_moving_pct: 100, stuck_step_hours: 0, open_step_hours: 0, stuck_after_checkin: 0, owner_paused_stuck: 0, checkin_not_running: 0, ...NO_MISSES },
     deadMs: 0, ownerTurns: 0, longTurns: 0, flagged: new Map(), seen: [] };
   for (const id of ids) await measureChat(id, join(sessionsDir, `${id}.jsonl`), now - WINDOW_MS, now, tally);
   await countPlaceholderTodos(new BoardStore(dataDir), ids, now, tally);
@@ -313,7 +314,16 @@ async function main(): Promise<void> {
   tally.metrics.repeat_corrections = repeats.length;
   tally.flagged.set("repeat_corrections", repeats.map(({ entry, repeat }) => ({ chat: repeat.chat.id, at: Date.parse(repeat.at), kind: "repeat_corrections",
     excerpt: clip(`${entry.id} "${entry.rule}" repeated in ${repeat.chat.name || repeat.chat.id} (first ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}): ${repeat.words}`) })));
-  const chats = await boardClasses({ dataDir, now, sessions: daemonSessions, chats: ids });
+  // One daemon list for the board classes and the duty fleet.
+  let roster: DaemonSession[] | undefined;
+  const sessions = (): DaemonSession[] => (roster ??= daemonSessions());
+  const chats = await boardClasses({ dataDir, now, sessions, chats: ids });
+  // The headline (owner 10-15, c75: "why is duties not all passing?"): the share of duties in all chats whose last run met every target, and the
+  // duties that missed CHANGE_APPROACH_MISSES runs in a row with no live fix job (scripts/duties/duty-fleet.ts).
+  const fleet = await dutyFleet({ dataDir, now, sessions });
+  tally.metrics.duties_green_pct = fleet.metrics.duties_green_pct;
+  tally.metrics.stuck_duties = fleet.metrics.stuck_duties;
+  tally.flagged.set("stuck_duties", fleet.flagged);
   for (const chat of chats) {
     for (const [key, value] of Object.entries(chat.misses) as [keyof ConvergenceMisses, number][]) tally.metrics[key] += value;
     for (const slice of chat.flagged) { const list = tally.flagged.get(slice.kind as Kind) ?? []; list.push(slice); tally.flagged.set(slice.kind as Kind, list); }
