@@ -2,7 +2,7 @@
   import { untrack, type Snippet } from "svelte";
   import { applyBoardOp, emptyBoard, needsGo, nextIds, stepGo } from "../shared/chat-board.ts";
   import type { ArtifactLink, BoardOp, ChatAgent, ChatBoard, OwnerTodo, PlanItem } from "../shared/types.ts";
-  import { AGENT_LINK_LABEL, AGENT_STATE_LABEL, agentSubagents, queueText, rowDetails } from "./board.ts";
+  import { AGENT_LINK_LABEL, AGENT_STATE_LABEL, agentSubagents, QUEUED_TEXT, queueText, rowParts } from "./board.ts";
   import { elapsed } from "./organize.ts";
   import { groupTodos, isEmptyBoard, isFinished, linkChip, planProgress, planTotals, planWait, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
@@ -10,7 +10,6 @@
   import { ChatDuties, dutiesCount } from "./duties.svelte.ts";
   import DutyList from "./DutyList.svelte";
   import Icon from "./Icon.svelte";
-  import IdChip from "./IdChip.svelte";
   import AgentChip from "./AgentChip.svelte";
   import PlanMark from "./PlanMark.svelte";
   import { tooltip } from "./ui/tooltip.ts";
@@ -21,15 +20,15 @@
   /**
    * The chat's board as cards, in this order: the plan the chat keeps (read-only here), For you (the chat's asks, each a question with its
    * choices in a row under it, answered by a tap on a choice or a typed reply; owner notes look the same), Duties (DutyList), Agents (every
-   * thread the server links to the chat, `SessionRow.agents`: a status dot, the name, one line of activity (or its place in the Mac-wide turn queue,
-   * "Queued 3 of 7, waiting 4 min"), the running subagent count, the output rate and the age; a click opens the job
-   * drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card).
-   * Plan steps are a tree: everything with children starts folded, done and dropped steps hide behind "Show done" per parent, and
-   * each item carries its id chip (the id the chat uses, with a color hashed from the chat and item ids; a click copies the id).
-   * A row is a fixed lead (the fold, the status mark and the chip) and a text block beside it, so a wrapped line, a counter, a wait and a note
-   * line up under the start of the text (a hanging indent at every depth). A todo's link opens through `store.openArtifact` (the reader, the
-   * thread, or a tab); a plan step with an agent carries its AgentChip after the text (status dot and name; a click opens the job drawer or the
-   * thread). The Plan header carries an "Open plan" button, and a double click on a row or its hover "open" button opens the plan view (`store.openPlan`) on that item. `checkIn` is the
+   * thread the server links to the chat, `SessionRow.agents`: a status dot, the name, one line of activity ("waiting for a turn" while its turn
+   * waits in the Mac-wide turn queue, with the place and wait in the tooltip), the running subagent count, the output rate and the age; a click
+   * opens the job drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card).
+   * Plan steps are a tree: everything with children starts folded, and done and dropped steps hide behind "Show done" per parent. A row is a
+   * fixed lead (the fold and the status mark) and one line beside it with no board id: a goal shows its title and progress, a step its title,
+   * its AgentChip (status dot and short name; a click opens the job drawer or the thread) and its wait, and either one the "needs your go"
+   * mark when it applies (`rowParts`). The title is cut to one line with the whole text in its tooltip; notes and requirement lines live in
+   * the plan view only. A todo's link opens through `store.openArtifact` (the reader, the thread, or a tab). The Plan header carries an "Open
+   * plan" button, and a double click on a row or its hover "open" button opens the plan view (`store.openPlan`) on that item. `checkIn` is the
    * server's 5-minute tick line under the cards. `apply` gets the board after the owner's ops and the ops themselves; it resolves false when
    * the server refused them.
    */
@@ -132,7 +131,7 @@
 {/snippet}
 
 {#snippet openRow(itemId: string)}
-  <button type="button" class="icon-button small row-open" aria-label="Open {itemId} in the plan view" use:tooltip={"Open in plan view"} onclick={() => openPlan(itemId)}><Icon name="expandBox" size={12} /></button>
+  <button type="button" class="icon-button small row-open" aria-label="Open this step in the plan view" use:tooltip={"Open in plan view"} onclick={() => openPlan(itemId)}><Icon name="expandBox" size={12} /></button>
 {/snippet}
 
 {#snippet foldButton(item: { id: string; text: string; children: unknown[] }, open: boolean)}
@@ -153,32 +152,23 @@
   {#if row.kind === "finished"}{@render finishedRow(row)}
   {:else}
     {@const item = row.item}
-    {@const progress = planProgress(item)}
-    {@const wait = planWait(item, now)}
+    {@const parts = rowParts(item, "panel")}
+    {@const progress = parts.progress ? planProgress(item) : null}
+    {@const wait = parts.wait ? planWait(item, now) : null}
     {@const open = view.open(item.id)}
-    {@const details = rowDetails(item, open)}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <li class="plan-item {item.status}" style:--depth={row.depth} ondblclick={onRowDblClick(item.id)}>
       <span class="row-lead">
         {@render foldButton(item, open)}
         <PlanMark status={item.status} />
-        <IdChip chat={id} id={item.id} />
       </span>
-      <div class="row-body">
-        <p class="plan-line">
-          <span class="plan-text">{item.text}</span>
-          {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
-          <AgentChip chat={id} {item} {agents} {onagent} {onjob} {previewJob} />
-          {#if wait}<span class="wait">{wait}</span>{/if}
-          {#if needsGo(item) && !stepGo(board ?? { todos: [] }, item)}<span class="go-mark" use:tooltip={"This step waits for your go in For you"}>needs your go</span>{/if}
-        </p>
-        {#if item.note && details.note}<p class="plan-note">{item.note}</p>{/if}
-        {#if item.requirements?.length && details.requirements}
-          <ul class="reqs" aria-label="Requirements of {item.text}">
-            {#each item.requirements as line, index (index)}<li class="req {line.status}"><span class="req-status">{line.status}</span> {line.text}</li>{/each}
-          </ul>
-        {/if}
-      </div>
+      <p class="plan-line">
+        <span class="plan-text" title={item.text}>{item.text}</span>
+        {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
+        {#if parts.agent}<AgentChip chat={id} {item} {agents} {onagent} {onjob} {previewJob} />{/if}
+        {#if wait}<span class="wait" title={wait}>{wait}</span>{/if}
+        {#if needsGo(item) && !stepGo(board ?? { todos: [] }, item)}<span class="go-mark" use:tooltip={"This step waits for your go in For you"}>needs your go</span>{/if}
+      </p>
       {@render openRow(item.id)}
     </li>
   {/if}
@@ -260,7 +250,7 @@
           <button type="button" class="agent" title={agentTitle(agent)} data-preview-chat={id} data-preview-job={agent.job} onclick={() => onagent(agent)}>
             <span class="agent-state">{#if agent.queued}<span class="agent-dot waiting"></span>{:else if agent.state === "working"}<span class="spinner tiny"></span>{:else}<span class="agent-dot {agent.state}"></span>{/if}</span>
             <span class="agent-name">{agent.name}</span>
-            {#if agent.queued}<span class="agent-activity">{queueText(agent.queued, now)}</span>
+            {#if agent.queued}<span class="agent-activity" title={queueText(agent.queued, now)}>{QUEUED_TEXT}</span>
             {:else if agent.activity}<span class="agent-activity" class:failed={agent.state === "failed"}>{agent.activity}</span>{/if}
             {#if subs}<span class="agent-subs" class:running={subs.running > 0} title={subs.title}>{subs.text}</span>{/if}
             {#if agent.rate}<span class="agent-rate" class:live={agent.rate.live && agent.state === "working"} title={agent.rate.live && agent.state === "working" ? "Output tokens per second now" : "Output tokens per second of its last turn"}>{rateText(agent.rate.tps)}</span>{/if}
@@ -317,26 +307,22 @@
   .empty { padding: 24px 8px; text-align: center; }
   .plan-list { list-style: none; margin: 0; padding: 0; }
   /*
-   * A row: a fixed lead (the fold, the status mark, the id chip; 18 px inline boxes) and the text block beside it, so a wrapped line and the
-   * note under it start where the text starts. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
+   * A row: a fixed lead (the fold and the status mark; 18 px boxes) and one line beside it. The title takes the room first and ends in an
+   * ellipsis; the wait shrinks before it. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
    */
   .plan-item { position: relative; display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
   .plan-item { padding-top: 3px; padding-bottom: 3px; }
   .row-lead { display: inline-flex; flex: none; align-items: center; height: 18px; gap: 2px; }
-  .row-body { flex: 1; min-width: 0; }
-  .plan-line { margin: 0; line-height: 18px; overflow-wrap: anywhere; }
+  .plan-line { display: flex; flex: 1; min-width: 0; align-items: center; gap: 5px; margin: 0; line-height: 18px; white-space: nowrap; overflow: hidden; }
+  .plan-text { flex: 0 1 auto; min-width: 6ch; overflow: hidden; text-overflow: ellipsis; }
+  .plan-line :global(.agent-chip) { flex: none; margin-left: 0; }
   .fold { display: inline-flex; vertical-align: top; width: 14px; height: 18px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
   .plan-item.done .plan-text { color: var(--text-muted); }
   .plan-item.dropped .plan-text { color: var(--text-faint); text-decoration: line-through; }
-  /* The counter and the wait follow the text after a space; no margin, so a wrapped counter starts under the text. */
-  .progress, .wait { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .wait { white-space: normal; }
-  .go-mark { margin-left: 4px; padding: 0 5px; border-radius: 999px; font-size: 10.5px; line-height: 16px; white-space: nowrap; color: var(--accent-bold); background: var(--accent-soft); }
-  .reqs { list-style: none; margin: 0; padding: 0 0 2px; font-size: 12px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
-  .req-status { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
-  .req.met .req-status { color: var(--text-muted); }
-  .req.unmet .req-status, .req.open .req-status { color: var(--accent-bold); }
+  .progress, .wait { flex: none; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .wait { flex: 0 4 auto; min-width: 4ch; overflow: hidden; text-overflow: ellipsis; }
+  .go-mark { flex: none; padding: 0 5px; border-radius: 999px; font-size: 10.5px; line-height: 16px; white-space: nowrap; color: var(--accent-bold); background: var(--accent-soft); }
   /*
    * The row's "open in plan view" button sits over the row's top right corner, out of the text flow, with a fade so it reads over a long
    * first line. It shows on hover and focus.
@@ -347,7 +333,6 @@
   .plan-item:hover > .row-open, .plan-item > .row-open:focus-visible { opacity: 1; }
   .finished { list-style: none; padding-left: calc(min(calc(var(--depth) * 14px), 25%) + 14px); }
   .finished .done-fold { margin-top: 2px; }
-  .plan-note { margin: 0; padding: 0 0 2px; font-size: 12px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
   /*
    * For you: each ask is its question in the plan's type, the chat's choices in one wrapping row under it (the first one tinted and marked
    * recommended, all 24 px tall), and the quiet text actions (Reply, Dismiss or Done, Remove, Reopen) at the end of that row.

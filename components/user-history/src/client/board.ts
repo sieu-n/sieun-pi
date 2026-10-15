@@ -32,15 +32,17 @@ export function stepAgent(item: PlanItem, agents: readonly ChatAgent[]): StepAge
   if (sessionId) return { name: short(job && target?.kind !== "thread" ? job : sessionId), state: null, sessionId };
   return job ? { name: short(job), state: null, job } : null;
 }
-/** A queued agent's words, from `pi-pool queue --json`: "Queued 3 of 7, waiting 4 min". */
+/** A queued agent's place, from `pi-pool queue --json`: "Queued 3 of 7, waiting 4 min". Only tooltips show it. */
 export function queueText(place: QueuePlace, now: number): string {
   const minutes = Math.floor(Math.max(0, now - place.since) / 60_000);
   const wait = minutes < 1 ? "under 1 min" : minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
   return `Queued ${place.position} of ${place.total}, waiting ${wait}`;
 }
-/** The chip's tooltip: the agent's name, its state in the Agents card's words, and its session id. */
-export const stepAgentTitle = (chip: StepAgent, name = chip.name): string =>
-  [name, chip.state ? AGENT_STATE_LABEL[chip.state] : "", chip.sessionId ?? ""].filter(Boolean).join(" · ");
+/** What the Agents card writes for a queued agent; its place in the queue and the wait go in the tooltip (owner 10-16: the queue numbers were noise). */
+export const QUEUED_TEXT = "waiting for a turn";
+/** The chip's tooltip: the agent's name, its state in the Agents card's words, its queue place when it waits for a turn, and its session id. */
+export const stepAgentTitle = (chip: StepAgent, name = chip.name, queued = ""): string =>
+  [name, queued || (chip.state ? AGENT_STATE_LABEL[chip.state] : ""), chip.sessionId ?? ""].filter(Boolean).join(" · ");
 
 export interface PlanProgress { done: number; total: number }
 /** Steps under a goal: every item below it that is not dropped, and how many are done. Null for an item with nothing below it. */
@@ -194,11 +196,38 @@ export function linkLabel(target: string): string {
 }
 
 /**
- * What a plan row shows under its line. A goal (a row with children) is compact unless its fold is open: its note, requirement lines and target
- * show only when open (owner 10-10 asked why a working card got worse: the Plan card printed every goal's MET/OPEN/UNMET lines and target inline).
- * A step with no children has no fold, so its note shows as before.
+ * What a plan row shows besides its title and its "needs your go" mark, in the board panel or in the plan view. In the panel a goal (a row
+ * with children) shows its progress only, and a step shows its agent and its wait; neither shows a note or requirement lines, folded or open
+ * (owner 10-16: "if human can't read it it's pointless"). The plan view adds the agent to goals and shows the note and requirement lines.
  */
-export function rowDetails(item: { children: readonly unknown[] }, open: boolean): { note: boolean; requirements: boolean; target: boolean } {
-  const shown = item.children.length === 0 || open;
-  return { note: shown, requirements: shown, target: shown };
+export interface RowParts { progress: boolean; agent: boolean; wait: boolean; note: boolean; requirements: boolean }
+export function rowParts(item: { children: readonly unknown[] }, where: "panel" | "view"): RowParts {
+  const goal = item.children.length > 0;
+  if (where === "panel") return { progress: goal, agent: !goal, wait: !goal, note: false, requirements: false };
+  return { progress: goal, agent: true, wait: false, note: true, requirements: true };
+}
+
+/** Words that end in a period inside a sentence, so the cut does not stop after them. */
+const ABBREVIATIONS = new Set(["e.g", "i.e", "vs", "etc", "approx", "incl", "no", "cf", "mr", "ms", "dr"]);
+/** Above this many words a first sentence is cut at the limit and ends in an ellipsis. */
+export const NOTE_WORDS = 25;
+/**
+ * A step note cut for the plan view: its first sentence, or its first line when that comes first. A sentence ends at ".", "!" or "?" before a
+ * space, except after an abbreviation such as "e.g." or a list number at the start. A first sentence over NOTE_WORDS words keeps its first
+ * NOTE_WORDS words and an ellipsis. `cut` is true when `text` is shorter than the whole note, so the view offers the rest on a click.
+ */
+export function firstSentence(note: string): { text: string; cut: boolean } {
+  const whole = note.trim();
+  const line = whole.split(/\n/, 1)[0]!.trim();
+  let sentence = line;
+  for (const match of line.matchAll(/[.!?]+(?=\s|$)/g)) {
+    const before = line.slice(0, match.index);
+    const word = before.split(/\s+/).at(-1)!.toLowerCase();
+    if (match[0] === "." && (ABBREVIATIONS.has(word) || (/^\d+$/.test(word) && !before.trim().includes(" ")))) continue;
+    sentence = line.slice(0, match.index + match[0].length);
+    break;
+  }
+  const words = sentence.split(/\s+/).filter(Boolean);
+  const text = words.length > NOTE_WORDS ? words.slice(0, NOTE_WORDS).join(" ").replace(/[,;:.]+$/, "") + "\u2026" : sentence;
+  return { text, cut: text !== whole };
 }

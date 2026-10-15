@@ -2,19 +2,19 @@
   import { tick, untrack } from "svelte";
   import { needsGo, stepGo } from "../shared/chat-board.ts";
   import type { ChatAgent, ChatBoard, PlanItem } from "../shared/types.ts";
-  import { focusPlan, isFinished, parentIds, planProgress, planTotals, treeRows, type TreeRow, type TreeView } from "./board.ts";
+  import { firstSentence, focusPlan, isFinished, parentIds, planProgress, planTotals, rowParts, treeRows, type TreeRow, type TreeView } from "./board.ts";
   import { store } from "./store.svelte.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
-  import IdChip from "./IdChip.svelte";
   import AgentChip from "./AgentChip.svelte";
   import PlanMark from "./PlanMark.svelte";
   import Checkbox from "./ui/Checkbox.svelte";
   import { tooltip } from "./ui/tooltip.ts";
 
   /**
-   * The whole board of a chat in one large modal: the plan as a tree with every level open, each step with its status mark, id chip, agent
-   * (AgentChip: it closes the view and opens the job drawer or the agent's thread) and note. Done and dropped
+   * The whole board of a chat in one large modal: the plan as a tree with every level open, each step with its status mark, its title (two
+   * lines at most; the whole title and the board id show on hover), its agent (AgentChip: it closes the view and opens the job drawer or the
+   * agent's thread), the first sentence of its note (a click shows the whole note, `firstSentence`) and its requirement lines. Done and dropped
    * steps stay hidden until "Show done" is on; one control folds or unfolds every parent. `focus` is the item the view opened on: its
    * parents unfold, done items show when it is one, and the row scrolls into view and lights up for 2 s. The board prop is live.
    */
@@ -40,6 +40,12 @@
     folded = open ? rest : { ...rest, [id]: true };
   }
   const foldAll = () => { folded = anyFolded ? {} : Object.fromEntries(parents.map(id => [id, true])); };
+  /** Notes the owner opened in full with a click; the rest show their first sentence. */
+  let fullNotes = $state.raw<Record<string, true>>({});
+  function toggleNote(id: string): void {
+    const { [id]: was, ...rest } = fullNotes;
+    fullNotes = was ? rest : { ...rest, [id]: true };
+  }
 
   let body: HTMLElement | undefined = $state();
   let lit = $state<string | null>(null);
@@ -82,19 +88,23 @@
         <ul class="tree">
           {#each planRows as row (row.item.id)}
             {@const item = row.item}
-            {@const progress = planProgress(item)}
+            {@const parts = rowParts(item, "view")}
+            {@const progress = parts.progress ? planProgress(item) : null}
+            {@const note = parts.note && item.note?.trim() ? firstSentence(item.note) : null}
+            {@const full = fullNotes[item.id] === true}
             <li class="row plan {item.status}" class:lit={lit === item.id} data-item={item.id} style:--depth={row.depth}>
-              <p class="line">
+              <div class="line">
                 {@render foldButton(item, view.open(item.id))}
                 <PlanMark status={item.status} />
-                <IdChip {chat} id={item.id} />
-                <span class="text">{item.text}</span>
+                <span class="text" title="{item.text} ({item.id})">{item.text}</span>
                 {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
-                <AgentChip {chat} {item} {agents} {onagent} {onjob} {previewJob} onopen={onclose} />
+                {#if parts.agent}<AgentChip {chat} {item} {agents} {onagent} {onjob} {previewJob} onopen={onclose} />{/if}
                 {#if needsGo(item) && !stepGo(board ?? { todos: [] }, item)}<span class="go-mark" use:tooltip={"This step waits for your go in For you"}>needs your go</span>{/if}
-              </p>
-              {#if item.note}<p class="note">{item.note}</p>{/if}
-              {#if item.requirements?.length}
+              </div>
+              {#if note?.cut}
+                <button type="button" class="note" aria-expanded={full} title={full ? "Show the first sentence" : "Show the whole note"} onclick={() => toggleNote(item.id)}>{full ? item.note : note.text}<span class="more">{full ? "less" : "more"}</span></button>
+              {:else if note}<p class="note">{note.text}</p>{/if}
+              {#if parts.requirements && item.requirements?.length}
                 <ul class="reqs" aria-label="Requirements of {item.text}">
                   {#each item.requirements as line, index (index)}<li class="req {line.status}"><span class="req-status">{line.status}</span> {line.text}</li>{/each}
                 </ul>
@@ -122,20 +132,24 @@
   .row { border-radius: 6px; padding-left: calc(var(--depth) * 18px); transition: background-color 0.3s; }
   .row.lit { animation: lit 2s ease-out; }
   @keyframes lit { from { background: color-mix(in srgb, var(--accent) 18%, transparent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; box-shadow: none; } }
-  .line { margin: 0; padding: 4px 6px 4px 0; line-height: 20px; overflow-wrap: anywhere; }
+  /* The title wraps to two lines at most; the counter, the agent and the go mark sit after it on its first line. */
+  .line { display: flex; align-items: flex-start; gap: 4px; padding: 4px 6px 4px 0; line-height: 20px; }
+  .line > :global(*) { flex: none; }
   .line :global(.status) { height: 20px; }
-  .line :global(.id-chip) { height: 20px; line-height: 20px; margin-right: 2px; }
+  .line > .text { flex: 0 1 auto; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
   .fold { display: inline-flex; vertical-align: top; width: 18px; height: 20px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
   .chev { display: inline-flex; transform: rotate(-90deg); transition: transform 0.12s; }
   .chev.open { transform: none; }
   .row.plan.done > .line > .text { color: var(--text-muted); }
   .row.plan.dropped > .line > .text { color: var(--text-faint); text-decoration: line-through; }
-  .progress { margin-left: 6px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .line :global(.agent-chip) { height: 20px; line-height: 20px; margin-left: 8px; }
-  .note { margin: -2px 0 4px; padding: 0 0 0 calc(18px + 14px + 4px); font-size: 12.5px; line-height: 1.5; color: var(--text-faint); overflow-wrap: anywhere; white-space: pre-wrap; }
-  .go-mark { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 18px; white-space: nowrap; color: var(--accent-bold); background: var(--accent-soft); }
-  .reqs { list-style: none; margin: -2px 0 4px; padding: 0 0 0 calc(18px + 14px + 4px); font-size: 12.5px; line-height: 1.5; color: var(--text-faint); overflow-wrap: anywhere; }
+  .progress { margin-left: 4px; font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .line :global(.agent-chip) { height: 20px; line-height: 20px; margin-left: 4px; }
+  .note { display: block; margin: -2px 0 4px; padding: 0 0 0 calc(18px + 14px + 8px); font-size: 12.5px; line-height: 1.5; text-align: left; color: var(--text-faint); overflow-wrap: anywhere; white-space: pre-wrap; }
+  button.note:hover { color: var(--text-muted); }
+  .more { margin-left: 6px; color: var(--accent); }
+  .go-mark { margin: 1px 0 0 4px; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 18px; white-space: nowrap; color: var(--accent-bold); background: var(--accent-soft); }
+  .reqs { list-style: none; margin: -2px 0 4px; padding: 0 0 0 calc(18px + 14px + 8px); font-size: 12.5px; line-height: 1.5; color: var(--text-faint); overflow-wrap: anywhere; }
   .req-status { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
   .req.met .req-status { color: var(--text-muted); }
   .req.unmet .req-status, .req.open .req-status { color: var(--accent-bold); }

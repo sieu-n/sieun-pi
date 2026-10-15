@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardActionText, rowDetails, focusPlan, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, openAgentTodos, parentIds, planProgress, planTotals, planWait, ROOT, shortTitle, stepAgent, stepAgentTitle, treeRows, type TreeRow } from "../src/client/board.ts";
+import { boardActionText, firstSentence, focusPlan, NOTE_WORDS, QUEUED_TEXT, queueText, rowParts, groupTodos, ID_COLORS, idClass, idIndex, isBoardAction, isEmptyBoard, isFinished, linkChip, linkLabel, openAgentTodos, parentIds, planProgress, planTotals, planWait, ROOT, shortTitle, stepAgent, stepAgentTitle, treeRows, type TreeRow } from "../src/client/board.ts";
 import type { ChatAgent, ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
 
 const item = (id: string, status: PlanItem["status"], children: PlanItem[] = []): PlanItem => ({ id, text: id, status, children });
@@ -118,11 +118,38 @@ test("planWait: nothing for a plain step; a local time for waitUntil with the ye
   assert.equal(planWait({ ...item("p1", "todo"), waitUntil: "2026-10-09T05:30:00Z", waitFor: "land 25" }, now), `waits for land 25 until ${local("2026-10-09T05:30:00Z", false)}`);
 });
 
-test("a collapsed goal shows no note, requirement lines or target; open, it shows them; a step with no children keeps its note (owner 10-10)", () => {
+test("rowParts: in the panel a goal shows only its progress and a step its agent and wait, never a note or requirements; the plan view shows notes and requirements (owner 10-16)", () => {
   const goal = { children: [{}] };
-  assert.deepEqual(rowDetails(goal, false), { note: false, requirements: false, target: false });
-  assert.deepEqual(rowDetails(goal, true), { note: true, requirements: true, target: true });
-  assert.deepEqual(rowDetails({ children: [] }, false), { note: true, requirements: true, target: true });
+  const step = { children: [] };
+  assert.deepEqual(rowParts(goal, "panel"), { progress: true, agent: false, wait: false, note: false, requirements: false });
+  assert.deepEqual(rowParts(step, "panel"), { progress: false, agent: true, wait: true, note: false, requirements: false });
+  assert.deepEqual(rowParts(goal, "view"), { progress: true, agent: true, wait: false, note: true, requirements: true });
+  assert.deepEqual(rowParts(step, "view"), { progress: false, agent: true, wait: false, note: true, requirements: true });
+});
+
+test("firstSentence: the note's first sentence or first line, past abbreviations and a leading list number; a long sentence keeps 25 words and an ellipsis", () => {
+  assert.deepEqual(firstSentence("Landed on staging. CI run 1234 green at 3f2a9c1, stack below."), { text: "Landed on staging.", cut: true });
+  assert.deepEqual(firstSentence("  One sentence only.  "), { text: "One sentence only.", cut: false });
+  assert.deepEqual(firstSentence("No period at all"), { text: "No period at all", cut: false });
+  assert.deepEqual(firstSentence("Waits on the owner, e.g. a Slack click. Then it ships."), { text: "Waits on the owner, e.g. a Slack click.", cut: true });
+  assert.deepEqual(firstSentence("1. Fix the chart. 2. Ship it."), { text: "1. Fix the chart.", cut: true });
+  assert.deepEqual(firstSentence("Is it live? Yes."), { text: "Is it live?", cut: true });
+  assert.deepEqual(firstSentence("Reads board.ts and v1.2 fine\nError: stack at line 4"), { text: "Reads board.ts and v1.2 fine", cut: true });
+  const long = Array.from({ length: 40 }, (_, index) => `w${index}`).join(" ") + ".";
+  const cut = firstSentence(long);
+  assert.equal(cut.text, Array.from({ length: NOTE_WORDS }, (_, index) => `w${index}`).join(" ") + "\u2026");
+  assert.equal(cut.cut, true);
+  assert.equal(NOTE_WORDS, 25);
+  assert.deepEqual(firstSentence(""), { text: "", cut: false });
+});
+
+test("a queued agent reads 'waiting for a turn'; its place and wait stay in the tooltip", () => {
+  const now = Date.parse("2026-10-16T01:00:00Z");
+  const agent: ChatAgent = { key: "child:sub-1", sessionId: "s-1", name: "ops-fix", job: "ops-fix", sender: "ops-fix", link: "subagent", state: "working", steps: ["p2"], queued: { position: 74, total: 83, since: now - 3 * 60_000 } };
+  assert.equal(QUEUED_TEXT, "waiting for a turn");
+  const queued = queueText(agent.queued!, now);
+  assert.equal(queued, "Queued 74 of 83, waiting 3 min");
+  assert.equal(stepAgentTitle(stepAgent({ ...item("p2", "doing") }, [agent])!, "ops-fix", queued), "ops-fix · Queued 74 of 83, waiting 3 min · s-1");
 });
 
 test("stepAgent: the Agents row that owns the step, else the stored session of a deleted job, else the owner as written, else none", () => {
