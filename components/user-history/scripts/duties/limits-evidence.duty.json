@@ -1,17 +1,18 @@
 {
   "name": "Limits rest on evidence",
   "ownerWords": "i want daily duty to hunt for these and ferociously remove them aggressively",
-  "goal": "No limit in auto-sns-agent rests on a guess. Every cap, ceiling, budget, throttle, timeout, backoff, retry count, batch size and concurrency setting cites a measurement, a vendor doc or an incident in the ledger, or it is gone with the code that served it. Each run removes every unbacked limit it finds.",
+  "goal": "No limit in auto-sns-agent's sieun/dev rests on a guess. Every cap, timeout, backoff, retry, batch or concurrency setting cites a measurement, vendor doc or incident in the ledger, or is an auth, billing or abuse bound on outside input, or it is gone with the code that served it.",
   "metrics": [
     {
-      "key": "unjudged",
-      "label": "Limit candidates with no verdict in the ledger",
+      "key": "unbacked_left",
+      "label": "Unbacked limits still in the code",
       "op": "<=",
-      "target": 0
+      "target": 0,
+      "headline": true
     },
     {
-      "key": "unbacked_left",
-      "label": "Unbacked limits found but still in the code",
+      "key": "unjudged",
+      "label": "Limit candidates with no verdict",
       "op": "<=",
       "target": 0
     },
@@ -22,38 +23,8 @@
       "target": 0
     },
     {
-      "key": "kept_no_evidence",
-      "label": "Kept limits with no evidence written",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "owner_calls",
-      "label": "Unbacked money, send or ban limits waiting for the owner",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "unbacked_found",
-      "label": "Unbacked limits the last run found",
-      "op": ">=",
-      "target": 0
-    },
-    {
-      "key": "unbacked_removed",
-      "label": "Unbacked limits the last run removed",
-      "op": ">=",
-      "target": 0
-    },
-    {
-      "key": "ledger_errors",
-      "label": "Ledger file that could not be read",
-      "op": "<=",
-      "target": 0
-    },
-    {
       "key": "leftover_refs",
-      "label": "Dropped limits whose name the code still uses",
+      "label": "Dropped limit names still used",
       "op": "<=",
       "target": 0
     }
@@ -72,5 +43,5 @@
     "cwd": "../..",
     "timeoutMs": 120000
   },
-  "onMiss": "Follow limits-evidence.md next to this precheck in sieun-pi components/user-history/scripts/duties/. Read the auto-sns-agent ledger apps/llm-wiki/content/domains/devops/limits-ledger.json first and write it last. Start one subagent per app with unjudged, unbacked or leftover candidates. A limit with no measurement, vendor doc or incident goes, with the code that only served it, unless it guards money, an outside send or a ban, which is the owner's call. Each drop is one commit, \"chore(<app>): drop unbacked limit <name>\", that also updates every caller, import, test and doc naming it, its env var or config key, found by a whole-repo search. Before the push, --leftovers lists nothing, and ruff, ty, tsc or svelte-check and the touched tests pass under nice -n 20. The subagent pushes the app's whole stack to ci/limits-<app>-<yymmdd> without --force and reports the run id. It joins the ops train only on that run's green. Send this chat the found, removed and kept counts as chat_board ops."
+  "onMiss": "Follow limits-evidence.md next to this precheck in sieun-pi components/user-history/scripts/duties/. Read the auto-sns-agent ledger apps/llm-wiki/content/domains/devops/limits-ledger.json first and write it last. Start one subagent per app with unbacked, unjudged, returned or leftover candidates. A limit with no measurement, vendor doc or incident goes with the code that only served it. The owner chose \"Remove all\" for money, send and ban caps (t23), so only an auth, billing or abuse bound on outside input stays, as not_limit with that reason. Each drop is one commit, \"chore(<app>): drop unbacked limit <name>\", that updates every caller, test, doc, env var and config key a whole-repo search finds, and --leftovers lists nothing. Push each app's stack to a fresh ci/limits-<app>-<yymmdd>, fix red on top, and send the chat the green sha and run id for the ops train. An unbacked limit counts until its drop is on the sieun/dev tip."
 }

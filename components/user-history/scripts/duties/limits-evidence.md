@@ -4,7 +4,7 @@ The owner wants every made-up safety limit in auto-sns-agent found and removed, 
 
 ## Inputs
 
-1. The precheck output file named in the brief holds `candidates`, new ones first, each with its key, app, file, line, kind and text.
+1. The precheck output file named in the brief holds `candidates`, new ones first, each with its key, app, file, line, kind and text. It scans the committed sieun/dev tree, never the shared working tree, so another job's unsaved edit is not a candidate.
 2. The ledger is `apps/llm-wiki/content/domains/devops/limits-ledger.json` in auto-sns-agent, with a verdict per candidate key under `limits` and one record per run under `runs`.
 3. Read the ledger first, and write it last, after the stacks are sent.
 4. The precheck output's `leftovers` lists each dropped limit whose name a tree still uses, searched on sieun/dev for `removed` entries and on the stack's ci/ ref for `unbacked` ones. Each one gets a commit in this run's stack for its app that removes the leftover lines. A line that uses a different limit of the same name stays, and the report names it.
@@ -23,9 +23,11 @@ The owner wants every made-up safety limit in auto-sns-agent found and removed, 
 
 1. `kept` means the limit cites real evidence, and the `evidence` field says which.
 2. `not_limit` means the match is no safety limit, such as a vendor page size passed to an API, a protocol constant or a schema length the vendor enforces, and `evidence` says why.
-3. `unbacked` means no evidence exists and its removal is on a ci/ ref but not yet on the local sieun/dev tip; `commit` names the sha and the ref.
-4. `removed` means the key is gone from the candidate list because the removal reached the tip.
-5. `owner` means the limit guards money, an outside send or account ban risk and has no evidence, so the owner decides.
+3. An auth, billing or abuse bound on outside input, such as a request body cap or a login attempt limit, is out of scope and gets `not_limit` with `evidence` that starts with "out of scope:".
+4. `unbacked` means no evidence exists and its removal is on a ci/ ref but not yet on the local sieun/dev tip; `commit` names the sha and the ref.
+5. `removed` means the key is gone from the candidate list because the removal reached the tip.
+6. `owner` is retired, because the owner chose "Remove all" for unmeasured money, send and ban caps on 10-14 (board choice t23), and the precheck counts an `owner` entry still in the code as unbacked.
+7. A `kept` or `not_limit` entry with an empty `evidence` counts as unjudged.
 
 ## Evidence
 
@@ -41,7 +43,7 @@ The owner wants every made-up safety limit in auto-sns-agent found and removed, 
 1. Delete the limit and every line that only served it, such as the constant, the check, the retry or backoff loop, the batching wrapper, the config field, the env var and its docs.
 2. A loop that chunked work only for the cap becomes one call, and a timeout with no evidence goes, so the library default applies.
 3. Leave the code simpler than you found it, with no shim, alias or fallback that keeps the old cap alive.
-4. Never touch a limit that guards real money, an outside send or account ban risk when it has measured evidence, and mark such a limit with no evidence as `owner`.
+4. A money, send or ban limit with measured evidence stays as `kept`, and one with no evidence goes like any other (t23).
 5. Before you build each commit, search the stack's base for the limit's name, and for its env var and config key if it has them, with `git grep -n -w <name> <base> -- . ':(exclude)apps/llm-wiki/content'`. This is rg over the whole repo, read from the commit the stack builds on, because the shared tree holds other jobs' edits.
 6. Update every caller, import, test, doc and config line that search finds in the same commit as the drop.
 7. A test that pins the old value changes to assert the new behavior, and a test that only checked the cap goes.
@@ -68,7 +70,7 @@ The owner wants every made-up safety limit in auto-sns-agent found and removed, 
 
 ## Ledger and report
 
-1. Set `unbacked` with the commit for each limit you removed, `kept` or `not_limit` with evidence, and `owner` for the guard limits, then move each `unbacked` entry whose key left the candidate list to `removed`.
+1. Set `unbacked` with the commit for each limit you removed and `kept` or `not_limit` with evidence, then move each `unbacked` entry whose key left the candidate list to `removed`.
 2. Append one run record with the unbacked limits found, removed, kept and left for the owner.
 3. Commit the ledger with `node scripts/repo/agent/commit.mjs -m "docs(limits): ledger <date>" apps/llm-wiki/content/domains/devops/limits-ledger.json`.
-4. Send this chat one `scratch_add` op with the counts and a `wiki:domains/devops/limits-ledger.json` link, and one `todo_add` per `owner` limit with its file, what it guards and the choices "remove it" and "keep it".
+4. Send this chat one `scratch_add` op with the counts and a `wiki:domains/devops/limits-ledger.json` link.

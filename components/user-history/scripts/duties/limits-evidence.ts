@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -8,26 +7,33 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 /**
  * The precheck of the "Limits rest on evidence" duty (`node --import tsx scripts/duties/limits-evidence.ts`). It lists the limit-like code in
- * auto-sns-agent with rg (caps, ceilings, budgets, throttles, timeouts, backoffs, retries, batch sizes, concurrency, and "to be safe" comments),
- * marks what is new since the last run, and reads the duty's ledger in the wiki for what the duty job already kept with evidence or removed.
+ * the committed tree of auto-sns-agent's sieun/dev (LIMITS_REV) with git grep (caps, ceilings, budgets, throttles, timeouts, backoffs, retries,
+ * batch sizes, concurrency, and "to be safe" comments), marks what is new since the last run, and reads the duty's ledger in the wiki for what
+ * the duty job already kept with evidence or removed. The shared working tree is never scanned, because it holds other jobs' unsaved edits.
  * No model call: the duty job judges each candidate. The full list, new ones first, goes to OUTPUT_FILE as `candidates`.
  * It also searches the trees the ledger's drops ride for lines that still name a dropped limit (`leftovers`), and with `--leftovers <base> <tip>`
  * it runs that search for one stack before its push.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
+const REV = process.env.LIMITS_REV || "sieun/dev";
 export const LEDGER_PATH = "apps/llm-wiki/content/domains/devops/limits-ledger.json";
 export const ROOTS = ["apps", "convex", "ops", "scripts", "packages"] as const;
-/** Source files only; tests, generated code, builds and the wiki's 59 GB content tree are left out. */
-export const GLOBS = ["*.{ts,tsx,js,mjs,cjs,svelte,py,toml,yaml,yml,sh}", "!apps/llm-wiki/content/**", "!**/_generated/**", "!**/*.test.*", "!**/*.spec.*",
-  "!**/test/**", "!**/tests/**", "!**/__tests__/**", "!**/e2e/**", "!**/*.d.ts", "!**/dist/**", "!**/build/**", "!**/*.min.js", "!**/node_modules/**"];
+/** Source files only, as git pathspecs; tests, generated code, builds and the wiki's 59 GB content tree are left out. */
+export const EXTENSIONS = ["ts", "tsx", "js", "mjs", "cjs", "svelte", "py", "toml", "yaml", "yml", "sh"] as const;
+export const EXCLUDES = ["apps/llm-wiki/content/**", "**/_generated/**", "**/*.test.*", "**/*.spec.*", "**/test/**", "**/tests/**", "**/__tests__/**", "**/e2e/**",
+  "**/*.d.ts", "**/dist/**", "**/build/**", "**/*.min.js", "**/node_modules/**"] as const;
+export const pathspecs = (roots: readonly string[]): string[] =>
+  [...roots.flatMap(root => EXTENSIONS.map(ext => `:(glob)${root}/**/*.${ext}`)), ...EXCLUDES.map(glob => `:(exclude,glob)${glob}`)];
 export type Kind = "const" | "literal" | "comment";
-/** rg patterns: a named constant like MAX_ROWS or FETCH_TIMEOUT_MS, a key set to a number like `concurrency: 4`, and a comment that hedges. */
+/** Patterns for git grep -P and for JS, which finds the match in each line: a named constant like MAX_ROWS or FETCH_TIMEOUT_MS, a key set to a
+ * number like `concurrency: 4`, and a comment that hedges, matched case-blind. */
 export const PATTERNS: Record<Kind, string> = {
   const: String.raw`\b[A-Z][A-Z0-9_]*(MAX|LIMIT|CAP|CEILING|BUDGET|THROTTLE|TIMEOUT|BACKOFF|CONCURRENCY|RATE|BATCH|RETRIES)[A-Z0-9_]*\s*(:[^=]+)?=\s*[^=>\s"'\x60]`,
   literal: String.raw`\b(max[A-Za-z0-9_]*|[A-Za-z0-9_]*([Ll]imit|[Cc]ap|[Cc]eiling|[Bb]udget|[Tt]hrottle|[Cc]oncurrency|[Bb]atch_?[Ss]ize|[Tt]imeout|[Bb]ackoff|[Rr]ate_?[Ll]imit|[Rr]etries|[Rr]ps|[Qq]ps))\s*[:=]\s*[0-9][0-9_.]*`,
-  comment: String.raw`(?i)(//|#|/\*|^\s*\*|""").*\b(conservative|to be safe|caution|safety margin|just in case|on the safe side)`,
+  comment: String.raw`(//|#|/\*|^\s*\*|""").*\b(conservative|to be safe|caution|safety margin|just in case|on the safe side)`,
 };
+const FLAGS: Record<Kind, string> = { const: "", literal: "", comment: "i" };
 /** Layout and number-format sizes, such as a panel's max height or maximumFractionDigits, limit no work. */
 const LAYOUT = /height|width|px|cols|columns|rows|zoom|scale|opacity|datapoints|digits/i;
 
@@ -57,16 +63,17 @@ export function appOf(file: string): string {
   return (top === "apps" || top === "packages") && name ? name : top!;
 }
 
-/** The matches in rg `--json` output; layout sizes are dropped. */
-export function parseRg(kind: Kind, json: string): Found[] {
+/** The matches in `git grep -z -n <rev>` output (`<rev>:<path>\0<line>\0<text>`), each line's first match found again in JS; layout sizes are dropped. */
+export function parseGrep(kind: Kind, rev: string, out: string): Found[] {
+  const pattern = new RegExp(PATTERNS[kind], FLAGS[kind]);
   const found: Found[] = [];
-  for (const line of json.split("\n")) {
-    if (!line.startsWith('{"type":"match"')) continue;
-    const { data } = JSON.parse(line) as { data: { path: { text: string }; lines: { text?: string }; line_number: number; submatches: { match: { text?: string } }[] } };
-    const match = (data.submatches[0]?.match.text ?? "").replace(/\s+/g, " ").trim();
-    if (kind !== "comment" && LAYOUT.test(match.split(/[\s:=]/)[0]!)) continue;
-    found.push({ file: data.path.text, line: data.line_number, kind, match: kind === "comment" ? match.slice(-60) : kind === "const" ? match.split(/[\s:=]/)[0]! : match.replace(/\s*([:=])\s*/, "$1"),
-      text: (data.lines.text ?? "").trim().slice(0, 200) });
+  for (const row of out.split("\n")) {
+    const [path, line, text] = row.split("\0");
+    if (!path || !line || text === undefined) continue;
+    const match = (pattern.exec(text)?.[0] ?? "").replace(/\s+/g, " ").trim();
+    if (!match || (kind !== "comment" && LAYOUT.test(match.split(/[\s:=]/)[0]!))) continue;
+    found.push({ file: path.slice(rev.length + 1), line: Number(line), kind, match: kind === "comment" ? match.slice(-60) : kind === "const" ? match.split(/[\s:=]/)[0]! :
+      match.replace(/\s*([:=])\s*/, "$1"), text: text.trim().slice(0, 200) });
   }
   return found;
 }
@@ -82,7 +89,7 @@ export function withKeys(found: readonly Found[]): Omit<Candidate, "new" | "verd
   });
 }
 
-/** The ledger from its JSON text; a missing file is an empty ledger. Throws on a file that is not a ledger. */
+/** The ledger from its JSON text; a missing file is an empty ledger. Throws on a file that is not a ledger, which fails the run. */
 export function parseLedger(text: string | undefined): Ledger {
   if (text === undefined) return { limits: {}, runs: [] };
   const value = JSON.parse(text) as Partial<Ledger>;
@@ -90,46 +97,49 @@ export function parseLedger(text: string | undefined): Ledger {
   return { limits: value.limits ?? {}, runs: value.runs };
 }
 
-export function measureLimits(found: readonly Found[], previous: LimitsState | undefined, ledger: Ledger | { error: string }, at: number,
+/** A verdict that counts: kept and not_limit need their evidence written, or the candidate is still unjudged. */
+const judged = (entry: LedgerEntry | undefined): Verdict | undefined =>
+  !entry || ((entry.verdict === "kept" || entry.verdict === "not_limit") && !entry.evidence?.trim()) ? undefined : entry.verdict;
+
+/**
+ * The duty's 4 metrics, headline first: unbacked limits still in the code (an `unbacked` removal not on the tip yet, or an `owner` one, since the
+ * owner chose "Remove all" for money, send and ban caps on 10-14), candidates with no verdict (a kept or not_limit verdict with no evidence counts
+ * as none), removed limits that came back, and dropped names the code still uses. Every other count goes to the `detail` line.
+ */
+export function measureLimits(found: readonly Found[], previous: LimitsState | undefined, ledger: Ledger, at: number,
   left: readonly LeftoverFinding[] = []): { output: PrecheckOutput & { candidates: Candidate[]; ledger: string; leftovers: LeftoverFinding[] }; state: LimitsState } {
   const known = previous && new Set(previous.keys);
-  const limits = "error" in ledger ? {} : ledger.limits;
-  const candidates: Candidate[] = withKeys(found).map(hit => ({ ...hit, new: known ? !known.has(hit.key) : false, ...(limits[hit.key] ? { verdict: limits[hit.key]!.verdict } : {}) }));
-  const live = new Set(candidates.map(hit => hit.key));
-  const entries = Object.entries(limits);
-  const where = (key: string) => candidates.find(hit => hit.key === key);
-  const lastRun = "error" in ledger ? undefined : ledger.runs.at(-1);
-  const unbacked = entries.filter(([key, entry]) => entry.verdict === "unbacked" && live.has(key));
-  const back = entries.filter(([key, entry]) => entry.verdict === "removed" && live.has(key));
-  const bare = entries.filter(([, entry]) => entry.verdict === "kept" && !entry.evidence?.trim());
-  const owner = entries.filter(([key, entry]) => entry.verdict === "owner" && live.has(key));
+  const limits = ledger.limits;
+  const candidates: Candidate[] = withKeys(found).map(hit => {
+    const verdict = judged(limits[hit.key]);
+    return { ...hit, new: known ? !known.has(hit.key) : false, ...(verdict ? { verdict } : {}) };
+  });
+  const of = (...verdicts: Verdict[]) => candidates.filter(hit => hit.verdict && verdicts.includes(hit.verdict));
+  const unbacked = of("unbacked", "owner");
+  const back = of("removed");
   const metrics = {
-    unjudged: candidates.filter(hit => !hit.verdict).length,
     unbacked_left: unbacked.length,
+    unjudged: candidates.filter(hit => !hit.verdict).length,
     removed_back: back.length,
-    kept_no_evidence: bare.length,
-    owner_calls: owner.length,
-    unbacked_found: lastRun?.found ?? 0,
-    unbacked_removed: lastRun?.removed ?? 0,
-    ledger_errors: "error" in ledger ? 1 : 0,
     leftover_refs: left.length,
   };
-  const flagged: FlaggedSlice[] = [];
-  if ("error" in ledger) flagged.push({ at, kind: "ledger", excerpt: `${LEDGER_PATH}: ${ledger.error}`.slice(0, 300) });
+  const lastRun = ledger.runs.at(-1);
+  const flagged: FlaggedSlice[] = [{ at, kind: "detail", excerpt: `${candidates.length} candidates on ${REV}: ${of("kept").length} kept, ${of("not_limit").length} not limits, ` +
+    `${of("unbacked").length} unbacked, ${of("owner").length} owner; ledger has ${Object.keys(limits).length} keys` +
+    `${lastRun ? `; its last run (${lastRun.at}) found ${lastRun.found}, removed ${lastRun.removed}, kept ${lastRun.kept}` : ""}` }];
   if (!known) flagged.push({ at, kind: "baseline", excerpt: `first run: ${candidates.length} candidates saved as the baseline; later runs flag each new one` });
   const apps = [...new Set(candidates.map(hit => hit.app))].sort();
   for (const app of apps) {
     const mine = candidates.filter(hit => hit.app === app);
     const count = (test: (hit: Candidate) => boolean) => mine.filter(test).length;
     flagged.push({ at, kind: "app", item: app, excerpt: `${count(() => true)} candidates, ${count(hit => hit.new)} new, ${count(hit => !hit.verdict)} unjudged, ` +
-      `${count(hit => hit.verdict === "kept")} kept, ${count(hit => hit.verdict === "unbacked")} unbacked waiting to land` });
+      `${count(hit => hit.verdict === "kept")} kept, ${count(hit => hit.verdict === "unbacked" || hit.verdict === "owner")} unbacked still in the code` });
   }
-  const line = (hit: Candidate | undefined, key: string) => hit ? `${hit.file}:${hit.line} ${hit.text}` : key;
-  for (const hit of candidates.filter(entry => entry.new)) flagged.push({ at, kind: "new", item: hit.app, excerpt: line(hit, hit.key) });
-  for (const [key] of back) flagged.push({ at, kind: "back", excerpt: `removed before, in the code again: ${line(where(key), key)}` });
-  for (const [key, entry] of unbacked) flagged.push({ at, kind: "unbacked", excerpt: `${line(where(key), key)}${entry.commit ? ` (removal ${entry.commit})` : ""}` });
-  for (const [key] of bare) flagged.push({ at, kind: "no_evidence", excerpt: `kept with no evidence written: ${key}` });
-  for (const [key] of owner) flagged.push({ at, kind: "owner", excerpt: `waits for the owner's call: ${line(where(key), key)}` });
+  const line = (hit: Candidate) => `${hit.file}:${hit.line} ${hit.text}`;
+  for (const hit of candidates.filter(entry => entry.new)) flagged.push({ at, kind: "new", item: hit.app, excerpt: line(hit) });
+  for (const hit of back) flagged.push({ at, kind: "back", item: hit.app, excerpt: `removed before, in the code again: ${line(hit)}` });
+  for (const hit of unbacked) { const commit = limits[hit.key]!.commit;
+    flagged.push({ at, kind: "unbacked", item: hit.app, excerpt: `${line(hit)}${commit ? ` (removal ${commit})` : ""}`.slice(0, 300) }); }
   for (const { key, rev, hits } of left) flagged.push({ at, kind: "leftover", item: appOf(key), excerpt: (`dropped ${hits[0]!.name} (${key}), but ${rev} still names it in ` +
     `${hits[0]!.file}:${hits[0]!.line} ${hits[0]!.text}${hits.length > 1 ? ` and ${hits.length - 1} more lines` : ""}`).slice(0, 300) });
   candidates.sort((a, b) => Number(b.new) - Number(a.new) || a.app.localeCompare(b.app) || a.file.localeCompare(b.file) || a.line - b.line);
@@ -194,7 +204,7 @@ async function stackRef(repo: string, commit: string | undefined): Promise<strin
  * Only TRACEABLE names are searched, and a name another file of that tree still defines is skipped (`definedElsewhere`). A file that defines
  * its own limit of the same name, as `defined` (`file#NAME` from the scan) or another ledger key shows, uses that one, so its lines do not count.
  */
-export async function findLeftovers(repo: string, ledger: Ledger, defined: ReadonlySet<string>, tip = "sieun/dev"): Promise<LeftoverFinding[]> {
+export async function findLeftovers(repo: string, ledger: Ledger, defined: ReadonlySet<string>, tip = REV): Promise<LeftoverFinding[]> {
   const byRev = new Map<string, { name: string; key: string }[]>();
   for (const [key, entry] of Object.entries(ledger.limits)) {
     const name = key.split("#")[1] ?? "";
@@ -235,13 +245,12 @@ async function checkStack(base: string, tip: string): Promise<void> {
   process.exit(left.size ? 1 : 0);
 }
 
-/** Runs the 3 searches over the source roots the repo has; rg exit 1 means no match. */
-export async function scan(repo: string): Promise<Found[]> {
-  const roots = ROOTS.filter(root => existsSync(join(repo, root)));
-  const searches = (Object.keys(PATTERNS) as Kind[]).map(kind => new Promise<Found[]>((resolve, reject) => {
-    execFile("rg", ["--json", ...GLOBS.flatMap(glob => ["-g", glob]), "-e", PATTERNS[kind], ...roots], { cwd: repo, encoding: "utf8", maxBuffer: Infinity },
-      (error, stdout, stderr) => error && error.code !== 1 ? reject(new Error(`rg ${kind}: ${String(stderr).trim() || error.message}`)) : resolve(parseRg(kind, stdout)));
-  }));
+/** Runs the 3 searches with git grep over the committed tree of `rev`, in the source roots it has; exit 1 means no match. */
+export async function scan(repo: string, rev = REV): Promise<Found[]> {
+  const roots = (await git(repo, ["ls-tree", "--name-only", rev])).stdout.split("\n").filter(name => (ROOTS as readonly string[]).includes(name));
+  if (!roots.length) return [];
+  const searches = (Object.keys(PATTERNS) as Kind[]).map(async kind =>
+    parseGrep(kind, rev, (await git(repo, ["grep", "-P", "-z", "-n", "-I", ...(FLAGS[kind] ? ["-i"] : []), "-e", PATTERNS[kind], rev, "--", ...pathspecs(roots)])).stdout));
   return (await Promise.all(searches)).flat();
 }
 
@@ -257,10 +266,9 @@ async function main(): Promise<void> {
   const stateFile = process.env.STATE_FILE;
   const previous = stateFile ? await readFile(stateFile, "utf8").then(text => JSON.parse(text) as Partial<LimitsState>, () => undefined) : undefined;
   const ledgerText = await readFile(join(REPO, LEDGER_PATH), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
-  let ledger: Ledger | { error: string };
-  try { ledger = parseLedger(ledgerText); } catch (error) { ledger = { error: error instanceof Error ? error.message : String(error) }; }
+  const ledger = parseLedger(ledgerText);
   const found = await scan(REPO);
-  const left = "error" in ledger ? [] : await findLeftovers(REPO, ledger, new Set(found.map(hit => `${hit.file}#${hit.match}`)));
+  const left = await findLeftovers(REPO, ledger, new Set(found.map(hit => `${hit.file}#${hit.match}`)), REV);
   const result = measureLimits(found, Array.isArray(previous?.keys) ? { keys: previous.keys } : undefined, ledger, Date.now(), left);
   await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile) await writeFile(stateFile, JSON.stringify(result.state) + "\n");

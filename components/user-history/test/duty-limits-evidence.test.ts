@@ -5,24 +5,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { appOf, definedElsewhere, dropLeftovers, drops, findLeftovers, type Ledger, leftovers, measureLimits, ownDefinitions, parseLedger, parseRg, scan, withKeys }
+import { appOf, definedElsewhere, dropLeftovers, drops, findLeftovers, type Ledger, leftovers, measureLimits, ownDefinitions, parseGrep, parseLedger, scan, withKeys }
   from "../scripts/duties/limits-evidence.ts";
 
 const NOW = Date.parse("2026-10-12T18:30:00Z");
-const rgMatch = (path: string, line: number, text: string, match: string) =>
-  JSON.stringify({ type: "match", data: { path: { text: path }, lines: { text: `${text}\n` }, line_number: line, submatches: [{ match: { text: match }, start: 0, end: 1 }] } });
+const grepRow = (path: string, line: number, text: string) => `dev:${path}\0${line}\0${text}`;
 const hit = (file: string, line: number, match: string, kind: "const" | "literal" | "comment" = "const") => ({ file, line, kind, match, text: match });
 
-test("limits evidence: rg json becomes keyed candidates; layout sizes drop and a repeated match gets its occurrence number", () => {
-  const json = [
-    JSON.stringify({ type: "begin", data: { path: { text: "apps/search/a.ts" } } }),
-    rgMatch("apps/search/a.ts", 3, "const FETCH_TIMEOUT_MS = 30_000;", "FETCH_TIMEOUT_MS = 3"),
-    rgMatch("apps/search/a.ts", 9, "const PANEL_MAX_HEIGHT = 460;", "PANEL_MAX_HEIGHT = 4"),
-  ].join("\n");
-  assert.deepEqual(parseRg("const", json).map(found => found.match), ["FETCH_TIMEOUT_MS"]);
-  const literals = parseRg("literal", [rgMatch("convex/x.ts", 1, "f({ timeout: 60 })", "timeout: 60"), rgMatch("convex/x.ts", 7, "g({ timeout:60 })", "timeout:60"),
-    rgMatch("convex/x.ts", 8, "{ maxHeight: 280 }", "maxHeight: 280")].join("\n"));
+test("limits evidence: git grep rows become keyed candidates; layout sizes drop and a repeated match gets its occurrence number", () => {
+  const rows = [grepRow("apps/search/a.ts", 3, "const FETCH_TIMEOUT_MS = 30_000;"), grepRow("apps/search/a.ts", 9, "const PANEL_MAX_HEIGHT = 460;")].join("\n");
+  assert.deepEqual(parseGrep("const", "dev", rows).map(found => [found.file, found.line, found.match]), [["apps/search/a.ts", 3, "FETCH_TIMEOUT_MS"]]);
+  const literals = parseGrep("literal", "dev", [grepRow("convex/x.ts", 1, "f({ timeout: 60 })"), grepRow("convex/x.ts", 7, "g({ timeout:60 })"),
+    grepRow("convex/x.ts", 8, "{ maxHeight: 280 }")].join("\n"));
   assert.deepEqual(withKeys(literals).map(found => found.key), ["convex/x.ts#timeout:60", "convex/x.ts#timeout:60#2"]);
+  assert.deepEqual(parseGrep("comment", "dev", grepRow("ops/a.sh", 2, "sleep 5  # To Be Safe")).map(found => found.match), ["# To Be Safe"]);
   assert.deepEqual(["apps/crawler-v3/src/x.py", "packages/ui/a.ts", "convex/a.ts", "scripts/dev/b.mjs"].map(appOf), ["crawler-v3", "ui", "convex", "scripts"]);
 });
 
@@ -37,29 +33,29 @@ test("limits evidence: the first run saves a baseline, the next flags only new c
       "apps/crawler-v3/t.py#WRITE_CAP": { verdict: "unbacked", commit: "abc on ci/limits-crawler-v3-261013" },
       "convex/a.ts#DRAIN_BATCH": { verdict: "kept", evidence: "Convex read limit, https://docs.convex.dev/production/state/limits" },
       "convex/a.ts#OLD_MAX": { verdict: "removed" },
-      "convex/a.ts#GONE_LIMIT": { verdict: "kept", evidence: " " },
+      "convex/a.ts#BARE_CAP": { verdict: "kept", evidence: " " },
+      "convex/a.ts#GONE_LIMIT": { verdict: "unbacked" },
       "apps/crawler-v3/t.py#RETRY_BACKOFF": { verdict: "owner" },
     },
     runs: [{ at: "2026-10-12T03:30:00+09:00", found: 5, removed: 3, kept: 1 }],
   };
-  const next = measureLimits([...found, hit("convex/b.ts", 2, "NEW_LIMIT")], first.state, ledger, NOW);
-  assert.deepEqual(next.output.metrics, { unjudged: 1, unbacked_left: 1, removed_back: 1, kept_no_evidence: 1, owner_calls: 1, unbacked_found: 5, unbacked_removed: 3, ledger_errors: 0, leftover_refs: 0 });
-  assert.deepEqual(next.output.flagged?.filter(item => item.kind !== "app").map(item => item.kind), ["new", "back", "unbacked", "no_evidence", "owner"]);
-  assert.equal(next.output.candidates[0]!.key, "convex/b.ts#NEW_LIMIT", "new candidates come first");
-  assert.ok(next.output.flagged?.some(item => item.kind === "app" && item.item === "convex" && item.excerpt.startsWith("3 candidates, 1 new, 1 unjudged, 1 kept")));
+  const next = measureLimits([...found, hit("convex/a.ts", 12, "BARE_CAP"), hit("convex/b.ts", 2, "NEW_LIMIT")], first.state, ledger, NOW);
+  assert.deepEqual(next.output.metrics, { unbacked_left: 2, unjudged: 2, removed_back: 1, leftover_refs: 0 },
+    "an owner verdict counts as unbacked, a kept one with no evidence as unjudged, and a ledger key gone from the code counts nowhere");
+  assert.deepEqual(next.output.flagged?.filter(item => !["app", "detail"].includes(item.kind)).map(item => item.kind), ["new", "new", "back", "unbacked", "unbacked"]);
+  assert.match(next.output.flagged?.find(item => item.kind === "detail")?.excerpt ?? "", /^6 candidates on sieun\/dev: 1 kept, 0 not limits, 1 unbacked, 1 owner; ledger has 6 keys; its last run .* found 5, removed 3, kept 1$/);
+  assert.equal(next.output.candidates[0]!.key, "convex/a.ts#BARE_CAP", "new candidates come first");
+  assert.ok(next.output.flagged?.some(item => item.kind === "app" && item.item === "convex" && item.excerpt.startsWith("4 candidates, 2 new, 2 unjudged, 1 kept")));
 });
 
-test("limits evidence: a missing ledger is empty, a broken one is one flagged error with every metric still written", () => {
+test("limits evidence: a missing ledger is empty, and a broken one throws so the run fails", () => {
   assert.deepEqual(parseLedger(undefined), { limits: {}, runs: [] });
   assert.throws(() => parseLedger("[]"), /not a ledger/);
-  const { output } = measureLimits([hit("ops/a.mjs", 1, "MAX_X")], { keys: [] }, { error: "not a ledger" }, NOW);
-  assert.equal(output.metrics.ledger_errors, 1);
-  assert.equal(output.metrics.unjudged, 1);
-  assert.equal(output.flagged?.[0]?.kind, "ledger");
 });
 
-test("limits evidence: rg finds caps, numeric settings and hedging comments in source roots, and skips tests, strings and the wiki content", async () => {
+test("limits evidence: git grep finds caps, numeric settings and hedging comments in the committed source roots, and skips tests, strings, the wiki content and unsaved files", async () => {
   const repo = await mkdtemp(join(tmpdir(), "limits-repo-"));
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], { cwd: repo, encoding: "utf8" }).trim();
   try {
     const files: Record<string, string> = {
       "apps/crawler-v3/src/tuning.py": "CENSUS_WRITE_CAP_MB_S = 75  # to be safe\nRATE_LIMITED = \"rate_limited_share\"\nclient = httpx.Client(timeout=30)\n",
@@ -68,10 +64,17 @@ test("limits evidence: rg finds caps, numeric settings and hedging comments in s
       "apps/llm-wiki/content/sessions/x.ts": "const MAX_ROWS = 5;\n",
       "docs/b.ts": "const MAX_ROWS = 5;\n",
     };
-    for (const [path, text] of Object.entries(files)) { await mkdir(join(repo, path, ".."), { recursive: true }); await writeFile(join(repo, path), text); }
-    const keys = withKeys(await scan(repo)).map(found => found.key).sort();
+    const write = async (set: Record<string, string>) => {
+      for (const [path, text] of Object.entries(set)) { await mkdir(join(repo, path, ".."), { recursive: true }); await writeFile(join(repo, path), text); }
+    };
+    git("init", "-q", "-b", "dev");
+    await write(files);
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    await write({ "apps/virev-demo/overlay/x.ts": "const SEND_CAP = 3;\n", "convex/search/a.ts": "const DRAIN_BATCH = 200;\nconst UNSAVED_MAX = 9;\n" });
+    const keys = withKeys(await scan(repo, "dev")).map(found => found.key).sort();
     assert.deepEqual(keys, ["apps/crawler-v3/src/tuning.py## to be safe", "apps/crawler-v3/src/tuning.py#CENSUS_WRITE_CAP_MB_S", "apps/crawler-v3/src/tuning.py#timeout=30",
-      "convex/search/a.ts#DRAIN_BATCH", "convex/search/a.ts#concurrency:4"]);
+      "convex/search/a.ts#DRAIN_BATCH", "convex/search/a.ts#concurrency:4"], "another job's unsaved edit or untracked file is not the code");
   } finally { await rm(repo, { recursive: true, force: true }); }
 });
 
@@ -79,6 +82,9 @@ test("limits evidence duty file parses, runs daily, and every metric is a key th
   const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "limits-evidence.duty.json"), "utf8")), "d", NOW);
   assert.equal(duty.name, "Limits rest on evidence");
   assert.deepEqual(duty.schedule, { kind: "daily", at: "03:30" });
+  assert.equal(duty.metrics[0]?.key, "unbacked_left");
+  assert.equal(duty.metrics[0]?.headline, true);
+  assert.ok(duty.metrics.length <= 4, "one headline and at most 3 supporting metrics (c75)");
   const { output } = measureLimits([], undefined, { limits: {}, runs: [] }, NOW);
   assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), Object.keys(output.metrics).sort());
 });
