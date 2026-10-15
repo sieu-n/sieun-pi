@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { activePause, type CheckInSetting, localTime } from "../../src/checkin-settings.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice } from "../../src/shared/chat-duties.ts";
+import { effectiveRun } from "../../src/shared/duty-streak.ts";
 
 const HOUR = 60 * 60_000;
 
@@ -11,26 +12,16 @@ export const UNFIXED_RUNS = 4;
 /**
  * `unfixed_flags`: each (kind, item) pair the chat's check-in flagged in UNFIXED_RUNS or more check-in runs in a row, with the streak ending in
  * the window. Runs are the check-in records of `<dataDir>/duties/<chatId>.runs.jsonl` that measured the board (a skipped or failed run neither
- * extends nor breaks a streak); a run that did not flag the pair ends its streak. One slice per pair, its longest streak in the window, with the
+ * extends nor breaks a streak), each with the flags its own job left (`liveFlags`); a run that did not flag the pair ends its streak. One slice per pair, its longest streak in the window, with the
  * excerpt of the last run that flagged it. A missing runs file is no runs.
  */
 export async function unfixedFlags(dataDir: string, chat: string, start: number, now: number): Promise<FlaggedSlice[]> {
-  let text: string;
-  try { text = await readFile(join(dataDir, "duties", `${chat}.runs.jsonl`), "utf8"); } catch { return []; }
-  const runs: DutyRunRecord[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const run = JSON.parse(line) as DutyRunRecord;
-      if (run.duty === CHECK_IN_DUTY_ID && run.verdict !== "skipped" && run.verdict !== "error" && Number.isFinite(run.at) && run.at <= now) runs.push(run);
-    } catch { continue; }
-  }
-  runs.sort((a, b) => a.at - b.at);
+  const runs = await checkInRuns(dataDir, chat, now);
   const streaks = new Map<string, { since: number; count: number }>();
   const worst = new Map<string, { since: number; count: number; last: FlaggedSlice; at: number }>();
   for (const run of runs) {
     const flagged = new Map<string, FlaggedSlice>();
-    for (const slice of run.flagged ?? []) if (slice.item) flagged.set(`${slice.kind} ${slice.item}`, slice);
+    for (const slice of liveFlags(run)) if (slice.item) flagged.set(`${slice.kind} ${slice.item}`, slice);
     for (const key of streaks.keys()) if (!flagged.has(key)) streaks.delete(key);
     for (const [key, slice] of flagged) {
       const streak = streaks.get(key) ?? { since: run.at, count: 0 };
@@ -63,12 +54,24 @@ async function checkInRuns(dataDir: string, chat: string, now: number): Promise<
     if (!line.trim()) continue;
     try {
       const run = JSON.parse(line) as DutyRunRecord;
-      if (run.duty === CHECK_IN_DUTY_ID && run.verdict !== "skipped" && run.verdict !== "error" && Number.isFinite(run.at) && run.at <= now) runs.push(run);
+      if (run.duty === CHECK_IN_DUTY_ID && measured(run) && Number.isFinite(run.at) && run.at <= now) runs.push(run);
     } catch { continue; }
   }
   return runs.sort((a, b) => a.at - b.at);
 }
-const stuckItems = (run: DutyRunRecord): string[] => (run.flagged ?? []).flatMap(slice => slice.kind === "stuck_steps" && slice.item ? [slice.item] : []);
+/** A run that looked at the board, judged as `effectiveRun` reads it: a skipped run, or one whose after-job measure failed, does not count. */
+const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
+/**
+ * The run's flagged items still standing after its own job (`effectiveRun`): a kind whose metric the after-job measure found on target was fixed
+ * by that job, so its items drop. The after-job measure holds counts, not items, so a kind still missed keeps every item the run flagged.
+ * Chat 01a1164b 10-15: a check-in flagged loose_goals and its job gave p447 a step in the same turn (chat-duty-run.ts, `after`).
+ */
+export function liveFlags(run: DutyRunRecord): FlaggedSlice[] {
+  if (!run.after) return run.flagged ?? [];
+  const metrics = effectiveRun(run).metrics;
+  return (run.flagged ?? []).filter(slice => metrics[slice.kind]?.met !== true);
+}
+const stuckItems = (run: DutyRunRecord): string[] => liveFlags(run).flatMap(slice => slice.kind === "stuck_steps" && slice.item ? [slice.item] : []);
 const ownerPaused = (setting: CheckInSetting, now: number): boolean => activePause(setting, now) !== null && setting.pausedBy === "owner";
 
 /**
@@ -147,7 +150,7 @@ export async function noProgressHours(dataDir: string, chat: string, start: numb
     if (!line.trim()) continue;
     try {
       const run = JSON.parse(line) as DutyRunRecord;
-      if (run.duty === CHECK_IN_DUTY_ID && run.at >= start && run.at <= now && (run.metrics?.no_progress?.value ?? 0) > 0) hours.add(Math.floor(run.at / 3_600_000) * 3_600_000);
+      if (run.duty === CHECK_IN_DUTY_ID && run.at >= start && run.at <= now && (effectiveRun(run).metrics?.no_progress?.value ?? 0) > 0) hours.add(Math.floor(run.at / 3_600_000) * 3_600_000);
     } catch { continue; }
   }
   return [...hours].sort((a, b) => a - b);

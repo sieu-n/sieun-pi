@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { stuckPastCheckIn, stuckStepHours } from "../scripts/duties/checkin-quality.ts";
+import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
+import { liveFlags, noProgressHours, stuckPastCheckIn, stuckStepHours, unfixedFlags } from "../scripts/duties/checkin-quality.ts";
 
 const NOW = Date.parse("2026-10-15T09:00:00Z");
 const MIN = 60_000;
@@ -47,6 +48,37 @@ test("steps kept moving: on the board now, a step stuck since the last check-in 
       left: [{ item: "p5", since: NOW - 50 * MIN, runs: 0 }, { item: "p6", since: NOW - 50 * MIN, runs: 0 }] }, "no measured check-in for over two intervals plus 15 min");
     assert.deepEqual(await stuckPastCheckIn(dir, "c3", ["p5"], { ...EVERY, pausedUntil: "forever", pausedBy: "owner" }, NOW), { stand: "owner_paused", left: [] });
     assert.equal((await stuckPastCheckIn(dir, "c3", ["p5"], { ...EVERY, pausedUntil: "forever", pausedBy: "agent" }, NOW)).stand, "not_running", "an agent's pause does not hide stuck steps");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+const record = (value: unknown): DutyRunRecord => value as DutyRunRecord;
+/** A check-in run whose own job ended and was measured again (`after`), as the duty runner writes it since 476a86b. */
+const fixed = (base: ReturnType<typeof run>, metrics: Record<string, number>) => ({ ...base,
+  after: { at: base.at + 5 * MIN, verdict: Object.values(metrics).every(value => value === 0) ? "met" : "missed", summary: "after",
+    metrics: Object.fromEntries(Object.entries(metrics).map(([key, value]) => [key, { value, target: 0, op: "<=", met: value === 0 }])) } });
+
+test("check-in quality reads each run after its own job (effectiveRun): flags its job fixed drop, so stuck steps, unfixed flags and no-progress hours count only what stayed", async () => {
+  // Chat 01a1164b 10-15: a check-in flagged loose_goals and its job gave p447 a step in the same turn; the after-job measure read it on target.
+  const p1Fixed = fixed(run(30, ["p1"]), { stuck_steps: 0 });
+  const p2Kept = fixed(run(30, ["p2"]), { stuck_steps: 1 });
+  assert.deepEqual(liveFlags(record(p1Fixed)), [], "the job fixed every stuck step the run flagged");
+  assert.deepEqual(liveFlags(record(p2Kept)).map(slice => slice.item), ["p2"], "a kind still missed after the job keeps its items");
+  assert.deepEqual(liveFlags(record(run(30, ["p3"]))).map(slice => slice.item), ["p3"], "a run with no after-job measure reads as it was");
+  const failedAfter = { ...run(20, ["p1"]), after: { at: NOW - 15 * MIN, verdict: "error", metrics: {}, summary: "the after-job measure failed" } };
+  const noProgress = (minutesAgo: number, value: number, after?: number) => {
+    const base = { ...run(minutesAgo, []), metrics: { no_progress: { value, target: 0, op: "<=", met: value === 0 } } };
+    return after === undefined ? base : fixed(base, { no_progress: after });
+  };
+  const dir = await dataDir({ c4: [p1Fixed, failedAfter, run(10, ["p1"])], c5: [run(45, ["p1"]), fixed(run(30, ["p1"]), { stuck_steps: 0 }), run(15, ["p1"]), run(5, ["p1"])],
+    c6: [noProgress(150, 1, 0), noProgress(90, 1), noProgress(30, 1, 1)] });
+  try {
+    assert.deepEqual((await stuckPastCheckIn(dir, "c4", ["p1"], EVERY, NOW)).left, [],
+      "after the 30 min run's job fixed p1, only the 10 min run found it again; a run whose after-job measure failed does not count");
+    assert.deepEqual((await stuckPastCheckIn(dir, "c5", ["p1"], EVERY, NOW)).left, [{ item: "p1", since: NOW - 15 * MIN, runs: 2 }], "the fixed run breaks the streak");
+    assert.deepEqual(await unfixedFlags(dir, "c5", NOW - 60 * MIN, NOW), [], "no 4 runs in a row left p1 stuck");
+    assert.deepEqual((await noProgressHours(dir, "c6", NOW - 24 * 60 * MIN, NOW)).length, 2, "the 150 min run's job moved a step, so its hour does not count");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
