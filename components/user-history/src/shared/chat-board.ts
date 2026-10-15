@@ -1,5 +1,6 @@
 import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
+import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
   type Requirement, type RequirementStatus, type ScratchItem } from "./types.ts";
 
@@ -291,6 +292,7 @@ export function todoJargon(text: string): string | null {
 }
 function checkAgentTodo(todo: OwnerTodo): void {
   if (placeholderTodo(todo)) invalid(PLACEHOLDER_TODO_ERROR);
+  if (releaseGo.preapproval && preApprovedAsk(todo)) throw new BoardError("forbidden", preApprovedAskError(releaseGo.preapproval));
   if (leaveAsk(todo)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
   const jargon = todoJargon(todo.text);
   if (jargon) invalid(jargon);
@@ -711,20 +713,29 @@ const PUSH = new RegExp([
   String.raw`\bgit\s+push\s+(?:-\S+\s+)*[\w.:/@-]+\s+(?:\+?[\w./-]+:)?(?:refs\/heads\/)?(?:main|master)\b`,
   String.raw`\bland(?:s|ed|ing)?\s+(?:[\w.'#/-]+\s+){0,3}?(?:on|to|into)\s+(?:main|master)\b`,
 ].join("|"), "i");
-/** The merge rule as every brief says it: the chat brief, the job reply guideline and the duty job brief. */
-export const MERGE_RULE = "Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Production needs his " +
-  "explicit approval of that specific PR or push in For you (c49): never merge a PR into the production branch, turn on auto-merge for one, push to " +
-  "main or master, or promote to production before a todo linked to the step, whose text names the PR (for a push, the repo and the branch or the " +
-  "word push), is answered by him with a go and checked off. There is no standing \"merge once checks pass\" approval, and a go on another step, PR " +
-  "or push does not carry over. For such a merge or push the global-rules merge guard refuses the command until it carries that todo as " +
-  "OWNER_OK=<chat id>/<todo id>: an env prefix in bash (`OWNER_OK=<chat>/<todo> gh pr merge 123`), or a `# OWNER_OK=<chat>/<todo>` line in an ipython cell. " +
-  "The guard passes staging pushes and branch merges that name base staging with no token, but it still refuses `gh pr merge <n>` for a staging PR, " +
-  "because that command never names the base: merge a staging PR through a path that names the base, or the land script.";
+/**
+ * The merge rule as every brief says it: the chat brief, the job reply guideline and the duty job brief. While the owner's standing go is on
+ * (`releaseGo`, c74), merges, pushes to main and promotes go ahead with no todo; without it, each needs his go on a For you todo (c49).
+ */
+export const MERGE_RULE = releaseGo.preapproval
+  ? "Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). " + preApprovalText(releaseGo.preapproval) +
+    " The board gate and the global-rules merge guard pass a merge, a push to main or master and a promote with no For you todo and no OWNER_OK. " +
+    "An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37)."
+  : "Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Production needs his " +
+    "explicit approval of that specific PR or push in For you (c49): never merge a PR into the production branch, turn on auto-merge for one, push to " +
+    "main or master, or promote to production before a todo linked to the step, whose text names the PR (for a push, the repo and the branch or the " +
+    "word push), is answered by him with a go and checked off. There is no standing \"merge once checks pass\" approval, and a go on another step, PR " +
+    "or push does not carry over. For such a merge or push the global-rules merge guard refuses the command until it carries that todo as " +
+    "OWNER_OK=<chat id>/<todo id>: an env prefix in bash (`OWNER_OK=<chat>/<todo> gh pr merge 123`), or a `# OWNER_OK=<chat>/<todo>` line in an ipython cell. " +
+    "The guard passes staging pushes and branch merges that name base staging with no token, but it still refuses `gh pr merge <n>` for a staging PR, " +
+    "because that command never names the base: merge a staging PR through a path that names the base, or the land script.";
 /** A step that states the merge rule itself ("Nothing merges without your go", "the guard refuses gh pr merge") merges nothing. */
 const RULE_TEXT = /\bwithout\s+(?:the\s+owner['\u2019]?s|your|his|an?)\s+(?:explicit\s+)?(?:go|approval|ok)\b|\b(?:refuses?|blocks?)\s+(?:gh\s+pr\s+merge|auto-?merges?|merges?|pushes)\b/i;
 /** MERGE_RULE in one sentence, for the short job reply guideline. */
-export const MERGE_RULE_SHORT = "Never ask the owner to confirm a staging land or deploy; never merge a PR into production, push to main or master, or " +
-  "promote to production without his go on a For you todo that names that PR or push, passed to the command as OWNER_OK=<chat id>/<todo id> (c49).";
+export const MERGE_RULE_SHORT = releaseGo.preapproval
+  ? "Never ask the owner to confirm a staging land, a deploy, a merge, a push to main or master or a prod promote. " + preApprovalText(releaseGo.preapproval)
+  : "Never ask the owner to confirm a staging land or deploy; never merge a PR into production, push to main or master, or " +
+    "promote to production without his go on a For you todo that names that PR or push, passed to the command as OWNER_OK=<chat id>/<todo id> (c49).";
 /** Whether a step's text says it merges a PR or a branch, turns on auto-merge, lands code or pushes to main or master. */
 export const mergeStep = (text: string): boolean => (MERGE.test(text) || PUSH.test(text)) && !RULE_TEXT.test(text);
 /** The default branch a push step moves, or null when the step pushes nothing to main or master. */
@@ -813,11 +824,13 @@ export function stepGoWait(item: Pick<PlanItem, "text" | "waitFor">): GoWait | n
 /** The fix for a wait for leave, said the same way by the board refusal, the check-in and the brief check. */
 export const GO_WAIT_FIX = "Staging, sieun/dev, ci/ and other GitHub pushes and staging lands need nobody's go or word (c47, c50; the owner 10-12: " +
   "\"NEVER wait for something, or ask for my permission to push to Github etc.\"). Do the next action now: push or land it yourself, and if a land " +
-  "is busy, push to a ci/ ref and go on. Only production (prod, promote, main, master, a PR merge) keeps the owner's go (c49).";
+  "is busy, push to a ci/ ref and go on. " + (releaseGo.preapproval
+    ? `Production merges, pushes to main and promotes need no go either: ${preApprovalText(releaseGo.preapproval)}`
+    : "Only production (prod, promote, main, master, a PR merge) keeps the owner's go (c49).");
 export const goWaitText = (wait: GoWait): string =>
   `waits for ${wait.kind === "owner" ? "the owner's ok on a push or a staging land" : "another thread's go, word or slot"} (${quote(wait.phrase)})`;
 /** A todo sentence that asks for leave: "Go on staging ...?", "Approve the next staging release?", "Can we push ...?". */
-const LEAVE_ASK = /^\s*(?:go(?:\s+ahead)?|approve|ship|push|land|deploy|merge|ok(?:ay)?|(?:can|may|should)\s+(?:i|we))\b/i;
+const LEAVE_ASK = /^\s*(?:go(?:\s+ahead)?|approve|ship|push|land|deploy|merge|promote|ok(?:ay)?|(?:can|may|should)\s+(?:i|we))\b/i;
 const LEAVE_MOVE = /\bpush(?:es|ed|ing)?\b|\bci\/|\bstaging\b|\bsieun\/dev\b|\bland\s+(?:\d+\w*|it|them|this|that)\b/i;
 /**
  * Whether an agent's todo asks the owner for leave he never needs to give (c47, c50): it offers a go choice, and a question that asks for a go
@@ -829,8 +842,28 @@ export const leaveAsk = (todo: Pick<OwnerTodo, "text" | "choices">): boolean =>
   todo.text.split(/(?<=[.!?;])\s+|\n+/).some(sentence => sentence.trim().endsWith("?") && LEAVE_ASK.test(sentence) && !namesProduction(sentence) &&
     (LEAVE_MOVE.test(sentence) || THREAD_GO.test(sentence)));
 export const LEAVE_ASK_ERROR = `This todo asks the owner for leave on a non-production move. ${GO_WAIT_FIX} Do it, and tell the owner what shipped in a chat message.`;
-/** Whether a step needs the owner's go: the chat marked it, or it is a merge step, and its target is not staging only. */
-export const needsGo = (item: Pick<PlanItem, "go" | "text">): boolean => (item.go === "needed" || mergeStep(item.text)) && !stagingOnly(item.text);
+/**
+ * Whether the owner's standing go (`releaseGo`, c74) covers a text: it merges, pushes to main or master, promotes or names another production
+ * target, and it names no outside send or public release (c37), which keep their todo.
+ */
+export const preApproved = (text: string, preapproval: PreApproval | null = releaseGo.preapproval): boolean =>
+  !!preapproval && !KEEPS_OWNER_OK.test(text) && (mergeStep(text) || PRODUCTION.test(text) || PR_MERGE(text));
+/**
+ * Whether an agent's todo asks the owner for a go the standing go already gives (c74: "Never put a promote, merge or push go on For you"): it
+ * offers a go choice ("Go", "Merge it", "Push it"), and a question that asks for a go merges, pushes to main or master or promotes, with no outside
+ * send in that question.
+ */
+export const preApprovedAsk = (todo: Pick<OwnerTodo, "text" | "choices">, preapproval: PreApproval | null = releaseGo.preapproval): boolean =>
+  !!preapproval && !!todo.choices?.some(choice => APPROVE.test(choice) || /^\s*(?:merge|push|promote|land|deploy)\b/i.test(choice)) &&
+  todo.text.split(/(?<=[.!?;])\s+|\n+/).some(sentence => sentence.trim().endsWith("?") && LEAVE_ASK.test(sentence) && preApproved(sentence, preapproval));
+export const preApprovedAskError = (preapproval: PreApproval): string => "This todo asks the owner for a go on a merge, a push to main or master " +
+  `or a promote, which he already gave: ${preApprovalText(preapproval)} Do it, and tell the owner what shipped in a chat message.`;
+/**
+ * Whether a step needs the owner's go: the chat marked it, or it is a merge step, its target is not staging only, and the owner's standing go
+ * (`preApproved`, c74) does not cover it.
+ */
+export const needsGo = (item: Pick<PlanItem, "go" | "text">, preapproval: PreApproval | null = releaseGo.preapproval): boolean =>
+  (item.go === "needed" || mergeStep(item.text)) && !stagingOnly(item.text) && !preApproved(item.text, preapproval);
 /** The PRs a merge step merges: the ones its text names, less one it names as replaced ("#236, replaces #207"). */
 export const mergedPrs = (text: string): string[] =>
   prNumbers(text).filter(pr => !new RegExp(String.raw`\b(?:replac|supersed)\w*\s+(?:PR\s*)?#?${pr}(?!\d)|\binstead\s+of\s+(?:PR\s*)?#?${pr}(?!\d)`, "i").test(text));

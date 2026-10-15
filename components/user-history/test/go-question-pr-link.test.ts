@@ -4,6 +4,10 @@ import { gateFindings, gateLine } from "../src/checkin-findings.ts";
 import { todoForStep } from "../src/checkin-steps.ts";
 import { stepGo } from "../src/shared/chat-board.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
+import { releaseGo } from "../src/shared/release-go.ts";
+
+// These tests hold the owner's go on production and merge steps as it runs with the c74 standing go off; release-go-c74.test.ts covers it on.
+releaseGo.preapproval = null;
 
 /*
  * slack green guy 10-13, check-in at 05:13 KST: the precheck said "For you has no question for it" on eleven merge steps that t18 asks by PR

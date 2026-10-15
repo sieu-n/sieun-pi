@@ -6,7 +6,7 @@ Use the root build, check and apply commands. Do not change the live setup from 
 
 The pool runs from an installed copy, not from this checkout. A change under `components/pi-pool` is live only after you commit it and run `/usr/bin/python3 -B components/pi-pool/install.py`; `install.py rollback` undoes the last install. Never edit files under `~/.config/pi-pool` or `~/.local/share/pi-pool`.
 
-Workers own disjoint directories. Do not change another worker's files. Do not commit or push until the coordinator has reviewed the source and secret scan. A push to `main` also needs the owner's go: run it as `OWNER_OK=<chat id>/<todo id> git push origin main`, where the todo names sieun-pi and the push, or the global-rules merge guard refuses it (c49). A push to `staging` needs no ok (c50).
+Workers own disjoint directories. Do not change another worker's files. Do not commit or push until the coordinator has reviewed the source and secret scan. A push to `main` needs no owner go while his standing go of c74 (2026-10-15) is on in `components/user-history/src/shared/release-go.ts`; when it is off, run it as `OWNER_OK=<chat id>/<todo id> git push origin main`, where the todo names sieun-pi and the push, or the global-rules merge guard refuses it (c49). A push to `staging` needs no ok (c50).
 
 Target Prime Agent first. Do not claim upstream Pi compatibility without a separate real runtime check.
 

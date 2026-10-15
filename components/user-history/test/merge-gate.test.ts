@@ -10,8 +10,11 @@ import { CHAT_BRIEF, jobReplyGuideline } from "../src/chat-brief.ts";
 import { applyBoardOp, BoardError, emptyBoard, MERGE_RULE, MERGE_RULE_SHORT, mergeStep, namesPr, needsGo, nextIds, parseBoardOps, prNumbers, pushBranch, renderOpenPlan, stepGo } from "../src/shared/chat-board.ts";
 import { CHECK_IN_DUTY, parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { BoardActor, BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
+import { C74, preApprovalText, releaseGo } from "../src/shared/release-go.ts";
 
 // Owner 10-12 (c49): "never auto merge anything without my approval this is one of your duty repo rules are enforced."
+// These tests hold the c49 gate as it runs with the c74 standing go off (release-go.ts); release-go-c74.test.ts covers the switch on.
+releaseGo.preapproval = null;
 const T0 = "2026-10-12T00:00:00.000Z";
 const T1 = "2026-10-12T00:01:00.000Z";
 function run(board: ChatBoard, ops: unknown[], actor: BoardActor = "agent"): ChatBoard {
@@ -182,20 +185,20 @@ test("merge gate: the check-in lists a merge step done without the owner's go as
   assert.ok(health.metrics.some(metric => metric.key === "merges_without_go" && metric.target === 0), "Chat health counts it");
 });
 
-test("merge gate: the brief, the job reply guideline and the duty job brief say no merge without the owner's approval of that PR", async () => {
+test("merge gate: while the c74 standing go is on, the brief, the job reply guideline and the duty job brief carry it, and git.md holds the rule word for word", async () => {
+  assert.equal(releaseGo.preapproval, null, "this file turned the switch off after the briefs were built from it");
   assert.ok(MERGE_RULE.startsWith("Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12)."));
-  assert.ok(MERGE_RULE.includes("Production needs his explicit approval of that specific PR or push in For you (c49): never merge a PR into the production branch, turn on auto-merge for one, push to main or master, or promote to production"));
-  assert.ok(CHAT_BRIEF.some(line => line.startsWith("Staging lands and deploys never need the owner's ok (c50). A production merge, auto-merge, push to main or master, or promote " +
-    "needs his go on a For you todo that names that PR or push; no standing \"merge once checks pass\" go exists (c49).")), "chat brief: c49 and c50 in one line");
-  assert.ok(MERGE_RULE.includes("until it carries that todo as OWNER_OK=<chat id>/<todo id>"), "chats learn how to pass an approved go to a command");
-  assert.ok(MERGE_RULE.includes("it still refuses `gh pr merge <n>` for a staging PR, because that command never names the base"), "the guard's staging gap (sieun-pi 468b49c)");
-  assert.ok(MERGE_RULE.includes('There is no standing "merge once checks pass" approval'));
+  assert.ok(MERGE_RULE.includes(preApprovalText(C74)), "the c74 words and date");
+  assert.ok(MERGE_RULE.includes("An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37)."));
+  assert.ok(!/OWNER_OK=<chat id>|\(c49\)/.test(MERGE_RULE), "no merge go to ask for while c74 is on");
+  assert.ok(CHAT_BRIEF.some(line => line === `Staging lands and deploys never need the owner's ok (c50). ${preApprovalText(C74)}`), "chat brief: c50 and c74 in one line");
   const git = await readFile(new URL("../../../skills/board/references/git.md", import.meta.url), "utf8");
   assert.ok(git.includes(MERGE_RULE), "the full rule sits in the git reference the brief points to");
+  assert.ok(git.includes("Production needs his explicit approval of that specific PR or push in For you (c49)"), "git.md keeps the c49 rule that returns when the switch is off");
   assert.ok(CHAT_BRIEF.some(line => line.includes("references/git.md before a sieun-pi commit, a merge or a push")));
   assert.ok(jobReplyGuideline({ chat: "slack green guy", root: false }).includes(MERGE_RULE_SHORT), "job reply guideline");
-  assert.ok(MERGE_RULE_SHORT.startsWith("Never ask the owner to confirm a staging land or deploy; never merge a PR into production"));
+  assert.equal(MERGE_RULE_SHORT, `Never ask the owner to confirm a staging land, a deploy, a merge, a push to main or master or a prod promote. ${preApprovalText(C74)}`);
   const duty = dutyJobBrief({ duty: { ...CHECK_IN_DUTY }, chat: { id: "c1", name: "slack green guy", board: "/b/c1.json" }, job: "check-in slack green guy 14:00", at: 0, measure: "m", findings: "f" });
   assert.ok(duty.includes("(a step whose only target is staging never needs one)"), "duty job brief: staging needs no go");
-  assert.ok(duty.includes(`${MERGE_RULE} A merge step done without that go is a repo rule breach: report it to the owner in your report, with the PR.`), "duty job brief");
+  assert.ok(duty.includes(MERGE_RULE), "duty job brief");
 });

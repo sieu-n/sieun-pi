@@ -4,6 +4,10 @@ import { gateFindings, gateLine } from "../src/checkin-findings.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { mergedPrs, stepGo } from "../src/shared/chat-board.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
+import { releaseGo } from "../src/shared/release-go.ts";
+
+// These tests hold the owner's go on production and merge steps as it runs with the c74 standing go off; release-go-c74.test.ts covers it on.
+releaseGo.preapproval = null;
 
 /*
  * slack green guy 10-14, check-in at 11:31 KST: go_missing on p94 though the owner chose "Go: turn it on" on t16, which names #247, the PR p94

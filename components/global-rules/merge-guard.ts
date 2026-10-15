@@ -4,6 +4,7 @@ import { basename, resolve } from "node:path";
 import { PY_STRING, SHELLS, effective, heredocs, lex, shellScript, stripHeredocs } from "./shell.ts";
 import type { Subject, Verdict } from "./guard.ts";
 import { parseGit } from "./sieun-pi.ts";
+import { releaseGo } from "../user-history/src/shared/release-go.ts";
 
 /*
  * Merges and default-branch pushes (owner correction c49, 2026-10-12): a pull request merges, and a commit lands on main or master,
@@ -11,6 +12,9 @@ import { parseGit } from "./sieun-pi.ts";
  * This guard reads tool-call text, like the send guard (c37), and shares its OWNER_OK check. The release train's land.yml and promote.yml
  * dispatches and auto-sns-agent's `git push origin sieun/dev` stay outside it (VP decision, 2026-10-12). Staging lands never need the owner's
  * ok (c50), so a push, ref update or branch merge into staging passes; a PR merge whose base the command does not name stays refused.
+ * While the owner's standing go is on (`releaseGo` in components/user-history/src/shared/release-go.ts, c74 of 2026-10-15: "Until the proper
+ * launch, the owner pre-approves every prod promote, merge or push to main"), this guard passes every merge and push; setting it to null brings
+ * the refusals back. The send guard (c37) and the CI run guard do not read it.
  */
 
 const MUTATION = /\b(enablePullRequestAutoMerge|mergePullRequest|enqueuePullRequest|mergeBranch)\b/;
@@ -266,6 +270,7 @@ function collect(command: string, raw: string, cwd: string, depth: number, out: 
 
 /** Merges in shell text, including `bash -c`, `$(...)`, `eval`, wrappers, and heredoc bodies fed to a shell. */
 export function judgeMergeShell(text: string, cwd: string): Verdict[] {
+	if (releaseGo.preapproval) return [];
 	const out: Verdict[] = [];
 	collect(text, text, cwd, 0, out);
 	for (const doc of heredocs(text)) {
@@ -287,6 +292,7 @@ const PY_GRAPHQL = /\bgraphql\b/i;
 
 /** Merges and default-branch ref updates written as Python in an ipython cell, sent with an HTTP write call. */
 export function judgeMergePython(code: string): Verdict[] {
+	if (releaseGo.preapproval) return [];
 	const sites = code.replace(new RegExp(`${PY_STRING.source}|#[^\n]*`, "g"), (text) => " ".repeat(text.length));
 	if (!PY_HTTP_WRITE.test(sites) && !(PY_HTTP_CALL.test(sites) && PY_WRITE_METHOD.test(code))) return [];
 	for (const m of code.matchAll(PY_REPO_PATH)) {

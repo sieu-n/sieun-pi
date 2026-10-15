@@ -99,9 +99,11 @@ A step keeps its agent's thread id in `sessionId`, so the link survives when the
 
 `go: "needed"` marks a step that ships, ports, deploys, merges into a shared app, or moves work from a demo or preview to a real app or production. That step and its children move to doing or done only after the owner answers a todo linked to it with a go. The mark never clears.
 
-A step whose text merges a PR or a branch, turns on auto-merge, lands code or pushes to main or master needs the go even without the mark. The approving todo's text must name the PR the step names, or say push (c49). A step whose only target is staging never needs a go, even when marked. Such a step names staging, sieun/dev or a dev branch, or lands with no PR number, and it names no prod, production, promote, main, master or real app (owner 10-12).
+Until the proper launch the owner pre-approves every prod promote, merge or push to main (c74, 2026-10-15). While that standing go is on, a step that merges, pushes to main or master, promotes or names another production target moves with no todo, even when marked. Never put a promote, merge or push go on For you and never wait for one, because the board refuses a todo that asks for one. A step that sends something outside or publishes to a web store still needs the owner's answer on its todo (c37).
 
-The owner picking a design on a demo is not a go. Offer the go choice first, worded with Go, Ship or Yes, and a hold choice such as Not yet. A go said in chat does not count, so ask the owner to answer the todo. The check-in reports a merge step done without its go as a repo rule breach. `references/git.md` holds the full merge rule and the OWNER_OK token.
+A step whose only target is staging never needs a go, even when marked. Such a step names staging, sieun/dev or a dev branch, or lands with no PR number, and it names no prod, production, promote, main, master or real app (owner 10-12).
+
+The owner picking a design on a demo is not a go. Offer the go choice first, worded with Go, Ship or Yes, and a hold choice such as Not yet. A go said in chat does not count, so ask the owner to answer the todo. `references/git.md` holds the full merge rule, the one switch that turns the standing go off after launch, and the c49 rule with its OWNER_OK token that comes back then.
 
 ### Build steps and requirements
 

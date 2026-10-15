@@ -18,6 +18,9 @@ process.env.GLOBAL_RULES_LOG = join(root, "global-rules.log");
 process.env.AGENT_CHAT_DATA_DIR = data;
 const guard = await import("../components/global-rules/guard.ts");
 const { prSubject, pushSubject } = await import("../components/global-rules/merge-guard.ts");
+// These tests hold the c49 guard as it runs with the c74 standing go off; global-rules-merge-c74.test.mjs covers the switch on.
+const { releaseGo } = await import("../components/user-history/src/shared/release-go.ts");
+releaseGo.preapproval = null;
 test.after(() => {
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];

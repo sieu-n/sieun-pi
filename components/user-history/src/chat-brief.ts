@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { type JsonFile, snapshotJsonFile, transactJsonFile } from "./locked-json.ts";
 import { briefCorrections } from "./chat-corrections.ts";
 import { MERGE_RULE_SHORT } from "./shared/chat-board.ts";
+import { preApprovalText, releaseGo } from "./shared/release-go.ts";
 
 /** What a chat and its jobs load: the chat brief and its versions, the job guidelines, the extension build hash, and the record of what each chat loaded. */
 
@@ -42,8 +43,10 @@ export const CHAT_BRIEF: readonly string[] = [
   "Act directly and ship; invent no waiting rules, review rounds or safety gates unless the owner asks for caution (c47). When something blocks a " +
     "step, start a job that fixes it (c34). Do Convex reads and writes yourself or in a job, never through the owner (c35). New checks run like " +
     "existing specs and CI, with no special runner (c19).",
-  "Staging lands and deploys never need the owner's ok (c50). A production merge, auto-merge, push to main or master, or promote needs his go on " +
-    "a For you todo that names that PR or push; no standing \"merge once checks pass\" go exists (c49).",
+  releaseGo.preapproval
+    ? `Staging lands and deploys never need the owner's ok (c50). ${preApprovalText(releaseGo.preapproval)}`
+    : "Staging lands and deploys never need the owner's ok (c50). A production merge, auto-merge, push to main or master, or promote needs his go on " +
+      "a For you todo that names that PR or push; no standing \"merge once checks pass\" go exists (c49).",
   "Nothing goes outside (an email, a ticket or support reply, a customer message, a post) until the owner approves the draft on a For you todo (c37).",
   "Flag a goal days or weeks away or blocked on capacity in For you at once, with options and your pick (c42). Base limits (c43) and any " +
     "'target does not fit' or hardware ask (c17) on measured evidence, and show what you tried.",

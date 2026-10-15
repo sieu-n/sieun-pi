@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
+import { releaseGo } from "./shared/release-go.ts";
 import { type DutyCard, type DutyJobRef, headlineMetric } from "./shared/chat-duties.ts";
 import type { SessionRow } from "./shared/types.ts";
 
@@ -113,7 +114,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "never start, steer or report work on it as approved before that, and stop a job that started without it. A Build step starts only after " +
         "its goal's requirements check: a plan or design job's report quotes the original owner request and checks each line of it against the " +
         "design before build.",
-      `${MERGE_RULE} A merge step done without that go is a repo rule breach: report it to the owner in your report, with the PR.`,
+      releaseGo.preapproval ? MERGE_RULE : `${MERGE_RULE} A merge step done without that go is a repo rule breach: report it to the owner in your report, with the PR.`,
       "A goal can carry a target: when you measure it, apply plan_update with its whole target, like " +
         "`{\"op\":\"plan_update\",\"id\":\"p1\",\"target\":{\"metric\":\"proxy bandwidth used\",\"target\":200,\"unit\":\"Mbps\",\"current\":8,\"measuredAt\":\"2026-10-09T21:00:00+09:00\",\"source\":\"proxy dashboard, 24 h average\"}}`. " +
         "Close the largest gap first: start or steer the job that moves the number.",

@@ -11,6 +11,10 @@ import { CHAT_BRIEF } from "../src/chat-brief.ts";
 import { AGENT_REPLY_ERROR, applyBoardOp, approves, BoardError, emptyBoard, nextIds, parseBoardOps, stepGo, renderOpenPlan, requirementGaps } from "../src/shared/chat-board.ts";
 import { CHECK_IN_DUTY } from "../src/shared/chat-duties.ts";
 import type { BoardActor, BoardOp, ChatBoard, PlanItem, Requirement } from "../src/shared/types.ts";
+import { releaseGo } from "../src/shared/release-go.ts";
+
+// These tests hold the owner's go on production and merge steps as it runs with the c74 standing go off; release-go-c74.test.ts covers it on.
+releaseGo.preapproval = null;
 
 const T0 = "2026-10-09T00:00:00.000Z";
 const T1 = "2026-10-09T00:01:00.000Z";

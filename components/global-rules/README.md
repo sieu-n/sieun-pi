@@ -7,7 +7,7 @@ Repository rules do not live here. A repository ships its own guard as a project
 
 | Event | Module | Effect |
 | --- | --- | --- |
-| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a recursive grep of `~/.prime/agent`, a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a PR merge without the owner's go on that PR, and an auto-sns-agent CI run cancel or rerun outside the release owner's and Fable's sessions. |
+| `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a recursive grep of `~/.prime/agent`, a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a PR merge without the owner's go on that PR (off while the c74 standing go is on), and an auto-sns-agent CI run cancel or rerun outside the release owner's and Fable's sessions. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send and an auto-sns-agent CI run cancel or rerun at run time. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 
@@ -53,6 +53,7 @@ The tool_call guard logs an allowed ipython cell only when it runs, through the 
 `GLOBAL_RULES_SEND_LOG` moves the file; without it, `AGENT_CHAT_DATA_DIR` or the folder of `GLOBAL_RULES_LOG` does, so a suite that moves the guard log moves this one too.
 
 `merge-guard.ts` refuses a pull request merge, and a push or ref update that moves `main` or `master`, unless the owner said go on a For you todo that names that PR, or that repo and push (correction c49).
+Until the proper launch the owner pre-approves every prod promote, merge or push to main (correction c74, 2026-10-15), so while `releaseGo.preapproval` in `components/user-history/src/shared/release-go.ts` is set, `merge-guard.ts` passes every merge and push with no token. Setting it to null brings back every refusal below. The send guard and the CI run guard do not read it.
 Staging lands never need the owner's ok (c50), so a push, ref update or branch merge into `staging` passes with no token. A `gh pr merge` names no base branch, so it stays refused even when the PR targets staging.
 It covers `gh pr merge` with any flag (`--auto`, `--squash`, `--merge`, `--rebase`, `--admin`), a `gh api` or `curl` write to `repos/<o>/<r>/pulls/<n>/merge` or `repos/<o>/<r>/merges`, and the GitHub GraphQL mutations `enablePullRequestAutoMerge`, `mergePullRequest`, `enqueuePullRequest` and `mergeBranch`, sent by `gh api graphql`, `curl` or a Python HTTP call.
 It covers `git push` in any repo whose target is one of those branches: `main`, `HEAD:main`, `+main`, `x:refs/heads/main`, `--delete main`, `:main`, `--all`, `--mirror`, and a bare `git push` or `git push origin HEAD` while the branch's push target is one of them.

@@ -4,6 +4,10 @@ import { checkInPrecheck, checkInPrecheckText } from "../src/chat-checkin.ts";
 import { briefCheck, briefCheckNote } from "../src/shared/brief-check.ts";
 import { applyBoardOp, BoardError, emptyBoard, goWait, leaveAsk, nextIds, parseBoardOps, stepGoWait } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
+import { releaseGo } from "../src/shared/release-go.ts";
+
+// These tests hold the owner's go on production and merge steps as it runs with the c74 standing go off; release-go-c74.test.ts covers it on.
+releaseGo.preapproval = null;
 
 // c47, repeated by the owner 10-12: "look, be fucking aggressive. it's ok to break things. just make it work. NEVER wait for something, or ask
 // for my permission to push to Github etc." and "especially staging". The cases are real board lines and briefs from 10-10 to 10-12.
