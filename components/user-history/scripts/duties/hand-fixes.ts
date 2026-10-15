@@ -46,7 +46,8 @@ export interface FaultMatch {
  * A fault's design work, one ref each: `pN` (a step on this chat's board), `<chat id>/pN` (a step on another chat's board), `branch:<name>` or
  * `commit:<sha>` (in the auto-sns-agent checkout, for work no board tracks).
  */
-export interface Fault { id: string; title: string; designs: string[]; owner: string; match: FaultMatch }
+/** `done_at` is when the last design went live; a hand fix before it is not a repeat. */
+export interface Fault { id: string; title: string; designs: string[]; owner: string; match: FaultMatch; done_at?: string }
 export interface Registry {
   automatic_writers: { config_actors: string[] };
   exempt: { config_reason_regex: string; note_regex?: string };
@@ -90,6 +91,7 @@ export function parseRegistry(value: unknown): Registry {
     throw new Error("hand-fixes.faults.json needs automatic_writers.config_actors, exempt.config_reason_regex and faults");
   for (const fault of registry.faults) {
     if (!/^F\d+$/.test(fault.id) || !fault.title || !fault.match || !Array.isArray(fault.designs)) throw new Error(`fault ${String(fault.id)}: id F<n>, title, designs and match`);
+    if (fault.done_at !== undefined && Number.isNaN(Date.parse(fault.done_at))) throw new Error(`fault ${fault.id}: done_at ${fault.done_at} is not a time`);
     for (const ref of fault.designs) if (!/^(?:branch:\S+|commit:[0-9a-f]{7,40}|(?:[0-9a-f-]{36}\/)?p\d+)$/.test(ref)) throw new Error(`fault ${fault.id}: design ref ${ref} is not pN, <chat id>/pN, branch:<name> or commit:<sha>`);
     for (const pattern of [fault.match.config_reason_regex, fault.match.note_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
       if (pattern) new RegExp(pattern);
@@ -220,7 +222,8 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     }
     const counted = fixes.filter(item => item.verdict.kind === "fault" || item.verdict.kind === "undesigned");
     const undesigned = counted.filter(item => item.verdict.kind === "undesigned");
-    const repeats = counted.filter(item => item.verdict.kind === "fault" && stepState(item.verdict.fault, refs) === "done");
+    const repeats = counted.filter(item => item.verdict.kind === "fault" && stepState(item.verdict.fault, refs) === "done" &&
+      !(item.verdict.fault.done_at && item.fix.at < Date.parse(item.verdict.fault.done_at)));
     metrics.undesigned_hand_fixes = undesigned.length;
     metrics.repeats_after_design = repeats.length;
     const byFault = new Map<string, number>();

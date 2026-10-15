@@ -167,3 +167,26 @@ test("hand fixes: measure reads every source through its deps, and no Grafana lo
   assert.equal(output.metrics.undesigned_hand_fixes, UNMEASURED);
   assert.equal(output.metrics.session_loops_writing, 0);
 });
+
+test("hand fixes: a fix before a fault's done_at is no repeat, and the 10-14 misses map to faults or the owner-order exemption", async () => {
+  const reg = await registry();
+  const verdict = (key: string, reason: string) => classifyConfig({ actor: "api-key", keys: [key], text: reason }, reg);
+  assert.equal(verdict("proxy_endpoints.anonymous_country", "Owner order 10-14 about 09:15Z: GeoNode calls never ask for a country (c71).").kind, "exempt");
+  const kafka = verdict("kafka.topic.media.fetch.retention.bytes", "metal 01a11d24: prod media.fetch fullest partition 813 MB of 1 GiB");
+  assert.equal(kafka.kind === "fault" && kafka.fault.id, "F13");
+  const mirror = verdict("media.mirror_kinds", "revert 10:1xZ change: fix the live refresh instead (Crawler ops)");
+  assert.equal(mirror.kind === "fault" && mirror.fault.id, "F14");
+  const slice = classifyNote({ id: "s224", at: NOW, text: "The old rule stopped the slice again at 20:19Z (prod-driven IO), and metal started it by hand at 20:27Z." }, reg);
+  assert.equal(slice?.kind === "fault" && slice.fault.id, "F2");
+  const staging = classifyNote({ id: "s231", at: NOW, text: "staging is back at 21:21Z by hand on land 34's image. Cause: compose's config hash depends on the project path" }, reg);
+  assert.equal(staging?.kind === "fault" && staging.fault.id, "F7");
+  const f6 = reg.faults.find(fault => fault.id === "F6")!;
+  const metrics = await dutyMetrics();
+  const data = await clean();
+  data.registry = { ...reg, faults: [{ ...f6, done_at: new Date(NOW).toISOString() }] };
+  data.refs = steps([[f6.designs[0]!, "done"]]);
+  data.notes = [{ id: "s1", at: NOW - 60_000, text: "we reran 38618401570" }, { id: "s2", at: NOW + 60_000, text: "we reran 38618401571" }];
+  const output = report(data, metrics);
+  assert.equal(output.metrics.repeats_after_design, 1, "only the rerun after done_at is a repeat");
+  assert.throws(() => parseRegistry({ ...reg, faults: [{ ...f6, done_at: "yesterday" }] }), /done_at/);
+});

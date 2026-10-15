@@ -44,16 +44,17 @@
       "owner": "metal (01a11d24) and each lane owner",
       "match": {
         "config_reason_regex": "^watch_proxy abort|watch --act|box stop|left on with no owner",
-        "mac_process_regex": "(guard|watch|stop_loop|monitor|back_\\d+_after).*\\.py"
+        "mac_process_regex": "(guard|watch|stop_loop|monitor|back_\\d+_after).*\\.py",
+        "note_regex": "stopped the (CI )?slice|started it by hand"
       }
     },
     {
       "id": "F3",
       "title": "Acquisition writer count is fixed",
       "designs": [
-        "p100"
+        "commit:dca86c9471"
       ],
-      "owner": "Instagram Main (01a10db0), acq-writer-autoscale",
+      "owner": "Instagram Main (01a10db0), acq-writer-autoscale (dca86c9471 on sieun/dev, rides land 37)",
       "match": {
         "box_exec_regex": "acquisition-writer",
         "config_key_prefixes": [
@@ -111,18 +112,22 @@
       "match": {
         "note_regex": "cancell?(ed)? \\d+ runs|ghost|re-?push|\\brerun|\\breran\\b|\\bhold\\d+\\b",
         "mac_process_regex": "prio_loop|rwd\\d"
-      }
+      },
+      "done_at": "2026-10-14T22:06:26Z"
     },
     {
       "id": "F7",
       "title": "Deploys lose live changes and get blocked by sessions they do not own",
       "designs": [
-        "01a115e2-9544-7204-b8db-8ce4d5319048/p172"
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p172",
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p148",
+        "commit:c6a255815c"
       ],
       "owner": "metal (01a11d24), release owner (01a10810)",
       "match": {
         "config_reason_regex": "docker update|deploy recreates",
-        "box_container_regex": "oneoff|one-off|copy"
+        "box_container_regex": "oneoff|one-off|copy",
+        "note_regex": "back .{0,40}by hand|config hash"
       }
     },
     {
@@ -187,11 +192,37 @@
       "match": {
         "note_regex": "staging read nothing|queued staging"
       }
+    },
+    {
+      "id": "F13",
+      "title": "Kafka topic sizes and the prod media override set by hand",
+      "designs": [
+        "p116"
+      ],
+      "owner": "kafka retention design (launch chat p116), metal (01a11d24)",
+      "match": {
+        "config_key_prefixes": [
+          "kafka.topic."
+        ]
+      }
+    },
+    {
+      "id": "F14",
+      "title": "Live post media refresh fails, so media.mirror_kinds is flipped by hand",
+      "designs": [
+        "01a115e2-9544-7204-b8db-8ce4d5319048/p40"
+      ],
+      "owner": "Crawler VP (01a115e2), crawler ops train (media refresh hedge)",
+      "match": {
+        "config_key_prefixes": [
+          "media.mirror_kinds"
+        ]
+      }
     }
   ],
   "exempt": {
-    "config_reason_regex": "^owner: \"|A/B",
-    "note": "An owner order quoted in the reason, or a named A/B experiment with its restore, is a decision, not a hand fix.",
+    "config_reason_regex": "^owner: \"|A/B|^Owner order",
+    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix.",
     "note_regex": "self-heal|hand fix audit|design job|Durable software"
   }
 }
