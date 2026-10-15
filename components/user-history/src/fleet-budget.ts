@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { readAgentQueue } from "./chat-pool.ts";
 import { queueLong } from "./chat-turn-queue.ts";
 import type { AgentQueueReading } from "./shared/types.ts";
@@ -32,6 +32,14 @@ export const FIX_UNLISTED_MS = 200_000;
  * Owner sends and prod turns never read it. Delete the file to open the budget again; it is read on every check.
  */
 export const FLEET_STOP_FILE = "fleet-stop.json";
+
+/**
+ * The budget's state for the sessions themselves, next to the stop file: `{ at, closed }`, rewritten every FLEET_READ_MS. The user-history
+ * extension reads it before an rlm.create_session (src/fleet-guard.ts), so a root job an agent starts on its own waits like the server's: at 04:03
+ * KST on 10-16, with the budget shut at 17.9 GB, jobs started "5180 comes back after daemon stop fix" and "5180 restart cause fix" themselves.
+ */
+export const FLEET_STATE_FILE = "fleet-state.json";
+export interface FleetState { at: number; closed: string | null }
 
 /** Whether an alert text names a prod alert and no staging or dev one, the same rule pi-pool's prod turns use (pool/prod.py). */
 export const isProdAlert = (text: string): boolean => /\b(prod|production)\b/i.test(text) && !/\b(staging|stg|dev)\b/i.test(text);
@@ -86,6 +94,7 @@ export class FleetBudget {
   private pumping = false;
   private closedWhy: string | null = null;
   private stopped = false;
+  private publishing: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly readMs: number;
@@ -94,6 +103,21 @@ export class FleetBudget {
     this.now = deps.now ?? Date.now;
     this.sleep = deps.sleep ?? (ms => new Promise<void>(resolve => { setTimeout(resolve, ms).unref?.(); }));
     this.readMs = deps.readMs ?? FLEET_READ_MS;
+    if (deps.stopFile) {
+      const file = join(dirname(deps.stopFile), FLEET_STATE_FILE);
+      const publish = () => { void this.publish(file); };
+      this.publishing = setInterval(publish, this.readMs);
+      this.publishing.unref?.();
+      publish();
+    }
+  }
+
+  /** Writes FLEET_STATE_FILE (FleetState) through a temp file, so a reader never sees half of it. A failed write is left for the next one. */
+  private async publish(file: string): Promise<void> {
+    const why = this.waiting.length ? await this.held().catch(() => null) : await this.closed().catch(() => null);
+    const state: FleetState = { at: this.now(), closed: why };
+    const temp = `${file}.${process.pid}.tmp`;
+    await writeFile(temp, JSON.stringify(state)).then(() => rename(temp, file)).catch(() => {});
   }
 
   /** Waits for this start's turn and returns the call that names its session. */
@@ -132,7 +156,11 @@ export class FleetBudget {
   queued(): readonly FleetAsk[] { return this.waiting.map(entry => entry.ask); }
 
   /** Stops the wait loop for good (service shutdown): the starts still waiting never go, and later asks only wait. */
-  stop(): void { this.stopped = true; }
+  stop(): void {
+    this.stopped = true;
+    if (this.publishing) clearInterval(this.publishing);
+    this.publishing = null;
+  }
 
   private async read(): Promise<{ gb: number | null; long: string | null }> {
     if (!this.reading || this.now() - this.reading.at >= this.readMs) {
