@@ -87,7 +87,7 @@
       {#if card.headline}
         <p class="duty-headline">{card.headline}{#if card.headlineMiss}{@render marks(card.headlineMiss)}{/if}</p>
       {/if}
-      {#each card.misses as line (line.key)}<p class="duty-miss"><span class="miss-text">{line.text}</span>{@render marks(line)}</p>{/each}
+      {#each card.misses as line (line.key)}<p class="duty-miss">{line.text}{@render marks(line)}</p>{/each}
       {#if card.onTarget.length}<p class="duty-ok" use:tooltip={card.onTarget.join("\n")}>On target: {card.onTarget.join(", ")}</p>{/if}
       <p class="duty-last">
         <span class="duty-verdict {state}">{lastLabel(view, now)}</span>
@@ -205,11 +205,10 @@
   .duty-tag { flex: none; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
   .duty-priority { flex: none; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
   .duty-headline { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text); font-weight: 500; }
-  .duty-miss { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); }
-  .duty-headline { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; }
-  .miss-text { min-width: 0; overflow-wrap: anywhere; }
-  .miss-runs { flex: none; font-size: 11px; color: var(--warning); font-variant-numeric: tabular-nums; font-weight: 400; }
-  .miss-mark { flex: none; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 15px; font-weight: 400; }
+  .duty-miss { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .miss-runs, .miss-mark, .duty-miss .link-chip, .duty-headline .link-chip { margin-left: 6px; vertical-align: bottom; }
+  .miss-runs { font-size: 11px; color: var(--warning); font-variant-numeric: tabular-nums; font-weight: 400; white-space: nowrap; }
+  .miss-mark { display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 15px; font-weight: 400; white-space: nowrap; }
   .miss-mark.stuck { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); }
   .miss-mark.gap { color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); }
   .duty-ok { margin: 0; padding: 0 0 0 18px; font-size: 11.5px; line-height: 17px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
