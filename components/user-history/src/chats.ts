@@ -62,7 +62,7 @@ export function followUps(before: readonly ChildAgent[] | undefined, roster: rea
 }
 
 /**
- * An attached chat's children with what the daemon's rows add: the later of the two last activities, and a running turn the attach missed,
+ * An attached chat's children with what the daemon's rows add: its session id, the later of the two last activities, and a running turn the attach missed,
  * kept as `followUps` keeps it. The parent's record of a finished job can freeze (VP of CI 10-13: the attach kept "repo rules check fix" at
  * 09:20:49Z and stopped it mid-tool while its session file shows work until 09:47:48Z), and the row reads the job's own session.
  */
@@ -73,8 +73,9 @@ export function withRoster(attached: readonly ChildAgent[], roster: readonly Chi
     const at = Math.max(child.lastActivityAt ?? -Infinity, row.lastActivityAt ?? -Infinity);
     const running = row.status === "running" && !childWorking(child);
     const settled = settledLater(child, row);
-    if (at === (child.lastActivityAt ?? -Infinity) && !running && !settled) return child;
-    return { ...child, ...(Number.isFinite(at) ? { lastActivityAt: at } : {}), ...(running ? { activity: { kind: "executing" as const } } : {}),
+    const sessionId = child.sessionId ?? row.sessionId;
+    if (at === (child.lastActivityAt ?? -Infinity) && !running && !settled && sessionId === child.sessionId) return child;
+    return { ...child, ...(sessionId !== undefined ? { sessionId } : {}), ...(Number.isFinite(at) ? { lastActivityAt: at } : {}), ...(running ? { activity: { kind: "executing" as const } } : {}),
       ...(settled ? { status: row.status, ...(row.repliedSinceTask !== undefined ? { repliedSinceTask: row.repliedSinceTask } : {}) } : {}) };
   });
 }
@@ -508,24 +509,31 @@ export class Chats {
    * such as `ci-run-status --wait`, or a background bash its kernel waits on, keeps it), and the daemon refuses a job that streams or holds
    * an unfinished action in the same request (`running`), so a job that started a turn since the cleanup read its children is kept and looked
    * at again later. A delete that fails is tried again at the next sweep: on 10-14 at 12:3xZ the daemon answered neither of Crawler VP's census
-   * write cuts and live route parity fixes within 30 s, and the job id stayed in `deletedJobs` until the next service start.
+   * write cuts and live route parity fixes within 30 s, and the job id stayed in `deletedJobs` until the next service start. The session comes
+   * from the hub's child or the daemon's list, and a job with neither is kept while the service reads wakes: slack green guy 10-15 11:07Z, the
+   * hub's children carry no session id, so the sweep skipped the wake check and deleted blog signup fix, asleep on a 10-22 board.wake for p143.
    */
   private async deleteJob(id: string, child: ChildAgent, listed: readonly string[], now: number): Promise<SubagentDelete | "kept"> {
     const current = this.children.get(id)?.find(candidate => candidate.id === child.id);
     if (this.deletedJobs.has(child.id) || !current || childWorking(current)) return "kept";
+    const sessionId = current.sessionId ?? this.subagents.get(id)?.find(row => row.id === child.id)?.sessionId;
+    if (sessionId === undefined && this.source.waking) {
+      this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: the daemon's list has not given its session yet, so its board.wakes cannot be read`);
+      return "kept";
+    }
     this.deletedJobs.add(child.id);
     try {
-      if (current.sessionId !== undefined && await this.source.waking?.(current.sessionId)) {
+      if (sessionId !== undefined && await this.source.waking?.(sessionId)) {
         this.deletedJobs.delete(child.id);
         this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: it waits on a board.wake`);
         return "kept";
       }
-      if (current.sessionId !== undefined && await this.threads.sessionActive(current.sessionId)) {
+      if (sessionId !== undefined && await this.threads.sessionActive(sessionId)) {
         this.deletedJobs.delete(child.id);
         this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: its session runs a tool call or a background bash`);
         return "kept";
       }
-      const strays = current.sessionId !== undefined ? await this.strays(id, current.sessionId) : [];
+      const strays = sessionId !== undefined ? await this.strays(id, sessionId) : [];
       const result = await this.threads.deleteSubagent(id, child.id);
       if (result === "running") {
         this.deletedJobs.delete(child.id);
