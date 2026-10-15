@@ -7,6 +7,7 @@ The owner wants every made-up safety limit in auto-sns-agent found and removed, 
 1. The precheck output file named in the brief holds `candidates`, new ones first, each with its key, app, file, line, kind and text.
 2. The ledger is `apps/llm-wiki/content/domains/devops/limits-ledger.json` in auto-sns-agent, with a verdict per candidate key under `limits` and one record per run under `runs`.
 3. Read the ledger first, and write it last, after the stacks are sent.
+4. The precheck output's `leftovers` lists each dropped limit whose name a tree still uses, searched on sieun/dev for `removed` entries and on the stack's ci/ ref for `unbacked` ones. Each one gets a commit in this run's stack for its app that removes the leftover lines. A line that uses a different limit of the same name stays, and the report names it.
 
 ```json
 {
@@ -41,7 +42,9 @@ The owner wants every made-up safety limit in auto-sns-agent found and removed, 
 2. A loop that chunked work only for the cap becomes one call, and a timeout with no evidence goes, so the library default applies.
 3. Leave the code simpler than you found it, with no shim, alias or fallback that keeps the old cap alive.
 4. Never touch a limit that guards real money, an outside send or account ban risk when it has measured evidence, and mark such a limit with no evidence as `owner`.
-5. A limit that a test checks loses that test case in the same commit.
+5. Before you build each commit, search the stack's base for the limit's name, and for its env var and config key if it has them, with `git grep -n -w <name> <base> -- . ':(exclude)apps/llm-wiki/content'`. This is rg over the whole repo, read from the commit the stack builds on, because the shared tree holds other jobs' edits.
+6. Update every caller, import, test, doc and config line that search finds in the same commit as the drop.
+7. A test that pins the old value changes to assert the new behavior, and a test that only checked the cap goes.
 
 ## Shipping
 
@@ -50,10 +53,18 @@ The owner wants every made-up safety limit in auto-sns-agent found and removed, 
 3. For each limit, copy the file with `git show <base>:<path>` into the session folder, edit the copy, then `git hash-object -w`, `git update-index --cacheinfo`, `git write-tree` and `git commit-tree -p <previous commit>`.
 4. Each commit removes one limit, with the message `chore(<app>): drop unbacked limit <name>` and a body line `Evidence check: <what you searched>, none found.` plus a `Session-Id:` trailer.
 5. Check that `git diff --stat <base> <stack tip>` names only the files you meant.
-6. Check the syntax of each changed file from a `git archive` copy, such as `python3 -m py_compile` or `node --check`, because checks on this machine are guard-refused.
-7. Send this chat the app, the stack tip sha and a fresh ref name `ci/limits-<app>-<yymmdd>`; the chat asks Fable for the probe slot, and the stack goes to that ref only on Fable's go, with a plain push and never `--force`.
-8. Read the run with `gh run list --workflow verify-dev.yml --branch ci/limits-<app>-<yymmdd> --limit 1`; when it is red, add a fix commit on top and push to the same ref as a fast-forward.
-9. When it is green, send this chat the sha and run id for the release owner, and stop there.
+6. Run `node --import tsx ~/Documents/Github/sieun-pi/components/user-history/scripts/duties/limits-evidence.ts --leftovers <base> <stack tip>`. It lists each line in the tip's tree that still names a constant a drop commit removed, and exits 1 when there is one. Fold each fix into the drop commit that left the line, and build the later commits again on top of it. It cannot trace lowercase names such as `timeout`, so it lists those for you to search by hand.
+7. Check out the stack tip in your session folder with `git worktree add --detach --no-checkout <session folder>/tree <stack tip>`, then run `git sparse-checkout set --no-cone '/*' '!/apps/llm-wiki/content/'` and `git checkout -q` in it. On 10-15 this took 3 s and 352 MB.
+8. Link the installed dependencies from the shared tree into that checkout. A Python app gets a `.venv` symlink to the app's `.venv`. A TS app gets symlinks to the root and app `node_modules`, and a SvelteKit app also gets `.svelte-kit` and `src/lib/paraglide`.
+9. Run these checks in the checkout's app folder, one at a time, each under `nice -n 20`.
+   1. Run `uv run --no-sync ruff check <files>` and `uv run --no-sync ty check <files>` on the touched Python files.
+   2. Run `tsc --noEmit -p .` on a TS app, or `svelte-check --tsconfig ./tsconfig.json --threshold error` on a SvelteKit app, once per stack. In search on 10-15 at load 25, it took 66 s and 4 GB and found the `CH_INSERT_TIMEOUT_MS` import left behind by d3a8762bf3.
+   3. Run the test files the stack touched, plus the test files that import a touched module, with `uv run --no-sync pytest <files>`, `vitest run <files>` or `node --test <files>`. Never run a whole suite.
+10. Fold each fix into the drop commit that caused the failure in the same way, then run the failed check again. If a repo guard refuses a check, send this chat the refusal text and let the probe run it. Never route around a guard.
+11. Remove the checkout with `git worktree remove --force <session folder>/tree`.
+12. Push the whole stack to a fresh `ci/limits-<app>-<yymmdd>` with a plain push, never `--force`. Read its run with `gh run list --workflow verify-dev.yml --branch ci/limits-<app>-<yymmdd> --limit 1`, and send this chat the ref, the stack tip sha and the run id.
+13. Wait for the run with `board.wake(run=<id>)` and end the turn. When it is red, add a fix commit on top and push to the same ref as a fast-forward.
+14. The stack goes to the ops train only on that run's green. Send this chat the sha and run id for the release owner, and stop there.
 
 ## Ledger and report
 

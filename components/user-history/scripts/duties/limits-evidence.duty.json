@@ -50,6 +50,12 @@
       "label": "Ledger file that could not be read",
       "op": "<=",
       "target": 0
+    },
+    {
+      "key": "leftover_refs",
+      "label": "Dropped limits whose name the code still uses",
+      "op": "<=",
+      "target": 0
     }
   ],
   "schedule": {
@@ -66,5 +72,5 @@
     "cwd": "../..",
     "timeoutMs": 120000
   },
-  "onMiss": "Follow the playbook limits-evidence.md next to this precheck, in sieun-pi components/user-history/scripts/duties/. The ledger is apps/llm-wiki/content/domains/devops/limits-ledger.json in auto-sns-agent: read it first, write it last. The precheck output file holds every candidate, new ones first. Start one subagent per app with unjudged, new or unbacked candidates. A limit stays only with evidence: a measurement in the wiki or code, a vendor doc link, or an incident it prevents. Without evidence the subagent deletes it and the code that only served it. A limit on money, an outside send or account ban risk with no evidence is the owner's call, never removed. Each app ships one stack of commit objects built in a private GIT_INDEX_FILE on local sieun/dev, one commit per limit, \"chore(<app>): drop unbacked limit <name>\". Send each stack to this chat for Fable's probe slot and a fresh ci/ ref, never a force push. Send this chat the found, removed and kept counts as chat_board ops."
+  "onMiss": "Follow limits-evidence.md next to this precheck in sieun-pi components/user-history/scripts/duties/. Read the auto-sns-agent ledger apps/llm-wiki/content/domains/devops/limits-ledger.json first and write it last. Start one subagent per app with unjudged, unbacked or leftover candidates. A limit with no measurement, vendor doc or incident goes, with the code that only served it, unless it guards money, an outside send or a ban, which is the owner's call. Each drop is one commit, \"chore(<app>): drop unbacked limit <name>\", that also updates every caller, import, test and doc naming it, its env var or config key, found by a whole-repo search. Before the push, --leftovers lists nothing, and ruff, ty, tsc or svelte-check and the touched tests pass under nice -n 20. The subagent pushes the app's whole stack to ci/limits-<app>-<yymmdd> without --force and reports the run id. It joins the ops train only on that run's green. Send this chat the found, removed and kept counts as chat_board ops."
 }
