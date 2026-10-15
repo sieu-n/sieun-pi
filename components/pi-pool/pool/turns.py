@@ -55,7 +55,7 @@ worker that asked) is gone, is dropped, and so is a queue entry whose `admit --w
 process (`waiter`) is gone, so an abort with no agent_end, a hung tool or a crash
 cannot hold a slot.
 """
-import json, os, re, sys, time
+import json, math, os, re, sys, time
 
 from . import base, pressure, prod, registry
 
@@ -90,6 +90,19 @@ PRESSURE_TTL_SEC = 30
 # on 10-15 held 16 slots and 6 borrows and read 152.3% while a job fanned out 26 children
 # (tests/critical_minutes_1014_1015.json, from sessions/2026/10/15/1721-spawn-burst-admission/critical_borrows.py).
 PRESSURE_BORROWS = 2
+# Background turns start only while the Prime daemon's workers hold under WORKERS_GB_MAX GiB (pressure.read_workers_gb, the sum the chat
+# service's Mac usable watch logs as workerGb), read again at each admit under the flock, so the turns of a chat count against it like a
+# job's. The AI harness chat decided this on 10-16 after the 21:00Z-22:00Z hour on 10-15 read 56% usable with 21 harness minutes, every one
+# with the workers at 18.5 to 23.9 GiB, while the slot limit let 14 to 24 turns work. Over the Mac usable watch minutes of 10-15 none of
+# the 364 at 16 GiB or less was unusable (pool/spawns.py HOLD_OFF_GB), and mac-stays-usable.ts puts a minute over 16 GiB on the harness.
+# Owner turns, an owner's queued run started "ahead" and prod turns never read it.
+WORKERS_GB_MAX = 16
+# What one admitted turn adds to the workers before the next read: at 22:00Z on 10-15 the 5 root jobs mid-turn held 1.82 GiB by
+# phys_footprint, 0.36 a tree with its worker and kernels.
+TURN_GB = 0.36
+# Background turns that may work whatever the workers hold. A queued turn's worker is loaded already, so with none working the workers can
+# sit over the line with nothing running that would end and free them.
+WORKERS_FLOOR = 1
 
 
 def limits(cfg):
@@ -173,12 +186,13 @@ def lending(turns):
     return {e["lender"]: s for s, e in turns["working"].items() if e.get("kind") == "borrow"}
 
 
-def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None, firm=None, borrow_top=None):
+def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None, firm=None, borrow_top=None, room=None):
     """Move queued entries to working: free slots by class first, then borrows. An entry
     `hold(entry)` is true for takes a free slot only after the others, one per tree each pass,
     and may borrow its in-flight parent's lent slot. An entry `firm(session, entry)` is true for
     stays queued. With `borrow_top` set, a borrow starts only while slots and borrows in use
-    are under it. Returns [(session, kind)] in admission order."""
+    are under it. With `room` set, at most that many slots and borrows start (workers_room); a
+    prod turn always starts. Returns [(session, kind)] in admission order."""
     lease = lease or base.DEFAULTS["lease_s"]
     admitted = []
     rush = {s: prod.why(turns.get("prod"), s, turns["queued"][s]) for s in order(turns["queued"], now, aging)}
@@ -190,36 +204,42 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None, firm
     for entry in held:
         trees[entry["tree"]] = trees.get(entry["tree"], 0) + 1
     used = len(held)
+    started = 0
+
+    def full():
+        return room is not None and started >= room
 
     def start(session, kind, **extra):
-        nonlocal used
+        nonlocal used, started
         entry = turns["queued"].pop(session)
         entry.pop("waiter", None)
         turns["working"][session] = dict(entry, kind=kind, since=now, queued_since=entry["since"], lease_until=now + lease, **extra)
         if kind != "borrow":
             trees[entry["tree"]] = trees.get(entry["tree"], 0) + 1
             used += 1
+        if kind != "prod":
+            started += 1
         admitted.append((session, kind))
 
     for session, why in rush.items():
         if why:
             start(session, "prod", why=why)
     for session in queue:
-        if used >= mac_max:
+        if used >= mac_max or full():
             break
         if trees.get(turns["queued"][session]["tree"], 0) < tree_max:
             start(session, "slot")
     let_through = set()
     for session in [s for s in ordered if s in held_ids]:
         tree = turns["queued"][session]["tree"]
-        if used >= mac_max:
+        if used >= mac_max or full():
             break
         if tree not in let_through and trees.get(tree, 0) < tree_max:
             start(session, "slot")
             let_through.add(tree)
     lent = lending(turns)
     for session in [s for s in ordered if s in turns["queued"]]:
-        if borrow_top is not None and used + len(lent) >= borrow_top:
+        if (borrow_top is not None and used + len(lent) >= borrow_top) or full():
             break
         parent = turns["queued"][session].get("parent")
         if parent and parent in turns["working"] and parent not in lent:
@@ -311,10 +331,38 @@ def held_prod(snapshot):
     return lambda cfg, now: snapshot.get("prod") or {"at": now, "trees": {}, "sessions": {}}
 
 
-def governed(turns, sessions, now, cfg, read=pressure.read, trees=pressure.read_tree_memory, prods=prod.read):
-    """(working limit, hold rule or None, firm hold rule or None, borrow top or None, refreshed, events) under
+def workers_room(gb, working):
+    """How many background turns may start against a read of `gb` GiB in the Prime workers: while gb plus TURN_GB for each one
+    started stays under WORKERS_GB_MAX, and at least enough that WORKERS_FLOOR work; None (no cap) when the read failed."""
+    if gb is None:
+        return None
+    background = sum(1 for e in working.values() if e.get("kind") in ("slot", "borrow"))
+    return max(0, math.ceil((WORKERS_GB_MAX - gb) / TURN_GB), WORKERS_FLOOR - background)
+
+
+def workers_watch(turns, last, now, workers, ttl=0):
+    """Read the workers (`workers()`, GiB or None) unless `last` holds a read under `ttl` s old, and keep it in turns["pressure"] as
+    workers_gb, workers_at and workers_full. Returns (room, read now, events); a change of workers_full logs workers_held or
+    workers_released."""
+    rec = turns["pressure"]
+    fresh = not (0 <= now - last.get("workers_at", -1e18) < ttl)
+    gb, at = (workers(), now) if fresh else (last.get("workers_gb"), last["workers_at"])
+    full = gb is not None and gb >= WORKERS_GB_MAX
+    rec.update(workers_gb=gb, workers_at=at, workers_full=full)
+    events = []
+    if full != bool(last.get("workers_full")):
+        events.append(("workers_held" if full else "workers_released", {"gb": gb, "at": now, "queued": len(turns["queued"]),
+                                                                         "working": len(turns["working"])}))
+    return workers_room(gb, turns["working"]), fresh, events
+
+
+def governed(turns, sessions, now, cfg, read=pressure.read, trees=pressure.read_tree_memory, prods=prod.read, workers=None, workers_ttl=0):
+    """(working limit, hold rule or None, firm hold rule or None, borrow top or None, refreshed, events, room) under
     the current pressure. The borrow top is the limit plus PRESSURE_BORROWS while the level is high or critical.
-    It refreshes the prod record too (prod_watch), which admit_pass reads."""
+    It refreshes the prod record too (prod_watch), which admit_pass reads. `room` is how many background turns the
+    Prime workers have room for (workers_watch), None while the governor is off or the read fails; `workers` defaults
+    to pressure.read_workers_gb when `read` is pressure.read and to no read for a caller with a reader of its own."""
+    last = dict(turns.get("pressure") or {})
     refreshed, events = governor(turns, now, cfg, read, trees)
     prod_refreshed, prod_events = prod_watch(turns, now, cfg, prods)
     refreshed, events = refreshed or prod_refreshed, events + prod_events
@@ -322,7 +370,12 @@ def governed(turns, sessions, now, cfg, read=pressure.read, trees=pressure.read_
     hold = None if rec["level"] == "ok" else (lambda entry: holds(entry, sessions, now))
     firm = (lambda session, entry: held_for_memory(turns, session, entry)) if rec.get("memory_trees") else None
     top = None if rec["level"] == "ok" else rec["limit"] + PRESSURE_BORROWS
-    return rec["limit"], hold, firm, top, refreshed, events
+    room = None
+    if rec.get("on", True):
+        reader = workers or (pressure.read_workers_gb if read is pressure.read else (lambda: None))
+        room, fresh, held = workers_watch(turns, last, now, reader, workers_ttl)
+        refreshed, events = refreshed or fresh, events + held
+    return rec["limit"], hold, firm, top, refreshed, events, room
 
 
 def reply(turns, session, now, aging, enabled=True):
@@ -363,7 +416,8 @@ def pressure_view(turns, sessions, now=None):
     if not rec:
         return None
     held = sum(1 for s, e in turns["queued"].items() if holds(e, sessions, now) or held_for_memory(turns, s, e)) if rec["level"] != "ok" else 0
-    return {k: rec.get(k) for k in ("level", "on", "at", "since", "reading", "limit", "changed")} | {"held": held, "memory_trees": rec.get("memory_trees") or []}
+    return ({k: rec.get(k) for k in ("level", "on", "at", "since", "reading", "limit", "changed", "workers_gb", "workers_at", "workers_full")}
+            | {"held": held, "memory_trees": rec.get("memory_trees") or [], "workers_gb_max": WORKERS_GB_MAX})
 
 
 def last_set(key):
@@ -414,7 +468,7 @@ def class_for(a, sessions):
     return rec.get("priority") or "normal"
 
 
-def ask(turns, sessions, a, now, cfg, waiter=None, read=pressure.read, trees=pressure.read_tree_memory):
+def ask(turns, sessions, a, now, cfg, waiter=None, read=pressure.read, trees=pressure.read_tree_memory, workers=None):
     """One admit, under the flock. Returns (changed, answer, events to log).
 
     A session already working renews its lease. --renew comes from a run in flight:
@@ -426,8 +480,8 @@ def ask(turns, sessions, a, now, cfg, waiter=None, read=pressure.read, trees=pre
         dropped = turns["queued"].pop(session, None) is not None
         return dropped, reply(turns, session, now, aging, enabled=False), []
     gone = sweep(turns, now)
-    mac, hold, firm, top, _, events = governed(turns, sessions, now, cfg, read, trees)
-    admitted = admit_pass(turns, now, mac, tree_max, aging, lease, hold, firm, top)
+    mac, hold, firm, top, _, events, room = governed(turns, sessions, now, cfg, read, trees, workers=workers)
+    admitted = admit_pass(turns, now, mac, tree_max, aging, lease, hold, firm, top, room)
     events += [("turn_swept", dict(session=g["session"], part=g["part"], why=g["why"])) for g in gone]
     changed = True
     entry = {"tree": a["tree"], "parent": a["parent"], "class": class_for(a, sessions), "since": now, "pid": a["pid"]}
@@ -445,7 +499,8 @@ def ask(turns, sessions, a, now, cfg, waiter=None, read=pressure.read, trees=pre
         events.append(("turn_renewed_after_lapse", dict(session=session, tree=a["tree"])))
     else:
         turns["queued"][session] = dict(entry, waiter=waiter)
-        admitted += admit_pass(turns, now, mac, tree_max, aging, lease, hold, firm, top)
+        room = None if room is None else max(0, room - sum(1 for _, kind in admitted if kind != "prod"))
+        admitted += admit_pass(turns, now, mac, tree_max, aging, lease, hold, firm, top, room)
         if session in turns["queued"]:
             memory = bool(firm and firm(session, entry))
             events.append(("turn_queued", {"session": session, "tree": a["tree"], "parent": a["parent"], "class": entry["class"],
@@ -484,14 +539,14 @@ def log_changes(gone, admitted, turns, now, events=()):
         base.log("turn_admitted", session=session, tree=e["tree"], kind=kind, waited_s=round(now - e["queued_since"], 1))
 
 
-def step(turns, sessions, now, cfg, read=pressure.read, trees=pressure.read_tree_memory):
+def step(turns, sessions, now, cfg, read=pressure.read, trees=pressure.read_tree_memory, workers=None):
     """Sweep, then admit what fits under the governor. Returns (changed, gone, admitted, events)."""
     gone = sweep(turns, now)
     mac, tree_max, aging = limits(cfg)
     if mac is None:
         return bool(gone), gone, [], []
-    mac, hold, firm, top, refreshed, events = governed(turns, sessions, now, cfg, read, trees)
-    admitted = admit_pass(turns, now, mac, tree_max, aging, int(cfg["lease_s"]), hold, firm, top)
+    mac, hold, firm, top, refreshed, events, room = governed(turns, sessions, now, cfg, read, trees, workers=workers)
+    admitted = admit_pass(turns, now, mac, tree_max, aging, int(cfg["lease_s"]), hold, firm, top, room)
     return bool(gone or admitted or refreshed), gone, admitted, events
 
 
@@ -545,10 +600,10 @@ def wait(session, pid, last):
             snapshot, sessions = of(whole), whole.get("sessions") or {}
         trial = json.loads(json.dumps(snapshot))
         sweep(trial, now)
-        limit, hold, firm, top, refreshed, _ = governed(trial, sessions, now, cfg, prods=held_prod(snapshot))
+        limit, hold, firm, top, refreshed, _, room = governed(trial, sessions, now, cfg, prods=held_prod(snapshot), workers_ttl=PRESSURE_TTL_SEC)
         if refreshed:
             snapshot["pressure"] = trial["pressure"]
-        admit_pass(trial, now, limit, tree_max, aging, int(cfg["lease_s"]), hold, firm, top)
+        admit_pass(trial, now, limit, tree_max, aging, int(cfg["lease_s"]), hold, firm, top, room)
         answer = reply(trial, session, now, aging)
         if answer["state"] != "queued" and session not in snapshot["working"]:
             def settle(state, turns, now):
@@ -639,6 +694,8 @@ def cmd_queue(rest):
         p = out["pressure"]
         if p and p["level"] != "ok":
             print(f"Memory pressure {p['level']}: the limit is {p['limit']}, and {p['held']} queued turns are held.")
+        if p and p.get("workers_gb") is not None:
+            print(f"Prime workers hold {p['workers_gb']} GiB; background turns start only under {p['workers_gb_max']} GiB.")
     for e in out["queued"]:
         print(f"  {e['position']}. {e['session']} {e['class']} (was {e['base_class']}), waiting {e['wait_s']} s")
     return 0

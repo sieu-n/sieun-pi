@@ -538,7 +538,8 @@ class Governor(unittest.TestCase):
         p = turns.view(t, 0, self.CFG, self.SESSIONS)["pressure"]
         self.assertEqual({k: p[k] for k in ("level", "on", "limit", "held", "reading")},
                          {"level": "high", "on": True, "limit": 16, "held": 1, "reading": WARN})
-        self.assertEqual(set(p), {"level", "on", "at", "since", "reading", "limit", "changed", "held", "memory_trees"})
+        self.assertEqual(set(p), {"level", "on", "at", "since", "reading", "limit", "changed", "held", "memory_trees", "workers_gb", "workers_at",
+                                  "workers_full", "workers_gb_max"})
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="pi-pool-turns-")
         self.env = dict(os.environ, PI_POOL_DIR=self.dir)
