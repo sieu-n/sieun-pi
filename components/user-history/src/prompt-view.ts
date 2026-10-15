@@ -272,8 +272,8 @@ const SYSTEM_LABELS: Record<string, Source> = {
 };
 
 /**
- * `# Additional Guidance` bullets in runs: the job lines, and the rest. In a chat the rest is the chat brief (the chat_board tool carries it and
- * no other active tool has guidelines), so a brief pinned before an edit of CHAT_BRIEF still reads as the brief.
+ * `# Additional Guidance` bullets in runs: the job lines, the poteto-mode line, and the rest. In a chat the rest is the chat brief (the chat_board
+ * tool carries it and no other active tool has guidelines), so a brief pinned before an edit of CHAT_BRIEF still reads as the brief.
  */
 function guidanceParts(body: string, brief: ReadonlySet<string>): Draft[] {
   const lines = body.split("\n");
@@ -289,7 +289,8 @@ function guidanceParts(body: string, brief: ReadonlySet<string>): Draft[] {
   const chat = bullets.some(bullet => brief.has(text(bullet)));
   const group = (bullet: string): string => {
     const line = text(bullet);
-    if (line.startsWith("You are a job of the chat") || line.startsWith("Work in poteto-mode:")) return "job";
+    if (line.startsWith("You are a job of the chat")) return "job";
+    if (line.startsWith("Work in poteto-mode:")) return "persona";
     return chat ? "brief" : "tools";
   };
   const runs: { group: string; lines: string[] }[] = [];
@@ -302,6 +303,7 @@ function guidanceParts(body: string, brief: ReadonlySet<string>): Draft[] {
   const labels: Record<string, Source> = {
     brief: { kind: "instructions", label: "Chat brief", source: "chat_board tool promptGuidelines (src/chat-brief.ts CHAT_BRIEF, as pinned at the chat's start or last compaction)" },
     job: { kind: "instructions", label: "Job report line", source: "job_reply tool promptGuidelines (src/chat-brief.ts)" },
+    persona: { kind: "instructions", label: "poteto-mode line", source: "poteto_mode tool promptGuidelines (src/chat-brief.ts personaGuideline)" },
     tools: { kind: "instructions", label: "Tool guidelines", source: "promptGuidelines of the active tools" },
   };
   return runs.map((run, index) => ({ ...labels[run.group]!, text: (index === 0 ? title + "\n" : "") + run.lines.join("\n") }));

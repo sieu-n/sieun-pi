@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { jobRegistry } from "../src/chat-sources.ts";
-import { CHAT_BRIEF, extensionBuild, jobOf, jobPersonaGuideline, jobReplyGuideline, loadRecord, reloadAction } from "../src/chat-brief.ts";
+import { CHAT_BRIEF, extensionBuild, jobOf, jobReplyGuideline, loadRecord, reloadAction } from "../src/chat-brief.ts";
 import { Chats } from "../src/chats.ts";
 import { createSessionNames, jobNameLiterals, topSession } from "../src/chat-guard.ts";
 import { IdIndex } from "../src/id-index.ts";
@@ -249,13 +249,6 @@ test("stale extension in a job: a job of a chat that runs an older build than th
   await chats.settled();
   assert.deepEqual(threads.reloaded, [], "the same build reloads nothing");
   chats.close();
-});
-
-test("jobs of a chat work in poteto-mode when the skill is installed, and get nothing extra when it is not", () => {
-  const skill = "/home/x/.prime/agent/skills/poteto-mode/SKILL.md";
-  const line = jobPersonaGuideline(skill, path => path === skill);
-  assert.equal(line, `Work in poteto-mode: read ${skill} before your first step.`);
-  assert.equal(jobPersonaGuideline(skill, () => false), null, "no skill installed: no persona line");
 });
 
 test("a job that ended its task is not reloaded at a service start, so its Python kernel is not rebuilt, and is reloaded once it is idle on new work", async () => {

@@ -4,7 +4,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "prime-age
 import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { ensureChatService } from "../src/chat-service.ts";
-import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobPersonaGuideline, jobReplyGuideline, pinnedBrief } from "../src/chat-brief.ts";
+import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";
 import { CHAT_BOARD_TOOL, CHAT_FLAG, CHAT_MODE_ENTRY, chatGuard, chatModeAt, createSessionNames, hasChatMarker, topSession, withChatTool, withReplyCap } from "../src/chat-guard.ts";
 import { jobRegistry, registerPrintedRoots } from "../src/chat-sources.ts";
 import { TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "../src/chats.ts";
@@ -19,8 +19,8 @@ import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { loadWaitGuard } from "../src/load-wait.ts";
-import { FLEET_STATE_FILE, FLEET_STOP_FILE } from "../src/fleet-budget.ts";
-import { fleetGuard, fleetStopGuard, parseFleetState } from "../src/fleet-guard.ts";
+import { FLEET_STOP_FILE } from "../src/fleet-budget.ts";
+import { fleetStopGuard } from "../src/fleet-guard.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
@@ -200,15 +200,30 @@ export default function historyExtension(pi: ExtensionAPI): void {
     dutyJob = job !== null && byId !== undefined;
     if (!job) return;
     const guideline = jobReplyGuideline(job);
-    const persona = jobPersonaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
     pi.registerTool({
       name: JOB_REPLY_TOOL,
       label: "Report to the chat",
       description: "Shows how this job reports to its chat.",
-      promptGuidelines: persona ? [persona, guideline] : [guideline],
+      promptGuidelines: [guideline],
       parameters: { type: "object", properties: {} },
       async execute() { return { content: [{ type: "text", text: guideline }], details: undefined }; },
     });
+  };
+  // A chat, each job of it and every subagent under them work in poteto-mode: one tool whose guideline is the line. Any error fails open.
+  let persona: string | null = null;
+  const registerPersona = (): string | null => {
+    if (persona) return persona;
+    persona = personaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
+    const line = persona;
+    if (line) pi.registerTool({
+      name: PERSONA_TOOL,
+      label: "poteto-mode",
+      description: "Shows the skill this session works in.",
+      promptGuidelines: [line],
+      parameters: { type: "object", properties: {} },
+      async execute() { return { content: [{ type: "text", text: line }], details: undefined }; },
+    });
+    return persona;
   };
   pi.on("session_start", async (_event, ctx) => {
     try {
@@ -229,6 +244,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
       } catch { /* the loaded brief */ }
     }
     await findJob(ctx).catch(() => {});
+    if (marked || job || underChat) try { registerPersona(); } catch { /* no line */ }
   });
   pi.on("session_compact", () => {
     if (!marked) return;
@@ -240,8 +256,9 @@ export default function historyExtension(pi: ExtensionAPI): void {
     await findJob(ctx).catch(() => {});
     if (!job) return undefined;
     const guideline = jobReplyGuideline(job);
-    const persona = jobPersonaGuideline(join(getAgentDir(), "skills", "poteto-mode", "SKILL.md"));
-    const add = [persona, guideline].filter((line): line is string => line !== null && !event.systemPrompt.includes(line));
+    let line: string | null = null;
+    try { line = registerPersona(); } catch { /* no line */ }
+    const add = [guideline, line].filter((line): line is string => line !== null && !event.systemPrompt.includes(line));
     return add.length ? { systemPrompt: `${event.systemPrompt}\n\n${add.join("\n")}` } : undefined;
   });
   pi.on("tool_call", async (event, ctx) => {
@@ -251,11 +268,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
       if (marked || job || underChat) {
         const loadWait = loadWaitGuard(event.toolName, event.input);
         if (loadWait) return loadWait;
-        // A root job an agent starts itself waits for the fleet budget like the server's own (src/fleet-guard.ts).
+        // A root job an agent starts itself while the fleet budget is closed waits in the kernel and starts later (src/message-limit-check.py).
         if (event.toolName === "ipython") {
-          const state = parseFleetState(await readFile(join(dataDir(), FLEET_STATE_FILE), "utf8").catch(() => null));
-          const held = fleetGuard(event.toolName, event.input, state, Date.now());
-          if (held) return held;
           if (dutyJob) {
             const stop = await readFile(join(dataDir(), FLEET_STOP_FILE), "utf8").then(() => "the fleet stop switch is on", () => null);
             const stopped = fleetStopGuard(event.toolName, event.input, stop, dutyJob);
