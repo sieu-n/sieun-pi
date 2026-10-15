@@ -9,7 +9,9 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { ChatBoard, ChildAgent, ThreadMessage } from "../src/shared/types.ts";
-import { parseWake, RUN_LOOK_MS, type RunState, startWakes, TICKED, type WakeOn, Wakes, waking } from "../src/wakes.ts";
+import { withWakes } from "../src/checkin-load.ts";
+import type { JobFact } from "../src/checkin-steps.ts";
+import { parseWake, pendingWakes, RUN_LOOK_MS, type RunState, startWakes, TICKED, type WakeOn, Wakes, waking } from "../src/wakes.ts";
 import { fakeThreads, source } from "./chats-helpers.ts";
 
 // 10-14 20:5xZ: 125 of 152 working sessions had ended their turn and waited on a bash handle in their Python kernel (82 on a CI run, 11 on a
@@ -194,4 +196,27 @@ test("wakes: a child whose chat tree was evicted is reached by starting its root
   assert.equal(await f.wakes.tick(), 0);
   assert.deepEqual(f.started, [ROOT]);
   assert.deepEqual(await f.files(), []);
+});
+
+test("wakes: a tick stamps TICKED when it starts, so a check-in during a long tick, such as the first one after a release restart, still sees the wakes owed", async () => {
+  // VP of CI 10-15: ci release driver (01a138a6) ended its turn at 10:16:18Z on a board.wake on run 38708750431, the 19:32 KST release killed
+  // the service mid-tick, and its restarted service's first tick was still reading runs at 10:33:27Z. The 10:33:18Z check-in read the stamp of
+  // the old service's last finished tick, over WAKE_LATE_MS old, owed nothing, and listed "ci release driver thread: idle".
+  const dir = await mkdtemp(join(tmpdir(), "wakes-restart-"));
+  const driver = "01a138a6-4245-71b9-96bf-b2e1269c4d6a";
+  const at = (clock: string) => Date.parse(`2026-10-15T${clock}Z`);
+  await writeFile(join(dir, `${driver}-run-38708750431.json`), JSON.stringify({ session: driver, on: { kind: "run", run: 38708750431 }, note: "promote 10 try 3", since: at("10:16:18") }));
+  await writeFile(join(dir, TICKED), new Date(at("10:31:05")).toISOString());
+  let release!: () => void;
+  const reading = new Promise<void>(done => { release = done; });
+  let read!: () => void;
+  const started = new Promise<void>(done => { read = done; });
+  const stop = startWakes({ dir, now: () => at("10:32:45"), runState: async () => { read(); await reading; return { done: false }; }, deliver: async () => "sent", log: () => {} }, 5);
+  await started;
+  const owed = await pendingWakes(dir, at("10:33:18"));
+  stop();
+  release();
+  assert.deepEqual(owed.map(wake => wake.session), [driver], "the tick that started at 10:32:45Z is still reading runs and owes the wake");
+  const thread: JobFact = { key: `thread:${driver}`, name: "ci release driver", state: "ended", activityAt: at("10:16:18") };
+  assert.deepEqual(withWakes([thread], owed, () => undefined).map(fact => [fact.state, fact.wake]), [["working", "a board.wake on run 38708750431"]]);
 });

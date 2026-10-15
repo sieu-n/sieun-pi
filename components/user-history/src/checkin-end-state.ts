@@ -1,7 +1,7 @@
 import { bridgeHolds, ESCALATE_MS } from "./alert-bridge.ts";
 import { coversStep } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
-import { ago, clip, ownerLabel, quote, STEP_STALE_MS, type StepView, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
+import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS, type StepView, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
 /**
  * The owner's end state for a board (owner 10-14: "all the PLAN list should clear or be stuck in FOR YOU right? check in duty should push forward
@@ -21,8 +21,6 @@ export const STUCK_STATES: readonly EndState[] = ["owner_no_todo", "release", "c
 const OWNER_WAIT = /\b(?:owner|sieun|you)(?:'s|r)?\b.*\b(?:go|ok|approval|answer|decision|choice|login|sign[ -]?in|review|reply|merge|says|decides|confirms|approves|picks)\b/i;
 const RELEASE = /\b(?:land|lands|landed|promote|release|released|deploys?|redeploys?|cut|train|fable|slot|cas)\b/i;
 const CI = /\b(?:runs?|ci|checks?|green|probe|verify-dev|workflow|tests?|push(?:es|ed)?)\b|\bci\//i;
-/** The first clause of a wait: what it waits on before "then". */
-const firstClause = (text: string): string => text.split(/;|,? then |\. /i)[0]!;
 
 /**
  * Whether an open agent todo holds the step by an explicit link: it names the step's id, links it (`step`) or a PR it names (`coversStep`), or
@@ -39,19 +37,21 @@ export function heldByTodo(item: Pick<PlanItem, "id" | "text" | "waitFor" | "not
 export interface EndStateView { view: StepView; state: EndState; reason: string }
 
 /**
- * The end state of one open leaf step, rules in order. A parked step (an owner correction in force) and a step whose owner is a working job or a
- * working thread are fine; a step the chat owns is moving when it changed within STEP_STALE_MS and waits on nothing, and so is a step the alert
+ * The end state of one open leaf step, rules in order. A parked step (an owner correction in force), a step whose owner is a working job or a
+ * working thread, and a step whose wait names a working job of this chat (`waitCarrier`, from `facts`) are fine; a step the chat owns is moving when it changed within STEP_STALE_MS and waits on nothing, and so is a step the alert
  * bridge just added (`bridgeHolds`). Next an explicit For you
  * link (`heldByTodo`). Every other step is stuck, by what it waits on: the owner with no todo, a release, a CI run, another thread, an event,
  * a time; else its job ended or is gone, else it has no owner.
  */
 export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1], rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
-  self: ReadonlySet<string>, now: number): EndStateView {
+  self: ReadonlySet<string>, now: number, facts: readonly JobFact[] = []): EndStateView {
   const { item, owner, mine, cls } = view;
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
   if (cls === "parked") return out("parked", `parked by ${view.parked ?? "an owner correction"}`);
   if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${owner.wake ? `sleeps on ${owner.wake}` : "works on it"}`);
   const wait = item.waitFor ?? "";
+  const carrier = waitCarrier(wait, facts);
+  if (carrier) return out("moving", `its wait is on ${ownerLabel(carrier)}, which ${carrier.wake ? `sleeps on ${carrier.wake}` : "works on it"}`);
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
   if (bridgeHolds(item, view.changedAt, now)) return out("moving", `the alert bridge added it ${ago(now - view.changedAt)} ago and escalates it at ${ESCALATE_MS / 60_000} min`);
   if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");

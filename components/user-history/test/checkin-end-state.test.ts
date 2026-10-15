@@ -126,3 +126,27 @@ test("end state: a step the alert bridge just added is moving until ESCALATE_MS,
   assert.equal(state(step("p361", { status: "todo", note: "Grafana alert came up in chat." }), [], [], NOW - MIN).state, "no_owner", "only the bridge's own mark counts");
   assert.equal(state({ ...added, waitFor: "the alert clears by itself" }, [], [], NOW - MIN).state, "event", "a wait the chat set takes over from the bridge");
 });
+
+test("end state: a step whose wait names a working job of this chat is moving, and a step left on a deleted job falls to that job", () => {
+  // VP of CI 10-15: the job git rules duty reshape was deleted once its part ended ("delete job git rules duty reshape"), p200 still named it, and
+  // three check-ins in a row counted p200 stuck on a release ("no live job of this chat watches it") while the job ci train carried the objects.
+  const train: JobFact = { key: "sub-ci-train", name: "ci train", state: "working", activityAt: NOW - MIN };
+  const lanes: JobFact = { key: "sub-ci-lanes", name: "ci lanes for every app", state: "working", activityAt: NOW - 9 * MIN };
+  const p200 = step("p200", { status: "doing", text: "Every CI duty is one headline number plus at most three supporting ones, and each miss has a live fix job",
+    job: "git rules duty reshape", sessionId: "01a13a70-b2fc-7191-a914-3d3058bea249",
+    waitFor: "ci train lands the d2 and d3 precheck objects; then git rules duty reshape and repo design duty reshape switch the configs" });
+  const seen = view(p200, [train, lanes]);
+  assert.equal(seen.owner?.name, "ci train", "the deleted job's step falls to the job its wait names, not \"(git rules duty reshape not found)\"");
+  const end = endState(seen, [], [], self, NOW, [train, lanes]);
+  assert.equal(end.state, "moving");
+  assert.match(end.reason, /job ci train/);
+  const reshape: JobFact = { key: "sub-reshape", name: "git rules duty reshape", state: "ended", activityAt: NOW - 40 * MIN };
+  const kept = endState(view(p200, [reshape, train]), [], [], self, NOW, [reshape, train]);
+  assert.deepEqual([kept.state, kept.reason], ["moving", "its wait is on job ci train, which works on it"], "an idle owner does not hide the job that carries the wait");
+  const left = endState(view(p200, [lanes]), [], [], self, NOW, [lanes]);
+  assert.equal(left.state, "release", "with ci train gone the wait is stuck again");
+  const idleTrain = { ...train, state: "ended" as const };
+  assert.equal(endState(view(p200, [idleTrain]), [], [], self, NOW, [idleTrain]).state, "release", "an idle job named in the wait moves nothing");
+  const later = step("p201", { waitFor: "land 37 lands; then ci train reads it back" });
+  assert.equal(endState(view(later, [train]), [], [], self, NOW, [train]).state, "release", "a job named only after \"then\" does not carry the wait");
+});

@@ -18,7 +18,7 @@ export interface Wake { session: string; root?: string; on: WakeOn; note: string
 export type RunState = { done: false } | { done: true; conclusion: string; url: string; label: string } | { error: string };
 
 export const TICK_MS = 30_000;
-/** The file each finished tick rewrites; board.wake refuses a wake while it is over 2 min old, since no service would deliver it. */
+/** The file each tick rewrites when it starts and ends; board.wake refuses a wake while it is over 2 min old, since no service would deliver it. */
 export const TICKED = ".ticked";
 /** A run the CI cache does not stamp, or one read with `gh`, is read at most this often (GitHub's REST limit is 5,000 requests an hour). */
 export const RUN_LOOK_MS = 2 * 60_000;
@@ -198,14 +198,21 @@ export async function waking(dir: string, session: string): Promise<boolean> {
   return (await readdir(dir).catch(() => [] as string[])).some(name => name.startsWith(`${session}-`) && name.endsWith(".json"));
 }
 
-/** Ticks the wakes every TICK_MS until the returned stop is called; a tick still running when the next comes skips it. */
+/**
+ * Ticks the wakes every TICK_MS until the returned stop is called; a tick still running when the next comes skips it. TICKED is stamped when a
+ * tick starts and when it ends, so it ages only while no tick runs. 10-15: a tick took 30 s to over 2 min (a run read under load, a send held
+ * up to 30 s by a slow daemon), and the 19:32 KST release killed one mid-tick; its restarted service's first tick reads every run afresh. At
+ * the 10:33:18Z VP of CI check-in the stamp was the old service's last finished tick, past WAKE_LATE_MS, so `pendingWakes` owed nothing and
+ * "ci release driver", asleep on run 38708750431 since 10:16Z and woken at 10:38:14Z, read idle and p96 stuck.
+ */
 export function startWakes(deps: WakeDeps, everyMs = TICK_MS): () => void {
   const wakes = new Wakes(deps);
   let running = false;
   const timer = setInterval(() => {
     if (running) return;
     running = true;
-    void mkdir(deps.dir, { recursive: true, mode: 0o700 }).then(() => wakes.tick()).then(() => writeFile(join(deps.dir, TICKED), new Date().toISOString()))
+    const stamp = () => writeFile(join(deps.dir, TICKED), new Date((deps.now ?? Date.now)()).toISOString());
+    void mkdir(deps.dir, { recursive: true, mode: 0o700 }).then(stamp).then(() => wakes.tick()).then(stamp)
       .catch(error => deps.log(`wakes: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
   }, everyMs);
   timer.unref();

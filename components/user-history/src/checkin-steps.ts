@@ -392,6 +392,22 @@ export function namesWhole(text: string, name: string): boolean {
 }
 /** A job name shorter than this never counts as named in a step's free text, as in `waitTarget`: "dev" would hit "sieun/dev". */
 export const JOB_NAME_MIN = 6;
+/** The first clause of a wait: what it waits on before "then". */
+export const firstClause = (text: string): string => text.split(/;|,? then |\. /i)[0]!;
+/**
+ * The working job of this chat that the first clause of a wait names (`namesWhole`, a name of JOB_NAME_MIN characters or more, or its child id),
+ * the longest name first. A thread is left out: a wait on another thread is a chase. VP of CI 10-15: p200 waited for "ci train lands the d2 and
+ * d3 precheck objects; then git rules duty reshape ...", its job git rules duty reshape was deleted once its part ended, and three check-ins in
+ * a row counted it stuck on a release while the job ci train worked on that land.
+ */
+export function waitCarrier(wait: string, facts: readonly JobFact[]): JobFact | undefined {
+  if (!wait) return undefined;
+  const head = firstClause(wait);
+  return facts.filter(fact => fact.state === "working" && !fact.key.startsWith("thread:") &&
+    ((fact.name.trim().length >= JOB_NAME_MIN && namesWhole(head, fact.name)) || namesWhole(head, fact.key)))
+    .sort((a, b) => b.name.length - a.name.length)[0];
+}
+
 /**
  * Whether an open step still owes a job work: the step's owner (`stepOwner`) is the job's id or name, or its job, waitFor, note or text names
  * the job's id or one of its names (JOB_NAME_MIN characters or more) as whole words (`namesWhole`). launch main bro 10-14 04:1xZ to 04:2xZ: the
@@ -434,8 +450,10 @@ export function withGoals(views: StepView[], board: ChatBoard | null): StepView[
 /** One open leaf step's view: its owner (none when the chat owns it), its class, and the thread to chase for a stale chase. */
 export function stepView(item: PlanItem, changedAt: number, self: ReadonlySet<string>, facts: readonly JobFact[], openTodos: readonly Pick<OwnerTodo, "id" | "text">[],
   rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], now: number, active?: ReadonlySet<string>): StepView {
-  const mine = self.has(stepOwner(item) ?? "");
-  const owner = mine ? undefined : ownerOf(item, facts);
+  const named = stepOwner(item);
+  const mine = self.has(named ?? "");
+  // A job deleted once its part ended leaves its name on the step; the working job its wait names carries the step on (`waitCarrier`).
+  const owner = mine ? undefined : ownerOf(item, facts) ?? (named !== undefined ? waitCarrier(item.waitFor ?? "", facts) : undefined);
   const parked = parkedBy(item, active);
   const base = { item, changedAt, mine, owner, openTodos, ...(parked ? { parked } : {}) };
   const cls = stepClass(base, now);
