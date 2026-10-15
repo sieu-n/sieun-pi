@@ -223,8 +223,8 @@ export function dutyFor(goal: Pick<PlanItem, "id" | "text">, duties: readonly Du
  * open at the 14:07 check-in: their own work ran as the chat's duties and their open steps rode other goals' jobs. An open goal folds when an
  * active duty of the chat runs its work (`dutyFor`), or when every open step right under it has a home in another goal: an open item there with
  * the same job (not the chat itself, not a thread); for a step with no job of its own, the item its waitFor names by id or whose job its waitFor
- * names. A step with its own job that no other goal shares stays, whatever it waits for. `moves` puts each
- * step with a home under that home; `left` are a duty goal's open steps with no home, which the check-in places itself. A goal another fold
+ * names. A step with its own job that no other goal shares stays, whatever it waits for, and so does a step on its own goal's job. `moves` puts
+ * each step with a home under the goal that holds that item, never under a step; `left` are a duty goal's open steps with no home, which the check-in places itself. A goal another fold
  * moves steps into does not fold, and a duty's goal is never a home. Board order.
  */
 export interface FoldMove { item: PlanItem; home: PlanItem; why: string }
@@ -242,31 +242,36 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
   for (const goal of goals) {
     const duty = byDuty.get(goal.id);
     if (!duty && homeGoals.has(goal.id)) continue;
-    const homes: { item: PlanItem; goal: string }[] = [];
+    // A home is an open goal, never a step: on ops guy's board (10-16 01:08) p259 and p260 were to fold under p138 "Fix: the M1 Air's Docker
+    // memory chart has gaps", a step of p45, because p138 had the job ops train. A goal that has the job itself comes first.
+    const homes: { item: PlanItem; goal: PlanItem }[] = [];
     for (const other of goals) {
       if (other === goal || byDuty.has(other.id) || folds.some(fold => fold.goal === other)) continue;
-      walkItems([other], item => { if (OPEN.has(item.status)) homes.push({ item, goal: other.id }); });
+      walkItems([other], item => { if (OPEN.has(item.status)) homes.push({ item, goal: other }); });
     }
-    const homeOf = (step: PlanItem): { home: { item: PlanItem; goal: string }; why: string } | undefined => {
+    const first = (match: (item: PlanItem) => boolean) => homes.find(entry => entry.item === entry.goal && match(entry.item)) ?? homes.find(entry => match(entry.item));
+    const where = (entry: { item: PlanItem; goal: PlanItem }) => entry.item === entry.goal ? entry.goal.id : `${entry.item.id} of ${entry.goal.id}`;
+    const homeOf = (step: PlanItem): { home: PlanItem; why: string } | undefined => {
       const job = workJob(step);
       // A step with a job of its own rides another goal only on that job: p96 has its own job and waits for p97 of another goal, and stays.
+      // A step on its own goal's job is home already: p192, the goal ops train lands, holds ops train's steps (ops guy 10-16).
       if (job !== undefined) {
-        const same = homes.find(entry => workJob(entry.item) === job);
-        return same ? { home: same, why: `${same.item.id} has its job ${job}` } : undefined;
+        const same = job === workJob(goal) ? undefined : first(item => workJob(item) === job);
+        return same ? { home: same.goal, why: `${where(same)} has its job ${job}` } : undefined;
       }
       for (const id of step.waitFor?.match(/\bp\d+\b/g) ?? []) {
         const home = homes.find(entry => entry.item.id === id);
-        if (home) return { home, why: `it waits for ${id}` };
+        if (home) return { home: home.goal, why: `it waits for ${where(home)}` };
       }
-      const named = step.waitFor ? homes.find(entry => { const other = workJob(entry.item); return other !== undefined && phrasePattern(other)?.test(step.waitFor!) === true; }) : undefined;
-      return named ? { home: named, why: `it waits for the job ${workJob(named.item)} of ${named.item.id}` } : undefined;
+      const named = step.waitFor ? first(item => { const other = workJob(item); return other !== undefined && phrasePattern(other)?.test(step.waitFor!) === true; }) : undefined;
+      return named ? { home: named.goal, why: `it waits for the job ${workJob(named.item)} of ${where(named)}` } : undefined;
     };
     const moves: FoldMove[] = [];
     const left: PlanItem[] = [];
     const found = new Set<string>();
     for (const step of goal.children.filter(child => OPEN.has(child.status))) {
       const home = homeOf(step);
-      if (home) { moves.push({ item: step, home: home.home.item, why: home.why }); found.add(home.home.goal); }
+      if (home) { moves.push({ item: step, home: home.home, why: home.why }); found.add(home.home.id); }
       else left.push(step);
     }
     if (!duty && (!moves.length || left.length)) continue;

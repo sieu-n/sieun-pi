@@ -113,3 +113,25 @@ test("looks done: a note that says what is still missed or red, or that a job is
     "Live on production after promote 7: env-var verify exits 0 for both limits, and the crawler now makes live reads for the tools. A live check found " +
     "the lookup page still fails visitors; that fix is its own step.")), 'its note says "Live on production"', "a failure handed to another step");
 });
+
+/*
+ * ops guy 10-16: the 01:08 KST check-in counted finished_open 1 on p258 "looks done: its note says "landed"". The note says none of the drops
+ * has landed, because the ops train stopped. The text, job and note are p258's at 01:08. p133 on the same board said the Vercel fix "hasn't landed".
+ */
+const P258_NOTE = "Cause: 264 of 265 unbacked limits have a drop on a ci/ ref, but none has landed, because the ops train stopped at 14:12Z. The ops " +
+  "train has been re-driven. It pushes chain A f5835170cf as ci/limits-d2-chain-a (reads 176) and chain B 6ec9170ccb as ci/limits-d2-chain-b (adds " +
+  "infra, reads 144, with metal-deploy-tests and ack 29), and lands each on green. limits duty green rebuilds the 4 conflicting stacks and the " +
+  "FL_MAX_PAGES leftover. This job remeasures after each land.";
+const p258 = (note: string): PlanItem => ({ id: "p258", status: "doing", children: [], job: "fix limits rest on evidence ops guy (+observability) 23:28", note,
+  text: "Unbacked limits still in the code in the Limits rest on evidence duty reaches at most 0, from 930 on" });
+
+test("looks done: a ship word after none or a negated verb, or a land still to come, is not done (ops guy 10-16, p258)", () => {
+  assert.equal(looksDone(p258(P258_NOTE)), null, "the note at the 01:08 check-in");
+  for (const note of ["None of the 264 drops have landed.", "The Vercel fix hasn't landed.", "Chain A is not landed yet.", "Chain A lands next.",
+    "Chain A waits to land on green.", "Neither chain merged.", "The drops didn't land before the train stopped."]) {
+    assert.equal(looksDone(p258(note)), null, note);
+  }
+  assert.equal(looksDone(p258("Chain A landed on sieun/dev as f5835170cf.")), 'its note says "landed"', "a real land still counts");
+  assert.equal(looksDone(p258("Both chains landed on sieun/dev as f5835170cf and 6ec9170ccb, so none of the 265 limits is left.")), 'its note says "landed"',
+    "a none after the ship word names what is left, and the land still counts");
+});

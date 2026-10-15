@@ -12,15 +12,15 @@ export const pathLike = (token: string): boolean => token.includes("/") || /^\d{
 /**
  * A note that says the work shipped: shipped, merged, deployed, landed, released, or live (is live, now live, live on production), unless a
  * word up to three words before it, in the same clause, makes it a condition, a wait or a denial ("not merged", "after it is deployed",
- * "until landed", "to be released", "nothing deployed"), or the word right before it makes it a name or an adjective ("the shipped app",
- * "built from Shipped": frontend bro 10-12, p84, p92 and p96). A word joined to it by a hyphen, a slash or a dot is part of a path or a
+ * "until landed", "to be released", "nothing deployed", "none of them has landed", "hasn't merged": ops guy 10-16, p258), or the word right
+ * before it makes it a name or an adjective ("the shipped app", "built from Shipped": frontend bro 10-12, p84, p92 and p96). A word joined to it by a hyphen, a slash or a dot is part of a path or a
  * name ("2030-email-from-shipped/assets"). Parts merged into one version are one build, not a merged PR (frontend bro 10-13, p92). A released
  * queue, hold or lock frees other work and ships nothing ("Fable released the queue": AI harness 10-13, p319). A quoted ship word, or one
  * after "after" and another actor's name, is someone else's act ("After Fable's 'released' at 09:43Z": AI harness 10-13, p357). A check
  * verb before it names a check ("checks each fix job is live"), and a job, session, worker or thread that is live is running, not shipped
  * (AI harness 10-15, p456). A count right before it counts other things that shipped ("so 738 landed in a day": Crawler VP 10-15, p504 to p506).
  */
-const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on|nothing|no|never|without|yet|pending|` +
+const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|\w+n['’]t|until|after|once|before|when|if|be|awaiting|for|on|nothing|none(?:\s+of(?:\s+[\w'’]+){0,3})?|neither|nor|no|never|without|yet|pending|` +
   String.raw`checks?|checking|verify|verifies|verifying|confirms?|confirming|whether)\s+(?:[\w'’]+\s+){0,3})` +
   String.raw`(?<![-/.'"‘“])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?<!(?<![\w.#]|\b(?:land|promote|board|part|cut|wave|phase|tier|round|attempt|release|run|pr|step|item|to|and|or|through)s?\s+#?)\d{1,3}(?:,\d{3})*\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)` +
   String.raw`(?!(?<=merged)\s+into\s+(?:one|a|a\s+single)\b)(?!(?<=released)\s+(?:the\s+|its\s+|their\s+|a\s+)?(?:\w+\s+)?(?:queue|hold|lock)s?\b)|` +
