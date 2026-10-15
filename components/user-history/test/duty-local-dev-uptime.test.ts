@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type Exec, footprintMb, measureUptime, parseEnv, restartsSince, target, treePids, type UptimeDeps } from "../scripts/duties/local-dev-uptime.ts";
+import { ANSWER_TIMEOUT_MS, type Exec, footprintMb, measureUptime, parseEnv, restartsSince, target, treePids, type UptimeDeps } from "../scripts/duties/local-dev-uptime.ts";
 
 const NOW = Date.parse("2026-10-10T05:00:00Z");
 const ENV = { PUBLIC_CONVEX_URL: "http://127.0.0.1:3210", CRAWLER_API_URL: "http://localhost:8787" };
@@ -35,31 +35,42 @@ test("local dev uptime: probes the 4 URLs, takes Convex and crawler URLs from th
   const run = deps({ jlist: jlist(0, 2), footprintMb: 1500 });
   const { output, state } = await measureUptime(run, undefined);
   assert.deepEqual(run.urls.sort(), ["http://127.0.0.1:3210/version", "http://localhost:5174/", "http://localhost:5176/", "http://localhost:8787/health"]);
-  assert.deepEqual([output.metrics.wiki_down, output.metrics.search_down, output.metrics.convex_down, output.metrics.crawler_down], [0, 0, 0, 0]);
-  assert.equal(output.metrics.wiki_footprint_mb, 1500);
-  assert.deepEqual(output.flagged?.map(item => item.kind), ["baseline", "baseline"]);
+  assert.deepEqual(output.metrics, { servers_not_answering: 0, wiki_footprint_mb: 1500, restarts: 0 });
+  assert.deepEqual(output.flagged?.map(item => item.kind), ["answer", "answer", "answer", "answer", "baseline", "baseline"]);
+  assert.match(output.flagged![0]!.excerpt, /^wiki: GET http:\/\/localhost:5176\/ gave 200 in 0 ms$/);
   assert.deepEqual(state?.restarts.search?.restartTime, 2);
 });
 
 test("local dev uptime: a non-200, a network error and repeated restarts are flagged; a remote crawler is off by design", async () => {
   const previous = { restarts: { "llm-wiki": { restartTime: 0, at: NOW - 600_000 }, search: { restartTime: 2, at: NOW - 600_000 } } };
-  const run = deps({ jlist: jlist(3, 2), footprintMb: 5000, env: { PUBLIC_CONVEX_URL: "http://127.0.0.1:3210", CRAWLER_API_URL: "https://crawler-staging.example.com" },
+  const run = deps({ jlist: jlist(3, 4), footprintMb: 5000, env: { PUBLIC_CONVEX_URL: "http://127.0.0.1:3210", CRAWLER_API_URL: "https://crawler-staging.example.com" },
     answers: { "http://localhost:5174/": 502, "http://127.0.0.1:3210/version": new Error("connect ECONNREFUSED") } });
   const { output } = await measureUptime(run, previous);
-  assert.equal(output.metrics.search_down, 1);
-  assert.equal(output.metrics.convex_down, 1);
-  assert.equal(output.metrics.crawler_down, 0);
-  assert.equal(output.metrics.wiki_restarts, 3);
-  assert.equal(output.metrics.search_restarts, 0);
+  assert.deepEqual(output.metrics, { servers_not_answering: 2, wiki_footprint_mb: 5000, restarts: 5 });
   assert.ok(!run.urls.some(url => url.includes("crawler")));
   const kinds = output.flagged?.map(item => item.kind).sort();
-  assert.deepEqual(kinds, ["by_design", "down", "down", "memory", "restarts"]);
+  assert.deepEqual(kinds, ["answer", "by_design", "down", "down", "memory", "restarts", "restarts"]);
+});
+
+test("local dev uptime: a 200 slower than 5 s counts as not answering", async () => {
+  let clock = NOW;
+  const run = deps({ jlist: jlist(0, 0) });
+  const slowFetch = (async (url: string, init?: RequestInit) => {
+    if (url !== "http://localhost:5176/") return run.fetch(url, init);
+    clock += 1;
+    return await new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(new Response("late")), 60_000);
+      init?.signal?.addEventListener("abort", () => { clearTimeout(timer); clock += ANSWER_TIMEOUT_MS; reject(init.signal!.reason); });
+    });
+  }) as unknown as typeof fetch;
+  const { output } = await measureUptime({ ...run, fetch: slowFetch, now: () => clock }, undefined);
+  assert.equal(output.metrics.servers_not_answering, 1);
+  assert.match(output.flagged!.find(item => item.kind === "down")!.excerpt, /^wiki: GET http:\/\/localhost:5176\/ gave .*after 5001 ms$/);
 });
 
 test("local dev uptime: pm2 down still reports every metric, and an encrypted env value is a down service", async () => {
   const { output, state } = await measureUptime(deps({ env: { PUBLIC_CONVEX_URL: "encrypted:abc" } }), undefined);
-  assert.equal(output.metrics.convex_down, 1);
-  assert.equal(output.metrics.crawler_down, 1);
+  assert.equal(output.metrics.servers_not_answering, 2);
   assert.equal(state, undefined);
   assert.equal(output.flagged?.filter(item => item.kind === "pm2").length, 1);
 });

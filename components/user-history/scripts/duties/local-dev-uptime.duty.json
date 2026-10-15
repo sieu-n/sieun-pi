@@ -1,59 +1,14 @@
 {
   "name": "Local dev servers",
   "ownerWords": "A 200 check is a good duty too. Hand the 200 checks of the wiki, the frontend app, Convex and the crawler API in the local environment to the ops chat.",
-  "goal": "The wiki (localhost:5176), the search app (localhost:5174), local Convex and the local crawler-v3 API each answer 200 within 5 s, the wiki's pm2 tree stays under 4096 MB, and pm2 does not restart the wiki or search again and again. Tell the owner only when one is down, over its cap, or restarting repeatedly.",
+  "goal": "The wiki (localhost:5176), the search app (localhost:5174), local Convex and the local crawler-v3 API each answer 200 within 5 s, the wiki's pm2 tree stays under 4096 MB, and pm2 restarts the wiki or search at most once a day. Tell the owner only when a server does not answer, the wiki is over its cap, or a server keeps restarting.",
   "metrics": [
     {
-      "key": "wiki_down",
-      "label": "The wiki (localhost:5176) gave no 200 within 30 s",
+      "key": "servers_not_answering",
+      "label": "Local servers not answering 200 within 5 s",
       "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "search_down",
-      "label": "The search app (localhost:5174) gave no 200 within 30 s",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "convex_down",
-      "label": "Local Convex /version gave no 200 within 30 s",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "crawler_down",
-      "label": "Local crawler-v3 /health gave no 200 within 30 s",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "wiki_ms",
-      "label": "Time for the wiki (localhost:5176) to answer",
-      "op": "<=",
-      "target": 5000,
-      "unit": " ms"
-    },
-    {
-      "key": "search_ms",
-      "label": "Time for the search app (localhost:5174) to answer",
-      "op": "<=",
-      "target": 5000,
-      "unit": " ms"
-    },
-    {
-      "key": "convex_ms",
-      "label": "Time for local Convex /version to answer",
-      "op": "<=",
-      "target": 5000,
-      "unit": " ms"
-    },
-    {
-      "key": "crawler_ms",
-      "label": "Time for local crawler-v3 /health to answer",
-      "op": "<=",
-      "target": 5000,
-      "unit": " ms"
+      "target": 0,
+      "headline": true
     },
     {
       "key": "wiki_footprint_mb",
@@ -63,14 +18,8 @@
       "unit": " MB"
     },
     {
-      "key": "wiki_restarts",
-      "label": "pm2 restarts of llm-wiki since the last run",
-      "op": "<=",
-      "target": 1
-    },
-    {
-      "key": "search_restarts",
-      "label": "pm2 restarts of search since the last run",
+      "key": "restarts",
+      "label": "pm2 restarts of the wiki or search since the last run",
       "op": "<=",
       "target": 1
     }
@@ -89,6 +38,6 @@
     "cwd": "../..",
     "timeoutMs": 90000
   },
-  "onMiss": "Read the flagged items. by_design means the search app points that service away from this machine: not news. Wiki or search down: in auto-sns-agent read `PM2_HOME=.cache/pm2-dev node_modules/.bin/pm2 logs <llm-wiki|search> --lines 200 --nostream`, find the cause, and restart it with that pm2 only if it still does not answer. Convex or crawler down: run `node scripts/dev/devstack.mjs status` in auto-sns-agent and follow ops/runbooks/local-runtime.md. Over the cap or restarting repeatedly: find what holds the memory or kills the server (scripts/dev/dev-guard.mjs logs why it exits) and start one job that fixes the root and commits with scripts/repo/agent/commit.mjs. Tell the owner what broke, the numbers, and whether it answers now. Slow alone: note it under the board goal, no message. All on target: end the turn with no message.",
+  "onMiss": "Read the flagged items; each service's answer is there, and by_design means the search app uses a remote one. Wiki or search not answering: in auto-sns-agent read `PM2_HOME=.cache/pm2-dev node_modules/.bin/pm2 logs <llm-wiki|search> --lines 200 --nostream`, find the cause, and restart it with that pm2 only if it still does not answer. Convex or crawler: run `node scripts/dev/devstack.mjs status` and follow ops/runbooks/local-runtime.md. Over the cap or restarting: find the root (dev-guard.mjs logs exits; `Stopping app` in .cache/pm2-dev/pm2.log is a restart command) and start one job that fixes it with `commit.mjs --object-only --push-ci ci/<name>`. Tell the owner what broke and whether it answers now. All on target: no message.",
   "boardGoal": "p53"
 }

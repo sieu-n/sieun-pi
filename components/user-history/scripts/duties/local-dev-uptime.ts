@@ -6,16 +6,16 @@ import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
- * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): whether the 4 local dev services answer 200,
- * how long each took, the wiki's pm2 tree memory against its cap, and pm2 restarts of the wiki and search since the last run. No model call.
+ * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 4 local dev services gave no
+ * 200 within 5 s, the wiki's pm2 tree memory against its cap, and pm2 restarts of the wiki and search since the last run. Each service's
+ * answer and time goes into the flagged items as run detail. No model call.
  * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
  * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const SLOW_MS = 5000;
-/** Longer than the 5 s target, so a slow answer counts as slow and only no answer counts as down. */
-const ANSWER_TIMEOUT_MS = 30_000;
+/** The owner's 200 check: an answer slower than 5 s counts as no answer. */
+export const ANSWER_TIMEOUT_MS = 5000;
 export const CAP_MB = 4096;
 
 /** A service: its metric key prefix, and either a fixed URL or the search app's env key for its base URL plus the health path. */
@@ -26,8 +26,8 @@ export const SERVICES: readonly Service[] = [
   { key: "convex", envKey: "PUBLIC_CONVEX_URL", path: "/version" },
   { key: "crawler", envKey: "CRAWLER_API_URL", path: "/health" },
 ];
-/** pm2 processes whose restarts the duty counts, by metric key prefix. Only the wiki has a memory cap. */
-export const PM2_NAMES = { wiki: "llm-wiki", search: "search" } as const;
+/** pm2 processes whose restarts the duty counts. Only the wiki has a memory cap. */
+export const PM2_NAMES = ["llm-wiki", "search"] as const;
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], env?: Record<string, string>) => Promise<string>;
@@ -104,25 +104,19 @@ export function target(service: Service, env: Record<string, string>): { url: st
 
 export async function measureUptime(deps: UptimeDeps, previous: UptimeState | undefined): Promise<{ output: PrecheckOutput; state?: UptimeState }> {
   const flagged: FlaggedSlice[] = [];
-  const metrics: Record<string, number> = {};
+  const metrics = { servers_not_answering: 0, wiki_footprint_mb: 0, restarts: 0 };
   const at = deps.now();
-  await Promise.all(SERVICES.map(async service => {
+  const answers = await Promise.all(SERVICES.map(async (service): Promise<FlaggedSlice> => {
     const where = target(service, deps.env);
-    metrics[`${service.key}_down`] = 0;
-    metrics[`${service.key}_ms`] = 0;
-    if ("off" in where) { flagged.push({ at, kind: "by_design", excerpt: `${service.key}: ${where.off}` }); return; }
-    if ("error" in where) { metrics[`${service.key}_down`] = 1; flagged.push({ at, kind: "down", excerpt: `${service.key}: ${where.error}` }); return; }
+    if ("off" in where) return { at, kind: "by_design", excerpt: `${service.key}: ${where.off}` };
+    if ("error" in where) return { at, kind: "down", excerpt: `${service.key}: ${where.error}` };
     const answer = await probe(deps, where.url);
-    metrics[`${service.key}_ms`] = answer.ms;
-    if (answer.status !== 200) {
-      metrics[`${service.key}_down`] = 1;
-      flagged.push({ at, kind: "down", excerpt: `${service.key}: GET ${where.url} gave ${answer.error ?? `HTTP ${answer.status}`} after ${answer.ms} ms` });
-    } else if (answer.ms > SLOW_MS) flagged.push({ at, kind: "slow", excerpt: `${service.key}: GET ${where.url} answered 200 in ${answer.ms} ms` });
+    if (answer.status === 200) return { at, kind: "answer", excerpt: `${service.key}: GET ${where.url} gave 200 in ${answer.ms} ms` };
+    return { at, kind: "down", excerpt: `${service.key}: GET ${where.url} gave ${answer.error ?? `HTTP ${answer.status}`} after ${answer.ms} ms` };
   }));
+  metrics.servers_not_answering = answers.filter(answer => answer.kind === "down").length;
+  flagged.push(...answers);
 
-  metrics.wiki_footprint_mb = 0;
-  metrics.wiki_restarts = 0;
-  metrics.search_restarts = 0;
   let list: Pm2Process[];
   try {
     const text = await deps.exec(deps.pm2.bin, ["jlist"], { PM2_HOME: deps.pm2.home });
@@ -132,17 +126,17 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
     return { output: { metrics, flagged } };
   }
   const state: UptimeState = { restarts: {} };
-  for (const [key, name] of Object.entries(PM2_NAMES)) {
+  for (const name of PM2_NAMES) {
     const proc = list.find(candidate => candidate.name === name);
     if (!proc?.pid) { flagged.push({ at, kind: "pm2", excerpt: `pm2 has no live ${name} process (status ${proc?.pm2_env?.status ?? "missing"})` }); continue; }
     const restartTime = proc.pm2_env?.restart_time ?? 0;
     const before = previous?.restarts[name];
     const restarts = restartsSince(before, restartTime);
-    metrics[`${key}_restarts`] = restarts;
+    metrics.restarts += restarts;
     state.restarts[name] = { restartTime, at };
     if (!before) flagged.push({ at, kind: "baseline", excerpt: `first run: pm2 restart count ${restartTime} of ${name} saved as the baseline` });
     else if (restarts > 0) flagged.push({ at, kind: "restarts", excerpt: `pm2 restarted ${name} ${restarts} times since ${new Date(before.at).toISOString()} (count ${before.restartTime} to ${restartTime})` });
-    if (key !== "wiki") continue;
+    if (name !== "llm-wiki") continue;
     const pids = treePids(await deps.exec("ps", ["-axo", "pid=,ppid="]), proc.pid);
     metrics.wiki_footprint_mb = footprintMb(await deps.exec("footprint", ["--noCategories", "-f", "bytes", ...pids.flatMap(pid => ["-p", String(pid)])]));
     if (metrics.wiki_footprint_mb > CAP_MB) flagged.push({ at, kind: "memory", excerpt: `${name} process tree (pids ${pids.join(", ")}) holds ${metrics.wiki_footprint_mb} MB, over the ${CAP_MB} MB cap` });
