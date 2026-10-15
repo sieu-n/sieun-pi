@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "./chat-duty-job.ts";
 import type { CheckInActor } from "./checkin-settings.ts";
@@ -109,8 +109,22 @@ export const STUCK_MAX_MS = 12 * 60 * 60_000;
  * requests hung for hours and were aborted at each restart.
  */
 export function stuckAfterMs(schedule: DutySchedule): number {
-  const intervalMs = schedule.kind === "every" ? schedule.minutes * 60_000 : 24 * 60 * 60_000;
-  return Math.min(Math.max(intervalMs, STUCK_MIN_MS), STUCK_MAX_MS);
+  return Math.min(Math.max(intervalMs(schedule), STUCK_MIN_MS), STUCK_MAX_MS);
+}
+
+/** The time between two slots of a schedule; a daily duty's is a day. */
+export const intervalMs = (schedule: DutySchedule): number => schedule.kind === "every" ? schedule.minutes * 60_000 : 24 * 60 * 60_000;
+
+/** Why a run has no job when its start failed or a restart cut it off; a run with it is never started again. */
+export const NOT_STARTED = "the duty job did not start";
+/** A run's job start in progress, kept in `<dutyId>.pending.json` until the start ends, so a restart can finish it (`Duties.resume`). */
+interface PendingStart {
+  at: number; schedule: DutySchedule; measured: AfterMeasure | null;
+  brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses">;
+}
+async function readPending(file: string): Promise<PendingStart | null> {
+  try { const value = JSON.parse(await readFile(file, "utf8")) as PendingStart; return typeof value?.at === "number" && value.schedule && value.brief ? value : null; }
+  catch { return null; }
 }
 
 const pad = (value: number): string => String(value).padStart(2, "0");
@@ -210,6 +224,7 @@ export class Duties {
     for (const chatId of await this.store.chats()) {
       if (!(await this.host.isChat(chatId))) continue;
       chats.push(chatId);
+      await this.resume(chatId);
       if (!this.boards.has(chatId)) {
         const board = await this.host.board?.(chatId).catch(() => null);
         if (board && !this.boards.has(chatId)) this.boards.set(chatId, board);
@@ -506,27 +521,82 @@ export class Duties {
     const record: DutyRunRecord = { duty: CHECK_IN_DUTY_ID, at: run.at, slot: run.at, trigger: run.trigger, ms: 0, verdict: judged.verdict, metrics: judged.metrics,
       summary: judged.summary, classes: run.classes, ...(run.output.flagged.length ? { flagged: run.output.flagged } : {}) };
     const previous = (await this.store.runs(chatId)).filter(entry => entry.duty === CHECK_IN_DUTY_ID);
+    if (previous.some(entry => entry.slot === run.at && entry.job !== undefined)) return "done";
     const misses = await this.missesOf(chatId, record, previous, CHECK_IN_DUTY.metrics);
-    let launched: Launched;
-    let failed = false;
-    try {
-      launched = await this.launch(chatId, CHECK_IN_DUTY_ID, { kind: "every", minutes: run.everyMs / 60_000 }, run.at, run.at,
-        { duty: CHECK_IN_DUTY, measure: judged.summary, findings: [run.findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses },
-        judged.verdict === "error" ? null : { at: run.at, ...judged });
-    }
-    catch (error) { failed = true; launched = { skipped: `the duty job did not start: ${message(error).slice(0, 300)}` }; }
-    if (launched === null) return "done";
-    if ("skipped" in launched) { record.verdict = "skipped"; record.summary = launched.skipped; }
-    else { record.job = launched.job; if (launched.replaced) record.summary += launched.replaced; }
-    record.ms = Math.max(0, this.now() - run.at);
     await this.store.updateFile(chatId, file => {
       const state = file.checkIn ??= { createdAt: run.at, runCount: 0 };
       state.runCount += 1;
       state.lastRunAt = run.at;
     });
-    await this.store.appendRun(chatId, record);
-    this.log(`duty ${chatId.slice(0, 8)}/${CHECK_IN_DUTY_ID}: ${record.verdict}, ${record.job ? `started ${record.job.name}` : record.summary}`);
-    return failed ? "failed" : "done";
+    const started = await this.startJob(chatId, record, CHECK_IN_DUTY, {
+      schedule: { kind: "every", minutes: run.everyMs / 60_000 }, measured: judged.verdict === "error" ? null : { at: run.at, ...judged },
+      brief: { measure: judged.summary, findings: [run.findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses } });
+    return started === "failed" ? "failed" : "done";
+  }
+
+  private pendingFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.pending.json`); }
+
+  /**
+   * Appends a measured run's record, then starts its duty job (`launch`) and writes the job, or why none started, into the record. The record
+   * comes first because the start waits for a working slot in the Mac-wide turn queue, and a restart during that wait lost it: on 10-15 the
+   * cc3dcb8 and 1ba8ab0 releases each dropped a measured Skills and tools Run now, and about 8 restarts from 09:11Z to 09:41Z left no check-in
+   * recorded in any chat after 08:41Z. The job's brief is kept in `<dutyId>.pending.json` until the start ends, so `resume` can start the job
+   * after a restart. A check-in run that starts no job is recorded as skipped; a standing duty's keeps its verdict and says why in its summary.
+   */
+  private async startJob(chatId: string, record: DutyRunRecord, duty: DutyJobInput["duty"], pending: Omit<PendingStart, "at">, append = true): Promise<"started" | "none" | "failed"> {
+    const file = this.pendingFile(chatId, record.duty);
+    const older = await readPending(file);
+    await mkdir(this.store.chatDir(chatId), { recursive: true, mode: 0o700 });
+    await writeFile(file, JSON.stringify({ at: record.at, ...pending } satisfies PendingStart), { mode: 0o600 });
+    if (older && older.at !== record.at) await this.store.updateRun(chatId, record.duty, older.at, stored => { if (!stored.job) stored.summary += `; ${NOT_STARTED}: a later run took its place`; });
+    if (append) await this.store.appendRun(chatId, record);
+    let launched: Launched;
+    let failed = false;
+    try { launched = await this.launch(chatId, record.duty, pending.schedule, record.slot ?? record.at, record.at, { duty, ...pending.brief }, pending.measured); }
+    catch (error) { failed = true; launched = { skipped: `${NOT_STARTED}: ${message(error).slice(0, 300)}` }; }
+    const checkIn = record.duty === CHECK_IN_DUTY_ID;
+    const ms = Math.max(0, this.now() - record.at);
+    const attach = (stored: DutyRunRecord) => {
+      if (launched && "job" in launched) { stored.job = launched.job; if (launched.replaced) stored.summary += launched.replaced; }
+      else if (launched && checkIn) { stored.verdict = "skipped"; stored.summary = launched.skipped; }
+      else if (launched) stored.summary += `; ${launched.skipped}`;
+      if (checkIn) stored.ms = ms;
+    };
+    attach(record);
+    if (launched) await this.store.updateRun(chatId, record.duty, record.at, attach);
+    if ((await readPending(file))?.at === record.at) await rm(file, { force: true });
+    this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: ${record.verdict}, ${record.summary}${record.job ? `, started ${record.job.name}` : ""}`);
+    return failed ? "failed" : record.job ? "started" : "none";
+  }
+
+  /**
+   * Starts the job of each run whose start a restart cut off: a `<dutyId>.pending.json` left with no run of this process going. The job starts
+   * through the same turn-queue wait and is written into the run's record, while the run's slot is under one interval old; an older slot, or a
+   * record that already has its job or is gone, only clears the file.
+   */
+  private async resume(chatId: string): Promise<void> {
+    const names = await readdir(this.store.chatDir(chatId)).catch(() => [] as string[]);
+    for (const name of names.filter(entry => entry.endsWith(".pending.json"))) {
+      const dutyId = name.slice(0, -".pending.json".length);
+      const key = `${chatId}/${dutyId}`;
+      if (this.running.has(key)) continue;
+      const file = this.pendingFile(chatId, dutyId);
+      const pending = await readPending(file);
+      const record = pending && (await this.store.runs(chatId)).find(run => run.duty === dutyId && run.at === pending.at);
+      const duty = dutyId === CHECK_IN_DUTY_ID ? CHECK_IN_DUTY : (await this.store.list(chatId)).find(entry => entry.id === dutyId);
+      if (!pending || !record || !duty || record.job || record.verdict === "skipped" || record.summary.includes(NOT_STARTED)) { await rm(file, { force: true }); continue; }
+      if (this.now() - (record.slot ?? record.at) >= intervalMs(pending.schedule)) {
+        await this.store.updateRun(chatId, dutyId, record.at, stored => { stored.summary += `; ${NOT_STARTED}: the server restarted and its slot passed`; });
+        await rm(file, { force: true });
+        continue;
+      }
+      this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: the server restarted before the job of the run of ${new Date(record.at).toISOString()} started; starting it`);
+      this.steps.set(key, { at: record.at, step: "starting its job" });
+      const task = this.startJob(chatId, record, duty, { schedule: pending.schedule, measured: pending.measured, brief: pending.brief }, false)
+        .then(() => {}, error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: resume its job: ${message(error)}`))
+        .finally(() => { this.running.delete(key); this.steps.delete(key); });
+      this.running.set(key, task);
+    }
   }
 
   /**
@@ -633,14 +703,8 @@ export class Duties {
     ].filter(Boolean).join("\n\n");
     this.steps.set(key, { at: started, step: "starting its job" });
     const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary } : null;
-    try {
-      const launched = await this.launch(chatId, dutyId, duty.schedule, at, started,
-        { duty, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses }, measured);
-      if (launched && "job" in launched) { record.job = launched.job; if (launched.replaced) record.summary += launched.replaced; }
-      else if (launched) record.summary += `; ${launched.skipped}`;
-    } catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: start the duty job: ${message(error)}`); }
-    await this.store.appendRun(chatId, record);
-    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${record.verdict}, ${record.summary}${record.job ? `, started ${record.job.name}` : ""}`);
+    await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured,
+      brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses } });
   }
 
   /**

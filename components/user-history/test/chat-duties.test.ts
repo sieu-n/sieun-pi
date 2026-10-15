@@ -497,8 +497,8 @@ test("Duties: a slot that comes while the last run still starts its job gets a s
   await duties.settled();
   const runs = (await store.runs("chat1")).reverse();
   assert.deepEqual(runs.map(entry => [(entry.at - start) / 60_000, entry.verdict, entry.job?.id ?? entry.summary]), [
-    [10, "skipped", `${STILL_GOING} starting its job (run of 23:07, 600 s ago)`], [20, "skipped", `${STILL_GOING} starting its job (run of 23:07, 1200 s ago)`],
-    [0, "met", "s1"], [30, "met", "s2"]], "slots 0, 10, 20 and 30 each have one record");
+    [0, "met", "s1"], [10, "skipped", `${STILL_GOING} starting its job (run of 23:07, 600 s ago)`],
+    [20, "skipped", `${STILL_GOING} starting its job (run of 23:07, 1200 s ago)`], [30, "met", "s2"]], "slots 0, 10, 20 and 30 each have one record, the run's own before its job starts");
   duties.close();
 });
 
