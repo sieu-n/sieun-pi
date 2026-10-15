@@ -223,7 +223,46 @@ class Flock:
 
 
 # ---------------------------------------------------------------- keychain io
+# Linux has no Keychain and no /usr/bin/security, so off macOS each item is a 0600 file named by its
+# service in a 0700 folder beside the stores. PI_POOL_SECRETS=file picks the files on macOS too.
+SECRETS = os.path.join(TM, "secrets")
+FILE_SECRETS = os.environ.get("PI_POOL_SECRETS") == "file" or not os.path.exists("/usr/bin/security")
+
+
+def secret_path(service):
+    if not service or "/" in service or service.startswith("."):
+        raise RuntimeError(f"bad keychain service name {service!r}")
+    return os.path.join(SECRETS, service)
+
+
+def file_read(service):
+    try:
+        with open(secret_path(service)) as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def file_write(service, secret):
+    os.makedirs(SECRETS, mode=0o700, exist_ok=True)
+    path = secret_path(service)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    fd = os.open(tmp, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(secret)
+    os.replace(tmp, path)
+
+
+def file_delete(service):
+    try:
+        os.unlink(secret_path(service))
+    except FileNotFoundError:
+        pass
+
+
 def kc_read(service):
+    if FILE_SECRETS:
+        return file_read(service)
     r = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", service,
                         "-a", KC_ACCOUNT, "-w"], capture_output=True, text=True)
     if r.returncode == 44:
@@ -235,6 +274,8 @@ def kc_read(service):
 
 def kc_write(service, secret):
     """ps-safe write: the secret travels on stdin, never in argv."""
+    if FILE_SECRETS:
+        return file_write(service, secret)
     if "'" in secret:
         quoted = '"' + secret.replace("\\", "\\\\").replace('"', '\\"') + '"'
     else:
@@ -248,6 +289,8 @@ def kc_write(service, secret):
 
 
 def kc_delete(service):
+    if FILE_SECRETS:
+        return file_delete(service)
     r = subprocess.run(["/usr/bin/security", "delete-generic-password", "-s", service, "-a", KC_ACCOUNT],
                        capture_output=True, text=True)
     if r.returncode not in (0, 44):

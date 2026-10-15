@@ -54,7 +54,7 @@ def level(reading):
 
 def read(feed=FEED, now=None):
     """{kernel, swap_used, swap_total, compressor, ram, source} in bytes but kernel and
-    source, or None off macOS. The feed's level, compressor, swap and swapouts replace the
+    source, or None when the kernel read fails. The feed's level, compressor, swap and swapouts replace the
     kernel's while the feed is fresh and parses (source "feed"); otherwise source is "sysctl"."""
     own = read_kernel()
     if own is None:
@@ -127,9 +127,75 @@ def gb_ok(value, top=1024):
     return not isinstance(value, bool) and isinstance(value, (int, float)) and 0 <= value < top
 
 
+# Linux PSI (/proc/pressure/memory, or memory.pressure of the cgroup that caps this process) stands in for xnu's
+# level. The cutoffs are Android lmkd's defaults for its 1 s PSI window: ro.lmk.psi_partial_stall_ms 70 (some
+# tasks stalled 7% of the time) for medium pressure and ro.lmk.psi_complete_stall_ms 700 (all tasks stalled 70%)
+# for critical. avg10 is the kernel's 10 s average, in percent.
+PSI_SOME_WARN = 7.0
+PSI_FULL_CRITICAL = 70.0
+
+
 def read_kernel():
-    """{kernel, swap_used, swap_total, compressor, ram} from the kernel, or None when a
-    kernel call fails (another OS, a changed struct)."""
+    """read_mach on macOS, read_linux on Linux."""
+    return read_linux() if os.path.exists("/proc/meminfo") else read_mach()
+
+
+def read_linux(proc="/proc", cgroups="/sys/fs/cgroup"):
+    """{kernel, swap_used, swap_total, compressor, ram} from /proc and cgroup v2, or None when they cannot be read.
+    ram is the nearest memory.max above this process (a systemd slice's MemoryMax) when it is below MemTotal,
+    and the PSI read is that cgroup's, so CI load in another slice does not hold this one's turns."""
+    try:
+        info = {}
+        with open(os.path.join(proc, "meminfo")) as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                info[key] = int(rest.split()[0]) * 1024
+        ram, psi = info["MemTotal"], os.path.join(proc, "pressure", "memory")
+        cap = capping_cgroup(proc, cgroups)
+        if cap:
+            ram = min(ram, cap[1])
+            psi = os.path.join(cap[0], "memory.pressure")
+        with open(psi) as f:
+            stalls = parse_psi(f.read())
+        kernel = KERNEL_CRITICAL if stalls["full"] >= PSI_FULL_CRITICAL else KERNEL_WARN if stalls["some"] >= PSI_SOME_WARN else 1
+        return {"kernel": kernel, "swap_used": info["SwapTotal"] - info["SwapFree"], "swap_total": info["SwapTotal"],
+                "compressor": info.get("Zswap", 0), "ram": ram}
+    except (OSError, KeyError, ValueError, IndexError):
+        return None
+
+
+def parse_psi(text):
+    """{some, full}: the avg10 percentages of one PSI file; full is 0 where the kernel gives no full line."""
+    out = {"some": 0.0, "full": 0.0}
+    for line in text.splitlines():
+        kind, *fields = line.split()
+        if kind in out:
+            out[kind] = float(dict(f.split("=", 1) for f in fields)["avg10"])
+    return out
+
+
+def capping_cgroup(proc, cgroups):
+    """(folder, bytes) of the nearest cgroup v2 folder at or above this process with a numeric memory.max, or None."""
+    with open(os.path.join(proc, "self", "cgroup")) as f:
+        rel = next((line[3:].strip() for line in f if line.startswith("0::")), None)
+    while rel is not None:
+        folder = os.path.join(cgroups, rel.lstrip("/"))
+        try:
+            with open(os.path.join(folder, "memory.max")) as f:
+                value = f.read().strip()
+            if value != "max":
+                return folder, int(value)
+        except FileNotFoundError:
+            pass
+        if rel in ("", "/"):
+            return None
+        rel = os.path.dirname(rel.rstrip("/"))
+    return None
+
+
+def read_mach():
+    """{kernel, swap_used, swap_total, compressor, ram} from the macOS kernel, or None when a
+    kernel call fails (a changed struct)."""
     try:
         import ctypes
         libc = ctypes.CDLL(None)

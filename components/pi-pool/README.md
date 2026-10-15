@@ -97,6 +97,7 @@ This repository does not install or seed those stores.
 | `accounts.json` (v2) | Claude account ids, emails, usage `windows` and `needsReauth` |
 | `stores/<uuid8>/` | One Claude store per account. Its credential is the Keychain item `Claude Code-credentials-<sha256(store path)[:8]>`, the same item a supervised `claude` reads |
 | macOS Keychain | Claude credentials, read and written through `/usr/bin/security` using `USER` as the keychain account |
+| `secrets/<service>` | Claude credentials on a host without `/usr/bin/security` (Linux), or with `PI_POOL_SECRETS=file`: one 0600 file per Keychain service name in a 0700 folder (`tests/test_linux_host.py`) |
 | `lock` and `stores/<uuid8>/.oauth_refresh.lock` + `stores/<uuid8>.lock` | tokenmaxxing's Claude pool lock, then Claude Code's own refresh lock on that store |
 | `live/` | Presence files of supervised `claude` sessions, a picker penalty only |
 | `codex-accounts.json` (v2) | Codex account ids, emails, plan (`tier`), usage `windows` and `needsReauth` |
@@ -535,6 +536,8 @@ A replay of the 852 runs that started 10-14 02:00-03:00 KST, when load reached 2
 
 While the Mac is short of memory the queue lowers its limit and holds low turns, so agent work stops adding load while the Mac pages.
 `pool/pressure.py` reads three kernel values in-process, with no fork: `kern.memorystatus_vm_pressure_level`, `vm.swapusage`, and the pages the compressor occupies (`vm_stat`'s "Pages occupied by compressor").
+On Linux it reads `/proc/meminfo` and the memory PSI of the nearest cgroup with a numeric `memory.max` (a systemd slice's `MemoryMax`, else `/proc/pressure/memory`): `some avg10` at 7% or more reads warn and `full avg10` at 70% or more reads critical, Android lmkd's default PSI cutoffs, and RAM is that `memory.max` when it is below `MemTotal` (`tests/test_linux_host.py`).
+The spawn gate's worker read uses macOS libproc and returns nothing on Linux, so spawns are not held there; its 20 and 16 GiB cutoffs were measured on the 32 GB Mac.
 While ops guy's machine-wide feed `~/.cache/virev/mac-pressure.json` (schema v1) is under 30 s old and parses, its `pressure_level`, `mem_gb.compressed`, `swap_gb` and `swapouts_per_s` replace the kernel's values, and the reading's `source` says `feed`; a missing, stale or malformed feed leaves the kernel read (`source` `sysctl`), and `pressure.parse_feed` is the one place that knows the schema.
 The level is critical when the kernel says critical (4), the compressor holds 45% of RAM, swap is over 95% full or the feed counts 6,000 swapouts a second or more, high when the kernel says warn (2), and ok otherwise. macOS said warn through the 10-14 thrash, with swap 98% full and 6,210 to 22,956 swapouts a second while kernel_task paged at 168% to 256%.
 At 18:00 KST on 10-14 the compressor held 16 GB of 32 with kernel_task paging at 189-268%, and at 18:20 it held 17.1 GB with a median 12,000 swap-ins a second while the kernel still said warn.
