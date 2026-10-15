@@ -18,11 +18,11 @@ export const pathLike = (token: string): boolean => token.includes("/") || /^\d{
  * queue, hold or lock frees other work and ships nothing ("Fable released the queue": AI harness 10-13, p319). A quoted ship word, or one
  * after "after" and another actor's name, is someone else's act ("After Fable's 'released' at 09:43Z": AI harness 10-13, p357). A check
  * verb before it names a check ("checks each fix job is live"), and a job, session, worker or thread that is live is running, not shipped
- * (AI harness 10-15, p456).
+ * (AI harness 10-15, p456). A count right before it counts other things that shipped ("so 738 landed in a day": Crawler VP 10-15, p504 to p506).
  */
 const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on|nothing|no|never|without|yet|pending|` +
   String.raw`checks?|checking|verify|verifies|verifying|confirms?|confirming|whether)\s+(?:[\w'’]+\s+){0,3})` +
-  String.raw`(?<![-/.'"‘“])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)` +
+  String.raw`(?<![-/.'"‘“])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?<!(?<![\w.#]|\b(?:land|promote|board|part|cut|wave|phase|tier|round|attempt|release|run|pr|step|item|to|and|or|through)s?\s+#?)\d{1,3}(?:,\d{3})*\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)` +
   String.raw`(?!(?<=merged)\s+into\s+(?:one|a|a\s+single)\b)(?!(?<=released)\s+(?:the\s+|its\s+|their\s+|a\s+)?(?:\w+\s+)?(?:queue|hold|lock)s?\b)|` +
   String.raw`(?<!\b(?:jobs?|sessions?|workers?|agents?|child|children|threads?|process(?:es)?)\s+)(?:is|are|now|went|already)\s+live|` +
   String.raw`live\s+on\s+(?:prod|production|staging|main))\b`, "i");
@@ -175,7 +175,8 @@ export function unlandedCloses(before: ChatBoard, after: ChatBoard): string[] {
   const visit = (items: readonly PlanItem[]) => {
     for (const item of items) {
       const prior = was.get(item.id);
-      const reason = prior ? unlandedClose(prior, item) : null;
+      // The board marks a reopened step done again with the note it closed on before (`reclose` in src/shared/chat-board.ts).
+      const reason = prior && !(prior.reopened && item.note === prior.note) ? unlandedClose(prior, item) : null;
       if (reason) refused.push(`${item.id} "${item.text.length > 70 ? item.text.slice(0, 69) + "…" : item.text}": ${reason}`);
       visit(item.children);
     }

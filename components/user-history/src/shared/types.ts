@@ -111,6 +111,11 @@ export interface PlanItem {
    * src/shared/duty-fixes.ts). Each duty run reads it as the fix for that metric's miss, and its close starts a verify run of the duty.
    */
   duty?: string;
+  /**
+   * The board reopened this done item because an open step went under it (plan_add, or plan_update with a parent). When its last open step
+   * closes, the board marks it done again; a status the agent sets clears the mark.
+   */
+  reopened?: true;
   children: PlanItem[];
 }
 /**

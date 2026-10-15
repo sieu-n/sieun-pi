@@ -81,6 +81,24 @@ function find<T extends Tree<T>>(items: readonly T[], id: string, above: T[] = [
   }
   return null;
 }
+/**
+ * The plan with each item the board reopened (`reopened`) marked done again once every step under it is closed, steps before the items above
+ * them. On 10-15 the Crawler VP moved p361 under done p314 and p378 under done p202; both reopened, their new steps closed by 11:04Z, and
+ * both stayed open with their close evidence in the note until the 12:30Z check-in closed them, counted in finished_open by 4 check-ins.
+ */
+function reclose(plan: readonly PlanItem[]): { plan: PlanItem[]; ids: string[] } {
+  const ids: string[] = [];
+  const visit = (items: readonly PlanItem[]): PlanItem[] => items.map(item => {
+    const children = item.children.length ? visit(item.children) : item.children;
+    if (!item.reopened || item.waitFor || !children.length || children.some(child => OPEN_STATUSES.has(child.status))) return children === item.children ? item : { ...item, children };
+    const { reopened: _reopened, ...rest } = item;
+    ids.push(item.id);
+    return { ...rest, status: "done", children };
+  });
+  const next = visit(plan);
+  return { plan: ids.length ? next : [...plan], ids };
+}
+
 /** The client's board views share the walk and the find: the mention index, the plan view's collapse-all and focus path. */
 export { walk as walkItems, find as findItem };
 /** The tree with the item `id` replaced by `change(item)` (null removes it with its children). */
@@ -426,6 +444,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
   // Summaries are written lowercase ("checked ...") and voiced here: "Owner checked ..." for the owner, "Checked ..." for the agent.
   const voice = (sentence: string) => actor === "owner" ? `Owner ${sentence}` : sentence[0]!.toUpperCase() + sentence.slice(1);
   const done = (next: Partial<ChatBoard>, summary: string) => {
+    if (next.plan) {
+      const closed = reclose(next.plan);
+      if (closed.ids.length) { next = { ...next, plan: closed.plan }; summary += `, closed ${closed.ids.join(", ")} again now that no open step is left under ${closed.ids.length === 1 ? "it" : "them"}`; }
+    }
     // A board that already holds more open goals than the limit (from before it) may keep them, but no change adds one.
     if (next.plan && openGoals(next.plan).length > Math.max(BOARD_LIMITS.openGoals, openGoals(board.plan).length)) invalid(GOAL_LIMIT_ERROR);
     if (actor === "agent" && next.plan) { checkGates(board, next.plan); checkGoWaits(board, next.plan); next = { ...next, plan: markMerges(next.plan) }; }
@@ -476,7 +498,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       // A step under a finished goal reopens the goal and every finished goal above it: a done parent with open work is a lie.
       const reopened = [...parent.ancestors, parent.item].filter(above => above.status === "done").map(above => above.id);
       let plan = map(board.plan, op.parent, p => ({ ...p, children: [...p.children, item] }));
-      for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo" }));
+      for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo", reopened: true }));
       return done({ plan }, `added ${item.id} ${quote(item.text)}${gateText(item)}${dutyText(item)} under ${parent.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
     }
     case "plan_update": {
@@ -490,6 +512,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const next: PlanItem = { ...item };
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== item.text) { next.text = op.text; parts.push(`renamed it ${quote(op.text)}`); }
+      if (op.status !== undefined) delete next.reopened;
       if (op.status !== undefined && op.status !== item.status) { next.status = op.status; parts.push(`marked it ${op.status}`); }
       const job = op.job === null ? null : op.job === undefined ? undefined : planJob(op.job) ?? null;
       // A new job drops the old job's session id; the same job keeps it. sessionId null clears it, a given one replaces it.
@@ -527,7 +550,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (to === null) return done({ plan: [...rest, next] }, `updated ${item.id} ${quote(item.text)}: ${[...parts, "moved it to the top level"].join(", ")}`);
       const reopened = OPEN_STATUSES.has(next.status) ? [...to.ancestors, to.item].filter(above => above.status === "done").map(above => above.id) : [];
       let plan = map(rest, to.item.id, p => ({ ...p, children: [...p.children, next] }));
-      for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo" }));
+      for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo", reopened: true }));
       parts.push(`moved it under ${to.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
       return done({ plan }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ")}`);
     }
