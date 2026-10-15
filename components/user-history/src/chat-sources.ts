@@ -14,6 +14,7 @@ import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { JobResumes } from "./job-resume.ts";
 import type { InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
 import type { Wake } from "./wakes.ts";
+import type { FleetStop } from "./fleet-budget.ts";
 import type { RawProcess } from "./mac-usable-watch.ts";
 import type { BoardOp, ChatBoard, ChatWait, ChildAgent, ModelInfo, QueuePlace, QueueState, RetryState, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 
@@ -258,6 +259,8 @@ export interface CheckInSource {
   wakes?: (now: number) => Promise<readonly Wake[]>;
   /** The job names of a chat whose start or send-back waits in the fleet budget (`FleetBudget.queued`); the check-in reads their steps as moving. Absent: none. */
   starting?: (chat: string) => readonly string[] | Promise<readonly string[]>;
+  /** The fleet stop switch (`readFleetStop`): once it is off, a step that waits for the owner to lift it has its wait over (`stopWaits`). Absent: never read. */
+  fleetStop?: () => Promise<FleetStop>;
   /**
    * Where the cleanup saves a job it ends while the job waits on a board step (`JobResumes`, src/job-resume.ts), and how it writes that step's
    * note (the board store's apply). Absent: such a job is kept.

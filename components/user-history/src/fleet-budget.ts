@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { readAgentQueue } from "./chat-pool.ts";
@@ -32,6 +32,26 @@ export const FIX_UNLISTED_MS = 200_000;
  * Owner sends and prod turns never read it. Delete the file to open the budget again; it is read on every check.
  */
 export const FLEET_STOP_FILE = "fleet-stop.json";
+/**
+ * Whether the stop switch is on now, and when it went off: the stamp of the newest `fleet-stop.off-<UTC stamp>.json` the switch was moved to
+ * (on 10-15 at 19:13:56Z the stop was lifted as fleet-stop.off-20261015T191356Z.json), else that file's change time. Absent `liftedAt`: off
+ * with no record of when.
+ */
+export type FleetStop = { on: true; why: string } | { on: false; liftedAt?: number };
+export async function readFleetStop(dataDir: string): Promise<FleetStop> {
+  const text = await readFile(join(dataDir, FLEET_STOP_FILE), "utf8").catch(() => null);
+  if (text !== null) {
+    let why = "";
+    try { const value: unknown = JSON.parse(text); if (typeof value === "object" && value && "why" in value && typeof value.why === "string") why = value.why; } catch {}
+    return { on: true, why };
+  }
+  const offs = (await readdir(dataDir).catch(() => [] as string[])).filter(name => /^fleet-stop\.off-.*\.json$/.test(name)).sort();
+  const newest = offs.at(-1);
+  if (!newest) return { on: false };
+  const stamp = /^fleet-stop\.off-(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z\.json$/.exec(newest);
+  const at = stamp ? Date.parse(`${stamp[1]}-${stamp[2]}-${stamp[3]}T${stamp[4]}:${stamp[5]}:${stamp[6]}Z`) : (await stat(join(dataDir, newest)).catch(() => null))?.mtimeMs;
+  return at !== undefined && Number.isFinite(at) ? { on: false, liftedAt: at } : { on: false };
+}
 
 /**
  * The budget's state for the sessions themselves, next to the stop file: `{ at, closed }`, rewritten every FLEET_READ_MS. The user-history
