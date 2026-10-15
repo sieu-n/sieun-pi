@@ -3,7 +3,7 @@ import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
-import { type DutyCard, type DutyJobRef, headlineMetric } from "./shared/chat-duties.ts";
+import { type DutyCard, type DutyJobRef, headlineMetric, verdictMetrics } from "./shared/chat-duties.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { SessionRow } from "./shared/types.ts";
@@ -100,6 +100,8 @@ export function missLine(dutyId: string, streak: MetricStreak, label: string, un
 export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [] }: DutyJobInput): string {
   const send = `await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
   const headline = headlineMetric(duty.metrics);
+  const counted = verdictMetrics(duty.metrics);
+  const shown = misses.filter(streak => counted.some(metric => metric.key === streak.key));
   const apply = `await bash("cd ${USER_HISTORY} && node --import tsx scripts/board-apply.ts ${chat.id} " + shlex.quote(json.dumps(ops)) + " --data-dir ${dirname(dirname(chat.board))}")`;
   return [
     `# ${job}: the ${duty.name} duty of the chat "${chat.name}"`,
@@ -111,13 +113,13 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
     ...(duty.onMiss ? [`What to do about a miss: ${duty.onMiss}${duty.boardGoal ? ` Fixes go under the plan item ${duty.boardGoal}.` : ""}`] : []),
     ...(headline ? [`## Headline KPI\nThis run is judged on moving one number: ${headline.label} (${headline.key} ${headline.op} ${headline.target}${headline.unit ?? ""}). ` +
       "Spend the run on the work that moves it most; the other targets and the number of checks you run are detail."] : []),
-    `Targets: ${duty.metrics.map(metric => `${metric.key} ${metric.op} ${metric.target}${metric.unit ?? ""} (${metric.label})`).join("; ")}.`,
+    `Targets: ${counted.map(metric => `${metric.key} ${metric.op} ${metric.target}${metric.unit ?? ""} (${metric.label})`).join("; ")}.`,
     "## What the precheck found",
     `Measured against the targets: ${measure}. This is information, not a verdict: a met target does not mean nothing needs work, and code ` +
       "cannot see everything. Check the real state.",
     findings,
-    ...(misses.length ? [`## Missed metrics: each one needs a fix step with a live job\n` +
-      misses.map(streak => { const metric = duty.metrics.find(entry => entry.key === streak.key); return `- ${missLine(duty.id ?? "<dutyId>", streak, metric?.label ?? streak.key, metric?.unit)}`; }).join("\n") +
+    ...(shown.length ? [`## Missed metrics: each one needs a fix step with a live job\n` +
+      shown.map(streak => { const metric = counted.find(entry => entry.key === streak.key); return `- ${missLine(duty.id ?? "<dutyId>", streak, metric?.label ?? streak.key, metric?.unit)}`; }).join("\n") +
       "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `<dutyId>/<metricKey>` and `job` set to a job that " +
       "works on a code change, not a note or a later wait. When your turn ends, the server reads the board: a missed metric with no fix step whose " +
       "job is live sends you back with its name, so the run cannot end on an unowned miss. When a fix step closes, the server runs this duty again " +

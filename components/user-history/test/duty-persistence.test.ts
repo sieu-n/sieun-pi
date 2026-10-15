@@ -46,11 +46,11 @@ function fakeJobs() {
 }
 
 /** A Duties runner over a store seeded with the d6 runs before 17:22, whose precheck measures the 17:22 run's values, so its run stands for that one. */
-async function runner(input: { board: () => ChatBoard; live?: ReadonlySet<string>; checkIn?: (trigger: string | undefined) => void }) {
+async function runner(input: { board: () => ChatBoard; live?: ReadonlySet<string>; checkIn?: (trigger: string | undefined) => void; values?: Record<string, number> }) {
   const dir = await mkdtemp(join(tmpdir(), "duty-persistence-"));
   const store = new DutyStore(dir);
   for (const run of fixture.runs.slice(1).reverse()) await store.appendRun(CHAT, run);
-  const values = Object.fromEntries(Object.entries(newest.metrics).map(([key, result]) => [key, result.value]));
+  const values = { ...Object.fromEntries(Object.entries(newest.metrics).map(([key, result]) => [key, result.value])), ...input.values };
   const now = { at: newest.at };
   await store.update(CHAT, duties => {
     // The stored d6 predates the shape rule (6 metrics), so it goes in as stored rather than through add.ts's parse.
@@ -193,4 +193,21 @@ test("chat_board: plan_add and plan_update set, change and clear a step's duty l
   assert.equal(cleared.board.plan[1]!.children[0]!.duty, undefined);
   assert.match(cleared.summary, /unlinked its duty metric/);
   assert.throws(() => parseBoardOp({ op: "plan_update", id: "p449", duty: "Mac stays usable" }), /duty must be "<dutyId>\/<metricKey>"/);
+});
+
+test("an old duty with 6 metrics briefs, records and sends back only its verdict metrics, the headline and 3 more", async () => {
+  const { store, duties, jobs, now } = await runner({ board: () => board({}), values: { kernel_waiters_1h: 2 } });
+  await duties.runNow(CHAT, "d6");
+  await duties.settled();
+  const brief = jobs.briefs[0]!;
+  assert.match(brief, /Targets: usable_pct_1h >= 100% .*; idle_miss_min_1h <= 0 \(.*\)\.\n/);
+  assert.doesNotMatch(brief, /Targets: [^\n]*kernel_waiters_1h/);
+  assert.doesNotMatch(brief, /- kernel_waiters_1h \(/, "a metric outside the verdict gets no fix line");
+  assert.deepEqual(Object.keys((await store.runs(CHAT))[0]!.fixes ?? {}), []);
+  jobs.ended.add("s1");
+  now.at += 60_000;
+  await duties.tick();
+  assert.equal(jobs.steers.length, 1);
+  assert.doesNotMatch(jobs.steers[0]!.text, /kernel_waiters_1h/);
+  assert.match(jobs.steers[0]!.text, /2 missed metrics have no fix step/);
 });

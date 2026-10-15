@@ -6,7 +6,7 @@ import type { CheckInActor } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { agentScheduleProblem, type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
-  type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
+  type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, verdictMetrics } from "./shared/chat-duties.ts";
 import { closedFixes, dutyFixes, dutyLink, missedKeys } from "./shared/duty-fixes.ts";
 import { CHANGE_APPROACH_MISSES, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
@@ -126,6 +126,9 @@ type Launched = { job: DutyJobRef; replaced?: string } | { skipped: string } | n
 type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string } | null;
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
+
+/** The keys of the metrics a duty's verdict counts (`verdictMetrics`); old run records still carry every metric the duty once had. */
+const verdictKeys = (metrics: readonly DutyMetric[]): Set<string> => new Set(verdictMetrics(metrics).map(metric => metric.key));
 
 /** The findings line for the stuck metrics (`MetricStreak.stuck`): each one names its streak and the fix that did not move it. Empty when none is stuck. */
 export function stuckFindings(misses: readonly MetricStreak[]): string {
@@ -274,20 +277,23 @@ export class Duties {
   }
 
   /** Fills a missed run's `fixes` from the board, and returns its miss streaks with them (`metricStreaks`, from `previous` newest first). */
-  private async missesOf(chatId: string, record: DutyRunRecord, previous: readonly DutyRunRecord[]): Promise<MetricStreak[]> {
+  private async missesOf(chatId: string, record: DutyRunRecord, previous: readonly DutyRunRecord[], metrics: readonly DutyMetric[]): Promise<MetricStreak[]> {
     if (record.verdict !== "missed") return [];
+    const counted = verdictKeys(metrics);
     const board = this.host.board ? await this.host.board(chatId).catch(error => { this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: read the board: ${message(error)}`); return null; }) : null;
-    const fixes = await this.fixesOn(board, chatId, record.duty, missedKeys(record));
+    const fixes = await this.fixesOn(board, chatId, record.duty, missedKeys(record).filter(key => counted.has(key)));
     if (Object.keys(fixes).length) record.fixes = fixes;
-    return metricStreaks([record, ...previous]);
+    return metricStreaks([record, ...previous]).filter(streak => counted.has(streak.key));
   }
 
   /**
    * The newest measured verdict's missed metrics (`effectiveRun`, so the after-job measure when there is one) that have no fix step with a live
    * job on the board now. A stuck metric needs a new step: the fix the job's own run found (`own.fixes`) does not count for it.
    */
-  private async unownedFixes(chatId: string, runs: readonly DutyRunRecord[], own: DutyRunRecord | undefined): Promise<{ rev: number; misses: { key: string; stuck: boolean; fix?: FixLink }[] }> {
-    const streaks = metricStreaks(runs);
+  private async unownedFixes(chatId: string, runs: readonly DutyRunRecord[], own: DutyRunRecord | undefined, metrics: readonly DutyMetric[]):
+    Promise<{ rev: number; misses: { key: string; stuck: boolean; fix?: FixLink }[] }> {
+    const counted = verdictKeys(metrics);
+    const streaks = metricStreaks(runs).filter(streak => counted.has(streak.key));
     if (!streaks.length || !this.host.board) return { rev: 0, misses: [] };
     const board = await this.host.board(chatId);
     const fixes = await this.fixesOn(board, chatId, runs[0]!.duty, streaks.map(streak => streak.key));
@@ -315,7 +321,7 @@ export class Duties {
     const own = runs.find(run => run.job?.id === job.id);
     const duty = own ? (own.duty === CHECK_IN_DUTY_ID ? CHECK_IN_DUTY : (await this.store.list(chatId)).find(entry => entry.id === own.duty)) : undefined;
     if (!own || !duty) return false;
-    const { rev, misses } = await this.unownedFixes(chatId, runs, own).catch(error => { this.log(`duty job ${job.name}: read its fixes: ${message(error)}`); return { rev: 0, misses: [] }; });
+    const { rev, misses } = await this.unownedFixes(chatId, runs, own, duty.metrics).catch(error => { this.log(`duty job ${job.name}: read its fixes: ${message(error)}`); return { rev: 0, misses: [] }; });
     if (!misses.length) { this.sentBack.delete(job.id); return false; }
     if (this.sentBack.get(job.id) === rev) {
       this.sentBack.delete(job.id);
@@ -500,7 +506,7 @@ export class Duties {
     const record: DutyRunRecord = { duty: CHECK_IN_DUTY_ID, at: run.at, slot: run.at, trigger: run.trigger, ms: 0, verdict: judged.verdict, metrics: judged.metrics,
       summary: judged.summary, classes: run.classes, ...(run.output.flagged.length ? { flagged: run.output.flagged } : {}) };
     const previous = (await this.store.runs(chatId)).filter(entry => entry.duty === CHECK_IN_DUTY_ID);
-    const misses = await this.missesOf(chatId, record, previous);
+    const misses = await this.missesOf(chatId, record, previous, CHECK_IN_DUTY.metrics);
     let launched: Launched;
     let failed = false;
     try {
@@ -617,7 +623,7 @@ export class Duties {
     }
     const pause = record.verdict === "error" && errorStreak([record, ...previous]) >= ERROR_PAUSE_RUNS;
     await markRun(pause);
-    const misses = await this.missesOf(chatId, record, previous);
+    const misses = await this.missesOf(chatId, record, previous, duty.metrics);
     const findings = [
       ...(record.verdict === "error" ? [`The precheck failed: ${record.error ?? record.summary}. ${pause ? `It failed ${ERROR_PAUSE_RUNS} runs in a row and the duty is ` +
         "paused until resumed: fix the precheck, then tell the chat to resume the duty." : "Fix the precheck or check the duty by hand."}`] : []),
