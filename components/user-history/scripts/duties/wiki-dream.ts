@@ -10,7 +10,9 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
  * - the wiki facts come from `node apps/llm-wiki/scripts/wiki-health.mjs --since <last run>` in auto-sns-agent, which owns the wiki rules;
  * - the mistake signal comes from the owner corrections ledger and the continual-harness memories and refinements made since the last run;
  * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back;
- * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which files the dream edited twice in 7 days.
+ * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which files the dream edited twice in 7 days;
+ * - the wiki's `/api/agent/stale` list plus `git log` in auto-sns-agent say which pages are behind their code (pagesBehindCode).
+ * The headline `wiki_problems` adds up the sync problems the owner asked to keep at 0; the run detail file keeps every other number.
  * An input it cannot read counts in `source_errors` and writes 999999 for the metrics that input feeds, so the run misses and says why.
  */
 
@@ -35,6 +37,10 @@ export interface DreamDeps {
   readText: (path: string) => Promise<string>;
   /** The node binary that runs wiki-health.mjs. */
   node: string;
+  /** GETs a URL and parses its JSON; throws on a non-2xx answer. */
+  getJson: (url: string) => Promise<unknown>;
+  /** The wiki server, http://localhost:5176 unless WIKI_URL says otherwise. */
+  wikiUrl: string;
   repos: { wiki: string; pi: string };
   files: { corrections: string; harness: string; ledger: string };
 }
@@ -107,11 +113,17 @@ export function unjudgedPairs(pairs: Health["dupPairs"], ledger: Ledger, now: nu
   return pairs.filter(pair => { const verdict = ledger.pairs?.[pairKey(pair.a, pair.b)]; return !(verdict?.verdict && now - ms(verdict.at) <= PAIR_SETTLED_MS); });
 }
 
-/** Ledger classes still open (open or reopened), and classes with a recurrence in the last 7 days. */
-export function classStates(ledger: Ledger, now: number): { open: [string, LedgerClass][]; back: [string, LedgerClass][] } {
+/**
+ * Ledger classes still open (open or reopened); the open ones the last run already had (first seen before `since`, or with no date), which
+ * open_mistakes counts; and classes with a recurrence in the last 7 days. A class the last run found gets one daily run to land its fix,
+ * because a rule takes a CI probe: the 10-13 rules took 22 h from draft (10-13 17:47Z) to land (68d53dd86d, 10-14 16:07Z).
+ */
+export function classStates(ledger: Ledger, now: number, since = now): { open: [string, LedgerClass][]; due: [string, LedgerClass][]; back: [string, LedgerClass][] } {
   const classes = Object.entries(ledger.classes ?? {});
+  const open = classes.filter(([, row]) => row.status === "open" || row.status === "reopened");
   return {
-    open: classes.filter(([, row]) => row.status === "open" || row.status === "reopened"),
+    open,
+    due: open.filter(([, row]) => !(ms(row.firstSeen) >= since)),
     back: classes.filter(([, row]) => (row.recurred ?? []).some(at => now - ms(at) <= CHURN_MS && ms(at) <= now)),
   };
 }
@@ -138,6 +150,55 @@ export function churn(commits: readonly DreamCommit[]): { reverts: DreamCommit[]
   }
   const retouched = [...edits].filter(([, count]) => count >= 2).map(([file, count]) => ({ file, commits: count })).sort((a, b) => b.commits - a.commits);
   return { reverts, retouched };
+}
+
+/** One page of `GET /api/agent/stale`: the engine lists a page when a `source_refs` file's mtime is after its `last_verified` day. */
+export interface StalePage { path: string; last_verified: string; staleRefs: { ref: string; modified: string }[] }
+export function parseStale(value: unknown): StalePage[] {
+  if (!isRecord(value) || !Array.isArray(value.stale)) throw new Error("/api/agent/stale gave no stale list");
+  return value.stale.filter(isRecord).filter(row => typeof row.path === "string" && typeof row.last_verified === "string" && Array.isArray(row.staleRefs))
+    .map(row => ({ path: row.path as string, last_verified: row.last_verified as string,
+      staleRefs: (row.staleRefs as unknown[]).filter(isRecord).filter(ref => typeof ref.ref === "string").map(ref => ({ ref: ref.ref as string, modified: String(ref.modified ?? "") })) }));
+}
+
+/** Parses `git log --format=%x1e%ct --name-only` (newest first) into the newest commit time in ms per file. */
+export function lastChanged(text: string): Map<string, number> {
+  const changed = new Map<string, number>();
+  for (const block of text.split("\x1e").map(part => part.trim()).filter(Boolean)) {
+    const [head = "", ...files] = block.split("\n");
+    const at = Number(head.trim()) * 1000;
+    if (!Number.isFinite(at)) continue;
+    for (const file of files.map(line => line.trim()).filter(Boolean)) if (!changed.has(file)) changed.set(file, at);
+  }
+  return changed;
+}
+
+/** The engine's rule: a page is checked through the end of its `last_verified` day, UTC. */
+export const verifiedUntil = (lastVerified: string): number => Date.parse(`${lastVerified}T23:59:59Z`);
+
+/**
+ * Pages behind their code: a `source_refs` path (a file, or any file under a folder) changed in a commit after the page's
+ * `last_verified` day and before `since`, the start of the last measured run, so the last dream run had the change in front of it.
+ * The engine compares file mtimes, and a checkout or stash in the shared tree rewrites them with no content change: on 2026-10-15 30 of
+ * the 75 refs it listed had no commit after the page's check, and apps/admin/index.html, checked on 10-14, was listed for 3 such refs.
+ * A ref git has no commit for (an untracked file) keeps the engine's verdict.
+ */
+export function pagesBehindCode(pages: readonly StalePage[], changed: ReadonlyMap<string, number>, since: number): { path: string; lastVerified: string; refs: { ref: string; at: number }[] }[] {
+  const commitAt = (ref: string): number | undefined => {
+    const folder = `${ref.replace(/\/+$/, "")}/`;
+    let newest: number | undefined;
+    for (const [file, at] of changed) if ((file === ref || file.startsWith(folder)) && (newest === undefined || at > newest)) newest = at;
+    return newest;
+  };
+  return pages.map(page => {
+    const until = verifiedUntil(page.last_verified);
+    const refs = page.staleRefs.flatMap(({ ref, modified }) => {
+      const at = commitAt(ref);
+      if (at === undefined) { const engineAt = Date.parse(modified); return Number.isFinite(engineAt) && engineAt >= since ? [] : [{ ref, at: Number.isFinite(engineAt) ? engineAt : 0 }]; }
+      return at > until && at < since ? [{ ref, at }] : [];
+    });
+    return { path: page.path, lastVerified: page.last_verified, refs };
+  }).filter(page => page.refs.length);
 }
 
 /** A global memory about the auto-sns-agent repo: its path or title starts with "auto-sns-agent". */
@@ -180,9 +241,9 @@ export function freshCorrections(file: unknown, since: number): FlaggedSlice[] {
 
 /** The order the job reads flagged items in, with a cap per kind; the list stops at FLAGGED_MAX. */
 export const FLAG_ORDER: readonly [string, number][] = [
-  ["source_error", 6], ["recurred", 8], ["revert", 5], ["retouched", 5], ["open_class", 10], ["correction", 10], ["signal", 8], ["refinement", 6],
-  ["memory", 14], ["dead_link", 5], ["hub_orphan", 5], ["superseded_linked", 5], ["session_link", 5], ["missing_meta", 4], ["stale_vs_code", 5],
-  ["dup_pair", 5], ["lint_page", 5], ["archive_candidate", 3],
+  ["source_error", 6], ["recurred", 8], ["open_class", 10], ["hub_orphan", 8], ["dead_link", 8], ["superseded_linked", 8], ["session_link", 8],
+  ["missing_meta", 6], ["stale_vs_code", 10], ["dup_pair", 5], ["revert", 5], ["retouched", 5], ["correction", 10], ["signal", 6], ["refinement", 6],
+  ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
 
 /** Picks the flagged items: each kind in FLAG_ORDER up to its cap, unknown kinds last, FLAGGED_MAX in all. */
@@ -204,6 +265,8 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
 }
 
 const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "stale_vs_code"] as const;
+/** The sync problems wiki_problems adds up; pages_behind_code replaces the engine's mtime-based stale_vs_code. */
+const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code"] as const;
 
 /** Measures everything and builds the precheck output. Each input that fails adds a source_error item and 999999 for the metrics it feeds. */
 export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRecord[]): Promise<PrecheckOutput & { info: Record<string, number> }> {
@@ -226,15 +289,27 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
       { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }, error => { gitOk = false; fail(`git log ${name}`, error); });
   }
 
+  const stalePages = await deps.getJson(`${deps.wikiUrl}/api/agent/stale`).then(parseStale, error => fail("/api/agent/stale", error));
+  let behind: ReturnType<typeof pagesBehindCode> | undefined;
+  if (stalePages) {
+    const refs = [...new Set(stalePages.flatMap(page => page.staleRefs.map(ref => ref.ref)))];
+    const oldest = Math.min(...stalePages.map(page => verifiedUntil(page.last_verified)).filter(Number.isFinite));
+    behind = !refs.length ? [] : await deps.exec("git", ["-C", deps.repos.wiki, "log", "HEAD", "--format=%x1e%ct", "--name-only", "--no-renames",
+      ...(Number.isFinite(oldest) ? [`--since=${new Date(oldest).toISOString()}`] : []), "--", ...refs], { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS })
+      .then(text => pagesBehindCode(stalePages, lastChanged(text), since), error => fail("git log source_refs", error));
+  }
+
   const metrics: Record<string, number> = {};
   for (const key of HEALTH_METRICS) metrics[key] = health?.facts[key] ?? UNMEASURED;
+  metrics.pages_behind_code = behind?.length ?? UNMEASURED;
+  metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
   metrics.lint_over_glide = lintFailing === undefined ? UNMEASURED : lintFailing - glide(LINT_GLIDE, now);
   const unjudged = health && ledger ? unjudgedPairs(health.dupPairs, ledger, now) : undefined;
   metrics.dup_unjudged = unjudged?.length ?? UNMEASURED;
   metrics.memory_rules_over_glide = harness ? harness.repoFacts - glide(MEMORY_GLIDE, now) : UNMEASURED;
-  const classes = ledger ? classStates(ledger, now) : undefined;
-  metrics.open_mistakes = classes?.open.length ?? UNMEASURED;
+  const classes = ledger ? classStates(ledger, now, since) : undefined;
+  metrics.open_mistakes = classes?.due.length ?? UNMEASURED;
   metrics.mistakes_back = classes?.back.length ?? UNMEASURED;
   const dream = churn(commits);
   metrics.dream_reverts = gitOk ? dream.reverts.length : UNMEASURED;
@@ -249,7 +324,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     since, curated_pages: health?.curatedPages ?? UNMEASURED, lint_failing_pages: lintFailing ?? UNMEASURED, lint_glide_plan: glide(LINT_GLIDE, now),
     repo_fact_memories: harness?.repoFacts ?? UNMEASURED, memory_glide_plan: glide(MEMORY_GLIDE, now), new_corrections: corrections?.length ?? UNMEASURED,
     new_memories: harness?.fresh.length ?? UNMEASURED, new_refinements: harness?.refinements.length ?? UNMEASURED, signals: health?.signals.length ?? UNMEASURED,
-    open_session_logs: health?.facts.open_session_logs ?? UNMEASURED, dream_commits_7d: commits.filter(commit => !isRevert(commit.subject)).length,
+    open_session_logs: health?.facts.open_session_logs ?? UNMEASURED, open_classes: classes?.open.length ?? UNMEASURED, dream_commits_7d: commits.filter(commit => !isRevert(commit.subject)).length,
   };
 
   const slices: FlaggedSlice[] = [...errors];
@@ -273,8 +348,11 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const freshIds = new Set((harness?.fresh ?? []).map(entry => entry.id));
   for (const entry of harness?.fresh ?? []) slices.push(memorySlice(entry, "new since last run"));
   for (const entry of (harness?.moves ?? []).filter(entry => !freshIds.has(entry.id)).slice(0, 10)) slices.push(memorySlice(entry, "move into its skill"));
+  for (const page of behind ?? []) {
+    slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(`last_verified ${page.lastVerified}; code changed since: ${page.refs.map(ref => `${ref.ref}${ref.at ? ` (${new Date(ref.at).toISOString().slice(0, 10)})` : " (missing)"}`).join(", ")}`) });
+  }
   for (const item of health?.items ?? []) {
-    if (item.kind === "signal") continue;
+    if (item.kind === "signal" || (item.kind === "stale_vs_code" && behind)) continue;
     slices.push({ kind: item.kind, item: item.path, excerpt: clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`) });
   }
   for (const pair of unjudged ?? []) slices.push({ kind: "dup_pair", item: pairKey(pair.a, pair.b), excerpt: `${pair.a} and ${pair.b} look alike (score ${pair.score})` });
@@ -290,13 +368,20 @@ const execNoShell: Exec = (file, args, options) => new Promise((done, failed) =>
   });
 });
 
+const getJsonOnce = async (url: string): Promise<unknown> => {
+  const response = await fetch(url, { signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
+  if (!response.ok) throw new Error(`${url} answered ${response.status}`);
+  return response.json() as Promise<unknown>;
+};
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("wiki-dream: OUTPUT_FILE is not set\n"); process.exit(2); }
   const home = homedir();
   const lastRuns = await readFile(process.env.LAST_RUNS_FILE ?? "", "utf8").then(text => JSON.parse(text) as unknown, () => []);
   const deps: DreamDeps = {
-    now: Date.now(), exec: execNoShell, readText: path => readFile(path, "utf8"), node: process.execPath,
+    now: Date.now(), exec: execNoShell, readText: path => readFile(path, "utf8"), node: process.execPath, getJson: getJsonOnce,
+    wikiUrl: process.env.WIKI_URL || "http://localhost:5176",
     repos: { wiki: process.env.LLM_WIKI_REPO || join(home, "Documents/Github/auto-sns-agent"), pi: process.env.SIEUN_PI_REPO || join(home, "Documents/Github/sieun-pi") },
     files: {
       corrections: join(home, ".prime/agent/browser-chat/corrections.json"),
