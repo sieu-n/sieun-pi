@@ -253,7 +253,7 @@ test("Duties: a miss starts the job with the flagged items and the repeat; the p
   now.at = at(9, 23, 7);
   await duties.runNow("chat1", "d1");
   await duties.settled();
-  assert.match(jobs.briefs[1]!, /Missed in the last run too: orphans\./);
+  assert.match(jobs.briefs[1]!, /- orphans \(.*\) is 3, target <= 0, missed 2 runs in a row, not moving toward the target\. No plan step fixes it\./);
   assert.deepEqual(jobs.calls, ["start chat1 chat system dev VP 23:07 s1", "retire s1", "start chat1 chat system dev VP 23:07 s2"], "the last job is archived when the next starts");
 });
 

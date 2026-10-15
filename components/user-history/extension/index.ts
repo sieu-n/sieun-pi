@@ -48,7 +48,8 @@ export default function historyExtension(pi: ExtensionAPI): void {
           type: "array",
           description: `Applied in order, all or none. Fields: id, parent, text, status (${PLAN_STATUSES.join("|")}), job, sessionId, note, waitUntil, ` +
             `waitFor, done, step, choices, items, go ("needed"), kind ("build"), requirements [{text,status (${REQUIREMENT_STATUSES.join("|")}),evidence,` +
-            "note}], target {metric,target,unit,current,measuredAt,source,cadence}, links [{label,target}]; null clears a field.",
+            "note}], target {metric,target,unit,current,measuredAt,source,cadence}, duty (\"<dutyId>/<metricKey>\", the duty metric a step fixes), " +
+            "links [{label,target}]; null clears a field.",
           items: {
             type: "object",
             properties: { op: { type: "string", enum: ["plan_set", "plan_add", "plan_update", "plan_remove", "scratch_add", "scratch_update", "scratch_remove", "todo_add", "todo_update", "todo_remove"] } },

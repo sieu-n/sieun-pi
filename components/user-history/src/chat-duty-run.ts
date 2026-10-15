@@ -5,15 +5,18 @@ import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "
 import type { CheckInActor } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
-import { agentScheduleProblem, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, repeatMisses, type Duty, type DutyJobRef,
-  type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
-import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type CheckInPause, type CheckInView, type PoolPriority } from "./shared/types.ts";
+import { agentScheduleProblem, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
+  type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
+import { closedFixes, dutyFixes, dutyLink, missedKeys } from "./shared/duty-fixes.ts";
+import { CHANGE_APPROACH_MISSES, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
+import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
 /** The check-in duty's side on the chat server (src/chats.ts): its setting (the header's control writes the same one) and a run now. */
 export interface CheckInDutyHost {
   view(chatId: string): Promise<CheckInView | null>;
   set(chatId: string, change: { everyMs?: number; pause?: CheckInPause | null }, actor: CheckInActor): Promise<CheckInView | null>;
-  run(chatId: string): Promise<void>;
+  /** A check-in run now; `trigger` "verify" when a fix step linked to a check-in metric closed. */
+  run(chatId: string, trigger?: DutyTrigger): Promise<void>;
 }
 /**
  * One run of the check-in duty as the chat server measured it: the slot time, its trigger, the chat's check-in interval, the misses, the step
@@ -41,6 +44,10 @@ export interface DutyHost {
   admit?: DutyAdmitter["admit"];
   /** The chat's pool class from its sidebar label (`chatPoolPriority`), for the card; absent: high, as for an unlabelled chat. */
   priority?: (chatId: string) => Promise<PoolPriority>;
+  /** The chat's board, where each missed metric's fix step lives (`dutyFixes`); absent: runs record no fixes and send no job back. */
+  board?: (chatId: string) => Promise<ChatBoard | null>;
+  /** Whether a fix step's job is at work now (`fixJobLive`); absent: no fix counts as live. */
+  fixLive?: (chatId: string, item: PlanItem) => Promise<boolean>;
 }
 
 export const DUTY_TICK_MS = 30_000;
@@ -115,6 +122,14 @@ type Previous = { last?: DutyJobRef; replaced?: string } | { skipped: string } |
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
+/** The findings line for the stuck metrics (`MetricStreak.stuck`): each one names its streak and the fix that did not move it. Empty when none is stuck. */
+export function stuckFindings(misses: readonly MetricStreak[]): string {
+  const stuck = misses.filter(miss => miss.stuck);
+  if (!stuck.length) return "";
+  return `### Change approach\n${stuck.map(miss => `- ${miss.key} missed ${miss.misses} runs in a row and did not move toward its target` +
+    `${miss.fix ? `; the fix ${miss.fix.step}${miss.fix.job ? ` by ${miss.fix.job}` : ""} did not move it` : ""}. This run starts a new root-cause job for it, not the same fix again.`).join("\n")}`;
+}
+
 /** The check-in duty's cadence in minutes: `{ kind: every, minutes }` with a whole number the check-in setting takes. */
 function checkInMinutes(value: unknown): number {
   const minutes = typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "every" ? (value as { minutes?: unknown }).minutes : undefined;
@@ -133,6 +148,20 @@ function checkInMinutes(value: unknown): number {
  * last one: it leaves the registry at once and its archive is queued, so a slow daemon never holds up the start. A precheck that errors ERROR_PAUSE_RUNS times in a row pauses the duty; that run's job is told to fix it. The check-in duty's
  * schedule and precheck live on the chat server, which hands each run here (`checkIn`); its card reads and edits the chat's check-in setting.
  */
+/**
+ * What the server sends a duty job whose turn ended while a missed metric has no fix step with a live job (`unownedFixes`), so the job goes on
+ * working instead of ending its run on a miss nobody owns. A stuck metric must get a new step, not the fix that did not move it.
+ */
+export function unownedMessage(duty: string, dutyId: string, misses: readonly { key: string; stuck: boolean; fix?: FixLink }[]): string {
+  const lines = misses.map(miss => `- ${miss.key}: ${miss.stuck ? `missed ${CHANGE_APPROACH_MISSES} or more runs with no move${miss.fix ? `, and ${miss.fix.step} did not move it` : ""}. ` +
+    "Start a new root-cause job with rlm.create_session that finds why the last fix did not work, and add a new plan step for it" :
+    miss.fix ? `${miss.fix.step} has no live job. Start a fix job with rlm.create_session and set it as ${miss.fix.step}'s job, or add a new step if it is closed` :
+    "no plan step fixes it. Start a fix job with rlm.create_session and add a plan step for it"} with duty ${JSON.stringify(dutyLink(dutyId, miss.key))} and that job.`);
+  return `[duty] Your ${duty} run is not done: ${misses.length === 1 ? "a missed metric has" : `${misses.length} missed metrics have`} no fix step with a live job.\n` +
+    `${lines.join("\n")}\nApply the board change with board-apply in this turn. Each fix job lands a code change that moves its number; a note or a ` +
+    "later wait is not a fix. The server checks again when this turn ends.";
+}
+
 export class Duties {
   /** The run going per `<chatId>/<dutyId>`; a second start shares it. */
   private readonly running = new Map<string, Promise<CheckInStart | void>>();
@@ -140,6 +169,10 @@ export class Duties {
   private readonly steps = new Map<string, { at: number; step: "reading the catalog" | "measuring" | "waiting for a working slot" | "starting its job" }>();
   /** Duty jobs whose archive `stopEnded` queued, so each is queued once. */
   private readonly stopped = new Set<string>();
+  /** The board rev each duty job was sent back at for its unowned misses; a job that ends again with no board change since is stopped. */
+  private readonly sentBack = new Map<string, number>();
+  /** The last board each chat's watch showed, to find the fix steps a change closed (`boardChanged`). */
+  private readonly boards = new Map<string, ChatBoard>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -166,6 +199,10 @@ export class Duties {
     for (const chatId of await this.store.chats()) {
       if (!(await this.host.isChat(chatId))) continue;
       chats.push(chatId);
+      if (!this.boards.has(chatId)) {
+        const board = await this.host.board?.(chatId).catch(() => null);
+        if (board && !this.boards.has(chatId)) this.boards.set(chatId, board);
+      }
       for (const duty of await this.store.list(chatId)) {
         const due = dutyDue(duty, this.now());
         if (due.kind === "skip") await this.skip(chatId, duty, due.slot);
@@ -186,6 +223,7 @@ export class Duties {
     const jobs = this.host.jobs;
     if (!jobs.ended || !jobs.stop) return;
     const last: DutyJobRef[] = [];
+    const lastRun = new Map<string, { chatId: string; duty: string }>();
     const older = new Map<string, DutyJobRef>();
     for (const chatId of chats) {
       const seen = new Set<string>();
@@ -195,14 +233,103 @@ export class Duties {
         seen.add(run.duty);
         if (this.stopped.has(run.job.id)) continue;
         if (!newest) older.set(run.job.id, run.job);
-        else if (!this.running.has(`${chatId}/${run.duty}`)) last.push(run.job);
+        else if (!this.running.has(`${chatId}/${run.duty}`)) {
+          last.push(run.job);
+          lastRun.set(run.job.id, { chatId, duty: run.duty });
+        }
       }
     }
     for (const job of last) older.delete(job.id);
     for (const job of await jobs.ended(last, [...older.values()])) {
+      const ended = lastRun.get(job.id);
+      if (ended && await this.sendBack(ended.chatId, job, ended.duty)) continue;
       this.stopped.add(job.id);
       await jobs.stop(job);
       this.log(`duty job ${job.name}: ${older.has(job.id) ? "an older job still up" : "its turn ended"}; queued its archive`);
+    }
+  }
+
+  private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[]): Promise<Record<string, FixLink>> {
+    const live = this.host.fixLive;
+    return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false));
+  }
+
+  /** Fills a missed run's `fixes` from the board, and returns its miss streaks with them (`metricStreaks`, from `previous` newest first). */
+  private async missesOf(chatId: string, record: DutyRunRecord, previous: readonly DutyRunRecord[]): Promise<MetricStreak[]> {
+    if (record.verdict !== "missed") return [];
+    const board = this.host.board ? await this.host.board(chatId).catch(error => { this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: read the board: ${message(error)}`); return null; }) : null;
+    const fixes = await this.fixesOn(board, chatId, record.duty, missedKeys(record));
+    if (Object.keys(fixes).length) record.fixes = fixes;
+    return metricStreaks([record, ...previous]);
+  }
+
+  /**
+   * The newest measured verdict's missed metrics (`effectiveRun`, so the after-job measure when there is one) that have no fix step with a live
+   * job on the board now. A stuck metric needs a new step: the fix the job's own run found (`own.fixes`) does not count for it.
+   */
+  private async unownedFixes(chatId: string, runs: readonly DutyRunRecord[], own: DutyRunRecord | undefined): Promise<{ rev: number; misses: { key: string; stuck: boolean; fix?: FixLink }[] }> {
+    const streaks = metricStreaks(runs);
+    if (!streaks.length || !this.host.board) return { rev: 0, misses: [] };
+    const board = await this.host.board(chatId);
+    const fixes = await this.fixesOn(board, chatId, runs[0]!.duty, streaks.map(streak => streak.key));
+    const owned = (streak: MetricStreak): boolean => {
+      const fix = fixes[streak.key];
+      return fix?.live === true && !(streak.stuck && own?.fixes?.[streak.key]?.step === fix.step);
+    };
+    const misses = streaks.filter(streak => !owned(streak)).map(streak => {
+      const fix = fixes[streak.key] ?? own?.fixes?.[streak.key];
+      return { key: streak.key, stuck: streak.stuck, ...(fix ? { fix } : {}) };
+    });
+    return { rev: board?.rev ?? 0, misses };
+  }
+
+  /**
+   * A duty job whose turn ended goes back to work while its run's misses have no fix step with a live job (`unownedFixes`): the server sends it
+   * one message naming each metric and what to do, and true says it was sent back. A job that ends again with the board where it was at the
+   * last message did not act on it, so it is stopped like any ended job and the next run's brief names the miss again.
+   */
+  private async sendBack(chatId: string, job: DutyJobRef, dutyId: string): Promise<boolean> {
+    const steer = this.host.jobs.steer;
+    if (!steer) return false;
+    // Read now, after the turn ended, so the run's after-job measure counts.
+    const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
+    const own = runs.find(run => run.job?.id === job.id);
+    const duty = own ? (own.duty === CHECK_IN_DUTY_ID ? CHECK_IN_DUTY : (await this.store.list(chatId)).find(entry => entry.id === own.duty)) : undefined;
+    if (!own || !duty) return false;
+    const { rev, misses } = await this.unownedFixes(chatId, runs, own).catch(error => { this.log(`duty job ${job.name}: read its fixes: ${message(error)}`); return { rev: 0, misses: [] }; });
+    if (!misses.length) { this.sentBack.delete(job.id); return false; }
+    if (this.sentBack.get(job.id) === rev) {
+      this.sentBack.delete(job.id);
+      this.log(`duty job ${job.name}: ended again with ${misses.map(miss => miss.key).join(", ")} unowned and no board change since it was sent back`);
+      return false;
+    }
+    try { await steer(job, unownedMessage(duty.name, own.duty, misses)); }
+    catch (error) { this.log(`duty job ${job.name}: send it back: ${message(error)}`); return false; }
+    this.sentBack.set(job.id, rev);
+    this.log(`duty job ${job.name}: its turn ended with ${misses.map(miss => miss.key).join(", ")} unowned; sent it back`);
+    return true;
+  }
+
+  /**
+   * A change to a chat's board, from its watch: each duty with a fix step that closed in it (`closedFixes`) starts one verify run, so the land is
+   * measured at once instead of at the next slot. The first board seen for a chat only sets the base.
+   */
+  async boardChanged(chatId: string, board: ChatBoard): Promise<void> {
+    const before = this.boards.get(chatId);
+    this.boards.set(chatId, board);
+    if (!before) return;
+    const closed = closedFixes(before, board);
+    for (const dutyId of new Set(closed.map(fix => fix.duty))) {
+      const steps = closed.filter(fix => fix.duty === dutyId).map(fix => fix.step).join(", ");
+      if (dutyId === CHECK_IN_DUTY_ID) {
+        if (!this.host.checkIn) continue;
+        this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: fix ${steps} closed; a verify run starts`);
+        void this.host.checkIn.run(chatId, "verify").catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: verify: ${message(error)}`));
+        continue;
+      }
+      if (!(await this.store.list(chatId)).some(duty => duty.id === dutyId)) continue;
+      const started = this.start(chatId, dutyId, "verify", null);
+      this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: fix ${steps} closed; ${started ? "a verify run starts" : "a run is going, so no verify run starts"}`);
     }
   }
 
@@ -327,11 +454,13 @@ export class Duties {
     const judged = judge(CHECK_IN_DUTY.metrics, run.output);
     const record: DutyRunRecord = { duty: CHECK_IN_DUTY_ID, at: run.at, slot: run.at, trigger: run.trigger, ms: 0, verdict: judged.verdict, metrics: judged.metrics,
       summary: judged.summary, classes: run.classes, ...(run.output.flagged.length ? { flagged: run.output.flagged } : {}) };
+    const previous = (await this.store.runs(chatId)).filter(entry => entry.duty === CHECK_IN_DUTY_ID);
+    const misses = await this.missesOf(chatId, record, previous);
     let launched: Launched;
     let failed = false;
     try {
       launched = await this.launch(chatId, CHECK_IN_DUTY_ID, { kind: "every", minutes: run.everyMs / 60_000 }, run.at, run.at,
-        { duty: CHECK_IN_DUTY, measure: judged.summary, findings: run.findings, focus: CHECK_IN_FOCUS });
+        { duty: CHECK_IN_DUTY, measure: judged.summary, findings: [run.findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses });
     }
     catch (error) { failed = true; launched = { skipped: `the duty job did not start: ${message(error).slice(0, 300)}` }; }
     if (launched === null) return "done";
@@ -371,7 +500,7 @@ export class Duties {
    * Mac-wide turn queue admits the run (`admit`), and the run's queue key is released once the session exists or its start failed.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
-    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus">): Promise<Launched> {
+    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses">): Promise<Launched> {
     const chat = await this.host.jobs.chat(chatId);
     const previous = await this.previous(chatId, dutyId, schedule, slot);
     if (previous === null || "skipped" in previous) return previous;
@@ -436,18 +565,18 @@ export class Duties {
     }
     const pause = record.verdict === "error" && errorStreak([record, ...previous]) >= ERROR_PAUSE_RUNS;
     await markRun(pause);
-    const repeats = repeatMisses(record, previous[0]);
+    const misses = await this.missesOf(chatId, record, previous);
     const findings = [
       ...(record.verdict === "error" ? [`The precheck failed: ${record.error ?? record.summary}. ${pause ? `It failed ${ERROR_PAUSE_RUNS} runs in a row and the duty is ` +
         "paused until resumed: fix the precheck, then tell the chat to resume the duty." : "Fix the precheck or check the duty by hand."}`] : []),
       ...(record.detail && record.verdict !== "error" ? [`The full precheck output is ${record.detail}.`] : []),
-      ...(repeats.length ? [`Missed in the last run too: ${repeats.join(", ")}.`] : []),
       ...(flagged.length ? [`### Flagged\n${flagged.map(slice => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`).join("\n")}`] : []),
-    ].join("\n\n");
+      stuckFindings(misses),
+    ].filter(Boolean).join("\n\n");
     this.steps.set(key, { at: started, step: "starting its job" });
     try {
       const launched = await this.launch(chatId, dutyId, duty.schedule, at, started,
-        { duty, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings });
+        { duty, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses });
       if (launched && "job" in launched) { record.job = launched.job; if (launched.replaced) record.summary += launched.replaced; }
       else if (launched) record.summary += `; ${launched.skipped}`;
     } catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: start the duty job: ${message(error)}`); }

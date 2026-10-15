@@ -1,0 +1,826 @@
+{
+ "source": "~/.prime/agent/browser-chat duties/01a1164b-4a2d-742d-b27a-82f086ed0200.runs.jsonl (d6, newest first) and boards/01a1164b-4a2d-742d-b27a-82f086ed0200.json, read 2026-10-15 09:10Z",
+ "chat": "01a1164b-4a2d-742d-b27a-82f086ed0200",
+ "duty": {
+  "id": "d6",
+  "name": "Mac stays usable",
+  "ownerWords": "look it's you and ops guys responsibility that this machine is usable.\n\nyou -harness side of bullshit, ops guy -app side of bullshit fixing monitoring\n\nsetup a 60min cadence duty",
+  "goal": "The Mac stays usable every minute: memory pressure stays under critical, swapouts stay under 6,000 a second, and kernel_task stays under one core, read from ops guy's pressure feed. On the harness side no working session sits quiet over 30 min and no queued turn waits over 706 s. The Prime worker footprint is a detail line with no target.",
+  "metrics": [
+   {
+    "key": "usable_pct_1h",
+    "label": "Share of the last hour's minutes the Mac was usable",
+    "op": ">=",
+    "target": 100,
+    "unit": "%",
+    "headline": true
+   },
+   {
+    "key": "usable_pct_24h",
+    "label": "Share of the last 24 hours' minutes the Mac was usable",
+    "op": ">=",
+    "target": 100,
+    "unit": "%"
+   },
+   {
+    "key": "unusable_streak_max_1h",
+    "label": "Longest run of unusable minutes in the last hour",
+    "op": "<=",
+    "target": 9,
+    "unit": " min"
+   },
+   {
+    "key": "idle_miss_min_1h",
+    "label": "Minutes in the last hour with a working session quiet over 30 min",
+    "op": "<=",
+    "target": 0
+   },
+   {
+    "key": "queue_miss_min_1h",
+    "label": "Minutes in the last hour with a queued turn waiting over 706 s",
+    "op": "<=",
+    "target": 0
+   },
+   {
+    "key": "kernel_waiters_1h",
+    "label": "Background waiters in job kernels in the last hour",
+    "op": "<=",
+    "target": 0
+   }
+  ],
+  "onMiss": "Start one fix job for the top miss with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\"), or message the job an earlier run started on the same part if it still works. The brief names the part, its minutes off target, the chat trees behind it and the now numbers, and asks for a root fix in the harness with a test and a commit. Usable: find which harness load ran in the unusable minutes (the trees behind it, turns, worker reloads) and whether removing it would have kept those minutes usable; a part with no measured cost in usable minutes is reported, not fixed. Idle: find why those working sessions went quiet. Queue: find what holds the slots. Never kill a session mid-turn, restart the Prime daemon or the :5182 service, or message another chat. An alert flag: tell the chat in one line with the part, the minutes and the tree. All on target: end the turn with no message."
+ },
+ "runs": [
+  {
+   "duty": "d6",
+   "at": 1792052539136,
+   "slot": 1792052538842,
+   "trigger": "schedule",
+   "ms": 707,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 93.2,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "usable_pct_24h": {
+     "value": 96.7,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 2,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "usable_pct_1h 93.2% (target at least 100%), usable_pct_24h 96.7% (target at least 100%)",
+   "job": {
+    "id": "01a13ea7-b892-72aa-b15a-599401920db2",
+    "name": "mac stays usable AI harness developer environment 17:22"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792048923521,
+   "slot": 1792048923218,
+   "trigger": "schedule",
+   "ms": 402,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "usable_pct_24h": {
+     "value": 96.9,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 0,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "usable_pct_1h 100% (on target), usable_pct_24h 96.9% (target at least 100%), kernel_waiters_1h 1 (target at most 0)",
+   "job": {
+    "id": "01a13e70-8ae5-764b-a83e-5d07735d9ae0",
+    "name": "mac stays usable AI harness developer environment 16:22"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792045293264,
+   "slot": 1792045292961,
+   "trigger": "schedule",
+   "ms": 328,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "usable_pct_24h": {
+     "value": 96.6,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 0,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "usable_pct_1h 100% (on target), usable_pct_24h 96.6% (target at least 100%)",
+   "job": {
+    "id": "01a13e39-24df-733e-99d1-940572c2f770",
+    "name": "mac stays usable AI harness developer environment 15:21"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792041662958,
+   "slot": 1792041662699,
+   "trigger": "schedule",
+   "ms": 285,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "usable_pct_24h": {
+     "value": 96.2,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 0,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "usable_pct_1h 100% (on target), usable_pct_24h 96.2% (target at least 100%)",
+   "job": {
+    "id": "01a13e01-bfb4-717e-9fbd-b83aff52c30a",
+    "name": "mac stays usable AI harness developer environment 14:21"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792038062645,
+   "slot": 1792038062393,
+   "trigger": "schedule",
+   "ms": 256,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "usable_pct_24h": {
+     "value": 95.7,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 0,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 8,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "usable_pct_1h 100% (on target), usable_pct_24h 95.7% (target at least 100%), idle_miss_min_1h 8 (target at most 0)",
+   "job": {
+    "id": "01a13dca-d096-766b-a44f-f0eba5e16714",
+    "name": "mac stays usable AI harness developer environment 13:21"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792034458281,
+   "slot": 1792034458014,
+   "trigger": "schedule",
+   "ms": 319,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "usable_pct_24h": {
+     "value": 95.1,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 0,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 40,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "usable_pct_1h 100% (on target), usable_pct_24h 95.1% (target at least 100%), idle_miss_min_1h 40 (target at most 0), kernel_waiters_1h 1 (target at most 0)",
+   "job": {
+    "id": "01a13d93-d6fb-77d8-8860-06b2d4e9f5fa",
+    "name": "mac stays usable AI harness developer environment 12:20"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792030840299,
+   "slot": 1792030840118,
+   "trigger": "schedule",
+   "ms": 396,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "usable_pct_24h": {
+     "value": 94.2,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 0,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 26,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 2,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "usable_pct_1h 100% (on target), usable_pct_24h 94.2% (target at least 100%), idle_miss_min_1h 26 (target at most 0), kernel_waiters_1h 2 (target at most 0)",
+   "job": {
+    "id": "01a13d5c-9d7e-7383-9079-7bf5f6c8dea9",
+    "name": "mac stays usable AI harness developer environment 11:20"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792027210344,
+   "slot": 1792027209844,
+   "trigger": "schedule",
+   "ms": 880,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 73.3,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "usable_pct_24h": {
+     "value": 93,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 13,
+     "target": 9,
+     "op": "<=",
+     "met": false
+    },
+    "idle_miss_min_1h": {
+     "value": 2,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "queue_miss_min_1h": {
+     "value": 13,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "kernel_waiters_1h": {
+     "value": 4,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "usable_pct_1h 73.3% (target at least 100%), usable_pct_24h 93% (target at least 100%), unusable_streak_max_1h 13 min (target at most 9 min), idle_miss_min_1h 2 (target at most 0), queue_miss_min_1h 13 (target at most 0), kernel_waiters_1h 4 (target at most 0)",
+   "job": {
+    "id": "01a13d25-3e5b-763a-870b-5bab820c65cc",
+    "name": "mac stays usable AI harness developer environment 10:20"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792023594336,
+   "slot": 1792023594120,
+   "trigger": "schedule",
+   "ms": 378,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 95,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "usable_pct_24h": {
+     "value": 98.2,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 2,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 4,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "usable_pct_1h 95% (target at least 100%), usable_pct_24h 98.2% (target at least 100%), kernel_waiters_1h 4 (target at most 0)",
+   "job": {
+    "id": "01a13cf0-e21a-72e6-bde6-f4b2be2905c1",
+    "name": "mac stays usable AI harness developer environment 09:19"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792019993185,
+   "slot": 1792019993005,
+   "trigger": "schedule",
+   "ms": 264,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "usable_pct_24h": {
+     "value": 99.4,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 0,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 18,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 1,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "usable_pct_1h 100% (on target), usable_pct_24h 99.4% (target at least 100%), idle_miss_min_1h 18 (target at most 0), kernel_waiters_1h 1 (target at most 0)",
+   "job": {
+    "id": "01a13cb7-181c-75f8-aef8-551ffc42e6d1",
+    "name": "mac stays usable AI harness developer environment 08:19"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792016391375,
+   "slot": 1792016391061,
+   "trigger": "schedule",
+   "ms": 582,
+   "verdict": "missed",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 98.3,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "usable_pct_24h": {
+     "value": 99.1,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "unusable_streak_max_1h": {
+     "value": 1,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 20,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 2,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "usable_pct_1h 98.3% (target at least 100%), usable_pct_24h 99.1% (target at least 100%), idle_miss_min_1h 20 (target at most 0), kernel_waiters_1h 2 (target at most 0)",
+   "job": {
+    "id": "01a13c80-29bf-7446-8a8e-fa08dcb75653",
+    "name": "mac stays usable AI harness developer environment 07:19"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792012775739,
+   "slot": 1792012775374,
+   "trigger": "schedule",
+   "ms": 717,
+   "verdict": "met",
+   "metrics": {
+    "usable_pct_1h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "usable_pct_24h": {
+     "value": 100,
+     "target": 100,
+     "op": ">=",
+     "met": true
+    },
+    "unusable_streak_max_1h": {
+     "value": 0,
+     "target": 9,
+     "op": "<=",
+     "met": true
+    },
+    "idle_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "kernel_waiters_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    }
+   },
+   "summary": "usable_pct_1h 100% (on target); all 6 on target",
+   "job": {
+    "id": "01a13c49-affa-75c2-8b17-8a78c169fdb8",
+    "name": "mac stays usable AI harness developer environment 06:19"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792009161166,
+   "slot": 1792009160909,
+   "trigger": "schedule",
+   "ms": 370,
+   "verdict": "missed",
+   "metrics": {
+    "on_target_pct_1h": {
+     "value": 0,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "on_target_pct_24h": {
+     "value": 0,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "footprint_miss_min_1h": {
+     "value": 59,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "idle_miss_min_1h": {
+     "value": 5,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "off_streak_max_1h": {
+     "value": 59,
+     "target": 9,
+     "op": "<=",
+     "met": false
+    },
+    "worker_gb_over_budget_now": {
+     "value": 10.47,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "kernel_waiters_1h": {
+     "value": 3,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "on_target_pct_1h 0% (target at least 100%), on_target_pct_24h 0% (target at least 100%), footprint_miss_min_1h 59 (target at most 0), idle_miss_min_1h 5 (target at most 0), off_streak_max_1h 59 min (target at most 9 min), worker_gb_over_budget_now 10.5 GB (target at most 0 GB), kernel_waiters_1h 3 (target at most 0)",
+   "job": {
+    "id": "01a13c11-cfe1-7438-b95a-1d5072341dc3",
+    "name": "mac stays usable AI harness developer environment 05:19"
+   }
+  },
+  {
+   "duty": "d6",
+   "at": 1792005551439,
+   "slot": 1792005551211,
+   "trigger": "schedule",
+   "ms": 297,
+   "verdict": "missed",
+   "metrics": {
+    "on_target_pct_1h": {
+     "value": 0,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "on_target_pct_24h": {
+     "value": 0,
+     "target": 100,
+     "op": ">=",
+     "met": false
+    },
+    "footprint_miss_min_1h": {
+     "value": 60,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "idle_miss_min_1h": {
+     "value": 9,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "queue_miss_min_1h": {
+     "value": 0,
+     "target": 0,
+     "op": "<=",
+     "met": true
+    },
+    "off_streak_max_1h": {
+     "value": 60,
+     "target": 9,
+     "op": "<=",
+     "met": false
+    },
+    "worker_gb_over_budget_now": {
+     "value": 31.04,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    },
+    "kernel_waiters_1h": {
+     "value": 3,
+     "target": 0,
+     "op": "<=",
+     "met": false
+    }
+   },
+   "summary": "on_target_pct_1h 0% (target at least 100%), on_target_pct_24h 0% (target at least 100%), footprint_miss_min_1h 60 (target at most 0), idle_miss_min_1h 9 (target at most 0), off_streak_max_1h 60 min (target at most 9 min), worker_gb_over_budget_now 31 GB (target at most 0 GB), kernel_waiters_1h 3 (target at most 0)",
+   "job": {
+    "id": "01a13bda-bace-757c-9c21-e130e7c870af",
+    "name": "mac stays usable AI harness developer environment 04:19"
+   }
+  }
+ ],
+ "board": {
+  "v": 2,
+  "rev": 2902,
+  "plan": [
+   {
+    "id": "p445",
+    "text": "The Mac usable watch counts a quiet session whose kernel moves CPU or socket bytes as working, and interrupts a call whose kernel stayed still 30 min",
+    "status": "done",
+    "job": "hung cell interrupt",
+    "sessionId": "01a13d95-95b5-766b-a155-e52cc066072a",
+    "children": []
+   },
+   {
+    "id": "p449",
+    "text": "A 26-way subagent fan-out can't push kernel_task past a core: spawned children start as their turns get slots",
+    "status": "doing",
+    "job": "spawn burst admission",
+    "sessionId": "01a13ea9-bb56-77ec-8ddc-2260c9ec1c14",
+    "children": []
+   },
+   {
+    "id": "p452",
+    "text": "You see what every chat shipped on 10-14 and where its 11.1B tokens and $5,994 went",
+    "status": "doing",
+    "job": "yesterday work and tokens",
+    "sessionId": "01a13eb2-f4ed-753e-8eed-1f357d70a60d",
+    "children": []
+   }
+  ],
+  "scratch": [],
+  "todos": [],
+  "updatedAt": "2026-10-15T08:58:59.665Z"
+ }
+}

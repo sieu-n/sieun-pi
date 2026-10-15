@@ -106,6 +106,11 @@ export interface PlanItem {
   requirements?: Requirement[];
   /** A goal's measurable target and its last measurement (`goalGaps` in src/checkin-findings.ts); only a top-level plan item carries one. */
   target?: GoalTarget;
+  /**
+   * The duty metric this step fixes, `<dutyId>/<metricKey>` like "d6/usable_pct_24h" or "checkin/stuck_steps" (`dutyFixes` in
+   * src/shared/duty-fixes.ts). Each duty run reads it as the fix for that metric's miss, and its close starts a verify run of the duty.
+   */
+  duty?: string;
   children: PlanItem[];
 }
 /**
@@ -145,12 +150,12 @@ export type BoardActor = "agent" | "owner";
 /** The gate fields a plan op can set: `go` only to "needed" (it never clears), `kind` and `requirements` (null clears them on plan_update). */
 type GateInput = { go?: "needed"; kind?: "build"; requirements?: Requirement[] };
 export type PlanItemInput = { id?: string; text: string; status?: PlanStatus; job?: string; sessionId?: string; note?: string; waitUntil?: string; waitFor?: string; target?: GoalTarget;
-  children?: PlanItemInput[] } & GateInput;
+  duty?: string; children?: PlanItemInput[] } & GateInput;
 export type BoardOp =
   | { op: "plan_set"; items: PlanItemInput[] }
-  | ({ op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string; sessionId?: string; waitUntil?: string; waitFor?: string; target?: GoalTarget } & GateInput)
+  | ({ op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string; sessionId?: string; waitUntil?: string; waitFor?: string; target?: GoalTarget; duty?: string } & GateInput)
   | { op: "plan_update"; id: string; parent?: string | null; text?: string; status?: PlanStatus; job?: string | null; sessionId?: string | null; note?: string | null; waitUntil?: string | null;
-      waitFor?: string | null; go?: "needed"; kind?: "build" | null; requirements?: Requirement[] | null; target?: GoalTarget | null }
+      waitFor?: string | null; go?: "needed"; kind?: "build" | null; requirements?: Requirement[] | null; target?: GoalTarget | null; duty?: string | null }
   | { op: "plan_remove"; id: string }
   | { op: "scratch_add"; parent?: string; text: string; links?: ArtifactLink[] }
   | { op: "scratch_update"; id: string; text?: string; links?: ArtifactLink[] }

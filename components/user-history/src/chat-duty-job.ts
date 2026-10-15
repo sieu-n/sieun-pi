@@ -4,6 +4,8 @@ import type { JobRegistry } from "./chat-sources.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
 import { type DutyCard, type DutyJobRef, headlineMetric } from "./shared/chat-duties.ts";
+import { dutyLink } from "./shared/duty-fixes.ts";
+import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /**
@@ -43,6 +45,8 @@ export interface DutyJobHost {
   ended?(last: readonly DutyJobRef[], older?: readonly DutyJobRef[]): Promise<DutyJobRef[]>;
   /** Queues the archive of an ended duty job, so its worker and Python kernel stop; it stays registered until the next run retires it. */
   stop?(job: DutyJobRef): Promise<void>;
+  /** Sends a duty job a message that starts a new turn: the server sends a job back while its run's misses have no fix step with a live job. */
+  steer?(job: DutyJobRef, text: string): Promise<void>;
 }
 
 /**
@@ -56,11 +60,36 @@ export const dutyJobName = (duty: string, chat: string, at: number): string => {
 
 /** What a duty job's brief holds: the duty, the chat, the job's name and start, the measure against the targets, and the precheck's findings (markdown). */
 export interface DutyJobInput {
-  duty: Pick<DutyCard, "name" | "ownerWords" | "goal" | "metrics"> & { onMiss?: string; boardGoal?: string };
+  duty: Pick<DutyCard, "name" | "ownerWords" | "goal" | "metrics"> & { id?: string; onMiss?: string; boardGoal?: string };
   chat: Pick<DutyChat, "id" | "name" | "board">;
   job: string; at: number; measure: string; findings: string;
   /** What this duty's job looks at besides the generic rules, in the owner's terms. */
   focus?: readonly string[];
+  /** The miss streak of each metric this run missed (`metricStreaks`), with the fix step the run found for it. */
+  misses?: readonly MetricStreak[];
+}
+
+const runs = (count: number): string => `${count} ${count === 1 ? "run" : "runs"}`;
+const owner = (fix: NonNullable<MetricStreak["fix"]>): string => fix.job ? `job ${fix.job}` : "no job";
+
+/**
+ * One line per missed metric: its streak and what this run must do about it. A metric with a live fix job gets a steer, one with none gets a
+ * new fix job, and a stuck one (CHANGE_APPROACH_MISSES misses with no move) gets a new root-cause job that names the fix that did not work.
+ */
+export function missLine(dutyId: string, streak: MetricStreak, label: string, unit = ""): string {
+  const link = JSON.stringify(dutyLink(dutyId, streak.key));
+  const where = `${streak.key} (${label}) is ${streak.value}${unit}, target ${streak.op} ${streak.target}${unit}, missed ${runs(streak.misses)} in a row` +
+    `${streak.misses > 1 ? streak.moved ? ", moving toward the target" : ", not moving toward the target" : ""}.`;
+  const fix = streak.fix;
+  if (streak.stuck) {
+    return `${where} Change approach: ${fix ? `the fix ${fix.step} (${owner(fix)}) did not move it` : "no fix step moved it"}. Start a new ` +
+      "root-cause job with rlm.create_session that finds why the last fix did not move the number and fixes that cause in code. Do not run the " +
+      `same fix again. Add its own plan step with duty ${link} and the new job${fix ? `, and close or drop ${fix.step} with a note naming the new step` : ""}.`;
+  }
+  if (fix?.live) return `${where} Its fix step ${fix.step} has the live job ${fix.job}: steer that job with this number and what the precheck found, and push it to land the code fix.`;
+  return `${where} ${fix ? `Its fix step ${fix.step} has ${fix.job ? `no live job (${fix.job} is not at work)` : "no job"}.` : "No plan step fixes it."} Start a fix job with ` +
+    "rlm.create_session whose brief is to find the cause and land a code change that moves this number. In the same board change, " +
+    `${fix ? `set that job on ${fix.step} if it is still open, else add a plan step` : "add a plan step"} with duty ${link} and that job.`;
 }
 
 /**
@@ -68,7 +97,7 @@ export interface DutyJobInput {
  * specifies, be a VP, report to user what needed'"; "control flow should be dynamically defined by agent"): the duty in the owner's words, the
  * precheck as information, and how a chat job works. It names no fixed list of checks and no verdict; a quiet run ends in one short turn.
  */
-export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [] }: DutyJobInput): string {
+export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [] }: DutyJobInput): string {
   const send = `await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(chat.name)})`;
   const headline = headlineMetric(duty.metrics);
   const apply = `await bash("cd ${USER_HISTORY} && node --import tsx scripts/board-apply.ts ${chat.id} " + shlex.quote(json.dumps(ops)) + " --data-dir ${dirname(dirname(chat.board))}")`;
@@ -87,6 +116,12 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
     `Measured against the targets: ${measure}. This is information, not a verdict: a met target does not mean nothing needs work, and code ` +
       "cannot see everything. Check the real state.",
     findings,
+    ...(misses.length ? [`## Missed metrics: each one needs a fix step with a live job\n` +
+      misses.map(streak => { const metric = duty.metrics.find(entry => entry.key === streak.key); return `- ${missLine(duty.id ?? "<dutyId>", streak, metric?.label ?? streak.key, metric?.unit)}`; }).join("\n") +
+      "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `<dutyId>/<metricKey>` and `job` set to a job that " +
+      "works on a code change, not a note or a later wait. When your turn ends, the server reads the board: a missed metric with no fix step whose " +
+      "job is live sends you back with its name, so the run cannot end on an unowned miss. When a fix step closes, the server runs this duty again " +
+      "at once to check the number moved."] : []),
     "## How to work",
     [
       `The chat's board is the JSON file ${chat.board}: the plan, the scratch notes with the owner's rulings, and the For you todos. Read it, then ` +
@@ -253,5 +288,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         ...older.filter(job => idle(job) !== undefined)];
     },
     stop: job => input.archives.add(job),
+    steer: (job, text) => input.threads.prompt(job.id, { message: text, images: [], mode: "steer" }),
   };
 }

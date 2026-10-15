@@ -1,4 +1,5 @@
 import { isSessionId, normalizeArtifactTarget, parseArtifactTarget } from "./artifact-link.ts";
+import { DUTY_LINK_SHAPE, parseDutyLink } from "./duty-fixes.ts";
 import { JARGON_HINT, jargonTerms } from "./reply-lint.ts";
 import { preApprovalText, releaseGo, type PreApproval } from "./release-go.ts";
 import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp, type ChatBoard, type GoalTarget, type OwnerTodo, type PlanItem, type PlanItemInput, type PlanStatus,
@@ -100,6 +101,10 @@ function str(value: unknown, field: string, max: number, required = true): strin
   return value;
 }
 function optStr(value: unknown, field: string, max: number): string | undefined { return value === undefined ? undefined : str(value, field, max); }
+function dutyLinkValue(value: unknown): string {
+  if (typeof value !== "string" || !parseDutyLink(value)) invalid(`${DUTY_LINK_SHAPE}.`);
+  return value;
+}
 function nullableStr(value: unknown, field: string, max: number): string | null | undefined { return value === null ? null : optStr(value, field, max); }
 function status(value: unknown): PlanStatus | undefined {
   if (value === undefined) return undefined;
@@ -140,6 +145,7 @@ function planInput(value: unknown): PlanItemInput {
   const until = optWaitUntil(value.waitUntil); if (until !== undefined) input.waitUntil = until;
   const event = optStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) input.waitFor = event;
   if (value.target !== undefined) input.target = goalTarget(value.target);
+  if (value.duty !== undefined) input.duty = dutyLinkValue(value.duty);
   Object.assign(input, gates(value));
   if (value.children !== undefined) {
     if (!Array.isArray(value.children)) invalid("children must be a list of plan items.");
@@ -349,6 +355,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       const until = optWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
       const event = optStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) op.waitFor = event;
       if (value.target !== undefined) op.target = goalTarget(value.target);
+      if (value.duty !== undefined) op.duty = dutyLinkValue(value.duty);
       return Object.assign(op, gates(value));
     }
     case "plan_update": {
@@ -362,6 +369,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       const until = nullableWaitUntil(value.waitUntil); if (until !== undefined) op.waitUntil = until;
       const event = nullableStr(value.waitFor, "waitFor", BOARD_LIMITS.waitFor); if (event !== undefined) op.waitFor = event;
       if (value.target !== undefined) op.target = value.target === null ? null : goalTarget(value.target);
+      if (value.duty !== undefined) op.duty = value.duty === null ? null : dutyLinkValue(value.duty);
       const set = gates({ go: value.go, kind: value.kind ?? undefined, requirements: value.requirements ?? undefined });
       return Object.assign(op, set, value.kind === null ? { kind: null } : {}, value.requirements === null ? { requirements: null } : {});
     }
@@ -441,9 +449,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         const session = input.sessionId ?? jobSession(input.job) ?? (job && job === kept?.job ? kept.sessionId : undefined);
         if (input.target && !goal) invalid(GOAL_ONLY);
         const target = goal ? input.target ?? kept?.target : undefined;
+        const duty = input.duty ?? kept?.duty;
         if (input.target) measuredBy(input.target, now);
         return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
-          ...gateFields({ go: input.go ?? kept?.go, kind: input.kind ?? kept?.kind, requirements: input.requirements ?? kept?.requirements }), ...(target ? { target } : {}),
+          ...gateFields({ go: input.go ?? kept?.go, kind: input.kind ?? kept?.kind, requirements: input.requirements ?? kept?.requirements }), ...(target ? { target } : {}), ...(duty ? { duty } : {}),
           children: (input.children ?? []).map(child => build(child, false)) };
       };
       const plan = op.items.map(input => build(input, true));
@@ -457,10 +466,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const session = op.sessionId ?? jobSession(op.job);
       if (op.target) { if (op.parent !== undefined) invalid(GOAL_ONLY); measuredBy(op.target, now); }
       const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...waits(op), ...gateFields(op), ...(op.target ? { target: op.target } : {}),
-        children: [] };
+        ...(op.duty ? { duty: op.duty } : {}), children: [] };
       if (op.parent === undefined) {
         const area = actor === "agent" ? sameAreaGoal(board.plan, item.text) : undefined;
-        return done({ plan: [...board.plan, item] }, `added ${item.id} ${quote(item.text)}${gateText(item)}${item.target ? `, ${item.target.metric} ${targetText(item.target)}` : ""}` +
+        return done({ plan: [...board.plan, item] }, `added ${item.id} ${quote(item.text)}${gateText(item)}${item.target ? `, ${item.target.metric} ${targetText(item.target)}` : ""}${dutyText(item)}` +
           (area ? `. ${area.id} ${quote(area.text)} covers the same area: put new work under it unless it is a separate area` : ""));
       }
       const parent = find(board.plan, op.parent) ?? unknown("plan item", op.parent);
@@ -468,7 +477,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const reopened = [...parent.ancestors, parent.item].filter(above => above.status === "done").map(above => above.id);
       let plan = map(board.plan, op.parent, p => ({ ...p, children: [...p.children, item] }));
       for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo" }));
-      return done({ plan }, `added ${item.id} ${quote(item.text)}${gateText(item)} under ${parent.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
+      return done({ plan }, `added ${item.id} ${quote(item.text)}${gateText(item)}${dutyText(item)} under ${parent.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
     }
     case "plan_update": {
       const { item, ancestors } = find(board.plan, op.id) ?? unknown("plan item", op.id);
@@ -503,6 +512,8 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       else if (op.kind && !item.kind) { next.kind = op.kind; parts.push("marked it a Build step"); }
       if (op.requirements === null) { delete next.requirements; if (item.requirements) parts.push("cleared its requirements"); }
       else if (op.requirements && JSON.stringify(op.requirements) !== JSON.stringify(item.requirements)) { next.requirements = op.requirements; parts.push(`set its requirements: ${requirementCount(op.requirements)}`); }
+      if (op.duty === null) { delete next.duty; if (item.duty) parts.push("unlinked its duty metric"); }
+      else if (op.duty && op.duty !== item.duty) { next.duty = op.duty; parts.push(`linked duty metric ${op.duty}`); }
       if (op.target === null) { delete next.target; if (item.target) parts.push("cleared its target"); }
       else if (op.target && JSON.stringify(op.target) !== JSON.stringify(item.target)) {
         if (!goal) invalid(GOAL_ONLY);
@@ -993,6 +1004,7 @@ function checkGoWaits(before: ChatBoard, plan: readonly PlanItem[]): void {
 /** The gate fields that are set, for a stored plan item. */
 const gateFields = ({ go, kind, requirements: lines }: { [K in keyof Gates]?: Gates[K] | undefined }): Gates => ({ ...(go ? { go } : {}), ...(kind ? { kind } : {}), ...(lines?.length ? { requirements: lines } : {}) });
 const gateText = (item: PlanItem): string => needsGo(item) ? ", which needs the owner's go" : "";
+const dutyText = (item: PlanItem): string => item.duty ? `, fixing duty metric ${item.duty}` : "";
 const requirementCount = (lines: readonly Requirement[]): string => `${lines.length} ${lines.length === 1 ? "line" : "lines"}, ${lines.filter(line => line.status === "met").length} met`;
 
 function walkInputs(items: readonly PlanItemInput[], visit: (input: PlanItemInput) => void): void {
@@ -1027,6 +1039,7 @@ export function renderOpenPlan(board: ChatBoard | null, sessionId?: string, chec
         ...(isBuildStep(item) ? ["build"] : []),
         ...(needsGo(item) ? [go ? `owner's go on ${go.id}` : "needs owner's go"] : []),
         ...(item.target ? [targetText(item.target)] : []),
+        ...(item.duty ? [`fixes ${item.duty}`] : []),
       ];
       lines.push(`${"  ".repeat(depth + 1)}${MARKS[item.status]} ${item.id} ${clip(item.text, 110)}${marks.length ? ` (${marks.join(", ")})` : ""}`);
       visit(item.children, depth + 1);

@@ -81,9 +81,9 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 
 Ops apply in order, all or none. A refused op returns the reason and the fix.
 
-1. `plan_set {items:[{text,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,children?}]}` replaces the plan. An item that keeps its id keeps its go, kind, requirements and target when you leave them out.
-2. `plan_add {text,parent?,status?,job?,sessionId?,waitUntil?,waitFor?,go?,kind?,requirements?,target?}` adds a goal, or a step under `parent`. The plan holds at most 6 open goals, so new work goes under the goal it belongs to.
-3. `plan_update {id,parent?,text?,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?}` changes an item. `null` clears job, sessionId, note, waitUntil, waitFor, kind, requirements or target. `parent` moves the item with its steps to the end of that item's steps, and `parent: null` moves it to the top level.
+1. `plan_set {items:[{text,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?,children?}]}` replaces the plan. An item that keeps its id keeps its go, kind, requirements, target and duty when you leave them out.
+2. `plan_add {text,parent?,status?,job?,sessionId?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` adds a goal, or a step under `parent`. The plan holds at most 6 open goals, so new work goes under the goal it belongs to.
+3. `plan_update {id,parent?,text?,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` changes an item. `null` clears job, sessionId, note, waitUntil, waitFor, kind, requirements, target or duty. `parent` moves the item with its steps to the end of that item's steps, and `parent: null` moves it to the top level.
 4. `plan_remove {id}` removes an item and its steps.
 5. `scratch_add {text,parent?,links?}`, `scratch_update {id,text?,links?}` and `scratch_remove {id}` edit the scratchpad. In `scratch_update`, `links` replaces the list and `[]` clears it.
 6. `todo_add {text,choices?,step?,links?}` asks the owner one short question in plain words. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks about. A todo that asks him to review, look at or pick something needs `links` to each exact page, or the URL in its text, and the board refuses it otherwise (c32).
@@ -117,6 +117,10 @@ The owner picking a design on a demo is not a go. Offer the go choice first, wor
 `target: {metric,target,unit,current?,measuredAt?,source?,cadence?}` on a top-level goal is its measurable target, and higher is better. Give a goal one when it has a measurable outcome. Each time you measure, send the whole target with current, measuredAt (ISO) and source together. Use `cadence: "daily"` when a daily duty measures it.
 
 The check-in lists every goal short of its target or not measured. Push the step that closes the largest gap, because waiting steps are not progress (c23).
+
+### Duty fix steps
+
+`duty: "<dutyId>/<metricKey>"`, like `"d6/usable_pct_24h"` or `"checkin/stuck_steps"`, marks a step as the fix for one duty metric. Give it a job that works on a code change. Each duty run reads these steps for its missed metrics, and closing one starts a verify run of the duty. The rules are in [check-ins](references/check-ins.md).
 
 ### Waits
 

@@ -22,6 +22,7 @@ import { jobResumes } from "./job-resume.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
+import { fixJobLive } from "./shared/duty-fixes.ts";
 import { archiveDutyJob, dutyJobHost } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
 import { DaemonGate, rosterList } from "./chat-daemon-gate.ts";
@@ -152,6 +153,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const queueReading = sharedQueueRead();
   const queued = queueReader(queueReading);
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
+    board: id => boards.read(id),
+    fixLive: async (id, item) => {
+      const now = Date.now();
+      const asleep = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));
+      return fixJobLive(item, id, await catalog.rows(), asleep);
+    },
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
     jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
       started: id => poolPriorities.set(id, "low") }),
@@ -171,7 +178,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       ...(options.ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}) },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
-  const unwatchBoards = boards.watch((id, board) => threads.setBoard(id, board),
+  const unwatchBoards = boards.watch((id, board) => {
+    threads.setBoard(id, board);
+    void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+  },
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   // The usage worker thread reads the transcripts and owns usage.duckdb; its first build runs in the background.
   const usage = new UsageService({ dataDir, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) });
