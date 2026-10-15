@@ -485,6 +485,41 @@ export function waitingJobs(children: readonly ChildAgent[], board: ChatBoard | 
 }
 
 /**
+ * The jobs whose turn just ended: at work in `before`, not at work in `after`, however it ended (done, cancelled or failed).
+ */
+export function endedJobs(before: readonly ChildAgent[], after: readonly ChildAgent[]): ChildAgent[] {
+  const working = new Set(before.filter(childWorking).map(child => child.id));
+  return after.filter(child => working.has(child.id) && !childWorking(child));
+}
+
+/**
+ * The open steps a job leaves behind when its turn ends: each open step that names it (`stepNamesJob`), less a step whose owner is another job
+ * of the chat that still works. Ops guy 10-15: job limits duty drops complete was cancelled at 09:45Z after a report that said its work was done,
+ * and p233 stayed doing for 8 h; check in duty green ended at 10:42Z and left p247 waiting on a check-in no job watched. From 10-14 15:00Z to
+ * 10-15 11:50Z, 45 of the 60 steps the check-ins of six chats found stuck named a job that was no longer at work: 34 waited on a land and 11
+ * read job_ended.
+ */
+export function leftOpenSteps(child: ChildAgent, children: readonly ChildAgent[], board: ChatBoard | null): PlanItem[] {
+  const others = children.filter(other => other.id !== child.id && childWorking(other));
+  return openSteps(board).filter(item => {
+    if (!stepNamesJob(item, jobRef(child))) return false;
+    const owner = stepOwner(item);
+    return owner === undefined || !others.some(other => owner === other.id || owner === childName(other) || owner === other.sessionId);
+  });
+}
+
+/** The line a chat gets when a job's turn ended and open steps still name it (`leftOpenSteps`): each step, its wait, and what to do now. */
+export function openStepsNotice(child: ChildAgent, steps: readonly PlanItem[]): string {
+  const how = child.status === "cancelled" ? "was cancelled" : child.status === "error" ? "failed" : "ended its turn";
+  const lines = steps.map(step => {
+    const wait = [step.waitFor !== undefined ? `waits for ${quote(clip(step.waitFor, 80))}` : "", step.waitUntil !== undefined ? `waits until ${step.waitUntil}` : ""].filter(Boolean);
+    return `${step.id} ${quote(step.text)} ${wait.length ? wait.join(" and ") : `is ${step.status}`}`;
+  });
+  return `${childName(child)} ${how}, and ${steps.length === 1 ? "this open step names" : "these open steps name"} it: ${lines.join("; ")}. ` +
+    "Read its last report now, then close each step whose work is done, steer the job, or start a fresh job for the rest, so no step waits on a job that stopped.";
+}
+
+/**
  * A create_session root of the chat that ended its turn with its report in: idle (not working, failed, or waiting on an answer from the chat)
  * and its last message is in the chat's transcript (`said`, by the name it sends with).
  */

@@ -8,8 +8,8 @@ import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs } from "./checkin-steps.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
-import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
-  idleRoots, jobReport, lastJobMessages, noReportNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
+import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
+  idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
@@ -128,6 +128,8 @@ export class Chats {
    */
   private readonly workingSince = new Map<string, number>();
   private readonly noticedEnd = new Map<string, { end: number; waited?: number }>();
+  /** The job end and steps each open-steps notice told, by child id, so one end is told once. */
+  private readonly openStepsTold = new Map<string, string>();
   /** Chats found stale while mid-turn; the end of the turn reloads them. */
   private readonly reloadWaiting = new Set<string>();
   /** Chats the owner's Update all chats reloads even on the current build; each leaves the set once its reload ran. */
@@ -232,6 +234,7 @@ export class Chats {
     this.children.set(id, children);
     for (const child of children) if (childWorking(child) && !before?.some(was => was.id === child.id && childWorking(was))) this.workingSince.set(child.id, this.now());
     if (before) for (const child of endedWithoutReport(before, children)) this.laterNoReport(id, child.id);
+    if (before) for (const child of endedJobs(before, children)) this.laterOpenSteps(id, child.id);
     for (const child of children) if (!this.briefSeen.has(child.id)) this.queue(id, () => this.briefCheck(id, child));
     if (before?.some(was => childWorking(was) && children.some(child => child.id === was.id && !childWorking(child)))) this.cleanSoon(id);
   }
@@ -1041,6 +1044,40 @@ export class Chats {
     try {
       await this.threads.prompt(id, { message: line, images: [], mode: "steer" });
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: no-report notice: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /**
+   * A job whose turn ended while open steps still name it (`leftOpenSteps`) is told to the chat as one steer after the no-report grace, so the
+   * chat closes, steers or restarts in that turn rather than at the next check-in, up to 2 h later. Its report lands first, and while the chat
+   * is mid-turn the check waits for it, up to NO_REPORT_BUSY_TRIES graces, so a chat that closes the step on the report gets nothing. A job at
+   * work again, asleep on a board.wake the service still owes, or with a subagent at work below it is not told; each end is told once.
+   */
+  private laterOpenSteps(id: string, childId: string, tries = 0): void {
+    const timer = setTimeout(() => this.queue(id, () => this.openSteps(id, childId, tries)), this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
+    timer.unref?.();
+  }
+
+  private async openSteps(id: string, childId: string, tries: number): Promise<void> {
+    await this.load();
+    if (!this.chatIds.has(id)) return;
+    const children = this.children.get(id) ?? [];
+    const child = children.find(candidate => candidate.id === childId);
+    if (!child || childWorking(child)) return;
+    if (child.sessionId !== undefined && await this.source.waking?.(child.sessionId).catch(() => false)) return;
+    if (liveJobs([child], this.subagents, this.now(), 0).size) return;
+    if (this.threads.busy(id) && tries < NO_REPORT_BUSY_TRIES && !this.stall(id)) { this.laterOpenSteps(id, childId, tries + 1); return; }
+    let board: ChatBoard | null;
+    try { board = await this.source.board(id); }
+    catch (error) { this.log(`chat ${id.slice(0, 8)}: open-steps notice: ${error instanceof Error ? error.message : String(error)}`); return; }
+    const steps = leftOpenSteps(child, children, board);
+    if (!steps.length) return;
+    const told = `${child.lastActivityAt ?? ""}:${steps.map(step => step.id).join(",")}`;
+    if (this.openStepsTold.get(child.id) === told) return;
+    this.openStepsTold.set(child.id, told);
+    try {
+      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + openStepsNotice(child, steps), images: [], mode: "steer" });
+      this.log(`chat ${id.slice(0, 8)}: told the chat ${childName(child)} ended with ${steps.map(step => step.id).join(", ")} open`);
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: open-steps notice: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /**
