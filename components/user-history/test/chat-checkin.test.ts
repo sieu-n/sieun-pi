@@ -321,7 +321,7 @@ test("check-in setting: the interval range, the pause ends, the next run, the bo
 
   const path = join(await mkdtemp(join(tmpdir(), "check-in-settings-")), "check-in-settings.json");
   const settings = checkInSettings(path);
-  assert.deepEqual(await settings.get("c1"), { everyMs: 15 * 60_000 }, "default 15 min");
+  assert.deepEqual(await settings.get("c1"), { everyMs: 120 * 60_000 }, "default 120 min");
   await settings.update("c1", setting => ({ ...setting, everyMs: 15 * 60_000, pausedUntil: "forever" }));
   assert.deepEqual(await checkInSettings(path).get("c1"), { everyMs: 15 * 60_000, pausedUntil: "forever" });
   assert.deepEqual(await checkInSettings(path).all(), { c1: { everyMs: 15 * 60_000, pausedUntil: "forever" } });
@@ -360,18 +360,18 @@ test("chat check_in: the chat pauses itself for 1h or until 09:00, resumes its o
   assert.deepEqual(parseChatCheckIn({ pause: null, every_minutes: 30 }), { pause: null, everyMs: 30 * 60_000 });
   for (const bad of [{ pause: "forever" }, { every_minutes: 0 }, { every_minutes: 2.5 }, {}, "1h"]) assert.throws(() => parseChatCheckIn(bad), /check_in/);
   assert.equal(await chatCheckIn(settings, "c1", { pause: "tomorrow" }, now), "The chat set its check-in: paused until 2026-10-09 09:00");
-  assert.deepEqual(await settings.get("c1"), { everyMs: 15 * 60_000, pausedUntil: new Date(2026, 9, 9, 9, 0).getTime(), pausedBy: "agent", setter: "c1" });
-  assert.equal(await chatCheckIn(settings, "c1", { pause: null }, now + 60_000), "The chat set its check-in: resumed, every 15 min");
-  assert.equal(await chatCheckIn(settings, "c1", { everyMs: 30 * 60_000 }, now + 120_000), "The chat set its check-in: every 30 min");
+  assert.deepEqual(await settings.get("c1"), { everyMs: 120 * 60_000, pausedUntil: new Date(2026, 9, 9, 9, 0).getTime(), pausedBy: "agent", setter: "c1" });
+  assert.equal(await chatCheckIn(settings, "c1", { pause: null }, now + 60_000), "The chat set its check-in: resumed, every 120 min");
+  assert.equal(await chatCheckIn(settings, "c1", { everyMs: 180 * 60_000 }, now + 120_000), "The chat set its check-in: every 180 min");
   assert.equal(await chatCheckIn(settings, "c1", { pause: "1h" }, now + 180_000), "The chat set its check-in: paused until 2026-10-08 15:03");
 
   const owner = (change: Parameters<typeof changeCheckIn>[1], at: number) => settings.update("c1", current => { const result = changeCheckIn(current, change, at, OWNER_UI); return "setting" in result ? result.setting : current; });
-  assert.deepEqual(await owner({ pause: null }, now + 240_000), { everyMs: 30 * 60_000 }, "the owner's later choice wins over the chat's pause");
+  assert.deepEqual(await owner({ pause: null }, now + 240_000), { everyMs: 180 * 60_000 }, "the owner's later choice wins over the chat's pause");
   await owner({ pause: "forever" }, now + 300_000);
   await assert.rejects(chatCheckIn(settings, "c1", { pause: null }, now + 360_000), /check_in refused: the owner paused check-ins until they resume them; that stays/);
   await assert.rejects(chatCheckIn(settings, "c1", { pause: "1h" }, now + 360_000), /that stays/);
-  assert.equal(await chatCheckIn(settings, "c1", { everyMs: 60 * 60_000 }, now + 420_000), "The chat set its check-in: every 60 min", "the interval still applies");
-  assert.deepEqual(await settings.get("c1"), { everyMs: 60 * 60_000, pausedUntil: "forever", pausedBy: "owner", setter: "ui" });
+  assert.equal(await chatCheckIn(settings, "c1", { everyMs: 240 * 60_000 }, now + 420_000), "The chat set its check-in: every 240 min", "the interval still applies");
+  assert.deepEqual(await settings.get("c1"), { everyMs: 240 * 60_000, pausedUntil: "forever", pausedBy: "owner", setter: "ui" });
 });
 
 test("check-in pause by another agent: recorded with its session, the chat's own check_in {pause: null} clears it, another agent cannot clear an owner pause", async () => {
@@ -379,10 +379,10 @@ test("check-in pause by another agent: recorded with its session, the chat's own
   const now = new Date(2026, 9, 10, 21, 54).getTime();
   const lead = { by: "agent", setter: "01a00000-0000-7000-8000-000000000008" } as const;
   const agent = (change: Parameters<typeof changeCheckIn>[1], at: number) => settings.update("c1", current => { const result = changeCheckIn(current, change, at, lead); return "setting" in result ? result.setting : current; });
-  assert.deepEqual(await agent({ pause: "forever" }, now), { everyMs: 15 * 60_000, pausedUntil: "forever", pausedBy: "agent", setter: lead.setter });
+  assert.deepEqual(await agent({ pause: "forever" }, now), { everyMs: 120 * 60_000, pausedUntil: "forever", pausedBy: "agent", setter: lead.setter });
   assert.equal(checkInLine(await settings.get("c1"), now), `Check-in: paused by agent ${lead.setter} until resumed; check_in {pause: null} resumes it`);
-  assert.equal(await chatCheckIn(settings, "c1", { pause: null }, now + 60_000), "The chat set its check-in: resumed, every 15 min");
-  assert.deepEqual(await settings.get("c1"), { everyMs: 15 * 60_000 });
+  assert.equal(await chatCheckIn(settings, "c1", { pause: null }, now + 60_000), "The chat set its check-in: resumed, every 120 min");
+  assert.deepEqual(await settings.get("c1"), { everyMs: 120 * 60_000 });
 
   assert.deepEqual(changeCheckIn({ everyMs: 60_000, pausedUntil: "forever", pausedBy: "owner", setter: "ui" }, { pause: null }, now, lead),
     { refused: "the owner paused check-ins until they resume them; that stays" }, "an agent calling the API cannot clear the owner's pause");

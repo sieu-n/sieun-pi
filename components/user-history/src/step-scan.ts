@@ -1,5 +1,6 @@
 import { type EndStateView, stuckLine } from "./checkin-end-state.ts";
 import { plural } from "./checkin-steps.ts";
+import { cappedLines } from "./shared/brief-cap.ts";
 import type { SessionRow } from "./shared/types.ts";
 
 /** The state the chat's row lists for each of its jobs (a subagent or a create_session root), by session id. */
@@ -27,7 +28,10 @@ export function deadOwnerSteps(entries: readonly EndStateView[], roots: Readonly
   });
 }
 
-/** The steer the step scan sends: one line per dead-owner step (`stuckLine`). */
-export const deadOwnerNotice = (entries: readonly EndStateView[], now: number): string =>
+/** The steer the step scan sends: one line per dead-owner step (`stuckLine`), at most BRIEF_ITEMS of them, and the file that lists the rest (`detail`). */
+export const deadOwnerNotice = (entries: readonly EndStateView[], now: number, detail?: string): string =>
   `Step scan: ${plural(entries.length, "open step")} ${entries.length === 1 ? "has" : "have"} no live owner. Give each a live owner, a For you todo, ` +
-  `or a close now:\n${entries.map(entry => `- ${stuckLine(entry, now)}`).join("\n")}`;
+  `or a close now:\n${cappedLines(deadOwnerLines(entries, now), detail)}`;
+
+/** Each dead-owner step as the step scan names it, for its notice and the notice's detail file. */
+export const deadOwnerLines = (entries: readonly EndStateView[], now: number): string[] => entries.map(entry => stuckLine(entry, now));

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ChatBackend } from "../src/chat-backend.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
-import { checkInSettings } from "../src/checkin-settings.ts";
+import { CHECK_IN_MS, checkInSettings } from "../src/checkin-settings.ts";
 import { startChatServer } from "../src/chat-server.ts";
 import { Chats } from "../src/chats.ts";
 import { type ChatThreads, replyCheckRecord } from "../src/chat-sources.ts";
@@ -36,9 +36,11 @@ test("api/threads/:id/check-in: GET reads a chat's setting, POST sets the interv
   };
   const stored = () => checkInSettings(join(dir, "check-in-settings.json")).get("chat1");
   try {
-    assert.deepEqual(await get("chat1"), { status: 200, body: { everyMs: 900_000, paused: false, nextAt: now, pausedUntil: null, lastAt: null } });
+    assert.deepEqual(await get("chat1"), { status: 200, body: { everyMs: CHECK_IN_MS, paused: false, nextAt: now, pausedUntil: null, lastAt: null } });
     assert.equal((await get("plain")).status, 404);
-    const set = await post("chat1", { everyMs: 15 * 60_000 });
+    const agentSet = await post("chat1", { everyMs: 15 * 60_000 });
+    assert.deepEqual([agentSet.status, agentSet.body.error], [409, "check-in refused: an agent cannot set the check-in under every 120 min; only the owner can, on his page"]);
+    const set = await post("chat1", { everyMs: 15 * 60_000 }, "token", { "X-Chat-Owner-Ui": "1" });
     assert.equal(set.status, 200, JSON.stringify(set.body));
     assert.equal(set.body.everyMs, 900_000);
     assert.equal(notified, 1, "the sessions stream gets the new row");
@@ -46,7 +48,7 @@ test("api/threads/:id/check-in: GET reads a chat's setting, POST sets the interv
     assert.deepEqual([paused.body.paused, paused.body.pausedUntil, paused.body.everyMs], [true, new Date(2026, 9, 9, 9, 0).getTime(), 900_000]);
     assert.equal((await post("chat1", { pause: "forever" })).body.nextAt, null);
     assert.deepEqual((await get("chat1")).body.pausedUntil, "forever");
-    const resumed = await post("chat1", { pause: null, everyMs: 60_000 });
+    const resumed = await post("chat1", { pause: null, everyMs: 60_000 }, "token", { "X-Chat-Owner-Ui": "1" });
     assert.deepEqual([resumed.body.paused, resumed.body.everyMs], [false, 60_000]);
     assert.equal((await post("chat1", { everyMs: 60_000 }, "wrong")).status, 403, "the write token is required");
     assert.equal((await post("plain", { everyMs: 60_000 })).status, 404);

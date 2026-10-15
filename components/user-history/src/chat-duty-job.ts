@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
+import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
 import type { FleetAsk, FleetDone, FleetKind } from "./fleet-budget.ts";
@@ -185,8 +186,10 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.",
       ...chatJobRules(),
       "When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.",
-      `Otherwise send the chat one report when your work is done, with only what it and the owner need: the board ops you applied, then at most 3 short ` +
-        `plain lines the owner should hear, or "nothing for the owner". Send it with \`${send}\`.`,
+      `Otherwise send the chat one short report when your work is done, with only what it and the owner need: the headline number, the board ops ` +
+        `you applied, at most ${BRIEF_ITEMS} items in plain words the owner should hear (like "p412 waits on land 37 with no job moving it", never a ` +
+        `kind label or a list of step ids) or "nothing for the owner", and the detail file path the findings name. Never paste the full flagged list. ` +
+        `Send it with \`${send}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].filter(part => part !== "").join("\n\n") + "\n";
 }

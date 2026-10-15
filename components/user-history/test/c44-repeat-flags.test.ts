@@ -96,6 +96,8 @@ test("check-in: a finding the last check-in flagged and the board did not fix he
   const runs = new Map<string, CheckInRun[]>();
   let now = capturedAt + 16 * MIN;
   const memory = checkInRecord(join(dir, "check-ins.json"));
+  // The chat ran its check-in every 15 min then, under today's 120 min default.
+  await writeFile(join(dir, "check-in-settings.json"), JSON.stringify(Object.fromEntries(Object.keys(boards).map(id => [id, { everyMs: 15 * MIN }]))));
   const source: CheckInSource = {
     board: async id => boards[id] ?? null, rows: async () => sessionRows(sessions), memory, replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
     settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,

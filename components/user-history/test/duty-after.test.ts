@@ -9,6 +9,7 @@ import type { DutyChat, DutyJobHost } from "../src/chat-duty-job.ts";
 import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { Chats } from "../src/chats.ts";
+import { CHECK_IN_MS } from "../src/checkin-settings.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { type DutyJobRef, type DutyMetric, type DutyRunRecord, parseDutyInput } from "../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks } from "../src/shared/duty-streak.ts";
@@ -106,7 +107,7 @@ test("after-job measure: a check-in job still working at the next slot is retire
   board.plan = [lookingDone(), P453];
   await chats.checkIn("c1");
   board.plan = [P421, P453];
-  now.at += 91 * 60_000;
+  now.at += CHECK_IN_MS + 60_000;
   await chats.checkIn("c1");
   const [second, first] = await store.runs("c1");
   assert.deepEqual(jobs.calls, ["start s1", "retire s1", "start s2"], "the stuck job is retired and replaced");

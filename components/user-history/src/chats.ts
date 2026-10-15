@@ -9,21 +9,22 @@ import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, Chec
 import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, withHeldSpawns } from "./checkin-steps.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
-  idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
+  idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { resumeChatJobs } from "./chat-resume.ts";
 import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
 import { newestReportAt, opsSteer, tailMessages } from "./checkin-ops.ts";
-import { deadOwnerNotice, deadOwnerSteps, jobStateMap, jobStopped } from "./step-scan.ts";
+import { deadOwnerLines, deadOwnerNotice, deadOwnerSteps, jobStateMap, jobStopped } from "./step-scan.ts";
+import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { previousSpawn, spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
 import { briefCheckNote, ownerSaid, turnOwnerAt } from "./shared/brief-check.ts";
 import { briefCheckWithHistory } from "./owner-history.ts";
-import type { CheckInRun } from "./chat-duty-run.ts";
+import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
 import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, ChildAgent, PlanItem, QueuePlace, SessionRow, ThinkingLevel, ThreadMessage } from "./shared/types.ts";
 import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
@@ -282,12 +283,23 @@ export class Chats {
     const fresh = dead.filter(({ entry, end }) => before?.get(entry.view.item.id) !== end);
     if (!fresh.length) return;
     try {
-      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + deadOwnerNotice(fresh.map(({ entry }) => entry), now), images: [], mode: "steer" });
+      const entries = fresh.map(({ entry }) => entry);
+      const detail = await this.noticeDetail(id, "step-scan", deadOwnerLines(entries, now));
+      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + deadOwnerNotice(entries, now, detail), images: [], mode: "steer" });
       this.log(`chat ${id.slice(0, 8)}: step scan told the chat ${fresh.map(({ entry }) => entry.view.item.id).join(", ")} have no live owner`);
     } catch (error) {
       for (const { entry } of fresh) this.scanTold.get(id)?.delete(entry.view.item.id);
       this.log(`chat ${id.slice(0, 8)}: step scan: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * The detail file of a notice that names more than BRIEF_ITEMS items: every line, written next to the chat's duty runs (`writeDetail`);
+   * undefined when the notice lists them all or the server runs no duties.
+   */
+  private async noticeDetail(id: string, kind: string, lines: readonly string[]): Promise<string | undefined> {
+    if (lines.length <= BRIEF_ITEMS || !this.source.duty?.writeDetail) return undefined;
+    return this.source.duty.writeDetail(id, `${kind}-${runStamp(this.now())}`, [`# ${kind} notice of ${new Date(this.now()).toISOString()}`, lines.map(line => `- ${line}`).join("\n")]);
   }
 
   /** A job of the chat just ended its turn, or the chat went idle with its reports in: its finished jobs are deleted now, not at the next sweep. */
@@ -1135,7 +1147,8 @@ export class Chats {
     if (this.openStepsTold.get(child.id) === told) return;
     this.openStepsTold.set(child.id, told);
     try {
-      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + openStepsNotice(child, steps), images: [], mode: "steer" });
+      const detail = await this.noticeDetail(id, "open-steps", openStepLines(steps));
+      await this.threads.prompt(id, { message: JOB_NOTICE_PREFIX + openStepsNotice(child, steps, detail), images: [], mode: "steer" });
       this.log(`chat ${id.slice(0, 8)}: told the chat ${childName(child)} ended with ${steps.map(step => step.id).join(", ")} open`);
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: open-steps notice: ${error instanceof Error ? error.message : String(error)}`); }
   }

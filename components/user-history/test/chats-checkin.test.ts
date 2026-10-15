@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { checkInRecord } from "../src/chat-checkin.ts";
-import { clockTime, localTime, OWNER_UI } from "../src/checkin-settings.ts";
+import { CHECK_IN_MS, clockTime, localTime, OWNER_UI } from "../src/checkin-settings.ts";
 import type { Ledger } from "../src/chat-corrections.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, briefCheckRecord, REPLY_CHECK_MAX_AGE_MS, replyCheckRecord } from "../src/chat-sources.ts";
 import { loadRecord } from "../src/chat-brief.ts";
@@ -28,6 +28,8 @@ test("chats: every scheduled check-in hands one run with the precheck to the dut
     { id: "p2", text: "Plan", status: "doing", job: "api-audit", children: [] },
     { id: "p3", text: "Build", status: "blocked", waitUntil: new Date(1_000_000 + 86_400_000).toISOString(), children: [] }] }] };
   let now = 1_000_000;
+  // The owner's page set this chat to every 15 min, under the 120 min default.
+  await writeFile(join(dir, "check-in-settings.json"), JSON.stringify({ c1: { everyMs: 15 * 60_000 } }));
   const sink = dutySink();
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
     { ...source(dir, { c1: board }, () => now), duty: sink.duty });
@@ -104,7 +106,7 @@ test("chats: the scheduler runs each chat at its own interval, skips a paused on
   const chats = new Chats(index, fakeThreads(calls), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source(dir, {}, () => now));
   assert.equal(await chats.checkInView("plain"), null, "not a chat");
   assert.equal(await chats.setCheckIn("plain", { everyMs: 60_000 }, OWNER_UI), null);
-  assert.deepEqual(await chats.checkInView("fast"), { everyMs: 900_000, paused: false, nextAt: now, pausedUntil: null, lastAt: null },
+  assert.deepEqual(await chats.checkInView("fast"), { everyMs: CHECK_IN_MS, paused: false, nextAt: now, pausedUntil: null, lastAt: null },
     "a chat with no check-in on record is due at once, not one interval after the service started");
   await chats.setCheckIn("fast", { everyMs: 60_000 }, OWNER_UI);
   await chats.setCheckIn("slow", { everyMs: 15 * 60_000 }, OWNER_UI);
@@ -203,7 +205,7 @@ test("chats: a service restart keeps each chat's check-in schedule from its memo
   const threads = fakeThreads(calls);
   const busy = new Chats(index, { ...threads, running: () => true, state: () => ({ messages: [{ role: "user", content: "hi", timestamp: now }] }) }, async () => ({ lifecycle: "live" }), "b1",
     loadRecord(join(dir, "extension-loads.json")), source(dir, { vp: board, fresh: board }, () => now));
-  now += 15 * 60_000;
+  now += CHECK_IN_MS;
   assert.deepEqual((await busy.tick()).sort(), ["fresh", "vp"], "the duty job runs beside the owner's turn: no hold");
   await busy.settled();
   chats.close();

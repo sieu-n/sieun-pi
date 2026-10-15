@@ -29,7 +29,7 @@ const pool = (key: PoolKey): Setting => ({ kind: "pool-config", key });
 const CODE: Setting = { kind: "code" };
 
 /** Server-only values (src/checkin-settings.ts, src/checkin-steps.ts, src/chat-checkin.ts, src/chats.ts), checked against their source by the test. */
-export const CHECK_IN_MS = 15 * 60_000;
+export const CHECK_IN_MS = 120 * 60_000;
 export const STEP_STALE_MS = 2 * 60 * 60_000;
 export const NO_REPORT_GRACE_MS = 90_000;
 export const PARK_IDLE_MS = 60 * 60_000;

@@ -4,8 +4,12 @@ import { CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type CheckInPause } from ".
 
 /** A chat's check-in setting: its interval, its pause and who set them, read and written through `<data dir>/check-in-settings.json`, and the clock words its lines use. */
 
-/** How often a chat's check-in runs unless the owner set another interval (CheckInSetting). */
-export const CHECK_IN_MS = 15 * 60_000;
+/**
+ * How often a chat's check-in runs unless the owner set another interval (CheckInSetting), and the shortest interval an agent may set
+ * (`changeCheckIn`). On 10-15 seven of 11 chats ran their check-in every 10 to 60 min, and the owner, on Crawler VP's 15 min check-ins, said
+ * "the threads behaved nicer back in the day".
+ */
+export const CHECK_IN_MS = 120 * 60_000;
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
@@ -88,11 +92,14 @@ export function checkInLine(setting: CheckInSetting, now: number): string {
 export interface CheckInChange { everyMs?: number; pause?: CheckInPause | null }
 
 /**
- * A change applied to a chat's setting at `now`. Whoever writes later wins, with one limit: an agent cannot pause or resume over a pause in
- * force that the owner or the daemon gate made (the refusal says why); a pause with no author counts as the owner's. An agent's pause, the
- * chat's own or another session's, any agent may change. The interval change always applies.
+ * A change applied to a chat's setting at `now`. Whoever writes later wins, with two limits: an agent cannot pause or resume over a pause in
+ * force that the owner or the daemon gate made (the refusal says why), and an agent cannot set an interval under CHECK_IN_MS; only the owner's
+ * page can. A pause with no author counts as the owner's. An agent's pause, the chat's own or another session's, any agent may change.
  */
 export function changeCheckIn(current: CheckInSetting, change: CheckInChange, now: number, actor: CheckInActor): { setting: CheckInSetting } | { refused: string } {
+  if (actor.by === "agent" && change.everyMs !== undefined && change.everyMs < CHECK_IN_MS) {
+    return { refused: `an agent cannot set the check-in under every ${CHECK_IN_MS / 60_000} min; only the owner can, on his page` };
+  }
   const pause = activePause(current, now);
   if (actor.by === "agent" && change.pause !== undefined && pause !== null && current.pausedBy !== "agent") {
     if (current.pausedBy === "daemon") return { refused: "the server paused check-ins while the daemon is slow; they resume on their own" };

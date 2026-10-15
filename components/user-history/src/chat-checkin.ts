@@ -5,6 +5,7 @@ import { flagKey, REPEAT_HEAD, REPEAT_RUNS, repeatLines } from "./checkin-repeat
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
 import { snapshotJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { BOARD_LIMITS, goWaitText, planJob, stepGoWait } from "./shared/chat-board.ts";
+import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, ownerState, parkedBy, quote, readySteps,
@@ -508,14 +509,22 @@ export function leftOpenSteps(child: ChildAgent, children: readonly ChildAgent[]
   });
 }
 
-/** The line a chat gets when a job's turn ended and open steps still name it (`leftOpenSteps`): each step, its wait, and what to do now. */
-export function openStepsNotice(child: ChildAgent, steps: readonly PlanItem[]): string {
+/** Each open step a stopped job left (`leftOpenSteps`) as the open-steps notice names it: its id, text and wait. */
+export const openStepLines = (steps: readonly PlanItem[]): string[] => steps.map(step => {
+  const wait = [step.waitFor !== undefined ? `waits for ${quote(clip(step.waitFor, 80))}` : "", step.waitUntil !== undefined ? `waits until ${step.waitUntil}` : ""].filter(Boolean);
+  return `${step.id} ${quote(step.text)} ${wait.length ? wait.join(" and ") : `is ${step.status}`}`;
+});
+
+/**
+ * The line a chat gets when a job's turn ended and open steps still name it (`leftOpenSteps`): at most BRIEF_ITEMS steps with their waits,
+ * the file that lists the rest (`detail`), and what to do now.
+ */
+export function openStepsNotice(child: ChildAgent, steps: readonly PlanItem[], detail?: string): string {
   const how = child.status === "cancelled" ? "was cancelled" : child.status === "error" ? "failed" : "ended its turn";
-  const lines = steps.map(step => {
-    const wait = [step.waitFor !== undefined ? `waits for ${quote(clip(step.waitFor, 80))}` : "", step.waitUntil !== undefined ? `waits until ${step.waitUntil}` : ""].filter(Boolean);
-    return `${step.id} ${quote(step.text)} ${wait.length ? wait.join(" and ") : `is ${step.status}`}`;
-  });
-  return `${childName(child)} ${how}, and ${steps.length === 1 ? "this open step names" : "these open steps name"} it: ${lines.join("; ")}. ` +
+  const lines = openStepLines(steps);
+  const rest = lines.length - BRIEF_ITEMS;
+  const listed = [...lines.slice(0, BRIEF_ITEMS), ...rest > 0 ? [`and ${rest} more${detail ? `, all listed in ${detail}` : ""}`] : []];
+  return `${childName(child)} ${how}, and ${steps.length === 1 ? "this open step names" : "these open steps name"} it: ${listed.join("; ")}. ` +
     "Read its last report now, then close each step whose work is done, steer the job, or start a fresh job for the rest, so no step waits on a job that stopped.";
 }
 

@@ -109,7 +109,7 @@ Measured against the targets: all 2 on target. This is information, not a verdic
 - Act directly and ship: do not invent waiting rules, extra review rounds or safety gates of your own; keep only the gates the owner asked for.
 - No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones.
 - When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.
-- Otherwise send the chat one report when your work is done, with only what it and the owner need: the board ops you applied, then at most 3 short plain lines the owner should hear, or "nothing for the owner". Send it with \`await agent_message.send(report, receiver_role="sibling", receiver_name="dev VP")\`.
+- Otherwise send the chat one short report when your work is done, with only what it and the owner need: the headline number, the board ops you applied, at most 3 items in plain words the owner should hear (like "p412 waits on land 37 with no job moving it", never a kind label or a list of step ids) or "nothing for the owner", and the detail file path the findings name. Never paste the full flagged list. Send it with \`await agent_message.send(report, receiver_role="sibling", receiver_name="dev VP")\`.
 `);
   assert.doesNotMatch(brief, /verifier per goal|start at least these subagents/i, "no fixed split");
   const record = (verdict: DutyRunRecord["verdict"], metrics: DutyRunRecord["metrics"] = {}): DutyRunRecord => ({ duty: "d1", at: 1, trigger: "schedule", ms: 1, verdict, metrics, summary: "" });
@@ -217,7 +217,7 @@ async function setup(command: string[], now: { at: number }) {
 
 test("Duties: a met run still starts one duty job with the precheck in its brief; a covered slot does not run twice", async () => {
   const now = { at: at(8, 23, 7) };
-  const { store, jobs, duties } = await setup(script(writeOutput({ orphans: 0, long_replies: 5 })), now);
+  const { dir, store, jobs, duties } = await setup(script(writeOutput({ orphans: 0, long_replies: 5 })), now);
   await duties.tick();
   await duties.settled();
   const [run] = await store.runs("chat1");
@@ -227,7 +227,9 @@ test("Duties: a met run still starts one duty job with the precheck in its brief
   assert.equal(run.slot, at(8, 23, 7));
   assert.deepEqual(jobs.calls, ["start chat1 chat system dev VP 23:07 s1"], "met is no reason to stay quiet: the job judges");
   assert.match(jobs.briefs[0]!, /Measured against the targets: orphans 0 \(on target\); all 2 on target\. This is information, not a verdict/);
-  assert.match(jobs.briefs[0]!, /The full precheck output is .*d1-261008-2307\.json\./);
+  assert.match(jobs.briefs[0]!, /The headline number this run is orphans at 0, target at most 0 \(Orphan steps\)\.\n\nNo flagged items\./);
+  assert.match(jobs.briefs[0]!, /Every flagged item and the full precheck are in .*d1-261008-2307\.flagged\.md\./);
+  assert.match(await readFile(join(dir, "duties", "chat1", "d1-261008-2307.flagged.md"), "utf8"), /The full precheck output is .*d1-261008-2307\.json\./);
   const [d1] = await store.list("chat1");
   assert.deepEqual([d1!.runCount, d1!.lastRunAt, d1!.lastSlotAt], [1, at(8, 23, 7), at(8, 23, 7)]);
   now.at = at(8, 23, 30);
@@ -249,7 +251,8 @@ test("Duties: a miss starts the job with the flagged items and the repeat; the p
   await duties.settled();
   assert.equal(jobs.briefs.length, 1);
   assert.match(jobs.briefs[0]!, /Measured against the targets: orphans 3 \(target at most 0\)\./);
-  assert.match(jobs.briefs[0]!, /### Flagged\n- orphans p5: p5 sat 3 h/);
+  assert.match(jobs.briefs[0]!, /1 flagged item; the first 1:\n- p5 sat 3 h\n/);
+  assert.match(await readFile(join(dir, "duties", "chat1", "d1-261008-2307.flagged.md"), "utf8"), /### Flagged \(1\)\n- orphans p5: p5 sat 3 h/);
   const [run] = await store.runs("chat1");
   assert.deepEqual([run!.verdict, run!.trigger, run!.job?.name], ["missed", "owner", "chat system dev VP 23:07"]);
   assert.deepEqual(JSON.parse(await readFile(run!.detail!, "utf8")).metrics, { orphans: 3, long_replies: 5 });
@@ -393,7 +396,8 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   assert.match(jobs.briefs[0]!, /Goal: The check-in keeps two things true in every chat/);
   assert.match(jobs.briefs[0]!, /> YES\. it - checks and synchronizes the agent swarm with user intent/);
   assert.match(jobs.briefs[0]!, /Measured against the targets: stuck_steps 0 \(on target\); all 4 on target\./);
-  assert.match(jobs.briefs[0]!, /### Every open step, oldest change first\n- p2 \(live\) "Build" doing/);
+  assert.doesNotMatch(jobs.briefs[0]!, /### Every open step/, "the full precheck stays in the detail file");
+  assert.match(await readFile(join(dir, "duties", "chat1", "checkin-261009-1800.flagged.md"), "utf8"), /### Every open step, oldest change first\n- p2 \(live\) "Build" doing/);
   assert.match(jobs.briefs[0]!, /When nothing needs work, end in one short turn and send nothing/);
   for (const line of CHECK_IN_FOCUS) assert.ok(jobs.briefs[0]!.includes(`- ${line}`), line);
   await Promise.all([duties.checkIn("chat1", run(0)), duties.checkIn("chat1", run(0))]);

@@ -5,8 +5,9 @@ import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, fixJobB
 import type { CheckInActor } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
-import { agentScheduleProblem, type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
+import { agentScheduleProblem, type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, headlineMetric, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
   type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, verdictMetrics } from "./shared/chat-duties.ts";
+import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { closedFixes, dutyFixes, dutyLink, fixStepOps, missedKeys } from "./shared/duty-fixes.ts";
 import { CHANGE_APPROACH_MISSES, metricStreaks, missStreak, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MAX_MINUTES, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
@@ -82,12 +83,12 @@ export const VIEW_RUNS = 14;
  */
 export const CHECK_IN_FOCUS: readonly string[] = [
   "Your number is the stuck count the precheck opens with (owner 10-14: \"all the PLAN list should clear or be stuck in FOR YOU\"). Every step " +
-    "under Stuck steps ends this run with a live owner (steer its job, or start one with rlm.create_session and set the step's job), a For you " +
+    "the detail file lists under Stuck steps ends this run with a live owner (steer its job, or start one with rlm.create_session and set the step's job), a For you " +
     "todo that links it when only the owner can unblock it, or a close on evidence. A chase message, a new wait text or a later waitUntil " +
     "leaves it stuck. Report the stuck count before and after your run.",
   "Organize the plan first, in every run, with board ops: close or fold what shipped (name the evidence), move a loose step under its goal with " +
     "plan_update parent, remove a step another thread now owns (its goal's note names the new owner), close a step a duty now covers, and fix " +
-    "stale notes. A run that only rewrites notes and wait times while Plan shape or Look done lists items has not done its job: the owner should " +
+    "stale notes. A run that only rewrites notes and wait times while the detail file's Plan shape or Look done lists items has not done its job: the owner should " +
     "never have to ask a chat to tidy its plan (c44, owner 10-12).",
   "A goal held only by other threads (Plan shape lists it) or a step whose wait is over is finished work behind a wait: check the wait " +
     "against the real state in this run (the release holds the commit, the land is green, the thread answered). When it is met, close the " +
@@ -169,6 +170,17 @@ export function stuckFindings(misses: readonly MetricStreak[]): string {
   return `### Change approach\n${stuck.map(miss => `- ${miss.key} missed ${miss.misses} runs in a row and did not move toward its target` +
     `${miss.fix ? `; the fix ${miss.fix.step}${miss.fix.job ? ` by ${miss.fix.job}` : ""} did not move it` : ""}. This run starts a new root-cause job for it, not the same fix again.`).join("\n")}`;
 }
+
+/** The headline metric's number in a run's record as the brief's first line (`headlineWords`); null when the duty has none or the run has no value. */
+function headlineOf(metrics: readonly DutyMetric[], record: Pick<DutyRunRecord, "metrics">): { key: string; words: string } | null {
+  const lead = headlineMetric(verdictMetrics(metrics));
+  const value = lead && record.metrics[lead.key]?.value;
+  return lead && typeof value === "number" ? { key: lead.key, words: headlineWords(lead, value) } : null;
+}
+
+/** Every flagged item of a run, one raw line each, for its detail file. */
+const flaggedSection = (flagged: readonly FlaggedSlice[]): string =>
+  flagged.length ? `### Flagged (${flagged.length})\n${flagged.map(slice => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`).join("\n")}` : "";
 
 /** The check-in duty's cadence in minutes: `{ kind: every, minutes }` with a whole number the check-in setting takes. */
 function checkInMinutes(value: unknown): number {
@@ -667,15 +679,33 @@ export class Duties {
       state.runCount += 1;
       state.lastRunAt = run.at;
     });
+    const detail = await this.writeDetail(chatId, `${CHECK_IN_DUTY_ID}-${runStamp(run.at)}`,
+      [`# Check-in run of ${new Date(run.at).toISOString()}`, `Measured against the targets: ${judged.summary}.`, run.findings, flaggedSection(run.output.flagged)]);
+    const headline = headlineOf(CHECK_IN_DUTY.metrics, record);
+    const findings = briefFindings({ headline: headline?.words ?? null, flagged: run.output.flagged, ...headline ? { headlineKey: headline.key } : {}, detail });
     const started = await this.startJob(chatId, record, CHECK_IN_DUTY, {
       schedule: { kind: "every", minutes: run.everyMs / 60_000 }, measured: judged.verdict === "error" ? null : { at: run.at, ...judged },
-      brief: { measure: judged.summary, findings: [run.findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses } });
+      brief: { measure: judged.summary, findings: [findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses } });
     return started === "failed" ? "failed" : "done";
   }
 
   /** When the chat's newest check-in run was recorded; undefined when it has none. The scheduler reads it at start (`Chats.load`). */
   async lastCheckIn(chatId: string): Promise<number | undefined> {
     return (await this.store.runs(chatId)).find(run => run.duty === CHECK_IN_DUTY_ID)?.at;
+  }
+
+  /**
+   * Writes the full findings of a run or a notice to `<chat dir>/<name>.flagged.md` and returns its path, which the brief or the notice names
+   * instead of listing every item (`briefFindings`, `cappedLines`). A write that fails is logged and the path is still named.
+   */
+  async writeDetail(chatId: string, name: string, parts: readonly string[]): Promise<string> {
+    const dir = this.store.chatDir(chatId);
+    const path = join(dir, `${name}.flagged.md`);
+    try {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      await writeFile(path, parts.filter(Boolean).join("\n\n") + "\n", { mode: 0o600 });
+    } catch (error) { this.log(`duty ${chatId.slice(0, 8)}: write ${name}.flagged.md: ${message(error)}`); }
+    return path;
   }
 
   private pendingFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.pending.json`); }
@@ -840,13 +870,17 @@ export class Duties {
     const pause = record.verdict === "error" && errorStreak([record, ...previous]) >= ERROR_PAUSE_RUNS;
     await markRun(pause);
     const misses = await this.missesOf(chatId, record, previous, duty.metrics);
-    const findings = [
-      ...(record.verdict === "error" ? [`The precheck failed: ${record.error ?? record.summary}. ${pause ? `It failed ${ERROR_PAUSE_RUNS} runs in a row and the duty is ` +
-        "paused until resumed: fix the precheck, then tell the chat to resume the duty." : "Fix the precheck or check the duty by hand."}`] : []),
-      ...(record.detail && record.verdict !== "error" ? [`The full precheck output is ${record.detail}.`] : []),
-      ...(flagged.length ? [`### Flagged\n${flagged.map(slice => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`).join("\n")}`] : []),
-      stuckFindings(misses),
-    ].filter(Boolean).join("\n\n");
+    let findings: string;
+    if (record.verdict === "error") {
+      findings = [`The precheck failed: ${record.error ?? record.summary}. ${pause ? `It failed ${ERROR_PAUSE_RUNS} runs in a row and the duty is ` +
+        "paused until resumed: fix the precheck, then tell the chat to resume the duty." : "Fix the precheck or check the duty by hand."}`, stuckFindings(misses)].filter(Boolean).join("\n\n");
+    } else {
+      const file = await this.writeDetail(chatId, `${dutyId}-${runStamp(started)}`, [`# ${duty.name} run of ${new Date(started).toISOString()}`,
+        `Measured against the targets: ${record.summary}.`, ...record.detail ? [`The full precheck output is ${record.detail}.`] : [], flaggedSection(flagged)]);
+      const headline = headlineOf(duty.metrics, record);
+      findings = [briefFindings({ headline: headline?.words ?? null, flagged, ...headline ? { headlineKey: headline.key } : {}, detail: file }), stuckFindings(misses)]
+        .filter(Boolean).join("\n\n");
+    }
     this.steps.set(key, { at: started, step: "starting its job" });
     const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary } : null;
     await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured,
