@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { dutyCard, jobLive, judgedRun, missStreak } from "../src/client/duty-card.ts";
+import { headlineWords } from "../src/client/duty-cadence.ts";
+import { dutyCard, dutyState, dutyStatus, dutyStatusLine, jobLive, judgedRun, missStreak } from "../src/client/duty-card.ts";
 import { CHECK_IN_DUTY, type DutyCard, type DutyRunRecord, type DutyView } from "../src/shared/chat-duties.ts";
 import type { ChatAgent } from "../src/shared/types.ts";
 
@@ -78,4 +79,42 @@ test("a duty over the shape rule counts its first 4 metrics only, says its chat 
     extra_1: { value: 0, target: 0, op: "<=" as const, met: true }, extra_2: { value: 0, target: 0, op: "<=" as const, met: true } } }));
   assert.equal(missStreak(met, green.metrics), 0, "a miss outside the counted metrics does not extend the streak");
   assert.equal(judgedRun(met[0]!, green.metrics).verdict, "met");
+});
+
+test("the row's one line is the headline number in words and what is being done, with no keys, badges or run counts", () => {
+  const [newest, ...older] = fixture.runs.d6!;
+  const fixed = [{ ...newest!, fixes: { usable_pct_1h: { step: "p12", job: "mac usable fix", live: false } } }, ...older];
+  const line = (duty: DutyView, agents: ChatAgent[] = []) => {
+    const card = dutyCard(duty, agents);
+    return dutyStatusLine(dutyStatus(duty, card), headlineWords(duty), card.headlineMiss !== null || card.headline === null);
+  };
+  assert.deepEqual(dutyStatus(view("d6", fixed), dutyCard(view("d6", fixed), [agent("mac usable fix", "working")])), { kind: "fixing", job: "mac usable fix", by: "fix" });
+  assert.equal(line(view("d6", fixed), [agent("mac usable fix", "working")]), "93.2% of the last hour's minutes the Mac was usable, and a fix is running.");
+  const runJob = "mac stays usable AI harness developer environment 17:22";
+  assert.deepEqual(dutyStatus(view("d6"), dutyCard(view("d6"), [agent(runJob, "working")])), { kind: "fixing", job: runJob, by: "run" });
+  assert.equal(line(view("d6"), [agent(runJob, "working")]), "93.2% of the last hour's minutes the Mac was usable, and its check job is working on it.");
+  assert.equal(line(view("d6", fixed), [agent("mac usable fix", "idle")]), "93.2% of the last hour's minutes the Mac was usable, and no fix is running yet.", "an ended fix job is the gap");
+  const met = [{ ...newest!, after: { at: newest!.at + 600_000, verdict: "met" as const, metrics: Object.fromEntries(Object.entries(newest!.metrics).map(([key, result]) => [key, { ...result, value: 100, met: true }])), summary: "" } }, ...older];
+  assert.equal(line(view("d6", met)), "100% of the last hour's minutes the Mac was usable.");
+  assert.equal(line(view("d6", [{ ...newest!, verdict: "error", error: "precheck exited 1" }])), "The last run could not measure it, and the next run tries again.");
+  assert.equal(line({ ...view("d6"), running: true }), "93.2% of the last hour's minutes the Mac was usable, and a check is running now.");
+  assert.equal(dutyState({ ...view("d6"), running: true }), "running");
+  assert.equal(line(view("d6", [])), "Not checked yet.");
+  assert.match(line(view("d5")), /^\d+ skill and tool checks that fail, and no fix is running yet\.$/);
+  assert.match(line(view("checkin")), /^\d+ open steps nobody is moving/);
+  for (const text of ["d5", "d6", "checkin"].map(id => line(view(id)))) {
+    assert.doesNotMatch(text, /_|·|target at|runs?\b|no live fix job|On target:/, "no keys, dots, targets or badges on the main line");
+    assert.ok(text.split(/\s+/).length <= 20, text);
+  }
+});
+
+test("headline words: a share reads 'N% of', a count leads with its number, any other unit reads 'is', and the label stops at its first comma", () => {
+  const words = (label: string, value: number, unit?: string) => headlineWords({ ...view("d6", [{ ...fixture.runs.d6![0]!, after: undefined, metrics: { k: { value, met: false } } } as DutyRunRecord]),
+    duty: { ...fixture.duties.find(duty => duty.id === "d6")!, metrics: [{ key: "k", label, op: ">=", target: 1, ...(unit ? { unit } : {}), headline: true }] } });
+  assert.equal(words("Duties in all chats whose last run met every target", 21.2, "%"), "21.2% of duties in all chats whose last run met every target");
+  assert.equal(words("Prod uptime of api.virev.ai and its crawler, last 24 h", 99.25, "%"), "Prod uptime of api.virev.ai and its crawler is 99.3%");
+  assert.equal(words("Wiki problems: unlisted pages, broken links", 2), "2 wiki problems");
+  assert.equal(words("Blog and tool visits a day, 7-day average, no bots or staff (PostHog)", 12345.6, " visits/day"), "Blog and tool visits a day is 12,345.6 visits/day");
+  assert.equal(words("Days since a new blog article or edition went live and returned 200", 1, " days"), "Days since a new blog article or edition went live and returned 200 is 1 day");
+  assert.equal(words("Main commits over 20 min old not live on the Railway worker or Vercel", 3), "3 main commits over 20 min old not live on the Railway worker or Vercel");
 });

@@ -22,15 +22,63 @@ export function cadenceSchedule(draft: CadenceDraft, builtin: boolean): DutySche
   return Number.isInteger(draft.minutes) && draft.minutes >= min && draft.minutes <= max ? { kind: "every", minutes: draft.minutes } : { error: `Give ${min} to ${max} minutes.` };
 }
 
-/** A check-in run's open steps per class, the classes with steps only: "live 6 · waiting 1 · orphan 1". */
+const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
+const sentence = (parts: readonly string[]): string =>
+  !parts.length ? "" : `${parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`}.`;
+
+const CLASS_WORDS: Record<string, string> = {
+  live: "in progress", foryou: "waiting on you", waiting: "waiting until a set time", due: "due now", "stale-chase": "gone quiet",
+  orphan: "with no job", parked: "parked",
+};
+
+/** A check-in run's open steps per class, in plain words: "41 steps in progress, 7 steps waiting on you and 1 step with no job."; empty with none. */
 export function classesLabel(run: DutyRunRecord | undefined): string {
-  return Object.entries(run?.classes ?? {}).filter(([, count]) => count > 0).map(([cls, count]) => `${cls} ${count}`).join(" · ");
+  return sentence(Object.entries(run?.classes ?? {}).filter(([, n]) => n > 0).map(([cls, n]) => `${count(n, "step")} ${CLASS_WORDS[cls] ?? cls.replace(/[-_]/g, " ")}`));
 }
 
-/** What the last run that measured flagged, by step: "p56 orphan steps, p18 due late"; empty when it flagged nothing. */
+/** Each flagged kind as a noun and what is wrong with it, or the whole finding when it names no item. */
+const FLAG_WORDS: Record<string, { noun: string; words: string } | string> = {
+  orphan_steps: { noun: "step", words: "with no job" },
+  due_late: { noun: "step", words: "past due" },
+  stale_chase_24h: { noun: "step", words: "quiet for a day" },
+  job_end_unrecorded: { noun: "step", words: "not updated after its job ended" },
+  job_end_silent: { noun: "step", words: "whose job failed with no report" },
+  scope_misses: { noun: "step", words: "on another chat's work" },
+  idle_goals: { noun: "goal", words: "with no job working" },
+  stalled_steps: { noun: "step", words: "stalled" },
+  go_missing: { noun: "step", words: "missing the owner's go" },
+  requirements_missing: { noun: "goal", words: "missing requirements" },
+  merges_without_go: { noun: "merge", words: "done without the owner's go" },
+  goal_gaps: { noun: "goal", words: "far from target with no job" },
+  blocked_on_others: { noun: "step", words: "blocked on others for over an hour" },
+  finished_open: { noun: "item", words: "done but still open" },
+  loose_goals: { noun: "goal", words: "with no steps" },
+  extra_goals: "too many open goals",
+  open_under_closed: { noun: "item", words: "open under a closed one" },
+  held_elsewhere: { noun: "goal", words: "held by other chats" },
+  wait_met: { noun: "step", words: "whose wait is over" },
+  no_progress: "no progress in the last hour",
+  stale_steps: { noun: "item", words: "with an old record" },
+  goals_to_fold: { noun: "goal", words: "to fold into a duty" },
+  one_session_load: { noun: "goal", words: "with too much on one job" },
+  redundant_heartbeats: { noun: "heartbeat", words: "repeating a duty's work" },
+  goals_without_duty: "open goals with no duty",
+  stuck_steps: { noun: "step", words: "stuck" },
+};
+
+/**
+ * What the last run that measured flagged, counted per kind in plain words with no step ids: "3 steps stalled and 1 goal with no steps.";
+ * empty when it flagged nothing.
+ */
 export function flaggedLabel(view: DutyView): string {
   const run = view.runs.find(entry => entry.verdict !== "skipped");
-  return [...new Set((run?.flagged ?? []).map(slice => slice.item ? `${slice.item} ${slice.kind.replace(/_/g, " ")}` : slice.kind))].join(", ");
+  const items = new Map<string, Set<string>>();
+  for (const [index, slice] of (run?.flagged ?? []).entries()) items.set(slice.kind, (items.get(slice.kind) ?? new Set()).add(slice.item ?? `#${index}`));
+  return sentence([...items].map(([kind, found]) => {
+    const words = FLAG_WORDS[kind];
+    if (typeof words === "string") return words;
+    return words ? `${count(found.size, words.noun)} ${words.words}` : `${found.size} ${kind.replace(/_/g, " ")}`;
+  }));
 }
 
 /** The duty's metrics with its headline metric first. */
@@ -41,6 +89,34 @@ export const metricsHeadlineFirst = (metrics: readonly DutyMetric[]): DutyMetric
 
 /** A metric's value with its unit, as the metric table shows it. */
 export const metricText = (number: number, unit = ""): string => `${Math.round(number * 10) / 10}${unit}`;
+
+const NUMBER = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+const lowerFirst = (text: string): string => /^[A-Z][a-z]/.test(text) ? text[0]!.toLowerCase() + text.slice(1) : text;
+const NOT_PLURAL = new Set(["is", "was", "has", "this", "its", "his", "plus", "less"]);
+/** Whether a label names a set of things in its first 4 words ("Duties in all chats ...", "On-topic real visitors ..."), so a share reads "N% of". */
+const namesThings = (what: string): boolean => what.split(/\s+/).slice(0, 4).some(word => /[a-z][^s]s$/i.test(word) && !NOT_PLURAL.has(word.toLowerCase()));
+
+/**
+ * The headline number in plain words for the duty's one line: "4% of the last hour's minutes the Mac was usable", "17 open steps nobody is
+ * moving", "Prod uptime of api.virev.ai and its crawler is 99.2%". The label is cut at its first colon, bracket or comma, so the detail keeps
+ * the rest. Null before the headline is measured or for a duty with none.
+ */
+export function headlineWords(view: DutyView): string | null {
+  const metric = headlineMetric(view.duty.metrics);
+  if (!metric) return null;
+  const result = view.runs.map(effectiveRun).find(run => run.verdict !== "skipped" && run.metrics[metric.key] !== undefined)?.metrics[metric.key];
+  if (!result) return null;
+  const what = metric.label.split(/:|\(|, /)[0]!.trim();
+  const value = NUMBER.format(result.value);
+  if (!metric.unit) return `${value} ${lowerFirst(what)}`;
+  if (metric.unit === "%") {
+    const share = /^share of (.+)$/i.exec(what)?.[1];
+    if (share) return `${value}% of ${share}`;
+    if (namesThings(what)) return `${value}% of ${lowerFirst(what)}`;
+  }
+  const unit = result.value === 1 && / \w+s$/.test(metric.unit) ? metric.unit.slice(0, -1) : metric.unit;
+  return `${what} is ${value}${unit}`;
+}
 
 /**
  * The headline line a duty row shows first: "Open steps in the owner's end state 43%, target at least 100%, off target", from the last run that

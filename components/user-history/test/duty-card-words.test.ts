@@ -4,7 +4,7 @@ import type { DutyRunRecord, DutyView } from "../src/shared/chat-duties.ts";
 
 // duties.svelte.ts imports the page's api module, which reads the chat token from the page body at load.
 (globalThis as { document?: unknown }).document ??= { body: { dataset: {} } };
-const { dutiesCount, lastLabel, VERDICT_WORDS } = await import("../src/client/duties.svelte.ts");
+const { dutiesCount, lastLabel, nextLabel, VERDICT_WORDS } = await import("../src/client/duties.svelte.ts");
 
 const NOW = Date.parse("2026-10-10T09:00:00Z");
 const run = (verdict: DutyRunRecord["verdict"], minutesAgo: number): DutyRunRecord => ({ at: NOW - minutesAgo * 60_000, verdict, metrics: {}, summary: "" } as unknown as DutyRunRecord);
@@ -22,4 +22,11 @@ test("duty card words: a run whose numbers came up short is 'off target' with it
   assert.doesNotMatch(lastLabel(view([run("missed", 1)]), NOW), /missed/);
   assert.equal(lastLabel(view([]), NOW), "no run yet");
   assert.equal(dutiesCount([view([run("missed", 1)]), view([run("met", 1)])]), "2 duties, 1 off target");
+});
+
+test("duty detail: the next run reads as a sentence", () => {
+  assert.equal(nextLabel(view([]), NOW), "Due now.");
+  assert.match(nextLabel({ ...view([]), nextAt: NOW + 3_600_000 }, NOW), /^Next run at \S.*\.$/);
+  assert.equal(nextLabel({ ...view([]), nextAt: null }, NOW), "Paused.");
+  assert.equal(nextLabel({ ...view([]), running: true }, NOW), "Running now.");
 });

@@ -19,13 +19,19 @@ test("duty cadence editor: the draft starts from the schedule; the check-in save
   assert.deepEqual(cadenceSchedule({ kind: "daily", minutes: 0, at: "7:30" }, false), { error: "Give a time like 23:07." });
 });
 
-test("check-in card: the last run's classes and what it flagged by step", () => {
+test("check-in detail: the last run's open steps and what it flagged read as plain sentences with no step ids", () => {
   const run = record({ at: 10, classes: { live: 5, foryou: 7, waiting: 5, due: 0, "stale-chase": 0, orphan: 1 }, job: { id: "s1", name: "check-in 14:00" },
     flagged: [{ kind: "orphan_steps", excerpt: "x", item: "p56" }, { kind: "job_end_unrecorded", excerpt: "y", item: "p56" }, { kind: "due_late", excerpt: "z", item: "p18" }] });
-  assert.equal(classesLabel(run), "live 5 · foryou 7 · waiting 5 · orphan 1");
+  assert.equal(classesLabel(run), "5 steps in progress, 7 steps waiting on you, 5 steps waiting until a set time and 1 step with no job.");
+  assert.equal(classesLabel(record({ classes: { live: 41, "stale-chase": 1 } })), "41 steps in progress and 1 step gone quiet.");
   assert.equal(classesLabel(undefined), "");
-  assert.equal(flaggedLabel(view([run])), "p56 orphan steps, p56 job end unrecorded, p18 due late");
+  assert.equal(flaggedLabel(view([run])), "1 step with no job, 1 step not updated after its job ended and 1 step past due.");
   const skipped = record({ at: 20, verdict: "skipped", summary: "skipped: previous run still working" });
-  assert.equal(flaggedLabel(view([skipped, run])), "p56 orphan steps, p56 job end unrecorded, p18 due late", "a skipped run measures nothing new");
+  assert.equal(flaggedLabel(view([skipped, run])), flaggedLabel(view([run])), "a skipped run measures nothing new");
   assert.equal(flaggedLabel(view([record({ at: 30 })])), "");
+  const stalled = record({ flagged: [{ kind: "stalled_steps", excerpt: "a", item: "p254" }, { kind: "stalled_steps", excerpt: "b", item: "p255" }, { kind: "stalled_steps", excerpt: "c", item: "p255" },
+    { kind: "stalled_steps", excerpt: "d", item: "p9" }, { kind: "no_progress", excerpt: "e" }, { kind: "brand_new_kind", excerpt: "f", item: "p1" }] });
+  const words = flaggedLabel(view([stalled]));
+  assert.equal(words, "3 steps stalled, no progress in the last hour and 1 brand new kind.", "one count per step, never its id");
+  assert.doesNotMatch(words + classesLabel(run), /\bp\d+\b|_|·/);
 });

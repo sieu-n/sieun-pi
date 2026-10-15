@@ -1,7 +1,7 @@
 import { get, OWNER_UI_HEADERS, post } from "./api.ts";
 import { clockTime } from "./format.ts";
 import type { DutyRunRecord, DutySchedule, DutyView } from "../shared/chat-duties.ts";
-import { judgedRun, missStreak } from "./duty-card.ts";
+import { dutyState, judgedRun, missStreak } from "./duty-card.ts";
 
 export type DutyAction = "run" | "pause" | "resume" | "schedule";
 const route = (id: string) => "api/threads/" + encodeURIComponent(id) + "/duties";
@@ -9,18 +9,6 @@ export const dutiesApi = {
   view: (id: string) => get<{ duties: DutyView[] }>(route(id)),
   act: (id: string, duty: string, action: DutyAction, schedule?: DutySchedule) => post<{ duties: DutyView[] }>(route(id), { duty, action, ...(schedule ? { schedule } : {}) }, undefined, OWNER_UI_HEADERS),
 };
-
-/** The dot a duty row shows: its last verdict after its job over its counted metrics (`judgedRun`), or running, paused, or new before its first run. */
-export type DutyState = "met" | "missed" | "error" | "paused" | "running" | "new";
-export function dutyState(view: DutyView): DutyState {
-  if (view.running) return "running";
-  if (view.paused) return "paused";
-  const last = view.runs.find(run => run.verdict !== "skipped");
-  return last ? judgedRun(last, view.duty.metrics).verdict as Exclude<DutyRunRecord["verdict"], "skipped"> : "new";
-}
-
-/** "daily 23:07", "every 30 min". */
-export const scheduleLabel = (schedule: DutySchedule): string => schedule.kind === "daily" ? `daily ${schedule.at}` : `every ${schedule.minutes} min`;
 
 const DAY = 24 * 60 * 60_000;
 /** "23:07", "23:07 yesterday", "Oct 6 23:07", against the local day of `now`. */
@@ -34,11 +22,11 @@ export function whenLabel(at: number, now: number): string {
   return `${new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
 }
 
-/** The row's next-run text: "next 23:07", "paused", "running now". */
+/** The next run as a sentence: "Next run at 23:07.", "Paused.", "Running now.", "Due now." */
 export function nextLabel(view: DutyView, now: number): string {
-  if (view.running) return "running now";
-  if (view.nextAt === null) return "paused";
-  return view.nextAt <= now ? "due now" : `next ${whenLabel(view.nextAt, now)}`;
+  if (view.running) return "Running now.";
+  if (view.nextAt === null) return "Paused.";
+  return view.nextAt <= now ? "Due now." : `Next run at ${whenLabel(view.nextAt, now)}.`;
 }
 
 /**

@@ -2,24 +2,21 @@
     import { type DutyView, verdictMetrics } from "../shared/chat-duties.ts";
   import { CHANGE_APPROACH_MISSES, effectiveRun } from "../shared/duty-streak.ts";
   import type { ChatAgent } from "../shared/types.ts";
-  import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel } from "./duty-cadence.ts";
-  import { dutyCard, judgedRun, type MissLine } from "./duty-card.ts";
-  import { dutyState, history, lastLabel, metricValue, nextLabel, scheduleLabel, VERDICT_WORDS, type ChatDuties } from "./duties.svelte.ts";
+  import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel, headlineWords } from "./duty-cadence.ts";
+  import { dutyCard, dutyState, dutyStatus, dutyStatusLine, judgedRun, type MissLine } from "./duty-card.ts";
+  import { history, lastLabel, metricValue, nextLabel, VERDICT_WORDS, type ChatDuties } from "./duties.svelte.ts";
   import Icon from "./Icon.svelte";
   import IdChip from "./IdChip.svelte";
   import { store } from "./store.svelte.ts";
   import { tooltip } from "./ui/tooltip.ts";
 
   /**
-   * The Duties card body: one row per duty with its state dot, name, schedule, next run, the last verdict and the pass and fail history as dots
-   * (oldest first; green met, amber missed, red failed, grey skipped). A click on the row opens its goal, the owner's words, each metric against
-   * its target over the last runs, the last run's output file, and the cadence editor (every N minutes or a daily time). Run now and Pause or
-   * Resume act through the server. Each run starts one duty job, named under the row. The check-in is a built-in duty: it carries a Built-in
-   * tag and its last run's open steps per class and what it flagged, and its cadence and pause are the chat's check-in setting (the header's control).
-   * Each row names the chat's priority, which picks a new duty's morning band. Under the row the headline metric comes first, then one line per
-   * missed metric with its miss streak, a stuck mark when it must change approach, and its fix job as a link or a gap mark when no live job fixes
-   * it (`dutyCard`). Every verdict is the run's after-job measure when it has one, over the duty's counted metrics (`verdictMetrics`); a duty
-   * over the shape rule says its chat must rework it. The detail keeps the measure from before the job.
+   * The Duties card body: one line per duty with its state dot, its name and one plain sentence with its headline number in words and what is
+   * being done about it (`dutyStatusLine`), and nothing else (owner 10-16: "if human can't read it it's pointless", "too much slop"). A click on the line opens the rest: the goal, the headline
+   * metric and each missed metric with its streak, stuck and gap marks and fix job (`dutyCard`), the shape warning, the metrics on target, the last
+   * verdict with the run history as dots (oldest first; green met, amber missed, red failed, grey skipped), the check-in's open steps and what it
+   * flagged in plain words, the duty job, schedule, priority, Run now and Pause, the metrics table, the last run's summary and output file, the
+   * cadence editor and the owner's words. The check-in is a built-in duty whose cadence and pause are the chat's check-in setting.
    */
   let { chat, duties, now, agents }: { chat: string; duties: ChatDuties; now: number; agents: readonly ChatAgent[] } = $props();
 
@@ -69,48 +66,45 @@
     {@const duty = view.duty}
     {@const state = dutyState(view)}
     {@const last = lastRun(view)}
-    {@const found = flaggedLabel(view)}
     {@const card = dutyCard(view, agents)}
+    {@const status = dutyStatus(view, card)}
     <li class="duty">
       <div class="duty-line">
         <button type="button" class="duty-main" aria-expanded={open[duty.id] === true} onclick={() => toggle(duty.id)}>
           <span class="duty-state">{#if state === "running"}<span class="spinner tiny"></span>{:else}<span class="duty-dot {state}"></span>{/if}</span>
-          <span class="duty-name">{duty.name}</span>
-          {#if view.builtin}<span class="duty-tag" use:tooltip={"Built in: the check-in. Its cadence and pause are the header's Check-in control"}>Built-in</span>{/if}
-          <span class="duty-priority" use:tooltip={PRIORITY_TIP}>{view.priority} priority</span>
-          <span class="duty-when">{scheduleLabel(view.schedule)} · {nextLabel(view, now)}</span>
+          <span class="duty-text"><span class="duty-name">{duty.name}</span> <span class="duty-status {status.kind}">{dutyStatusLine(status, headlineWords(view), card.headlineMiss !== null || card.headline === null)}</span></span>
         </button>
-        <span class="duty-actions">
-          <button type="button" class="duty-act" disabled={view.running} onclick={() => void duties.act(duty.id, "run")}>Run now</button>
-          <button type="button" class="duty-act" onclick={() => void duties.act(duty.id, view.paused ? "resume" : "pause")}>{view.paused ? "Resume" : "Pause"}</button>
-        </span>
       </div>
-      {#if card.headline}
-        <p class="duty-headline">{card.headline}{#if card.headlineMiss}{@render marks(card.headlineMiss)}{/if}</p>
-      {/if}
-      {#each card.misses as line (line.key)}<p class="duty-miss">{line.text}{@render marks(line)}</p>{/each}
-      {#if card.shape}<p class="duty-shape">{card.shape}</p>{/if}
-      {#if card.onTarget.length}<p class="duty-ok" use:tooltip={card.onTarget.join("\n")}>On target: {card.onTarget.join(", ")}</p>{/if}
-      <p class="duty-last">
-        <span class="duty-verdict {state}">{lastLabel(view, now)}</span>
-        {#if view.runs.length}
-          <span class="history" aria-label="Last {view.runs.length} runs, oldest first">
-            {#each history(view) as run, index (run.at)}<span class="run {judgedRun(run, duty.metrics).verdict}" use:tooltip={runTitle(view, index)}></span>{/each}
-          </span>
-        {/if}
-      </p>
-      {#if view.builtin}
-        {@const classes = classesLabel(last)}
-        {#if classes}<p class="duty-found">{classes}</p>{/if}
-        {#if found}<p class="duty-found">Flagged: {found}</p>{/if}
-      {/if}
-      {#if card.job}
-        {@const job = card.job}
-        <p class="duty-found">Duty job {@render jobLink(job.name)}<span class="job-state" class:live={job.live}>{job.live ? "working" : "ended"}</span></p>
-      {/if}
       {#if open[duty.id]}
+        {@const found = flaggedLabel(view)}
+        {@const classes = view.builtin ? classesLabel(last) : ""}
         <div class="duty-detail">
           <p class="goal">{duty.goal}</p>
+          {#if card.headline}<p class="duty-headline">{card.headline}{#if card.headlineMiss}{@render marks(card.headlineMiss)}{/if}</p>{/if}
+          {#each card.misses as line (line.key)}<p class="duty-miss">{line.text}{@render marks(line)}</p>{/each}
+          {#if card.shape}<p class="duty-shape">{card.shape}</p>{/if}
+          {#if card.onTarget.length}<p class="duty-ok">{card.onTarget.join(", ")} {card.onTarget.length === 1 ? "is" : "are"} on target.</p>{/if}
+          <p class="duty-last">
+            <span class="duty-verdict {state}">{lastLabel(view, now)}</span>
+            {#if view.runs.length}
+              <span class="history" aria-label="Last {view.runs.length} runs, oldest first">
+                {#each history(view) as run, index (run.at)}<span class="run {judgedRun(run, duty.metrics).verdict}" use:tooltip={runTitle(view, index)}></span>{/each}
+              </span>
+            {/if}
+          </p>
+          {#if classes}<p>{classes}</p>{/if}
+          {#if view.builtin && found}<p>The last check-in flagged {found}</p>{/if}
+          {#if card.job}
+            {@const job = card.job}
+            <p>Its last run started {@render jobLink(job.name)}, which {job.live ? "is working" : "has ended"}.</p>
+          {/if}
+          <p class="duty-when">
+            <span>{nextLabel(view, now)}</span>
+            <span use:tooltip={PRIORITY_TIP}>Priority is {view.priority}.</span>
+            {#if view.builtin}<span use:tooltip={"Its cadence and pause are the header's Check-in control"}>Built in.</span>{/if}
+            <button type="button" class="duty-act" disabled={view.running} onclick={() => void duties.act(duty.id, "run")}>Run now</button>
+            <button type="button" class="duty-act" onclick={() => void duties.act(duty.id, view.paused ? "resume" : "pause")}>{view.paused ? "Resume" : "Pause"}</button>
+          </p>
           <table class="metrics">
             <thead><tr><th>Metric</th><th>Target</th><th>Last</th><th>Runs</th></tr></thead>
             <tbody>
@@ -165,23 +159,37 @@
 {#if duties.error}<p class="duty-error">{duties.error}</p>{/if}
 
 <style>
-  .duties { list-style: none; margin: 0 -6px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .duties { list-style: none; margin: 0 -6px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
   .duty { padding: 0 6px; }
-  .duty-line { display: flex; align-items: center; gap: 4px; }
-  .duty-main { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; padding: 3px 6px; margin: 0 -6px; border-radius: var(--radius-small); text-align: left; line-height: 18px; }
+  .duty-line { display: flex; align-items: flex-start; gap: 6px; }
+  .duty-main { display: flex; flex: 1; min-width: 0; align-items: flex-start; gap: 6px; padding: 3px 6px; margin: 0 -6px; border-radius: var(--radius-small); text-align: left; line-height: 18px; }
   .duty-main:hover { background: var(--bg-hover); }
-  .duty-state { display: inline-flex; flex: none; width: 12px; justify-content: center; }
+  .duty-state { display: inline-flex; flex: none; width: 12px; height: 18px; align-items: center; justify-content: center; }
   .duty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
   .duty-dot.met { background: var(--success); }
   .duty-dot.missed { background: var(--warning); }
   .duty-dot.error { background: var(--danger); }
-  .duty-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-  .duty-when { flex: 1; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-faint); }
-  .duty-actions { display: inline-flex; flex: none; gap: 2px; }
-  .duty-act { padding: 1px 6px; border-radius: 4px; font-size: 11.5px; color: var(--text-faint); }
+  .duty-text { min-width: 0; overflow-wrap: anywhere; }
+  .duty-name { font-weight: 500; }
+  .duty-status { margin-left: 4px; font-size: 12px; color: var(--text-muted); }
+  .duty-status.unfixed { color: var(--warning); }
+  .duty-status.error { color: var(--danger); }
+  .duty-act { padding: 0 4px; border-radius: 4px; font-size: 11.5px; color: var(--text-faint); }
   .duty-act:hover:not(:disabled) { color: var(--accent-bold); background: var(--bg-hover); }
   .duty-act:disabled { opacity: 0.5; }
-  .duty-last { display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); }
+  .duty-detail { margin: 2px 0 6px 18px; display: flex; flex-direction: column; gap: 3px; font-size: 12px; line-height: 18px; color: var(--text-muted); }
+  .duty-detail p { margin: 0; overflow-wrap: anywhere; }
+  .duty-detail .link-chip { vertical-align: bottom; }
+  .goal { color: var(--text); }
+  .duty-headline { color: var(--text); font-weight: 500; }
+  .miss-runs, .miss-mark, .duty-miss .link-chip, .duty-headline .link-chip { margin-left: 6px; }
+  .miss-runs { font-size: 11px; color: var(--warning); font-variant-numeric: tabular-nums; font-weight: 400; white-space: nowrap; }
+  .miss-mark { display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 15px; font-weight: 400; white-space: nowrap; }
+  .miss-mark.stuck { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); }
+  .miss-mark.gap { color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); }
+  .duty-shape { color: var(--danger); }
+  .duty-ok { color: var(--text-faint); }
+  .duty-last { display: flex; align-items: center; gap: 8px; }
   .duty-verdict { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .duty-verdict.missed { color: var(--warning); }
   .duty-verdict.error { color: var(--danger); }
@@ -190,39 +198,20 @@
   .run.met { background: var(--success); }
   .run.missed { background: var(--warning); }
   .run.error { background: var(--danger); }
-  .duty-detail { margin: 6px 0 2px 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.45; }
-  .duty-detail p { margin: 0; }
-  .goal { color: var(--text); }
+  .duty-when { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; color: var(--text-faint); }
   .metrics { width: 100%; border-collapse: collapse; font-size: 12px; }
-  .metrics th { text-align: left; font-weight: 500; color: var(--text-faint); padding: 2px 6px 2px 0; border-bottom: 1px solid var(--border); }
-  .metrics td { padding: 2px 6px 2px 0; color: var(--text-muted); vertical-align: middle; }
+  .metrics th { text-align: left; font-weight: 500; color: var(--text-faint); padding: 1px 6px 1px 0; border-bottom: 1px solid var(--border); }
+  .metrics td { padding: 1px 6px 1px 0; color: var(--text-muted); vertical-align: middle; }
   .metrics .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .metrics .miss { color: var(--warning); font-weight: 500; }
   .metrics .history { margin-left: 0; }
-  .summary { color: var(--text-muted); overflow-wrap: anywhere; }
-  .link-chip { align-self: flex-start; }
-  .owner-words { color: var(--text-faint); font-style: normal; overflow-wrap: anywhere; }
-  .board-goal { color: var(--text-faint); }
-  .duty-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
-  .duty-tag { flex: none; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
-  .duty-priority { flex: none; font-size: 10.5px; line-height: 15px; color: var(--text-faint); }
-  .duty-headline { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text); font-weight: 500; }
-  .duty-miss { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); overflow-wrap: anywhere; }
-  .miss-runs, .miss-mark, .duty-miss .link-chip, .duty-headline .link-chip { margin-left: 6px; vertical-align: bottom; }
-  .miss-runs { font-size: 11px; color: var(--warning); font-variant-numeric: tabular-nums; font-weight: 400; white-space: nowrap; }
-  .miss-mark { display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 15px; font-weight: 400; white-space: nowrap; }
-  .miss-mark.stuck { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); }
-  .miss-mark.gap { color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); }
-  .duty-shape { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--danger); }
-  .duty-ok { margin: 0; padding: 0 0 0 18px; font-size: 11.5px; line-height: 17px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .duty-found .link-chip { vertical-align: bottom; }
-  .job-state { margin-left: 6px; font-size: 11px; color: var(--text-faint); }
-  .job-state.live { color: var(--success); }
   .summary.before { color: var(--text-faint); }
-  .duty-found { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--text-muted); overflow-wrap: anywhere; }
-  .cadence { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text-muted); }
+  .link-chip { align-self: flex-start; }
+  .owner-words, .board-goal { color: var(--text-faint); }
+  .duty-error { margin: 6px 0 0; font-size: 12px; color: var(--danger); }
+  .cadence { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
   .cadence-label { color: var(--text-faint); }
   .cadence input[type="number"] { width: 6ch; }
-  .cadence input, .cadence select { font: inherit; font-size: 12px; padding: 1px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
+  .cadence input, .cadence select { font: inherit; font-size: 12px; padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
   .cadence-error { color: var(--danger); }
 </style>

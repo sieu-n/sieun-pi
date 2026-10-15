@@ -67,6 +67,15 @@ export function judgedRun(run: DutyRunRecord, metrics: readonly DutyMetric[]): P
   return { verdict: results.some(result => !result.met) ? "missed" : "met", metrics: counted, summary: judged.summary };
 }
 
+/** The dot a duty row shows: its last verdict after its job over its counted metrics (`judgedRun`), or running, paused, or new before its first run. */
+export type DutyState = "met" | "missed" | "error" | "paused" | "running" | "new";
+export function dutyState(view: DutyView): DutyState {
+  if (view.running) return "running";
+  if (view.paused) return "paused";
+  const last = view.runs.find(run => run.verdict !== "skipped");
+  return last ? judgedRun(last, view.duty.metrics).verdict as Exclude<DutyRunRecord["verdict"], "skipped"> : "new";
+}
+
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
 
 /** Measured runs in a row whose counted metrics, after their job, came up short. */
@@ -110,4 +119,44 @@ export function dutyCard(view: DutyView, agents: readonly ChatAgent[]): DutyCard
     job: newestJob ? { name: newestJob.name, live: jobLive(newestJob.name, agents) } : null,
     shape: shapeLine(view.duty.metrics),
   };
+}
+
+/**
+ * What the row's one line says is being done about the duty (owner 10-16: "if human can't read it it's pointless"). A missed duty is `fixing`
+ * when a live job works on one of its misses (`by: "fix"`) or its own run job still works (`by: "run"`), else `unfixed`.
+ */
+export type DutyStatus =
+  | { kind: "met" } | { kind: "fixing"; job: string; by: "fix" | "run" } | { kind: "unfixed" }
+  | { kind: "error" } | { kind: "running" } | { kind: "paused" } | { kind: "new" };
+
+export function dutyStatus(view: DutyView, card: DutyCardModel): DutyStatus {
+  const state = dutyState(view);
+  if (state !== "missed") return { kind: state };
+  const live = [card.headlineMiss, ...card.misses].find(line => line?.fix.kind === "live")?.fix;
+  if (live?.kind === "live") return { kind: "fixing", job: live.job, by: "fix" };
+  if (card.job?.live) return { kind: "fixing", job: card.job.name, by: "run" };
+  return { kind: "unfixed" };
+}
+
+/**
+ * The duty's one line: the headline number in words (`headlineWords`), then what is being done about it, as one sentence:
+ * "4% of the last hour's minutes the Mac was usable, and a fix is running." A missed duty whose headline is on target says another number is off.
+ */
+export function dutyStatusLine(status: DutyStatus, words: string | null = null, headlineOff = true): string {
+  const lead = words && status.kind !== "error" && status.kind !== "new" ? words : null;
+  const off = headlineOff || (status.kind !== "fixing" && status.kind !== "unfixed") ? "" : ", but another of its numbers is off target";
+  const doing = (() => {
+    switch (status.kind) {
+      case "met": return lead ? "" : "On target";
+      case "fixing": return status.by === "fix" ? "a fix is running" : "its check job is working on it";
+      case "unfixed": return "no fix is running yet";
+      case "error": return "The last run could not measure it, and the next run tries again";
+      case "running": return "a check is running now";
+      case "paused": return "its checks are paused";
+      case "new": return "Not checked yet";
+    }
+  })();
+  if (!lead) return `${doing[0]!.toUpperCase()}${doing.slice(1)}${off}.`;
+  const head = `${lead[0]!.toUpperCase()}${lead.slice(1)}${off}`;
+  return doing ? `${head}, and ${doing}.` : `${head}.`;
 }
