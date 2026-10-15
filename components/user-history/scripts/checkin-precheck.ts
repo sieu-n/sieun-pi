@@ -22,6 +22,7 @@ import { DutyStore } from "../src/chat-duty-store.ts";
 import { type ChatThreads, type CheckInSource, jobRegistry, replyCheckRecord } from "../src/chat-sources.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { Chats } from "../src/chats.ts";
+import { readHeldTurns } from "../src/held-turns.ts";
 import { IdIndex } from "../src/id-index.ts";
 import { readBranchTail } from "../src/session-tail.ts";
 import { pendingWakes } from "../src/wakes.ts";
@@ -70,7 +71,7 @@ const source: CheckInSource = {
   memory: checkInRecord(await copy("check-ins.json")), replyChecks: replyCheckRecord(await copy("reply-checks.json")),
   settings: checkInSettings(await copy("check-in-settings.json")), tickMs: 0, noReportGraceMs: 60 * 60_000,
   corrections: () => corrections.read(), duties: id => duties.list(id), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-  dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []), spawns: () => readHeldSpawns(),
+  dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []), spawns: () => readHeldSpawns(), held: now => readHeldTurns(dataDir, now),
   // pi-pool's queue and the starts the service's fleet budget holds (its fleet-state.json), as the service's check-in reads them.
   queue: queueReader(), starting: id => fleet && Date.now() - fleet.at <= FLEET_STATE_FRESH_MS ? startsOf(fleet.waiting ?? [], id) : [],
   duty: { async lastCheckIn() { return undefined; }, async checkIn(_id, run) {

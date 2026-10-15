@@ -6,13 +6,14 @@ import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, with
 import { flagStreaks } from "./checkin-repeats.ts";
 import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
-import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, withHeldSpawns } from "./checkin-steps.ts";
+import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, OPEN, walk, withHeldSpawns } from "./checkin-steps.ts";
 import type { Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { resumeChatJobs } from "./chat-resume.ts";
+import { withHeldTurns } from "./held-turns.ts";
 import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
@@ -642,6 +643,28 @@ export class Chats {
   }
 
   /**
+   * The sessions that own an open leaf step of these chats, by the step's stored session id or a linked thread that lists the step, less the
+   * chats and the roots queue-park holds. The resume pass looks at each one even with no worker or archived (resume_paused.py --owners): on
+   * 10-15 a worker stop, a SIGTERM of every worker and the owner's stop each left a frontend bro step owner cut, and none was resumed.
+   */
+  private async stepOwners(chatRows: readonly SessionRow[]): Promise<Set<string>> {
+    const parked = (await this.source.held?.(this.now()).catch(() => undefined))?.parked ?? new Set<string>();
+    const owners = new Set<string>();
+    for (const row of chatRows) {
+      const board = await this.source.board(row.id).catch(() => null);
+      const open = new Set<string>();
+      walk(board?.plan ?? [], item => {
+        if (!OPEN.has(item.status) || item.children.some(child => OPEN.has(child.status))) return;
+        open.add(item.id);
+        if (item.sessionId) owners.add(item.sessionId);
+      });
+      for (const agent of row.agents ?? []) if (agent.sessionId && agent.steps.some(step => open.has(step))) owners.add(agent.sessionId);
+    }
+    for (const id of owners) if (parked.has(id) || this.chatIds.has(id)) owners.delete(id);
+    return owners;
+  }
+
+  /**
    * The jobs of the chats, from the catalog rows: tells `awake` whether any chat or job works, and looks at each subagent and create_session
    * root of a chat that is not paused for a turn that ended in a transient failure (`wakeJob`). A job is read again only when its activity
    * changed since it was last found fine, or while a failure of it waits for its wake.
@@ -656,7 +679,11 @@ export class Chats {
     if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS) {
       this.rootsSweptAt = this.now();
       for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
-      if (this.source.interrupted) { const resume = this.source.interrupted; this.queue("#interrupted", () => resumeChatJobs(chatRows.filter(row => active.has(row.id)), this.chatIds, resume, line => this.log(line))); }
+      if (this.source.interrupted) {
+        const resume = this.source.interrupted;
+        const swept = chatRows.filter(row => active.has(row.id));
+        this.queue("#interrupted", async () => resumeChatJobs(swept, this.chatIds, resume, line => this.log(line), await this.stepOwners(swept)));
+      }
     }
     this.source.awake?.(chatRows.some(row => row.working || (row.agents ?? []).some(agent => agent.state === "working")));
     const now = this.now();
@@ -1057,8 +1084,10 @@ export class Chats {
     const asleep = new Set(wakes.map(wake => wake.session));
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs), asleep);
     const spawns = await this.source.spawns?.().catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in spawns: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
-    const threads = withHeldSpawns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
-      wakes, key => sessions.get(key)), board, spawns, new Set([id, ...dutyJobs]));
+    // A parked root and a cut owner the resume pass continues are the service's to give back (`readHeldTurns`).
+    const held = await this.source.held?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in held turns: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
+    const threads = withHeldTurns(withHeldSpawns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
+      wakes, key => sessions.get(key)), board, spawns, new Set([id, ...dutyJobs])), held?.sessions ?? new Map(), key => sessions.get(key));
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
     const facts = withQueuePlaces(threads.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);

@@ -21,6 +21,7 @@ import { jobResumes } from "./job-resume.ts";
 import { interruptedRuns } from "./chat-resume.ts";
 import { FLEET_STOP_FILE, FleetBudget, isProdAlert, readWorkersGb, startsOf } from "./fleet-budget.ts";
 import { parkTick, queueView } from "./queue-park.ts";
+import { QUEUE_PARKED_FILE, readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
@@ -209,7 +210,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       starting: chat => startsOf(fleet.queued(), chat),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
-      interrupted: isJob => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet),
+      interrupted: (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet, owners, cut => writeResumePending(dataDir, cut, Date.now())),
+      held: now => readHeldTurns(dataDir, now),
       settings, claude: claudeReader(), queue: queued, spawns: () => readHeldSpawns(),
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
@@ -290,7 +292,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const parker = options.ownChatsOnly ? undefined : setInterval(() => {
     if (parking) return;
     parking = true;
-    void parkTick({ file: join(dataDir, "queue-parked.json"), queue: async () => queueView(await queueReading().catch(() => null)), chats: () => chats.ids(), fleet, log: dutyLog,
+    void parkTick({ file: join(dataDir, QUEUE_PARKED_FILE), queue: async () => queueView(await queueReading().catch(() => null)), chats: () => chats.ids(), fleet, log: dutyLog,
       abort: async session => {
         const active = (await catalog.summary(session))?.activeSessionId;
         if (!active) throw new Error("the session is not loaded");

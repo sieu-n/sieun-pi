@@ -42,6 +42,16 @@ With --direct each interrupted run gets the message itself and no head gets a
 list, and a message to the head no longer hides a run below it. The chat
 server runs it that way for the jobs of its chats, naming them with --only.
 
+--owners names the sessions that own an open step of a chat. Each one is looked
+at even when its worker is gone or it was archived (from `prime-agent list
+--all`), an empty aborted reply counts for it ("aborted"), and a spawned job
+whose worker stopped before its first task reached it ("never_started") gets
+that task from its rlm-subagent.json instead of "continue". On 10-15 a worker
+stop at 16:07Z lost the first task of watchlist viewers and scroll for 3 h, the
+workers SIGTERMed at 17:43:22Z left stuck steps root cause unloaded and out of
+the default list, and the owner's stop archived three step owners at 18:25Z;
+nothing resumed any of them.
+
 Usage:
   python3 resume_paused.py                  # find and resume heads
   python3 resume_paused.py --dry-run        # show what would be sent
@@ -85,6 +95,11 @@ SHUTDOWN_LINE = re.compile(r"^\[(\S+Z)\] supervisor: Session worker \w+ stderr: 
 # A stopped worker writes "Request was aborted" to its running turn. On 10-15 the four such aborts in live chat jobs
 # came 0.002 s before to 0.049 s after their worker's SIGTERM line, so an abort this close to one is the shutdown's.
 SHUTDOWN_MATCH_S = 1.0
+# Full session ids that own an open step of a chat (--owners).
+OWNERS = set()
+RECOVERY_NOTICE = "prime-agent.worker_recovery"
+NEVER_STARTED_INTRO = ("[resume] Your parent spawned you, but its worker stopped before your task reached you, so the chat service sends it now. "
+                       "Your task, as your parent wrote it:\n\n")
 
 
 def prime_agent_bin():
@@ -106,8 +121,16 @@ def run(cmd):
     return p.stdout
 
 
-def list_sessions():
-    return json.loads(run([prime_agent_bin(), "list", "--json"]))["sessions"]
+def list_sessions(saved=False):
+    return json.loads(run([prime_agent_bin(), "list", "--json", *(["--all"] if saved else [])]))["sessions"]
+
+
+def with_saved_owners(sessions, saved_rows, owners):
+    """The resident sessions plus each owner the daemon only lists as saved (no worker, or archived), marked `saved`."""
+    seen = {s.get("sessionId") or s["id"] for s in sessions}
+    extra = [{**row, "saved": True} for row in saved_rows
+             if (row.get("sessionId") or row["id"]) in owners and (row.get("sessionId") or row["id"]) not in seen]
+    return [*sessions, *extra]
 
 
 def tail_entries(path, nbytes=256_000):
@@ -274,9 +297,10 @@ def worker_shutdowns():
     return sorted(stamps)
 
 
-def aborted_verdict(last, entries, shutdowns):
+def aborted_verdict(last, entries, shutdowns, owner=False):
     """("error", text) for an abort that ended the retry of an interruption error, ("worker_stopped", text) for one the
-    daemon wrote when it shut the run's worker down, else None: the user or a parent stopped the run."""
+    daemon wrote when it shut the run's worker down, ("aborted", text) for an empty one of a step owner, else None: the
+    user or a parent stopped the run."""
     before = last_message(entries[:entries.index(last)]) if last in entries else None
     msg = (before or {}).get("message") or {}
     err = str(msg.get("errorMessage") or "")
@@ -285,17 +309,43 @@ def aborted_verdict(last, entries, shutdowns):
     ts = parse_ts(last.get("timestamp"))
     if ts and any(abs((ts - stamp).total_seconds()) <= SHUTDOWN_MATCH_S for stamp in shutdowns()):
         return ("worker_stopped", f"The daemon shut its worker down at {last.get('timestamp')} in the middle of the turn.")
+    if owner and not reply_text(last):
+        return ("aborted", "Its turn was aborted with no reply while it owned an open step.")
     return None
 
 
-def classify(last, now, entries=(), shutdowns=list):
-    """("error" | "cut_off" | "empty_reply" | "worker_stopped", text) when the last message shows the run stopped mid-work, else None."""
+def reply_text(entry):
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content.strip()
+    return "".join(part.get("text") or "" for part in content or [] if isinstance(part, dict) and part.get("type") == "text").strip()
+
+
+def never_started(session, entries, nbytes=256_000):
+    """(notice, task) for a spawned job whose worker stopped before its first task reached it: its whole file holds no
+    message, a worker recovery notice, and rlm-subagent.json next to it keeps the task its parent gave rlm.spawn."""
+    path = session.get("sessionFile")
+    notice = next((e for e in reversed(entries) if e.get("type") == "custom_message" and e.get("customType") == RECOVERY_NOTICE), None)
+    if not path or not notice or last_message(entries):
+        return None
+    try:
+        if os.path.getsize(path) > nbytes:
+            return None
+        record = json.loads((Path(path).parent / "rlm-subagent.json").read_text())
+    except (OSError, ValueError):
+        return None
+    task = record.get("prompt") if isinstance(record, dict) else None
+    return (notice, task) if isinstance(task, str) and task.strip() else None
+
+
+def classify(last, now, entries=(), shutdowns=list, owner=False):
+    """("error" | "cut_off" | "empty_reply" | "worker_stopped" | "aborted", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
         return None
     msg = last.get("message") or {}
     role, stop = msg.get("role"), msg.get("stopReason")
     if role == "assistant" and stop == "aborted":
-        return aborted_verdict(last, list(entries), shutdowns)
+        return aborted_verdict(last, list(entries), shutdowns, owner)
     if role == "assistant" and stop == "toolUse" and not msg.get("content"):
         ts = parse_ts(last.get("timestamp"))
         if ts is None or (now - ts).total_seconds() / 60 < CUT_OFF_GRACE_MIN:
@@ -354,7 +404,9 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
     paused = []
     for s in sessions:
         sid = short_id(s)
-        if s.get("lifecycle") != "live":
+        full = s.get("sessionId") or s["id"]
+        owner = full in OWNERS
+        if s.get("lifecycle") != "live" and not (owner and s.get("saved")):
             continue
         if s.get("workerState") == "failed":
             head = head_of(sid, by_id)
@@ -379,14 +431,20 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
         if since_minutes and seen_at and (now - seen_at).total_seconds() / 60 > since_minutes + 5:
             continue
         last = last_message(entries_of(sid))
+        task = None
         if not last:
-            continue
-        unstuck = (s.get("sessionId") or s["id"]) in UNSTUCK
-        if not unstuck and stopped_on_purpose(entries_of(sid), last):
-            continue
-        verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns)
-        if not verdict:
-            continue
+            started = never_started(s, entries_of(sid)) if owner else None
+            if not started:
+                continue
+            last, task = started
+            verdict = ("never_started", "Its worker stopped before its first task reached it.")
+        else:
+            unstuck = full in UNSTUCK
+            if not unstuck and stopped_on_purpose(entries_of(sid), last):
+                continue
+            verdict = ("hung", "Was hung; the Resume button aborted it.") if unstuck else classify(last, now, entries_of(sid), shutdowns, owner)
+            if not verdict:
+                continue
         ts = parse_ts(last.get("timestamp"))
         age_min = (now - ts).total_seconds() / 60 if ts else None
         if since_minutes and age_min is not None and age_min > since_minutes:
@@ -414,7 +472,10 @@ def find_paused(sessions, since_minutes, state, now, direct=False):
             "age_min": round(age_min, 1) if age_min is not None else None,
             "head": head,
             "head_session_id": head_session(head, s),
-            **({"aborted": True} if unstuck else {}),
+            **({"aborted": True} if full in UNSTUCK else {}),
+            # A saved session has no short id the daemon answers to; it takes its full id, and the message reopens it.
+            **({"target": full} if s.get("saved") else {}),
+            **({"task": task} if task else {}),
         })
     return paused
 
@@ -451,7 +512,7 @@ def direct_resume(paused, args, state, now):
             res = "dry-run"
         else:
             try:
-                res = send(p["id"], args.message)
+                res = send(p.get("target", p["id"]), NEVER_STARTED_INTRO + p["task"] if "task" in p else args.message)
             except CommandError as error:
                 res = {"error": str(error)[:300]}
             else:
@@ -547,11 +608,16 @@ def main():
     ap.add_argument("--unstuck", default="", help="comma-separated full session ids the caller aborted because they were hung")
     ap.add_argument("--direct", action="store_true", help="message each interrupted run itself and send no head a list")
     ap.add_argument("--only", default="", help="comma-separated full session ids: act only on these interrupted runs")
+    ap.add_argument("--owners", default="", help="comma-separated full session ids that own an open step of a chat (see above)")
     args = ap.parse_args()
     UNSTUCK.update(filter(None, args.unstuck.split(",")))
+    OWNERS.update(filter(None, args.owners.split(",")))
 
     try:
-        report = resume(list_sessions(), args, dt.datetime.now(dt.timezone.utc))
+        sessions = list_sessions()
+        if OWNERS:
+            sessions = with_saved_owners(sessions, list_sessions(saved=True), OWNERS)
+        report = resume(sessions, args, dt.datetime.now(dt.timezone.utc))
     except CommandError as error:
         raise SystemExit(str(error))
     if args.json:

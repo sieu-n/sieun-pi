@@ -6,6 +6,7 @@ import type { CheckInRecord } from "./chat-checkin.ts";
 import type { CheckInSettings } from "./checkin-settings.ts";
 import type { DutyRef } from "./checkin-findings.ts";
 import type { HeldSpawn } from "./checkin-steps.ts";
+import type { HeldTurns } from "./held-turns.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { JobResumes } from "./job-resume.ts";
@@ -262,7 +263,9 @@ export interface CheckInSource {
    * Sends "continue" to each interrupted run that `isJob` keeps, as the resume script finds them at any depth (`InterruptedRuns.resumeJobs`).
    * Absent (tests): the job sweep resumes nothing.
    */
-  interrupted?: (isJob: (run: InterruptedRun) => boolean) => Promise<InterruptedReport | null>;
+  interrupted?: (isJob: (run: InterruptedRun) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>;
+  /** The turns the service holds and gives back itself (`readHeldTurns`), which the check-in reads as moving; absent or failing: none. */
+  held?: (now: number) => Promise<HeldTurns>;
   /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
   corrections?: () => Promise<Ledger>;
   /**

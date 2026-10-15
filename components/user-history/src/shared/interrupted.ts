@@ -9,8 +9,10 @@ export interface InterruptedRun {
    * "hung": it showed working with no activity for 30 min; Resume aborts it before it messages the head.
    * "worker_failed": its Prime worker died, so it takes no command; Resume reopens its head from the saved file.
    * "worker_stopped": the daemon shut its worker down in the middle of the turn, which wrote "Request was aborted".
+   * "aborted": a step owner's turn was aborted with no reply (--owners). "never_started": a spawned step owner whose worker stopped before its
+   * first task reached it; it gets that task.
    */
-  reason: "error" | "cut_off" | "empty_reply" | "hung" | "worker_failed" | "worker_stopped";
+  reason: "error" | "cut_off" | "empty_reply" | "hung" | "worker_failed" | "worker_stopped" | "aborted" | "never_started";
   session_id?: string;
   head_session_id?: string;
   error: string;

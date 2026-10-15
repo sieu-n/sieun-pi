@@ -236,6 +236,63 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual([p["id"] for p in report["paused"]], ["jobjobjobjob"])
         self.assertEqual(self.sent, [("jobjobjobjob", "continue")])
 
+    def owners(self, *ids):
+        resume_paused.OWNERS.update(ids)
+        self.addCleanup(resume_paused.OWNERS.clear)
+
+    def test_a_step_owner_whose_worker_stopped_before_its_first_task_gets_that_task(self):
+        # frontend bro 10-15: watchlist viewers and scroll was spawned at 15:37:14Z, its task waited behind the chat's worker, and the
+        # worker stop at 16:07:02Z lost it. Its file held only the header and two worker recovery notices, rlm-subagent.json kept the
+        # task, nothing resumed it, and p157 read job_ended for 3 h until the chat sent "continue" at 18:57Z.
+        recovery = {"type": "custom_message", "customType": "prime-agent.worker_recovery", "timestamp": at(113),
+                    "content": "<prime_agent_worker_interrupted>The isolated session worker stopped during in-flight work."}
+        header = [{"type": "session", "timestamp": at(143)}, {"type": "model_change", "timestamp": at(143)}]
+        self.session("watchlistvie", [*header, recovery, {**recovery, "timestamp": at(112)}], parent="frontendbro0")
+        (self.root / "rlm-subagent.json").write_text(json.dumps({"childId": "sub-1ae59fb8", "status": "running", "prompt": "Owner's words: watchlist, load on scroll."}))
+        self.assertEqual(self.run_direct(dry_run=True)["paused"], [], "a job no open step names is left alone")
+        self.owners("0" * 24 + "watchlistvie")
+        report = self.run_direct()
+        self.assertEqual([(p["id"], p["reason"], p["errored_at"]) for p in report["paused"]], [("watchlistvie", "never_started", at(112))])
+        self.assertEqual(self.sent, [("watchlistvie", resume_paused.NEVER_STARTED_INTRO + "Owner's words: watchlist, load on scroll.")])
+        self.assertEqual(self.run_direct(dry_run=True)["paused"], [], "the task is sent once")
+
+    def test_a_job_that_got_its_task_is_not_never_started(self):
+        recovery = {"type": "custom_message", "customType": "prime-agent.worker_recovery", "timestamp": at(30), "content": "x"}
+        self.session("startedjob01", [role(40, "user"), assistant(39, "stop"), recovery])
+        (self.root / "rlm-subagent.json").write_text(json.dumps({"prompt": "task"}))
+        self.owners("0" * 24 + "startedjob01")
+        self.assertEqual(self.run_direct(dry_run=True)["paused"], [])
+
+    def test_a_step_owner_aborted_and_archived_with_no_worker_is_resumed_by_its_full_id(self):
+        # frontend bro 10-15: stuck steps root cause waited 103rd in pi-pool's queue; the workers' SIGTERM at 17:43:22Z aborted it, the
+        # daemon restarted, and it no longer showed in `prime-agent list`. At 18:25Z the owner's stop archived it with another empty abort,
+        # and the lift at 19:13Z resumed nothing, so p158 read stuck.
+        queued = {"type": "custom", "customType": "pi-pool-queue", "timestamp": at(31), "data": {"position": 103}}
+        archived = {"type": "session_state", "timestamp": at(30.1), "state": {"status": "archived"}}
+        aborted = {"type": "message", "timestamp": at(30), "message": {"role": "assistant", "stopReason": "aborted", "errorMessage": "Request was aborted",
+                                                                       "content": [{"type": "text", "text": ""}]}}
+        full = "01a14075-ec87-74e6-a080-109665a0941d"
+        saved = [{"id": full, "sessionId": full, "lifecycle": "archived", "activity": "idle", "sessionName": "stuck steps root cause",
+                  "lastActivityAt": at(30)}]
+        path = self.root / "root.jsonl"
+        path.write_text("\n".join(json.dumps(entry) for entry in [role(32, "user"), queued, archived, aborted]) + "\n")
+        saved[0]["sessionFile"] = str(path)
+        self.assertEqual(resume_paused.with_saved_owners(self.sessions, saved, set()), [])
+        self.sessions = resume_paused.with_saved_owners(self.sessions, saved, {full})
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            self.owners(full)
+            report = self.run_direct()
+        self.assertEqual([(p["reason"], p["target"]) for p in report["paused"]], [("aborted", full)])
+        self.assertEqual(self.sent, [(full, "continue")])
+
+    def test_an_empty_abort_of_a_job_that_owns_no_open_step_still_does_not_count(self):
+        self.session("ownerstopped", [role(21, "toolResult"), assistant(20, "aborted", "Request was aborted")])
+        self.session("stepownerjob", [role(21, "toolResult"), assistant(20, "aborted", "Request was aborted")])
+        self.owners("0" * 24 + "stepownerjob")
+        with patch.object(resume_paused, "worker_shutdowns", return_value=[]):
+            report = self.run_direct(dry_run=True)
+        self.assertEqual([(p["id"], p["reason"]) for p in report["paused"]], [("stepownerjob", "aborted")])
+
     def test_direct_never_messages_a_hung_or_dead_worker_run(self):
         self.session("hunghunghung", [assistant(80, "toolUse"), role(79, "toolResult")], activity="working", isStreaming=True, lastActivityAt=at(79))
         self.session("deaddeaddead", [assistant(80, "toolUse")], workerState="failed")

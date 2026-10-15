@@ -68,9 +68,12 @@ export class InterruptedRuns {
    * (`--direct`), after the head of a dead worker among them is reopened. A hung job is left to Resume and the Mac usable watch: an abort drops
    * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. Null when no job of a chat is interrupted.
    */
-  resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>, fleet?: Pick<FleetBudget, "tryAdmit">): Promise<InterruptedReport | null> {
+  resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>, fleet?: Pick<FleetBudget, "tryAdmit">,
+    owners: ReadonlySet<string> = new Set(), found?: (cut: readonly InterruptedRun[]) => Promise<void>): Promise<InterruptedReport | null> {
     const report = this.serial(async () => {
-      const cut = (await this.run(["--dry-run", "--direct"])).paused.filter(run => run.session_id !== undefined && run.reason !== "hung" && isJob(run));
+      const named = owners.size ? ["--owners", [...owners].join(",")] : [];
+      const cut = (await this.run(["--dry-run", "--direct", ...named])).paused.filter(run => run.session_id !== undefined && run.reason !== "hung" && isJob(run));
+      await found?.(cut).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
       // Each continue waits for the fleet budget, and the ones it does not let through now stay for the next sweep: after the reboot at 13:48:58Z
       // on 10-15 the daemon found 31 sessions cut mid-run, and one "continue" each would have loaded 31 workers at once.
       const jobs: InterruptedRun[] = [];
@@ -85,7 +88,7 @@ export class InterruptedRuns {
         try { await reopen(head); }
         catch (error) { process.stderr.write(`resume: could not reopen ${head}: ${error instanceof Error ? error.message : String(error)}\n`); }
       }
-      return this.run(["--direct", "--only", jobs.map(run => run.session_id).join(",")]);
+      return this.run(["--direct", "--only", jobs.map(run => run.session_id).join(","), ...named]);
     });
     this.last = null;
     return report;
@@ -101,15 +104,17 @@ export class InterruptedRuns {
 export const interruptedRuns = new InterruptedRuns();
 
 /**
- * Each interrupted run under one of `chatRows` at any depth, or under one of their root jobs, gets "continue" itself (`interrupted`). Never a
- * chat: `Chats.revive` restarts those. On 10-15 nothing restarted alert follow through after its mid-tool stop at 13:29Z or the jobs a token
+ * Each interrupted run under one of `chatRows` at any depth, or under one of their root jobs, gets "continue" itself (`interrupted`), and so
+ * does each session in `owners` (the owners of the chats' open steps, see resume_paused.py --owners) wherever it sits. Never a chat:
+ * `Chats.revive` restarts those. On 10-15 nothing restarted alert follow through after its mid-tool stop at 13:29Z or the jobs a token
  * hook failure and a worker stop ended at 13:48Z, two of them two levels under Crawler VP, and their steps stalled over 2 h.
  */
 export async function resumeChatJobs(chatRows: readonly SessionRow[], chats: ReadonlySet<string>,
-  interrupted: (isJob: (run: InterruptedRun) => boolean) => Promise<InterruptedReport | null>, log: (line: string) => void): Promise<void> {
+  interrupted: (isJob: (run: InterruptedRun) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>, log: (line: string) => void,
+  owners: ReadonlySet<string> = new Set()): Promise<void> {
   const owned = new Set(chatRows.flatMap(row => [row.id, ...(row.agents ?? []).flatMap(agent => agent.link === "root" && agent.sessionId ? [agent.sessionId] : [])]));
   try {
-    const report = await interrupted(run => !chats.has(run.session_id ?? "") && owned.has(run.head_session_id ?? ""));
+    const report = await interrupted(run => !chats.has(run.session_id ?? "") && (owned.has(run.head_session_id ?? "") || owners.has(run.session_id ?? "")), owners);
     for (const job of report?.children ?? []) {
       const run = report!.paused.find(entry => entry.id === job.id);
       log(`job ${job.name}: interrupted (${run?.reason ?? "?"} at ${run?.errored_at ?? "?"}); continue: ${typeof job.result === "string" ? job.result : JSON.stringify(job.result)}`);
