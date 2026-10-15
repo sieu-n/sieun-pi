@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type Board, demoSteps, type Exec, LINE_FILE, lintJob, measureStaging, openSteps, picks, reviewWait, type StagingDeps, type StagingLine } from "../scripts/duties/apps-reach-staging.ts";
+import { type Board, demoSteps, type Exec, LINE_FILE, lintJob, measureStaging, openReviews, openSteps, picks, reviewWait, type StagingDeps, type StagingLine, tabStatus } from "../scripts/duties/apps-reach-staging.ts";
 
 const NOW = Date.parse("2026-10-13T00:30:00Z");
 const HOUR = 3_600_000;
@@ -85,31 +85,59 @@ test("apps reach staging: the CI check reads the virev-demo receipts of the lint
   assert.deepEqual(Object.values(demoSteps(FAILED)!).map(task => task.ok), [false, false], "a failed exit and a task not run are red");
 });
 
-test("apps reach staging: measures picks, the longest wait and the last demo CI result", async () => {
-  const run = deps({ line: LINE, board: BOARD, runs: [{ id: 4, status: "in_progress", jobs: {} }, { id: 3, status: "completed", jobs: lintJobs(30, "skipped") },
+test("apps reach staging: open reviews are agent todos naming an app or asking to review or pick, oldest first", () => {
+  const todos = [...BOARD.todos!,
+    { id: "t25", text: "Review Email with the 6-item checklist.", done: false, from: "agent", at: iso(30), step: "p129" },
+    { id: "t27", text: "Say yes or no to the List app's top-10 changes (http://x/1731-list-app-review/review.html).", done: false, from: "agent", at: iso(2), step: "p120" },
+    { id: "t28", text: "Renew the GeoNode plan?", done: false, from: "agent", at: iso(90) },
+    { id: "t29", text: "Pick the Home chart", done: false, from: "owner", at: iso(80) }];
+  assert.deepEqual(openReviews(todos, NOW).map(({ todo, hours }) => [todo.id, hours]), [["t25", 30], ["t27", 2]]);
+});
+
+test("apps reach staging: a tab's status counts its Staging pick as one step, and dropped steps leave", () => {
+  const plan = [{ id: "p1", text: "Creators lists", status: "done" }, { id: "p2", text: "Creators CRM", status: "doing" },
+    { id: "p3", text: "Creators swipe", status: "dropped" }, { id: "p4", text: "Home", status: "done", children: [{ id: "p5", text: "Creators deck", status: "blocked" }] }];
+  assert.deepEqual(tabStatus(plan, { key: "creators", word: "Creators", picked: true }),
+    { key: "creators", word: "Creators", pct: 50, picked: true, done: ["p1"], open: ["p2", "p5"] });
+  assert.equal(tabStatus(plan, { key: "creators", word: "Creators", picked: false }).pct, 25);
+  assert.equal(tabStatus(plan, { key: "home", word: "Home", picked: true }).pct, 100);
+  assert.equal(tabStatus([], { key: "email", word: "Email", picked: false }).pct, 0);
+});
+
+test("apps reach staging: measures picks, the oldest open review, each tab and the last demo CI result", async () => {
+  const board: Board = { ...BOARD, todos: [...BOARD.todos!, { id: "t16", text: "Review the Creators set.", done: false, from: "agent", at: iso(20) }] };
+  const run = deps({ line: LINE, board, runs: [{ id: 4, status: "in_progress", jobs: {} }, { id: 3, status: "completed", jobs: lintJobs(30, "skipped") },
     { id: 2, status: "completed", jobs: lintJobs(20, "success"), log: LEFT_OUT }, { id: 1, status: "completed", jobs: lintJobs(10, "success"), log: CACHED }] });
   const output = await measureStaging(run);
-  assert.deepEqual(output.metrics, { apps_picked: 4, review_wait_max_h: 20, demo_ci_ok: 1, source_errors: 0 });
+  assert.deepEqual(output.metrics, { apps_picked: 4, open_review_max_h: 20, demo_ci_ok: 1, source_errors: 0 });
   assert.deepEqual(run.calls.filter(call => call[2] === "view").map(call => call[3]), ["3", "2", "1"]);
   assert.deepEqual(run.calls.filter(call => call[1] === "api").map(call => call[2]), ["repos/{owner}/{repo}/actions/jobs/20/logs", "repos/{owner}/{repo}/actions/jobs/10/logs"]);
-  assert.deepEqual(output.flagged?.map(item => item.kind).sort(), ["demo_ci", "no_pick", "no_pick", "picked", "picked", "picked", "picked"]);
+  assert.deepEqual(output.flagged?.filter(item => item.kind !== "tab_status").map(item => item.kind).sort(),
+    ["demo_ci", "no_pick", "no_pick", "open_review", "picked", "picked", "picked", "picked"]);
+  assert.deepEqual(output.tabs.map(tab => [tab.key, tab.pct]), [["home", 100], ["inbox", 100], ["watchlist", 100], ["email", 100], ["creators", 0], ["connections", 0]]);
+  assert.ok(output.flagged?.some(item => item.kind === "tab_status" && item.excerpt === "Creators 0%: no pick on Staging, 0 of 1 board steps done; open: p97"));
   const failed = await measureStaging(deps({ line: LINE, board: BOARD, runs: [{ id: 1, status: "completed", jobs: lintJobs(10, "failure"), log: FAILED }] }));
   assert.equal(failed.metrics.demo_ci_ok, 0);
   assert.equal(failed.metrics.source_errors, 0);
   assert.ok(failed.flagged?.some(item => item.kind === "demo_ci_failed" && item.excerpt?.includes("failed with exit 2")));
 });
 
-test("apps reach staging: unread sources still give every metric and count as source errors", async () => {
-  const output = await measureStaging(deps({ line: new Error("ENOENT"), board: new Error("bad json"), runs: new Error("gh: not logged in") }));
-  assert.deepEqual(output.metrics, { apps_picked: 0, review_wait_max_h: 0, demo_ci_ok: 0, source_errors: 3 });
-  const failed = await measureStaging(deps({ line: LINE, board: BOARD, runs: [{ id: 1, status: "completed", jobs: lintJobs(10, "success"), log: LEFT_OUT }] }));
-  assert.equal(failed.metrics.source_errors, 1);
+test("apps reach staging: an unread Staging line or board fails the run, and a failed CI read leaves demo_ci_ok at 0 as run detail", async () => {
+  await assert.rejects(measureStaging(deps({ line: new Error("ENOENT"), board: BOARD })), /Staging line .*ENOENT/);
+  await assert.rejects(measureStaging(deps({ line: LINE, board: new Error("bad json") })), /board .*bad json/);
+  const unread = await measureStaging(deps({ line: LINE, board: BOARD, runs: new Error("gh: not logged in") }));
+  assert.deepEqual([unread.metrics.demo_ci_ok, unread.metrics.source_errors], [0, 1]);
+  const leftOut = await measureStaging(deps({ line: LINE, board: BOARD, runs: [{ id: 1, status: "completed", jobs: lintJobs(10, "success"), log: LEFT_OUT }] }));
+  assert.deepEqual([leftOut.metrics.demo_ci_ok, leftOut.metrics.source_errors], [0, 1]);
 });
 
-test("apps reach staging duty file parses, and every metric is a key the precheck writes", async () => {
+test("apps reach staging duty file parses with one headline and at most 3 more, each a key the precheck writes", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "apps-reach-staging.duty.json"), "utf8")), "d", NOW);
   assert.deepEqual(duty.schedule, { kind: "daily", at: "09:30" });
   assert.equal(duty.precheck.cwd, "../..");
-  const output = await measureStaging(deps({}));
-  assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), Object.keys(output.metrics).sort());
+  assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["apps_picked"]);
+  assert.ok(duty.metrics.length <= 4);
+  const output = await measureStaging(deps({ line: LINE, board: BOARD }));
+  for (const metric of duty.metrics) assert.ok(metric.key in output.metrics, metric.key);
+  assert.ok(!duty.metrics.some(metric => metric.key === "source_errors"), "source_errors is run detail");
 });

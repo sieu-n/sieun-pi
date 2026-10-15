@@ -1,33 +1,28 @@
 {
   "name": "Apps reach staging",
   "ownerWords": "and by the way the ultimate goal is to get an accepted version of each app in the prospects view.\n\nwhat should i review? report status (in 0%-100%) of each tab\n\nonly move things to 5174 when i say 5180 is good enough.",
-  "goal": "Each of the 6 Prospect apps on 5180 (Home, Inbox, Watchlist, Email, Creators, Connections) has an owner pick in the Staging line. An app with no pick never waits over 48 h for a new set to review, and the virev-demo unit and typecheck steps pass on sieun/dev. Each run tells the owner the 0 to 100% status of each tab.",
+  "goal": "Each of the 6 Prospect apps on 5180 (Home, Inbox, Watchlist, Email, Creators, Connections) has an owner pick on Staging. No owner review stays open over 48 h, and virev-demo check and unit pass on sieun/dev. Each run gives the owner each tab's 0 to 100% status.",
   "metrics": [
     {
       "key": "apps_picked",
-      "label": "Prospect apps whose Staging pointer is an owner pick, not shipped",
+      "label": "Prospect apps whose owner pick is on Staging (of 6)",
       "op": ">=",
       "target": 6,
-      "unit": " apps"
+      "unit": " apps",
+      "headline": true
     },
     {
-      "key": "review_wait_max_h",
-      "label": "Longest wait of an app with no pick for a new review todo",
+      "key": "open_review_max_h",
+      "label": "Longest open owner review",
       "op": "<=",
       "target": 48,
       "unit": " h"
     },
     {
       "key": "demo_ci_ok",
-      "label": "Last sieun/dev verify-dev run passed virev-demo unit and typecheck",
+      "label": "Demo CI green on sieun/dev (virev-demo check and unit)",
       "op": ">=",
       "target": 1
-    },
-    {
-      "key": "source_errors",
-      "label": "Sources this check could not read",
-      "op": "<=",
-      "target": 0
     }
   ],
   "schedule": {
@@ -43,6 +38,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "Read the flagged items. Post one short chat line with a 0 to 100% status per tab, each with what done means and what is missing (c58). demo_ci_ok 0: fix the virev-demo test or type error first. For each no_pick app whose open steps show no live job, start one variant set job built against the canonical flows (apps/llm-wiki/content/sessions/2026/10/10/1716-canonical-flows-storyboards), using the frontend design skill, about 70% building and 30% visual checks, no mobile or accessibility passes on mocks. When a set is built and checked in a desktop browser, put one For you todo for that app with links and screenshots inline. Never write picks into lines/staging.json; the owner picks with Put in line. Fixes are one commit on the local sieun/dev tip under the VP of CI git rules. Never deploy to staging or prod, never move anything to 5174 or the real app, and never ask the owner to (c40).",
+  "onMiss": "Every run, post one chat line with each tab's % from the tab_status slices, what done means and what is missing (c58). apps_picked under 6: per no_pick app, steer its live step job, else start one with rlm.create_session named '<app> variant set', built against the canonical flows (sessions/2026/10/10/1716-canonical-flows-storyboards), then one For you todo with links and screenshots. open_review_max_h over 48: per open_review slice over 48 h, start or steer '<app> review refresh': check off a todo the owner already answered (a Staging pick, a chat reply), else cut it to one-link yes or no items and edit it in place; never re-post to reset its age. demo_ci_ok 0: start or steer 'virev-demo CI fix' (object-only, push-ci, own green run); on a source flag fix this precheck. Never write lines/staging.json, deploy, or move to 5174 (c40).",
   "boardGoal": "p14"
 }

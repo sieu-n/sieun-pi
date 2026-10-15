@@ -6,10 +6,13 @@ import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
- * The Apps reach staging duty's precheck (`node --import tsx scripts/duties/apps-reach-staging.ts`) for the frontend chat: how many of the
- * 6 Prospect apps have an owner pick in the 5180 demo's Staging line (apps/virev-demo/lines/staging.json in auto-sns-agent), how long an
- * app with no pick has gone without a new review todo on the chat's board, and whether the last verify-dev run on sieun/dev that ran the
- * virev-demo turbo tasks passed them (gh, the receipt lines of the monorepo lint job's log). No model call, no browser. A source it cannot read adds 1 to source_errors and a flagged slice.
+ * The Apps reach staging duty's precheck (`node --import tsx scripts/duties/apps-reach-staging.ts`) for the frontend chat. The headline,
+ * apps_picked, is how many of the 6 Prospect apps have an owner pick in the 5180 demo's Staging line (apps/virev-demo/lines/staging.json in
+ * auto-sns-agent). open_review_max_h is the age of the oldest open review todo the chat put on For you, and demo_ci_ok whether the last
+ * verify-dev run on sieun/dev that ran the virev-demo turbo tasks passed them (gh, the receipt lines of the monorepo lint job's log). Run
+ * detail, not judged: source_errors and each tab's 0 to 100% status (`tabs`), the owner's "report status (in 0%-100%) of each tab". An
+ * unreadable Staging line or board fails the run, since neither the headline nor the reviews can be read without it; a failed gh read leaves
+ * demo_ci_ok at 0. No model call, no browser.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -77,6 +80,41 @@ export function openSteps(plan: readonly BoardItem[], word: string): string[] {
   return found;
 }
 
+/** A review ask: an agent todo that names one of the 6 apps or asks to review or pick (t27 on 10-15 says "List app", not "Creators"). */
+export const isReview = (todo: BoardTodo): boolean => todo.from === "agent"
+  && (APPS.some(app => mentions(todo.text, app.word)) || /\b(review|pick|put in line)\b/i.test(todo.text ?? ""));
+
+/** Open review todos on For you, oldest first, with their age in hours (one decimal). */
+export function openReviews(todos: readonly BoardTodo[], now: number): { todo: BoardTodo; hours: number }[] {
+  return todos.filter(todo => !todo.done && isReview(todo) && Number.isFinite(Date.parse(todo.at ?? "")))
+    .map(todo => ({ todo, hours: Math.max(0, Math.round((now - Date.parse(todo.at!)) / HOUR_MS * 10) / 10) }))
+    .sort((a, b) => b.hours - a.hours);
+}
+
+export interface TabStatus { key: string; word: string; pct: number; picked: boolean; done: string[]; open: string[] }
+
+/**
+ * Each tab's 0 to 100% status: its owner pick on Staging counts as one step, plus every plan step whose text names the tab (dropped steps
+ * left out), and the status is the done share. A tab reads 100% only with a pick and every named step done. On 10-15 09:2xZ the board gave
+ * Home 6 of 7, Email 6 of 9.
+ */
+export function tabStatus(plan: readonly BoardItem[], app: { key: string; word: string; picked: boolean }): TabStatus {
+  const done: string[] = [];
+  const open: string[] = [];
+  const walk = (items: readonly BoardItem[]) => {
+    for (const item of items) {
+      if (mentions(item.text, app.word)) {
+        if (item.status === "done") done.push(item.id);
+        else if (["todo", "doing", "blocked"].includes(item.status ?? "")) open.push(item.id);
+      }
+      walk(item.children ?? []);
+    }
+  };
+  walk(plan);
+  const pct = Math.round(100 * (done.length + (app.picked ? 1 : 0)) / (done.length + open.length + 1));
+  return { key: app.key, word: app.word, pct, picked: app.picked, done, open };
+}
+
 /** The lint job's id when it ran the lint + typecheck + unit step to an end (success or failure), else null (skipped, cancelled). */
 export function lintJob(jobs: readonly GhJob[]): number | null {
   const job = jobs.find(candidate => candidate.name === LINT_JOB
@@ -99,35 +137,46 @@ export function demoSteps(log: string): Record<string, DemoTask> | null {
   return DEMO_TASKS.every(task => result[task]) ? result : null;
 }
 
-export async function measureStaging(deps: StagingDeps): Promise<PrecheckOutput> {
+export interface StagingOutput extends PrecheckOutput { tabs: TabStatus[] }
+
+export async function measureStaging(deps: StagingDeps): Promise<StagingOutput> {
   const at = deps.now();
   const flagged: FlaggedSlice[] = [];
-  // Targets in apps-reach-staging.duty.json and their sources. apps_picked at least 6: the 6 Prospect apps (board goal p14 targets 6) and the
-  // owner's "get an accepted version of each app in the prospects view". review_wait_max_h at most 48: the proposal's limit; incident, the
-  // board's review todos for the apps went from t5 (2026-10-09T12:38Z) to t11 (2026-10-12T05:55Z), 65 h with nothing new to pick, and on
-  // 2026-10-12T13:34Z the owner asked "what should i review?". demo_ci_ok at least 1 and source_errors 0 are yes or no checks.
-  const metrics: Record<string, number> = { apps_picked: 0, review_wait_max_h: 0, demo_ci_ok: 0, source_errors: 0 };
-  const sourceError = (excerpt: string) => { metrics.source_errors = (metrics.source_errors ?? 0) + 1; flagged.push({ at, kind: "source", excerpt }); };
+  // Targets in apps-reach-staging.duty.json and their sources. apps_picked at least 6 is the headline: the 6 Prospect apps (board goal p14
+  // targets 6) and the owner's "get an accepted version of each app in the prospects view". open_review_max_h at most 48: the review limit the
+  // duty has held since 10-12; incident, the board went from t5 (2026-10-09T12:38Z) to t11 (2026-10-12T05:55Z), 65 h with nothing to pick, and
+  // on 2026-10-12T13:34Z the owner asked "what should i review?". demo_ci_ok at least 1 is a yes or no check. source_errors is run detail.
+  const metrics: Record<string, number> = { apps_picked: 0, open_review_max_h: 0, demo_ci_ok: 0, source_errors: 0 };
+  const sourceError = (excerpt: string) => { metrics.source_errors! += 1; flagged.push({ at, kind: "source", excerpt }); };
   const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+  const readJson = async <T>(path: string, what: string): Promise<T> => {
+    try { return JSON.parse(await deps.read(path)) as T; } catch (error) { throw new Error(`${what} ${path}: ${message(error)}`); }
+  };
+  const line = await readJson<StagingLine>(join(deps.repo, LINE_FILE), "Staging line");
+  const board = await readJson<Board>(deps.board, "board");
 
-  let line: StagingLine | undefined;
-  try { line = JSON.parse(await deps.read(join(deps.repo, LINE_FILE))) as StagingLine; } catch (error) { sourceError(`${LINE_FILE}: ${message(error)}`); }
-  let board: Board | undefined;
-  try { board = JSON.parse(await deps.read(deps.board)) as Board; } catch (error) { sourceError(`board ${deps.board}: ${message(error)}`); }
+  const apps = picks(line);
+  metrics.apps_picked = apps.filter(app => app.picked).length;
+  const since = Math.min(...(line.log ?? []).map(entry => Date.parse(entry.at ?? "")).filter(Number.isFinite), at);
+  for (const app of apps) {
+    if (app.picked) { flagged.push({ at, kind: "picked", item: app.key, excerpt: `${app.word}: Staging points at ${app.variant}${app.at ? ` since ${app.at}` : ""}` }); continue; }
+    const wait = reviewWait(board.todos ?? [], app.word, at, since);
+    const todo = wait.open ? `open review todo ${wait.open.id} from ${wait.open.at}` : wait.last ? `last review todo ${wait.last.id} at ${wait.last.at}, done, ${wait.hours} h ago` : `no review todo yet, ${wait.hours} h since the line started`;
+    const steps = openSteps(board.plan ?? [], app.word);
+    flagged.push({ at, kind: "no_pick", item: app.key, excerpt: `${app.word}: Staging points at shipped; ${todo}; open steps: ${steps.join(", ") || "none"}` });
+  }
 
-  if (line) {
-    const apps = picks(line);
-    metrics.apps_picked = apps.filter(app => app.picked).length;
-    const since = Math.min(...(line.log ?? []).map(entry => Date.parse(entry.at ?? "")).filter(Number.isFinite), at);
-    for (const app of apps) {
-      if (app.picked) { flagged.push({ at, kind: "picked", item: app.key, excerpt: `${app.word}: Staging points at ${app.variant}${app.at ? ` since ${app.at}` : ""}` }); continue; }
-      if (!board) continue;
-      const wait = reviewWait(board.todos ?? [], app.word, at, since);
-      metrics.review_wait_max_h = Math.max(metrics.review_wait_max_h ?? 0, wait.hours);
-      const todo = wait.open ? `open review todo ${wait.open.id} from ${wait.open.at}` : wait.last ? `last review todo ${wait.last.id} at ${wait.last.at}, done, ${wait.hours} h ago` : `no review todo yet, ${wait.hours} h since the line started`;
-      const steps = openSteps(board.plan ?? [], app.word);
-      flagged.push({ at, kind: "no_pick", item: app.key, excerpt: `${app.word}: Staging points at shipped; ${todo}; open steps: ${steps.join(", ") || "none"}` });
-    }
+  const reviews = openReviews(board.todos ?? [], at);
+  metrics.open_review_max_h = reviews[0]?.hours ?? 0;
+  for (const { todo, hours } of reviews) {
+    flagged.push({ at, kind: "open_review", ...(todo.step ? { item: todo.step } : {}),
+      excerpt: `${todo.id} open ${hours} h (since ${todo.at}${todo.step ? `, step ${todo.step}` : ""}): ${(todo.text ?? "").slice(0, 160)}` });
+  }
+
+  const tabs = apps.map(app => tabStatus(board.plan ?? [], app));
+  for (const tab of tabs) {
+    flagged.push({ at, kind: "tab_status", item: tab.key, excerpt: `${tab.word} ${tab.pct}%: ${tab.picked ? "owner pick on Staging" : "no pick on Staging"}, ` +
+      `${tab.done.length} of ${tab.done.length + tab.open.length} board steps done${tab.open.length ? `; open: ${tab.open.join(", ")}` : ""}` });
   }
 
   try {
@@ -148,7 +197,7 @@ export async function measureStaging(deps: StagingDeps): Promise<PrecheckOutput>
     }
     if (!found) sourceError(`none of the last ${runs.length} verify-dev runs on ${CI_BRANCH} ran both virev-demo turbo tasks in ${LINT_JOB}`);
   } catch (error) { sourceError(`gh run list or view for verify-dev.yml on ${CI_BRANCH}: ${message(error)}`); }
-  return { metrics, flagged };
+  return { metrics, flagged, tabs };
 }
 
 const exec: Exec = (file, args, cwd) => new Promise((resolve, reject) => {
