@@ -152,9 +152,14 @@ export const DEAD_RUN_MS = 30 * 60_000;
  * The steps whose wait ended with no green, as `wait_met`: the waitFor names a run the CI cache (`train`) shows cancelled over DEAD_RUN_MS ago
  * and no run it names is queued or running (`deadRun`). 10-13 23:07 KST counted five such steps as blocked_on_others: api portal vp p9, p12 and
  * p14 and launch main bro p75 and p84, whose runs Fable's land-34 loop and 14:05Z stop had cancelled.
+ *
+ * A step whose owner works on it, or sleeps on a board.wake the service still owes (`withWakes` makes that owner working), is the owner's to
+ * rerun, as `endState` reads it moving. Ops guy 10-15: Fable's holds U to AA cancelled the ops train's runs, the job slept on a wake at each
+ * hold's cap (05:02Z, 06:45Z, 08:40Z), and the 04:36Z, 06:36Z and 08:36Z check-ins still counted 22, 28 and 1 of its steps as wait_met.
  */
 export function deadRunWaits(views: readonly StepView[], train: Train | undefined, now: number): WaitMet[] {
   return views.flatMap(view => {
+    if (view.owner?.state === "working") return [];
     const run = deadRun(view.item, train);
     return run && now - run.updatedAt > DEAD_RUN_MS ? [{ view, run, over: [`run ${run.id} was cancelled ${ago(now - run.updatedAt)} ago and nothing reruns it`] }] : [];
   });
