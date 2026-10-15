@@ -14,7 +14,7 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
 import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
-import { readStrays, startMacUsableWatch, TREE_MEMORY_FILE, workerGbNow } from "./mac-usable-watch.ts";
+import { readStrays, startMacUsableWatch, TREE_MEMORY_FILE } from "./mac-usable-watch.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
@@ -149,7 +149,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // A finished duty job's archive runs in the background with retries, so a slow daemon never holds up the next job's start.
   const archives = new ArchiveQueue({ path: join(dataDir, "duty-archive-queue.json"), archive: archiveDutyJob(threads, () => catalog.rows()), log: dutyLog });
   // Duty and check-in jobs wait for the Mac-wide turn queue before their session is created; a restart releases the keys its killed waits left.
-  const turns = dutyAdmitter({ log: dutyLog, memory: () => workerGbNow(dataDir) });
+  const turns = dutyAdmitter({ log: dutyLog });
   const queueReading = sharedQueueRead();
   const queued = queueReader(queueReading);
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
