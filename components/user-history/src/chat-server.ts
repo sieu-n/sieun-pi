@@ -596,8 +596,9 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           if (action === "commands") { json(res, 200, { commands: await backend.threads.commands(id) }); return; }
           if (action === "stats") { json(res, 200, await backend.threads.stats(id)); return; }
           if (action === "prompt") {
-            const view = backend.prompt ? await backend.prompt(id) : null;
-            if (!view) throw new RequestError(404, "This thread has no session file.");
+            const via = (url.searchParams.get("via") ?? "").split(",").filter(Boolean).map(threadId);
+            const view = backend.prompt ? await backend.prompt(id, via) : null;
+            if (!view) throw new RequestError(404, "This session has no session file left.");
             json(res, 200, view); return;
           }
           if (action === "check-in") {

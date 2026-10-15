@@ -41,7 +41,7 @@ import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wake
 import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
-import { promptView } from "./prompt-view.ts";
+import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { prStates } from "./pr-states.ts";
 import { heldStartsOf, readHeldStarts } from "./held-starts.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
@@ -80,8 +80,11 @@ export interface ChatBackend {
    * waits behind background work. It never rejects: a pool that fails is logged and the prompt goes as before. Absent in tests that fake a backend.
    */
   ownerTurn?: (sessionId: string) => Promise<void>;
-  /** `GET api/threads/<id>/prompt`: the prompt the thread's model gets (src/prompt-view.ts); null for a thread with no session file. Absent in tests that fake a backend. */
-  prompt?: (id: string) => Promise<PromptView | null>;
+  /**
+   * `GET api/threads/<id>/prompt?via=<parent ids>`: the prompt any session's model gets (src/prompt-view.ts), a thread, a job or a subagent the
+   * daemon no longer lists (`sessionFileFor`); null for a session with no session file. Absent in tests that fake a backend.
+   */
+  prompt?: (id: string, via?: readonly string[]) => Promise<PromptView | null>;
   close(): Promise<void>;
 }
 
@@ -333,9 +336,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   return {
     catalog, threads, readState, labels, bookmarks, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
-    prompt: async id => {
-      const sessionFile = (await catalog.summary(id))?.sessionFile;
-      return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id) }) : null;
+    prompt: async (id, via) => {
+      const sessionFile = await sessionFileFor(id, { listed: async session => (await catalog.summary(session))?.sessionFile, ...(via ? { via } : {}), dataDir, agentDir });
+      const title = catalog.title(id);
+      return sessionFile ? promptView(id, { sessionFile, dataDir, agentDir, chat: (await chats.ids()).has(id), ...(title ? { title } : {}) }) : null;
     },
     ownerTurn: id => markOwnerTurn(id).catch(error => { dutyLog(`turn queue: owner turn for ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }),
     async close() {
