@@ -8,8 +8,9 @@ import type { AgentQueueReading } from "./shared/types.ts";
  * At 20:03Z on 10-15, with the fleet budget shut since 19:23Z, 33 workers held 21.2 GB while pi-pool ran 14 turns: 36 of the 38 trees with a
  * queued turn had none working, and 31 of them were one root session alone, each holding a worker for nothing but its place in the queue. That
  * hour 8 of 48 watch minutes were unusable, all with the workers over 16 GB. A parked job's turn is aborted, which drops its queue entry
- * (pi-pool's admit wait releases on Stop), and Prime's idle sweep then unloads its worker; it gets "continue" through the fleet budget once
- * pi-pool has a free slot for it.
+ * (pi-pool's admit wait releases on Stop), and then its worker is stopped at once (`unload`), not by Prime's idle sweep: at 06:0x KST on 10-16
+ * parked jobs still held their workers 47 and 53 min after their last message, since a sweep ends at the first worker that "did not stop" (99
+ * such sweeps on 10-15 in daemon.sock.bab13329.log). It gets "continue" through the fleet budget once pi-pool has a free slot for it.
  */
 
 /** A queued turn is parked once it waited this long: past pi-pool's 120 s ticket renew poll, so a turn about to be admitted is left alone. */
@@ -49,6 +50,8 @@ export interface ParkDeps {
   chats: () => Promise<ReadonlySet<string>>;
   /** Aborts the session's turn without attaching a client (an attached client keeps the worker from Prime's idle sweep). */
   abort: (session: string) => Promise<void>;
+  /** Stops the session's worker without archiving it; the session stays listed and loads again on its next message. */
+  unload: (session: string) => Promise<void>;
   /** Starts the parked session's turn again with `text`. */
   resume: (session: string, text: string) => Promise<void>;
   fleet: { tryAdmit(ask: FleetAsk): Promise<FleetDone | null> };
@@ -66,7 +69,8 @@ export async function parkTick(deps: ParkDeps): Promise<{ parked: number; resume
   let parked = 0, resumed = 0;
   for (const entry of park) {
     try { await deps.abort(entry.session); list.push({ session: entry.session, at: now(), position: entry.position }); parked++; }
-    catch (error) { deps.log(`queue park: ${entry.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) { deps.log(`queue park: ${entry.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); continue; }
+    await deps.unload(entry.session).catch(error => deps.log(`queue park: unload ${entry.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
   }
   for (const entry of unpark) {
     const done = await deps.fleet.tryAdmit({ kind: "continue", label: `parked ${entry.session.slice(0, 8)}` });

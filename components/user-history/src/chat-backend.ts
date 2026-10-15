@@ -300,6 +300,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
         const response = await catalog.client.request({ type: "abort", activeSessionId: active }, 30_000, { recoverable: false });
         if (!response.success) throw new Error(response.error);
       },
+      unload: async session => {
+        const active = (await catalog.summary(session))?.activeSessionId;
+        if (!active) return;
+        const response = await catalog.client.request({ type: "kill", activeSessionId: active }, 30_000, { recoverable: false });
+        if (!response.success) throw new Error(response.error);
+      },
       resume: (session, text) => threads.restart(session, text, false) })
       .catch(error => dutyLog(`queue park: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { parking = false; });
   }, 60_000);

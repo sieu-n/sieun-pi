@@ -436,6 +436,8 @@ export function endedWithoutReport(before: readonly ChildAgent[], after: readonl
 
 /** The check for finished jobs runs on each job end and chat idle, and at least once per JOB_CLEANUP_EVERY_MS per chat. */
 export const JOB_CLEANUP_EVERY_MS = 10 * 60_000;
+/** How often the service looks for reported roots to end (`idleRoots`): each look reads the chat's board and one summary per reported root. */
+export const ROOT_END_EVERY_MS = 60_000;
 /** A job quiet this long whose only open work is a board wait is ended, with its state saved on the step (`waitingJobs`). */
 export const PARK_IDLE_MS = 60 * 60_000;
 
@@ -541,10 +543,14 @@ export function openStepsNotice(child: ChildAgent, steps: readonly PlanItem[], d
 export const reportedRoot = (agent: ChatAgent, said: ReadonlyMap<string, JobMessage>): boolean =>
   agent.link === "root" && agent.state === "idle" && agent.sessionId !== undefined && said.has(agent.sender);
 
-/** The chat's reported roots (`reportedRoot`) quiet PARK_IDLE_MS that no open step names (`stepNamesJob`), each its own worker to end. */
-export function idleRoots(agents: readonly ChatAgent[], board: ChatBoard | null, said: ReadonlyMap<string, JobMessage>, now: number): ChatAgent[] {
+/**
+ * The chat's reported roots (`reportedRoot`) that no open step names (`stepNamesJob`), each its own worker to end as soon as its report is in.
+ * At 06:0x KST on 10-16, 19 finished jobs were not deleted (slack green guy 6, the AI harness chat 3, launch main bro 2) while they waited out
+ * the 60 min quiet this used to ask for, and the Mac had 12 harness minutes in the hour with the workers at 18.5 to 23.9 GB.
+ */
+export function idleRoots(agents: readonly ChatAgent[], board: ChatBoard | null, said: ReadonlyMap<string, JobMessage>): ChatAgent[] {
   const open = openSteps(board);
-  return agents.filter(agent => reportedRoot(agent, said) && now - Date.parse(agent.lastActivityAt ?? "") >= PARK_IDLE_MS &&
+  return agents.filter(agent => reportedRoot(agent, said) &&
     !open.some(item => stepNamesJob(item, { id: agent.sessionId!, names: [agent.name, agent.sender] })));
 }
 

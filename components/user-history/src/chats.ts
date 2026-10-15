@@ -9,7 +9,7 @@ import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, Chec
 import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, OPEN, walk, withHeldSpawns } from "./checkin-steps.ts";
 import type { Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
-import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
+import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
   idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { resumeChatJobs } from "./chat-resume.ts";
@@ -183,6 +183,7 @@ export class Chats {
    * had then: a root that runs again (an agent message resumes it) gets a newer stamp and is looked at again.
    */
   private rootsSweptAt = -Infinity;
+  private rootsEndedAt = -Infinity;
   private readonly rootsEnded = new Map<string, string | undefined>();
   /** Job threads found gone (`threadGone`) at an activity stamp: never looked at again unless the stamp changes. */
   private readonly jobGone = new Map<string, string>();
@@ -676,9 +677,12 @@ export class Chats {
     const chatRows = rows.filter(row => this.chatIds.has(row.id));
     this.refreshJobs(chatRows);
     for (const row of chatRows) if (jobStopped(this.jobStates.get(row.id), this.jobStates.set(row.id, jobStateMap(row)).get(row.id)!)) this.scanSoon(row.id, this.source.noReportGraceMs ?? NO_REPORT_GRACE_MS);
+    if (this.now() - this.rootsEndedAt >= ROOT_END_EVERY_MS) {
+      this.rootsEndedAt = this.now();
+      for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
+    }
     if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS) {
       this.rootsSweptAt = this.now();
-      for (const row of chatRows) if (active.has(row.id)) this.queue(row.id, () => this.endRoots(row));
       if (this.source.interrupted) {
         const resume = this.source.interrupted;
         const swept = chatRows.filter(row => active.has(row.id));
@@ -746,7 +750,7 @@ export class Chats {
     const messages = this.messages(row.id) ?? [];
     const duty = new Set(await this.source.dutyJobs?.(row.id).catch(() => []) ?? []);
     const now = this.now();
-    for (const agent of idleRoots(row.agents ?? [], board, lastJobMessages(messages), now)) {
+    for (const agent of idleRoots(row.agents ?? [], board, lastJobMessages(messages))) {
       const id = agent.sessionId!;
       if (this.chatIds.has(id) || duty.has(id) || (this.rootsEnded.has(id) && this.rootsEnded.get(id) === agent.lastActivityAt)) continue;
       this.rootsEnded.set(id, agent.lastActivityAt);

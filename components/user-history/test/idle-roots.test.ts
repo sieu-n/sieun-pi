@@ -64,18 +64,19 @@ test("a reported root quiet past PARK_IDLE_MS that no open step names is saved a
   chats.close();
 });
 
-test("a root is kept while it is quiet under the limit, an open step names it, it waits on an answer, it is a duty run, or its session runs a tool call", async () => {
+// 10-16 at 06:0x KST: 19 finished jobs waited out the old 60 min quiet with their workers loaded, and the hour had 12 harness minutes.
+test("a reported root goes as soon as its report is in, and is kept while an open step names it, it waits on an answer, it is a duty run, or its session runs a tool call", async () => {
   const step: PlanItem = { id: "p7", text: "Build: land 35", status: "doing", job: "land 35 crawler pushes", children: [] };
-  const agents = [root("r1", "ops release driver", "idle", 59), root("r2", "land 35 crawler pushes"), root("r3", "ci release driver", "waiting"),
+  const agents = [root("r1", "ops release driver", "idle", 1), root("r2", "land 35 crawler pushes"), root("r3", "ci release driver", "waiting"),
     root("r4", "check-in Crawler VP 20:46"), root("r5", "heavy demand remeasure")];
   const { chats, threads, calls, sweep } = await setup(agents, [step], ["r4"]);
   threads.sessionBusy.add("r5");
   await sweep(START);
-  assert.deepEqual(calls.filter(call => call.startsWith("archive")), []);
+  assert.deepEqual(calls.filter(call => call.startsWith("archive")), ["archive r1"], "1 min quiet with its report in is enough");
   threads.sessionBusy.delete("r5");
-  await sweep(START + 5 * 60_000);
-  assert.deepEqual(calls.filter(call => call.startsWith("archive")), [], "the next look is one sweep later");
-  await sweep(START + 11 * 60_000);
-  assert.deepEqual(calls.filter(call => call.startsWith("archive")), ["archive r1", "archive r5"], "r1 is now 70 min quiet; r5 runs nothing now");
+  await sweep(START + 30_000);
+  assert.deepEqual(calls.filter(call => call.startsWith("archive")), ["archive r1"], "the next look is one minute later");
+  await sweep(START + 61_000);
+  assert.deepEqual(calls.filter(call => call.startsWith("archive")), ["archive r1", "archive r5"], "r5 runs nothing now");
   chats.close();
 });

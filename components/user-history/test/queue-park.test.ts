@@ -51,14 +51,16 @@ test("parkTick aborts what it parks, keeps the list on disk, and resumes through
   const dir = await mkdtemp(join(tmpdir(), "queue-park-"));
   const file = join(dir, "queue-parked.json");
   const aborted: string[] = [];
+  const unloaded: string[] = [];
   const resumed: [string, string][] = [];
   let current = view;
   let open = false;
-  const deps = { file, queue: async () => current, chats: async () => CHATS, log: () => {}, abort: async (id: string) => { aborted.push(id); },
+  const deps = { file, queue: async () => current, chats: async () => CHATS, log: () => {}, abort: async (id: string) => { aborted.push(id); }, unload: async (id: string) => { unloaded.push(id); },
     resume: async (id: string, text: string) => { resumed.push([id, text]); },
     fleet: { tryAdmit: async () => open ? () => {} : null }, now: () => 1000 };
   const first = await parkTick(deps);
   assert.equal(first.parked, aborted.length);
+  assert.deepEqual(unloaded, aborted, "each parked job's worker stops at once, after its abort released the queue entry");
   assert.equal(JSON.parse(await readFile(file, "utf8")).length, aborted.length);
   current = { ...view, queued: [] };
   assert.equal((await parkTick(deps)).resumed, 0, "the budget is shut, so nothing goes back");
