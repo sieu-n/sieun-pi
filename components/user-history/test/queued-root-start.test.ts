@@ -14,7 +14,7 @@ import { messageCheckPrelude } from "../src/message-limit-check.ts";
  * written where the check-in reads it as starting, and goes out by itself once the budget opens.
  */
 const CS = "create" + "_session";
-const kernel = async (closed: boolean) => {
+const kernel = async (closed: boolean, cancel = false) => {
   const dir = await mkdtemp(join(tmpdir(), "queued-root-"));
   await writeFile(join(dir, "fleet-state.json"), JSON.stringify({ at: Date.now(), closed: closed ? "the Prime workers hold 21.7 GB (budget 16 GB)" : null }));
   await writeFile(join(dir, "rlm.py"), [
@@ -36,6 +36,7 @@ const kernel = async (closed: boolean) => {
     `    handle = await rlm.${CS}('do it', name='crawler duty fixes')`,
     "    at_return = list(rlm.sent)",
     "    records = sorted(os.listdir(os.path.join(os.environ['DATA'], 'held-starts'))) if os.path.isdir(os.path.join(os.environ['DATA'], 'held-starts')) else []",
+    ...(cancel ? ["    [os.remove(os.path.join(os.environ['DATA'], 'held-starts', r)) for r in records if r.endswith('.json')]"] : []),
     "    with open(os.path.join(os.environ['DATA'], 'fleet-state.json'), 'w') as f: json.dump({'at': 0, 'closed': None}, f)",
     "    await asyncio.sleep(1.5)",
     "    held = getattr(rlm, 'held_sessions', {}).get('crawler duty fixes', {})",
@@ -75,4 +76,12 @@ test("the check-in reads a held start as a start of the chat the registry names,
   const registry = { chatOf: async (name: string) => name === "crawler duty fixes" ? "Crawler VP" : undefined };
   assert.deepEqual(await heldStartsOf(starts, registry, ["01a115e2", "Crawler VP"]), ["crawler duty fixes", "own start"]);
   assert.deepEqual(await heldStartsOf(starts, registry, ["01a11bd7", "launch main bro"]), []);
+});
+
+// 10-16: the AI harness chat had to cancel "limits pass", a check-in's queued root whose work had moved to Crawler VP's job. Killing the
+// waiter would have started it at once. Deleting its record now cancels it.
+test("deleting a queued root's record cancels it: it never starts once the budget opens", async () => {
+  const { run } = await kernel(true, true);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout.trim().split("\n").at(-1)!), { handle: "queued-", at_return: 0, later: 0, records: 1, held: "cancelled", marks: [true, false] });
 });

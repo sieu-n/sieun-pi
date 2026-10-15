@@ -48,16 +48,6 @@ export interface FleetState { at: number; closed: string | null; waiting?: reado
 /** Whether an alert text names a prod alert and no staging or dev one, the same rule pi-pool's prod turns use (pool/prod.py). */
 export const isProdAlert = (text: string): boolean => /\b(prod|production)\b/i.test(text) && !/\b(staging|stg|dev)\b/i.test(text);
 
-/**
- * Why the Mac as a whole has no room, from pi-pool's memory governor: high or critical shuts the budget even with the workers under FLEET_GB,
- * as FLEET_GB counts only the Prime workers. At 04:00 KST on 10-16 the workers held 11.8 GB while the owner's browsers held about 19 GB, the
- * governor read critical with 16 GB compressed and load 46, and the budget still let 4 fix jobs start.
- */
-export function pressured(reading: AgentQueueReading | null): string | null {
-  const level = reading?.governor?.level;
-  return level === "high" || level === "critical" ? `pi-pool reads memory pressure ${level}` : null;
-}
-
 /** The job names of `chat` whose start waits in the budget: its own starts, and the send-backs and continues, which name no chat. */
 export const startsOf = (waiting: readonly FleetAsk[], chat: string): string[] =>
   waiting.filter(ask => ask.chat === chat || ask.chat === undefined).map(ask => ask.label);
@@ -197,7 +187,10 @@ export class FleetBudget {
   private async read(): Promise<{ gb: number | null; long: string | null }> {
     if (!this.reading || this.now() - this.reading.at >= this.readMs) {
       const [gb, queue] = await Promise.all([this.deps.gb().catch(() => null), this.deps.queue ? this.deps.queue().catch(() => null) : Promise.resolve(null)]);
-      this.reading = { at: this.now(), gb, long: queueLong(queue) ?? pressured(queue) };
+      // No close on pi-pool's pressure level: the AI harness chat set the rule on 10-16 to the Prime workers' GB alone. At 22:50Z on 10-15
+      // the workers held 14.64 GB while the compressor held 15 of 32 GB for Helium (9.07 GB), Docker (5.03) and Chrome (4.67), so the level
+      // read critical, 76 starts waited and 33 parked jobs never went back.
+      this.reading = { at: this.now(), gb, long: queueLong(queue) };
       this.sinceRead = 0;
     }
     return this.reading;

@@ -202,14 +202,14 @@ test("prod alerts pass the stop switch and other alerts wait, by pi-pool's prod 
   assert.equal(isProdAlert("us-metal01 CPU >85% for 30m"), false);
 });
 
-test("memory pressure high or critical shuts the budget with the workers under 16 GB (10-16 04:00 KST: 11.8 GB of workers, browsers about 19 GB)", async () => {
+test("the budget reads the Prime workers' GB alone: at 22:50Z on 10-15 the workers held 14.64 GB with pi-pool critical from the apps' memory, and starts go", async () => {
   const time = clock();
-  const at = (level: string) => async () => ({ ...queue(4, 8), governor: { limit: 8, level } }) as unknown as AgentQueueReading;
+  const at = (level: string) => async () => ({ ...queue(4, 12), governor: { limit: 12, level } }) as unknown as AgentQueueReading;
   for (const level of ["high", "critical"]) {
-    const budget = new FleetBudget({ gb: async () => 11.8, queue: at(level), live: async () => false, log: () => {}, ...time });
-    assert.equal(await budget.held(), `pi-pool reads memory pressure ${level}`);
-    assert.equal(await budget.tryAdmit({ kind: "fix", chat: "c", label: "fix x" }), null);
+    const budget = new FleetBudget({ gb: async () => 14.64, queue: at(level), live: async () => false, log: () => {}, ...time });
+    assert.equal(await budget.held(), null);
+    assert.notEqual(await budget.tryAdmit({ kind: "continue", label: "parked job" }), null);
   }
-  const ok = new FleetBudget({ gb: async () => 11.8, queue: at("ok"), live: async () => false, log: () => {}, ...time });
-  assert.equal(await ok.held(), null);
+  const full = new FleetBudget({ gb: async () => 16.2, queue: at("ok"), live: async () => false, log: () => {}, ...time });
+  assert.equal(await full.held(), "the Prime workers hold 16.2 GB (budget 16 GB)");
 });

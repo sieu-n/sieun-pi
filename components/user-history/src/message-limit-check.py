@@ -36,7 +36,7 @@ import sys
 import time
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
-VERSION = 5
+VERSION = 6
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
 UNCONFIRMED_NOTE = (
     "agent_message: Prime Agent did not confirm this send within 30 s because {target} is busy. The daemon still holds it and delivers it "
@@ -125,6 +125,8 @@ FLEET_STATE_FRESH_S = 120
 START_GAP_S = 30
 # How often the waiter reads the budget; the budget publishes every 15 s. Tests set USER_HISTORY_START_POLL_S.
 START_POLL_S = float(os.environ.get("USER_HISTORY_START_POLL_S") or 15)
+# The waiter's exit code when the start's record was deleted (wait_start).
+CANCELLED = 3
 START_LINE = ("rlm.create_session: {name} is queued, not started: the Mac has no room for another root job now ({why}). It starts by itself "
               "when there is room, oldest first, and the check-in reads its step as starting, so name {name!r} on the step now and end your turn. "
               "rlm.held_sessions[{name!r}] holds its handle once it starts.")
@@ -179,8 +181,15 @@ def may_start(data_dir, ticket, now=None):
 
 
 def wait_start(data_dir, ticket):
-    """Runs in the waiter process: returns once `ticket` may start."""
-    while not may_start(data_dir, ticket):
+    """Runs in the waiter process: returns once `ticket` may start, and exits CANCELLED once its record is gone, so deleting
+    held-starts/<ticket>.json cancels a queued root. On 10-16 the AI harness chat had to cancel "limits pass", a check-in's root start
+    whose work had moved to another job, and the only ways were to kill the waiter, which started it at once, or the kernel."""
+    record = os.path.join(held_dir(data_dir), f"{ticket}.json")
+    while True:
+        if not os.path.exists(record):
+            sys.exit(CANCELLED)
+        if may_start(data_dir, ticket):
+            return
         time.sleep(START_POLL_S)
 
 
@@ -198,6 +207,11 @@ async def start_root(real, payload, ticket, name, data_dir):
         activity = {"id": secrets.token_hex(16), "pid": proc.pid, "active": True}
         repl.emit({"application/vnd.prime-agent.bash-activity+json": activity})
         await proc.wait()
+        if proc.returncode == CANCELLED:
+            held[name] = {"state": "cancelled", "ticket": ticket}
+            print(f"rlm.create_session: the queued root {name} was cancelled before it started", file=sys.stderr)
+            repl.emit({"application/vnd.prime-agent.bash-activity+json": {**activity, "active": False}})
+            return
     except Exception:
         pass
     try:
