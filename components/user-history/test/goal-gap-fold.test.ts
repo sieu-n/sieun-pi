@@ -48,12 +48,12 @@ test("goal gap: a goal the check-in folds into its duty gets the fold alone, not
   const { output, text } = findings([D1]);
   assert.deepEqual(output.flagged.filter(slice => slice.kind === "goals_to_fold").map(slice => slice.item), ["p48"]);
   assert.equal(output.metrics.goal_gaps, 0, "the duty d1 carries the target; one ask per goal");
-  assert.doesNotMatch(section(text, "### Goal gaps"), /\bp48\b/);
+  assert.doesNotMatch(section(text, "### Goals, "), /\bp48\b/);
 });
 
 test("goal gap: the same goal with no duty that runs it stays a goal gap (slack green guy p48, 10-12 18:02 to 22:04 KST)", () => {
   const { output, text } = findings([]);
   assert.equal(output.metrics.goals_to_fold, 0);
   assert.deepEqual(output.flagged.filter(slice => slice.kind === "goal_gaps").map(slice => slice.item), ["p48"]);
-  assert.match(section(text, "### Goal gaps"), /p48 .*75% short.*no live job/);
+  assert.match(section(text, "### Goals, "), /p48 visitor-to-signup conversion rate 0\.5 of 2%, first reading, no trend yet, and its last measurement is from 10-12 09:15Z; no live job owns it/);
 });

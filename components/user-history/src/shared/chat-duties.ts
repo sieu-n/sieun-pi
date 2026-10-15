@@ -358,9 +358,10 @@ export function parseDutyFile(value: unknown): DutyFile {
 export const CHECK_IN_DUTY_ID = "checkin";
 /**
  * The built-in duty every chat has: the check-in. It runs on the chat's check-in setting (the header's control and this card edit the same
- * setting); its precheck sorts every open step into a class (src/chat-checkin.ts) and its run starts one check-in job with that as context.
- * Its verdict is the headline, stuck_steps (the end state the owner asked for), plus one number for each half of the goal: finished_open for
- * a plan that matches reality, and stalled_steps and no_progress for goals that keep moving. Every other count of the measure
+ * setting); its precheck reads each open goal's number, trend, pace and owner job (src/checkin-goals.ts) and sorts every open step into a
+ * class (src/chat-checkin.ts), and its run starts one check-in job with that as context. Its headline is goal_gaps, the open goals whose
+ * number is off pace or that no live job owns (owner 10-15: "Check in 이 일을 쭉쭉 밀어줘야되는데 it's deeply flawed"), then stuck_steps, the
+ * end state of the steps, then finished_open and stalled_steps for a plan that matches reality. Every other count of the measure
  * (`ConvergenceMisses`) stays in its output and its flagged items, which the check-in job reads in its findings.
  */
 export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
@@ -371,15 +372,16 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
     "harness for steering agent swarm\n\n" +
     "look, eventually on it's own all threads should resolve to\nsome items in FOR YOU\nTODO all cleared, only ones blocked by FOR YOU remaining.\n" +
     "manage stale shit, properly nudge push through, ... is you (chat agent's responsiblitity).\n" +
-    "그럴거면 check in은 왜있어? checkin이 그렇게 되도록 해야지. check in을 duty로 모델링을 하는건 좋은거 같아",
-  goal: "The check-in keeps two things true in every chat, so the owner never has to ask. The plan matches reality and stays organized: a few " +
-    "area goals with their open steps under them, shipped work closed or folded, new work under its goal. And every goal keeps moving: it holds " +
-    "the whole status and messages, restarts or starts the jobs and threads that stalled, died or are missing. End state: every open step is done, " +
-    "moved by a live owner, or blocked only by an open For you todo, and no goal stays open only to wait on another thread's work.",
+    "그럴거면 check in은 왜있어? checkin이 그렇게 되도록 해야지. check in을 duty로 모델링을 하는건 좋은거 같아\n\n" +
+    "Check in 이 일을 쭉쭉 밀어줘야되는데 it's deeply flawed. fix this",
+  goal: "The check-in pushes every open goal to its outcome, so the owner never has to ask whether it is working. Each run it reads each goal's " +
+    "number against its target, its trend since the last check-in and the pace to the target, and makes sure one live job owns that number: it " +
+    "steers that job with the owner's words and the measured gap when the number is off pace, and starts one when no job owns it. Second, every " +
+    "open step is moved by a live owner, held by an open For you todo, or closed, and the plan matches reality.",
   metrics: [
-    { key: "stuck_steps", label: "Open steps nobody is moving (no live job, For you todo or owner ruling holds them)", op: "<=", target: 0, headline: true },
+    { key: "goal_gaps", label: "Open goals off pace or with no live job that owns their number", op: "<=", target: 0, headline: true },
+    { key: "stuck_steps", label: "Open steps nobody is moving (no live job, For you todo or owner ruling holds them)", op: "<=", target: 0 },
     { key: "finished_open", label: "Done items still open", op: "<=", target: 0 },
     { key: "stalled_steps", label: "Steps waiting over 2 hours on the same thing", op: "<=", target: 0 },
-    { key: "no_progress", label: "No progress in the last hour while work was open", op: "<=", target: 0 },
   ],
 };

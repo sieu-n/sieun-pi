@@ -42,7 +42,7 @@ test("a check-in brief with 150 flagged items shows the headline number, 3 items
   const brief = briefs[0]!;
   assert.equal(BRIEF_ITEMS, 3);
   assert.deepEqual(bullets(brief).map(line => line.split(" ")[1]), ["p1", "p2", "p3"], "3 items, the headline metric's first");
-  assert.match(brief, /The headline number this run is stuck_steps at 117, target at most 0 \(Open steps nobody is moving/);
+  assert.match(brief, /The headline number this run is goal_gaps at 0, target at most 0 \(Open goals off pace or with no live job/);
   assert.match(brief, /150 flagged items; the first 3:\n- p1 "Step 1" is stuck \(event\): waits on land 1 and no live job of this chat watches it\n/);
   assert.match(brief, /- and 147 more\n/);
   assert.doesNotMatch(brief, /stuck_steps p1|stale_chase_24h|p150/, "no kind label and never the full list");

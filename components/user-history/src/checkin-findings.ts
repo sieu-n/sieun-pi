@@ -1,16 +1,16 @@
 import type { HandoffRule } from "./chat-corrections.ts";
 import { type DoneReason, pathLike, type PrState } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty } from "./shared/chat-duties.ts";
-import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
-  type TargetState, targetText, walkItems } from "./shared/chat-board.ts";
-import type { BoardOp, ChatBoard, GoalTarget, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
+import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo,
+  walkItems } from "./shared/chat-board.ts";
+import type { BoardOp, ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
 import { type Movers, outsideMover } from "./checkin-end-state.ts";
 import { localTime } from "./checkin-settings.ts";
 
-/** The check-in's board findings: the plan's shape, goals to fold, held and stalled steps, scope misses, owner gates and goal gaps, each with the line the duty job reads. */
+/** The check-in's board findings: the plan's shape, goals to fold, held and stalled steps, scope misses and owner gates, each with the line the duty job reads (goals: src/checkin-goals.ts). */
 
 /*
  * The plan's shape (c44, reopened 10-12: p253 sat as a top-level item with no steps, status doing, after its work shipped, and the owner had to
@@ -783,33 +783,6 @@ export function gateLine(gate: GateFinding): string {
         `For you todo with step "${gate.item.id}" naming ${prs}, choices like "Yes, keep it" and "No, revert it"`;
     }
   }
-}
-
-/**
- * A goal with a target that is short of it, not measured, or measured too long ago (W54, owner 10-09 on a 200 Mbps proxy plan used at 8 Mbps
- * while every step waited: the check-in should push harder toward each goal). `live` when one of its open steps has a live job.
- * Largest gap first; a goal never measured counts as the largest.
- */
-export interface GoalGap { goal: PlanItem; target: GoalTarget; state: TargetState; live: boolean }
-export function goalGaps(board: ChatBoard | null, views: readonly StepView[], everyMs: number, now: number): GoalGap[] {
-  const gaps = (board?.plan ?? []).flatMap(goal => {
-    if (!goal.target || !OPEN.has(goal.status)) return [];
-    const state = targetState(goal.target, everyMs, now);
-    if (state.kind === "measured" && state.ratio >= 1 && !state.stale) return [];
-    return [{ goal, target: goal.target, state, live: views.some(view => view.goal?.id === goal.id && view.cls === "live") }];
-  });
-  const short = (gap: GoalGap) => gap.state.kind === "unmeasured" ? 1 : 1 - gap.state.ratio;
-  return gaps.sort((a, b) => short(b) - short(a));
-}
-/** A goal gap the duty counts in `goal_gaps`: its last measurement is under half the target and no job of it is live. */
-export const countedGap = (gap: GoalGap): boolean => gap.state.kind === "measured" && gap.state.ratio < 0.5 && !gap.live;
-export function goalGapLine({ goal, target, state, live }: GoalGap): string {
-  const head = `${goal.id} ${quote(goal.text)}: ${target.metric} ${targetText(target)}`;
-  const jobs = live ? "a job of it is live" : "no live job";
-  if (state.kind === "unmeasured") return `${head}; ${jobs}: measure it in this run`;
-  const short = `${Math.max(0, 100 - state.percent)}% short`;
-  return state.stale ? `${head}, ${short} at its last measurement, not measured since ${localTime(state.measuredAt)}; ${jobs}: measure it again in this run`
-    : `${head}, ${short}, measured ${localTime(state.measuredAt)} by ${quote(target.source ?? "")}; ${jobs}`;
 }
 
 /**

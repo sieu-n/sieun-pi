@@ -9,11 +9,12 @@ import { ACT_CLASSES, classifyBoard, classLine, jobFacts, liveJobs, liveWindowMs
 import { endState, endStateKpi, endStateLine, type EndStateKpi, type EndStateView, OK_STATES, stuckLine } from "../../src/checkin-end-state.ts";
 import { checkInRecord, classCounts, convergenceMisses, type ConvergenceMisses, finishedOpen } from "../../src/chat-checkin.ts";
 import { checkInSettings } from "../../src/checkin-settings.ts";
-import { blockedOnOthers, deadRunWaits, extraGoals, gateFindings, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, noProgress, openUnderClosed, scopeMisses,
+import { blockedOnOthers, deadRunWaits, extraGoals, gateFindings, goalsToFold, goalsWithoutDuty, heldElsewhere, looseGoals, noProgress, openUnderClosed, scopeMisses,
   staleSteps, stalledSteps, waitsMet } from "../../src/checkin-findings.ts";
 import { activeCorrections, CorrectionLedger, handoffRules } from "../../src/chat-corrections.ts";
 import { heartbeatsFile, oneSessionLoad, readHeartbeats, readTrain, redundantHeartbeats, trainFile, withWakes } from "../../src/checkin-load.ts";
 import { pendingWakes } from "../../src/wakes.ts";
+import { goalPushes } from "../../src/checkin-goals.ts";
 import { boardPrs, metricFacts } from "../../src/checkin-done.ts";
 import { prStates } from "../../src/pr-states.ts";
 import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";
@@ -151,7 +152,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
       prs: cwd && boardPrs(board).length ? await prs(cwd, boardPrs(board)).catch(() => new Map()) : new Map() };
     const done = finishedOpen(board, doneFacts);
     const findings = { scope: scopeMisses(board, handoffs, [id, name]), gates: gateFindings(board, facts, active), stalled: stalledSteps(steps, memo?.steps ?? {}, rows, new Set([id, name]), now, train),
-      goals: goalGaps(board, steps, everyMs, now), blocked: blockedOnOthers(steps, rows, new Set([id, name]), now, train, new Map(), asleep), done, loose: looseGoals(board),
+      goals: goalPushes(board, steps, memo?.goals, everyMs, now, doneFacts.metrics, new Set(goalsToFold(board, facts, new Set([id, name]), chatDuties ?? []).map(fold => fold.goal.id))).pushes, blocked: blockedOnOthers(steps, rows, new Set([id, name]), now, train, new Map(), asleep), done, loose: looseGoals(board),
       extra: extraGoals(board), underClosed: openUnderClosed(board), held: heldElsewhere(steps, board, rows, new Set([id, name]), rootsOf([id, name])), noProgress: noProgress(board, steps, memo?.steps ?? {}, memo?.since ?? now, rows, new Set([id, name]), now, train, new Map(), { done, prs: doneFacts.prs }),
       waitsMet: [...waitsMet(steps, board, rows, new Set([id, name])), ...deadRunWaits(steps, train, now)],
       stale: staleSteps(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), everyMs, now),

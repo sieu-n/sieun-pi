@@ -47,7 +47,10 @@ test("chats: every scheduled check-in hands one run with the precheck to the dut
   assert.deepEqual(Object.entries(run.output.metrics).filter(([, value]) => Number(value) > 0), [["stuck_steps", 1]],
     "every target met but the end state (p3 waits a day with no owner), and the run goes to a job");
   assert.deepEqual([run.at, run.trigger, run.classes.live, run.classes.waiting], [now, "schedule", 1, 1]);
-  assert.equal(run.findings, `End state: 1 of 2 open steps (50%) are moving, in For you or parked; 1 stuck (time 1).\n\n` +
+  assert.equal(run.findings, `Goals: 0 of 1 open goals are off pace or have no live owner, and 1 has no number.\n\n` +
+    `### Goals, the check-in's first job (steer or start one owner job per goal; the message for each is under it)\n` +
+    `- p1 "Reach chats from Slack": it has no target and no linked duty metric: set a target from the owner's words in this run\n\n` +
+    `End state: 1 of 2 open steps (50%) are moving, in For you or parked; 1 stuck (time 1).\n\n` +
     `### Stuck steps (the owner's end state: every open step is moved by a live owner now, held by an open For you todo that links it, or parked by his ` +
     `correction. Each step below ends this run with a live owner, a For you todo or a close; a chase, a new wait text or a later waitUntil leaves it stuck)\n` +
     `- p3 "Build" is stuck (time): waits on a time and no live job of this chat watches it, last change 0 min ago: do it now if it can run now, or give ` +

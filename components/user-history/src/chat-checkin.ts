@@ -11,12 +11,13 @@ import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason
 import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, openAsks, ownerLabel, ownerState, parkedBy, quote, readySteps,
   noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwner, stepView, type StepView, todoForStep,
   waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
-import { blockedLine, blockedOnOthers, type BlockedStep, countedGap, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
-  gateFindings, gateLine, type GoalGap, goalGapLine, goalGaps, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
+import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
+  gateFindings, gateLine, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
   staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet } from "./checkin-findings.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, OK_STATES, stuckLine } from "./checkin-end-state.ts";
+import { type GoalMemo, goalLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded } from "./checkin-goals.ts";
 import type { Wake } from "./wakes.ts";
 export { finishedOpen, looksDone };
 
@@ -40,7 +41,9 @@ export interface CheckInMemory { at: number; steps: Record<string, StepMemo>;
   /** When this chat's memory began (its first check-in, kept across runs): the no-progress check needs a full hour of it. */
   since?: number;
   /** How many runs in a row flagged each finding, by `flagKey` (src/checkin-repeats.ts). */
-  flags?: Record<string, number> }
+  flags?: Record<string, number>;
+  /** Each open goal's last readings of its number, for its trend and pace (`goalPushes`). */
+  goals?: Record<string, GoalMemo> }
 /**
  * What the precheck needs besides the jobs and the board: the chat's own id and name (a step it owns is `mine`), a board read error, the
  * catalog rows (the threads a step's `waitFor` can name), and the ledger's handoffs (`handoffRules`: an open step on another thread's topics).
@@ -77,7 +80,9 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
 
 /** What one check-in precheck found: the memory to keep, every open leaf step with its class, the steps on another thread's work, the open items that look done, and other facts. */
 export interface CheckInPrecheck {
-  memory: CheckInMemory; steps: StepView[]; scope: ScopeMiss[]; gates: GateFinding[]; stalled: StalledStep[]; goals: GoalGap[]; blocked: BlockedStep[];
+  memory: CheckInMemory; steps: StepView[]; scope: ScopeMiss[]; gates: GateFinding[]; stalled: StalledStep[];
+  /** Each open goal's number, trend, pace and owner, and whether to steer or start its owner job (`goalPushes`): the check-in's first job. */
+  goals: GoalPush[]; blocked: BlockedStep[];
   done: { item: PlanItem; reason: string; at: number }[]; loose: PlanItem[]; extra: PlanItem[]; underClosed: { item: PlanItem; parent: PlanItem }[];
   held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: RedundantHeartbeat[];
   /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties. */
@@ -140,16 +145,19 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, starting: new Set(context.starting ?? []) };
   const doneFacts = context.doneFacts ?? NO_FACTS;
   const done = context.boardError ? [] : finishedOpen(board, doneFacts);
-  return { memory: { at: now, steps, since }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
+  const fold = context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []);
+  const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
+    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)));
+  return { memory: { at: now, steps, since, goals: goals.memos }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),
-    goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done,
+    goals: goals.pushes, blocked, done,
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
-    fold: context.boardError ? [] : goalsToFold(board, facts, self, context.duties ?? []), load: oneSessionLoad(goaled, context.jobs),
+    fold, load: oneSessionLoad(goaled, context.jobs),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties ? [] : goalsWithoutDuty(board, context.duties), facts: notes,
     end: context.boardError ? [] : goaled.map(view => endState(view, board?.todos ?? [], context.rows ?? [], self, now, facts, movers)) };
 }
@@ -224,7 +232,8 @@ function jobLine(fact: JobFact, now: number): string {
 }
 
 /**
- * The check-in precheck as the duty job's brief gives it, plain markdown: the goals nobody works on (`idleGoals`), the steps whose class needs action (`classLine`), the open items that
+ * The check-in precheck as the duty job's brief gives it, plain markdown: first each open goal's number, trend and owner with the steer or start
+ * it needs (`goalsDetail`), then the stuck steps, the goals nobody works on (`idleGoals`), the steps whose class needs action (`classLine`), the open items that
  * look done, the steps on another thread's work, the other facts, the flagged items the class lines do not cover (a job end with no update),
  * the chat's jobs, and every open step with its class, owner and age, oldest change first. Findings flagged in REPEAT_RUNS or more runs in a
  * row (`streaks`, `flagStreaks`) come first, under Flagged again.
@@ -261,7 +270,10 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     const runs = streaks[flagKey({ kind: "stuck_steps", item: entry.view.item.id })] ?? 0;
     return `${stuckLine(entry, now)}${runs >= REPEAT_RUNS ? ` (stuck in ${runs} check-ins in a row)` : ""}`;
   });
+  const goals = goalsDetail(precheck.goals);
   return [
+    ...precheck.goals.length ? [goalsHeadline(precheck.goals)] : [],
+    ...goals ? [goals] : [],
     ...precheck.end.length ? [endStateLine(kpi)] : [],
     ...section("Stuck steps (the owner's end state: every open step is moved by a live owner now, held by an open For you todo that links it, or " +
       "parked by his correction. Each step below ends this run with a live owner, a For you todo or a close; a chase, a new wait text or a later " +
@@ -276,8 +288,6 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
       ...precheck.extra.length ? [extraGoalsLine(precheck.extra)] : [], ...precheck.underClosed.map(underClosedLine)]),
     ...section("Waits that are over (act on each in this run)", precheck.waitsMet.map(waitMetLine)),
     ...section("No progress in the last hour (work should be moving)", precheck.noProgress ? [noProgressLine(precheck.noProgress)] : []),
-    ...section("Goal gaps, largest first (for the largest gaps, push the next concrete step that closes the gap in this run: start or steer a job, " +
-      "pull a slot forward; confirming that steps are waiting is not an answer)", precheck.goals.filter(gap => !folded.has(gap.goal.id)).map(goalGapLine)),
     ...section("Blocked on CI, a release or another thread with no job on it (start a job that fixes each blocker in this run, or send its owner a " +
       "concrete patch; marking the step waiting is not an answer)", precheck.blocked.map(blocked => blockedLine(blocked, now))),
     ...section("One session carries too much (split these into your own jobs per part)", flagged.filter(slice => slice.kind === "one_session_load").map(slice => slice.excerpt)),
@@ -308,7 +318,7 @@ export const stepSig = (item: PlanItem): string => JSON.stringify([item.status, 
  * a stop mid-tool, the length limit) with no report, which the server told the chat at once (the check-in record's told ends), not updated a
  * check-in later; such a step is counted there and not again in `job_end_unrecorded`. `scope_misses` is an open step on another thread's work
  * by a ledger handoff (`scopeMisses`, correction c7). `stalled_steps` is a step on a passive wait (`stalledSteps`, c23). `go_missing` and
- * `requirements_missing` are the broken hard gates (`gateFindings`, W50), `merges_without_go` a merge step done without the owner's go on its PR (c49). `goal_gaps` is a goal under half its target with no live job (`countedGap`, W54).
+ * `requirements_missing` are the broken hard gates (`gateFindings`, W50), `merges_without_go` a merge step done without the owner's go on its PR (c49). `goal_gaps`, the headline, is an open goal whose number is off pace or that no live job owns (`pushNeeded`, owner 10-15 on p71).
  * `blocked_on_others` is a step blocked on CI, a release or another thread for over an hour with no live job (`blockedOnOthers`, W56).
  * `finished_open` is an open item that looks done (`looksDone`), `loose_goals` an open goal with no step under it (`looseGoals`) and
  * `extra_goals` the open goals over BOARD_LIMITS.openGoals (`extraGoals`), `open_under_closed` an open item right under a closed one
@@ -330,7 +340,7 @@ export const NO_MISSES: ConvergenceMisses = { orphan_steps: 0, due_late: 0, stal
   stalled_steps: 0, go_missing: 0, requirements_missing: 0, merges_without_go: 0, goal_gaps: 0, blocked_on_others: 0, finished_open: 0, loose_goals: 0, extra_goals: 0, open_under_closed: 0,
   held_elsewhere: 0, wait_met: 0, no_progress: 0, stale_steps: 0, goals_to_fold: 0, one_session_load: 0, redundant_heartbeats: 0, goals_without_duty: 0, stuck_steps: 0 };
 /** What the precheck found on the board besides the step classes: steps on another thread's work, broken hard gates, stalled waits, the plan's shape. */
-export interface BoardFindings { scope: readonly ScopeMiss[]; gates: readonly GateFinding[]; stalled: readonly StalledStep[]; goals: readonly GoalGap[]; blocked: readonly BlockedStep[];
+export interface BoardFindings { scope: readonly ScopeMiss[]; gates: readonly GateFinding[]; stalled: readonly StalledStep[]; goals: readonly GoalPush[]; blocked: readonly BlockedStep[];
   done: readonly { item: PlanItem; reason: string }[]; loose: readonly PlanItem[]; extra: readonly PlanItem[]; underClosed: readonly { item: PlanItem; parent: PlanItem }[];
   held: readonly HeldGoal[]; waitsMet: readonly WaitMet[]; noProgress: NoProgress | null; stale: readonly StaleStep[]; fold: readonly FoldGoal[];
   load?: readonly SessionLoad[]; heartbeats?: readonly RedundantHeartbeat[]; noDuty?: readonly PlanItem[];
@@ -392,7 +402,7 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   // A goal the check-in folds into a duty gets the fold alone: the duty carries its target. goal_gaps' "push the next step" on it was a second
   // ask (slack green guy p48 at 10-13 00:11 KST, the duty d1 made at 23:58).
   const folded = new Set(fold.map(entry => entry.goal.id));
-  for (const gap of goals.filter(gap => countedGap(gap) && !folded.has(gap.goal.id))) { misses.goal_gaps++; flagged.push({ chat, at: now, kind: "goal_gaps", excerpt: goalGapLine(gap), item: gap.goal.id }); }
+  for (const push of goals.filter(push => pushNeeded(push) && !folded.has(push.goal.id))) flag("goal_gaps", push.goal.id, goalLine(push));
   for (const block of blocked) { misses.blocked_on_others++; flagged.push({ chat, at: now, kind: "blocked_on_others", excerpt: blockedLine(block, now), item: block.view.item.id }); }
   for (const entry of fold) flag("goals_to_fold", entry.goal.id, foldLine(entry));
   for (const found of done.filter(found => !folded.has(found.item.id))) { misses.finished_open++; flagged.push({ chat, at: now, kind: "finished_open", excerpt: lookDoneLine(found), item: found.item.id }); }

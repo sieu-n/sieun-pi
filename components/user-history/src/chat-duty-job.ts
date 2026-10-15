@@ -72,6 +72,8 @@ export interface DutyJobInput {
   focus?: readonly string[];
   /** The miss streak of each metric this run missed (`metricStreaks`), with the fix step the run found for it. */
   misses?: readonly MetricStreak[];
+  /** How this duty's job reports to the chat, in place of the generic report rule; the check-in's is `CHECK_IN_REPORT`. */
+  report?: string;
 }
 
 const runs = (count: number): string => `${count} ${count === 1 ? "run" : "runs"}`;
@@ -135,7 +137,7 @@ const reportCall = (chat: Pick<DutyChat, "name">): string => `await agent_messag
  * specifies, be a VP, report to user what needed'"; "control flow should be dynamically defined by agent"): the duty in the owner's words, the
  * precheck as information, and how a chat job works. It names no fixed list of checks and no verdict; a quiet run ends in one short turn.
  */
-export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [] }: DutyJobInput): string {
+export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [], report }: DutyJobInput): string {
   const send = reportCall(chat);
   const headline = headlineMetric(duty.metrics);
   const counted = verdictMetrics(duty.metrics);
@@ -186,9 +188,9 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "name in the same board change. A subagent you spawn is archived when the next run retires you, so spawn only for work that ends inside this run.",
       ...chatJobRules(),
       "When nothing needs work, end in one short turn and send nothing; the server keeps this run's record.",
-      `Otherwise send the chat one short report when your work is done, with only what it and the owner need: the headline number, the board ops ` +
+      `${report ? `Otherwise ${report[0]!.toLowerCase()}${report.slice(1)}` : `Otherwise send the chat one short report when your work is done, with only what it and the owner need: the headline number, the board ops ` +
         `you applied, at most ${BRIEF_ITEMS} items in plain words the owner should hear (like "p412 waits on land 37 with no job moving it", never a ` +
-        `kind label or a list of step ids) or "nothing for the owner", and the detail file path the findings name. Never paste the full flagged list. ` +
+        `kind label or a list of step ids) or "nothing for the owner", and the detail file path the findings name. Never paste the full flagged list.`} ` +
         `Send it with \`${send}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].filter(part => part !== "").join("\n\n") + "\n";

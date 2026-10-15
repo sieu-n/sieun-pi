@@ -117,10 +117,10 @@ Measured against the targets: all 2 on target. This is information, not a verdic
   assert.deepEqual(repeatMisses(miss, miss), ["orphans"]);
   assert.deepEqual(repeatMisses(miss, record("met")), []);
   assert.equal(errorStreak([record("error"), record("skipped"), record("error"), record("met"), record("error")]), 2);
-  assert.ok(CHECK_IN_FOCUS.some(line => line.includes("an open goal with independent work and no live job gets jobs")), "the check-in job looks for idle goals");
-  assert.ok(CHECK_IN_FOCUS[0]!.startsWith("Your number is the stuck count"), "owner 10-14: the check-in job is judged on the stuck count first");
-  assert.ok(CHECK_IN_FOCUS[1]!.startsWith("Organize the plan first") && CHECK_IN_FOCUS[1]!.includes("plan_update parent"), "c44: the check-in job tidies the plan next");
-  assert.ok(CHECK_IN_FOCUS[2]!.startsWith("A goal held only by other threads") && CHECK_IN_FOCUS[2]!.includes("send the holding thread the leftover in one message"),
+  assert.ok(CHECK_IN_FOCUS[0]!.startsWith("Your number is goal_gaps"), "owner 10-15: the check-in job is judged on the goals first");
+  assert.ok(CHECK_IN_FOCUS[1]!.includes("add one push step") && CHECK_IN_FOCUS[1]!.includes("never start a second"), "one owner job per goal, steered when alive");
+  assert.ok(CHECK_IN_FOCUS[2]!.startsWith("Then the steps") && CHECK_IN_FOCUS[2]!.includes("plan_update parent"), "the stuck steps and c44's plan upkeep come second");
+  assert.ok(CHECK_IN_FOCUS[3]!.startsWith("A goal held only by other threads") && CHECK_IN_FOCUS[3]!.includes("send the holding thread the leftover in one message"),
     "c45: the check-in job closes or hands off a goal that only waits on another thread");
 });
 
@@ -393,9 +393,9 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   await duties.checkIn("chat1", run(0));
   assert.deepEqual(jobs.calls, ["start chat1 check-in dev VP 18:00 s1"], "all targets met: the job still starts");
   assert.match(jobs.briefs[0]!, /^# check-in dev VP 18:00: the Check-in duty of the chat "dev VP"/);
-  assert.match(jobs.briefs[0]!, /Goal: The check-in keeps two things true in every chat/);
+  assert.match(jobs.briefs[0]!, /Goal: The check-in pushes every open goal to its outcome/);
   assert.match(jobs.briefs[0]!, /> YES\. it - checks and synchronizes the agent swarm with user intent/);
-  assert.match(jobs.briefs[0]!, /Measured against the targets: stuck_steps 0 \(on target\); all 4 on target\./);
+  assert.match(jobs.briefs[0]!, /Measured against the targets: goal_gaps 0 \(on target\); all 4 on target\./);
   assert.doesNotMatch(jobs.briefs[0]!, /### Every open step/, "the full precheck stays in the detail file");
   assert.match(await readFile(join(dir, "duties", "chat1", "checkin-261009-1800.flagged.md"), "utf8"), /### Every open step, oldest change first\n- p2 \(live\) "Build" doing/);
   assert.match(jobs.briefs[0]!, /When nothing needs work, end in one short turn and send nothing/);

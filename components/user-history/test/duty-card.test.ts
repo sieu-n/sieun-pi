@@ -101,7 +101,7 @@ test("the row's one line is the headline number in words and what is being done,
   assert.equal(dutyState({ ...view("d6"), running: true }), "running");
   assert.equal(line(view("d6", [])), "Not checked yet.");
   assert.match(line(view("d5")), /^\d+ skill and tool checks that fail, and no fix is running yet\.$/);
-  assert.match(line(view("checkin")), /^\d+ open steps nobody is moving/);
+  assert.match(line(view("checkin")), /^\d+ open goals off pace or with no live job/);
   for (const text of ["d5", "d6", "checkin"].map(id => line(view(id)))) {
     assert.doesNotMatch(text, /_|·|target at|runs?\b|no live fix job|On target:/, "no keys, dots, targets or badges on the main line");
     assert.ok(text.split(/\s+/).length <= 20, text);

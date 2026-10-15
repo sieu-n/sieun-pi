@@ -11,7 +11,8 @@ import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS,
  * force. Every other open step is stuck. A wait on CI, a release, another thread, an event or a time is stuck when nobody is moving it: no job of
  * this chat, no session asleep on a board.wake for that run, that land or that thread (`wakeMover`), and no turn or start of its owner waiting
  * in pi-pool's queue or the fleet budget (`outsideMover`).
- * The stuck count and the share of open steps in the end state are the headline KPI of the check-in and of the Chat system duty.
+ * The stuck count and the share of open steps in the end state are the check-in's second KPI, after its goals (`goal_gaps`, src/checkin-goals.ts:
+ * each open goal's number moves on pace with a live job that owns it), and the headline KPI of the Chat system duty.
  *
  * On 10-14 at 03:11Z the rules below (measured by the KPI job, session 1108-checkin-swarm-kpi) found 102 of 179 open leaf steps stuck: 84 on a
  * land, promote or release, and most of the rest on a CI run whose job had gone idle. The step classes (`stepClass`) counted most of them as

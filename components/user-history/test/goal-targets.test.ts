@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
-import { countedGap, goalGaps } from "../src/checkin-findings.ts";
+import { goalPushes } from "../src/checkin-goals.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { applyBoardOp, BoardError, emptyBoard, nextIds, parseBoardOps, renderOpenPlan, targetState } from "../src/shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard, GoalTarget, PlanItem } from "../src/shared/types.ts";
@@ -51,45 +51,60 @@ test("goal target: the reducer refuses a bad target and a target on a step", () 
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });
 const boardOf = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: iso(NOW - 3 * HOUR), todos: [], plan });
 
-test("goal gaps: 8 of 200 Mbps with no live job is a 96% gap and counts; a goal at 90% is listed, not counted; a missing or stale measurement is listed", () => {
+test("goal pushes: every open goal gets its number and an act; a goal with no live owner needs a start, a stale one with an owner a steer", () => {
   const board = boardOf([
     step("p1", "Use the whole proxy plan", "doing", { target: PROXY, children: [step("p2", "Raise crawler concurrency", "todo", { waitFor: "the proxy pool review" })] }),
     step("p3", "Fast search", "doing", { target: { metric: "queries under 1 s", target: 100, unit: "%", current: 90, measuredAt: iso(NOW - 5 * MIN), source: "ClickHouse p95" },
       children: [step("p4", "Cache facets", "todo")] }),
     step("p5", "Reply within a day", "todo", { target: { metric: "replies within 24 h", target: 95, unit: "%" } }),
     step("p6", "Crawl every account", "doing", { target: { metric: "accounts crawled", target: 1000, unit: "accounts", current: 400, measuredAt: iso(NOW - 2 * HOUR), source: "ops page" },
-      children: [step("p7", "Run the backfill", "doing", { job: "backfill" })] }),
+      children: [step("p7", "Run the backfill", "doing", { job: "backfill", duty: "checkin/goal_gaps" })] }),
     step("p8", "Done goal", "done", { target: { ...PROXY, current: 0 } }),
     step("p9", "Met goal", "doing", { target: { ...PROXY, current: 210 } }),
   ]);
   const live: JobFact = { key: "k1", name: "backfill", state: "working", activityAt: NOW - MIN };
   const precheck = checkInPrecheck(undefined, [live], board, NOW, { everyMs: EVERY });
-  assert.deepEqual(precheck.goals.map(gap => `${gap.goal.id} ${gap.state.kind === "measured" ? gap.state.percent + "%" : "unmeasured"}${gap.live ? " live" : ""}`),
-    ["p5 unmeasured", "p1 4%", "p6 40% live", "p3 90%"], "largest gap first; a met goal and a done goal are not listed");
-  assert.deepEqual(precheck.goals.filter(countedGap).map(gap => gap.goal.id), ["p1"], "only p1 is more than 50% short with no live job");
+  assert.deepEqual(precheck.goals.map(push => `${push.goal.id} ${push.act}${push.owner ? ` ${push.owner.name}` : ""}`),
+    ["p5 start", "p1 start", "p3 start", "p6 steer backfill", "p9 on_pace"], "starts first, the largest gap first; a done goal is not listed");
   const output = convergenceMisses("c1", precheck.steps, precheck, {}, EVERY, NOW);
-  assert.equal(output.metrics.goal_gaps, 1);
-  const [flag] = output.flagged.filter(slice => slice.kind === "goal_gaps");
-  assert.equal(flag!.item, "p1");
-  assert.match(flag!.excerpt, /^p1 "Use the whole proxy plan": proxy bandwidth used 8 \/ 200 Mbps \(4%\), 96% short, measured .* by "proxy dashboard, 24 h average"; no live job$/);
-  const text = checkInPrecheckText(precheck, [live], output.flagged, NOW);
-  const section = text.split("\n\n").find(part => part.startsWith("### Goal gaps"))!;
-  assert.match(section, /push the next concrete step that closes the gap in this run: start or steer a job, pull a slot forward; confirming that steps are waiting is not an answer/);
-  const lines = section.split("\n").slice(1);
-  assert.match(lines[0]!, /^- p5 "Reply within a day": replies within 24 h target 95%, not measured; no live job: measure it in this run$/);
-  assert.match(lines[1]!, /^- p1 .*96% short/);
-  assert.match(lines[2]!, /^- p6 .*400 \/ 1,000 accounts \(40%\), 60% short at its last measurement, not measured since .*; a job of it is live: measure it again in this run$/,
+  assert.equal(output.metrics.goal_gaps, 4);
+  const p1 = output.flagged.find(slice => slice.kind === "goal_gaps" && slice.item === "p1")!;
+  assert.match(p1.excerpt, /^p1 proxy bandwidth used 8 of 200 Mbps, first reading, no trend yet; no live job owns it: add a push step under p1 for one job/);
+  const p6 = output.flagged.find(slice => slice.item === "p6")!;
+  assert.match(p6.excerpt, /400 of 1,000 accounts, first reading, no trend yet, and its last measurement is from 10-09 10:00Z; job backfill owns it and it is off pace: steer it/,
     "2 h is past 2 check-in intervals of 15 min");
-  assert.match(lines[3]!, /^- p3 .*10% short/);
-  assert.ok(text.indexOf("### Goal gaps") < text.indexOf("### Every open step"), "the gaps come before the step list");
+  const text = checkInPrecheckText(precheck, [live], output.flagged, NOW);
+  assert.ok(text.startsWith("Goals: 4 of 5 open goals are off pace or have no live owner"), text.slice(0, 120));
+  assert.ok(text.indexOf("### Goals") < text.indexOf("### Every open step"), "the goals come before the step list");
 });
 
-test("goal gaps: staleness is 2 check-in intervals, or 24 h for a daily metric", () => {
+test("goal pushes: the memo gives the trend; a goal that moved fast enough with a live owner is on pace, a still one is off pace", () => {
+  const plan = (p1: number, p3: number) => boardOf([
+    step("p1", "Use the whole proxy plan", "doing", { target: { ...PROXY, current: p1, measuredAt: iso(NOW + (p1 === 8 ? -10 * MIN : 110 * MIN)) },
+      children: [step("p2", "Raise crawler concurrency", "doing", { job: "proxy", duty: "checkin/goal_gaps" })] }),
+    step("p3", "Fast search", "doing", { target: { metric: "queries under 1 s", target: 100, unit: "%", current: p3, measuredAt: iso(NOW - 5 * MIN), source: "ClickHouse p95" },
+      children: [step("p4", "Cache facets", "doing", { job: "cache", duty: "checkin/goal_gaps" })] }),
+  ]);
+  const jobs: JobFact[] = [{ key: "k1", name: "proxy", state: "working", activityAt: NOW }, { key: "k2", name: "cache", state: "working", activityAt: NOW }];
+  const first = checkInPrecheck(undefined, jobs, plan(8, 90), NOW, { everyMs: HOUR });
+  assert.deepEqual(first.goals.map(push => push.act), ["steer", "steer"], "a first reading has no proven pace");
+  const later = NOW + 2 * HOUR;
+  const second = checkInPrecheck(first.memory, jobs, plan(40, 90), later, { everyMs: HOUR });
+  const byId = new Map(second.goals.map(push => [push.goal.id, push]));
+  assert.equal(byId.get("p1")!.act, "on_pace");
+  assert.deepEqual(byId.get("p1")!.trend, { kind: "moving", delta: 32, since: NOW - 10 * MIN, etaMs: 10 * HOUR });
+  assert.equal(byId.get("p3")!.act, "steer");
+  assert.deepEqual(byId.get("p3")!.trend, { kind: "still", runs: 1 });
+  assert.deepEqual(second.memory.goals!.p1!.readings.map(reading => reading.value), [8, 40]);
+});
+
+test("goal pushes: staleness is 2 check-in intervals, or 24 h for a daily metric", () => {
   const stale = (target: GoalTarget, everyMs: number) => { const state = targetState(target, everyMs, NOW); return state.kind === "measured" && state.stale; };
   const target: GoalTarget = { ...PROXY, measuredAt: iso(NOW - 3 * HOUR) };
   assert.equal(stale(target, HOUR), true);
   assert.equal(stale(target, 2 * HOUR), false);
   assert.equal(stale({ ...target, cadence: "daily" }, HOUR), false);
   assert.equal(stale({ ...target, cadence: "daily", measuredAt: iso(NOW - 25 * HOUR) }, HOUR), true);
-  assert.deepEqual(goalGaps(boardOf([step("p1", "Goal", "doing", { target: { ...PROXY, current: 200 } })]), [], EVERY, NOW), [], "a fresh measurement at target is no gap");
+  assert.deepEqual(goalPushes(boardOf([step("p1", "Goal", "doing", { target: { ...PROXY, current: 200 } })]), [], undefined, EVERY, NOW).pushes.map(push => push.act), ["on_pace"],
+    "a measurement at target is on pace");
 });

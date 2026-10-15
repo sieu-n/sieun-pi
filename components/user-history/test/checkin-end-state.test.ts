@@ -64,13 +64,15 @@ test("end state KPI: the check-in brief opens with the share and lists every stu
   const output = convergenceMisses("chat-1", precheck.steps, precheck, {}, 15 * MIN, NOW);
   assert.equal(output.metrics.stuck_steps, 1);
   const text = checkInPrecheckText(precheck, [idle, working], output.flagged, NOW, { "stuck_steps p1": 3 });
-  assert.ok(text.startsWith("End state: 2 of 3 open steps (66.7%)"), text.slice(0, 120));
+  assert.ok(text.startsWith("Goals: 0 of 1 open goals are off pace or have no live owner, and 1 has no number"), text.slice(0, 120));
+  assert.ok(text.indexOf("End state: 2 of 3 open steps (66.7%)") > text.indexOf("### Goals"), "the steps come second, after the goals");
   assert.match(text, /### Stuck steps \(the owner's end state[^\n]*\n- p1 "step p1 ships the crawler fix" is stuck \(release\)[^\n]*\(stuck in 3 check-ins in a row\)/);
   assert.doesNotMatch(text, /Flagged again[\s\S]*stuck_steps:/, "a stuck step is listed once, under Stuck steps");
 });
 
-test("headline metric: the check-in is judged on stuck_steps first, the duty brief leads with it, and the card shows it first", () => {
-  assert.deepEqual(CHECK_IN_DUTY.metrics[0], { key: "stuck_steps", label: "Open steps nobody is moving (no live job, For you todo or owner ruling holds them)", op: "<=", target: 0, headline: true });
+test("headline metric: the check-in is judged on goal_gaps first and stuck_steps second, the duty brief leads with the headline, and the card shows it first", () => {
+  assert.deepEqual(CHECK_IN_DUTY.metrics[0], { key: "goal_gaps", label: "Open goals off pace or with no live job that owns their number", op: "<=", target: 0, headline: true });
+  assert.deepEqual(CHECK_IN_DUTY.metrics[1], { key: "stuck_steps", label: "Open steps nobody is moving (no live job, For you todo or owner ruling holds them)", op: "<=", target: 0 });
   const metrics: DutyMetric[] = [{ key: "corrections", label: "Owner corrections", op: "<=", target: 1 },
     { key: "end_state_pct", label: "Open steps moving, in For you or parked, all chats", op: ">=", target: 100, unit: "%", headline: true }];
   assert.equal(judge(metrics, { metrics: { corrections: 3, end_state_pct: 43 } }).summary, "end_state_pct 43% (target at least 100%), corrections 3 (target at most 1)");
@@ -90,7 +92,7 @@ test("duty jobs act: they apply board ops to the chat's board themselves and sta
   assert.doesNotMatch(brief, /You cannot edit the board/, "10-13: the chats dropped 401 of 3,287 check-in ops in 48 h");
   assert.match(brief, /node --import tsx scripts\/board-apply\.ts c1 " \+ shlex\.quote\(json\.dumps\(ops\)\) \+ " --data-dir \/data\/chat/);
   assert.match(brief, /rlm\.create_session\(brief, name=\.\.\., cwd=\.\.\.\)`, which registers the session as a job of the chat/);
-  assert.match(brief, /Your number is the stuck count/);
+  assert.match(brief, /Your number is goal_gaps/);
   const dir = await mkdtemp(join(tmpdir(), "board-apply-"));
   const chat = "01a1164b-4a2d-742d-b27a-82f086ed0200";
   assert.match(await applyDutyOps(dir, chat, [{ op: "plan_add", text: "Ship the crawler fix" }]), /p1/);

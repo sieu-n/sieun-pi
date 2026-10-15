@@ -5,6 +5,7 @@ import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, fixJobB
 import type { CheckInActor } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
+import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { agentScheduleProblem, type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, headlineMetric, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
   type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
@@ -82,23 +83,32 @@ export const VIEW_RUNS = 14;
  * tasks to subagent & Jobs actively").
  */
 export const CHECK_IN_FOCUS: readonly string[] = [
-  "Your number is the stuck count the precheck opens with (owner 10-14: \"all the PLAN list should clear or be stuck in FOR YOU\"). Every step " +
-    "the detail file lists under Stuck steps ends this run with a live owner (steer its job, or start one with rlm.create_session and set the step's job), a For you " +
-    "todo that links it when only the owner can unblock it, or a close on evidence. A chase message, a new wait text or a later waitUntil " +
-    "leaves it stuck. Report the stuck count before and after your run.",
-  "Organize the plan first, in every run, with board ops: close or fold what shipped (name the evidence), move a loose step under its goal with " +
-    "plan_update parent, remove a step another thread now owns (its goal's note names the new owner), close a step a duty now covers, and fix " +
-    "stale notes. A run that only rewrites notes and wait times while the detail file's Plan shape or Look done lists items has not done its job: the owner should " +
-    "never have to ask a chat to tidy its plan (c44, owner 10-12).",
-  "A goal held only by other threads (Plan shape lists it) or a step whose wait is over is finished work behind a wait: check the wait " +
-    "against the real state in this run (the release holds the commit, the land is green, the thread answered). When it is met, close the " +
-    "step and the goal on that evidence. When it is not, send the holding thread the leftover in one message with what it must check, close " +
-    "the step here with a note naming that thread, and close the goal. A wait being new is no reason to keep the goal open (c45, owner 10-12: " +
-    "\"even for simple shit like this, it doesn't close/update plan desplite actually have finished\").",
-  "Then push every goal: a job or thread that stalled, died or ended without a report gets a message, a restart or a replacement in this run, and " +
-    "an open goal with independent work and no live job gets jobs at once, in parallel, each fanning out one subagent per unit of output. A finding " +
-    "the last check-ins already listed is yours to finish now, not to list again.",
+  "Your number is goal_gaps, the open goals whose number is off pace or that no live job owns (owner 10-15: \"Check in 이 일을 쭉쭉 밀어줘야되는데 " +
+    "it's deeply flawed. fix this\"). Spend the run on the goals first. The detail file's Goals section has, for each goal, its number, trend, pace " +
+    "and owner job, and under each goal to push the message to send: the owner's words for that goal, the measured gap and the ask to name and " +
+    "attack the biggest blocker on that number now.",
+  `For a goal that says steer, send its owner job that message with agent_message.send in this run. For a goal that says start, add one push ` +
+    `step under the goal with duty "${GOAL_PUSH_LINK}" and its job set to one job that names and attacks the biggest blocker: a live job of ` +
+    "that goal that already works on that blocker, or a new job you start with rlm.create_session whose brief opens with that message. One " +
+    "owner job per goal: when its push step's job is alive, steer it and never start a second, and when its push step has no live job, set one " +
+    "on that step instead of adding another. A goal with no number gets a target from the " +
+    "owner's words in this run.",
+  "Then the steps: every step the detail file lists under Stuck steps ends this run with a live owner (steer its job, or start one with " +
+    "rlm.create_session and set the step's job), a For you todo that links it when only the owner can unblock it, or a close on evidence. Fix " +
+    "the plan shape the detail file lists with board ops: close or fold what shipped, move a loose step under its goal with plan_update parent, " +
+    "and fix stale notes, so the owner never has to ask a chat to tidy its plan (c44).",
+  "A goal held only by other threads or a step whose wait is over is finished work behind a wait: check the wait against the real state. When " +
+    "it is met, close the step and the goal on that evidence. When it is not, send the holding thread the leftover in one message, close the " +
+    "step here with a note naming that thread, and close the goal (c45).",
 ];
+/**
+ * How the check-in job reports to the chat (c80): at most 3 plain lines on the goals, never a list of step ids or finding kinds. It replaces
+ * the duty job's generic report rule (`dutyJobBrief`).
+ */
+export const CHECK_IN_REPORT = "Send the chat one report of at most 3 plain lines when your work is done: the number and gap of the goal furthest " +
+  "from its target (like \"Instagram Tier A indexed 14.9 of 100%, +4.7 points since 10-15 06:42Z, about 10 days to target at this rate\"), what " +
+  "you steered or started for the goals, and the detail file path the findings name. A stuck step or plan fix goes in only when it blocks a goal. " +
+  "Never a list of step ids, a finding kind or the flagged list.";
 /**
  * How a check-in run ended for the scheduler: `failed` when its job could not start (a daemon create or brief error), so the chat retries in
  * CHECK_IN_RETRY_MS instead of a whole interval (slack green guy 10-12: "daemon client closed" at 04:54Z, and its next try was 05:54Z).
@@ -139,7 +149,7 @@ export const NOT_STARTED = "the duty job did not start";
 /** A run's job start in progress, kept in `<dutyId>.pending.json` until the start ends, so a restart can finish it (`Duties.resume`). */
 interface PendingStart {
   at: number; schedule: DutySchedule; measured: AfterMeasure | null;
-  brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses">;
+  brief: Pick<DutyJobInput, "measure" | "findings" | "focus" | "misses" | "report">;
 }
 async function readPending(file: string): Promise<PendingStart | null> {
   try { const value = JSON.parse(await readFile(file, "utf8")) as PendingStart; return typeof value?.at === "number" && value.schedule && value.brief ? value : null; }
@@ -683,9 +693,11 @@ export class Duties {
       [`# Check-in run of ${new Date(run.at).toISOString()}`, `Measured against the targets: ${judged.summary}.`, run.findings, flaggedSection(run.output.flagged)]);
     const headline = headlineOf(CHECK_IN_DUTY.metrics, record);
     const findings = briefFindings({ headline: headline?.words ?? null, flagged: run.output.flagged, ...headline ? { headlineKey: headline.key } : {}, detail });
+    // goal_gaps' ask is per goal, in the findings (steer or start its owner job on a push step); the generic "land a code fix" line would contradict it.
+    const stepMisses = misses.filter(miss => miss.key !== "goal_gaps");
     const started = await this.startJob(chatId, record, CHECK_IN_DUTY, {
       schedule: { kind: "every", minutes: run.everyMs / 60_000 }, measured: judged.verdict === "error" ? null : { at: run.at, ...judged },
-      brief: { measure: judged.summary, findings: [findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses } });
+      brief: { measure: judged.summary, findings: [findings, stuckFindings(stepMisses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses: stepMisses, report: CHECK_IN_REPORT } });
     return started === "failed" ? "failed" : "done";
   }
 

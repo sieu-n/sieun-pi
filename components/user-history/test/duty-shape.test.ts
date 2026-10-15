@@ -88,13 +88,13 @@ test("add.ts prints the shape refusal for the chat and exits 1, leaving the chat
   assert.equal(await readFile(join(dir, "duties", "chat1.json"), "utf8").catch(() => "absent"), "absent");
 });
 
-test("the check-in duty has one headline, stuck_steps, and 3 supporting metrics; its other counts stay in the measure output", () => {
+test("the check-in duty has one headline, goal_gaps, and 3 supporting metrics, stuck_steps first; its other counts stay in the measure output", () => {
   assert.equal(dutyShapeProblem(CHECK_IN_DUTY.metrics), null);
   assert.deepEqual(CHECK_IN_DUTY.metrics.map(entry => [entry.key, entry.headline ?? false]),
-    [["stuck_steps", true], ["finished_open", false], ["stalled_steps", false], ["no_progress", false]]);
+    [["goal_gaps", true], ["stuck_steps", false], ["finished_open", false], ["stalled_steps", false]]);
   for (const entry of CHECK_IN_DUTY.metrics) assert.ok(entry.key in NO_MISSES, entry.key);
   // 10-15 in AI harness: loose_goals counted as a miss after the run gave p447 a step; a count like it now lives in the findings only.
   const judged = judge(CHECK_IN_DUTY.metrics, { metrics: { ...NO_MISSES, loose_goals: 1, blocked_on_others: 3 } });
-  assert.deepEqual([judged.verdict, judged.summary], ["met", "stuck_steps 0 (on target); all 4 on target"]);
-  assert.equal(judge(CHECK_IN_DUTY.metrics, { metrics: { ...NO_MISSES, stalled_steps: 2 } }).summary, "stuck_steps 0 (on target), stalled_steps 2 (target at most 0)");
+  assert.deepEqual([judged.verdict, judged.summary], ["met", "goal_gaps 0 (on target); all 4 on target"]);
+  assert.equal(judge(CHECK_IN_DUTY.metrics, { metrics: { ...NO_MISSES, stalled_steps: 2 } }).summary, "goal_gaps 0 (on target), stalled_steps 2 (target at most 0)");
 });

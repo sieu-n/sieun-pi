@@ -52,20 +52,22 @@ export interface PrState { state: "merged" | "open" | "closed"; mergedAt?: numbe
  * A PR or metric that is missing is unknown, and unknown is not done.
  */
 export interface DoneFacts {
-  metrics: ReadonlyMap<string, { met: boolean; at: number }>;
+  metrics: ReadonlyMap<string, MetricFact>;
   prs: ReadonlyMap<string, PrState>;
 }
 export const NO_FACTS: DoneFacts = { metrics: new Map(), prs: new Map() };
 
+/** A duty metric's verdict on a run, with its value and target, which a goal with no target of its own reads as its number (`goalNumber`). */
+export interface MetricFact { met: boolean; at: number; value?: number; target?: number; op?: ">=" | "<=" }
 /** Each duty metric's verdict on the newest measured run of its duty that has it (`effectiveRun`), from runs newest first. */
-export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, { met: boolean; at: number }> {
-  const facts = new Map<string, { met: boolean; at: number }>();
+export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, MetricFact> {
+  const facts = new Map<string, MetricFact>();
   for (const run of runs) {
     const judged = effectiveRun(run);
     if (judged.verdict !== "met" && judged.verdict !== "missed") continue;
     for (const [key, result] of Object.entries(judged.metrics)) {
       const link = `${run.duty}/${key}`;
-      if (!facts.has(link)) facts.set(link, { met: result.met, at: run.after?.at ?? run.at });
+      if (!facts.has(link)) facts.set(link, { met: result.met, at: run.after?.at ?? run.at, value: result.value, target: result.target, op: result.op });
     }
   }
   return facts;
