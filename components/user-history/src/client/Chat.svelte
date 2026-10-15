@@ -22,6 +22,7 @@
   import PlanView from "./PlanView.svelte";
   import JobDrawer from "./JobDrawer.svelte";
   import ThreadTitle from "./ThreadTitle.svelte";
+  import PromptView from "./PromptView.svelte";
   import AccountChip from "./AccountChip.svelte";
   import CheckInControl, { checkInStatus } from "./CheckInControl.svelte";
   import SlackSync from "./SlackSync.svelte";
@@ -213,6 +214,7 @@
   const chooseEffort = (level: ThinkingLevel | null) => { if (level) void store.run(api.setThinking(id, level)); };
   /** The archive button asks first; the confirm names the chat and what happens to its turn and its Slack channel. */
   let archiveAsk = $state(false);
+  let promptOpen = $state(false);
   const archiveWords = $derived(archivePrompt({ name: row?.name ?? "", busy, slackChannel: store.slack?.chats[id]?.name ?? null }));
   function archive(): void { archiveAsk = false; void labels.archive([id]); }
 
@@ -423,8 +425,9 @@
     <div class="controls">
       <CheckInControl {id} />
       {#if !narrow}{@render setup()}{/if}
+      {#if row && !row.archived}<SlackSync {id} {narrow} />{/if}
+      <button type="button" class="icon-button" aria-label="Prompt" aria-haspopup="dialog" use:tooltip={"The prompt the model gets"} onclick={() => { promptOpen = !promptOpen; }}><Icon name="layers" size={16} /></button>
       {#if row && !row.archived}
-        <SlackSync {id} {narrow} />
         <button type="button" class="icon-button" aria-label="Archive chat" aria-haspopup="dialog" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={() => { archiveAsk = true; }}><Icon name="archive" size={16} /></button>
       {/if}
       {#if !narrow}
@@ -486,6 +489,7 @@
   {#if lightbox}
     <Lightbox images={lightbox.images} index={lightbox.index} onclose={() => { lightbox = null; }} />
   {/if}
+  {#if promptOpen}<PromptView threadId={id} {narrow} onclose={() => { promptOpen = false; }} />{/if}
   {#if archiveAsk}
     <ConfirmDialog title={archiveWords.title} body={archiveWords.body} label={archiveWords.label} danger onconfirm={archive} onclose={() => { archiveAsk = false; }} />
   {/if}

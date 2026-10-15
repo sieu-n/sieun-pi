@@ -59,6 +59,7 @@ export const ICON_PATHS = {
   hash: "M5 9h15M4 15h15M10 4L8 20M16 4l-2 16",
   download: "M12 4v11M7 10l5 5 5-5M5 20h14",
   bookmark: "M6.5 3.5h11v17L12 16.5l-5.5 4z",
+  layers: "M12 3L3 7.5l9 4.5 9-4.5zM3 12l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5",
   book: "M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3M9 7h6",
 } as const;
 export type IconName = keyof typeof ICON_PATHS;
