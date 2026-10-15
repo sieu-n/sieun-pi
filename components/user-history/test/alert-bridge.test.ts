@@ -52,7 +52,7 @@ async function fixture(list: unknown[] = [], options: { owners?: OwnerMap; board
     return found;
   };
   return { dir, boards, bridge, sent, failing, steps, set: (next: unknown[] | null) => { alerts = next; }, at: (ms: number) => { now = ms; },
-    state: async () => JSON.parse(await readFile(join(dir, "alert-bridge.json"), "utf8")) as { alerts: Record<string, { step: string; wokeAt: number }> } };
+    state: async () => JSON.parse(await readFile(join(dir, "alert-bridge.json"), "utf8")) as { alerts: Record<string, { step: string; wokeAt: number; resolvedAt?: number }> } };
 }
 
 test("alert bridge: a new firing alert adds exactly one board step in the chat that owns it and sends that chat one [alert] message", async () => {
@@ -192,7 +192,7 @@ test("alert bridge: an alert that leaves the firing list gets one resolved line 
   const [step] = await f.steps(CI);
   assert.equal(step!.status, "todo");
   assert.match(step!.note!, /\nThe alert resolved at 2026-10-14T01:37:00\.000Z, when the alert bridge saw it leave Grafana's firing list\.$/);
-  assert.deepEqual((await f.state()).alerts, {});
+  assert.equal((await f.state()).alerts[alertKey(ciAlert)]!.resolvedAt, NOW + 7 * MIN);
   f.at(NOW + 8 * MIN);
   await f.bridge.tick();
   assert.equal((await f.steps(CI))[0]!.note, step!.note);
@@ -210,6 +210,31 @@ test("alert bridge: the same fingerprint firing again after it resolved is a new
   await f.bridge.tick();
   assert.equal((await f.steps(CI)).length, 2);
   assert.equal(f.sent.length, 2);
+  assert.deepEqual(Object.keys((await f.state()).alerts), [alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:40:00.000Z" })]);
+});
+
+test("alert bridge: replay of 10-15 06:20Z, one poll drops a firing whose step the chat closed with a reason, and the same firing seen on 4 polls stays one step", async () => {
+  const at = Date.parse("2026-10-15T06:19:00Z");
+  const snapshot = { ...raw("25d578850844031d", { alertname: "Production crawler health read over 2 s", __alert_rule_uid__: "crawler-prod-health-slow", job: "crawler-v3", world: "prod" }),
+    startsAt: "2026-10-14T20:26:10.000Z" };
+  const f = await fixture([snapshot]);
+  const polls: unknown[][] = [[snapshot], [], [snapshot], [snapshot]];
+  for (const [index, list] of polls.entries()) {
+    f.set(list);
+    f.at(at + index * 70_000);
+    await f.bridge.tick();
+    if (index === 0) {
+      const [step] = await f.steps(CRAWLER);
+      await f.boards.apply(CRAWLER, [{ op: "plan_update", id: step!.id, status: "done", note: "Closed: the prod health read is slow because of the 20:26Z deploy, land 37 fixes it." }], "agent");
+    }
+  }
+  const ids: string[] = [];
+  walkItems((await f.boards.read(CRAWLER))!.plan, item => { if (item.text.includes("health read over 2 s")) ids.push(item.id); });
+  assert.equal(ids.length, 1);
+  assert.equal(f.sent.length, 1);
+  const tracked = (await f.state()).alerts[alertKey(snapshot)]!;
+  assert.equal(tracked.step, ids[0]);
+  assert.equal(tracked.resolvedAt, undefined);
 });
 
 test("alert bridge: silenced, inhibited and unprocessed alerts make no step, and no config file means no Grafana read", async () => {
@@ -339,7 +364,7 @@ test("alert bridge: an owner with no board, such as metal box owner, gets one me
   assert.equal(f.sent.length, 1);
   f.set([]);
   await f.bridge.tick();
-  assert.deepEqual((await f.state()).alerts, {});
+  assert.equal((await f.state()).alerts[alertKey(backup)]!.resolvedAt, NOW + 3 * REWAKE_MS);
   assert.equal(f.sent.length, 1);
 });
 

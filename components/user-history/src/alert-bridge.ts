@@ -17,7 +17,7 @@ export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts";
 const RESOLVED = "The alert resolved at";
 
 export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string }
-export interface Tracked { chat: string; step: string | null; alertname: string; startsAt: string; wokeAt: number; firstWokeAt: number; escalatedAt?: number }
+export interface Tracked { chat: string; step: string | null; alertname: string; startsAt: string; wokeAt: number; firstWokeAt: number; escalatedAt?: number; resolvedAt?: number }
 export interface BridgeState { v: 1; alerts: Record<string, Tracked> }
 export interface StepView { text: string; open: boolean; owned: boolean }
 export interface ChatNotice { chat: string; add: FiringAlert[]; rewake: string[] }
@@ -110,6 +110,7 @@ export function reconcile(alerts: readonly FiringAlert[], state: BridgeState, st
   const resolves: Resolve[] = [];
   const escalate: string[] = [];
   for (const [key, tracked] of Object.entries(state.alerts)) {
+    if (tracked.resolvedAt !== undefined) continue;
     if (!firing.has(key)) { resolves.push({ key, chat: tracked.chat, step: tracked.step, at: new Date(now).toISOString() }); continue; }
     const step = steps.get(key);
     if (!step?.open || step.owned) continue;
@@ -145,9 +146,30 @@ export function escalated(state: BridgeState, keys: readonly string[], now: numb
   return { ...state, alerts };
 }
 
-export function resolved(state: BridgeState, key: string): BridgeState {
-  const { [key]: _gone, ...alerts } = state.alerts;
-  return { ...state, alerts };
+/**
+ * Resolving keeps the entry with `resolvedAt`, so the same firing (same fingerprint and startsAt) coming back stays on its step. At 06:20:35Z on
+ * 10-15 one poll dropped 25 alerts at once, they came back later with the same startsAt, and 8 of them got a second step (p326 to p336)
+ * because the chat had rewritten the note the bridge's mark was in.
+ */
+export function resolved(state: BridgeState, key: string, now: number): BridgeState {
+  return state.alerts[key] ? { ...state, alerts: { ...state.alerts, [key]: { ...state.alerts[key], resolvedAt: now } } } : state;
+}
+
+/** Puts a resolved firing that is back in the list on its old step, and drops a resolved entry once its fingerprint fires with a new startsAt. */
+export function refired(state: BridgeState, alerts: readonly FiringAlert[]): { state: BridgeState; back: string[] } {
+  const firing = new Map(alerts.map(alert => [alertKey(alert), alert.fingerprint]));
+  const fingerprints = new Set(firing.values());
+  const back: string[] = [];
+  const kept = Object.entries(state.alerts).flatMap(([key, tracked]): [string, Tracked][] => {
+    if (tracked.resolvedAt === undefined) return [[key, tracked]];
+    if (firing.has(key)) {
+      back.push(key);
+      const { resolvedAt: _resolvedAt, ...live } = tracked;
+      return [[key, live]];
+    }
+    return fingerprints.has(key.split("@")[0]!) ? [] : [[key, tracked]];
+  });
+  return { state: kept.length === Object.keys(state.alerts).length && !back.length ? state : { ...state, alerts: Object.fromEntries(kept) }, back };
 }
 
 const mark = (alert: FiringAlert): string => `Grafana alert ${alert.fingerprint}, firing since ${alert.startsAt}.`;
@@ -267,8 +289,14 @@ export class AlertBridge {
     const alerts = await this.deps.alerts();
     if (!alerts) return;
     const route = routerFor(await this.ownerMap());
-    let state = await this.read();
     const now = this.now();
+    const read = await this.read();
+    const { state: current, back } = refired(read, alerts);
+    let state = current;
+    if (state !== read) {
+      await this.write(state);
+      for (const key of back) this.deps.log(`alerts: ${key} is back in the firing list with the same start, kept on ${state.alerts[key]!.step ?? "no step"}`);
+    }
     const steps = await this.steps(state);
     const { notices, resolves, escalate } = reconcile(alerts, state, steps, now, route);
     for (const notice of notices) {
@@ -295,7 +323,7 @@ export class AlertBridge {
     for (const resolve of resolves) {
       try {
         if (resolve.step !== null) await this.deps.boards.apply(resolve.chat, board => resolveOps(board, resolve), "agent");
-        state = resolved(state, resolve.key);
+        state = resolved(state, resolve.key, now);
         await this.write(state);
         this.deps.log(`alerts: ${resolve.key} resolved${resolve.step === null ? "" : `, noted on ${resolve.step}`} in ${resolve.chat.slice(0, 8)}`);
       } catch (error) { this.deps.log(`alerts: resolve ${resolve.key}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`); }
@@ -349,7 +377,7 @@ export class AlertBridge {
     const boards = new Map<string, ChatBoard | null>();
     const views = new Map<string, StepView>();
     for (const [key, tracked] of Object.entries(state.alerts)) {
-      if (tracked.step === null) continue;
+      if (tracked.step === null || tracked.resolvedAt !== undefined) continue;
       if (!boards.has(tracked.chat)) boards.set(tracked.chat, await this.deps.boards.read(tracked.chat));
       const item = findItem(boards.get(tracked.chat)?.plan ?? [], tracked.step)?.item;
       if (item) views.set(key, { text: item.text, open: OPEN.has(item.status), owned: Boolean(item.job || item.sessionId) });
