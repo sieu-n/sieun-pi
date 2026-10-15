@@ -1,3 +1,6 @@
+import { mergedPrs, prNumbers } from "./shared/chat-board.ts";
+import type { DutyRunRecord } from "./shared/chat-duties.ts";
+import { effectiveRun } from "./shared/duty-streak.ts";
 import type { ChatBoard, PlanItem, PlanStatus } from "./shared/types.ts";
 
 /*
@@ -5,7 +8,6 @@ import type { ChatBoard, PlanItem, PlanStatus } from "./shared/types.ts";
  */
 
 const OPEN: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
-const CLOSED: ReadonlySet<PlanStatus> = new Set(["done", "dropped"]);
 
 /** A path or a dated folder name ("sessions/2026/10/09/1952-thread-job-split-audit"): its words claim nothing (p168 matched "thread" in one). */
 export const pathLike = (token: string): boolean => token.includes("/") || /^\d{4}-[a-z0-9-]+$/i.test(token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""));
@@ -26,13 +28,6 @@ const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|\w+n['’]t|until|after|
   String.raw`(?!(?<=merged)\s+into\s+(?:one|a|a\s+single)\b)(?!(?<=released)\s+(?:the\s+|its\s+|their\s+|a\s+)?(?:\w+\s+)?(?:queue|hold|lock)s?\b)|` +
   String.raw`(?<!\b(?:jobs?|sessions?|workers?|agents?|child|children|threads?|process(?:es)?)\s+)(?:is|are|now|went|already)\s+live|` +
   String.raw`live\s+on\s+(?:prod|production|staging|main))\b`, "i");
-/** A step that measures or checks something "after X landed": X shipping is where the step starts, not its own work. The capture is X (VP of CI
- * 10-14: p150 "Re-measure heavy-runner demand a day after the queue cuts landed", flagged in 3 check-ins for "the 4 queue cuts landed"). */
-const CHECKS_AFTER = /^\s*(?:re-?)?(?:measure|check|verify|watch|compare)\b.*?\bafter\s+((?:[\w'’-]+\s+){1,6}?)(?:shipped|merged|deployed|landed|released|(?:is|are|went)\s+live)\b/i;
-/** A waitFor on the owner: a For you todo id (t41) or the owner's go, answer or pick. */
-const OWNER_WAIT = /\bt\d+\b|\bowner'?s?\b/i;
-/** A waitFor on the work reaching users: a land, deploy, release, merge, promote, push or ship, staging or production. */
-const SHIP_WAIT = /\b(?:land(?:s|ed|ing)?|deploy\w*|releas\w*|merg\w*|promot\w*|push\w*|ship\w*|staging|prod|production|live)\b/i;
 /** A run or a push still on its way: dispatched, queued, running (or rerunning), in flight or in progress (launch main bro 10-12: p68 waited for "promote 8 run 38267006888 (dispatched 15:00:06Z)";
  * AI harness 10-13: p319's run "is rerunning with its same id"). */
 const IN_FLIGHT = /\b(?:(?:re-?)?(?:dispatched|queued|running)|in\s+flight|in\s+progress)\b/i;
@@ -40,90 +35,84 @@ const IN_FLIGHT = /\b(?:(?:re-?)?(?:dispatched|queued|running)|in\s+flight|in\s+
  * frontend bro 10-13: p92 "Not done yet. ... Next the job fixes ..."), or names work still red, missed or open (AI harness 10-15: p454 "Parts 1 to
  * 5 shipped, but 16 duties ... still missed 3+ runs", p455 "d1, d4 and d6 are still red"). */
 const LEFT_TO_DO = /\bleft(?:\s+to\s+do\b|\s*:)|\bnot\s+(?:yet\s+)?(?:done|finished)\b|(?:^|[.;!?]\s+)next\s+the\s+job\b|\bstill\s+(?:red|open|miss(?:ed|es|ing)?|broken|stuck|unfixed|not)\b/i;
-/** The words that name what a ship claim or a wait is about: 3 letters or more, without the ship words and small words. */
-const SUBJECT_SKIP = new Set(["the", "and", "then", "with", "for", "from", "after", "about", "its", "his", "her", "our", "this", "that", "their", "is", "are", "now", "went",
-  "already", "live", "shipped", "merged", "deployed", "landed", "released", "staging", "prod", "production", "main", "run", "until", "once", "when"]);
-const subjectWords = (text: string): Set<string> =>
-  new Set((text.toLowerCase().match(/[\p{L}][\p{L}\p{N}]{2,}/gu) ?? []).filter(word => !SUBJECT_SKIP.has(word)));
 /** A note that reports a run or a check as green, passed or succeeded, and not "not green", "on green" or "once it goes green" (AI harness
  * 10-13: p357 "The job CAS-lands the 7 files on green" while its run was queued). */
 const GREEN = /(?<!\bnot\s+(?:yet\s+)?|\bon\s+|\b(?:until|once|when|if|unless|awaiting|pending)\s+(?:[\w'’-]+\s+){0,3})\b(?:green|passed|succeeded)\b/i;
-/** The names a wait or a sentence gives its parts: items (C8, r6, land 33, promote 8) and runs (CI run ids, ci/ refs, commit shas). A name
- * joined to a word by a hyphen, a slash or a dot is part of that word ("32b-on-staging", "ci/c4-cast-fix"), and clock times name nothing. */
-type PartNames = { items: Set<string>; runs: Set<string> };
-const ITEM = /(?<![\w/.:'-])[a-z]{1,3}\d{1,4}[a-z]?(?![\w/-])|\b(?:land|promote|board|part|cut|wave|phase|tier|round|attempt|release|pr)\s+#?\d{1,5}[a-z]?(?![\w:/-])/gi;
-const RUN = /\b\d{8,}\b|\bci\/[\w.-]*\w|(?<![\w/.-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w/-])/gi;
-const partNames = (text: string): PartNames => ({
-  items: new Set((text.match(ITEM) ?? []).map(name => name.toLowerCase().replace(/\s+#?/, " "))),
-  runs: new Set((text.match(RUN) ?? []).map(name => name.toLowerCase())),
-});
 /** The words of a note that can claim a ship: its paths, dated folder names and the item's own job name taken out. */
 function claimWords(note: string, job: string | undefined): string {
   const words = note.split(/\s+/).filter(token => !pathLike(token)).join(" ");
   const name = job?.trim();
   return name && !/^[0-9a-f]{8}-/i.test(name) ? words.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), " ") : words;
 }
+/** A PR's state on GitHub; `mergedAt` (ms) once it merged. */
+export interface PrState { state: "merged" | "open" | "closed"; mergedAt?: number }
 /**
- * Why an open plan item looks done, or null: every item under it is closed and it waits for nothing, or its note says it shipped
- * (SAYS_SHIPPED). The check-in then lists it for a check against the real state (dev env VP 10-09: a goal stayed open after it was live on
- * production).
+ * What the check-in knows outside the board when it asks whether an item is done: each duty metric's verdict on its duty's newest measured
+ * run (`metricFacts`, keyed `<dutyId>/<metricKey>` like a step's `duty`), and the state of each PR the board names (`prNumbers`), by number.
+ * A PR or metric that is missing is unknown, and unknown is not done.
  */
-export function looksDone(item: Pick<PlanItem, "status" | "note" | "children" | "waitFor"> & Partial<Pick<PlanItem, "job" | "text" | "waitUntil">>,
-  now = Date.now()): string | null {
+export interface DoneFacts {
+  metrics: ReadonlyMap<string, { met: boolean; at: number }>;
+  prs: ReadonlyMap<string, PrState>;
+}
+export const NO_FACTS: DoneFacts = { metrics: new Map(), prs: new Map() };
+
+/** Each duty metric's verdict on the newest measured run of its duty that has it (`effectiveRun`), from runs newest first. */
+export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, { met: boolean; at: number }> {
+  const facts = new Map<string, { met: boolean; at: number }>();
+  for (const run of runs) {
+    const judged = effectiveRun(run);
+    if (judged.verdict !== "met" && judged.verdict !== "missed") continue;
+    for (const [key, result] of Object.entries(judged.metrics)) {
+      const link = `${run.duty}/${key}`;
+      if (!facts.has(link)) facts.set(link, { met: result.met, at: run.after?.at ?? run.at });
+    }
+  }
+  return facts;
+}
+
+/** Why an open item looks done, and since when (ms): the fact that made it done. */
+export interface DoneReason { reason: string; at: number }
+/**
+ * Why an open plan item looks done, or null. Only facts count, never the words of a note: a step that fixes a duty metric (`duty`) is done when
+ * that metric meets its target on the duty's last run, and a step whose text names PRs when GitHub shows every one of them merged. Any other
+ * item is done when the chat or its job says so. On 10-16 all 7 items the check-in flagged on 4 chats were open work: notes said "is live" or
+ * "merged" about a part (launch main bro p75, slack green guy p71, AI harness p484 and p490), or every step under a goal was closed while its
+ * metric missed or its work moved to another chat (launch main bro p125, slack green guy p147, Crawler VP p191). A goal's own `target` does
+ * not count: it has no direction, and launch main bro p127 (error reads, 32.4% for a 5% target) and VP of CI p1 (157.8 min for a 10 min wait)
+ * are lower-is-better targets that a ratio would read as met.
+ */
+export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "duty">>, facts: DoneFacts): DoneReason | null {
   if (!OPEN.has(item.status)) return null;
-  // A step that waits on purpose until a time is not done before that time; wait_met takes it then (VP of CI 10-14: p150 waited until 22:30Z
-  // to re-measure and was flagged at 00:4xZ, 01:0xZ and 01:4xZ).
-  if (item.waitUntil && Date.parse(item.waitUntil) > now) return null;
-  const wait = item.waitFor?.trim() ?? "";
-  // An item that waits on the owner's answer is not done, whatever its steps or note say (VP of CI 10-12: p41's steps were all done and its
-  // build waited on the owner's ok on t26; it was flagged in every run).
-  if (OWNER_WAIT.test(wait)) return null;
-  // Closed steps under an item that still waits are its first part: its own work comes after the wait (VP of CI 10-12: p19 waits on the land
-  // 33 chain push, 3 runs; launch main bro 10-12: p27's rate test waits on a GO line, 4 runs; each check-in kept it open). The wait's own
-  // checks (stalled_steps, wait_met, blocked_on_others) push it.
-  if (!wait && item.children.length > 0 && item.children.every(child => CLOSED.has(child.status))) return "every step under it is closed";
-  // A note names shipped parts of work that is still open: an open step under the item, or a wait on the owner's answer (AI harness 10-12:
-  // p254 "...are live" with p268 open, p288 waiting on t41; 7 of 9 flags were false and jobs reworded notes to dodge the match). A wait on a
-  // deploy or a land stays listed: a note that says it shipped may mean the wait is over. Any other wait names the item's own next work
-  // (Crawler VP 10-12: p115 "Watch v8 is live" waited for its own ci ref).
-  if (item.children.some(child => OPEN.has(child.status))) return null;
-  if (wait && !SHIP_WAIT.test(wait)) return null;
-  // A note that lists work left, or a run still on its way in the wait or the note, says the item is not done yet (launch main bro 10-12:
-  // p54 "Board 39 is live ... Left to do: ...", p68 waited for promote 8 "(dispatched 15:00:06Z)"; each was flagged twice and kept open).
-  const note = item.note ?? "";
-  if (LEFT_TO_DO.test(note) || IN_FLIGHT.test(wait) || IN_FLIGHT.test(note)) return null;
-  // A wait for something "green" is not over while the note reports nothing green (Crawler VP 10-13: p118 waited for two runs "green" that
-  // were queued).
-  if (/\bgreen\b/i.test(wait) && !GREEN.test(note)) return null;
-  const sentences = note.split(/(?<=[.;!?])\s+/).map(text => ({ text, said: SAYS_SHIPPED.exec(claimWords(text, item.job)), ...partNames(text) }));
-  // A ship claim about what the step's title measures "after" is the step's starting point (VP of CI 10-14: p150 "the 4 queue cuts landed").
-  const start = subjectWords(CHECKS_AFTER.exec(item.text ?? "")?.[1] ?? "");
-  const claims = sentences.flatMap(({ said, ...sentence }) => said &&
-    ![...subjectWords(claimWords(sentence.text, item.job))].some(word => start.has(word)) ? [{ ...sentence, said }] : []);
-  // With a ship wait, only a claim about the waited thing may mean the wait is over: "PROBE A deployed" for a wait on PROBE A counts, and
-  // "Obs is deployed" for a wait on promote 8 is another service (launch main bro 10-12, p68).
-  const waited = subjectWords(wait);
-  const about = claims.find(sentence => !wait || [...subjectWords(claimWords(sentence.text, item.job))].some(word => waited.has(word)));
-  if (!about) return null;
-  // A wait that names its parts (C8, C3+C4, land 33, promote 8, run ids, ci refs) is over only when the ship claims name every part: all its
-  // items, or all its runs and refs, where a sentence that names a run as green also counts (Crawler VP 10-13: p118 "C3 is live on prod" under
-  // a wait on C8, C3+C4, land 33 and C2's recreate, flagged in 2 check-ins in a row).
-  const claimed = new Set(claims.flatMap(sentence => [...sentence.items, ...sentence.runs]));
-  const green = new Set(sentences.filter(sentence => GREEN.test(sentence.text)).flatMap(sentence => [...sentence.runs]));
-  const named = (part: PartNames) => part.items.size + part.runs.size === 0 || (part.items.size > 0 && [...part.items].every(name => claimed.has(name))) ||
-    (part.runs.size > 0 && [...part.runs].every(run => claimed.has(run) || green.has(run)));
-  return wait.split(/[,;]|\b(?:and|then|plus)\b/i).map(partNames).every(named) ? `its note says "${about.said[0]}"` : null;
+  if (item.duty) {
+    const fact = facts.metrics.get(item.duty);
+    return fact?.met ? { reason: `its metric ${item.duty} is met on the duty's last run`, at: fact.at } : null;
+  }
+  const prs = mergedPrs(item.text);
+  const states = prs.map(pr => facts.prs.get(pr));
+  if (!prs.length || !states.every(state => state?.state === "merged")) return null;
+  return { reason: `${prs.map(pr => `#${pr}`).join(", ")} ${prs.length > 1 ? "are" : "is"} merged`, at: Math.max(...states.map(state => state?.mergedAt ?? 0)) };
 }
 /** Every open plan item that looks done (`looksDone`), steps before the goal above them. */
-export function finishedOpen(board: ChatBoard | null, now: number): { item: PlanItem; reason: string }[] {
-  const found: { item: PlanItem; reason: string }[] = [];
+export function finishedOpen(board: ChatBoard | null, facts: DoneFacts): ({ item: PlanItem } & DoneReason)[] {
+  const found: ({ item: PlanItem } & DoneReason)[] = [];
   const visit = (item: PlanItem) => {
     item.children.forEach(visit);
-    const reason = looksDone(item, now);
-    if (reason) found.push({ item, reason });
+    const done = looksDone(item, facts);
+    if (done) found.push({ item, ...done });
   };
   (board?.plan ?? []).forEach(visit);
   return found;
+}
+/** The PR numbers the open items of a board name in their text or note: the ones whose state the check-in reads. */
+export function boardPrs(board: ChatBoard | null): string[] {
+  const prs = new Set<string>();
+  const visit = (item: PlanItem) => {
+    if (OPEN.has(item.status)) for (const pr of prNumbers(`${item.text}\n${item.note ?? ""}`)) prs.add(pr);
+    item.children.forEach(visit);
+  };
+  (board?.plan ?? []).forEach(visit);
+  return [...prs];
 }
 
 /**

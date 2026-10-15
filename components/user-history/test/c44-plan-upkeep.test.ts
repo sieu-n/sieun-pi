@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
+import type { DoneFacts } from "../src/checkin-done.ts";
 import { STALE_STEP_MS } from "../src/checkin-findings.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { applyBoardOp, areaWords, BoardError, nextIds, sameAreaGoal } from "../src/shared/chat-board.ts";
@@ -13,8 +14,8 @@ const EVERY = 15 * MIN;
 const iso = (at: number) => new Date(at).toISOString();
 const item = (id: string, text: string, extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "todo", children: [], ...extra });
 const boardOf = (updatedAt: number, ...plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: iso(updatedAt), todos: [], plan });
-const check = (board: ChatBoard, facts: JobFact[] = []) => {
-  const precheck = checkInPrecheck(undefined, facts, board, NOW, { self: ["01a00000-0000-7000-8000-000000000004", "Index VP"], rows: [], everyMs: EVERY });
+const check = (board: ChatBoard, facts: JobFact[] = [], doneFacts?: DoneFacts) => {
+  const precheck = checkInPrecheck(undefined, facts, board, NOW, { self: ["01a00000-0000-7000-8000-000000000004", "Index VP"], rows: [], everyMs: EVERY, ...(doneFacts ? { doneFacts } : {}) });
   const output = convergenceMisses("c1", precheck.steps, precheck, {}, EVERY, NOW);
   return { precheck, output, text: checkInPrecheckText(precheck, facts, output.flagged, NOW) };
 };
@@ -51,8 +52,8 @@ test("stale_steps: a due step under 24 h is due_late only; one over 24 h is stal
 });
 
 test("stale_steps: an item that looks finished is counted once, in finished_open, and listed under Look done only", () => {
-  const shipped = { ...P86, note: "exit labels abc1234 and hop fix def5678 deployed and live on prod; jobs end done again" };
-  const { output, text } = check(boardOf(NOW - 50 * 60 * MIN, goal(shipped)));
+  const shipped = { ...P86, text: `${P86.text}, PR #31`, note: "exit labels abc1234 and hop fix def5678 deployed and live on prod; jobs end done again" };
+  const { output, text } = check(boardOf(NOW - 50 * 60 * MIN, goal(shipped)), [], { metrics: new Map(), prs: new Map([["31", { state: "merged" }]]) });
   assert.deepEqual([output.metrics.stale_steps, output.metrics.finished_open], [0, 1]);
   assert.equal(sectionOf(text, "Stale steps"), undefined);
   assert.match(sectionOf(text, "Look done")!, /p86 /);

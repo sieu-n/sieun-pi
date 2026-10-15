@@ -1,5 +1,5 @@
 import type { HandoffRule } from "./chat-corrections.ts";
-import { finishedOpen, looksDone } from "./checkin-done.ts";
+import { type DoneFacts, finishedOpen, looksDone, NO_FACTS } from "./checkin-done.ts";
 import { heartbeatLine, oneSessionLoad, type RedundantHeartbeat, redundantHeartbeats, sessionLoadLine, type ScheduledJob, type SessionLoad, type Train, wakeWatches } from "./checkin-load.ts";
 import { flagKey, REPEAT_HEAD, REPEAT_RUNS, repeatLines } from "./checkin-repeats.ts";
 import type { FlaggedSlice, PrecheckOutput } from "./shared/chat-duties.ts";
@@ -71,12 +71,14 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   /** The job names of this chat whose start or send-back waits in the fleet budget (`FleetBudget.queued`): their steps are moving. Not given: none. */
   starting?: readonly string[];
   /** What the owner wrote in the chat (`ownerSaid`), for when he last ruled on a review (`readyReviews`); none when not given. */
-  owner?: readonly OwnerMessage[] }
+  owner?: readonly OwnerMessage[];
+  /** The duty metric verdicts and PR states that say an item is done (`looksDone`) and that a merge moved work (`noProgress`). Not given: nothing looks done. */
+  doneFacts?: DoneFacts }
 
 /** What one check-in precheck found: the memory to keep, every open leaf step with its class, the steps on another thread's work, the open items that look done, and other facts. */
 export interface CheckInPrecheck {
   memory: CheckInMemory; steps: StepView[]; scope: ScopeMiss[]; gates: GateFinding[]; stalled: StalledStep[]; goals: GoalGap[]; blocked: BlockedStep[];
-  done: { item: PlanItem; reason: string }[]; loose: PlanItem[]; extra: PlanItem[]; underClosed: { item: PlanItem; parent: PlanItem }[];
+  done: { item: PlanItem; reason: string; at: number }[]; loose: PlanItem[]; extra: PlanItem[]; underClosed: { item: PlanItem; parent: PlanItem }[];
   held: HeldGoal[]; waitsMet: WaitMet[]; noProgress: NoProgress | null; stale: StaleStep[]; fold: FoldGoal[]; load: SessionLoad[]; heartbeats: RedundantHeartbeat[];
   /** The open goals when the chat has no active duty (`goalsWithoutDuty`); none when the context gave no duties. */
   noDuty: PlanItem[];
@@ -136,12 +138,14 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // two lines with two different asks (34 steps from 10-13 09:15 to 23:59 KST, VP of CI's nine waits on the secrets cache at 14:29 among them).
   const onOthers = new Set(blocked.map(block => block.view.item.id));
   const movers = { watches: wakeWatches(context.wakes ?? [], context.train), queued, starting: new Set(context.starting ?? []) };
+  const doneFacts = context.doneFacts ?? NO_FACTS;
+  const done = context.boardError ? [] : finishedOpen(board, doneFacts);
   return { memory: { at: now, steps, since }, steps: goaled, scope: context.boardError ? [] : scopeMisses(board, context.handoffs ?? [], context.self ?? []), gates,
     stalled: context.boardError ? [] : stalledSteps(goaled, steps, context.rows ?? [], self, now, context.train, movers).filter(stall => !onOthers.has(stall.view.item.id)),
-    goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done: context.boardError ? [] : finishedOpen(board, now),
+    goals: context.boardError ? [] : goalGaps(board, goaled, context.everyMs ?? CHECK_IN_MS, now), blocked, done,
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs),
-    noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued),
+    noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }),
     waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
@@ -230,9 +234,10 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
   const stale = flagged.filter(slice => slice.kind === "stale_steps");
   /** A stale step is listed once, under Stale steps. */
   const staleIds = new Set(stale.map(slice => slice.item));
+  const doneIds = new Set(precheck.done.map(found => found.item.id));
   const act = precheck.steps.flatMap(view => {
     /** An orphan that looks done needs a check and a close, not a new job: it is listed under Look done only. */
-    const line = staleIds.has(view.item.id) || (view.cls === "orphan" && looksDone(view.item, now) !== null) ? null : classLine(view, now);
+    const line = staleIds.has(view.item.id) || (view.cls === "orphan" && doneIds.has(view.item.id)) ? null : classLine(view, now);
     return line ? [view.target ? `${line} (the thread to chase: ${clip(view.target.name, 40)}, thread:${view.target.id})` : line] : [];
   });
   const ended = flagged.filter(slice => slice.kind === "job_end_unrecorded" || slice.kind === "job_end_silent").map(slice => slice.excerpt);
@@ -283,7 +288,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
       precheck.stalled.map(stalledLine)),
     ...section("Stale steps (update or close each in this run: the job's result, the next action, done or dropped; the board refuses a later waitUntil)", stale.map(slice => slice.excerpt)),
     ...section("Steps whose class needs action", act),
-    ...section("Look done (check the real state: close, keep or reopen)", precheck.done.filter(found => !folded.has(found.item.id)).map(lookDoneLine)),
+    ...section("Look done (a met metric or target, or merged PRs: close each)", precheck.done.filter(found => !folded.has(found.item.id)).map(lookDoneLine)),
     ...section("Owned by another thread by an owner ruling", precheck.scope.map(scopeLine)),
     ...section("Job ends the board does not show", ended),
     ...section("Other facts", precheck.facts),
@@ -377,7 +382,7 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   // An open item with open steps under it is no step view; its stale record still counts.
   for (const entry of staleById.values()) flag("stale_steps", entry.item.id, staleLine(entry));
   for (const miss of scope) { misses.scope_misses++; flagged.push({ chat, at: now, kind: "scope_misses", excerpt: scopeLine(miss), item: miss.item.id }); }
-  for (const idle of idleGoals(steps)) { misses.idle_goals++; flagged.push({ chat, at: now, kind: "idle_goals", excerpt: idleGoalLine(idle), item: idle.goal.id }); }
+  for (const idle of idleGoals(steps, new Set(done.map(found => found.item.id)))) { misses.idle_goals++; flagged.push({ chat, at: now, kind: "idle_goals", excerpt: idleGoalLine(idle), item: idle.goal.id }); }
   for (const stall of stalled) { misses.stalled_steps++; flagged.push({ chat, at: now, kind: "stalled_steps", excerpt: stalledLine(stall), item: stall.view.item.id }); }
   for (const gate of gates) {
     if (gate.kind === "go_waiting") continue;

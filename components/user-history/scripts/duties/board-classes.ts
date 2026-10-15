@@ -14,6 +14,8 @@ import { blockedOnOthers, deadRunWaits, extraGoals, gateFindings, goalGaps, goal
 import { activeCorrections, CorrectionLedger, handoffRules } from "../../src/chat-corrections.ts";
 import { heartbeatsFile, oneSessionLoad, readHeartbeats, readTrain, redundantHeartbeats, trainFile, withWakes } from "../../src/checkin-load.ts";
 import { pendingWakes } from "../../src/wakes.ts";
+import { boardPrs, metricFacts } from "../../src/checkin-done.ts";
+import { prStates } from "../../src/pr-states.ts";
 import type { FlaggedSlice } from "../../src/shared/chat-duties.ts";
 import type { ChildAgent, SessionRow } from "../../src/shared/types.ts";
 
@@ -126,6 +128,7 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
   const wakes = await pendingWakes(join(dataDir, "wakes"), now);
   const asleep = new Set(wakes.map(wake => wake.session));
   const result: ChatClasses[] = [];
+  const prs = prStates();
   for (const id of ids) {
     const board = await boards.read(id).catch(() => null);
     const memo = await memory.get(id);
@@ -143,9 +146,13 @@ export async function boardClasses(options: { dataDir: string; now: number; sess
     const steps = classifyBoard(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), rows, now, active);
     const end = steps.map(view => endState(view, board?.todos ?? [], rows, new Set([id, name]), now));
     const chatDuties = await duties.list(id).catch(() => undefined);
+    const cwd = rows.find(row => row.id === id)?.cwd;
+    const doneFacts = { metrics: metricFacts(await duties.runs(id).catch(() => [])),
+      prs: cwd && boardPrs(board).length ? await prs(cwd, boardPrs(board)).catch(() => new Map()) : new Map() };
+    const done = finishedOpen(board, doneFacts);
     const findings = { scope: scopeMisses(board, handoffs, [id, name]), gates: gateFindings(board, facts, active), stalled: stalledSteps(steps, memo?.steps ?? {}, rows, new Set([id, name]), now, train),
-      goals: goalGaps(board, steps, everyMs, now), blocked: blockedOnOthers(steps, rows, new Set([id, name]), now, train, new Map(), asleep), done: finishedOpen(board, now), loose: looseGoals(board),
-      extra: extraGoals(board), underClosed: openUnderClosed(board), held: heldElsewhere(steps, board, rows, new Set([id, name]), rootsOf([id, name])), noProgress: noProgress(board, steps, memo?.steps ?? {}, memo?.since ?? now, rows, new Set([id, name]), now, train),
+      goals: goalGaps(board, steps, everyMs, now), blocked: blockedOnOthers(steps, rows, new Set([id, name]), now, train, new Map(), asleep), done, loose: looseGoals(board),
+      extra: extraGoals(board), underClosed: openUnderClosed(board), held: heldElsewhere(steps, board, rows, new Set([id, name]), rootsOf([id, name])), noProgress: noProgress(board, steps, memo?.steps ?? {}, memo?.since ?? now, rows, new Set([id, name]), now, train, new Map(), { done, prs: doneFacts.prs }),
       waitsMet: [...waitsMet(steps, board, rows, new Set([id, name])), ...deadRunWaits(steps, train, now)],
       stale: staleSteps(board, facts, item => memo?.steps[item.id]?.at ?? firstSeen, new Set([id, name]), everyMs, now),
       fold: goalsToFold(board, facts, new Set([id, name]), chatDuties ?? []), load: oneSessionLoad(steps, rootsOf([id, name])),

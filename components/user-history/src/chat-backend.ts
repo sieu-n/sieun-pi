@@ -41,6 +41,7 @@ import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-brid
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 import { promptView } from "./prompt-view.ts";
+import { prStates } from "./pr-states.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -215,6 +216,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       settings, claude: claudeReader(), queue: queued, spawns: () => readHeldSpawns(),
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
+      dutyRuns: id => duties.store.runs(id), prs: prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"),
       ...(options.ownChatsOnly ? { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") } : {}) },
     line => process.stderr.write(line + "\n"));

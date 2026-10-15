@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { chatChildren, type DaemonSession, sessionRows } from "../scripts/duties/board-classes.ts";
-import { checkInRecord, looksDone } from "../src/chat-checkin.ts";
+import { checkInRecord } from "../src/chat-checkin.ts";
 import { checkInSettings } from "../src/checkin-settings.ts";
 import { CorrectionLedger } from "../src/chat-corrections.ts";
 import type { CheckInRun } from "../src/chat-duty-run.ts";
@@ -17,50 +17,8 @@ import type { ChatBoard, ChildAgent, PlanItem } from "../src/shared/types.ts";
 
 /*
  * c44 repeated (owner 10-12 11:41 in the AI harness thread: "when i told you to organize plan ... that's a failure mode that would have been
- * the check-in's duty"). On 10-12 the long finished_open streaks were false matches each check-in judged and kept: frontend bro p93 (5 runs)
- * and p96 (4), launch main bro p27 (4), VP of CI p19 (3). The notes and waits below are the boards' own at the time of those flags.
+ * the check-in's duty"). A finding flagged in check-ins in a row is listed first, with its streak.
  */
-const item = (id: string, text: string, extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status: "doing", children: [], ...extra });
-
-test("looks done: shipped in a path, a job name, a name or an adjective claims nothing (frontend bro 10-12: p93, p96, p92, p84)", () => {
-  const p93 = item("p93", "Email from the current Staging screen: polish 5 parts one at a time", { job: "email from shipped",
-    note: "Part 1, the template list, is built and checked in the browser. Clicking a count opens a compact popup of those creators with Sent, " +
-      "Replied and No reply tabs, and columns can be resized. It scores 44 pass and 1 fail on the checklist, and that fail is fixed in the A/B part. " +
-      "Next is part 2, creating a template. Shots: sessions/2026/10/12/2030-email-from-shipped/assets/" });
-  assert.equal(looksDone(p93), null, "the path 2030-email-from-shipped");
-  assert.equal(looksDone({ ...p93, note: "The email from shipped job builds part 3." }), null, "the job's own name");
-  assert.equal(looksDone({ ...p93, note: "Shots in 2030-email-from-shipped.md" }), null, "a hyphenated file name");
-  const p96 = item("p96", "A From scratch scenario on 5180", { job: "fresh start scenario",
-    note: "The plan is done. The shipped app has had no onboarding since 2026-09-02, so this is a new design: one column where each step folds " +
-      "forward in place. Part 2, the seed, clock and configure entry, is building now. Plan: sessions/2026/10/12/2117-fresh-start-scenario/fresh-start-plan.md" });
-  assert.equal(looksDone(p96), null, "the shipped app");
-  assert.equal(looksDone(item("p92", "Connections from the shipped screen", { note: "Still building from the shipped screen. list-flat is building now." })), null);
-  assert.equal(looksDone(item("p84", "Creators from shipped", { note: "All four Creators versions are built from Shipped: swipe, wall, campaign and lens." })), null,
-    "Shipped as the name of the live screen");
-  assert.equal(looksDone({ ...p93, note: "Part 5 shipped to staging at 4f1c2a." }), 'its note says "shipped"', "a real ship claim still counts");
-  assert.equal(looksDone({ ...p96, note: "The onboarding is shipped and checked on staging." }), 'its note says "shipped"');
-});
-
-test("looks done: closed steps under an item that still waits are its first part; a denial is no ship (VP of CI p19, launch main bro p27, Crawler VP p46, p115)", () => {
-  const p27 = item("p27", "Build: 5-arm rate test (50 to 800 pages per account a day, 5 days)", { job: "engage rate test",
-    waitFor: "Crawler VP's GO line at 15:00Z after step C (metal OK'd v2)", children: [item("p46", "Build: per-arm daily and hourly caps", { status: "done" })] });
-  assert.equal(looksDone(p27), null, "its own test waits for the GO line");
-  const p19 = item("p19", "Secrets scan on the diff, tiny Python lanes on light runners", { job: "ship command build",
-    note: "Rides the land 33 chain, which ship command build pushes right after land 32b reaches staging.",
-    waitFor: "land 32b's third try reaches staging, about 14:15Z, then the land 33 chain push",
-    children: [item("p37", "Fix: the daily CI health check", { status: "done" }), item("p56", "Always-on CI dashboard", { status: "done" })] });
-  assert.equal(looksDone(p19), null, "its push waits on the land");
-  const { waitFor: _wait, ...p27Free } = p27;
-  assert.equal(looksDone(p27Free), "every step under it is closed", "with no wait, closed steps still mean done");
-  const p46 = item("p46", "Build: new snapshot tables and writers", { waitFor: "Fable's 32b-on-staging announcement (about 14:15Z), then media serving build pushes PROBE A",
-    note: "Land 32b attempt 2 failed at 13:05Z on the CI signed-in e2e test, not 32b code; nothing deployed. Re-dispatch on 4555d6526b after about 13:23Z." });
-  assert.equal(looksDone(p46), null, "nothing deployed");
-  assert.equal(looksDone({ ...p46, note: "PROBE A deployed to staging at 14:20Z." }), 'its note says "deployed"', "a land wait with a ship claim may be over");
-  const p115 = item("p115", "Fix: stop and ramp rules judge job outcomes", { waitFor: "census-cut-lines' ci ref from job outcome stop rules",
-    note: "Watch v8 (metal-acked) is live on prod. The code change in census-cut-lines still moves ramp.py's HOLD rule to job outcomes." });
-  assert.equal(looksDone(p115), null, "a wait on its own next work: another thing being live is no claim");
-});
-
 test("flag streaks: a finding flagged again counts up, a new one starts at 1, one not flagged now drops; Flagged again lists 2 or more", () => {
   const first = flagStreaks(undefined, [{ kind: "finished_open", item: "p93" }, { kind: "orphan_steps", item: "p88" }]);
   assert.deepEqual(first, { "finished_open p93": 1, "orphan_steps p88": 1 });
@@ -118,8 +76,8 @@ test("check-in: a finding the last check-in flagged and the board did not fix he
   const heads = second.split("\n\n").filter(part => part.startsWith("### "));
   const repeats = heads[heads[0]!.startsWith("### Stuck steps (") ? 1 : 0]!;
   assert.ok(repeats.startsWith("### Flagged again ("), "the repeats head the brief, after the stuck steps");
-  assert.match(repeats, /\n- finished_open: p31 "Goal: demo apps" doing, looks done: every step under it is closed \(flagged in 2 check-ins in a row\)/);
+  assert.match(repeats, /\n- orphan_steps: p31 "Goal: demo apps" has no live owner: .* \(flagged in 2 check-ins in a row\)/);
   assert.ok(repeats.includes(`send the ${CHAT_SYSTEM_THREAD} thread one message`), "a wrong finding goes to the thread that owns the checks");
-  assert.equal((await memory.get(D))?.flags?.["finished_open p31"], 2, "the streak is kept in the check-in memory");
+  assert.equal((await memory.get(D))?.flags?.["orphan_steps p31"], 2, "the streak is kept in the check-in memory");
   chats.close();
 });

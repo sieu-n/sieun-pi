@@ -227,13 +227,14 @@ test("check-in precheck: a board read error, an ask overflow, steps that can sta
 
 test("check-in precheck: an item that looks done is listed for a check, and an orphan that looks done gets no orphan line", () => {
   const now = 100 * STEP_STALE_MS;
-  const plan = board([step("p1", "Usage panel", "doing", { note: "Shipped on 10-08, live on production", children: [step("p2", "Land", "doing", { note: "deployed to production" })] })]);
-  const run = checkInPrecheck(undefined, [], plan, now);
+  const plan = board([step("p1", "Usage panel", "doing", { note: "Shipped on 10-08, live on production", children: [step("p2", "Land #12", "doing", { note: "deployed to production" })] })]);
+  const run = checkInPrecheck(undefined, [], plan, now, { doneFacts: { metrics: new Map(), prs: new Map([["12", { state: "merged", mergedAt: now - 60_000 }]]) } });
   const text = checkInPrecheckText(run, [], [], now);
-  assert.deepEqual(section(text, "Look done (check the real state: close, keep or reopen)"), ['p2 "Land" doing, looks done: its note says "deployed"'],
-    "p1 has open p2 under it, so its own note does not make it look done until p2 closes");
+  assert.deepEqual(section(text, "Look done (a met metric or target, or merged PRs: close each)"), ['p2 "Land #12" doing, looks done: #12 is merged; close it with a note that names this'],
+    "p1's note claims a ship and counts for nothing");
   assert.deepEqual(section(text, "Steps whose class needs action"), [], "the orphan p2 needs a check and a close, not a new job");
-  assert.deepEqual(idleGoals(run.steps), [], "a goal whose open steps look done is not idle");
+  assert.deepEqual(idleGoals(run.steps, new Set(run.done.map(found => found.item.id))), [], "a goal whose open steps look done is not idle");
+  assert.deepEqual(checkInPrecheck(undefined, [], plan, now).done, [], "with no PR state, nothing looks done");
 });
 
 test("idle goals: a goal with an open step nobody owns and no live job is idle; one with a live job, or only waiting and For you steps, is not", () => {
@@ -444,74 +445,15 @@ test("check-in record: told job ends per chat and job, kept apart from the prech
   assert.deepEqual(await record.ends("c1"), {});
 });
 
-test("looks done: an open item with every step under it closed, or a note that says it shipped; a wait or a negation is not done", () => {
-  assert.equal(looksDone(step("p1", "Goal", "doing", { children: [step("p2", "Build", "done"), step("p3", "Verify", "dropped")] })), "every step under it is closed");
-  assert.equal(looksDone(step("p1", "Goal", "doing", { children: [step("p2", "Build", "done"), step("p3", "Verify", "todo")] })), null, "an open step under it");
-  assert.equal(looksDone(step("p1", "Goal", "doing")), null, "a goal with no steps yet is not done");
-  assert.equal(looksDone(step("p1", "Goal", "done", { children: [step("p2", "Build", "done")] })), null, "a closed item");
-  assert.equal(looksDone(step("p4", "Ship", "doing", { note: "Now live on production at 4f1c2a." })), 'its note says "Now live"');
-  assert.equal(looksDone(step("p4", "Ship", "doing", { note: "Checked: live on staging.virev.ai" })), 'its note says "live on staging"');
-  assert.equal(looksDone(step("p4", "Ship", "blocked", { note: "PR 812 merged, staging green" })), 'its note says "merged"');
-  assert.equal(looksDone(step("p4", "Ship", "doing", { note: "Deployed to prod by land 25" })), 'its note says "Deployed"');
-  assert.equal(looksDone(step("p4", "Ship", "doing", { note: "Reviewed after the call, deployed at 14:10" })), 'its note says "deployed"', "a comma ends the clause");
-  for (const note of ["not merged yet", "close after it is deployed", "waits until landed", "to be released on Monday", "a live owner runs it", "not yet deployed", "waits until the PR is merged"]) {
-    assert.equal(looksDone(step("p4", "Ship", "doing", { note })), null, note);
-  }
-});
-
-test("looks done: a note that says shipped does not make an item done while a step under it is open or it waits on the owner (AI harness 10-12: p254, p288)", () => {
-  assert.equal(looksDone(step("p254", "Every agent tool works", "doing", { note: "The send guards for the browser and mail are live.",
-    children: [step("p253", "Mail guard", "done"), step("p268", "Fix the three skill index fails", "doing")] })), null, "an open step under it");
-  assert.equal(looksDone(step("p288", "Verify the theme", "todo", { note: "55c466b shipped in release-452e8a9.", waitFor: "the owner's answer on t41" })), null, "a wait on the owner's answer");
-  assert.equal(looksDone(step("p289", "Ship the theme", "doing", { note: "55c466b shipped in release-452e8a9." })), 'its note says "shipped"', "no open step and no wait");
-  assert.equal(looksDone(step("p41", "Build: second CI machine", "blocked", { waitFor: "owner's ok on the vendor reply draft in For you",
-    children: [step("p46", "Check", "done"), step("p98", "Prepare the setup kit", "done")] })), null, "every step done but the build waits on the owner (VP of CI 10-12, p41)");
-});
-
-test("looks done: a ship word in a note whose wait names a run still in flight, or whose note lists work left, is not done (launch main bro 10-12: p68, p54)", () => {
-  const p68 = step("p68", "Ship: promote land 32b to prod (rate-test caps, engage fixes, Watchlist batch fix), after it is proven on staging", "todo", {
-    waitFor: "promote 8 run 38267006888 (dispatched 15:00:06Z), Vercel prod aliases about 15:35-15:50Z, then the read-back: virev.ai 200 and an account add check with Fable",
-    note: "Promote 8 was dispatched at 15:00:06Z on the owner's go ('hey i approve the promote...'). Pre-checks were clean: IO 0.9%, backends 116. " +
-      "Prod crawler roles stop for about 6 min in the metal step. Obs is deployed at 64a696e59b (14:59Z)." });
-  assert.equal(looksDone(p68), null, "the promote run is still in flight");
-  assert.equal(looksDone({ ...p68, waitFor: "promote 8 run 38267006888, then the read-back", note: "Obs is deployed at 64a696e59b (14:59Z)." }), null,
-    "Obs is another service than the promote it waits for");
-  assert.equal(looksDone({ ...p68, waitFor: "promote 8 run 38267006888, then the read-back", note: "Promote 8 deployed to prod at 15:40Z." }), 'its note says "deployed"',
-    "a claim about the waited promote may mean the wait is over");
-  const p54 = step("p54", "Build: engage dashboard and alerts (pages per hour and day, account health, buy-more, killing, near-capacity), Slack DM to the owner to buy accounts", "doing", {
-    job: "engage monitoring alerts", waitFor: "the operator-cause fix probe (deliberate operator freezes get their own cause), Fable's ruling and land 33",
-    note: "Board 39 is live on obs (https://obs.virev.ai/d/engage-capacity). The job applied the 10 alert rules at about 15:05Z, all health ok. I checked the staging " +
-      "screenshot board39-staging-top.png. Left to do: give deliberate operator freezes their own cause, so the staging freeze alert stops going red." });
-  assert.equal(looksDone(p54), null, "a Left to do line");
-  const { waitFor: _wait, ...p54Free } = p54;
-  assert.equal(looksDone(p54Free), null, "a Left to do line with no wait");
-  assert.equal(looksDone({ ...p54Free, note: "Board 39 is live on obs. Left: the operator-cause fix." }), null, "a Left: line");
-});
-
-test("looks done: a note whose run is rerunning, or whose \"released\" is about a queue or a hold, is not done (AI harness 10-13: p319)", () => {
-  // p319's note when the 02:39 KST check-in flagged it for "released": Fable released the CI queue, and the step's own run was rerunning.
-  const p319 = step("p319", "The shared checkout's working tree stops lagging HEAD after object-path landings: sync the stale files now, and fix the landing path and " +
-    "commit.mjs so a stale copy can never revert landed work", "doing", { job: "stale tree sync",
-    note: "The tree sync is done: 170 stale files were synced to HEAD, and live and unknown files were left alone. Promote 8's metal prod deploy is green, and " +
-      "Fable released the queue at about 17:19Z, so ci/stale-tree-guard-3 (run 38268518309) is rerunning with its same id. stale tree sync reads it once at its " +
-      "expected end, puts the guard on the tip if green, and reports." });
-  assert.equal(looksDone(p319), null, "its run is rerunning");
-  assert.equal(looksDone({ ...p319, note: "The tree sync is done. Fable released the CI queue at about 17:19Z." }), null, "the CI queue is not the step's work");
-  assert.equal(looksDone({ ...p319, note: "Fable released the hold on land 33 at 17:19Z." }), null, "a released hold is not a ship");
-  assert.equal(looksDone({ ...p319, note: "The tree sync is done: 170 stale files were synced to HEAD. ci/stale-tree-guard-3 run 38268518309 has been queued on " +
-    "attempt 3 since 17:33Z, per ci-run-status at 17:45Z, behind the land-33 runs Fable put first." }), null, "its run is queued");
-  assert.equal(looksDone({ ...p319, note: "The guard fix released in 1.4.2 at 18:10Z." }), 'its note says "released"', "a released fix still counts");
-});
-
 test("c44: a step filed as a goal, a finished goal left open and too many open goals are counted misses with plan-shape lines", () => {
   const now = Date.parse("2026-10-12T03:00:00Z");
   const areas = Array.from({ length: 5 }, (_, i) => step(`p${i + 1}`, `Area ${i + 1}`, "doing", { children: [step(`p${i + 11}`, "Build", "doing", { job: "live-job" })] }));
   const plan = board([...areas,
-    step("p6", "Chat system works well", "doing", { children: [step("p16", "Fix the reply cap", "done"), step("p17", "Verify", "done")] }),
+    step("p6", "Chat system works well", "doing", { duty: "d1/reply_cap", children: [step("p16", "Fix the reply cap", "done"), step("p17", "Verify", "done")] }),
     step("p253", "Agents can't send emails or vendor ticket replies unless you approved it in For you", "doing"),
     step("p7", "Old area", "done", { children: [step("p86", "Watch the cache ratio", "todo")] })]);
   const facts: JobFact[] = [{ key: "job:live-job", name: "live-job", state: "working", activityAt: now }];
-  const precheck = checkInPrecheck(undefined, facts, plan, now);
+  const precheck = checkInPrecheck(undefined, facts, plan, now, { doneFacts: { metrics: new Map([["d1/reply_cap", { met: true, at: now }]]), prs: new Map() } });
   const { metrics, flagged } = convergenceMisses("c1", precheck.steps, precheck, {}, 15 * 60_000, now);
   assert.equal(metrics.loose_goals, 1);
   assert.ok(metrics.finished_open >= 1);

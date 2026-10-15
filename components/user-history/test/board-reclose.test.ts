@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { applyDutyOps } from "../scripts/board-apply.ts";
-import { finishedOpen, looksDone } from "../src/checkin-done.ts";
+import { finishedOpen, NO_FACTS } from "../src/checkin-done.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { applyBoardOp, emptyBoard, nextIds } from "../src/shared/chat-board.ts";
 import type { BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
@@ -42,7 +42,7 @@ test("a done step the board reopened for a new step is done again when that step
   const closed = run(moved.board, [{ op: "plan_update", id: "p361", status: "done", note: "The monitor tier reads 0 overdue." }]);
   assert.equal(status(closed.board.plan, "p314"), "done");
   assert.match(closed.summaries[0]!, /marked it done, updated its note, closed p314 again now that no open step is left under it$/);
-  assert.deepEqual(finishedOpen(closed.board, Date.parse(T)), []);
+  assert.deepEqual(finishedOpen(closed.board, NO_FACTS), []);
 });
 
 test("a reopened step the agent sets a status on, or gives a wait, stays open when its new step closes", () => {
@@ -60,12 +60,4 @@ test("a duty job's board-apply closes the last new step and the board closes the
   const out = await applyDutyOps(dataDir, CHAT, [{ op: "plan_update", id: "p361", status: "done", note: "Staging reads 0 overdue on a8f85b4206, land run 38646579034 green." }]);
   assert.match(out, /closed p314 again/);
   assert.equal(status((await new BoardStore(dataDir).read(CHAT))!.plan, "p314"), "done");
-});
-
-test("a count before a ship word counts other things that shipped, so the step does not look done (Crawler VP 10-15, p504 to p506)", () => {
-  const note = "Cause found and fixed in code: nothing refused a commit that adds an unbacked limit, so 738 landed in a day. Object b99156d373 makes " +
-    "commit.mjs refuse them (sent to the chat for a probe slot).";
-  assert.equal(looksDone({ status: "doing", note, children: [] }), null);
-  assert.equal(looksDone({ status: "doing", note: "Land 36 landed as staging a8f85b4206.", children: [] }), 'its note says "landed"');
-  assert.equal(looksDone({ status: "doing", note: "PR #187 merged.", children: [] }), 'its note says "merged"');
 });

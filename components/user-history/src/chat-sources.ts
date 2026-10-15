@@ -5,6 +5,8 @@ import type { Ledger } from "./chat-corrections.ts";
 import type { CheckInRecord } from "./chat-checkin.ts";
 import type { CheckInSettings } from "./checkin-settings.ts";
 import type { DutyRef } from "./checkin-findings.ts";
+import type { PrState } from "./checkin-done.ts";
+import type { DutyRunRecord } from "./shared/chat-duties.ts";
 import type { HeldSpawn } from "./checkin-steps.ts";
 import type { HeldTurns } from "./held-turns.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
@@ -279,6 +281,10 @@ export interface CheckInSource {
   duties?: (id: string) => Promise<readonly DutyRef[]>;
   /** The session ids of the chat's duty jobs (its duty run records, check-ins included), whose subagents may own its steps. Absent: none. */
   dutyJobs?: (id: string) => Promise<readonly string[]>;
+  /** The chat's duty runs, newest first, whose metric verdicts tell when a fix step is done (`metricFacts`). Absent: no fix step looks done. */
+  dutyRuns?: (id: string) => Promise<readonly DutyRunRecord[]>;
+  /** The GitHub state of PRs by number, in the repo of a folder (`prStates`, src/pr-states.ts). Absent: no PR reads as merged. */
+  prs?: (cwd: string, numbers: readonly string[]) => Promise<ReadonlyMap<string, PrState>>;
   /**
    * `<data dir>/archived-chats.json`: the chats the owner archived (`Chats.archive`), until the owner unarchives one (`Chats.restore`). The
    * scan never takes such a chat back and its sidebar row stays archived, while its session may still wake and answer an agent message. Absent

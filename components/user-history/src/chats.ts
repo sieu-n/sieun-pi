@@ -4,6 +4,7 @@ import { agentChildren } from "./chat-agents.ts";
 import { activeCorrections, handoffRules } from "./chat-corrections.ts";
 import { heartbeatsFile, liveThreads, readHeartbeats, readTrain, trainFile, withWakes } from "./checkin-load.ts";
 import { flagStreaks } from "./checkin-repeats.ts";
+import { boardPrs, type DoneFacts, metricFacts } from "./checkin-done.ts";
 import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs, OPEN, walk, withHeldSpawns } from "./checkin-steps.ts";
@@ -1063,8 +1064,9 @@ export class Chats {
     const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
     const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
     const train = await readTrain(trainFile(this.source.home));
+    const doneFacts = await this.doneFacts(id, board, rows);
     const precheck = checkInPrecheck(previous, facts, board, at,
-      { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, starting: this.source.starting?.(id) ?? [], ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, starting: this.source.starting?.(id) ?? [], ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
   }
@@ -1099,6 +1101,16 @@ export class Chats {
     }), queued, [...this.subagents.values()].flat().concat(children, nested));
     const name = rows.find(row => row.id === id)?.name;
     return { board, ...(boardError !== undefined ? { boardError } : {}), rows, facts, queued, asleep, wakes, ...(name ? { name } : {}) };
+  }
+
+  /** The facts that say an item is done: the chat's duty metric verdicts, and the state of the PRs its open items name in the repo of its folder. */
+  private async doneFacts(id: string, board: ChatBoard | null, rows: readonly SessionRow[]): Promise<DoneFacts> {
+    const fail = (what: string) => (error: unknown) => { this.log(`chat ${id.slice(0, 8)}: check-in ${what}: ${error instanceof Error ? error.message : String(error)}`); return undefined; };
+    const runs = await this.source.dutyRuns?.(id).catch(fail("duty runs")) ?? [];
+    const cwd = rows.find(row => row.id === id)?.cwd;
+    const numbers = boardPrs(board);
+    const prs = cwd && numbers.length ? await this.source.prs?.(cwd, numbers).catch(fail("PR states")) : undefined;
+    return { metrics: metricFacts(runs), prs: prs ?? new Map() };
   }
 
   /**

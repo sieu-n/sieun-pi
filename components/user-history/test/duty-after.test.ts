@@ -25,8 +25,13 @@ const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/duty-after-01a1164b.
   d6: { id: string; name: string; ownerWords: string; goal: string; metrics: DutyMetric[]; onMiss: string }; d6Runs: [DutyRunRecord, DutyRunRecord];
 };
 const [P421, P453] = FIXTURE.boardAfter.plan as [PlanItem, PlanItem];
-/** p421 as the 05:03 run found it: doing, with every step it had then closed. */
-const lookingDone = (): PlanItem => ({ ...P421, status: "doing", children: P421.children.filter(step => FIXTURE.stepsAt0503.includes(step.id)) });
+/**
+ * p421 as the 05:03 run found it: doing, with every step it had then closed. That run flagged it for its closed steps; a check-in now reads an
+ * item as done only on a fact, so here it fixes d6's usable_pct_1h, which d6's last run met.
+ */
+const lookingDone = (): PlanItem => ({ ...P421, status: "doing", duty: "d6/usable_pct_1h", children: P421.children.filter(step => FIXTURE.stepsAt0503.includes(step.id)) });
+const d6Met: DutyRunRecord = { duty: "d6", at: FIXTURE.checkInRun.at - 60_000, trigger: "schedule", ms: 1, verdict: "met", summary: "",
+  metrics: { usable_pct_1h: { value: 100, target: 100, op: ">=", met: true } } };
 
 function fakeJobs() {
   const calls: string[] = [];
@@ -56,7 +61,7 @@ async function checkInChat(now: { at: number }) {
   const duties = new Duties(store, { isChat: async id => id === "c1", jobs: jobs.host, now: () => now.at, tickMs: 0,
     checkIn: { view: async () => null, run: async () => {}, set: async () => null, measure: id => chats!.measureCheckIn(id) } });
   chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
-    { ...source(dir, { c1: board }, () => now.at), duty: duties });
+    { ...source(dir, { c1: board }, () => now.at), duty: duties, dutyRuns: async () => [d6Met] });
   await chats.adopt();
   threads.fire().live("c1", []);
   await chats.settled();
@@ -71,8 +76,7 @@ test("after-job measure: 01a1164b's 05:03 check-in missed finished_open on p421;
   const [run] = await store.runs("c1");
   assert.equal(run!.verdict, "missed");
   assert.deepEqual(run!.metrics.finished_open, { value: 1, target: 0, op: "<=", met: false });
-  assert.deepEqual(run!.flagged!.filter(slice => slice.kind === "finished_open").map(slice => slice.excerpt),
-    FIXTURE.checkInRun.flagged!.filter(slice => slice.kind === "finished_open" && slice.item === P421.id).map(slice => slice.excerpt), "the same finding the live run flagged");
+  assert.deepEqual(run!.flagged!.filter(slice => slice.kind === "finished_open").map(slice => slice.item), [P421.id], "the item the live run flagged");
   const memory = await readFile(join(dir, "check-ins.json"), "utf8");
 
   board.plan = [P421];

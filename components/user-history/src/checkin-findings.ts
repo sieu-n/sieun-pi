@@ -1,5 +1,5 @@
 import type { HandoffRule } from "./chat-corrections.ts";
-import { looksDone, pathLike } from "./checkin-done.ts";
+import { type DoneReason, pathLike, type PrState } from "./checkin-done.ts";
 import { CHECK_IN_DUTY_ID, type Duty } from "./shared/chat-duties.ts";
 import { areaWords, BOARD_LIMITS, buildGoal, coversStep, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, planJob, prNumbers, requirementGaps, stepGo, targetState,
   type TargetState, targetText, walkItems } from "./shared/chat-board.ts";
@@ -31,7 +31,7 @@ export function openUnderClosed(board: ChatBoard | null): { item: PlanItem; pare
 }
 export const underClosedLine = ({ item, parent }: { item: PlanItem; parent: PlanItem }): string =>
   `${item.id} ${quote(item.text)} is open under closed ${parent.id}: close it, or reopen ${parent.id} if the work is real`;
-export const lookDoneLine = ({ item, reason }: { item: PlanItem; reason: string }): string => `${item.id} ${quote(item.text)} ${item.status}, looks done: ${reason}`;
+export const lookDoneLine = ({ item, reason }: { item: PlanItem; reason: string }): string => `${item.id} ${quote(item.text)} ${item.status}, looks done: ${reason}; close it with a note that names this`;
 /**
  * A goal with a target never moves under another item, since board-apply refuses a target below the top level (`GOAL_ONLY`): launch main bro
  * 10-15 14:08Z was told to move p125 and p126, its top-level d1 and d2 duty metric items, "with plan_update parent", and p126 carries d2's target.
@@ -338,14 +338,23 @@ export const PROGRESS_MS = 60 * 60_000;
  * step whose owner sleeps on a board.wake for a run that is queued or running (`JobFact.wake`), as a waitFor naming that run is. Frontend bro
  * 10-15: the 20:31, 20:46 and 21:02 KST check-ins read no_progress 1 for p145 alone, whose job slept on a wake for verify-dev run 38724412490
  * from 20:01 KST while the run's jobs waited for pool-light and m1-air runners; the step's waitFor named no run.
+ * Finished work is progress before anyone closes its step (`finished`): an open item that looks done by a fact of the last PROGRESS_MS (its
+ * duty metric met, its PRs merged), or a PR an open item names in its text or note that merged in that hour. Slack green guy 10-15: job email
+ * confirm loss merged #258 at 10:57Z and its deploy was READY, p144 stayed doing until the check-in closed it at about 11:58Z, and the 11:18Z
+ * check-in read no_progress 1.
  */
 export interface NoProgress { moving: StepView[] }
 export function noProgress(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, since: number,
   rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number, train?: Train,
-  queued: ReadonlyMap<string, unknown> = new Map()): NoProgress | null {
+  queued: ReadonlyMap<string, unknown> = new Map(),
+  finished: { done: readonly DoneReason[]; prs: ReadonlyMap<string, PrState> } = { done: [], prs: new Map() }): NoProgress | null {
   if (now - since < PROGRESS_MS) return null;
-  let done = false;
-  walkItems(board?.plan ?? [], item => { if (item.status === "done" && (memos[item.id]?.doneAt ?? 0) >= now - PROGRESS_MS) done = true; });
+  const recentMs = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
+  let done = finished.done.some(found => recentMs(found.at));
+  walkItems(board?.plan ?? [], item => {
+    if (item.status === "done" && recentMs(memos[item.id]?.doneAt)) done = true;
+    if (OPEN.has(item.status) && prNumbers(`${item.text}\n${item.note ?? ""}`).some(pr => recentMs(finished.prs.get(pr)?.mergedAt))) done = true;
+  });
   if (done) return null;
   const held = (view: StepView): boolean => view.item.status === "blocked" || view.cls === "foryou" || Date.parse(view.item.waitUntil ?? "") > now ||
     (!view.mine && view.owner?.key.startsWith("thread:") === true) || waitTarget(view.item.waitFor, rows, self) !== undefined ||
@@ -808,7 +817,7 @@ export function goalGapLine({ goal, target, state, live }: GoalGap): string {
  * For you todo, no wait) that does not look done (that one needs a check and a close, not a job). A goal with a live job, or with only waiting
  * and For you steps, is not idle. Board order, with its orphan steps.
  */
-export function idleGoals(steps: readonly StepView[]): { goal: { id: string; text: string }; steps: StepView[] }[] {
+export function idleGoals(steps: readonly StepView[], done: ReadonlySet<string> = new Set()): { goal: { id: string; text: string }; steps: StepView[] }[] {
   const goals = new Map<string, { goal: { id: string; text: string }; views: StepView[] }>();
   for (const view of steps) {
     const goal = view.goal ?? { id: view.item.id, text: view.item.text };
@@ -816,7 +825,7 @@ export function idleGoals(steps: readonly StepView[]): { goal: { id: string; tex
     entry.views.push(view);
     goals.set(goal.id, entry);
   }
-  const unowned = (view: StepView) => view.cls === "orphan" && looksDone(view.item) === null;
+  const unowned = (view: StepView) => view.cls === "orphan" && !done.has(view.item.id);
   return [...goals.values()].filter(({ views }) => !views.some(view => view.cls === "live") && views.some(unowned))
     .map(({ goal, views }) => ({ goal, steps: views.filter(unowned) }));
 }

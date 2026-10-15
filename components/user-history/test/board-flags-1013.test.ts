@@ -114,10 +114,10 @@ test("redundant heartbeats: a heartbeat that spawns a job is no check-in work fo
 test("an open item that looks done gets finished_open only, not orphan_steps too (AI harness p1, 10-13 23:07 KST)", () => {
   const AH = ["01a1164b-4a2d-742d-b27a-82f086ed0200", "AI harness developer environment VP"];
   const board = boardOf([
-    item("p1", "The chat app feels like messaging a VP", { children: [item("p86", "Chats get better every day", { status: "done" }), item("p342", "Prime's idle cleanup", { status: "dropped" })] }),
+    item("p1", "The chat app feels like messaging a VP", { duty: "d1/chat_health", children: [item("p86", "Chats get better every day", { status: "done" }), item("p342", "Prime's idle cleanup", { status: "dropped" })] }),
     item("p300", "A repo goal", { status: "doing", children: [item("p301", "Write the stale-file guard")] }),
   ], RUN_AT - 4 * HOUR);
-  const precheck = checkInPrecheck(undefined, [], board, RUN_AT, { self: AH });
+  const precheck = checkInPrecheck(undefined, [], board, RUN_AT, { self: AH, doneFacts: { metrics: new Map([["d1/chat_health", { met: true, at: RUN_AT }]]), prs: new Map() } });
   const { metrics, flagged } = convergenceMisses(AH[0]!, precheck.steps, precheck, {}, 15 * MIN, RUN_AT);
   assert.equal(metrics.finished_open, 1);
   assert.deepEqual(flagged.filter(slice => slice.kind === "orphan_steps").map(slice => slice.item), ["p301"], "p301 has no owner and is not done, so it stays an orphan");
