@@ -8,7 +8,7 @@ import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
 import { advanceMotion, askChats, asksOf, type Footprints, MOTION, parseNettop, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { HARNESS_TURNS, longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
+import { HARNESS_GB, HARNESS_TURNS, longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
 // The owner, 10-14 09:15Z: "look it's you and ops guys responsibility that this machine is usable." The watch records a line a minute with ops
 // guy's pressure feed and the harness numbers, and the hourly Mac stays usable duty judges each minute on USABLE; the worker footprint is a detail.
@@ -338,19 +338,19 @@ test("quiet sessions: each line names every session quiet past TARGET.idleMinute
   assert.match(flagged!.find(item => item.kind === "now")!.excerpt, /3 quiet over 30 min \(wp-engage-crawl \(01a0f7cb, .*\) quiet 58 min, open ipython call since 01:58Z; /);
 });
 
-test("measure: an unusable minute with more than 14 agent turns working is the harness's, one with 14 or fewer names the feed's largest owners", () => {
-  assert.equal(HARNESS_TURNS, 14);
+test("measure: an unusable minute with more than 14 agent turns working or 16 GB in Prime workers is the harness's, one under both names the feed's largest owners", () => {
+  assert.deepEqual([HARNESS_TURNS, HARNESS_GB], [14, 16]);
   const owners = [{ owner: "browser:chrome", label: "Google Chrome", gb: 6.5 }, { owner: "chat:01a1164b", label: "AI harness", gb: 2.2 }, { owner: "pm2:virev-demo", label: "virev-demo", gb: 2.1 }];
   const queue = (working: number) => ({ working, queued: 30, held: 0, pressure: "critical", oldestWaitS: 60, oldestTree: null });
   const lines = [watch(40, { usable: { ...thrash, owners }, queue: queue(22) }), watch(41, { usable: { ...thrash, owners }, queue: queue(15) }),
-    watch(42, { usable: { ...thrash, owners }, queue: queue(14) }), watch(43, { queue: queue(20) })];
+    watch(42, { usable: { ...thrash, owners }, queue: queue(14) }), watch(43, { queue: queue(20) }), watch(44, { usable: thrash, queue: queue(3), workerGb: 25.9 })];
   const { metrics, flagged } = measure(lines, NOW);
-  assert.equal(metrics.harness_unusable_min_1h, 2, "22 and 15 turns; 20 turns on a usable minute counts nowhere");
+  assert.equal(metrics.harness_unusable_min_1h, 3, "22 and 15 turns, and 25.9 GB of workers at 3 turns; 20 turns on a usable minute counts nowhere");
   assert.equal(metrics.other_unusable_min_1h, 1);
-  assert.equal(metrics.usable_pct_1h, 25);
-  assert.match(flagged!.find(item => item.kind === "harness_side")!.excerpt, /^2 unusable minutes had more than 14 agent turns working \(\d\d:\d\d 22 turns, pi-pool critical; \d\d:\d\d 15 turns, pi-pool critical\)/);
+  assert.equal(metrics.usable_pct_1h, 20);
+  assert.match(flagged!.find(item => item.kind === "harness_side")!.excerpt, /^3 unusable minutes had more than 14 agent turns working or more than 16 GB in Prime workers \(\d\d:\d\d 22 turns, pi-pool critical, 2 workers 4 GB, 10 live sessions; .*\d\d:\d\d 3 turns, pi-pool critical, 2 workers 25\.9 GB/);
   assert.equal(flagged!.find(item => item.kind === "other_side")!.excerpt,
-    "1 unusable minutes had 14 or fewer agent turns working; the feed's largest owners then: Google Chrome 6.5 GB (app or owner), AI harness 2.2 GB (harness), virev-demo 2.1 GB (app or owner).");
+    "1 unusable minutes had 14 or fewer agent turns working and 16 GB or less in Prime workers; the feed's largest owners then: Google Chrome 6.5 GB (app or owner), AI harness 2.2 GB (harness), virev-demo 2.1 GB (app or owner).");
   const feed = parseFeed({ ...FEED, owners: Array.from({ length: 12 }, (_, i) => ({ owner: `other:p${i}`, label: `p${i}`, mem_gb: i, cpu_pct: 0, procs: 1 })) }, NOW)!;
   assert.deepEqual(feed.owners!.map(owner => owner.gb), [11, 10, 9, 8, 7, 6, 5, 4], "the feed's 8 largest owners, largest first");
 });

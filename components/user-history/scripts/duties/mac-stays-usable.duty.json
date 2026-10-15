@@ -1,7 +1,7 @@
 {
   "name": "Mac stays usable",
   "ownerWords": "look it's you and ops guys responsibility that this machine is usable.\n\nyou -harness side of bullshit, ops guy -app side of bullshit fixing monitoring\n\nsetup a 60min cadence duty",
-  "goal": "No minute of the hour reads unusable in ops guy's pressure feed (pressure critical, 6,000+ swapouts a second, or kernel_task over one core). A minute with more than 14 agent turns working is the harness's, else the apps' or owner's: at 14 or fewer, 0 of 567 minutes on 10-14 and 10-15 were unusable.",
+  "goal": "No minute of the hour reads unusable in ops guy's pressure feed (pressure critical, 6,000+ swapouts a second, or kernel_task over one core). A minute is the harness's with over 14 agent turns working or over 16 GB in Prime workers: under both, 0 of 337 measured minutes on 10-14 and 10-15 were unusable.",
   "metrics": [
     {
       "key": "usable_pct_1h",
@@ -13,14 +13,14 @@
     },
     {
       "key": "harness_unusable_min_1h",
-      "label": "Unusable minutes this hour with over 14 agent turns working (harness side)",
+      "label": "Unusable minutes with over 14 agent turns or 16 GB in Prime workers (harness)",
       "op": "<=",
       "target": 0,
       "unit": " min"
     },
     {
       "key": "other_unusable_min_1h",
-      "label": "Unusable minutes this hour with 14 or fewer turns working (app or owner side)",
+      "label": "Unusable minutes with the harness under both lines (app or owner side)",
       "op": "<=",
       "target": 0,
       "unit": " min"
@@ -40,5 +40,5 @@
     "cwd": "../..",
     "timeoutMs": 60000
   },
-  "onMiss": "Push until green; never only report. Read the detail's harness_side and other_side lines. Harness minutes: start one fix job (await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\")) or message the live one an earlier run started. It finds why pi-pool let over 14 turns work (level read, owner turns, limit step, borrows), fixes pi-pool or the chat service with a test, commits, releases, and presses Run now until it reads 0. Other-side minutes: a harness owner on top gets the same job; an app owner (pm2, docker, dev server) or the owner's own app: tell this chat one line with the minutes, the owner and its GB for ops guy. Never kill a session mid-turn, restart the Prime daemon or :5182, or message another chat. All on target: end with no message."
+  "onMiss": "Push until green; never only report. Read the detail's harness_side and other_side lines. Harness minutes: start one fix job (await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\")) or message the live one an earlier run started. It finds which trees put turns over 14 or workers over 16 GB (fan-outs, live jobs, pi-pool admits), fixes pi-pool or the chat service with a test, commits, releases, and presses Run now until it reads 0. Other-side minutes: an app owner (pm2, docker, dev server) or the owner's own app on top: tell this chat one line with the minutes, the owner and its GB for ops guy. Never kill a session mid-turn, restart the Prime daemon or :5182, or message another chat. All on target: end with no message."
 }
