@@ -66,7 +66,7 @@ const source: CheckInSource = {
   settings: checkInSettings(await copy("check-in-settings.json")), tickMs: 0, noReportGraceMs: 60 * 60_000,
   corrections: () => corrections.read(), duties: id => duties.list(id), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
   dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
-  duty: { async checkIn(_id, run) {
+  duty: { async lastCheckIn() { return undefined; }, async checkIn(_id, run) {
     printed = true;
     process.stdout.write(`classes ${JSON.stringify(run.classes)}\n`);
     for (const slice of run.output.flagged) process.stdout.write(`flagged ${slice.kind} ${slice.item ?? ""} ${slice.excerpt}\n`);
