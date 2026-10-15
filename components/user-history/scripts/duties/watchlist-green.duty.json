@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "owner_green_pct",
-      "label": "Owner's prod Watchlist accounts with posts and collabs read ok in 24 h",
+      "label": "Watchlist accounts read ok in 24 h",
       "op": ">=",
       "target": 100,
       "unit": "%",

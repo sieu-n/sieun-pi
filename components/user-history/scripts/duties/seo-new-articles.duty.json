@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "days_since_new_article",
-      "label": "Days since a new blog article or edition went live and returned 200",
+      "label": "Days since a new article went live",
       "op": "<=",
       "target": 1,
       "unit": " days",

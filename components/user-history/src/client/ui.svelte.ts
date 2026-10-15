@@ -53,8 +53,6 @@ class Ui {
   sidebarView = $state<SidebarView>(stored("chat.sidebarView") === "tags" ? "tags" : "current");
   agentsOpen = $state(false);
   bookmarksOpen = $state(false);
-  /** The notepad panel beside the open thread; the choice holds across threads and reloads. */
-  notesOpen = $state(stored("chat.notesOpen") === "1");
   /** The Heartbeats section at the top of the sidebar; open unless folded, and the choice holds across reloads. */
   /** Optional Agents view columns the person turned on or off; Status and Title always show. */
   agentsColumns = $state<Record<string, boolean>>(storedColumns());
@@ -64,7 +62,6 @@ class Ui {
   /** Threads an agent started through `rlm.create_session` are out of the sidebar unless this is on; the choice holds across reloads. */
   agentCreatedShown = $state(stored("chat.agentCreatedShown") === "1");
   setAgentCreatedShown(shown: boolean): void { this.agentCreatedShown = shown; store("chat.agentCreatedShown", shown ? "1" : "0"); }
-  setNotesOpen(open: boolean): void { this.notesOpen = open; store("chat.notesOpen", open ? "1" : "0"); }
   /** The Board panel beside a chat on a wide window; open unless folded, and the choice holds across chats and reloads. */
   boardOpen = $state(stored("chat.boardOpen") !== "0");
   setBoardOpen(open: boolean): void { this.boardOpen = open; store("chat.boardOpen", open ? "1" : "0"); }

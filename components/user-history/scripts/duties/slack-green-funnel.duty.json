@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "on_topic_visit_to_paid_pct",
-      "label": "On-topic real visitors who start paying within 28 days",
+      "label": "On-topic visitors who pay within 28 days",
       "op": ">=",
       "target": 1,
       "unit": "%",

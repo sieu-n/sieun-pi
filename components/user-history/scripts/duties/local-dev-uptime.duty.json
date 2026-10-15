@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "servers_not_answering",
-      "label": "Local servers not answering 200 within 5 s",
+      "label": "Local servers not answering",
       "op": "<=",
       "target": 0,
       "headline": true

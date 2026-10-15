@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "faults_without_job",
-      "label": "Open faults with no live design job",
+      "label": "Open faults with no design job",
       "op": "<=",
       "target": 0,
       "headline": true

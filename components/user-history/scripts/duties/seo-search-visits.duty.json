@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "goal_visits_d7",
-      "label": "Blog and tool visits a day, 7-day average, no bots or staff (PostHog)",
+      "label": "Search traffic, 7-day average of blog and tool visits, no bots or staff (PostHog)",
       "op": ">=",
       "target": 10000,
       "unit": " visits/day",

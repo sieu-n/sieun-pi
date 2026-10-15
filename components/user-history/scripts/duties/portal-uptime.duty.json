@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "probe_uptime_24h_pct",
-      "label": "Prod uptime of api.virev.ai and its crawler, last 24 h",
+      "label": "Portal prod uptime, last 24 h",
       "op": ">=",
       "target": 100,
       "unit": "%",

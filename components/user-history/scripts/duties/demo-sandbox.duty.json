@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "walk_problems",
-      "label": "Problems in the offline walk of the 6 apps (outside calls, fails, no walk 24 h)",
+      "label": "Problems in the demo walk (outside calls, fails, no walk in 24 h)",
       "op": "<=",
       "target": 0,
       "headline": true

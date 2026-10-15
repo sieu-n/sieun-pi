@@ -377,9 +377,9 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
     "the whole status and messages, restarts or starts the jobs and threads that stalled, died or are missing. End state: every open step is done, " +
     "moved by a live owner, or blocked only by an open For you todo, and no goal stays open only to wait on another thread's work.",
   metrics: [
-    { key: "stuck_steps", label: "Open steps nobody is moving, with no For you todo or owner ruling holding them", op: "<=", target: 0, headline: true },
-    { key: "finished_open", label: "Goals or steps that look done but are still open", op: "<=", target: 0 },
-    { key: "stalled_steps", label: "Steps stuck on the same wait for over 2 hours", op: "<=", target: 0 },
-    { key: "no_progress", label: "Nothing got done in the last hour while work was open", op: "<=", target: 0 },
+    { key: "stuck_steps", label: "Open steps nobody is moving (no live job, For you todo or owner ruling holds them)", op: "<=", target: 0, headline: true },
+    { key: "finished_open", label: "Done items still open", op: "<=", target: 0 },
+    { key: "stalled_steps", label: "Steps waiting over 2 hours on the same thing", op: "<=", target: 0 },
+    { key: "no_progress", label: "No progress in the last hour while work was open", op: "<=", target: 0 },
   ],
 };

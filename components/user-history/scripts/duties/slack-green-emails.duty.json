@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "bad_sends_24h",
-      "label": "Wrong or annoying emails sent, last 24 h",
+      "label": "Bad emails sent in the last day",
       "op": "<=",
       "target": 0,
       "headline": true

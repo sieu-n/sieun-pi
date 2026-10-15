@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "checks_failed",
-      "label": "Skill and tool checks that fail",
+      "label": "Skill and tool checks failing",
       "op": "<=",
       "target": 0,
       "headline": true

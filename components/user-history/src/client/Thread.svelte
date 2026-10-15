@@ -211,8 +211,6 @@
           </Popover>
         {/if}
       {/if}
-      <button type="button" class="icon-button" class:on={ui.notesOpen} aria-label="Notepad" aria-pressed={ui.notesOpen} use:tooltip={ui.notesOpen ? "Hide notepad" : "Notepad"}
-        onclick={() => ui.setNotesOpen(!ui.notesOpen)}><Icon name="note" size={16} /></button>
       <button type="button" class="icon-button" aria-label="Prompt" aria-haspopup="dialog" use:tooltip={"The prompt the model gets"} onclick={() => { promptOpen = !promptOpen; }}><Icon name="layers" size={16} /></button>
       {#if row && !row.archived}
         <button type="button" class="icon-button" aria-label="Archive thread" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
@@ -341,7 +339,7 @@
   .foot .column { padding: 4px 20px 8px; }
   .status-line { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px 6px 0; font-size: 12px; color: var(--text-faint); }
   .status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Read mode covers the sidebar and notepad; menus and dialogs still open above it in the top layer. */
+  /* Read mode covers the sidebar; menus and dialogs still open above it in the top layer. */
   .thread.read { position: fixed; inset: 0; z-index: 35; background: var(--bg); --column: 720px; }
   .thread.read .head { height: 48px; padding: 0 14px; border-bottom-color: transparent; }
   .thread.read :global(.title) { font-weight: 500; color: var(--text-muted); }

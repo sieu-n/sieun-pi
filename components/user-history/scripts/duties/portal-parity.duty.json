@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "prod_working_pct",
-      "label": "Crawler routes that work through api.virev.ai (prod)",
+      "label": "Crawler routes working on prod",
       "op": ">=",
       "target": 100,
       "unit": "%",

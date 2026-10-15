@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "commits_not_live",
-      "label": "Main commits over 20 min old not live on the Railway worker or Vercel",
+      "label": "Main commits not live after 20 min",
       "op": "<=",
       "target": 0,
       "headline": true

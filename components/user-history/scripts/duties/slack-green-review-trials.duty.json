@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "reviews_waiting_24h",
-      "label": "Review posts over 24 h old with no trial decision",
+      "label": "Review posts waiting over a day for a trial decision",
       "op": "<=",
       "target": 0,
       "unit": " posts",

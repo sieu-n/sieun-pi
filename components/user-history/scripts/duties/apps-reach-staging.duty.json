@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "apps_picked",
-      "label": "Prospect apps whose owner pick is on Staging (of 6)",
+      "label": "Apps with the owner's pick on staging, of 6",
       "op": ">=",
       "target": 6,
       "unit": " apps",

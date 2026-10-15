@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "prod_capacity_pages_day",
-      "label": "Pages prod can read a day: healthy accounts times the proven safe rate",
+      "label": "Pages prod can read a day (healthy accounts times the safe rate)",
       "op": ">=",
       "target": 100000,
       "unit": " pages",

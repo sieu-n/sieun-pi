@@ -97,8 +97,8 @@ const NOT_PLURAL = new Set(["is", "was", "has", "this", "its", "his", "plus", "l
 const namesThings = (what: string): boolean => what.split(/\s+/).slice(0, 4).some(word => /[a-z][^s]s$/i.test(word) && !NOT_PLURAL.has(word.toLowerCase()));
 
 /**
- * The headline number in plain words for the duty's one line: "4% of the last hour's minutes the Mac was usable", "17 open steps nobody is
- * moving", "Prod uptime of api.virev.ai and its crawler is 99.2%". The label is cut at its first colon, bracket or comma, so the detail keeps
+ * The headline number in plain words for the duty's one line: "4% of the last hour the Mac was usable", "17 open steps nobody is moving",
+ * "2 days since a new article went live", "Portal prod uptime is 99.2%". The label is cut at its first colon, bracket or comma, so the detail keeps
  * the rest. Null before the headline is measured or for a duty with none.
  */
 export function headlineWords(view: DutyView): string | null {
@@ -115,6 +115,8 @@ export function headlineWords(view: DutyView): string | null {
     if (namesThings(what)) return `${value}% of ${lowerFirst(what)}`;
   }
   const unit = result.value === 1 && / \w+s$/.test(metric.unit) ? metric.unit.slice(0, -1) : metric.unit;
+  const noun = /^ ([a-z]{3,})$/.exec(metric.unit)?.[1];
+  if (noun && what.toLowerCase().startsWith(noun.replace(/s$/, ""))) return `${value} ${lowerFirst(what).replace(/^(\w+?)s\b/, (word, stem: string) => result.value === 1 ? stem : word)}`;
   return `${what} is ${value}${unit}`;
 }
 

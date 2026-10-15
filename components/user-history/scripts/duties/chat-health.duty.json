@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "duties_green_pct",
-      "label": "Duties in all chats whose last run met every target",
+      "label": "Duties in all chats that are green",
       "op": ">=",
       "target": 100,
       "unit": "%",

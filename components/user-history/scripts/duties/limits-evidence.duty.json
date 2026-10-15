@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "unbacked_left",
-      "label": "Unbacked limits still in the code",
+      "label": "Unbacked limits in the code",
       "op": "<=",
       "target": 0,
       "headline": true

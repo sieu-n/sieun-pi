@@ -162,12 +162,6 @@ The account menu lists the pool accounts for the model's provider with their usa
 
 ![Account menu on the new chat screen](docs/images/frontend-account-picker.png)
 
-### Notepad
-
-Each thread has a private notepad beside it. It saves as you type, and the agent never sees it.
-
-![Notepad beside a thread](docs/images/frontend-notepad.png)
-
 ### Chats, mentions, Reply and duties
 
 A chat keeps a board with a plan, questions for you under For you, duties and notes. [Chat mode](#3-chat-mode) covers it in full.

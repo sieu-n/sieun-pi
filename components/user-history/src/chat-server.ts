@@ -14,7 +14,6 @@ import { parsePublicOrigin } from "./chat-origin.ts";
 import { FeedSockets } from "./chat-socket.ts";
 import { isPriority, isProgress, LabelError, TAG_NAME_MAX } from "./chat-labels.ts";
 import { AccountLogins, listAccounts, PoolError, runAccountAction, UsageRefreshes } from "./chat-pool.ts";
-import { NOTE_MAX } from "./chat-notes.ts";
 import { BOOKMARK_TEXT_MAX, type BookmarkAction } from "./shared/bookmarks.ts";
 import { ThreadError } from "./chat-threads.ts";
 import { type CheckInActor, type CheckInChange, CheckInRefused, OWNER_UI, UNKNOWN_AGENT, validCheckInEvery } from "./checkin-settings.ts";
@@ -584,7 +583,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
             }
             return;
           }
-          if (action === "note") { json(res, 200, await backend.notes.get(id)); return; }
           if (action === "tool-output") {
             const toolCallId = url.searchParams.get("toolCallId") ?? "";
             if (!toolCallId || toolCallId.length > 512) throw new RequestError(400, "Choose a tool call.");
@@ -803,7 +801,6 @@ export async function startChatServer({ backend, bundle, port, capability, csrfT
           json(res, 200, slack.view(origin === `http://${host}`)); return;
         }
         case "older": await backend.threads.older(id); break;
-        case "note": json(res, 200, await backend.notes.set(id, text(body.text, "note", NOTE_MAX))); return;
         case "board": {
           // The owner's side of the chat board: todo ops. The chat then gets a steer that says in plain words what the owner did.
           if (!(await backend.chats.ids()).has(id)) throw new RequestError(404, "This thread is not a chat.");

@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "usable_pct_1h",
-      "label": "Share of the last hour's minutes the Mac was usable",
+      "label": "Share of the last hour the Mac was usable",
       "op": ">=",
       "target": 100,
       "unit": "%",

@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "skills_to_prune",
-      "label": "Skills to prune or fix: broken, unread for 14 days, or a duplicate",
+      "label": "Skills to prune or fix (broken, unread 14 days, or a duplicate)",
       "op": "<=",
       "target": 0,
       "headline": true

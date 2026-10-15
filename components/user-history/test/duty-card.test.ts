@@ -108,14 +108,17 @@ test("the row's one line is the headline number in words and what is being done,
   }
 });
 
-test("headline words: a share reads 'N% of', a count leads with its number, any other unit reads 'is', and the label stops at its first comma", () => {
+test("headline words: a share reads 'N% of', a count or a unit the label starts with leads with its number, any other unit reads 'is', and the label stops at its first comma or bracket", () => {
   const { after: _after, ...plain } = fixture.runs.d6![0]!;
   const words = (label: string, value: number, unit?: string) => headlineWords({ ...view("d6", [{ ...plain, metrics: { k: { value, met: false, target: 1, op: ">=" as const } }, verdict: "missed" as const }]),
     duty: { ...fixture.duties.find(duty => duty.id === "d6")!, metrics: [{ key: "k", label, op: ">=", target: 1, ...(unit ? { unit } : {}), headline: true }] } });
   assert.equal(words("Duties in all chats whose last run met every target", 21.2, "%"), "21.2% of duties in all chats whose last run met every target");
   assert.equal(words("Prod uptime of api.virev.ai and its crawler, last 24 h", 99.25, "%"), "Prod uptime of api.virev.ai and its crawler is 99.3%");
   assert.equal(words("Wiki problems: unlisted pages, broken links", 2), "2 wiki problems");
-  assert.equal(words("Blog and tool visits a day, 7-day average, no bots or staff (PostHog)", 12345.6, " visits/day"), "Blog and tool visits a day is 12,345.6 visits/day");
-  assert.equal(words("Days since a new blog article or edition went live and returned 200", 1, " days"), "Days since a new blog article or edition went live and returned 200 is 1 day");
+  assert.equal(words("Search traffic, 7-day average of blog and tool visits", 12345.6, " visits/day"), "Search traffic is 12,345.6 visits/day");
+  assert.equal(words("Days since a new article went live", 1, " days"), "1 day since a new article went live");
+  assert.equal(words("Days since a new article went live", 3, " days"), "3 days since a new article went live");
+  assert.equal(words("Pages prod can read a day (healthy accounts times the safe rate)", 90000, " pages"), "90,000 pages prod can read a day");
+  assert.equal(words("Worst delay from one failed proxy call", 3, " s"), "Worst delay from one failed proxy call is 3 s");
   assert.equal(words("Main commits over 20 min old not live on the Railway worker or Vercel", 3), "3 main commits over 20 min old not live on the Railway worker or Vercel");
 });

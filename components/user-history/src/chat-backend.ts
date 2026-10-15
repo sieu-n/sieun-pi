@@ -4,7 +4,6 @@ import { defaultDaemonSocketPath, getAgentDir, SettingsManager } from "prime-age
 import { BoardStore } from "./chat-board-store.ts";
 import { Catalog } from "./chat-catalog.ts";
 import { ChatLabels } from "./chat-labels.ts";
-import { ChatNotes } from "./chat-notes.ts";
 import { ChatBookmarks } from "./chat-bookmarks.ts";
 import { ChatReadState } from "./chat-read-state.ts";
 import { ThreadHub } from "./chat-threads.ts";
@@ -54,7 +53,6 @@ export interface ChatBackend {
   threads: ThreadHub;
   readState: ChatReadState;
   labels: ChatLabels;
-  notes: ChatNotes;
   /** `<dataDir>/bookmarks.json`: chat messages the owner saved, listed in the Bookmarks view. */
   bookmarks: ChatBookmarks;
   defaults: ChatDefaultsStore;
@@ -121,7 +119,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dataDir = options.dataDir ?? join(agentDir, "browser-chat");
   const readState = new ChatReadState(join(dataDir, "read-state.json"));
   const labels = new ChatLabels(join(dataDir, "labels.json"));
-  const notes = new ChatNotes(join(dataDir, "notes.json"));
   const bookmarks = new ChatBookmarks(join(dataDir, "bookmarks.json"));
   const defaults = chatDefaultsStore(agentDir);
   const newChat = newChatStore(join(dataDir, "new-chat.json"));
@@ -309,7 +306,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   void poolPriorities.sync();
   let closed = false;
   return {
-    catalog, threads, readState, labels, notes, bookmarks, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
+    catalog, threads, readState, labels, bookmarks, defaults, newChat, chats, boards, created, usage, duties, poolPriorities,
     agentQueue: agentQueue(id => catalog.title(id), defaults),
     prompt: async id => {
       const sessionFile = (await catalog.summary(id))?.sessionFile;
