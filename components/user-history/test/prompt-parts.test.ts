@@ -69,3 +69,15 @@ test("textHeight: one line per newline, long lines wrap at the column count", ()
   assert.equal(textHeight("x".repeat(220), 110, 18), 36);
   assert.equal(textHeight("", 110, 18), 18);
 });
+
+test("outline: consecutive tool definitions share one row that jumps to the first", () => {
+  const tool = (id: string, name: string, tokens: number): PromptPart => ({ id, kind: "tools", label: "Tool: " + name, source: "tool definition", text: "x", tokens });
+  const result = outline({ ...view, parts: [view.parts[0]!, tool("t1", "ipython", 50), tool("t2", "chat_board", 70), view.parts[1]!, tool("t3", "job_reply", 5), view.parts[2]!] });
+  assert.deepEqual(result.rows.map(row => [row.first.id, row.label, row.tokens]), [
+    ["p0", "Base system prompt", 300],
+    ["t1", "Tools, 2 definitions", 120],
+    ["p1", "Chat brief", 100],
+    ["t3", "Tool: job_reply", 5],
+  ]);
+  assert.equal(result.head.length, 5);
+});

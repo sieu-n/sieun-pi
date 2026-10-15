@@ -67,7 +67,7 @@
 <Modal title="Prompt" icon="layers" width="min(1120px, 94vw)" height="90vh" tall full={narrow} {onclose}>
   {#snippet header()}
     {#if view}
-      <span class="summary">{compactNumber(view.totalTokens)} tokens, {view.origin.kind === "exact" ? "captured payload" : "rebuilt"}</span>
+      <span class="summary">About {compactNumber(view.totalTokens)} tokens{#if view.measuredInputTokens !== undefined}, {compactNumber(view.measuredInputTokens)} measured{/if}, {view.origin.kind === "exact" ? "captured payload" : "rebuilt"}</span>
       <button type="button" class="button small" onclick={() => root?.scrollIntoView({ block: "start" })}><Icon name="chevronUp" size={12} />Parts</button>
     {/if}
   {/snippet}
@@ -76,7 +76,7 @@
     {:else if !view || !parts}<p class="note"><span class="spinner tiny"></span> Reading the prompt</p>
     {:else}
       <div class="facts">
-        <div><strong>{tokens(view.totalTokens)}</strong> tokens in {view.parts.length} parts, counted as characters / 4{#if view.measuredInputTokens !== undefined}. The last call measured <strong>{tokens(view.measuredInputTokens)}</strong> input tokens{/if}.</div>
+        <div>About <strong>{tokens(view.totalTokens)}</strong> tokens in {view.parts.length} parts, estimated as characters / 4{#if view.measuredInputTokens !== undefined}. The provider measured <strong>{tokens(view.measuredInputTokens)}</strong> input tokens on the last call{/if}. Every count below is the same estimate.</div>
         {#if view.origin.kind === "exact"}
           <div class="origin">The exact payload sent to {view.origin.provider} {view.origin.model} at {when(view.origin.capturedAt)}.</div>
         {:else}
@@ -87,9 +87,9 @@
 
       <nav class="outline" aria-label="Prompt parts">
         <div class="group-head"><span>Before the conversation</span><span class="tok">{tokens(parts.headTokens)}</span>{@render bar(parts.headTokens)}</div>
-        {#each parts.head as part (part.id)}
-          <button type="button" class="row" onclick={() => void jump(part.id)}>
-            <span class="label" title={part.label}>{part.label}</span><span class="source" title={part.source}>{part.source}</span><span class="tok">{tokens(part.tokens)}</span>{@render bar(part.tokens)}
+        {#each parts.rows as row (row.first.id)}
+          <button type="button" class="row" onclick={() => void jump(row.first.id)}>
+            <span class="label" title={row.label}>{row.label}</span><span class="source" title={row.source}>{row.source}</span><span class="tok">{tokens(row.tokens)}</span>{@render bar(row.tokens)}
           </button>
         {/each}
         {#if !parts.head.length}<div class="row empty">None in this view.</div>{/if}

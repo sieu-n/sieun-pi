@@ -13,7 +13,22 @@ export const groupName = (label: string): string => label.split(/: | from | for 
 
 export type PartGroup = { name: string; speaker: Speaker; count: number; tokens: number };
 
-export type Outline = { head: PromptPart[]; messages: PromptPart[]; groups: PartGroup[]; headTokens: number; messageTokens: number };
+export type HeadRow = { first: PromptPart; label: string; source: string; tokens: number };
+
+export type Outline = { head: PromptPart[]; rows: HeadRow[]; messages: PromptPart[]; groups: PartGroup[]; headTokens: number; messageTokens: number };
+
+function headRows(head: readonly PromptPart[]): HeadRow[] {
+  const rows: (HeadRow & { tools: number })[] = [];
+  for (const part of head) {
+    const last = rows.at(-1);
+    if (part.kind === "tools" && last?.tools) {
+      last.tools += 1;
+      last.tokens += part.tokens;
+      last.label = `Tools, ${last.tools} definitions`;
+    } else rows.push({ first: part, label: part.label, source: part.source, tokens: part.tokens, tools: part.kind === "tools" ? 1 : 0 });
+  }
+  return rows.map(({ tools: _, ...row }) => row);
+}
 
 export function outline(view: PromptView): Outline {
   const head = view.parts.filter(part => !part.role);
@@ -26,7 +41,7 @@ export function outline(view: PromptView): Outline {
     else groups.set(name, { name, speaker: speakerOf(part), count: 1, tokens: part.tokens });
   }
   const sum = (parts: PromptPart[]) => parts.reduce((total, part) => total + part.tokens, 0);
-  return { head, messages, groups: [...groups.values()].sort((a, b) => b.tokens - a.tokens), headTokens: sum(head), messageTokens: sum(messages) };
+  return { head, rows: headRows(head), messages, groups: [...groups.values()].sort((a, b) => b.tokens - a.tokens), headTokens: sum(head), messageTokens: sum(messages) };
 }
 
 export function share(tokens: number, total: number): string {
