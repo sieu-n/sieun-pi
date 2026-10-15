@@ -6,8 +6,10 @@ vm.swapusage, and the pages the compressor occupies (vm_stat's "Pages occupied b
 compressor"). On 10-14 18:2x KST at load 54 a read took 0.009 ms after a 3 ms
 `import ctypes`, where `sysctl -n` took 126 ms, `vm_stat` 69 ms and
 `memory_pressure -Q` 171 ms (sessions/2026/10/14/1815-mac-stays-usable/pressure-governor/read_cost.py).
+It also reads the chat service's per-tree memory sample (read_tree_memory), so the
+governor can hold the turns of a tree that holds over a quarter of RAM.
 """
-import json, os, struct, time
+import datetime, json, os, struct, time
 
 LEVELS = ("ok", "high", "critical")
 # kern.memorystatus_vm_pressure_level holds xnu's NOTE_MEMORYSTATUS_PRESSURE_* bits:
@@ -88,6 +90,37 @@ def parse_feed(data):
         return None
     compressed, used, total = (int(gb * 2 ** 30) for gb in gbs)
     return {"kernel": FEED_LEVELS[level], "compressor": compressed, "swap_used": used, "swap_total": total, "swapouts": swapouts}
+
+
+# The chat service's per-tree memory sample (components/user-history), rewritten every
+# minute: the trees whose processes hold over a quarter of RAM (TREE_SHARE in
+# ~/.cache/virev/tree-guard-contract.md). On 10-15 00:40-00:53Z the VP of SEO tree held
+# 16 to 25.5 GiB of 32 while the Mac swapped out up to 25,873 pages a second.
+TREE_MEMORY = os.path.join(os.path.expanduser("~"), ".cache", "virev", "tree-memory.json")
+# A sample this old is stale and holds nothing: three missed one-minute writes, the same
+# three-missed-writes rule as FEED_FRESH_SEC.
+TREE_MEMORY_FRESH_SEC = 180
+
+
+def read_tree_memory(path=TREE_MEMORY, now=None):
+    """{root session id: its `over` record} from the chat service's tree-memory.json, or {}
+    when the file is missing, unreadable, not v 1, or its ts is TREE_MEMORY_FRESH_SEC or more old."""
+    try:
+        with open(path) as f:
+            return parse_tree_memory(json.load(f), time.time() if now is None else now)
+    except (OSError, ValueError):
+        return {}
+
+
+def parse_tree_memory(data, now):
+    """The `over` records of one v 1 sample by root, {} for a stale sample or one this does not know."""
+    if not isinstance(data, dict) or data.get("v") != 1 or not isinstance(data.get("ts"), str) or not isinstance(data.get("over"), list):
+        return {}
+    at = datetime.datetime.fromisoformat(data["ts"].replace("Z", "+00:00"))
+    at = at if at.tzinfo else at.replace(tzinfo=datetime.timezone.utc)
+    if now - at.timestamp() >= TREE_MEMORY_FRESH_SEC:
+        return {}
+    return {o["root"]: o for o in data["over"] if isinstance(o, dict) and isinstance(o.get("root"), str) and o["root"]}
 
 
 def gb_ok(value, top=1024):

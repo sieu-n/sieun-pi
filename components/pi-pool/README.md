@@ -545,6 +545,11 @@ A held turn keeps its place and takes a free slot under the lower limit only aft
 The level is read again once `state["turns"]["pressure"]` is 30 s old, a read costs about 0.01 ms, and a lost record is read again at the next admit.
 `queue --json` carries `pressure` with the level, the reading, the limit, the held count and the last level change (`changed`, with its reading and the limits before and after), and pi-pool.log gets a `pressure_level` line for each change and a `pressure_limit` line for each step of the limit inside one level.
 After a read at high or critical, the limit climbs back toward `mac_working_max` by at most 4 slots a read (`turns.LIMIT_STEP`), so one calm read between two critical ones opens 4 slots, and a calm Mac is back at 30 in four reads.
+While the level is high or critical, the governor also holds any tree that the chat service lists in `~/.cache/virev/tree-memory.json` as over a quarter of RAM (the share in `~/.cache/virev/tree-guard-contract.md`).
+Every queued turn of that tree waits, whatever its class, with no 141 s release, no one-per-tree pass and no borrow, until the tree leaves the file or the level is ok.
+The tree's root session still runs, so the chat can read the service's notice and stop its job, and an owner turn never queues.
+The file is read with the level, once every 30 s, and a missing, malformed or 180 s old file holds nothing; on 10-15 00:40-00:53Z the VP of SEO tree held 16 to 25.5 GiB while the Mac swapped out up to 25,873 pages a second.
+`queue --json`'s `pressure` lists the held root session ids in `memory_trees` and counts their turns in `held`, and pi-pool.log gets a `tree_memory_held` line when a tree starts being held and a `tree_memory_released` line when it stops (`tests/test_tree_memory.py`).
 `pi-pool set memory_governor_on 0` keeps the limits as set under any pressure.
 
 Rollout: `install.py` runs the Python tests and checks only the token hooks, and a running session keeps the extension code it loaded until the session is rebuilt, so the queue reaches each session at its next load, reload or worker restart.
