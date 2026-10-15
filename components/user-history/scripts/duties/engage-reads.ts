@@ -3,8 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import {
-  type DsQuery, DAY, HOUR, PG, PROM, SOURCE_DEADLINE_MS, grafanaClient, num, promInstant, readGrafanaAuth, round1, settle, sqlRows, ssh,
-  unmeasuredFlag, utc,
+  type DsQuery, DAY, HOUR, PG, PROM, SOURCE_DEADLINE_MS, UNMEASURED, grafanaClient, missValue, num, promInstant, readGrafanaAuth, round1, sqlRows, ssh, utc,
 } from "./estate-reads.ts";
 
 /**
@@ -27,8 +26,8 @@ import {
 const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.duty.json");
 
 /*
- * Targets in engage-reads.duty.json and their sources:
- * - prod_capacity_pages_day >= 100000: the owner, 10-09, "read 100k pages/day". Capacity is the healthy prod accounts times provenRate(). Healthy is
+ * Targets in engage-reads.duty.json and their sources (owner rule c75: one headline and at most 3 supporting metrics):
+ * - prod_capacity_pages_day >= 100000 is the headline: the owner, 10-09, "read 100k pages/day". Capacity is the healthy prod accounts times provenRate(). Healthy is
  *   admissible_now plus the active accounts whose proxy session binding ran out while the renewal loop retries it: Instagram did nothing to
  *   them, and they read again on their own once the proxy gives them an exit. A GeoNode outage from 23:05Z on 10-14 let 20 bindings lapse
  *   and dropped admissible_now from 122 to 106 with 0 Instagram verdicts; the proxy outage is the proxy's alert, not lost account capacity.
@@ -36,11 +35,13 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  * - deep_walk_ok_pct >= 99: the owner, 10-09, "reliable logged-in apis including pagination api for up to years". Measured 10-14 02:30Z on
  *   prod: of the 365-day collab walks, 8,960 of 8,978 in the last 72 h reached their end (99.8%), by UTC day 10-12 5,259 of 5,259 and 10-13
  *   3,664 of 3,681 (99.5%). The target is the 72 h value rounded down to a whole percent.
- * - canary_accounts_short <= 0: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
- * - staging_due_wait_min <= 60: staging stays a working test bed, so a due staging collab read starts within an hour. The owner keeps about
+ * - canary_accounts_short, staging_due_wait_min and source_errors are run detail: report() writes them to the output, the server does not judge
+ *   them, and the canary_short and staging_stall flags carry them to the fix jobs.
+ * - canary_accounts_short: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
+ * - staging_due_wait_min: staging stays a working test bed, so a due staging collab read starts within STAGING_WAIT_MIN. The owner keeps about
  *   10 monitored accounts on staging (t17, 10-12), so staging reads come in bursts hours apart by design, and the time since the last read
  *   says nothing; the wait of the oldest due, unpaused, unclaimed tagged row does. The 60 min is the launch VP's number, not the owner's.
- * - source_errors <= 0: a source that failed is reported, never shown as green.
+ * - A source that failed fails the run: every metric it feeds (FEEDS below) reads unmeasured() and a source_error flag names it.
  * The schedule is daily (owner rule c66). The duty's timeoutMs 120000 is the runner's own cap, PRECHECK_TIMEOUT_MS in src/shared/chat-duties.ts.
  */
 
@@ -62,15 +63,24 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
   bad_password: "bad_password",
   budget_meter_failed: "ours", exit_pinned: "ours", exit_unusable: "ours", geo_blocked: "ours", proxy_blocked: "ours", transport: "ours",
 };
-/** The data each metric reads; a metric whose source failed is not measured. */
-export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
-  prod_capacity_pages_day: ["prod read log", "prod accounts", "prod healthy gauge", "prod lapsed bindings"],
-  staging_due_wait_min: ["staging due reads"],
-  fleet_ig_killed_pct: ["prod accounts", "prod config"], canary_ig_deaths_1h: ["prod accounts", "prod config"],
-  canary_accounts_short: ["prod accounts", "prod config"],
-  deep_walk_ok_pct: ["prod deep walks"],
-};
+/** The staging stall line's limit: the oldest due staging collab read waits at most this long. The launch VP's number. */
+export const STAGING_WAIT_MIN = 60;
 export type Source = "grafana auth" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks";
+/**
+ * The judged metrics each source feeds; a failed source makes each of them read unmeasured(). The staging sources feed only detail lines, so
+ * they fail the headline, the number a run is judged on, and an unread source never leaves the run green.
+ */
+export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
+  "grafana auth": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
+  "prod read log": ["prod_capacity_pages_day"], "prod healthy gauge": ["prod_capacity_pages_day"], "prod lapsed bindings": ["prod_capacity_pages_day"],
+  "prod accounts": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
+  "prod config": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
+  "prod death gauge": ["fleet_ig_killed_pct", "canary_ig_deaths_1h"],
+  "staging read log": ["prod_capacity_pages_day"], "staging due reads": ["prod_capacity_pages_day"], "staging config": ["prod_capacity_pages_day"],
+  "prod deep walks": ["deep_walk_ok_pct"],
+};
+/** The value of a metric a failed source feeds: 0 for an at-least metric (no pages counted, no walk reached), missValue() for an at-most one. */
+export const unmeasured = (metric: Pick<DutyMetric, "op" | "target">): number => metric.op === ">=" ? Math.min(0, metric.target - 1) : missValue(metric);
 
 /** Pages one prod account read on one full UTC day (YYYY-MM-DD). */
 export interface DayPages { day: string; accountId: number; pages: number }
@@ -178,8 +188,8 @@ const fmt = (value: number): string => value.toLocaleString("en-US");
  * 2026-09-23 deploy (config_audit 13588, 13589) that never reopened them (owner rule c63). This line names such a row so the duty run clears
  * it instead of finding it weeks later.
  */
-export function stagingStallFlag(data: EngageData, dutyMetrics: readonly DutyMetric[]): FlaggedSlice | null {
-  const target = dutyMetrics.find(metric => metric.key === "staging_due_wait_min")?.target ?? 60;
+export function stagingStallFlag(data: EngageData): FlaggedSlice | null {
+  const target = STAGING_WAIT_MIN;
   if (!data.stagingDue || data.stagingDue.waitMin <= target || !data.stagingPauses) return null;
   const lastRead = data.stagingLastReadAt ? `last staging page read ${utc(data.stagingLastReadAt)}` : data.stagingLastReadAt === null ? "staging has never read a page" : "last staging read not measured";
   const late = `the oldest of ${data.stagingDue.due} due staging collab reads has waited ${data.stagingDue.waitMin} min (target ${target}), ${lastRead}`;
@@ -196,11 +206,9 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
   const at = now;
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = data.errors.map(error => ({ at, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 400) }));
-  const failed = new Set(data.errors.map(error => error.source));
-  const unmeasured = new Set(Object.keys(NEEDS).filter(key => NEEDS[key]!.some(source => failed.has(source))));
   if (data.stagingLastReadAt === null) flagged.push({ at, kind: "never_read", excerpt: "staging ig_engage_read_log has no read with pages > 0 at all" });
   if (data.stagingDue) metrics.staging_due_wait_min = data.stagingDue.waitMin;
-  const stagingStall = stagingStallFlag(data, dutyMetrics);
+  const stagingStall = stagingStallFlag(data);
   if (stagingStall) flagged.push(stagingStall);
   if (data.accounts && data.config && data.deaths) {
     const active = data.accounts.filter(account => account.status === "active");
@@ -208,7 +216,8 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     const want = canaryWant(active.length);
     const have = active.filter(account => roster.ids.has(account.id)).length;
     metrics.canary_accounts_short = Math.max(0, want - have);
-    flagged.push({ at, kind: "canary", excerpt: `${roster.note}; ${have} of ${active.length} active prod accounts are in it, and ~10% is ${want}` });
+    flagged.push({ at, kind: metrics.canary_accounts_short ? "canary_short" : "canary", excerpt: `${roster.note}; ${have} of ${active.length} active prod accounts are in it, and ~10% is ${want}`
+      + (metrics.canary_accounts_short ? `: add ${metrics.canary_accounts_short} active accounts to engage.rate_test_arms` : "") });
     const day = data.deaths.filter(death => now - death.at <= DAY);
     const killed = (deaths: readonly Death[]): number => new Set(deaths.filter(death => causeOf(death) === "instagram").map(death => death.accountId)).size;
     const fleetKilled = killed(day.filter(death => !roster.ids.has(death.accountId)));
@@ -247,8 +256,14 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     flagged.push({ at, kind: "deep_walks", excerpt: `365-day logged-in collab walks in the last 24 h: ${fmt(data.deepWalks.reached)} reached their end, ${errorStops} stopped on an error${errorStops ? ` (${Object.entries(data.deepWalks.errors).map(([code, count]) => `${code} ${count}`).join(", ")})` : ""}; profile_not_found and fleet_exhausted are not pagination errors and are left out` });
   }
   metrics.source_errors = data.errors.length;
-  const replaced = settle(dutyMetrics, metrics, unmeasured);
-  if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
+  const failed = new Set(data.errors.flatMap(error => FEEDS[error.source]));
+  const replaced: string[] = [];
+  for (const metric of dutyMetrics) {
+    if (!failed.has(metric.key) && Number.isFinite(metrics[metric.key])) continue;
+    metrics[metric.key] = unmeasured(metric);
+    replaced.push(metric.key);
+  }
+  if (replaced.length) flagged.push({ at, kind: "unmeasured", excerpt: `A source failed, so these read 0 (at least) or ${UNMEASURED} (at most) and miss: ${replaced.join(", ")}. Fix the read each source_error line names.`.slice(0, 300) });
   return { metrics, flagged };
 }
 

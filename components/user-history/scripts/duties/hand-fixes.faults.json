@@ -223,8 +223,8 @@
   ],
   "exempt": {
     "config_reason_regex": "^owner: \"|A/B|^Owner order",
-    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec is the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, daily timer 02:30Z), so it is not a hand-started process. A board note on a d3 run reports this duty's own work, not a hand fix.",
-    "note_regex": "self-heal|hand fix audit|design job|Durable software|\\bd3('s)? (first )?run\\b",
+    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec is the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, daily timer 02:30Z), so it is not a hand-started process. A board note on a d3 run or the d3 precheck reports this duty's own work, not a hand fix.",
+    "note_regex": "self-heal|hand fix audit|design job|Durable software|\\bd3('s)? (first )?run\\b|\\bd3 precheck\\b",
     "box_exec_regex": "\\.venv/bin/python - 3600 8$"
   }
 }

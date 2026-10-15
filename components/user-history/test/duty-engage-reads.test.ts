@@ -8,7 +8,8 @@ import { promisify } from "node:util";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { type DutyMetric, judge, parseDutyInput } from "../src/shared/chat-duties.ts";
 import {
-  type Account, type DayPages, type Death, type EngageData, canaryRoster, causeOf, deepWalksOf, lapsedOf, measure, parseArms, provenRate, report, stagingDueOf, stagingPausesOf,
+  type Account, type DayPages, type Death, type EngageData, type Source, FEEDS, canaryRoster, causeOf, deepWalksOf, lapsedOf, measure, parseArms, provenRate, report, stagingDueOf,
+  stagingPausesOf,
 } from "../scripts/duties/engage-reads.ts";
 import { UNMEASURED, frameRows, frameSeries, grafanaAuth, missValue } from "../scripts/duties/estate-reads.ts";
 
@@ -29,12 +30,16 @@ function data(fields: Partial<EngageData> = {}): EngageData {
     config: { "engage.rate_test_arms": "2000:1,2,3,4,5,6,7,8,9,10", "engage.rate_test_started_at": "2026-10-12T03:00:00+00:00" }, ...fields };
 }
 
-test("engage reads: the duty file parses, its name passes c38, and the precheck writes every metric key", async () => {
+test("engage reads: the duty file declares one headline and 3 supporting metrics, and the precheck writes them plus the run detail", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(FILE, "utf8")), "d", NOW);
   assert.deepEqual(duty.schedule, { kind: "daily", at: "09:00" });
   assert.equal(duty.precheck.cwd, "../..");
+  assert.deepEqual(duty.metrics.map(metric => [metric.key, metric.op, metric.target, metric.headline ?? false]), [
+    ["prod_capacity_pages_day", ">=", 100_000, true], ["fleet_ig_killed_pct", "<=", 2, false], ["canary_ig_deaths_1h", "<=", 3, false], ["deep_walk_ok_pct", ">=", 99, false]]);
   const output = report(data(), duty.metrics);
-  assert.deepEqual(Object.keys(output.metrics).sort(), duty.metrics.map(metric => metric.key).sort());
+  assert.deepEqual(Object.keys(output.metrics).sort(), [...duty.metrics.map(metric => metric.key), "canary_accounts_short", "source_errors", "staging_due_wait_min"].sort());
+  const keys = new Set(duty.metrics.map(metric => metric.key));
+  for (const [source, fed] of Object.entries(FEEDS)) assert.ok(fed.length && fed.every(key => keys.has(key)), `${source} feeds a judged metric`);
 });
 
 test("engage reads: 100 healthy accounts at a proven 1,000 pages a day meet every target", async () => {
@@ -120,8 +125,8 @@ test("engage reads: a due staging read waiting past the target names each stagin
     { key: "pause.odd", id: null, at: null, actor: null, reason: null },
   ]);
   const stalled = report(data({ stagingLastReadAt: NOW - 157 * MIN, stagingDue: { due: 4, waitMin: 95.5 }, stagingPauses }), metrics);
-  assert.equal(stalled.metrics.staging_due_wait_min, 95.5);
-  assert.equal(judge(metrics, stalled).verdict, "missed");
+  assert.equal(stalled.metrics.staging_due_wait_min, 95.5, "run detail for the staging fix job");
+  assert.equal(judge(metrics, stalled).verdict, "met", "a staging stall is a flag, not a judged metric");
   const line = stalled.flagged!.find(item => item.kind === "staging_stall")!.excerpt;
   assert.match(line, /^the oldest of 4 due staging collab reads has waited 95\.5 min \(target 60\), last staging page read 10-14 00:23Z\./);
   assert.match(line, /pause\.crawl \(audit 13588, 09-23 09:34Z, LEFT BY A DEPLOY, metal-deploy: metal deploy 737c640e7d8e: admissions closed\)/);
@@ -137,26 +142,41 @@ test("engage reads: a due staging read waiting past the target names each stagin
   assert.throws(() => stagingDueOf("what\n"), /unexpected/);
 });
 
-test("engage reads: a failed source reports source_errors and a value that misses, never a fake good one", async () => {
+test("engage reads: a failed source makes the metrics it feeds miss and flags source_error, never a fake good value", async () => {
   const metrics = await dutyMetrics();
   const { accounts: _accounts, ...rest } = data();
   const output = report({ ...rest, errors: [{ source: "prod accounts", message: "permission denied for table ig_engage_accounts" }] }, metrics);
   assert.equal(output.metrics.source_errors, 1);
-  assert.equal(output.metrics.prod_capacity_pages_day, -UNMEASURED);
+  assert.equal(output.metrics.prod_capacity_pages_day, 0);
   assert.equal(output.metrics.fleet_ig_killed_pct, UNMEASURED);
   assert.equal(output.metrics.deep_walk_ok_pct, 99.5);
   assert.ok(output.flagged!.some(item => item.kind === "unmeasured"));
+  assert.match(output.flagged!.find(item => item.kind === "source_error")!.excerpt, /^prod accounts: permission denied/);
   assert.equal(judge(metrics, output).verdict, "missed");
+  const sources: Source[] = ["staging due reads", "staging config", "prod death gauge", "prod deep walks"];
+  for (const source of sources) {
+    const failed = report(data({ errors: [{ source, message: "ssh: timed out" }] }), metrics);
+    assert.equal(judge(metrics, failed).verdict, "missed", `${source} failing fails the run`);
+  }
+  assert.equal(report(data({ errors: [{ source: "staging due reads", message: "x" }] }), metrics).metrics.prod_capacity_pages_day, 0, "a detail-only source fails the headline");
+});
+
+test("engage reads: a canary short of ~10% is a detail flag that names the accounts to add", async () => {
+  const metrics = await dutyMetrics();
+  const output = report(data({ config: { "engage.rate_test_arms": "2000:1,2,3,4", "engage.rate_test_started_at": "2026-10-12T03:00:00Z" } }), metrics);
+  assert.equal(output.metrics.canary_accounts_short, 6);
+  assert.match(output.flagged!.find(item => item.kind === "canary_short")!.excerpt, /4 of 100 active prod accounts are in it, and ~10% is 10: add 6 active accounts/);
+  assert.equal(judge(metrics, output).verdict, "met");
 });
 
 test("engage reads: no Grafana login still gives a value for every metric, and the deep walks still read", async () => {
   const metrics = await dutyMetrics();
   const output = report(await measure(null, "GRAFANA_ADMIN_PASSWORD is missing", NOW, async () => "reached\t\t10\n", async () => "2\t15\n", async () => "0\t0\t0\n"), metrics);
-  assert.deepEqual(Object.keys(output.metrics).sort(), metrics.map(metric => metric.key).sort());
+  for (const metric of metrics) assert.equal(typeof output.metrics[metric.key], "number", metric.key);
   assert.equal(output.metrics.source_errors, 7);
   assert.equal(output.metrics.deep_walk_ok_pct, 100);
   assert.equal(output.metrics.staging_due_wait_min, 15, "the staging due read comes over ssh, not Grafana");
-  assert.notEqual(judge(metrics, output).verdict, "error");
+  assert.equal(judge(metrics, output).verdict, "missed");
 });
 
 test("engage reads: the roster parser and the cause rule match rate_test.py and engage_deaths.py", () => {

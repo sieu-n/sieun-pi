@@ -21,13 +21,42 @@ const allLive = (): Map<string, RefState> => steps([["p97", "doing"], ["p98", "d
 const clean = async (): Promise<HandData> => ({ now: NOW, registry: await registry(), refs: allLive(), notes: [], audit: { prod: [], staging: [] }, events: { prod: [], staging: [] },
   box: { containers: [{ name: "virev-prod-crawler-worker", status: "running", service: "crawler-worker" }], execs: [] }, mac: [], errors: [] });
 
-test("hand fixes: the duty file parses as a daily duty, and the precheck writes every metric key", async () => {
+test("hand fixes: the duty file has one headline and 3 more metrics, and the precheck writes them plus the detail counts", async () => {
   const duty = parseDutyInput(JSON.parse(await readFile(FILE, "utf8")), "d", NOW);
   assert.equal(duty.name, "Hand fix designs");
   assert.deepEqual(duty.schedule, { kind: "daily", at: "10:30" });
   assert.equal(duty.precheck.cwd, "../..");
   assert.equal(duty.boardGoal, "p96");
-  assert.deepEqual(Object.keys(report(await clean(), duty.metrics).metrics).sort(), duty.metrics.map(metric => metric.key).sort());
+  assert.deepEqual(duty.metrics.map(metric => [metric.key, metric.headline ?? false]),
+    [["faults_without_job", true], ["repeats_after_design", false], ["undesigned_hand_fixes", false], ["hand_run_processes", false]]);
+  assert.deepEqual(Object.keys(report(await clean(), duty.metrics).metrics).sort(),
+    [...duty.metrics.map(metric => metric.key), "session_loops_writing", "unsupervised_box_processes", "source_errors"].sort());
+});
+
+test("hand fixes: hand_run_processes adds the session loops and the box processes, and both stay in the detail", async () => {
+  const metrics = await dutyMetrics();
+  const data = await clean();
+  data.mac = [{ pid: 7, command: "python3 guard.py", script: "guard.py", writes: true }, { pid: 8, command: "python3 read.py", script: "read.py", writes: false }];
+  data.box = { containers: [...data.box!.containers, { name: "virev-staging-copy-oneoff", status: "exited", service: "" }],
+    execs: [{ container: "virev-prod-crawler-worker", service: "crawler-worker", running: true, command: "sh -c exec dotenvx-start.sh uv run python -m src.run.run acquisition-writer" }] };
+  const output = report(data, metrics);
+  assert.deepEqual([output.metrics.hand_run_processes, output.metrics.session_loops_writing, output.metrics.unsupervised_box_processes], [3, 1, 2]);
+  assert.deepEqual(output.flagged!.map(slice => slice.kind).filter(kind => ["session_loops", "box_exec", "box_oneoff"].includes(kind)), ["session_loops", "box_exec", "box_oneoff"]);
+  const result = judge(metrics, output);
+  assert.equal(result.verdict, "missed");
+  assert.ok(!("session_loops_writing" in result.metrics), "the server judges only the 4 duty metrics");
+});
+
+test("hand fixes: an unread registry or board misses the headline and keeps its source_error flag", async () => {
+  const metrics = await dutyMetrics();
+  const data = await clean();
+  delete data.registry;
+  data.errors.push({ source: "registry", message: "hand-fixes.faults.json: Unexpected token" });
+  const output = report(data, metrics);
+  assert.equal(output.metrics.faults_without_job, UNMEASURED);
+  assert.equal(output.metrics.hand_run_processes, 0, "the box and the Mac were read");
+  assert.ok(output.flagged!.some(slice => slice.kind === "source_error" && /^registry:/.test(slice.excerpt)));
+  assert.match(judge(metrics, output).summary, /faults_without_job/);
 });
 
 test("hand fixes: config rows written together count once, and each is skipped, exempt, matched or undesigned", async () => {
@@ -137,7 +166,8 @@ test("hand fixes: a failed source is a miss and keeps its read mark; the first r
   delete data.box;
   data.errors.push({ source: "box", message: "ssh exit 255" });
   const output = report(data, metrics);
-  assert.equal(output.metrics.unsupervised_box_processes, UNMEASURED);
+  assert.equal(output.metrics.hand_run_processes, UNMEASURED);
+  assert.ok(!("unsupervised_box_processes" in output.metrics), "an unread box has no detail count");
   assert.equal(output.metrics.source_errors, 1);
   assert.equal(judge(metrics, output).verdict, "missed");
   assert.match(auditSql(undefined, NOW), /ts >= to_timestamp\(1791855000\)/);
@@ -166,6 +196,7 @@ test("hand fixes: measure reads every source through its deps, and no Grafana lo
   const output = report(data, await dutyMetrics());
   assert.equal(output.metrics.undesigned_hand_fixes, UNMEASURED);
   assert.equal(output.metrics.session_loops_writing, 0);
+  assert.equal(output.metrics.hand_run_processes, 0);
 });
 
 test("hand fixes: a fix before a fault's done_at is no repeat, and the 10-14 misses map to faults or the owner-order exemption", async () => {
@@ -200,5 +231,6 @@ test("hand fixes: a declared box unit's exec and a d3 run note are exempt, while
   assert.deepEqual(handExecs([inventory, writer]), [inventory, writer]);
   assert.deepEqual(classifyNote({ id: "s235", at: NOW, text: "d3 run 1 (sieun-pi 049b270): Live rerun: undesigned 0, repeats 0" }, reg), { kind: "exempt" });
   assert.deepEqual(classifyNote({ id: "s236", at: NOW, text: "d3's first run fixed its precheck. A live rerun shows 0 undesigned" }, reg), { kind: "exempt" });
+  assert.deepEqual(classifyNote({ id: "s238", at: NOW, text: "the d3 precheck changes are live. The open items left: one session loop (ladder22.py in Crawler VP's census canary rerun)" }, reg), { kind: "exempt" });
   assert.ok(reg.faults.find(fault => fault.id === "F2")!.designs.includes("commit:98c14dbd1a"));
 });

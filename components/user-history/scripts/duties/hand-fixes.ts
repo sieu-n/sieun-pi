@@ -27,14 +27,15 @@ export const CHAT = "01a11bd7-072f-7591-ad1d-f123c276cde5";
 const BOX = "root@64.34.205.243";
 
 /*
- * Targets in hand-fixes.duty.json, all <= 0, and their sources:
- * - undesigned_hand_fixes: the owner, 10-14, "자체적으로 고쳐질 수 있게 설계를 바꾸는게 니 역할이야"; a hand fix with no fault has no design.
+ * Targets in hand-fixes.duty.json, all <= 0, and their sources (rule c75: one headline and at most 3 supporting metrics):
+ * - faults_without_job, the headline: rule c63, every hand fix starts a design job, and the owner, 10-14, "자체적으로 고쳐질 수 있게 설계를
+ *   바꾸는게 니 역할이야"; a fault with no live or done design is one nobody is making fix itself.
+ * - undesigned_hand_fixes: a hand fix with no fault has no design.
  * - repeats_after_design: a hand fix for a fault whose design step is done means the design did not fix it.
- * - session_loops_writing: the box stop loop ran in an agent session and was down 08:50-13:52Z on 10-13 when that session hung (board s165).
- * - unsupervised_box_processes: the hand-started acquisition writer (docker exec) died in promote 9's restart and the writer fell 66 min
- *   behind (s160); the one-off copy container's idle prod session held promote 9 (s154).
- * - faults_without_job: rule c63, every hand fix starts a design job.
- * - source_errors: a source that failed is reported, never shown as green.
+ * - hand_run_processes: session_loops_writing plus unsupervised_box_processes, both kept in the run detail. The box stop loop ran in an agent
+ *   session and was down 08:50-13:52Z on 10-13 when that session hung (board s165); the hand-started acquisition writer (docker exec) died in
+ *   promote 9's restart and the writer fell 66 min behind (s160); the one-off copy container's idle prod session held promote 9 (s154).
+ * - source_errors is run detail. A source that failed turns every metric it feeds (NEEDS) into a miss and keeps its source_error flag.
  * The schedule, daily, is the owner's "daily check" in the audit brief. timeoutMs 120000 is the runner's cap, PRECHECK_TIMEOUT_MS.
  */
 
@@ -74,8 +75,7 @@ export type Source = "grafana auth" | "registry" | "board" | "box" | "mac" | `${
 const WORLDS: readonly World[] = ["prod", "staging"];
 const READS: readonly Source[] = ["registry", "board", "prod config", "staging config", "prod engage", "staging engage"];
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
-  undesigned_hand_fixes: READS, repeats_after_design: READS,
-  session_loops_writing: ["mac"], unsupervised_box_processes: ["box"], faults_without_job: ["registry", "board"],
+  faults_without_job: ["registry", "board"], undesigned_hand_fixes: READS, repeats_after_design: READS, hand_run_processes: ["mac", "box"],
 };
 
 /** Words that mark a board note as a report of a hand fix. */
@@ -253,10 +253,12 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     for (const exec of execs) flagged.push({ at, kind: "box_exec", excerpt: `docker exec in ${exec.container}, gone at the next restart: ${exec.command}`.slice(0, 400) });
     if (left.length) flagged.push({ at, kind: "box_oneoff", excerpt: `Containers with no compose service: ${left.map(container => `${container.name} (${container.status})`).join(", ")}` });
   }
-  metrics.source_errors = data.errors.length;
+  if (data.mac && data.box) metrics.hand_run_processes = metrics.session_loops_writing! + metrics.unsupervised_box_processes!;
+  const detail: Record<string, number> = { source_errors: data.errors.length };
+  for (const key of ["session_loops_writing", "unsupervised_box_processes"]) if (key in metrics) detail[key] = metrics[key]!;
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
-  return { metrics, flagged };
+  return { metrics: { ...metrics, ...detail }, flagged };
 }
 
 /** Where the last run stopped, per source; a source that failed keeps its old mark. The first run reads the last 24 h. */
