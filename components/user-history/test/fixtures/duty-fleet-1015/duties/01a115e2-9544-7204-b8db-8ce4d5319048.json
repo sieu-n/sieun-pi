@@ -1,0 +1,257 @@
+{
+ "version": 1,
+ "duties": [
+  {
+   "id": "d1",
+   "name": "Crawler pipeline",
+   "ownerWords": "why is it so inefficient compared to previous version? we did like 70M profiles with waaaay less, web_profile_info is 50kb per page. it returns 12 posts per profile what are we doing\nhave a look at the duties of the `AI harness developer environment VP`. i feel like you need clear duty and plan too keep ensure this in check.",
+   "goal": "Prod reads Instagram profiles fast and cheap. No hour of GeoNode traffic goes over 180 Mbps; the GeoNode proxy use duty holds the 150 Mbps daily average. Each read costs no more proxy, disk writes and CPU than the baseline, and keeps the posts it fetched. Prod never sits paused unless failed jobs, a dead gateway or a supply hold back the pause, and dead letters stay flat.",
+   "metrics": [
+    {
+     "key": "ig_reads_per_s",
+     "label": "Prod Instagram profile reads per second, ok, 24 h",
+     "op": ">=",
+     "target": 230,
+     "unit": "/s"
+    },
+    {
+     "key": "ig_read_success_pct",
+     "label": "Share of prod accounts read whose read answered on some try, 24 h",
+     "op": ">=",
+     "target": 99.5,
+     "unit": "%"
+    },
+    {
+     "key": "geonode_mbps_peak",
+     "label": "GeoNode Mbps in the busiest hour, 24 h",
+     "op": "<=",
+     "target": 180,
+     "unit": " Mbps"
+    },
+    {
+     "key": "proxy_kb_per_job",
+     "label": "Proxy KB on the wire per census job, 24 h",
+     "op": "<=",
+     "target": 82,
+     "unit": " KB"
+    },
+    {
+     "key": "mb_written_per_read",
+     "label": "MB written per read to Postgres WAL, ClickHouse and B2, 24 h",
+     "op": "<=",
+     "target": 1.2,
+     "unit": " MB"
+    },
+    {
+     "key": "cpu_ms_per_read",
+     "label": "Crawl CPU ms per ok Instagram read, image workers left out, 24 h",
+     "op": "<=",
+     "target": 411,
+     "unit": " ms"
+    },
+    {
+     "key": "posts_stored_per_read",
+     "label": "Posts stored per web_profile_info read (it returns up to 12), 24 h",
+     "op": ">=",
+     "target": 8.1
+    },
+    {
+     "key": "paused_minutes",
+     "label": "Minutes prod census spent paused, 24 h",
+     "op": "<=",
+     "target": 0,
+     "unit": " min"
+    },
+    {
+     "key": "dead_letter_growth",
+     "label": "New prod dead letters, 24 h",
+     "op": "<=",
+     "target": 0
+    },
+    {
+     "key": "false_pauses",
+     "label": "Watch pauses no failed jobs, dead gateway or supply hold justified, 24 h",
+     "op": "<=",
+     "target": 0
+    },
+    {
+     "key": "source_errors",
+     "label": "Data sources that failed in this check",
+     "op": "<=",
+     "target": 0
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "08:30"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "scripts/duties/crawler/crawler-pipeline.mjs"
+    ],
+    "cwd": "/Users/sieunpark/Documents/Github/auto-sns-agent",
+    "timeoutMs": 120000
+   },
+   "onMiss": "Read the flagged items. Start one subagent per missed metric to find its cause. Each cause gets a root fix with a test, or an open board step under the right goal that names the cause; a retry or a pause does not close it. Recheck yesterday's fixes against today's value of the metric each named, and reopen any that did not hold. If measured evidence shows a target is wrong, flag it with that evidence. Low reads while prod is paused are a real miss: name the pause key, who set it and why. A source error comes first: fix that source in the precheck. Never pause or unpause prod or write to prod. Reads only: owner_ro catalog stats in Postgres, the two crawler tables in ClickHouse, Prometheus via obs.virev.ai, ssh to us-metal01 at most once per 5 min tagged crawler-pipeline-duty. Ask the metal box owner thread (01a11d24) before any heavier read. Nothing goes to a vendor or outside party.",
+   "boardGoal": "p28",
+   "status": "active",
+   "createdAt": 1791794866662,
+   "updatedAt": 1792022118091,
+   "runCount": 4,
+   "lastRunAt": 1792020623387,
+   "lastSlotAt": 1792020600000
+  },
+  {
+   "id": "d2",
+   "name": "GeoNode proxy use",
+   "ownerWords": "look, even being blocked 50% of time is fine. sirocco should automagically smartly retry, asap. it's rotating proxy so make use of that. `make sensible use of Geonode rotating sticky proxy` this is another duty you must maintain.",
+   "goal": "Prod crawlers use the GeoNode rotating sticky proxy well. A blocked or rate-limited attempt retries at once on a fresh exit, so jobs succeed even when many attempts fail. A page walk holds one exit and one tunnel, and rotates only on a block or a dead exit. One exit answers at most about 20 profile reads. The gateway answers, no supply hold stops the crawl, and the plan carries about 150 Mbps.",
+   "metrics": [
+    {
+     "key": "job_success_pct_worst_lane",
+     "label": "Prod census job success in the worst lane (100+ jobs), 24 h",
+     "op": ">=",
+     "target": 99,
+     "unit": "%"
+    },
+    {
+     "key": "retry_rescue_pct_worst_lane",
+     "label": "Census jobs that failed an attempt and still got an answer, worst lane, 24 h",
+     "op": ">=",
+     "target": 95,
+     "unit": "%"
+    },
+    {
+     "key": "rate_limit_retry_extra_s",
+     "label": "Extra median seconds for an ok job after a 401/429, worst lane, 24 h",
+     "op": "<=",
+     "target": 3,
+     "unit": " s"
+    },
+    {
+     "key": "transport_fail_pct_worst_lane",
+     "label": "Census attempts failing in transport at the GeoNode gateway, worst lane, 24 h",
+     "op": "<=",
+     "target": 1,
+     "unit": "%"
+    },
+    {
+     "key": "proxy_connects_per_request",
+     "label": "New proxy connections per proxied request (proxy_wire_reads lanes), 24 h",
+     "op": "<=",
+     "target": 0.3
+    },
+    {
+     "key": "census_exits_per_walk",
+     "label": "Exits a prod census page walk uses (1 plus rotations), 24 h",
+     "op": "<=",
+     "target": 1.2
+    },
+    {
+     "key": "profile_reads_per_exit_max",
+     "label": "Most profile reads one held exit answered before it rotated, 24 h",
+     "op": "<=",
+     "target": 20
+    },
+    {
+     "key": "supply_hold_minutes",
+     "label": "Minutes a prod proxy supply hold was on, 24 h",
+     "op": "<=",
+     "target": 0,
+     "unit": " min"
+    },
+    {
+     "key": "geonode_mbps_avg",
+     "label": "GeoNode Mbps used by prod, 24 h average, of the 200 Mbps plan",
+     "op": ">=",
+     "target": 150,
+     "unit": " Mbps"
+    },
+    {
+     "key": "source_errors",
+     "label": "Data sources that failed in this check",
+     "op": "<=",
+     "target": 0
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "08:45"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "scripts/duties/crawler/geonode-proxy-use.mjs"
+    ],
+    "cwd": "/Users/sieunpark/Documents/Github/auto-sns-agent",
+    "timeoutMs": 120000
+   },
+   "onMiss": "Read the flagged items. Start one subagent per missed metric to find its cause; each cause gets a root fix with a test, or an open board step under the right goal naming it. A retry, a pause, a lower target or a slower crawl does not close it. Recheck yesterday's fixes against today's values and reopen any that did not hold. If measured evidence shows a target is wrong, flag it with that evidence. Fix a source error in the precheck first. An unmeasured metric is a miss: census_exits_per_walk and profile_reads_per_exit_max wait on the sirocco.sticky meter; wire its counters into the precheck once they reach Prometheus or ClickHouse. Reads only (ClickHouse census and proxy tables, Prometheus via obs.virev.ai, ssh to us-metal01 at most once per 5 min tagged geonode-proxy-use-duty); ask the metal box owner thread (01a11d24) before heavier reads. Never pause, unpause or write prod, never print the GeoNode credential, nothing to a vendor or outside party.",
+   "boardGoal": "p4",
+   "status": "active",
+   "createdAt": 1791806112681,
+   "updatedAt": 1791814959441,
+   "runCount": 4,
+   "lastRunAt": 1792021523366,
+   "lastSlotAt": 1792021500000
+  },
+  {
+   "id": "d3",
+   "name": "Arbitrary limits",
+   "ownerWords": "strip every single every evyer evyer fucking single arbitrary overly safe limit completely existense wipe streamline simplify code from the entire codebase.\ni want daily duty to hunt for these and ferociously remove them aggressively",
+   "goal": "No limit in the repo's code, config or ops scripts lives without a reason. Every cap, threshold, timeout, backoff, budget or quota either cites the measurement, vendor limit or incident behind its number in a `measured:` comment, or is gone. Each day's new unbacked limits are removed by the next run, and the repo count falls to 0.",
+   "metrics": [
+    {
+     "key": "new_unbacked_limits",
+     "label": "Limits added since the last run with no measured reason, still in the code",
+     "op": "<=",
+     "target": 0
+    },
+    {
+     "key": "flagged_left_unbacked",
+     "label": "Limits the last run flagged that are still unbacked",
+     "op": "<=",
+     "target": 0
+    },
+    {
+     "key": "repo_unbacked_limits",
+     "label": "Unbacked limits in the whole repo (code, config, ops scripts)",
+     "op": "<=",
+     "target": 0
+    },
+    {
+     "key": "source_errors",
+     "label": "Data sources that failed in this check",
+     "op": "<=",
+     "target": 0
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "09:00"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "scripts/duties/repo/arbitrary-limits.mjs"
+    ],
+    "cwd": "/Users/sieunpark/Documents/Github/auto-sns-agent",
+    "timeoutMs": 120000
+   },
+   "onMiss": "Fix a source error first. Start one subagent per app with flagged new_limit or still_unbacked items. For each limit: delete it with the code, config keys, docs and tests that exist only for it; or, when a measurement, vendor limit or incident backs the number, add a one-line `measured:` comment citing it. Leave auth and security, billing and credit caps, public API abuse limits and data-integrity guards; mark a missed one `out of scope: <which>`. Never raise or add a limit. Then work down the --list backlog by app. Ship by repo/git-workflow: probe slot from this chat, commit.mjs --object-only --push-ci ci/limits-<date>, commit on green, report the sha and run to this chat. Never push sieun/dev. No local pytest or docker. A bad hit (no limit) is a precheck fix with a test.",
+   "boardGoal": "p124",
+   "status": "active",
+   "createdAt": 1791813739063,
+   "updatedAt": 1791813739063,
+   "runCount": 3,
+   "lastRunAt": 1792022423588,
+   "lastSlotAt": 1792022400000
+  }
+ ],
+ "checkIn": {
+  "createdAt": 1791558595859,
+  "runCount": 334,
+  "lastRunAt": 1792053704423
+ }
+}

@@ -1,0 +1,118 @@
+{
+ "version": 1,
+ "duties": [
+  {
+   "id": "d1",
+   "name": "Search visits grow",
+   "ownerWords": "not bad, but our DR is probably shit, we aint getting any visitors. can you have a meta-level goal and subgoals?\n\nour goal is 10,000 blog/tool visits/day, and 300 sign ups from that. \n\nso you manage Search keyword research, competitor SEO analysis, like posting things on reddit, marketing forums ... to boost our DR, managing analytics and conversion realted to the initial land somewhere -> landing page/product page -> sign up or book a call flow",
+   "goal": "Blog and tool visits on virev.ai climb toward the owner's 10,000 a day, led by Google clicks, and sign-ups whose first page was blog or tools climb toward his 300 a day (t9). Every miss has a live fix job pushing changes. google_clicks_d7 goes to 500 on 11-01, as program/brief.md says.",
+   "metrics": [
+    {
+     "key": "goal_visits_d7",
+     "label": "Blog and tool visits a day, 7-day average, no bots or staff (PostHog)",
+     "op": ">=",
+     "target": 10000,
+     "unit": " visits/day",
+     "headline": true
+    },
+    {
+     "key": "google_clicks_d7",
+     "label": "Google clicks a day, 7-day average, all pages (Search Console)",
+     "op": ">=",
+     "target": 20,
+     "unit": " clicks/day"
+    },
+    {
+     "key": "signups_goal_d28",
+     "label": "Sign-ups a day whose first page was blog or tools, 28 days (Clerk, PostHog)",
+     "op": ">=",
+     "target": 300,
+     "unit": " signups/day"
+    },
+    {
+     "key": "source_errors",
+     "label": "Data sources that failed or were stale (PostHog, Search Console, Clerk)",
+     "op": "<=",
+     "target": 0
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "09:00"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "--import",
+     "tsx",
+     "scripts/duties/seo-search-visits.ts"
+    ],
+    "cwd": "/Users/sieunpark/Documents/Github/sieun-pi/components/user-history",
+    "timeoutMs": 120000
+   },
+   "onMiss": "Every run works in auto-sns-agent's SEO program (apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program), under its brief.md rules. Run `uv run --project scripts/seo seo-goal` and `seo gsc pull` to save the day. Each missed metric gets one live fix job with a board step under p56: goal_visits_d7 and google_clicks_d7 go to \"google clicks lift\" (p58), and signups_goal_d28 to \"blog signups lift\" (p59). A live job (agent_observe.list_agents) gets the new numbers and flagged lines by message; a missing one starts with await rlm.create_session(brief, name=...), and its step's job is set to it. Never start a second copy. Its brief names the metric, value and target, and asks for shipped changes. source_errors: fix the read this run, or start \"seo sources fix\". Never end a run with a missed metric and no live fix job. apps/search stays parked (c40), nothing goes outside (c37), and prod promotes need no ask (c74). Tell the owner the four numbers and what shipped.",
+   "boardGoal": "p56",
+   "status": "active",
+   "createdAt": 1791814714593,
+   "updatedAt": 1792054403662,
+   "runCount": 4,
+   "lastRunAt": 1792054426314,
+   "lastSlotAt": 1792022400000
+  },
+  {
+   "id": "d2",
+   "name": "New articles get indexed",
+   "ownerWords": "keep publishing blog articles daily",
+   "goal": "A new blog article or language edition goes live on virev.ai every day and answers 200, and Google indexes each new one within 3 days. Every miss has a live fix job pushing changes; the older unindexed backlog, IndexNow and the ledger are detail lines.",
+   "metrics": [
+    {
+     "key": "days_since_new_article",
+     "label": "Days since a new blog article or edition went live and returned 200",
+     "op": "<=",
+     "target": 1,
+     "unit": " days",
+     "headline": true
+    },
+    {
+     "key": "new_unindexed_3d",
+     "label": "Articles from the last 14 days still unindexed 3+ days after going live",
+     "op": "<=",
+     "target": 0
+    },
+    {
+     "key": "source_errors",
+     "label": "Data sources that failed (sitemap, pages, Search Console)",
+     "op": "<=",
+     "target": 0
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "10:20"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "--import",
+     "tsx",
+     "scripts/duties/seo-new-articles.ts"
+    ],
+    "cwd": "/Users/sieunpark/Documents/Github/sieun-pi/components/user-history",
+    "timeoutMs": 120000
+   },
+   "onMiss": "Every run works in auto-sns-agent's SEO program (apps/llm-wiki/content/sessions/2026/10/02/0040-virev-seo-agent/program), under its brief.md rules. Each missed metric gets one live fix job with a board step under p40: days_since_new_article goes to \"daily articles ship\", which lands and promotes the next built article or writes the next one from opportunities.md, one subagent per article, and new_unindexed_3d goes to \"crawl demand fix\" (p60). A live job (agent_observe.list_agents) gets the new numbers and flagged lines by message; a missing one starts with await rlm.create_session(brief, name=...), and its step's job is set to it. Never start a second copy. source_errors: fix the read this run, or start \"seo sources fix\". Also run `seo indexnow --new` when the detail lists unsent URLs, and score each overdue ledger check. Never end a run with a missed metric and no live fix job. Nothing goes outside (c37), and prod promotes need no ask (c74).",
+   "boardGoal": "p40",
+   "status": "active",
+   "createdAt": 1791814718593,
+   "updatedAt": 1792054403749,
+   "runCount": 4,
+   "lastRunAt": 1792054426358,
+   "lastSlotAt": 1792027200000
+  }
+ ],
+ "checkIn": {
+  "createdAt": 1791561201450,
+  "runCount": 12,
+  "lastRunAt": 1791633235243
+ }
+}

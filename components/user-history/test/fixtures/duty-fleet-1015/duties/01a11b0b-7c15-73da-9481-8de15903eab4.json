@@ -1,0 +1,205 @@
+{
+ "version": 1,
+ "duties": [
+  {
+   "id": "d1",
+   "name": "Visitors become paying users",
+   "ownerWords": "conversion funnel-this is pretty bad right? have a goal to improve this and lets go wild\n\nalso keep doing experiments on the landing page. in the main My App Dashboard can you setup weekly conversion funnel metrics over time too\n\ni also want onboarding tests. the signup -> add workspace is also super important funnel.",
+   "goal": "1% of on-topic real visitors start Pro or buy the CLI within 28 days of their first visit, about double the best month so far. On the way, over the last 28 full days 2% of on-topic real visitors sign up and 60% of signups connect a Slack workspace, and a home page test runs on real traffic every day.",
+   "metrics": [
+    {
+     "key": "on_topic_visit_to_paid_pct",
+     "label": "On-topic real visitors who start paying within 28 days",
+     "op": ">=",
+     "target": 1,
+     "unit": "%",
+     "headline": true
+    },
+    {
+     "key": "on_topic_visit_to_signup_pct",
+     "label": "On-topic real visitors who sign up, 28 days",
+     "op": ">=",
+     "target": 2,
+     "unit": "%"
+    },
+    {
+     "key": "signup_to_workspace_pct",
+     "label": "Signups who connect a Slack workspace, 28 days",
+     "op": ">=",
+     "target": 60,
+     "unit": "%"
+    },
+    {
+     "key": "home_test_people_24h",
+     "label": "Real people who got a home page test flag, last 24 h",
+     "op": ">=",
+     "target": 20,
+     "unit": " people"
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "09:30"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "--import",
+     "tsx",
+     "scripts/duties/slack-green-funnel.ts"
+    ],
+    "cwd": "/Users/sieunpark/.local/share/sieun-pi-chat/current/components/user-history",
+    "timeoutMs": 120000
+   },
+   "onMiss": "If a source_error slice shows up, fix the precheck or the PostHog key first, then the rest. Else find the step with the widest gap to its target: visit to signup, signup to workspace, or signup to paid (signup_to_paid_pct and the cohort slice in the detail). Weekly rows come from `node --import tsx scripts/duties/slack-green-funnel.ts --weeks 4` in sieun-pi components/user-history. If a live job already works that gap, message it the new numbers and what to try next. Else start one build job for the next experiment or fix on that step, as a PR behind a PostHog flag at 0%, with its merge and launch on the owner's For you todo. Open PRs that wait on the owner are not work on the gap, and no run ends without a job on it. If home_test_people_24h misses, build the next home test (p54) or put the ready one on that todo. Never merge, launch a flag, deploy prod or email users.",
+   "boardGoal": "p48",
+   "status": "active",
+   "createdAt": 1791814705666,
+   "updatedAt": 1792054892133,
+   "runCount": 3,
+   "lastRunAt": 1792024224502,
+   "lastSlotAt": 1792024200000
+  },
+  {
+   "id": "d2",
+   "name": "Reviewers get trials",
+   "ownerWords": "can you do daily check for the review as well?\n\nreview free trial thing i mean",
+   "goal": "Every real review post on slack.green gets a trial decision within 24 h: 14 free days for a clear, real review, or the owner's call on a doubtful one. The owner's two test posts do not count.",
+   "metrics": [
+    {
+     "key": "reviews_waiting_24h",
+     "label": "Review posts over 24 h old with no trial decision",
+     "op": "<=",
+     "target": 0,
+     "unit": " posts",
+     "headline": true
+    },
+    {
+     "key": "source_errors",
+     "label": "Data sources that failed in this check",
+     "op": "<=",
+     "target": 0
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "23:00"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "--import",
+     "tsx",
+     "scripts/duties/slack-green-review-trials.ts"
+    ],
+    "cwd": "/Users/sieunpark/.local/share/sieun-pi-chat/current/components/user-history",
+    "timeoutMs": 120000
+   },
+   "onMiss": "source_errors: fix the precheck or SUPABASE_SERVICE_KEY in slack-green scripts/seo-agent/.env first. Else open each waiting or new review's screenshot URL and read its text. For a clear, real review, grant 14 days with Grant on slack.green/admin/manage in the owner's Aside session (POST /api/admin/manage, action grant_trial with thread_id), then check that trial_extension_days and trial_ends_at changed. Put a doubtful or negative review on the owner's For you todo with its screenshot and text. Never email or message the reviewer. With nothing waiting, end with no message.",
+   "boardGoal": "p48",
+   "status": "active",
+   "createdAt": 1791814707924,
+   "updatedAt": 1792054389770,
+   "runCount": 2,
+   "lastRunAt": 1791986404427,
+   "lastSlotAt": 1791986400000
+  },
+  {
+   "id": "d3",
+   "name": "Slack green emails",
+   "ownerWords": "also your duty is to keep monitor Resend if there are no false-positive emails being sent or we're being annoying.",
+   "goal": "No Slack Green email is wrong or annoying. Wrong is a connect nudge after a workspace is connected, an email to a deleted account, a removed email, or marketing after an opt-out. Annoying is the same email twice in a day or over 2 connect nudges per person. Bounces plus complaints stay under Resend's 4% guide.",
+   "metrics": [
+    {
+     "key": "bad_sends_24h",
+     "label": "Wrong or annoying emails sent, last 24 h",
+     "op": "<=",
+     "target": 0,
+     "headline": true
+    },
+    {
+     "key": "false_positive_sends",
+     "label": "Emails sent to someone they no longer fit, last 24 h",
+     "op": "<=",
+     "target": 0
+    },
+    {
+     "key": "annoying_sends_24h",
+     "label": "Repeat emails or connect nudges past 2 per person, last 24 h",
+     "op": "<=",
+     "target": 0
+    },
+    {
+     "key": "bounce_or_complaint_pct",
+     "label": "Sends that bounced or were marked spam, last 24 h",
+     "op": "<=",
+     "target": 4,
+     "unit": "%"
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "10:00"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "--import",
+     "tsx",
+     "scripts/duties/slack-green-emails.ts"
+    ],
+    "cwd": "/Users/sieunpark/Documents/Github/sieun-pi/components/user-history",
+    "timeoutMs": 120000
+   },
+   "onMiss": "A failed source counts in the headline: fix the precheck or its key first. For each wrong or annoying send flagged, write on p68 the template, the user id (never the address) and why, find the slack-green code path that sent it, and start one fix job that opens a PR, or message the live job that owns that cause. A run with a miss ends with a job on each cause. If one template floods, turn its flag off at once (CONNECT_REMINDER_ENABLED on Railway slack-green-backend or PHONE_SETUP_EMAIL_AUTO_ENABLED on Vercel) and tell the chat. Bounces or complaints over 4%: start one fix job on the cause. The flag change is the only prod change; never email users or merge.",
+   "boardGoal": "p68",
+   "status": "active",
+   "createdAt": 1791942100475,
+   "updatedAt": 1792054388314,
+   "runCount": 1,
+   "lastRunAt": 1792026024699,
+   "lastSlotAt": 1792026000000
+  },
+  {
+   "id": "d4",
+   "name": "Slack green deploys",
+   "ownerWords": "look, YOUR JOB IS TO MAKE SURE THE SOFTWARE IS DURABLE. \uc790\uccb4\uc801\uc73c\ub85c \uace0\uccd0\uc9c8 \uc218 \uc788\uac8c \uc124\uacc4\ub97c \ubc14\uafb8\ub294\uac8c \ub2c8 \uc5ed\ud560\uc774\uc57c",
+   "goal": "Every slack-green main commit is live on the Railway worker (when it changes a railway.toml watch path) and on Vercel production within 20 minutes of its push. A miss heals without a hand fix, because the precheck deploys main's head to the worker once and the duty job fixes the cause in code so the miss does not repeat.",
+   "metrics": [
+    {
+     "key": "commits_not_live",
+     "label": "Main commits over 20 min old not live on the Railway worker or Vercel",
+     "op": "<=",
+     "target": 0,
+     "headline": true
+    }
+   ],
+   "schedule": {
+    "kind": "daily",
+    "at": "03:00"
+   },
+   "precheck": {
+    "command": [
+     "node",
+     "--import",
+     "tsx",
+     "scripts/duties/slack-green-deploys.ts"
+    ],
+    "cwd": "/Users/sieunpark/Documents/Github/sieun-pi/components/user-history",
+    "timeoutMs": 120000
+   },
+   "onMiss": "If a source_error is flagged, fix the precheck or its login first, because the headline is unmeasured until then. For a commit in railway_not_live, redeploy main's head to the worker unless the redeploy flag shows the precheck did it this run. For a commit in vercel_not_live with no deployment, GitHub sent no push event, so push an empty commit through a PR, never `vercel redeploy`. Then start or steer one fix job on the cause, built as a PR, so it does not happen again. For a CI skip the cause is the failing check suite on that commit, and for a failed or stuck build it is the build log. If a live job already targets that cause (agent_observe.list_agents), message it the new commit and status instead of starting a second one. Tell the chat in one line with the commit, the side and the cause. Never merge, and never deploy anything but main's head.",
+   "status": "active",
+   "createdAt": 1791943415388,
+   "updatedAt": 1792054935992,
+   "runCount": 2,
+   "lastRunAt": 1792000812952,
+   "lastSlotAt": 1792000800000
+  }
+ ],
+ "checkIn": {
+  "createdAt": 1791561201427,
+  "runCount": 93,
+  "lastRunAt": 1792052269564
+ }
+}
