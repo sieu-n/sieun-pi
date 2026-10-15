@@ -5,7 +5,24 @@
    "crawler": "POST /api/crawl/fetch",
    "group": "jobs_crawl",
    "portal": [
-    "POST /v1/crawl/web-scraping-api"
+    "POST /v1/crawl/web-scraping-api",
+    "GET /v1/crawl/biolink/page",
+    "GET /v1/crawl/bluesky/post",
+    "GET /v1/crawl/bluesky/profile",
+    "GET /v1/crawl/bluesky/user/posts",
+    "GET /v1/crawl/carrd/page",
+    "GET /v1/crawl/google/news",
+    "GET /v1/crawl/google/play-app",
+    "GET /v1/crawl/hackernews/profile",
+    "GET /v1/crawl/hackernews/search",
+    "GET /v1/crawl/hackernews/story",
+    "GET /v1/crawl/hackernews/story/comments",
+    "GET /v1/crawl/komi/page",
+    "GET /v1/crawl/linktree/page",
+    "GET /v1/crawl/snipfeed/page",
+    "GET /v1/crawl/taplink/page",
+    "GET /v1/crawl/threads/profile",
+    "GET /v1/crawl/x/tweet"
    ]
   },
   {
@@ -21,7 +38,12 @@
    "portal": [
     "GET /v1/youtube/live/channel/videos job",
     "GET /v1/youtube/live/channel/shorts job",
-    "GET /v1/youtube/live/channel/lives job"
+    "GET /v1/youtube/live/channel/lives job",
+    "GET /v1/facebook/live/adlibrary/company/ads job",
+    "GET /v1/facebook/live/adlibrary/search/ads job",
+    "GET /v1/tiktok/live/hashtag job",
+    "GET /v1/tiktok/live/mentions job",
+    "GET /v1/tiktok/live/profile/videos job"
    ]
   },
   {
@@ -34,7 +56,9 @@
   {
    "crawler": "POST /api/jobs/{batch_id}/cancel",
    "group": "jobs_crawl",
-   "portal": []
+   "portal": [
+    "POST /v1/jobs/{job_id}/cancel"
+   ]
   },
   {
    "crawler": "GET /api/jobs/{batch_id}/results",
@@ -200,62 +224,86 @@
   {
    "crawler": "GET /api/live/tiktok/profile/videos",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/profile/videos"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/mentions",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/mentions"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/post",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/post"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/post/transcript",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/post/transcript"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/hashtag",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/hashtag"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/music",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/music"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/search/users",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/search/users"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/profile/followers",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/profile/followers"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/profile/following",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/profile/following"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/profile/playlists",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/profile/playlists"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/post/comments",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/post/comments"
+   ]
   },
   {
    "crawler": "GET /api/live/tiktok/post/related",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/live/post/related"
+   ]
   },
   {
    "crawler": "GET /api/live/youtube/channel",
@@ -309,7 +357,9 @@
   {
    "crawler": "GET /api/live/youtube/community-post",
    "group": "youtube_channel",
-   "portal": []
+   "portal": [
+    "GET /v1/youtube/live/community-post"
+   ]
   },
   {
    "crawler": "GET /api/live/youtube/playlist",
@@ -403,7 +453,9 @@
   {
    "crawler": "POST /api/live/youtube/videos",
    "group": "youtube_video",
-   "portal": []
+   "portal": [
+    "POST /v1/youtube/live/videos"
+   ]
   },
   {
    "crawler": "GET /api/live/linkedin/ad",
@@ -455,7 +507,9 @@
   {
    "crawler": "GET /api/live/linkedin/profile",
    "group": "linkedin",
-   "portal": []
+   "portal": [
+    "GET /v1/linkedin/live/profile"
+   ]
   },
   {
    "crawler": "GET /api/live/linkedin/profile/stats",
@@ -523,17 +577,23 @@
   {
    "crawler": "GET /api/live/facebook/adlibrary/company/ads",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/facebook/live/adlibrary/company/ads"
+   ]
   },
   {
    "crawler": "GET /api/live/facebook/adlibrary/search/ads",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/facebook/live/adlibrary/search/ads"
+   ]
   },
   {
    "crawler": "GET /api/live/facebook/adlibrary/search/companies",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/facebook/live/adlibrary/search/companies"
+   ]
   },
   {
    "crawler": "GET /api/live/facebook/event/details",
@@ -545,12 +605,16 @@
   {
    "crawler": "GET /api/live/facebook/events/search",
    "group": "facebook",
-   "portal": []
+   "portal": [
+    "GET /v1/facebook/live/events/search"
+   ]
   },
   {
    "crawler": "GET /api/live/facebook/group/posts",
    "group": "facebook",
-   "portal": []
+   "portal": [
+    "GET /v1/facebook/live/group/posts"
+   ]
   },
   {
    "crawler": "GET /api/live/facebook/post",
@@ -618,17 +682,23 @@
   {
    "crawler": "GET /api/profiles/{username}/media-bundle",
    "group": "instagram_stored",
-   "portal": []
+   "portal": [
+    "GET /v1/instagram/stored/profile/media"
+   ]
   },
   {
    "crawler": "GET /api/profiles/{username}/full",
    "group": "instagram_stored",
-   "portal": []
+   "portal": [
+    "GET /v1/instagram/stored/profile/full"
+   ]
   },
   {
    "crawler": "GET /api/profiles/{username}/enrichment",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/profile/stored"
+   ]
   },
   {
    "crawler": "POST /api/profiles/{username}/enrich",
@@ -650,82 +720,114 @@
   {
    "crawler": "POST /api/enrich/custom",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "POST /v1/intelligence/custom/profiles"
+   ]
   },
   {
    "crawler": "POST /api/enrich/custom/content",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "POST /v1/intelligence/custom/content"
+   ]
   },
   {
    "crawler": "GET /api/posts/recent-comments",
    "group": "instagram_stored",
-   "portal": []
+   "portal": [
+    "GET /v1/instagram/stored/comments"
+   ]
   },
   {
    "crawler": "GET /api/posts/{shortcode}",
    "group": "instagram_stored",
-   "portal": []
+   "portal": [
+    "GET /v1/instagram/stored/post"
+   ]
   },
   {
    "crawler": "GET /api/posts/{key}/comments",
    "group": "instagram_stored",
-   "portal": []
+   "portal": [
+    "GET /v1/instagram/stored/post/comments"
+   ]
   },
   {
    "crawler": "GET /api/posts/{shortcode}/media-bundle",
    "group": "instagram_stored",
-   "portal": []
+   "portal": [
+    "GET /v1/instagram/stored/post/media"
+   ]
   },
   {
    "crawler": "POST /api/search/profiles",
    "group": "search",
-   "portal": []
+   "portal": [
+    "POST /v1/creators/profiles/search"
+   ]
   },
   {
    "crawler": "POST /api/search/content",
    "group": "search",
-   "portal": []
+   "portal": [
+    "POST /v1/creators/content/search"
+   ]
   },
   {
    "crawler": "POST /api/search/creators",
    "group": "search",
-   "portal": []
+   "portal": [
+    "POST /v1/creators/search"
+   ]
   },
   {
    "crawler": "POST /api/search/creators/mget",
    "group": "search",
-   "portal": []
+   "portal": [
+    "POST /v1/creators/mget"
+   ]
   },
   {
    "crawler": "GET /api/search/filter-options",
    "group": "search",
-   "portal": []
+   "portal": [
+    "GET /v1/creators/filter-options"
+   ]
   },
   {
    "crawler": "GET /api/search/autocomplete",
    "group": "search",
-   "portal": []
+   "portal": [
+    "GET /v1/creators/autocomplete"
+   ]
   },
   {
    "crawler": "GET /api/search/profiles/batch",
    "group": "search",
-   "portal": []
+   "portal": [
+    "GET /v1/creators/profiles"
+   ]
   },
   {
    "crawler": "GET /api/search/profiles/{profile_id}",
    "group": "search",
-   "portal": []
+   "portal": [
+    "GET /v1/creators/profile"
+   ]
   },
   {
    "crawler": "GET /api/search/avatars",
    "group": "search",
-   "portal": []
+   "portal": [
+    "GET /v1/creators/avatars"
+   ]
   },
   {
    "crawler": "POST /api/search/profiles/refresh-status",
    "group": "search",
-   "portal": []
+   "portal": [
+    "POST /v1/creators/profiles/refresh-status"
+   ]
   },
   {
    "crawler": "POST /api/search/profiles/refresh",
@@ -779,22 +881,30 @@
   {
    "crawler": "GET /api/profiles/{username}/contact",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/contact/stored"
+   ]
   },
   {
    "crawler": "GET /api/tiktok/profiles/{username}/contact",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/contact/stored"
+   ]
   },
   {
    "crawler": "GET /api/youtube/profiles/{handle}/contact",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/contact/stored"
+   ]
   },
   {
    "crawler": "POST /api/creators/enrich",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "POST /v1/intelligence/creator/enrich"
+   ]
   },
   {
    "crawler": "GET /api/tiktok/profiles/{username}",
@@ -820,67 +930,93 @@
   {
    "crawler": "GET /api/tiktok/profiles/{username}/mentioned-in",
    "group": "tiktok",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok/mentioned-in"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/products",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/products"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/shops",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/shops"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/categories",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/categories"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/products/{product_id}",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/product"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/products/{product_id}/videos",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/product/videos"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/products/{product_id}/creators",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/product/creators"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/shops/{seller_id}",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/shop"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/shops/{seller_id}/products",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/shop/products"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/shops/{seller_id}/creators",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/shop/creators"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/shops/{seller_id}/videos",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/shop/videos"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/creators/{creator}",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/creator"
+   ]
   },
   {
    "crawler": "GET /api/tiktok-shop/creators/{creator}/videos",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/tiktok_shop/creator/videos"
+   ]
   },
   {
    "crawler": "GET /api/youtube/profiles/{handle}",
@@ -906,7 +1042,9 @@
   {
    "crawler": "GET /api/youtube/videos/{video_id}/comments",
    "group": "youtube_video",
-   "portal": []
+   "portal": [
+    "GET /v1/youtube/video/comments"
+   ]
   },
   {
    "crawler": "GET /api/xiaohongshu/notes/{note_id}",
@@ -935,12 +1073,16 @@
   {
    "crawler": "GET /api/meta-ads/advertisers",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "GET /v1/meta_ads/advertisers"
+   ]
   },
   {
    "crawler": "POST /api/meta-ads/advertisers/lookup",
    "group": "meta_ads_tiktok_shop",
-   "portal": []
+   "portal": [
+    "POST /v1/meta_ads/advertisers/lookup"
+   ]
   },
   {
    "crawler": "POST /api/meta-ads/advertisers/{page_id}/track",
@@ -976,37 +1118,51 @@
   {
    "crawler": "GET /api/brand-research/{username}/creators",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/brand/creators"
+   ]
   },
   {
    "crawler": "GET /api/brand-research/{username}/analytics",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/brand/analytics"
+   ]
   },
   {
    "crawler": "GET /api/research/intel",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/research/questions"
+   ]
   },
   {
    "crawler": "GET /api/research/intel/{question}",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/research/answer"
+   ]
   },
   {
    "crawler": "GET /api/analytics/market",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/market"
+   ]
   },
   {
    "crawler": "GET /api/analytics/creators/{username}/intel",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/creator/intel"
+   ]
   },
   {
    "crawler": "GET /api/analytics/posts/trajectories",
    "group": "enrich_contact_intel",
-   "portal": []
+   "portal": [
+    "GET /v1/intelligence/posts/trajectories"
+   ]
   }
  ]
 }
