@@ -8,7 +8,7 @@ import type { DutyChat, DutyJobHost } from "../src/chat-duty-job.ts";
 import { type CheckInRun, Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import type { EndStateView } from "../src/checkin-end-state.ts";
-import { changeCheckIn, CHECK_IN_MS, chatCheckIn, checkInSettings, OWNER_UI } from "../src/checkin-settings.ts";
+import { changeCheckIn, CHECK_IN_MS, checkInSettings, OWNER_UI } from "../src/checkin-settings.ts";
 import { BRIEF_ITEMS, briefFindings } from "../src/shared/brief-cap.ts";
 import type { DutyJobRef, FlaggedSlice } from "../src/shared/chat-duties.ts";
 import type { ChildAgent, PlanItem } from "../src/shared/types.ts";
@@ -73,15 +73,11 @@ test("the step scan and open-steps notices name at most 3 steps and the detail f
   assert.doesNotMatch(open, /p4/);
 });
 
-test("an agent cannot set a check-in under 120 min; the owner's page can, and an agent's 120 min or more applies", async () => {
+test("the check-in default is 120 min, and an interval an agent sets applies as set (c81: the 120 min floor is a brief rule, not a refusal)", async () => {
   assert.equal(CHECK_IN_MS, 120 * 60_000);
   const agent = { by: "agent" as const, setter: "01a115e2" };
-  assert.deepEqual(changeCheckIn({ everyMs: CHECK_IN_MS }, { everyMs: 15 * 60_000 }, NOW, agent),
-    { refused: "an agent cannot set the check-in under every 120 min; only the owner can, on his page" });
+  assert.deepEqual(changeCheckIn({ everyMs: CHECK_IN_MS }, { everyMs: 180 * 60_000 }, NOW, agent), { setting: { everyMs: 180 * 60_000 } });
   assert.deepEqual(changeCheckIn({ everyMs: CHECK_IN_MS }, { everyMs: 15 * 60_000 }, NOW, OWNER_UI), { setting: { everyMs: 15 * 60_000 } });
-  assert.deepEqual(changeCheckIn({ everyMs: 15 * 60_000 }, { everyMs: 180 * 60_000 }, NOW, agent), { setting: { everyMs: 180 * 60_000 } });
-  const settings = checkInSettings(join(await mkdtemp(join(tmpdir(), "checkin-floor-")), "check-in-settings.json"));
+  const settings = checkInSettings(join(await mkdtemp(join(tmpdir(), "checkin-default-")), "check-in-settings.json"));
   assert.deepEqual(await settings.get("c1"), { everyMs: CHECK_IN_MS }, "the default is 120 min");
-  await assert.rejects(chatCheckIn(settings, "c1", { everyMs: 10 * 60_000 }, NOW), /check_in refused: an agent cannot set the check-in under every 120 min/);
-  assert.deepEqual(await settings.get("c1"), { everyMs: CHECK_IN_MS }, "a refused change writes nothing");
 });

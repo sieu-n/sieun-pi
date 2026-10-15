@@ -92,14 +92,11 @@ export function checkInLine(setting: CheckInSetting, now: number): string {
 export interface CheckInChange { everyMs?: number; pause?: CheckInPause | null }
 
 /**
- * A change applied to a chat's setting at `now`. Whoever writes later wins, with two limits: an agent cannot pause or resume over a pause in
- * force that the owner or the daemon gate made (the refusal says why), and an agent cannot set an interval under CHECK_IN_MS; only the owner's
- * page can. A pause with no author counts as the owner's. An agent's pause, the chat's own or another session's, any agent may change.
+ * A change applied to a chat's setting at `now`. Whoever writes later wins, with one limit: an agent cannot pause or resume over a pause in
+ * force that the owner or the daemon gate made (the refusal says why). An agent keeps the interval at CHECK_IN_MS or more by its brief and
+ * the chat_board tool text, not by a refusal here (c81). A pause with no author counts as the owner's. An agent's pause, the chat's own or another session's, any agent may change.
  */
 export function changeCheckIn(current: CheckInSetting, change: CheckInChange, now: number, actor: CheckInActor): { setting: CheckInSetting } | { refused: string } {
-  if (actor.by === "agent" && change.everyMs !== undefined && change.everyMs < CHECK_IN_MS) {
-    return { refused: `an agent cannot set the check-in under every ${CHECK_IN_MS / 60_000} min; only the owner can, on his page` };
-  }
   const pause = activePause(current, now);
   if (actor.by === "agent" && change.pause !== undefined && pause !== null && current.pausedBy !== "agent") {
     if (current.pausedBy === "daemon") return { refused: "the server paused check-ins while the daemon is slow; they resume on their own" };

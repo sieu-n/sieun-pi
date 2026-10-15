@@ -58,7 +58,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
             required: ["op"],
           },
         },
-        check_in: { type: "object", description: "pause (\"1h\", \"tomorrow\", null resumes) and/or every_minutes (1 to 240)." },
+        check_in: { type: "object", description: "pause (\"1h\", \"tomorrow\", null resumes) and/or every_minutes (120 to 240; never set it under 120, only the owner sets a shorter interval, on his page)." },
       },
     },
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {

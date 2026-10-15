@@ -38,8 +38,6 @@ test("api/threads/:id/check-in: GET reads a chat's setting, POST sets the interv
   try {
     assert.deepEqual(await get("chat1"), { status: 200, body: { everyMs: CHECK_IN_MS, paused: false, nextAt: now, pausedUntil: null, lastAt: null } });
     assert.equal((await get("plain")).status, 404);
-    const agentSet = await post("chat1", { everyMs: 15 * 60_000 });
-    assert.deepEqual([agentSet.status, agentSet.body.error], [409, "check-in refused: an agent cannot set the check-in under every 120 min; only the owner can, on his page"]);
     const set = await post("chat1", { everyMs: 15 * 60_000 }, "token", { "X-Chat-Owner-Ui": "1" });
     assert.equal(set.status, 200, JSON.stringify(set.body));
     assert.equal(set.body.everyMs, 900_000);
