@@ -219,8 +219,9 @@ const correctionId = (value: unknown, field: string): string => {
 };
 /**
  * The tool's arguments: `id` with `mergeInto` folds that entry into another as a repeat; `id` alone marks a fix (rule, enforcedBy, ref, status,
- * handoff); else a new correction (words, rule, theme, enforcedBy, ref, an optional handoff, and an optional `notRepeatOf`, ids or a
- * comma-separated string of them). A fix that names enforcedBy or ref and no status sets the entry active: the fix landed.
+ * handoff); else a new correction (words, rule, theme, ref, an optional enforcedBy that defaults to brief (c81), an optional handoff, and an
+ * optional `notRepeatOf`, ids or a comma-separated string of them). A fix that names enforcedBy or ref and no status sets the entry active: the
+ * fix landed.
  */
 export function parseCorrectionCall(value: unknown): CorrectionCall {
   const input = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
@@ -240,10 +241,15 @@ export function parseCorrectionCall(value: unknown): CorrectionCall {
   const notRepeatOf = (Array.isArray(input.notRepeatOf) ? input.notRepeatOf : typeof input.notRepeatOf === "string" ? input.notRepeatOf.split(",").filter(id => id.trim()) : [])
     .map(id => correctionId(id, "notRepeatOf"));
   return { kind: "add", input: { words: text(input.words, "words"), rule: text(input.rule, "rule").replace(/\s+/g, " "), theme,
-    enforcedBy: oneOf(input.enforcedBy, ENFORCEMENTS, "enforcedBy"), ref: text(input.ref, "ref"), ...handoff, ...(notRepeatOf.length ? { notRepeatOf } : {}) } };
+    enforcedBy: input.enforcedBy === undefined ? "brief" : oneOf(input.enforcedBy, ENFORCEMENTS, "enforcedBy"), ref: text(input.ref, "ref"), ...handoff,
+    ...(notRepeatOf.length ? { notRepeatOf } : {}) } };
 }
 
-/** What the tool tells the chat. A repeat says it is a sev and that the fix must be code or a test. */
+/**
+ * What the tool tells the chat. A repeat asks for the smallest fix that makes agents follow the rule: a brief, skill or prompt line first, and
+ * a code gate only when measured repeats show the text did not hold (c81, owner 10-15: "things like `enforced` here doesn't mean code-level
+ * blocks").
+ */
 export function correctionResult(outcome: CorrectionOutcome): string {
   const { entry } = outcome;
   switch (outcome.kind) {
@@ -255,8 +261,9 @@ export function correctionResult(outcome: CorrectionOutcome): string {
       `${entry.handoff ? `; steps on ${entry.handoff.topics.join(", ")} go to ${entry.handoff.to}` : ""}.`;
     case "repeat": return `Repeat of ${entry.id} "${entry.rule}", first given ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}; ` +
       `the owner has now repeated it ${entry.repeats.length} time${entry.repeats.length === 1 ? "" : "s"}, so ${entry.id} is reopened. ` +
-      `A repeat is a sev: the earlier fix (${entry.enforcedBy}: ${entry.ref}) did not hold. Fix it in code or a test, not only more prompt text: ` +
-      `start a job for it now, and when the fix lands call ${CORRECTION_TOOL} with id "${entry.id}", enforcedBy "code" or "test" and the ref. ` +
+      `The earlier fix (${entry.enforcedBy}: ${entry.ref}) did not hold. Make the smallest change that gets agents to follow the rule: first a ` +
+      `brief, skill or prompt line where agents read it before they act, and a code gate only when measured repeats show the text did not hold, ` +
+      `with those repeats named in the fix (c81). When the fix lands call ${CORRECTION_TOOL} with id "${entry.id}", its enforcedBy and the ref. ` +
       `If the owner gave a different rule, call ${CORRECTION_TOOL} again with notRepeatOf "${entry.id}", which takes this repeat back.`;
   }
 }
@@ -311,7 +318,7 @@ const lastAt = (entry: Correction): string => entry.repeats.at(-1)?.at ?? entry.
 const liveRules = (ledger: Ledger): Correction[] => ledger.corrections.filter(entry => entry.status !== "retired")
   .sort((a, b) => Number(b.status === "reopened") - Number(a.status === "reopened") || lastAt(b).localeCompare(lastAt(a)));
 const fullLine = (entry: Correction): string =>
-  `- ${entry.id}${entry.status === "reopened" ? ` (reopened: the owner repeated it ${entry.repeats.length}x; fix it in code or a test)` : ""} ${entry.rule}` +
+  `- ${entry.id}${entry.status === "reopened" ? ` (reopened: the owner repeated it ${entry.repeats.length}x; make agents follow it, c81)` : ""} ${entry.rule}` +
   (entry.handoff ? ` Steps on ${entry.handoff.topics.join(", ")} belong to ${entry.handoff.to}.` : "");
 /** How many theme words a rule held by code or a test shows. */
 export const TITLE_WORDS = 3;

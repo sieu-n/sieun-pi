@@ -22,7 +22,7 @@ test("budget: the corrections snapshot of a chat stays under 2,200 characters, a
   const ledger = await shape();
   assert.equal(ledger.corrections.length, 52);
   const chat = ledgerPrompt(ledger, BRIEF_CORRECTIONS)!;
-  assert.ok(chat.length <= CHAT_CORRECTIONS_MAX_CHARS, `the chat snapshot is ${chat.length} characters; put the rule in the brief with its id, or land code or a test for it`);
+  assert.ok(chat.length <= CHAT_CORRECTIONS_MAX_CHARS, `the chat snapshot is ${chat.length} characters; put the rule in the brief with its id, or in a skill the chat reads (c81)`);
   const job = jobLedgerPrompt(ledger);
   assert.ok(job.length <= JOB_CORRECTIONS_MAX_CHARS, `the job snapshot is ${job.length} characters`);
 });

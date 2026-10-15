@@ -45,6 +45,7 @@ Everything you send another agent (briefs, relays, answers) is in English. After
 ## Wiki page jobs
 
 1. An llm-wiki page is always written by its own subagent, one page per subagent (c20).
-2. The writer follows `.agents/skills/apps/llm-wiki/references/writing.md` in auto-sns-agent, read with `node scripts/skills/read-skill.mjs apps/llm-wiki/references/writing.md`, and makes `node apps/llm-wiki/scripts/prose-lint.mjs <page>` pass.
-3. The parent reads the page against that file before it links the page to anyone.
-4. The page is in the 메르 style, with numbered short lines of one plain sentence each, many diagrams and images, and no long blog prose.
+2. A brief for a job whose output includes a wiki page names that writer subagent in its `Split:` line, even when the rest of the job stays inline.
+3. The writer follows `.agents/skills/apps/llm-wiki/references/writing.md` in auto-sns-agent, read with `node scripts/skills/read-skill.mjs apps/llm-wiki/references/writing.md`, and makes `node apps/llm-wiki/scripts/prose-lint.mjs <page>` pass.
+4. The parent reads the page against that file before it links the page to anyone.
+5. The page is in the 메르 style, with numbered short lines of one plain sentence each, many diagrams and images, and no long blog prose.

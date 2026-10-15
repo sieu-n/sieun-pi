@@ -17,6 +17,12 @@ const VP: ChatRef = { id: "vp", name: "dev VP" };
 const CI: ChatRef = { id: "ci", name: "VP of CI" };
 const add = (words: string, theme: string, rule = "A rule.", enforcedBy = "brief", ref = "abc1234") => parseCorrectionCall({ words, rule, theme, enforcedBy, ref });
 
+test("c81: a new correction with no enforcedBy is held by the brief, and a bad one is still refused", () => {
+  const call = parseCorrectionCall({ words: "make sure these are enforced", rule: "A wiki write runs in a subagent.", theme: "llm wiki subagent write", ref: "pending" });
+  assert.equal(call.kind === "add" && call.input.enforcedBy, "brief");
+  assert.throws(() => parseCorrectionCall({ words: "x", rule: "y", theme: "a b", enforcedBy: "gate", ref: "z" }), /enforcedBy is one of brief, code, test/);
+});
+
 test("theme: key words drop stop words and fold plurals; a match shares two key words past the generic ones and half the shorter theme", () => {
   assert.deepEqual(themeTokens("Job reports stay folded in the feed, with links"), ["job", "report", "stay", "folded", "feed", "link"]);
   assert.deepEqual(themeTokens(["replies", "Class"]), ["reply", "class"]);
@@ -52,7 +58,9 @@ test("ledger: a new correction is c1 and active; the same words again change not
   assert.deepEqual(ledger.corrections[0]!.repeats, [{ at: "2026-10-09T12:00:00.000Z", chat: VP, words: "where the hell is the link?" }]);
   const text = correctionResult(again);
   assert.match(text, /^Repeat of c1 "A rule\.", first given 2026-10-09 in VP of CI; the owner has now repeated it 1 time, so c1 is reopened\./);
-  assert.match(text, /A repeat is a sev: the earlier fix \(brief: abc1234\) did not hold\. Fix it in code or a test, not only more prompt text/);
+  assert.match(text, /The earlier fix \(brief: abc1234\) did not hold\. Make the smallest change that gets agents to follow the rule: first a brief, skill or prompt line/);
+  assert.match(text, /a code gate only when measured repeats show the text did not hold, with those repeats named in the fix \(c81\)/);
+  assert.doesNotMatch(text, /Fix it in code or a test|enforcedBy "code" or "test"/);
   const fixed = applyCorrection(ledger, parseCorrectionCall({ id: "c1", enforcedBy: "test", ref: "test/x.test.ts" }), VP, "2026-10-09T13:00:00.000Z");
   assert.deepEqual([fixed.entry.status, fixed.entry.enforcedBy, fixed.entry.ref], ["active", "test", "test/x.test.ts"]);
   applyCorrection(ledger, parseCorrectionCall({ id: "c2", status: "retired" }), VP, "2026-10-09T13:00:00.000Z");
@@ -118,7 +126,7 @@ test("ledger prompt: active and reopened rules, reopened first then newest, capp
   const lines = ledgerPrompt(ledger, new Set())!.split("\n");
   assert.match(lines[0]!, /^\[corrections\] The owner's corrections in force, live from the ledger\./);
   assert.ok(lines[0]!.includes(READ_RULE), "the header says how to read a rule in full");
-  assert.equal(lines[1], "- c2 (reopened: the owner repeated it 1x; fix it in code or a test) Rule 2.");
+  assert.equal(lines[1], "- c2 (reopened: the owner repeated it 1x; make agents follow it, c81) Rule 2.");
   assert.equal(lines[2], "- c42 Rule 42.");
   assert.equal(lines.length, 1 + LEDGER_PROMPT_LINES + 1);
   assert.equal(lines.at(-1), "and 2 older ones");
@@ -135,7 +143,7 @@ test("ledger prompt: a rule the brief holds is its id and one landed code or a t
   applyCorrection(ledger, add("w5", "staging deploy confirm ask merge", "Staging needs no ok.", "code", "abc1234"), VP, at(5));
   applyCorrection(ledger, add("w6", "staging deploy confirm", "Staging deploys need no confirm."), VP, at(6));
   assert.deepEqual(ledgerPrompt(ledger, briefCorrections(["Nothing goes outside without his ok (c1)."]))!.split("\n").slice(1), [
-    "- c5 (reopened: the owner repeated it 1x; fix it in code or a test) Staging needs no ok.",
+    "- c5 (reopened: the owner repeated it 1x; make agents follow it, c81) Staging needs no ok.",
     "- c4 Frontend work is 70% build.",
     "- c3 A cache fix ships with a test.",
     "Held by the brief: c1",
@@ -208,7 +216,7 @@ test("extension: correction_add is registered only in a chat; it records a new c
     assert.equal(first.content[0]!.text, "Recorded c1: A handed-off step leaves the plan. (enforced by brief: 9953e20). Every chat reads it from its next model call.");
     const repeat = await tool.execute("t2", { words: "why is it still on the plan", rule: "A handed-off step leaves the plan at once.", theme: "handoff plan leave", enforcedBy: "brief", ref: "x" },
       undefined, undefined, chat.ctx(true));
-    assert.match(repeat.content[0]!.text, /^Repeat of c1 .* A repeat is a sev: .*Fix it in code or a test/);
+    assert.match(repeat.content[0]!.text, /^Repeat of c1 .* did not hold\. Make the smallest change .*\(c81\)/);
     const ledger = await new CorrectionLedger(dataDir).read();
     assert.deepEqual(ledger.corrections.map(entry => [entry.id, entry.status, entry.chat, entry.repeats.length]), [["c1", "reopened", { id: "chat-1", name: "dev VP" }, 1]]);
     await assert.rejects(tool.execute("t3", { words: "x" }, undefined, undefined, chat.ctx(true)), /theme is required/);
@@ -397,7 +405,7 @@ test("brief: one line tells the chat to record each owner correction in the same
   assert.ok(CHAT_BRIEF.includes("When the owner corrects how you work, apply it now and record it with `correction_add` in the same turn."));
   const reference = await readFile(new URL("../../../skills/board/references/corrections.md", import.meta.url), "utf8");
   assert.match(reference, /In the same turn, call `correction_add` with the owner's exact words/);
-  assert.match(reference, /When the tool says repeat, treat it as a sev\. Start a job that fixes it in code or a test/);
+  assert.match(reference, /When the tool says repeat, the earlier fix did not hold\. Make the smallest change that gets agents to follow the rule, first a brief, skill or prompt line/);
   assert.match(reference, /board\.corrections\("c12"\)/);
 });
 
