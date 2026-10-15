@@ -153,13 +153,15 @@ export function closedFixes(before: ChatBoard | null, after: ChatBoard): { step:
 
 /**
  * Whether a fix step's job is at work, from the catalog rows: the chat's agent that owns the step (or carries its job's name or session) is
- * working, its session row works, or it sleeps on a pending board.wake (`asleep`, session ids). A job that ended its turn and waits for nothing is not live.
+ * working or waits in the Mac-wide turn queue (`queued`), its session row works, or it sleeps on a pending board.wake (`asleep`, session ids).
+ * A job that ended its turn and waits for nothing is not live. A queued job reads idle everywhere else: after the 10-15 13:49Z restart the
+ * server opened "fix portal matches crawler api portal vp" 7 times in 39 min, each while the one before waited for a slot.
  */
 export function fixJobLive(item: Pick<PlanItem, "id" | "job" | "sessionId">, chatId: string, rows: readonly SessionRow[], asleep: ReadonlySet<string>): boolean {
   const agents = rows.find(row => row.id === chatId)?.agents ?? [];
   const agent = agents.find(entry => entry.steps.includes(item.id)) ??
     agents.find(entry => (item.sessionId !== undefined && entry.sessionId === item.sessionId) || (item.job !== undefined && (entry.sender === item.job || entry.name === item.job)));
-  if (agent?.state === "working") return true;
+  if (agent?.state === "working" || agent?.queued !== undefined) return true;
   const session = agent?.sessionId ?? item.sessionId ?? rows.find(row => row.name === item.job && !row.archived)?.id;
   if (session === undefined) return false;
   const row = rows.find(candidate => candidate.id === session);
