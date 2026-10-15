@@ -26,6 +26,12 @@ SHELL_HINT = re.compile(
     r"|convex|stripe|vercel|\bvc\b",
     re.I,
 )
+# A git write, as auto-sns-agent's repo guard reads one (DANGEROUS in its scripts/repo/agent/guards/index.mjs). It goes to that
+# guard only when it may touch that repo: the cwd or text names auto-sns-agent, or it pushes, which can name the repo by URL.
+GIT_WRITE = re.compile(
+    r"(?:^|[\s;&|`('\"/])git\s[\s\S]*\b(?:stash|reset|checkout|switch|restore|merge|rebase|pull|clean|worktree|push|add|commit|branch|filter-branch|replace)\b"
+)
+GIT_PUSH = re.compile(r"\bgit\s[\s\S]*\bpush\b")
 MCP_HINT = re.compile(r"send|reply|forward|post|comment|message|submit|create|invite|exec|repl", re.I)
 WRITE = frozenset({"POST", "PUT", "PATCH"})
 GITHUB_REPO = r"^https?://(?:api\.github\.com|[^/?#]+/api/v3)/repos/[^/?#]+/[^/?#]+/"
@@ -122,13 +128,22 @@ def shell_text(args) -> str:
     return " ".join(argv)
 
 
+def touches_repo(text: str, cwd: str) -> bool:
+    """A git write that auto-sns-agent's repo guard should judge with the kernel's real cwd, which an os.chdir hides from the tool_call guard."""
+    if not GIT_WRITE.search(text):
+        return False
+    return "auto-sns-agent" in text or "auto-sns-agent" in os.path.realpath(cwd) or bool(GIT_PUSH.search(text))
+
+
 def on_shell(args, cwd, env) -> None:
     text = shell_text(args)
-    if not SHELL_HINT.search(text) or owned_by_skill():
+    where = os.fsdecode(cwd) if cwd else os.getcwd()
+    repo = touches_repo(text, where)
+    if not (repo or SHELL_HINT.search(text)) or owned_by_skill():
         return
     names = env if isinstance(env, dict) else os.environ
     expanded = re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: os.fsdecode(names.get(m.group(1), m.group(0))), text)
-    judge({"kind": "shell", "text": expanded, "cwd": os.fsdecode(cwd) if cwd else os.getcwd()})
+    judge({"kind": "shell", "text": expanded, "cwd": where, "repo": repo})
 
 
 def on_http_bytes(data) -> None:

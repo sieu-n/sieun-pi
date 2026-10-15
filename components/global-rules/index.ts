@@ -48,6 +48,13 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		loadFailed("rlm-delete.ts", error);
 	}
 
+	try {
+		const autoSnsAgent: typeof import("./auto-sns-agent.ts") = await import(join(dir, "auto-sns-agent.ts"));
+		await autoSnsAgent.register(pi);
+	} catch (error) {
+		loadFailed("auto-sns-agent.ts", error);
+	}
+
 	if (failed.length) {
 		pi.on("session_start", (_event, ctx) => {
 			if (ctx.hasUI) ctx.ui.notify(`global-rules could not load ${failed.join(", ")}. Read ${logPath}.`, "error");

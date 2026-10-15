@@ -2,6 +2,7 @@
 
 This Prime Agent extension holds the rules that apply to every session on this Mac, whatever the session's cwd is.
 Repository rules do not live here. A repository ships its own guard as a project-local extension under `<repo>/.prime/agent/extensions/`, and Prime loads it only for sessions started in that repository.
+auto-sns-agent is the one exception: its rules stay in that repo's `scripts/repo/agent/guards/`, and `auto-sns-agent.ts` loads them here for every session, because chat jobs start in `/Users/sieunpark` and still work in that checkout.
 
 ## What it does
 
@@ -10,6 +11,7 @@ Repository rules do not live here. A repository ships its own guard as a project
 | `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a recursive grep of `~/.prime/agent`, a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a PR merge without the owner's go on that PR (off while the c74 standing go is on), and an auto-sns-agent CI run cancel or rerun outside the release owner's and Fable's sessions. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send and an auto-sns-agent CI run cancel or rerun at run time. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
+| `session_start`, `tool_call` (`bash`, `ipython`) | `auto-sns-agent.ts` | Registers auto-sns-agent's repo guard (`scripts/repo/agent/guards/prime.mjs` in that checkout) for every session, and judges each git write a Python kernel starts with the kernel's real cwd. |
 
 The extension adds no prompt text. The writing standard is the `unslop` skill, read on demand, and `config/AGENTS.md` (`~/.prime/agent/AGENTS.md`) points at it. Prime loads that file into the base system prompt, so owner turns, agent-message wakes, heartbeats and child notices all send the same prompt. Text added from a `before_agent_start` hook would break that: Prime 0.9.8 skips the hook on an agent-message wake, so the text vanishes on every wake and the prompt cache is rewritten twice. `components/user-history/test/prompt-prefix.test.ts` fails when any turn kind changes the cached prefix.
 
@@ -59,7 +61,7 @@ It covers `gh pr merge` with any flag (`--auto`, `--squash`, `--merge`, `--rebas
 It covers `git push` in any repo whose target is one of those branches: `main`, `HEAD:main`, `+main`, `x:refs/heads/main`, `--delete main`, `:main`, `--all`, `--mirror`, and a bare `git push` or `git push origin HEAD` while the branch's push target is one of them.
 It covers the refs API (`PATCH`, `DELETE` or `POST` on `repos/<o>/<r>/git/refs/heads/<branch>`, or `POST .../git/refs` with `ref=refs/heads/<branch>`) and the GraphQL mutations `updateRef`, `updateRefs`, `createCommitOnBranch` and `deleteRef`. A `POST .../merges` or GraphQL `mergeBranch` passes when its `base` is not `main` or `master`. A ref mutation that names no branch, such as `updateRef` by `refId`, is refused too.
 It follows `cd`, `git -C`, `bash -c`, `$(...)`, `eval`, `env`, `sudo`, `timeout`, `xargs`, `ssh`, heredocs fed to a shell, and GraphQL bodies read from a file (`-F query=@q.graphql`, `--input body.json`, `-d @body.json`).
-`gh pr merge --disable-auto`, reading PRs, a GET on `pulls/<n>/merge`, `git push --dry-run`, and pushes to any other branch stay allowed. auto-sns-agent's `git push origin sieun/dev` and the release train's `land.yml` and `promote.yml` dispatches stay with the repo's own release-owner guard (VP decision, 2026-10-12).
+`gh pr merge --disable-auto`, reading PRs, a GET on `pulls/<n>/merge`, `git push --dry-run`, and pushes to any other branch stay allowed. auto-sns-agent's `git push origin sieun/dev` and the release train's `land.yml` and `promote.yml` dispatches stay with the repo's own release-owner guard (VP decision, 2026-10-12), which `auto-sns-agent.ts` loads.
 A merge or push passes with the same `OWNER_OK=<chat id>/<todo id>` token as a send. For a merge, the todo's text must name the PR: `#123`, `PR 123`, `pull request 123`, a `/pull/123` link, or the GraphQL node id for a mutation. For a push, it must name the repo, and the branch or the word push ("Push sieun-pi to the public repo?").
 A merge that names no PR number, such as a bare `gh pr merge` or a branch name, is refused even with a token.
 
@@ -71,6 +73,12 @@ It covers `gh run cancel`, `gh run rerun` (with `--failed` or `--job`) and `gh r
 It follows `bash -c`, `$(...)`, `eval`, `timeout`, `xargs`, `ssh`, heredocs fed to a shell, the `perl -e 'alarm 60; exec @ARGV'` time limit wrapper, and a prefix filled in at run time such as `{T60} gh run cancel <id>`.
 In the kernel, `kernel-guard.py` sends each `gh` subprocess and each Python POST or DELETE to those paths through `send-check.ts`, which judges by the kernel's `RLM_SESSION_DIR`, so a command or URL built at run time is refused too, with `SendRefused` and the same text.
 `gh run view`, `gh run watch`, `gh run list` and every GET stay allowed for everyone. No OWNER_OK token lifts this rule.
+
+`auto-sns-agent.ts` loads auto-sns-agent's repo guard for every session, whatever its cwd. The rules and their tests stay in that repo's `scripts/repo/agent/guards/`, and its Claude Code hook calls the same rules.
+On 2026-10-14 at 14:40Z a Crawler ops job started in `/Users/sieunpark` ran `bash("git push origin 7ac6657831...:refs/heads/sieun/dev")` after `os.chdir` into the checkout. The repo guard then loaded only for sessions started in the checkout, so nothing judged the push.
+The tool_call half registers the repo's `prime.mjs`, whose rules follow `cd`, `git -C` and, for a push, the remote's URL. So a push of `sieun/dev` or `main` from a session started anywhere, from another clone, or to the repo's URL is refused unless the release owner (`01a10810`) makes it.
+A kernel's `os.chdir` is invisible to that text, so `kernel-guard.py` also sends each git write a kernel starts to `send-check.ts` with the kernel's real cwd, when the cwd or text names `auto-sns-agent` or the command pushes. `send-check.ts` runs the repo's `onToolCall` with the session id read from `RLM_SESSION_DIR`, which is the session id only for a root session, so a subagent is never the release owner. A refusal raises `SendRefused` with the repo guard's text, and each verdict is a line in the repo's `.cache/repo-guard/log.jsonl`.
+If the repo's rules fail to load, a call that looks like a git write, a deploy or a local check is refused in a session started in the checkout, or when its text names `auto-sns-agent`, and the failure is logged. With no checkout at `~/Documents/Github/auto-sns-agent` (`GLOBAL_RULES_AUTO_SNS_AGENT` moves it) the module does nothing.
 
 `cua-guard.ts` covers desktop sends through the `cua-driver` MCP server.
 It runs as a stdio proxy in front of `cua-driver mcp`, so `~/.prime/agent/settings.json` starts the server as `node <repo>/components/global-rules/cua-guard.ts <cua-driver> mcp`.
@@ -90,8 +98,9 @@ A call passes with `owner_ok: "<chat id>/<todo id>"` in its arguments, which the
 ~/.prime/agent/extensions/global-rules.ts  (link to index.ts)
   -> guard.ts           -> grep-guard.ts, sieun-pi.ts, send-guard.ts, merge-guard.ts, ci-run-guard.ts, cua-guard.ts -> shell.ts
                             send-guard.ts -> send-targets.json, node --import tsx ../user-history/src/owner-ok.ts (send and merge approvals)
-  -> kernel-guard.ts    -> ipython cell prelude -> kernel-guard.py -> send-targets.json, node send-check.ts -> guard.ts
+  -> kernel-guard.ts    -> ipython cell prelude -> kernel-guard.py -> send-targets.json, node send-check.ts -> guard.ts, auto-sns-agent.ts
                             python-child/sitecustomize.py -> kernel-guard.py (Python processes the kernel starts)
+  -> auto-sns-agent.ts  -> ~/Documents/Github/auto-sns-agent/scripts/repo/agent/guards/prime.mjs (that repo's rules)
 ```
 
 `index.ts` imports each feature in its own try/catch. A load-time throw in a global extension would stop every Prime session, and a broken guard must not take the other modules with it. A failed module is written to the log and shown once as a UI notice.
@@ -106,6 +115,7 @@ After an edit, run `/reload` in an idle session. A new session loads the current
 | `GLOBAL_RULES_GUARD=off` | Turns off the guard. |
 | `GLOBAL_RULES_RLM_DELETE=off` | Turns off the `rlm.delete_subagent` wait. |
 | `GLOBAL_RULES_LOG=<path>` | Writes the log here instead of `$TMPDIR/global-rules.log`. |
+| `GLOBAL_RULES_AUTO_SNS_AGENT=<path>` | Loads auto-sns-agent's repo guard from this checkout instead of `~/Documents/Github/auto-sns-agent`. |
 
 The switches are read from the Prime process environment, so they must be set before the daemon or session starts.
 Each log line names the rule and the session cwd, for example `[guard] block rule=grep cwd=/path :: grep -r foo ~/.prime`.
@@ -114,7 +124,7 @@ Each log line names the rule and the session cwd, for example `[guard] block rul
 
 The tool_call guard reads literal command text. The kernel guard checks the calls a Python process makes at run time. Neither is a sandbox.
 The tool_call guard skips cells over 200,000 characters.
-The kernel's `os.chdir` is invisible to the tool_call guard, so a bare git command is judged against the session cwd.
+The kernel's `os.chdir` is invisible to the tool_call guard, so a bare git command is judged against the session cwd. The kernel guard covers that gap for auto-sns-agent's git rules only.
 The send guard misses a command decoded at run time and piped to a shell (`base64 -d | sh`), a Node process that sends from a module the script imports, an HTTP request whose request line is split over several socket writes, HTTP/2, the private `rlm.mcp._registry`, a body-only WHMCS ticket call sent through `http.client`, a desktop send through an app it does not name, a cua-driver drag, `System Events` keystrokes, and a desktop click on a panel or sheet above layer 0, because `list_windows` lists only layer-0 windows.
 It also misses a desktop click on Send in a window that no snapshot has shown and that the guard cannot read, and a desktop click whose coordinates come from a downscaled `get_desktop_state` taken outside the proxy, such as a `cua-driver call` in a shell.
 In the Aside browser it misses Tab then Enter on a webmail page, selectors built at run time (`atob`), Gmail inside another site's iframe, and a mouse call through another name (`const m = page.mouse; m.click(x, y)`).
@@ -128,5 +138,7 @@ A handler error lets the call run and writes `handler error, failing open` to th
 node --test tests/global-rules-*.test.mjs
 uv run --locked --no-sync python -B -m unittest discover -s tests -p "test_kernel_*.py"
 ```
+
+`global-rules-auto-sns-agent.test.mjs` and `test_kernel_repo_guard.py` copy the live checkout's `scripts/repo/agent/guards` into a fixture checkout, so they test the rules agents get, and they skip on a machine without that checkout. The kernel test runs a fake `git`, so nothing reaches GitHub.
 
 The Node suites feed command strings to the handlers and run none of them. `test_kernel_send_guard.py` runs `kernel-guard.py` in fresh Python processes against a fake `curl`, a local HTTP server, `httpx.MockTransport` and a fake `rlm.mcp`, so nothing leaves the machine. `global-rules-native.test.mjs` loads the extension through Prime's own resource loader, reloads it after an edit, and checks that a broken guard leaves `rlm-delete.ts` in place. Every suite sets `GLOBAL_RULES_LOG` to a temporary file, so tests never write the live log.
