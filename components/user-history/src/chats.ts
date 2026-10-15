@@ -8,7 +8,7 @@ import { GateHolds } from "./chat-daemon-gate.ts";
 import { activePause, changeCheckIn, type CheckInActor, type CheckInChange, CheckInRefused, type CheckInSetting, DEFAULT_CHECK_IN, nextCheckIn } from "./checkin-settings.ts";
 import { checkInDue, childName, childWorking, jobFacts, liveJobs, liveWindowMs } from "./checkin-steps.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
-import { checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
+import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, jobEnd, jobEndText,
   idleRoots, jobReport, lastJobMessages, noReportNotice, reportedRoot, retryDue, waitingJobs } from "./chat-checkin.ts";
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { BOARD_LIMITS } from "./shared/chat-board.ts";
@@ -100,6 +100,11 @@ export const JOB_WAKE_WINDOW_MS = 24 * 60 * 60_000;
 export const JOB_END_NOTE_MAX_AGE_MS = 2 * 60 * 60_000;
 /** A job as the scheduler found it in its chat's row: the chat and its Agents entry. */
 interface ChatJob { chat: string; agent: ChatAgent }
+/** What `gather` read for one check-in measure. */
+interface Gathered {
+  board: ChatBoard | null; boardError?: string; rows: readonly SessionRow[]; facts: ReturnType<typeof jobFacts>;
+  queued: ReadonlyMap<string, QueuePlace>; asleep: ReadonlySet<string>; name?: string;
+}
 
 /**
  * Chats on the server: the index, residency (pinned, so they stay attached and resident), steering mode `all` after every attach (it is runtime
@@ -894,7 +899,8 @@ export class Chats {
     await this.load();
     if (!this.chatIds.has(id)) return;
     try {
-      const { board, boardError, rows, facts, queued, asleep, name } = await this.gather(id);
+      const gathered = await this.gather(id);
+      const { board, boardError, rows, facts } = gathered;
       // With no catalog rows yet and no hub children, every job of the chat reads as missing (frontend bro 10-13 01:09 and 01:24, while the
       // daemon's list timed out after restarts: 7 false orphans each, and the duty runner skipped both runs anyway).
       if (!rows.length && !this.children.has(id)) {
@@ -906,22 +912,14 @@ export class Chats {
       for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
       if (!checkInDue(facts, board, boardError)) return;
       const at = this.now();
-      const self = name ? [id, name] : [id];
       const everyMs = (await this.source.settings.get(id)).everyMs;
-      const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
-      const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
-      const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
-      const train = await readTrain(trainFile(this.source.home));
       const previous = await this.source.memory.get(id);
-      const precheck = checkInPrecheck(previous, facts, board, at,
-        { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
-          owner: ownerSaid(this.messages(id) ?? []) });
+      const { precheck, output } = await this.measure(id, gathered, previous, everyMs, at);
       // A job at work an hour with no report gets one status ask through the chat; the check-in job cannot message the chat's subagents.
       const said = this.stall(id) ? undefined : this.messages(id);
       for (const ask of said ? statusAsks(said, facts, key => this.workingSince.get(key), at) : []) {
         await this.threads.prompt(id, { message: ask, images: [], mode: "steer" }).catch(error => this.log(`chat ${id.slice(0, 8)}: status ask: ${error instanceof Error ? error.message : String(error)}`));
       }
-      const output = convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at);
       const flags = flagStreaks(previous?.flags, output.flagged);
       await this.source.memory.set(id, { ...precheck.memory, flags });
       const start = await this.source.duty?.checkIn(id, { at, trigger, everyMs, output, classes: classCounts(precheck.steps),
@@ -932,9 +930,35 @@ export class Chats {
     }
   }
 
+  /**
+   * The check-in measure as a run would take it now, for a run's after-job measure: the same precheck over the board, the jobs and the last
+   * run's memory, with none of a run's side effects (no memory write, no status ask, no owner wake). Null for a thread that is not a chat, or
+   * while the catalog has no rows and the hub has not attached the chat, when every job reads as missing.
+   */
+  async measureCheckIn(id: string): Promise<CheckInRun["output"] | null> {
+    await this.load();
+    if (!this.chatIds.has(id)) return null;
+    const gathered = await this.gather(id);
+    if (!gathered.rows.length && !this.children.has(id)) return null;
+    const everyMs = (await this.source.settings.get(id)).everyMs;
+    return (await this.measure(id, gathered, await this.source.memory.get(id), everyMs, this.now())).output;
+  }
+
+  /** One check-in measure from what `gather` read: the precheck and its misses against the check-in duty's targets. */
+  private async measure(id: string, { board, boardError, rows, facts, queued, asleep, name }: Gathered, previous: CheckInMemory | undefined, everyMs: number, at: number) {
+    const self = name ? [id, name] : [id];
+    const duties = await this.source.duties?.(id).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in duties: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
+    const jobs = this.source.registry ? await this.source.registry.rootsOf(self).catch(() => []) : [];
+    const heartbeats = readHeartbeats(heartbeatsFile(id, this.source.home));
+    const train = await readTrain(trainFile(this.source.home));
+    const precheck = checkInPrecheck(previous, facts, board, at,
+      { self, rows, ...await this.ledger(id), everyMs, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+        owner: ownerSaid(this.messages(id) ?? []) });
+    return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
+  }
+
   /** What a check-in reads: the board (or why it cannot be read), the catalog rows, the chat's name, and its jobs with their last messages. */
-  private async gather(id: string): Promise<{ board: ChatBoard | null; boardError?: string; rows: readonly SessionRow[]; facts: ReturnType<typeof jobFacts>;
-    queued: ReadonlyMap<string, QueuePlace>; asleep: ReadonlySet<string>; name?: string }> {
+  private async gather(id: string): Promise<Gathered> {
     let board: ChatBoard | null = null;
     let boardError: string | undefined;
     try { board = await this.source.board(id); }
@@ -975,9 +999,9 @@ export class Chats {
   }
 
   /** The owner's Run now on the check-in duty: a check-in at once, in the chat's check-in lane, and its schedule starts over. */
-  runCheckIn(id: string): Promise<void> {
+  runCheckIn(id: string, trigger: CheckInRun["trigger"] = "owner"): Promise<void> {
     return new Promise(resolve => this.queue(checkInLane(id), async () => {
-      try { if (this.chatIds.has(id)) { this.lastCheckIn.set(id, this.now()); await this.checkIn(id, "owner"); } } finally { resolve(); }
+      try { if (this.chatIds.has(id)) { this.lastCheckIn.set(id, this.now()); await this.checkIn(id, trigger); } } finally { resolve(); }
     }));
   }
 

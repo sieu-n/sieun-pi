@@ -46,6 +46,14 @@ async function acquire(file: JsonFile<unknown>): Promise<string> {
   }
 }
 
+/** Runs `task` under the cross-process lock of `path` (`<path>.lock`), for a file that is not one JSON value, such as an append-only JSONL log. */
+export async function withFileLock<R>(path: string, label: string, task: () => Promise<R>): Promise<R> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const lock = await acquire({ path, label, parse: value => value, initial: () => null });
+  try { return await task(); }
+  finally { await rm(lock, { recursive: true, force: true }); }
+}
+
 /** Read, change, and atomically replace a private JSON file under a cross-process lock. The file is written only when the change altered it. */
 export async function transactJsonFile<T, R = void>(file: JsonFile<T>, change: (state: T) => R): Promise<{ state: T; result: R }> {
   await mkdir(dirname(file.path), { recursive: true, mode: 0o700 });

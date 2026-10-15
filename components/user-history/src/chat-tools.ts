@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { CHECKS, RECHECKS_FILE, realDeps, runChecks, type Deps, type Recheck } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import type { Duty, DutyRunRecord, PrecheckOutput } from "./shared/chat-duties.ts";
+import { effectiveRun } from "./shared/duty-streak.ts";
 import type { ToolCheck, ToolKind, ToolsDailyRun, ToolsRecheck, ToolsView } from "./shared/types.ts";
 
 /** The Skills and tools duty's checks that Settings > Tools and skills runs live, in CHECKS order. websearch_query is a paid Virev search. */
@@ -71,7 +72,8 @@ export async function dailyRun(store: DutyStore): Promise<ToolsDailyRun | null> 
   });
   const rechecks = await latestRechecks(join(store.dir, RECHECKS_FILE), record.at);
   for (const problem of problems) { const recheck = rechecks.get(problem.id); if (recheck) problem.recheck = recheck; }
-  const checksRun = output?.metrics?.checks_run ?? record.metrics.checks_run?.value;
-  return { chatId, dutyId: duty.id, name: duty.name, at: record.at, verdict: record.verdict, summary: record.summary,
+  const judged = effectiveRun(record);
+  const checksRun = output?.metrics?.checks_run ?? judged.metrics.checks_run?.value;
+  return { chatId, dutyId: duty.id, name: duty.name, at: record.at, verdict: judged.verdict, summary: judged.summary,
     checksRun: typeof checksRun === "number" ? checksRun : null, problems };
 }

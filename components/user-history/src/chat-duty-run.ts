@@ -5,7 +5,7 @@ import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName } from "
 import type { CheckInActor } from "./checkin-settings.ts";
 import type { DutyAdmitter } from "./chat-turn-queue.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
-import { agentScheduleProblem, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
+import { agentScheduleProblem, type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue, ERROR_PAUSE_RUNS, errorStreak, judge, nextRunAt, parseSchedule, type Duty, type DutyJobRef,
   type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput } from "./shared/chat-duties.ts";
 import { closedFixes, dutyFixes, dutyLink, missedKeys } from "./shared/duty-fixes.ts";
 import { CHANGE_APPROACH_MISSES, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
@@ -17,6 +17,11 @@ export interface CheckInDutyHost {
   set(chatId: string, change: { everyMs?: number; pause?: CheckInPause | null }, actor: CheckInActor): Promise<CheckInView | null>;
   /** A check-in run now; `trigger` "verify" when a fix step linked to a check-in metric closed. */
   run(chatId: string, trigger?: DutyTrigger): Promise<void>;
+  /**
+   * The check-in measure as a run would take it now, with no side effects, for a run's after-job measure; null when it cannot be read yet.
+   * Absent (test fakes): a check-in run gets its after-job measure only from the next run.
+   */
+  measure?(chatId: string): Promise<CheckInRun["output"] | null>;
 }
 /**
  * One run of the check-in duty as the chat server measured it: the slot time, its trigger, the chat's check-in interval, the misses, the step
@@ -118,7 +123,7 @@ export function runStamp(at: number): string {
 /** What a run's start of its duty job did: started one (`replaced` notes a stuck job it retired), skipped with why, or nothing (the slot already has its job). */
 type Launched = { job: DutyJobRef; replaced?: string } | { skipped: string } | null;
 /** The duty's last job as a new run finds it: the slot already has its job (null), it still works (skip), or it is the job to retire, if any. */
-type Previous = { last?: DutyJobRef; replaced?: string } | { skipped: string } | null;
+type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string } | null;
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
@@ -173,6 +178,8 @@ export class Duties {
   private readonly sentBack = new Map<string, number>();
   /** The last board each chat's watch showed, to find the fix steps a change closed (`boardChanged`). */
   private readonly boards = new Map<string, ChatBoard>();
+  /** Each ended last job's after-job measure and then its archive (`stopEnded`), kept off the tick so a slow precheck holds up no due duty. */
+  private readonly ending = new Set<Promise<void>>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -191,7 +198,8 @@ export class Duties {
   /** One wake: every duty of every chat that is due starts, and a daily slot too late to run is recorded as skipped. */
   tick(): Promise<void> {
     void this.host.daemon?.tick().catch(error => this.log(`duties: daemon probe: ${message(error)}`));
-    return this.ticking ??= this.scan().catch(error => this.log(`duties: tick: ${message(error)}`)).finally(() => { this.ticking = undefined; });
+    const scan = this.ticking ??= this.scan().catch(error => this.log(`duties: tick: ${message(error)}`)).finally(() => { this.ticking = undefined; });
+    return scan.then(async () => { await Promise.all([...this.ending]); });
   }
 
   private async scan(): Promise<void> {
@@ -213,7 +221,10 @@ export class Duties {
   }
 
   /**
-   * Archives each duty's last job once its turn has ended, instead of at the next run, and any older duty job still up: an ended job kept its
+   * Measures each duty's last job's run again once that job's turn has ended (`measureAfter`), then sends the job back while a miss has no fix
+   * step with a live job (`sendBack`) or archives it, instead of at the next run; and archives any older duty job still up. A run's verdict is read after its own fixes this way (chat 01a1164b 10-15: a check-in counted
+   * loose_goals as a miss after its job gave p447 a step). The measure and archive run off the tick, since a precheck may take up to its
+   * timeout (120 s by default; SEO new-articles took 74 s on 10-15). The archive matters because an ended job kept its
    * worker and Python kernel until then (10-13 00:10 KST: 6 ended duty jobs held 1.9 GB on a 32 GB Mac with 30.4 of 30.7 GB swap used, and a
    * daemon gate pause kept the 22:15 to 22:33 check-in jobs 88 to 102 min). An older job is one a later run retired whose archive did not stop it:
    * "local dev servers ops guy (+observability) 22:24" of 10-10 was still loaded on 10-13 after its file said archived. A duty with a run going
@@ -222,8 +233,8 @@ export class Duties {
   private async stopEnded(chats: readonly string[]): Promise<void> {
     const jobs = this.host.jobs;
     if (!jobs.ended || !jobs.stop) return;
-    const last: DutyJobRef[] = [];
-    const lastRun = new Map<string, { chatId: string; duty: string }>();
+    const stop = jobs.stop.bind(jobs);
+    const last = new Map<string, { chatId: string; run: DutyRunRecord & { job: DutyJobRef } }>();
     const older = new Map<string, DutyJobRef>();
     for (const chatId of chats) {
       const seen = new Set<string>();
@@ -233,19 +244,27 @@ export class Duties {
         seen.add(run.duty);
         if (this.stopped.has(run.job.id)) continue;
         if (!newest) older.set(run.job.id, run.job);
-        else if (!this.running.has(`${chatId}/${run.duty}`)) {
-          last.push(run.job);
-          lastRun.set(run.job.id, { chatId, duty: run.duty });
-        }
+        else if (!this.running.has(`${chatId}/${run.duty}`)) last.set(run.job.id, { chatId, run: run as DutyRunRecord & { job: DutyJobRef } });
       }
     }
-    for (const job of last) older.delete(job.id);
-    for (const job of await jobs.ended(last, [...older.values()])) {
-      const ended = lastRun.get(job.id);
-      if (ended && await this.sendBack(ended.chatId, job, ended.duty)) continue;
+    for (const id of last.keys()) older.delete(id);
+    for (const job of await jobs.ended([...last.values()].map(entry => entry.run.job), [...older.values()])) {
       this.stopped.add(job.id);
-      await jobs.stop(job);
-      this.log(`duty job ${job.name}: ${older.has(job.id) ? "an older job still up" : "its turn ended"}; queued its archive`);
+      const ended = last.get(job.id);
+      if (!ended) {
+        await stop(job);
+        this.log(`duty job ${job.name}: an older job still up; queued its archive`);
+        continue;
+      }
+      const task = this.measureAfter(ended.chatId, ended.run)
+        .then(async () => {
+          if (await this.sendBack(ended.chatId, job, ended.run.duty)) { this.stopped.delete(job.id); return; }
+          await stop(job);
+          this.log(`duty job ${job.name}: its turn ended; queued its archive`);
+        })
+        .catch(error => this.log(`duty job ${job.name}: after its turn ended: ${message(error)}`))
+        .finally(() => this.ending.delete(task));
+      this.ending.add(task);
     }
   }
 
@@ -331,6 +350,32 @@ export class Duties {
       const started = this.start(chatId, dutyId, "verify", null);
       this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: fix ${steps} closed; ${started ? "a verify run starts" : "a run is going, so no verify run starts"}`);
     }
+  }
+
+  /**
+   * Writes a run's after-job measure into its record (`after`), so `effectiveRun` reads the run's verdict once its job's fixes are in. The check-in
+   * is measured by the chat server (`CheckInDutyHost.measure`); a standing duty reruns its precheck once with the file contract, keeping no state.
+   * A precheck that fails gives an error measure; a check-in the server cannot read yet gives none.
+   */
+  private async measureAfter(chatId: string, run: DutyRunRecord): Promise<void> {
+    const after = await this.afterMeasure(chatId, run.duty)
+      .catch((error): AfterMeasure => ({ at: this.now(), verdict: "error", metrics: {}, summary: `the after-job measure failed: ${message(error).slice(0, 300)}` }));
+    if (!after) return;
+    await this.store.updateRun(chatId, run.duty, run.at, record => { record.after = after; });
+    this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: after its job, ${after.verdict}, ${after.summary}`);
+  }
+
+  private async afterMeasure(chatId: string, dutyId: string): Promise<AfterMeasure | null> {
+    const at = this.now();
+    if (dutyId === CHECK_IN_DUTY_ID) {
+      const output = await this.host.checkIn?.measure?.(chatId);
+      return output ? { at, ...judge(CHECK_IN_DUTY.metrics, output) } : null;
+    }
+    const duty = (await this.store.list(chatId)).find(entry => entry.id === dutyId);
+    if (!duty) return null;
+    const lastRuns = (await this.store.runs(chatId)).filter(run => run.duty === dutyId && run.verdict !== "skipped").slice(0, 10);
+    const dir = this.store.chatDir(chatId);
+    return { at, ...judge(duty.metrics, await this.precheck(duty, dir, join(dir, `${dutyId}.after.json`), lastRuns, "after")) };
   }
 
   private async skip(chatId: string, duty: Duty, slot: number): Promise<void> {
@@ -460,7 +505,8 @@ export class Duties {
     let failed = false;
     try {
       launched = await this.launch(chatId, CHECK_IN_DUTY_ID, { kind: "every", minutes: run.everyMs / 60_000 }, run.at, run.at,
-        { duty: CHECK_IN_DUTY, measure: judged.summary, findings: [run.findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses });
+        { duty: CHECK_IN_DUTY, measure: judged.summary, findings: [run.findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses },
+        judged.verdict === "error" ? null : { at: run.at, ...judged });
     }
     catch (error) { failed = true; launched = { skipped: `the duty job did not start: ${message(error).slice(0, 300)}` }; }
     if (launched === null) return "done";
@@ -486,10 +532,10 @@ export class Duties {
     if (runs.some(run => run.slot === slot && run.job !== undefined)) return null;
     const started = runs.find(run => run.job);
     const last = started?.job;
-    if (!started || !last || !(await this.host.jobs.working(last))) return last ? { last } : {};
+    if (!started || !last || !(await this.host.jobs.working(last))) return last ? { last, lastRun: started } : {};
     const workingMs = this.now() - started.at;
     if (workingMs <= stuckAfterMs(schedule)) return { skipped: `${STILL_WORKING} (job ${last.name})` };
-    return { last, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };
+    return { last, lastRun: started, replaced: ` (replaced stuck job ${last.name}, working ${Math.round(workingMs / 60_000)} min)` };
   }
 
   /**
@@ -497,16 +543,22 @@ export class Duties {
    * still works, else the last job is retired (its archive queued) and a new one starts with the brief. A chat the daemon's list does not show is
    * skipped too, and a list that fails throws. The chat comes first, so whether the last job works is read from a catalog that lists it. A last
    * job stuck past `stuckAfterMs` of the duty's schedule is retired and replaced like a finished one. The job's session is created only once the
-   * Mac-wide turn queue admits the run (`admit`), and the run's queue key is released once the session exists or its start failed.
+   * Mac-wide turn queue admits the run (`admit`), and the run's queue key is released once the session exists or its start failed. The retired
+   * job's run gets this run's measure (`measured`) as its after-job measure when it has none yet: a job that ran past the next slot, or whose end
+   * `stopEnded` did not see, is still judged after its fixes.
    */
   private async launch(chatId: string, dutyId: string, schedule: DutySchedule, slot: number, at: number,
-    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses">): Promise<Launched> {
+    brief: Pick<DutyJobInput, "duty" | "measure" | "findings" | "focus" | "misses">, measured: AfterMeasure | null): Promise<Launched> {
     const chat = await this.host.jobs.chat(chatId);
     const previous = await this.previous(chatId, dutyId, schedule, slot);
     if (previous === null || "skipped" in previous) return previous;
-    const { last, replaced } = previous;
+    const { last, lastRun, replaced } = previous;
     if (!chat) return { skipped: "skipped: the catalog does not list the chat" };
     if (last) await this.host.jobs.retire(last).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: retire ${last.name}: ${message(error)}`));
+    if (lastRun && !lastRun.after && measured) {
+      await this.store.updateRun(chatId, dutyId, lastRun.at, record => { record.after ??= measured; })
+        .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: after-job measure of ${lastRun.job?.name ?? "the last run"}: ${message(error)}`));
+    }
     const name = dutyJobName(brief.duty.name, chat.name, at);
     // The wait runs here, outside the job host's one start lane, so a queued duty never holds up another chat's start.
     const key = `${chatId}/${dutyId}`;
@@ -574,9 +626,10 @@ export class Duties {
       stuckFindings(misses),
     ].filter(Boolean).join("\n\n");
     this.steps.set(key, { at: started, step: "starting its job" });
+    const measured = record.verdict === "met" || record.verdict === "missed" ? { at: started, verdict: record.verdict, metrics: record.metrics, summary: record.summary } : null;
     try {
       const launched = await this.launch(chatId, dutyId, duty.schedule, at, started,
-        { duty, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses });
+        { duty, measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses }, measured);
       if (launched && "job" in launched) { record.job = launched.job; if (launched.replaced) record.summary += launched.replaced; }
       else if (launched) record.summary += `; ${launched.skipped}`;
     } catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: start the duty job: ${message(error)}`); }
@@ -584,12 +637,16 @@ export class Duties {
     this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${record.verdict}, ${record.summary}${record.job ? `, started ${record.job.name}` : ""}`);
   }
 
-  /** Runs the precheck with the file contract; its state advances only when it exits 0 with a valid output. Throws with the reason otherwise. */
-  private async precheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[]): Promise<PrecheckOutput> {
+  /**
+   * Runs the precheck with the file contract; its state advances only when a scheduled run's precheck exits 0 with a valid output. An after-job
+   * measure (`after`) reads the state but keeps none, so the next run's precheck counts from the same point, and it has its own files, so it can
+   * run beside a run of the same duty. Throws with the reason otherwise.
+   */
+  private async precheck(duty: Duty, dir: string, outputFile: string, lastRuns: readonly DutyRunRecord[], mode: "run" | "after" = "run"): Promise<PrecheckOutput> {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const stateFile = join(dir, `${duty.id}.state.json`);
-    const nextState = join(dir, `${duty.id}.state.next.json`);
-    const lastRunsFile = join(dir, `${duty.id}.last-runs.json`);
+    const nextState = join(dir, `${duty.id}.state.${mode === "run" ? "next" : "after"}.json`);
+    const lastRunsFile = join(dir, `${duty.id}.last-runs${mode === "run" ? "" : ".after"}.json`);
     await copyFile(stateFile, nextState).catch(async () => { await writeFile(nextState, "{}", { mode: 0o600 }); });
     await writeFile(lastRunsFile, JSON.stringify(lastRuns), { mode: 0o600 });
     await rm(outputFile, { force: true });
@@ -611,7 +668,7 @@ export class Duties {
       if (typeof output !== "object" || output === null || typeof (output as { metrics?: unknown }).metrics !== "object" || (output as { metrics?: unknown }).metrics === null) {
         throw new Error("OUTPUT_FILE has no metrics object");
       }
-      await rename(nextState, stateFile);
+      if (mode === "run") await rename(nextState, stateFile);
       return output as PrecheckOutput;
     } finally { await rm(nextState, { force: true }); }
   }

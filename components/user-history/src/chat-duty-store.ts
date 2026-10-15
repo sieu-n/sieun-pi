@@ -1,13 +1,14 @@
 import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
+import { missing, readJsonFile, transactJsonFile, withFileLock, type JsonFile } from "./locked-json.ts";
 import { parseDutyFile, type Duty, type DutyFile, type DutyRunRecord } from "./shared/chat-duties.ts";
 
 const sessionIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
 
 /**
  * The duties, one file per chat at `<dataDir>/duties/<chatId>.json` through locked-json, and each chat's run history appended to
- * `<chatId>.runs.jsonl`. Precheck state and saved outputs live under `<dataDir>/duties/<chatId>/`.
+ * `<chatId>.runs.jsonl`. Every write of the runs file takes its lock (`<chatId>.runs.jsonl.lock`), so a rewrite of one record (`updateRun`,
+ * `remove`) never drops a record appended meanwhile. Precheck state and saved outputs live under `<dataDir>/duties/<chatId>/`.
  */
 export class DutyStore {
   readonly dir: string;
@@ -16,6 +17,11 @@ export class DutyStore {
   private check(chatId: string): string {
     if (!sessionIdPattern.test(chatId)) throw new Error(`Not a session id: ${chatId}`);
     return chatId;
+  }
+  private runsFile(chatId: string): string { return join(this.dir, this.check(chatId) + ".runs.jsonl"); }
+  private lockRuns<R>(chatId: string, task: (path: string) => Promise<R>): Promise<R> {
+    const path = this.runsFile(chatId);
+    return withFileLock(path, "Duty runs", () => task(path));
   }
   private file(chatId: string): JsonFile<DutyFile> {
     return { path: join(this.dir, this.check(chatId) + ".json"), label: "Chat duties", parse: parseDutyFile, initial: () => ({ version: 1, duties: [] }) };
@@ -59,18 +65,15 @@ export class DutyStore {
       if (at >= 0) duties.splice(at, 1);
       return at >= 0;
     });
-    const runsFile = join(this.dir, this.check(chatId) + ".runs.jsonl");
-    let ran = false;
-    const text = await readFile(runsFile, "utf8").catch(error => { if (missing(error)) return ""; throw error; });
-    const kept = text.split("\n").filter(line => {
-      if (!line.trim()) return false;
-      try { if ((JSON.parse(line) as { duty?: unknown }).duty === dutyId) { ran = true; return false; } } catch { /* an unreadable line stays */ }
-      return true;
+    const ran = await this.lockRuns(chatId, async runsFile => {
+      let found = false;
+      const lines = (await readLines(runsFile)).filter(line => {
+        try { if ((JSON.parse(line) as { duty?: unknown }).duty === dutyId) { found = true; return false; } } catch { /* an unreadable line stays */ }
+        return true;
+      });
+      if (found) await replaceLines(runsFile, lines);
+      return found;
     });
-    if (ran) {
-      await writeFile(runsFile + ".tmp", kept.map(line => line + "\n").join(""), { mode: 0o600 });
-      await rename(runsFile + ".tmp", runsFile);
-    }
     const files = await readdir(this.chatDir(chatId)).catch(error => { if (missing(error)) return [] as string[]; throw error; });
     const own = files.filter(name => name.startsWith(dutyId + "-") || name.startsWith(dutyId + "."));
     for (const name of own) await rm(join(this.chatDir(chatId), name), { force: true });
@@ -79,19 +82,46 @@ export class DutyStore {
 
   async appendRun(chatId: string, record: DutyRunRecord): Promise<void> {
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
-    await appendFile(join(this.dir, this.check(chatId) + ".runs.jsonl"), JSON.stringify(record) + "\n", { mode: 0o600 });
+    await this.lockRuns(chatId, path => appendFile(path, JSON.stringify(record) + "\n", { mode: 0o600 }));
+  }
+
+  /**
+   * Changes one run record, the one of `duty` at `at`, in place under the runs file's lock and rewrites the file; false when no record matches.
+   * The duty runner writes a run's after-job measure with it.
+   */
+  async updateRun(chatId: string, duty: string, at: number, change: (record: DutyRunRecord) => void): Promise<boolean> {
+    return this.lockRuns(chatId, async path => {
+      const lines = await readLines(path);
+      for (let index = lines.length - 1; index >= 0; index--) {
+        let record: DutyRunRecord;
+        try { record = JSON.parse(lines[index]!) as DutyRunRecord; } catch { continue; }
+        if (record.duty !== duty || record.at !== at) continue;
+        change(record);
+        lines[index] = JSON.stringify(record);
+        await replaceLines(path, lines);
+        return true;
+      }
+      return false;
+    });
   }
 
   /** The chat's run records, newest first; a line that does not parse is skipped. */
   async runs(chatId: string): Promise<DutyRunRecord[]> {
-    let text: string;
-    try { text = await readFile(join(this.dir, this.check(chatId) + ".runs.jsonl"), "utf8"); }
-    catch (error) { if (missing(error)) return []; throw error; }
     const records: DutyRunRecord[] = [];
-    for (const line of text.split("\n")) {
-      if (!line.trim()) continue;
+    for (const line of await readLines(this.runsFile(chatId))) {
       try { records.push(JSON.parse(line) as DutyRunRecord); } catch { continue; }
     }
     return records.reverse();
   }
+}
+
+/** The non-empty lines of a JSONL file; none when it is missing. */
+async function readLines(path: string): Promise<string[]> {
+  const text = await readFile(path, "utf8").catch(error => { if (missing(error)) return ""; throw error; });
+  return text.split("\n").filter(line => line.trim());
+}
+
+async function replaceLines(path: string, lines: readonly string[]): Promise<void> {
+  await writeFile(path + ".tmp", lines.map(line => line + "\n").join(""), { mode: 0o600 });
+  await rename(path + ".tmp", path);
 }
