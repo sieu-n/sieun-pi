@@ -60,6 +60,8 @@ test("a step looks done when GitHub shows every PR its text names merged, and a 
   assert.equal(looksDone(p71, facts({ prs: merged(all.filter(pr => pr !== "255")) })), null, "#255 unknown");
   assert.equal(looksDone(step("p4", "Ship the theme", { note: "PR #187 merged. Now live on production." }), facts({ prs: merged(["187"]) })), null,
     "a PR in the note is not the step's own");
+  const p82 = step("p82", "Ship: launch the merged signup tests (477145 from #229, the #213 Google One Tap and #214 home hero tests) after the owner's go");
+  assert.equal(looksDone(p82, facts({ prs: merged(["229", "213", "214"]) })), null, "p82 launches what the PRs merged, so it is no merge step");
   assert.deepEqual(boardPrs(board([p71, step("p5", "Done one #9", { status: "done" })])), [...all, "259"], "open items' text and note");
 });
 

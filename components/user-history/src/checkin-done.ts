@@ -1,4 +1,4 @@
-import { mergedPrs, prNumbers } from "./shared/chat-board.ts";
+import { mergedPrs, mergeStep, prNumbers } from "./shared/chat-board.ts";
 import type { DutyRunRecord } from "./shared/chat-duties.ts";
 import { effectiveRun } from "./shared/duty-streak.ts";
 import type { ChatBoard, PlanItem, PlanStatus } from "./shared/types.ts";
@@ -75,12 +75,13 @@ export function metricFacts(runs: readonly DutyRunRecord[]): Map<string, { met: 
 export interface DoneReason { reason: string; at: number }
 /**
  * Why an open plan item looks done, or null. Only facts count, never the words of a note: a step that fixes a duty metric (`duty`) is done when
- * that metric meets its target on the duty's last run, and a step whose text names PRs when GitHub shows every one of them merged. Any other
+ * that metric meets its target on the duty's last run, and a merge step (`mergeStep`) when GitHub shows every PR its text names merged. Any other
  * item is done when the chat or its job says so. On 10-16 all 7 items the check-in flagged on 4 chats were open work: notes said "is live" or
  * "merged" about a part (launch main bro p75, slack green guy p71, AI harness p484 and p490), or every step under a goal was closed while its
  * metric missed or its work moved to another chat (launch main bro p125, slack green guy p147, Crawler VP p191). A goal's own `target` does
  * not count: it has no direction, and launch main bro p127 (error reads, 32.4% for a 5% target) and VP of CI p1 (157.8 min for a 10 min wait)
- * are lower-is-better targets that a ratio would read as met.
+ * are lower-is-better targets that a ratio would read as met. A step that only names merged PRs is not a merge step: slack green guy p82
+ * launches the tests that #229 to #249 merged, and their merge is where it starts.
  */
 export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick<PlanItem, "duty">>, facts: DoneFacts): DoneReason | null {
   if (!OPEN.has(item.status)) return null;
@@ -88,7 +89,7 @@ export function looksDone(item: Pick<PlanItem, "status" | "text"> & Partial<Pick
     const fact = facts.metrics.get(item.duty);
     return fact?.met ? { reason: `its metric ${item.duty} is met on the duty's last run`, at: fact.at } : null;
   }
-  const prs = mergedPrs(item.text);
+  const prs = mergeStep(item.text) ? mergedPrs(item.text) : [];
   const states = prs.map(pr => facts.prs.get(pr));
   if (!prs.length || !states.every(state => state?.state === "merged")) return null;
   return { reason: `${prs.map(pr => `#${pr}`).join(", ")} ${prs.length > 1 ? "are" : "is"} merged`, at: Math.max(...states.map(state => state?.mergedAt ?? 0)) };
