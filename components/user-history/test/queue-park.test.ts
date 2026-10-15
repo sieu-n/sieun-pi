@@ -77,7 +77,7 @@ test("parkTick aborts what it parks, keeps the list on disk, and resumes through
   let open = false;
   const deps = { file, queue: async () => current, chats: async () => CHATS, log: () => {}, abort: async (id: string) => { aborted.push(id); }, unload: async (id: string) => { unloaded.push(id); },
     resume: async (id: string, text: string) => { resumed.push([id, text]); },
-    fleet: { tryAdmit: async () => open ? () => {} : null }, now: () => NOW };
+    fleet: { place: async () => open ? () => {} : null }, now: () => NOW };
   const first = await parkTick(deps);
   assert.equal(first.parked, aborted.length);
   assert.deepEqual(unloaded, aborted, "each parked job's worker stops at once, after its abort released the queue entry");

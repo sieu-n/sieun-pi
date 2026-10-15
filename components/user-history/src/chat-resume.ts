@@ -68,18 +68,18 @@ export class InterruptedRuns {
    * (`--direct`), after the head of a dead worker among them is reopened. A hung job is left to Resume and the Mac usable watch: an abort drops
    * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. Null when no job of a chat is interrupted.
    */
-  resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>, fleet?: Pick<FleetBudget, "tryAdmit">,
+  resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>, fleet?: Pick<FleetBudget, "place">,
     owners: ReadonlySet<string> = new Set(), found?: (cut: readonly InterruptedRun[]) => Promise<void>): Promise<InterruptedReport | null> {
     const report = this.serial(async () => {
       const named = owners.size ? ["--owners", [...owners].join(",")] : [];
       const cut = (await this.run(["--dry-run", "--direct", ...named])).paused.filter(run => run.session_id !== undefined && run.reason !== "hung" && isJob(run));
       await found?.(cut).catch(error => { process.stderr.write(`resume: could not record the cut runs: ${error instanceof Error ? error.message : String(error)}\n`); });
-      // Each continue waits for the fleet budget, and the ones it does not let through now stay for the next sweep: after the reboot at 13:48:58Z
-      // on 10-15 the daemon found 31 sessions cut mid-run, and one "continue" each would have loaded 31 workers at once.
+      // Each continue takes a place in the fleet budget's line, and the ones whose place has not come up stay for the next sweep: after the
+      // reboot at 13:48:58Z on 10-15 the daemon found 31 sessions cut mid-run, and one "continue" each would have loaded 31 workers at once.
       const jobs: InterruptedRun[] = [];
       for (const run of cut) {
-        const done = fleet ? await fleet.tryAdmit({ kind: "continue", label: run.name || run.session_id! }) : undefined;
-        if (fleet && !done) break;
+        const done = fleet ? await fleet.place({ kind: "continue", label: run.session_id! }) : undefined;
+        if (fleet && !done) continue;
         done?.(run.session_id);
         jobs.push(run);
       }

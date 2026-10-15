@@ -65,7 +65,8 @@ export interface ParkDeps {
   unload: (session: string) => Promise<void>;
   /** Starts the parked session's turn again with `text`. */
   resume: (session: string, text: string) => Promise<void>;
-  fleet: { tryAdmit(ask: FleetAsk): Promise<FleetDone | null> };
+  /** A parked job takes a place in the fleet budget's line (`FleetBudget.place`); `tryAdmit` refuses while any start waits. */
+  fleet: { place(ask: FleetAsk): Promise<FleetDone | null> };
   log: (line: string) => void;
   now?: () => number;
 }
@@ -85,8 +86,8 @@ export async function parkTick(deps: ParkDeps): Promise<{ parked: number; resume
     await deps.unload(entry.session).catch(error => deps.log(`queue park: unload ${entry.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
   }
   for (const entry of unpark) {
-    const done = await deps.fleet.tryAdmit({ kind: "continue", label: `parked ${entry.session.slice(0, 8)}` });
-    if (!done) break;
+    const done = await deps.fleet.place({ kind: "continue", label: entry.session });
+    if (!done) continue;
     try { await deps.resume(entry.session, PARK_CONTINUE); done(entry.session); resumed++; entry.resumedAt = now(); }
     catch (error) { done(); deps.log(`queue park: resume ${entry.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`); }
   }
