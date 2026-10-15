@@ -8,8 +8,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 /**
  * The Apps reach staging duty's precheck (`node --import tsx scripts/duties/apps-reach-staging.ts`) for the frontend chat: how many of the
  * 6 Prospect apps have an owner pick in the 5180 demo's Staging line (apps/virev-demo/lines/staging.json in auto-sns-agent), how long an
- * app with no pick has gone without a new review todo on the chat's board, and whether the last verify-dev run on sieun/dev passed the
- * virev-demo unit and typecheck steps (gh). No model call, no browser. A source it cannot read adds 1 to source_errors and a flagged slice.
+ * app with no pick has gone without a new review todo on the chat's board, and whether the last verify-dev run on sieun/dev that ran the
+ * virev-demo turbo tasks passed them (gh, the receipt lines of the monorepo lint job's log). No model call, no browser. A source it cannot read adds 1 to source_errors and a flagged slice.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -23,7 +23,10 @@ export const APPS = [
 ] as const;
 export const SHIPPED = "shipped";
 export const CI_BRANCH = "sieun/dev";
-export const DEMO_STEPS = ["virev-demo / test / unit", "virev-demo / typecheck"] as const;
+/** checks.yml runs virev-demo#check and virev-demo#test:unit in this job and step when the classify step sets virev_demo. */
+export const LINT_JOB = "checks / monorepo / lint";
+export const LINT_STEP = "js / lint + typecheck + unit";
+export const DEMO_TASKS = ["virev-demo#check", "virev-demo#test:unit"] as const;
 const HOUR_MS = 3_600_000;
 
 export interface StagingLine { apps?: Record<string, { variant?: string; at?: string }>; log?: { at?: string }[] }
@@ -31,7 +34,8 @@ export interface BoardTodo { id: string; text?: string; done?: boolean; from?: s
 export interface BoardItem { id: string; text?: string; status?: string; job?: string; children?: BoardItem[] }
 export interface Board { plan?: BoardItem[]; todos?: BoardTodo[] }
 export interface GhRun { databaseId: number; status?: string; conclusion?: string; createdAt?: string }
-export interface GhJob { name?: string; steps?: { name?: string; conclusion?: string }[] }
+export interface GhJob { databaseId?: number; name?: string; steps?: { name?: string; conclusion?: string }[] }
+export interface DemoTask { ok: boolean; receipt: string }
 
 export type Exec = (file: string, args: readonly string[], cwd: string) => Promise<string>;
 export interface StagingDeps { exec: Exec; now: () => number; read: (path: string) => Promise<string>; repo: string; board: string }
@@ -73,13 +77,26 @@ export function openSteps(plan: readonly BoardItem[], word: string): string[] {
   return found;
 }
 
-/** The two virev-demo step results in one run's jobs, or null when the run did not run both (skipped by scope, cancelled before them). */
-export function demoSteps(jobs: readonly GhJob[]): Record<string, string> | null {
-  const result: Record<string, string> = {};
-  for (const step of jobs.flatMap(job => job.steps ?? [])) {
-    if (step.name && (DEMO_STEPS as readonly string[]).includes(step.name) && (step.conclusion === "success" || step.conclusion === "failure")) result[step.name] = step.conclusion;
+/** The lint job's id when it ran the lint + typecheck + unit step to an end (success or failure), else null (skipped, cancelled). */
+export function lintJob(jobs: readonly GhJob[]): number | null {
+  const job = jobs.find(candidate => candidate.name === LINT_JOB
+    && candidate.steps?.some(step => step.name === LINT_STEP && (step.conclusion === "success" || step.conclusion === "failure")));
+  return job?.databaseId ?? null;
+}
+
+/**
+ * The two virev-demo task results from the receipt lines scripts/ci/turbo-run.mjs prints in the job log, or null when the classify step left
+ * virev-demo out (no receipt). "exit 0" and a cache hit pass (turbo caches only a task that exited 0); "failed with exit N" and "not run" fail.
+ */
+export function demoSteps(log: string): Record<string, DemoTask> | null {
+  const result: Record<string, DemoTask> = {};
+  for (const line of log.split("\n")) {
+    const match = /turbo task (\S+): (.*)$/.exec(line.trimEnd());
+    if (!match || !(DEMO_TASKS as readonly string[]).includes(match[1]!)) continue;
+    const receipt = match[2]!;
+    result[match[1]!] = { ok: /, exit 0$/.test(receipt) || receipt.startsWith("not executed in this run, cache hit"), receipt };
   }
-  return DEMO_STEPS.every(name => result[name]) ? result : null;
+  return DEMO_TASKS.every(task => result[task]) ? result : null;
 }
 
 export async function measureStaging(deps: StagingDeps): Promise<PrecheckOutput> {
@@ -119,23 +136,25 @@ export async function measureStaging(deps: StagingDeps): Promise<PrecheckOutput>
     let found = false;
     for (const run of runs.filter(candidate => candidate.status === "completed")) {
       const { jobs } = JSON.parse(await deps.exec("gh", ["run", "view", String(run.databaseId), "--json", "jobs"], deps.repo)) as { jobs?: GhJob[] };
-      const steps = demoSteps(jobs ?? []);
-      if (!steps) continue;
+      const job = lintJob(jobs ?? []);
+      if (job === null) continue;
+      const tasks = demoSteps(await deps.exec("gh", ["api", `repos/{owner}/{repo}/actions/jobs/${job}/logs`], deps.repo));
+      if (!tasks) continue;
       found = true;
-      metrics.demo_ci_ok = Object.values(steps).every(conclusion => conclusion === "success") ? 1 : 0;
+      metrics.demo_ci_ok = Object.values(tasks).every(task => task.ok) ? 1 : 0;
       flagged.push({ at, kind: metrics.demo_ci_ok ? "demo_ci" : "demo_ci_failed",
-        excerpt: `verify-dev run ${run.databaseId} on ${CI_BRANCH} (${run.createdAt}): ${Object.entries(steps).map(([name, conclusion]) => `${name} ${conclusion}`).join(", ")}` });
+        excerpt: `verify-dev run ${run.databaseId} on ${CI_BRANCH} (${run.createdAt}), job ${job}: ${Object.entries(tasks).map(([task, { receipt }]) => `${task} ${receipt}`).join("; ")}` });
       break;
     }
-    if (!found) sourceError(`none of the last ${runs.length} verify-dev runs on ${CI_BRANCH} ran both virev-demo steps`);
+    if (!found) sourceError(`none of the last ${runs.length} verify-dev runs on ${CI_BRANCH} ran both virev-demo turbo tasks in ${LINT_JOB}`);
   } catch (error) { sourceError(`gh run list or view for verify-dev.yml on ${CI_BRANCH}: ${message(error)}`); }
   return { metrics, flagged };
 }
 
 const exec: Exec = (file, args, cwd) => new Promise((resolve, reject) => {
-  // No timeout or buffer size of its own: the runner's precheck timeout ends a hung run, and the outputs measured 2026-10-12 (gh run view
-  // --json jobs 26 KB, gh run list 2 KB) fit Node's default buffer.
-  execFile(file, [...args], { cwd, encoding: "utf8" }, (error, stdout) => error ? reject(error) : resolve(stdout));
+  // No timeout of its own: the runner's precheck timeout ends a hung run. No buffer limit either: the lint job logs measured 2026-10-15 run
+  // 2.0 to 2.1 MB, past Node's 1 MB default.
+  execFile(file, [...args], { cwd, encoding: "utf8", maxBuffer: Infinity }, (error, stdout) => error ? reject(error) : resolve(stdout));
 });
 
 async function main(): Promise<void> {
