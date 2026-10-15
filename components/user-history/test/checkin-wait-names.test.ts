@@ -31,3 +31,18 @@ test("c45: a todo id standalone or after a small word still resolves (VP of CI 1
   for (const wait of ["waits on t18 (For you)", "t17 answered", "todo t9", "For you t9", "the owner's answer on t18"])
     assert.deepEqual(met(vpOfCi(wait)), ["p135"], wait);
 });
+
+/*
+ * Crawler VP 10-16: p535 waited for "land-39 p3 20880ecc10 green, plus metal's timing of the 80M-row cleanup", and the check-in said the wait
+ * was over because goal p3 on its board is done. "land-39 p3" is part 3 of land 39. Trimmed from the Crawler VP board.
+ */
+const crawler = (waitFor: string): ChatBoard => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan: [
+  { id: "p3", status: "done", children: [], text: "Old goal" },
+  { id: "p535", status: "doing", children: [], waitFor, text: "Census runs without IO pauses: cheaper census writes and gentler database cleanup" },
+] satisfies PlanItem[] });
+
+test("c45: a step id after a hyphenated land name is that land's part, not this board's step (Crawler VP 10-16: p535 and land-39 p3)", () => {
+  assert.deepEqual(met(crawler("land-39 p3 20880ecc10 green, plus metal's timing of the 80M-row cleanup")), []);
+  assert.deepEqual(met(crawler("train-8 p3 on staging")), []);
+  assert.deepEqual(met(crawler("p3 is done")), ["p535"], "a standalone p3 still names the step");
+});
