@@ -15,6 +15,7 @@ import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
 import { newestReportAt, opsSteer, tailMessages } from "./checkin-ops.ts";
+import { DECISION_TAIL, decisionSteer } from "./decision-notes.ts";
 import { previousSpawn, spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
@@ -186,6 +187,8 @@ export class Chats {
   private readonly spawnTimes = new Map<string, number>();
   /** Each chat's newest duty report with board ops that `opsCheck` judged after its turn ended, by its time. */
   private readonly opsJudged = new Map<string, number>();
+  /** Each chat's last ended turn that `decisionCheck` judged, by its end. */
+  private readonly decisionsJudged = new Map<string, number>();
 
   /**
    * `index` is `<data dir>/chats.json`: the session ids that are chats, newest first. The chat side's one definition of "chat"; the session entry
@@ -206,7 +209,7 @@ export class Chats {
         this.queue(id, () => this.attached(id));
         this.queue(id, () => this.refreshExtension(id));
         // A reply sent just before a restart ended its turn on the old server; an idle chat gets its check when it attaches.
-        if (!this.threads.busy(id)) { this.queue(id, () => this.replyCheck(id)); this.queue(id, () => this.opsCheck(id)); }
+        if (!this.threads.busy(id)) { this.queue(id, () => this.replyCheck(id)); this.queue(id, () => this.opsCheck(id)); this.queue(id, () => this.decisionCheck(id)); }
       },
       children: (id, attached) => { this.attachedChildren.set(id, attached); this.childrenChanged(id, withRoster(attached, this.subagents.get(id) ?? [])); },
       idle: id => {
@@ -214,6 +217,7 @@ export class Chats {
         this.cleanSoon(id);
         this.queue(id, () => this.replyCheck(id));
         this.queue(id, () => this.opsCheck(id));
+        this.queue(id, () => this.decisionCheck(id));
       },
     });
     const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
@@ -1152,6 +1156,26 @@ export class Chats {
       if (line) await this.threads.prompt(id, { message: line, images: [], mode: "steer" });
       this.opsJudged.set(id, at);
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: board ops check: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /**
+   * At a turn's end, and when an idle chat attaches: once per ended turn, one `[board]` steer when the turn sent a job or thread a ruling and
+   * added no scratch note (`decisionSteer`, c76). The hub drops a tool result's sent messages, so a turn the hub shows as new is read from the
+   * session file.
+   */
+  private async decisionCheck(id: string): Promise<void> {
+    await this.load();
+    const said = this.chatIds.has(id) ? this.messages(id) : undefined;
+    const end = said?.findLast(message => message.role === "assistant" && (message.stopReason === "stop" || message.stopReason === "length"))?.timestamp;
+    if (end === undefined || this.decisionsJudged.get(id) === end) return;
+    try {
+      const sessionFile = (await this.summary(id))?.sessionFile;
+      const messages = sessionFile ? await tailMessages(sessionFile, DECISION_TAIL) : undefined;
+      const judged = messages && decisionSteer(messages);
+      if (!judged) return;
+      this.decisionsJudged.set(id, end);
+      if (judged.line) await this.threads.prompt(id, { message: judged.line, images: [], mode: "steer" });
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: decision check: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /**

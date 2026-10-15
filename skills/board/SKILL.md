@@ -75,7 +75,8 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 7. A goal whose own work is done and whose last steps only wait on another thread (its release, its land, a check it owns) does not stay open (c45). Check the wait against the real state and close the goal on that evidence, or send that thread the leftover in one message and close the goal with a note naming the thread.
 8. Send a job only its own plan item, never the whole board.
 9. Keep the scratchpad a short bullet list with one finding or decision per bullet and links to what it is about, such as `job:<name>` for a job's report. Long detail such as findings, options and file paths goes there as bullets, never as long prose.
-10. Write board notes and todos as plain sentences a person reads once, with no all-caps labels (SECURITY:, URGENT:), no slash-joined names, and no repo jargon (origin/main, xoxb, HEAD) when a plain word works. Say what it is and what happens next.
+10. Put each decision the chat makes itself (a ruling between threads, a land order, a skipped re-probe, a kept or dropped limit) in the scratchpad as a dated note in the same turn, besides any step note or job message (c76). On 10-15 ops guy made a land order (05:41Z), a kept SUMMARY_MAX_KEYS limit (07:20Z), a "won't land" ruling on three runs (07:43Z) and a skipped re-probe (07:50Z) only in job and thread messages, and wrote dated notes only at 08:27Z, after the owner asked why it does not use the scratchpad. The chat server now sends a `[board] Decisions not on the scratchpad:` steer after a turn that sent a ruling and added no scratch note.
+11. Write board notes and todos as plain sentences a person reads once, with no all-caps labels (SECURITY:, URGENT:), no slash-joined names, and no repo jargon (origin/main, xoxb, HEAD) when a plain word works. Say what it is and what happens next.
 
 ## chat_board ops
 

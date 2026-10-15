@@ -12,7 +12,9 @@ import type { ChatBoard, PlanItem } from "./shared/types.ts";
  */
 
 /** A transcript message, as the session file holds it or the hub projects it: only the fields read here. */
-export interface Said { role: string; customType?: string; content?: unknown; stopReason?: string; toolCallId?: string; isError?: boolean; timestamp?: number }
+export interface Said { role: string; customType?: string; content?: unknown; stopReason?: string; toolCallId?: string; isError?: boolean; timestamp?: number;
+  /** A tool result's details as the session file holds them, such as `sentAgentMessages` (src/decision-notes.ts); the hub drops them. */
+  details?: unknown }
 type Op = Record<string, unknown> & { op: string };
 /**
  * One duty job report with board ops: who sent it and when, its ops by key (the step or todo id, or the op's name for one with no id, such as
@@ -127,8 +129,8 @@ export function newestReportAt(messages: readonly Said[]): number | undefined {
 }
 
 /** The transcript messages of a session file's branch tail (`readBranchTail`), whole, as the hub's projection clips custom text and tool arguments. */
-export async function tailMessages(sessionFile: string): Promise<Said[] | undefined> {
-  const tail = await readBranchTail(sessionFile);
+export async function tailMessages(sessionFile: string, limits?: Parameters<typeof readBranchTail>[1]): Promise<Said[] | undefined> {
+  const tail = await readBranchTail(sessionFile, limits);
   return tail?.entries.flatMap((entry: SessionEntry): Said[] => entry.type === "message" ? [entry.message as Said]
     : entry.type === "custom_message" ? [{ role: "custom", customType: entry.customType, content: entry.content, timestamp: Date.parse(entry.timestamp) }] : []);
 }
