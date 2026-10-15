@@ -3,6 +3,7 @@ import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
+import type { FleetAsk, FleetDone, FleetKind } from "./fleet-budget.ts";
 import { type DutyCard, type DutyJobRef, headlineMetric, verdictMetrics } from "./shared/chat-duties.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
 import { CHANGE_APPROACH_MISSES, type MetricStreak } from "./shared/duty-streak.ts";
@@ -30,8 +31,11 @@ export interface DutyJobHost {
   chat(chatId: string): Promise<DutyChat | null>;
   /** Whether a duty job still works: its own turn, or a subagent below it. False when it is gone. */
   working(job: DutyJobRef): Promise<boolean>;
-  /** Starts the job: a new root session named `name` in the chat's folder, registered as the chat's job, with `brief` as its first message. */
-  start(chat: DutyChat, name: string, brief: string): Promise<DutyJobRef>;
+  /**
+   * Starts the job: a new root session named `name` in the chat's folder, registered as the chat's job, with `brief` as its first message.
+   * `admitted` says the turn queue already admitted the run under its duty key, so the job's first turn runs at once (`handoff`).
+   */
+  start(chat: DutyChat, name: string, brief: string, admitted?: boolean): Promise<DutyJobRef>;
   /**
    * Drops a finished duty job from the registry, so the chat's Agents card lists only the current one, and queues its archive
    * (src/chat-archive-queue.ts): a slow daemon never holds up the next start.
@@ -190,6 +194,9 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
 /** A fix job's name: `fix <duty>` with the chat and start time, like `fix ci system VP of CI 20:41`. */
 export const fixJobName = (duty: string, chat: string, at: number): string => dutyJobName(`fix ${duty}`, chat, at);
 
+/** The fleet budget's kind of a duty job, from its name (`dutyJobName`, `fixJobName`). */
+export const dutyJobKind = (name: string): FleetKind => name.startsWith("fix ") ? "fix" : name.startsWith("check-in ") ? "checkin" : "duty";
+
 /** What the brief of a fix job the server opens holds: the duty, the chat, the job, and each missed metric with no live fix job. */
 export interface FixJobInput {
   duty: Pick<DutyCard, "name" | "goal" | "metrics"> & { id: string };
@@ -284,6 +291,17 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
   registry: JobRegistry; board: (chatId: string) => string;
   /** Runs after the job is registered and before its brief, so its first request already carries its pool class (low). */
   started?: (id: string) => Promise<void>;
+  /**
+   * Runs before the brief of a job whose run the turn queue admitted under its duty key, so the job's first turn takes that place and does not
+   * queue again behind every turn that asked meanwhile. On 10-15 a duty key waited 1,604 s and then the d4 job's own first turn 2,083 s more
+   * with its worker loaded (pi-pool.log, 21:28 and 22:03 KST); the low duty jobs that started from 22:49 KST waited 1,212 s at p50 for their first turn.
+   */
+  handoff?: (id: string) => Promise<void>;
+  /**
+   * The fleet budget (src/fleet-budget.ts): each create and each send-back waits for it, outside the one start lane, so a fix job held for its
+   * chat's live fix holds up no other chat's start. Absent: no wait.
+   */
+  fleet?: { admit(ask: FleetAsk): Promise<FleetDone> };
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -309,6 +327,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     }
     return undefined;
   };
+  const budgeted = async <T extends { id: string }>(ask: FleetAsk, work: () => Promise<T>): Promise<T> => {
+    const done = await input.fleet?.admit(ask);
+    try { const result = await work(); done?.(result.id); return result; }
+    catch (error) { done?.(); throw error; }
+  };
   const createOrAdopt = async (chat: DutyChat, first: string): Promise<{ id: string; name: string }> => {
     let cause = "";
     let name = first;
@@ -333,11 +356,12 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       return found ? { id: chatId, name: found.name.trim() || chatId, cwd: found.cwd, board: input.board(chatId) } : null;
     },
     async working(job) { return (await row(job.id))?.working === true; },
-    start: (chat, planned, brief) => serial(async () => {
+    start: (chat, planned, brief, admitted = false) => budgeted({ kind: dutyJobKind(planned), label: planned, chat: chat.id }, () => serial(async () => {
       const { id, name } = await createOrAdopt(chat, planned);
       try {
         await input.registry.add([id], chat.name);
         await input.started?.(id);
+        if (admitted) await input.handoff?.(id).catch(error => input.log?.(`duty job ${name}: hand its queue place over: ${reason(error)}`));
         await input.threads.prompt(id, { message: name === planned ? brief : brief.split(planned).join(name), images: [], mode: "steer" });
       } catch (error) {
         await input.registry.remove([id]).catch(() => {});
@@ -345,7 +369,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         throw new Error(`session ${id} could not be registered and briefed (${reason(error)}); ${archived}`);
       }
       return { id, name };
-    }),
+    })),
     async retire(job) {
       await input.registry.remove([job.id]);
       await input.archives.add(job);
@@ -358,6 +382,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         ...older.filter(job => idle(job) !== undefined)];
     },
     stop: job => input.archives.add(job),
-    steer: (job, text) => input.threads.prompt(job.id, { message: text, images: [], mode: "steer" }),
+    steer: (job, text) => budgeted({ kind: "sendback", label: job.name }, async () => { await input.threads.prompt(job.id, { message: text, images: [], mode: "steer" }); return job; }).then(() => {}),
   };
 }

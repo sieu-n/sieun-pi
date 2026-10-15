@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { InterruptedReport, InterruptedRun } from "./shared/interrupted.ts";
 import type { SessionRow } from "./shared/types.ts";
+import type { FleetBudget } from "./fleet-budget.ts";
 
 /** The resume-paused-sessions skill owns the rule for which runs count as interrupted; the chat only runs it. */
 const script = fileURLToPath(new URL("../../../skills/resume-paused-sessions/scripts/resume_paused.py", import.meta.url));
@@ -67,9 +68,18 @@ export class InterruptedRuns {
    * (`--direct`), after the head of a dead worker among them is reopened. A hung job is left to Resume and the Mac usable watch: an abort drops
    * its turn's place in the pi-pool queue, where limits-mid-areas waited 19 min on 10-15. Null when no job of a chat is interrupted.
    */
-  resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>): Promise<InterruptedReport | null> {
+  resumeJobs(isJob: (run: InterruptedRun) => boolean, reopen: (sessionId: string) => Promise<void>, fleet?: Pick<FleetBudget, "tryAdmit">): Promise<InterruptedReport | null> {
     const report = this.serial(async () => {
-      const jobs = (await this.run(["--dry-run", "--direct"])).paused.filter(run => run.session_id !== undefined && run.reason !== "hung" && isJob(run));
+      const cut = (await this.run(["--dry-run", "--direct"])).paused.filter(run => run.session_id !== undefined && run.reason !== "hung" && isJob(run));
+      // Each continue waits for the fleet budget, and the ones it does not let through now stay for the next sweep: after the reboot at 13:48:58Z
+      // on 10-15 the daemon found 31 sessions cut mid-run, and one "continue" each would have loaded 31 workers at once.
+      const jobs: InterruptedRun[] = [];
+      for (const run of cut) {
+        const done = fleet ? await fleet.tryAdmit({ kind: "continue", label: run.name || run.session_id! }) : undefined;
+        if (fleet && !done) break;
+        done?.(run.session_id);
+        jobs.push(run);
+      }
       if (!jobs.length) return null;
       for (const head of new Set(jobs.flatMap(run => run.reason === "worker_failed" && run.head_session_id ? [run.head_session_id] : []))) {
         try { await reopen(head); }

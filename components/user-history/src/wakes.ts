@@ -18,7 +18,7 @@ export interface Wake { session: string; root?: string; on: WakeOn; note: string
 export type RunState = { done: false } | { done: true; conclusion: string; url: string; label: string } | { error: string };
 
 export const TICK_MS = 30_000;
-/** The file each tick rewrites when it starts and ends; board.wake refuses a wake while it is over 2 min old, since no service would deliver it. */
+/** The file the ticker rewrites as it starts and on every beat (`startWakes`); board.wake refuses a wake while it is over 2 min old, since no service would deliver it. */
 export const TICKED = ".ticked";
 /** A run the CI cache does not stamp, or one read with `gh`, is read at most this often (GitHub's REST limit is 5,000 requests an hour). */
 export const RUN_LOOK_MS = 2 * 60_000;
@@ -68,12 +68,18 @@ export interface WakeDeps {
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
    */
   progress?: () => Promise<void>;
+  /**
+   * Why due wakes wait this tick, or null to send them. The chat service holds them while the turn queue is long (`queueLong`): a woken job's
+   * turn would wait there with its worker loaded, and its wake file costs nothing. Absent: never held.
+   */
+  hold?: () => Promise<string | null>;
   log: (line: string) => void;
 }
 
 /** The wake files, one tick at a time; it remembers each run's last stamp and look so a quiet run costs one stat a tick. */
 export class Wakes {
   private readonly looked = new Map<number, { stamp: string | null; at: number }>();
+  private held: string | null = null;
   private readonly now: () => number;
   constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
 
@@ -102,6 +108,12 @@ export class Wakes {
         if (!state || !("done" in state) || !state.done) continue;
       } else if (wake.on.at > now) continue;
       due.set(wake.session, [...due.get(wake.session) ?? [], { file, wake, state }]);
+    }
+    if (due.size && this.deps.hold) {
+      const hold = await this.deps.hold().catch(() => null);
+      if (!hold !== !this.held) this.deps.log(hold ? `wakes: ${due.size} sessions due, held while ${hold}` : "wakes: the turn queue is short again; due wakes go out");
+      this.held = hold;
+      if (hold) return 0;
     }
     let sent = 0;
     for (const [session, wakes] of due) {
@@ -212,22 +224,28 @@ export async function waking(dir: string, session: string): Promise<boolean> {
 }
 
 /**
- * Ticks the wakes every TICK_MS until the returned stop is called; a tick still running when the next comes skips it. TICKED is stamped when a
- * tick starts, after each run read and send, and when it ends, so it ages only while no tick runs or one step hangs. 10-15: a tick took 30 s to over 2 min (a run read under load, a send held
- * up to 30 s by a slow daemon), and the 19:32 KST release killed one mid-tick; its restarted service's first tick reads every run afresh. At
- * the 10:33:18Z VP of CI check-in the stamp was the old service's last finished tick, past WAKE_LATE_MS, so `pendingWakes` owed nothing and
- * "ci release driver", asleep on run 38708750431 since 10:16Z and woken at 10:38:14Z, read idle and p96 stuck.
+ * Ticks the wakes at once and then every TICK_MS until the returned stop is called; a tick still running when the next comes is left to run.
+ * TICKED is stamped when the ticker starts, on every TICK_MS beat even while a tick runs, after each run read and send, and when a tick ends,
+ * so it ages only while no service runs this ticker. 10-15: a tick took 30 s to over 2 min (a run read under load, a send held up to 30 s by a
+ * slow daemon), and releases and crashes restarted the service at 10:3xZ, 13:49:5xZ and 15:21:3xZ. At the 10:33:18Z VP of CI check-in the stamp
+ * was the old service's last finished tick, past WAKE_LATE_MS, so `pendingWakes` owed nothing and "ci release driver", asleep on run
+ * 38708750431, read idle and p96 stuck. Crawler VP's 13:41:51Z check-in ran inside a tick of sends that each timed out after 30 s, and its
+ * 15:22:22Z one read the wakes 30 s after the restarted service began and before its first tick: both owed no wake at all, so "index land
+ * follow through", asleep on run 38724863673, and "crawler lab window", asleep on wakes at 16:00Z and 22:00Z, read idle, and p92, p107, p110,
+ * p178, p185 and p18 stuck and blocked on others.
  */
 export function startWakes(deps: WakeDeps, everyMs = TICK_MS): () => void {
-  const stamp = () => writeFile(join(deps.dir, TICKED), new Date((deps.now ?? Date.now)()).toISOString());
+  const fail = (error: unknown) => deps.log(`wakes: ${error instanceof Error ? error.message : String(error)}`);
+  const stamp = () => mkdir(deps.dir, { recursive: true, mode: 0o700 }).then(() => writeFile(join(deps.dir, TICKED), new Date((deps.now ?? Date.now)()).toISOString()));
   const wakes = new Wakes({ ...deps, progress: stamp });
   let running = false;
-  const timer = setInterval(() => {
-    if (running) return;
+  const beat = () => {
+    if (running) { void stamp().catch(fail); return; }
     running = true;
-    void mkdir(deps.dir, { recursive: true, mode: 0o700 }).then(stamp).then(() => wakes.tick()).then(stamp)
-      .catch(error => deps.log(`wakes: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
-  }, everyMs);
+    void stamp().then(() => wakes.tick()).then(stamp).catch(fail).finally(() => { running = false; });
+  };
+  beat();
+  const timer = setInterval(beat, everyMs);
   timer.unref();
   return () => clearInterval(timer);
 }

@@ -13,13 +13,14 @@ import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
-import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
+import { dutyAdmitter, queueLong, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
 import { readStrays, startMacUsableWatch, TREE_MEMORY_FILE } from "./mac-usable-watch.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { interruptedRuns } from "./chat-resume.ts";
+import { FleetBudget, readWorkersGb } from "./fleet-budget.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
@@ -153,6 +154,25 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const turns = dutyAdmitter({ log: dutyLog });
   const queueReading = sharedQueueRead();
   const queued = queueReader(queueReading);
+  // Every non-owner start the service makes waits for the fleet budget: duty, check-in and fix jobs, send-backs, cut-turn continues and a job's
+  // wake. Owner sends, a chat's own wake and alert wakes never ask it.
+  const poolWaiting = async (): Promise<Set<string>> => {
+    const pool = await queueReading().catch(() => null);
+    return new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
+  };
+  const fleet = new FleetBudget({ gb: () => readWorkersGb(), queue: () => queueReading().catch(() => null), log: dutyLog,
+    live: async session => (await catalog.rows()).some(row => row.id === session && row.working) || (await poolWaiting()).has(session),
+    fixLive: async chat => {
+      const rows = await catalog.rows();
+      const name = rows.find(row => row.id === chat)?.name.trim();
+      if (!name) return false;
+      const waiting = await poolWaiting();
+      for (const row of rows) {
+        if (!row.name.startsWith("fix ") || row.archived || !(row.working || waiting.has(row.id))) continue;
+        if (await registry.chatOf(row.id) === name) return true;
+      }
+      return false;
+    } });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
     board: id => boards.read(id),
     applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
@@ -163,9 +183,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const waiting = new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
       return fixJobLive(item, id, await catalog.rows(), asleep, waiting, now);
     },
+    queueLong: async () => queueLong(await queueReading().catch(() => null)),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
-    jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
-      started: id => poolPriorities.set(id, "low") }),
+    jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog, fleet,
+      started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) }),
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger) => chats.runCheckIn(id, trigger), measure: id => chats.measureCheckIn(id),
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
@@ -175,7 +196,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       strays: readStrays,
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
-      interrupted: isJob => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }),
+      interrupted: isJob => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet),
       settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties, duties: id => duties.store.list(id),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
@@ -224,7 +245,17 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!response.success) throw new Error(response.error);
     },
   };
-  const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
+  // A job's wake waits for the fleet budget and stays due until it opens; a chat's own wake goes at once.
+  const wakeMessage = { ...agentMessage, deliver: async (session: string, text: string): Promise<"sent" | "gone"> => {
+    if (!(await chats.ids()).has(session)) {
+      const done = await fleet.tryAdmit({ kind: "wake", label: session.slice(0, 8) });
+      if (!done) throw new Error(`held by the fleet budget: ${await fleet.held() ?? "starts wait"}`);
+      done(session);
+    }
+    return agentMessage.deliver(session, text);
+  } };
+  const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog,
+    hold: async () => queueLong(await queueReading().catch(() => null)), ...wakeMessage });
   const grafanaConfig = join(dataDir, "grafana-alerts.json");
   const pollHealth = new PollHealth();
   const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"), alerts: () => pollHealth.poll(() => readGrafanaAlerts(grafanaConfig)),

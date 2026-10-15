@@ -77,7 +77,7 @@ test("a daily duty stuck 3 runs with its last job ended and no fix step gets a f
   const { duties, state, starts, lines, stepsAtStart, admits } = await setup({ runs: [run(13, [130, 57], "j13"), run(14, [294, 50], "j14"), run(15, [110, 28], "j15")] });
   await duties.tick();
   assert.equal(starts.length, 1, lines.join("\n"));
-  assert.deepEqual(admits, [], "the create does not wait in the turn queue, so a server restart cannot cut it (01a115e2 d2 and d3, 10-15 12:34Z)");
+  assert.deepEqual(admits, ["d1-fix"], "the create waits in the turn queue under the fix key, so the job holds no worker while its turn could only wait");
   assert.deepEqual(stepsAtStart[0], ["d1/verify_dev_p90_min no session", "d1/land_success_pct no session"], "the steps name the job before its create");
   assert.match(starts[0]!.name, /^fix ci system VP of CI \d\d:\d\d$/);
   assert.match(starts[0]!.brief, /- verify_dev_p90_min \(Dev verify p90\) is 110 min, target at most 10 min, missed 3 runs in a row, moving toward the target\./);

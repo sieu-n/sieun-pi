@@ -55,6 +55,12 @@ export interface DutyHost {
   fixLive?: (chatId: string, item: PlanItem) => Promise<boolean>;
   /** Applies board ops built from the board inside the write's lock, as an agent; absent: the server opens no fix job (`ownFixes`). */
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<unknown>;
+  /**
+   * Why a turn started now would only wait in the turn queue (`queueLong`), or null. While it says why, the server sends no job back: the
+   * message would start a turn that waits with the job's worker loaded. An ended duty job is then stopped like any other, and an idle fix job
+   * waits for a later tick. Absent: never held.
+   */
+  queueLong?: () => Promise<string | null>;
 }
 
 /** The part of a duty, the check-in included, its fix job needs. */
@@ -205,6 +211,8 @@ export class Duties {
   private readonly owning = new Set<string>();
   /** The board rev each fix job was sent back at (`ownFixes`); a fix job that ends again with no board change since gets a new fix job in its place. */
   private readonly fixSentBack = new Map<string, number>();
+  /** Fix jobs whose send-back waits for a shorter turn queue, so each logs the hold once. */
+  private readonly fixHeld = new Set<string>();
   /** The last board each chat's watch showed, to find the fix steps a change closed (`boardChanged`). */
   private readonly boards = new Map<string, ChatBoard>();
   /** Each ended last job's after-job measure and then its archive (`stopEnded`), kept off the tick so a slow precheck holds up no due duty. */
@@ -359,6 +367,11 @@ export class Duties {
       this.log(`duty job ${job.name}: ended again with ${misses.map(miss => miss.key).join(", ")} unowned and no board change since it was sent back`);
       return false;
     }
+    const long = await this.host.queueLong?.().catch(() => null) ?? null;
+    if (long) {
+      this.log(`duty job ${job.name}: ended with ${misses.map(miss => miss.key).join(", ")} unowned; not sent back, because ${long}, so it stops like any ended job`);
+      return false;
+    }
     try { await steer(job, unownedMessage(duty.name, own.duty, misses)); }
     catch (error) { this.log(`duty job ${job.name}: send it back: ${message(error)}`); return false; }
     this.sentBack.set(job.id, rev);
@@ -425,6 +438,13 @@ export class Duties {
     visit(board?.plan ?? []);
     const idle = held.size && jobs.ended ? await jobs.ended([...held.values()].map(entry => entry.job)) : [];
     const back = jobs.steer ? idle.find(job => this.fixSentBack.get(job.id) !== rev) : undefined;
+    const long = back ? await this.host.queueLong?.().catch(() => null) ?? null : null;
+    if (back && long) {
+      if (!this.fixHeld.has(back.id)) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: fix job ${back.name} ended; it goes back on a later tick, because ${long}`);
+      this.fixHeld.add(back.id);
+      return;
+    }
+    if (back) this.fixHeld.delete(back.id);
     if (back && jobs.steer) {
       const steps = held.get(back.id)?.steps ?? [];
       // A job Prime cannot resume gets a new one on its steps: on 10-15 at 16:13Z frontend bro's p148 job answered "Prime Agent did not resume
@@ -442,10 +462,14 @@ export class Duties {
     const at = this.now();
     const name = fixJobName(duty.name, chat.name, at);
     // The steps name the job before its create, which took up to 197 s on 10-15, so a restart in between leaves steps the next tick reuses.
-    // The create does not wait in the turn queue: the job's own turns queue in pi-pool under its session id, and that queue outlives a server
-    // restart. On 10-15 the 01a115e2 d2 and d3 opens waited 1816 s and 1912 s as low and the 12:34Z restart cut both before their create.
+    // The create waits in the turn queue under the duty's fix key, so a fix job holds no worker while its turn could only wait: at 14:35Z on
+    // 10-15, 22 of the 102 queued turns were fix and duty jobs started after the 13:49Z restart, each with its worker loaded. A restart during
+    // the wait loses the place, and the next tick asks again.
     await this.host.applyBoard!(chatId, current => fixStepOps(current, duty, misses, { name }));
-    const job = await jobs.start(chat, name, fixJobBrief({ duty, chat, job: name, at, misses }));
+    const release = await this.host.admit?.(chatId, `${duty.id}-fix`) ?? null;
+    let job: DutyJobRef;
+    try { job = await jobs.start(chat, name, fixJobBrief({ duty, chat, job: name, at, misses }), release !== null); }
+    finally { await release?.().catch(error => this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: release its fix job's turn queue key: ${message(error)}`)); }
     await this.host.applyBoard!(chatId, current => fixStepOps(current, duty, misses, job));
     this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: ${misses.map(miss => miss.key).join(", ")} had no fix step with a live job after ` +
       `${CHANGE_APPROACH_MISSES} or more missed runs; opened ${job.name}`);
@@ -752,7 +776,7 @@ export class Duties {
     const release = await this.host.admit?.(chatId, dutyId) ?? null;
     if (step) this.steps.set(key, step);
     let job: DutyJobRef;
-    try { job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at })); }
+    try { job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }), release !== null); }
     finally { await release?.().catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: release its turn queue key: ${message(error)}`)); }
     return replaced ? { job, replaced } : { job };
   }
