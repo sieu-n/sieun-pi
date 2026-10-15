@@ -356,7 +356,10 @@ class PressureLevel(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "reads this Mac's kernel")
     def test_a_read_on_this_mac_gives_every_value(self):
         reading = pressure.read()
-        self.assertEqual(set(reading), {"kernel", "swap_used", "swap_total", "compressor", "ram", "source"})
+        self.assertEqual(set(reading), {"kernel", "swap_used", "swap_total", "compressor", "ram", "load", "cpus", "uptime", "source"})
+        self.assertLessEqual(0, reading["load"])
+        self.assertLess(0, reading["cpus"])
+        self.assertLess(0, reading["uptime"])
         self.assertIn(reading["kernel"], (1, 2, 4))
         self.assertLessEqual(reading["swap_used"], reading["swap_total"])
         self.assertLess(0, reading["compressor"])

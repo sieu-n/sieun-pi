@@ -1,4 +1,4 @@
-"""Memory pressure on this Mac, read for the turn queue's governor (turns.py).
+"""Memory pressure and CPU load on this Mac, read for the turn queue's governor (turns.py).
 
 One reading is three kernel values, read in-process with sysctlbyname and
 host_statistics64, so a read forks nothing: kern.memorystatus_vm_pressure_level,
@@ -6,6 +6,8 @@ vm.swapusage, and the pages the compressor occupies (vm_stat's "Pages occupied b
 compressor"). On 10-14 18:2x KST at load 54 a read took 0.009 ms after a 3 ms
 `import ctypes`, where `sysctl -n` took 126 ms, `vm_stat` 69 ms and
 `memory_pressure -Q` 171 ms (sessions/2026/10/14/1815-mac-stays-usable/pressure-governor/read_cost.py).
+The macOS read adds the 1-minute load average (getloadavg, no fork) for LOAD_CRITICAL_PER_CPU and
+the time since boot for BOOT_CRITICAL_SEC.
 It also reads the chat service's per-tree memory sample (read_tree_memory), so the
 governor can hold the turns of a tree that holds over a quarter of RAM.
 """
@@ -29,6 +31,20 @@ SWAP_CRITICAL_SHARE = 0.95
 # reads at 10:59-11:02Z on 10-14 all read warn while kernel_task paged at 168% to 256%,
 # with swapouts from 6,210 to 22,956 a second (sessions/2026/10/14/1815-mac-stays-usable/feed-samples.jsonl).
 SWAPOUTS_CRITICAL = 6000
+# A 1-minute load average at or over this many runnable threads per CPU core reads critical, so the limit drops even while
+# memory is clean. After the 13:49Z restart on 10-15 the first read at 13:50:16Z found swap 0 and the compressor at 0.4 GB, so
+# the limit climbed 12 to 30 by 13:52:18Z and pi-pool admitted 21, 21 and 28 turns in those three minutes, while the 1-minute
+# load read 231 one minute after login and 268 at three (the coordinator's uptime reads) on 12 cores, every core at 100%. Memory read high only at 13:52:53Z. Over
+# the 442 watchdog samples from 10-09 to 10-15 (~/.prime/agent/watchdog/cron.jsonl) load was 9.6 at p50, 43.6 at p95 and 79.6
+# at p99, and each of the 5 samples at 48 or more had the governor at memory critical already, so 4 a core (48 here) acts
+# only when CPU is pinned while memory reads clean.
+LOAD_CRITICAL_PER_CPU = 4
+# For this long after boot (kern.boottime) every read is critical, so the limit sits at pressure_working_max["critical"] and
+# climbs by turns.LIMIT_STEP a read only after it. On 10-15 the Mac booted at 13:48:58Z, the chat service started the daemon
+# at 13:50:00Z (62 s), the daemon started 22 workers in 13:50Z and 10 in 13:51Z (31 of them recovered from before the
+# restart), and memory read high at 13:52:53Z (235 s) and critical at 13:54:31Z (333 s). The 1-minute load average lags a
+# burst by about a minute, and a record from before the boot can hold the ok limit of 30.
+BOOT_CRITICAL_SEC = 600
 # host_statistics64 flavor HOST_VM_INFO64 (mach/host_info.h).
 HOST_VM_INFO64 = 4
 # ops guy's machine-wide feed, rewritten every 10 s. A file older than FEED_FRESH_SEC
@@ -40,12 +56,15 @@ FEED_LEVELS = {1: 1, 2: 2, 4: 4, "normal": 1, "ok": 1, "warn": 2, "warning": 2, 
 
 def level(reading):
     """ok, high or critical for one reading; a reading of None (no probe) is ok,
-    because a broken probe must not hold the Mac's agents."""
+    because a broken probe must not hold the Mac's agents. A reading with no load or cpus (Linux, an old record) skips the CPU rule,
+    and one with no uptime skips the boot rule."""
     if reading is None:
         return "ok"
     swap_full = reading["swap_total"] > 0 and reading["swap_used"] > SWAP_CRITICAL_SHARE * reading["swap_total"]
+    cpu_full = reading.get("cpus", 0) > 0 and reading.get("load", 0) >= LOAD_CRITICAL_PER_CPU * reading["cpus"]
+    booting = 0 <= reading.get("uptime", BOOT_CRITICAL_SEC) < BOOT_CRITICAL_SEC
     if (reading["kernel"] >= KERNEL_CRITICAL or reading["compressor"] >= COMPRESSOR_CRITICAL_SHARE * reading["ram"]
-            or swap_full or reading.get("swapouts", 0) >= SWAPOUTS_CRITICAL):
+            or swap_full or reading.get("swapouts", 0) >= SWAPOUTS_CRITICAL or cpu_full or booting):
         return "critical"
     if reading["kernel"] >= KERNEL_WARN:
         return "high"
@@ -194,8 +213,9 @@ def capping_cgroup(proc, cgroups):
 
 
 def read_mach():
-    """{kernel, swap_used, swap_total, compressor, ram} from the macOS kernel, or None when a
-    kernel call fails (a changed struct)."""
+    """{kernel, swap_used, swap_total, compressor, ram, load, cpus, uptime} from the macOS kernel, or None when a
+    kernel call fails (a changed struct). load is the 1-minute load average, cpus the logical core count and uptime the
+    seconds since kern.boottime."""
     try:
         import ctypes
         libc = ctypes.CDLL(None)
@@ -218,12 +238,14 @@ def read_mach():
         kernel = struct.unpack("i", sysctl("kern.memorystatus_vm_pressure_level", 4))[0]
         swap_total, _, swap_used = struct.unpack("QQQ", sysctl("vm.swapusage", 32)[:24])
         ram = struct.unpack("Q", sysctl("hw.memsize", 8))[0]
+        booted = struct.unpack("q", sysctl("kern.boottime", 16)[:8])[0]
         page = struct.unpack("Q", sysctl("hw.pagesize", 8))[0]
         vm, count = VmStatistics64(), ctypes.c_uint32(ctypes.sizeof(VmStatistics64) // 4)
         if libc.host_statistics64(libc.mach_host_self(), HOST_VM_INFO64, ctypes.byref(vm), ctypes.byref(count)) != 0:
             raise OSError("host_statistics64")
         return {"kernel": kernel, "swap_used": swap_used, "swap_total": swap_total,
-                "compressor": vm.compressor_pages * page, "ram": ram}
+                "compressor": vm.compressor_pages * page, "ram": ram, "load": round(os.getloadavg()[0], 2), "cpus": os.cpu_count() or 0,
+                "uptime": round(time.time() - booted)}
     except Exception:
         return None
 
