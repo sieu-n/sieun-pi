@@ -109,7 +109,8 @@ test("the row's one line is the headline number in words and what is being done,
 });
 
 test("headline words: a share reads 'N% of', a count leads with its number, any other unit reads 'is', and the label stops at its first comma", () => {
-  const words = (label: string, value: number, unit?: string) => headlineWords({ ...view("d6", [{ ...fixture.runs.d6![0]!, after: undefined, metrics: { k: { value, met: false } } } as DutyRunRecord]),
+  const { after: _after, ...plain } = fixture.runs.d6![0]!;
+  const words = (label: string, value: number, unit?: string) => headlineWords({ ...view("d6", [{ ...plain, metrics: { k: { value, met: false, target: 1, op: ">=" as const } }, verdict: "missed" as const }]),
     duty: { ...fixture.duties.find(duty => duty.id === "d6")!, metrics: [{ key: "k", label, op: ">=", target: 1, ...(unit ? { unit } : {}), headline: true }] } });
   assert.equal(words("Duties in all chats whose last run met every target", 21.2, "%"), "21.2% of duties in all chats whose last run met every target");
   assert.equal(words("Prod uptime of api.virev.ai and its crawler, last 24 h", 99.25, "%"), "Prod uptime of api.virev.ai and its crawler is 99.3%");
