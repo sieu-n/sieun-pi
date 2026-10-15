@@ -767,5 +767,75 @@ class Replay1014Evening(unittest.TestCase):
         self.assertEqual({tree for _, h, tree in waits.values() if h}, {a["tree"] for a in arrivals if a["holdable"]})
 
 
+class Replay1015Flap(unittest.TestCase):
+    """The governor against the turns pi-pool logged on 10-15 from 08:57 to 09:27 KST, while its
+    level changed 25 times. One ok read at 09:17:28 between two critical ones put the limit from
+    16 to 30, 11 queued turns started in that second, and kernel_task read 146% of a core."""
+
+    def replay(self):
+        with open(os.path.join(os.path.dirname(__file__), "live_1015_0857_0926kst.json")) as f:
+            fixture = json.load(f)
+        arrivals, reads = fixture["turns"], fixture["reads"]
+        cfg = dict(base.DEFAULTS, mac_working_max=30, lease_s=10 ** 9)
+        reading = lambda now: [r for r in reads if r["t"] <= now][-1]["reading"]
+        t, keys, seen, per_second, limits = turns.empty(), {}, collections.Counter(), collections.Counter(), {}
+        first = reads[1]["t"] - turns.PRESSURE_TTL_SEC
+        t["pressure"] = {"level": "high", "at": first, "since": first, "reading": reading(first), "limit": 16, "changed": None, "on": True}
+        pending = sorted(arrivals, key=lambda a: (min(a["t"], a["admitted"]), a["session"]))
+        for a in [a for a in pending if a["admitted"] < 0]:
+            seen[a["session"]] += 1
+            key = f"{a['session']}#{seen[a['session']]}"
+            t["working"][key] = dict(entry(tree=a["tree"], parent=a["parent"], klass=a["class"], since=a["admitted"]),
+                                     kind="slot", queued_since=a["t"], lease_until=10 ** 9, dur=a["dur"], base=a["session"])
+            keys[a["session"]] = key
+        pending, i = [a for a in pending if a["admitted"] >= 0], 0
+        for now in range(0, 1800):
+            while i < len(pending) and pending[i]["t"] <= now:
+                a = pending[i]
+                i += 1
+                seen[a["session"]] += 1
+                t["queued"][f"{a['session']}#{seen[a['session']]}"] = dict(entry(tree=a["tree"], parent=a["parent"], klass=a["class"], since=a["t"]),
+                                                                           dur=a["dur"], base=a["session"])
+            for s, e in list(t["working"].items()):
+                if now >= e["since"] + e["dur"]:
+                    del t["working"][s]
+                    keys.pop(e["base"], None)
+            for e in t["queued"].values():
+                e["parent"] = keys.get(e["parent"], e["parent"])
+            admitted = turns.step(t, {}, now, cfg, lambda now=now: reading(now))[2]
+            for s, kind in admitted:
+                keys[t["working"][s]["base"]] = s
+            per_second[now] = sum(1 for s, kind in admitted if kind == "slot" and t["working"][s]["queued_since"] < now)
+            limits[now] = t["pressure"]["limit"]
+        return per_second, limits
+
+    def test_one_ok_read_between_critical_ones_opens_4_slots_not_14(self):
+        step = turns.LIMIT_STEP
+        try:
+            turns.LIMIT_STEP = 30
+            old, old_limits = self.replay()
+        finally:
+            turns.LIMIT_STEP = step
+        new, new_limits = self.replay()
+        at_0917 = range(1228, 1260)
+        self.assertGreaterEqual(max(old[s] for s in at_0917), 11, "the old rule starts the 09:17:28 burst again")
+        self.assertEqual(max(old_limits[s] for s in at_0917), 30)
+        self.assertLessEqual(max(new.values()), turns.LIMIT_STEP + 1, "the most queued turns any one second starts")
+        self.assertEqual(max(new_limits[s] for s in at_0917), 20)
+        print(f"\n10-15 flap replay: the most queued turns started in one second, old {max(old.values())}, new {max(new.values())}", file=sys.stderr)
+
+    def test_a_calm_mac_reaches_the_owners_30_in_four_reads(self):
+        t, read = turns.empty(), Readings(THRASH)
+        cfg = dict(base.DEFAULTS, mac_working_max=30)
+        turns.step(t, {}, 0, cfg, read)
+        read.reading = CALM
+        climb = [(turns.step(t, {}, now, cfg, read), t["pressure"]["limit"])[1] for now in range(30, 150, 30)]
+        self.assertEqual(climb, [20, 24, 28, 30])
+        self.assertEqual(turns.step(t, {}, 150, cfg, read)[3], [], "a limit at the ceiling logs nothing")
+        read.reading = THRASH
+        turns.step(t, {}, 180, cfg, read)
+        self.assertEqual(t["pressure"]["limit"], 16, "a pressured read drops the limit at once")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,8 @@ turn keeps its place and takes a free slot under the lower limit only after ever
 is not held, and only one per tree each admit pass, so every chat's check-in still runs; a
 turn held HOLD_MAX_S queues like any other. A held child may still borrow its in-flight
 parent's lent slot, so a parent waiting on it in a cell does not sit on its slot. The level is read again every
-PRESSURE_TTL_SEC, and the record holds only what the next read recomputes.
+PRESSURE_TTL_SEC, and the record holds only what the next read recomputes. A read at high
+or critical drops the limit at once, and each ok read raises it by at most LIMIT_STEP.
 
 Order: an owner turn runs at once and never waits. Then queued turns take free slots
 by class, high before normal before low, longest wait first inside a class, while the
@@ -59,6 +60,14 @@ LOCK_TIMEOUT = 6.0
 # The governor reads memory pressure at most this often and keeps the reading in
 # state["turns"]["pressure"] between reads.
 PRESSURE_TTL_SEC = 30
+# After a read at high or critical the limit climbs back toward mac_working_max at most this
+# many slots a read, so one ok read between two critical ones opens 4 slots. On 10-15 a
+# single ok read at 09:17:28 KST opened 16 to 30 at once, 11 queued turns started in that
+# second, and kernel_task read 146% and 120% of a core in the next two minutes. Over the
+# 235 minutes of the Mac usable watch feed from 10-14 20:31Z to 10-15 00:27Z, the 33 where
+# working turns grew by 3 to 8 peaked at 83.5% kernel_task, and the one that grew by 12 read
+# 146% (browser-chat/mac-usable/2026-10-1{4,5}.jsonl). Two reads a minute at 4 is 8.
+LIMIT_STEP = 4
 
 
 def limits(cfg):
@@ -197,6 +206,11 @@ def working_limit(cfg, level):
     return mac if level == "ok" else max(1, min(mac, int(cfg["pressure_working_max"][level])))
 
 
+def stepped(target, last):
+    """The limit after one read: down to `target` at once, up from `last` by at most LIMIT_STEP."""
+    return target if last is None or last >= target else min(target, last + LIMIT_STEP)
+
+
 def governor(turns, now, cfg, read=pressure.read):
     """Refresh turns["pressure"] once it is PRESSURE_TTL_SEC old. Returns (refreshed, events)."""
     last = turns.get("pressure") or {}
@@ -204,18 +218,20 @@ def governor(turns, now, cfg, read=pressure.read):
         turns["pressure"] = {"level": "ok", "at": now, "since": now, "reading": None, "limit": working_limit(cfg, "ok"), "changed": None, "on": False}
         return last.get("on", True), []
     if last.get("on", True) and last.get("level") in pressure.LEVELS and 0 <= now - last.get("at", -1e18) < PRESSURE_TTL_SEC:
-        limit = working_limit(cfg, last["level"])
+        limit = min(last.get("limit", working_limit(cfg, last["level"])), working_limit(cfg, last["level"]))
         turns["pressure"] = dict(last, limit=limit)
         return limit != last.get("limit"), []
     reading = read()
     level, was = pressure.level(reading), last.get("level", "ok")
     rec = {"level": level, "at": now, "since": last.get("since", now) if level == was else now, "reading": reading,
-           "limit": working_limit(cfg, level), "changed": last.get("changed"), "on": True}
+           "limit": stepped(working_limit(cfg, level), last.get("limit")), "changed": last.get("changed"), "on": True}
     events = []
     if level != was:
         rec["changed"] = {"from": was, "to": level, "at": now, "limit_from": last.get("limit", working_limit(cfg, was)),
                           "limit_to": rec["limit"], "reading": reading}
         events.append(("pressure_level", rec["changed"]))
+    elif "limit" in last and rec["limit"] != last["limit"]:
+        events.append(("pressure_limit", {"level": level, "at": now, "limit_from": last["limit"], "limit_to": rec["limit"]}))
     turns["pressure"] = rec
     return True, events
 
