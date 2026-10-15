@@ -10,6 +10,7 @@
   import { ChatDuties, dutiesCount } from "./duties.svelte.ts";
   import DutyList from "./DutyList.svelte";
   import Icon from "./Icon.svelte";
+  import IdChip from "./IdChip.svelte";
   import AgentChip from "./AgentChip.svelte";
   import PlanMark from "./PlanMark.svelte";
   import { tooltip } from "./ui/tooltip.ts";
@@ -24,12 +25,13 @@
    * waits in the Mac-wide turn queue, with the place and wait in the tooltip), the running subagent count, the output rate and the age; a click
    * opens the job drawer for a subagent and the thread for anything else, `onagent`; a hover shows the report card).
    * Plan steps are a tree: everything with children starts folded, and done and dropped steps hide behind "Show done" per parent. A row is a
-   * fixed lead (the fold and the status mark) and one line beside it with no board id: a goal shows its title and progress, a step its title,
-   * its AgentChip (status dot and short name; a click opens the job drawer or the thread) and its wait, and either one the "needs your go"
-   * mark when it applies (`rowParts`). The title is cut to one line with the whole text in its tooltip; notes and requirement lines live in
-   * the plan view only. A todo's link opens through `store.openArtifact` (the reader, the thread, or a tab). The Plan header carries an "Open
-   * plan" button, and a double click on a row or its hover "open" button opens the plan view (`store.openPlan`) on that item. `checkIn` is the
-   * server's 5-minute tick line under the cards. `apply` gets the board after the owner's ops and the ops themselves; it resolves false when
+   * fixed lead (the fold, the status mark and the IdChip, the board id in small muted mono that a click copies) and one line beside it: a goal
+   * shows its title and progress, a step its title, its AgentChip (status dot and short name; a click opens the job drawer or the thread) and
+   * its wait, and either one the "needs your go" mark when it applies (`rowParts`). The title is cut to one line with the whole text in its
+   * tooltip; notes and requirement lines live in the plan view only. A todo's link opens through `store.openArtifact` (the reader, the thread,
+   * or a tab). The Plan header carries an "Open plan" button, and a double click on a row or its hover "open" button opens the plan view
+   * (`store.openPlan`) on that item. `checkIn` is the server's 5-minute tick line under the cards. `apply` gets the board after the owner's
+   * ops and the ops themselves; it resolves false when
    * the server refused them.
    */
   let { id, board, agents, now, checkIn, onjob, onagent, previewJob, apply }: {
@@ -161,6 +163,7 @@
       <span class="row-lead">
         {@render foldButton(item, open)}
         <PlanMark status={item.status} />
+        <IdChip chat={id} id={item.id} />
       </span>
       <p class="plan-line">
         <span class="plan-text" title={item.text}>{item.text}</span>
@@ -307,8 +310,9 @@
   .empty { padding: 24px 8px; text-align: center; }
   .plan-list { list-style: none; margin: 0; padding: 0; }
   /*
-   * A row: a fixed lead (the fold and the status mark; 18 px boxes) and one line beside it. The title takes the room first and ends in an
-   * ellipsis; the wait shrinks before it. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default width.
+   * A row: a fixed lead (the fold, the status mark and the id chip; 18 px boxes) and one line beside it. The title takes the room first and
+   * ends in an ellipsis; the wait shrinks before it. Indents stop growing at 25% of the card, so a 10-deep chain stays readable at the default
+   * width.
    */
   .plan-item { position: relative; display: flex; align-items: flex-start; gap: 4px; padding-left: min(calc(var(--depth) * 14px), 25%); }
   .plan-item { padding-top: 3px; padding-bottom: 3px; }

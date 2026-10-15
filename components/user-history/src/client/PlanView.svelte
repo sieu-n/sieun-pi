@@ -6,16 +6,17 @@
   import { store } from "./store.svelte.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
+  import IdChip from "./IdChip.svelte";
   import AgentChip from "./AgentChip.svelte";
   import PlanMark from "./PlanMark.svelte";
   import Checkbox from "./ui/Checkbox.svelte";
   import { tooltip } from "./ui/tooltip.ts";
 
   /**
-   * The whole board of a chat in one large modal: the plan as a tree with every level open, each step with its status mark, its title (two
-   * lines at most; the whole title and the board id show on hover), its agent (AgentChip: it closes the view and opens the job drawer or the
-   * agent's thread), the first sentence of its note (a click shows the whole note, `firstSentence`) and its requirement lines. Done and dropped
-   * steps stay hidden until "Show done" is on; one control folds or unfolds every parent. `focus` is the item the view opened on: its
+   * The whole board of a chat in one large modal: the plan as a tree with every level open, each step with its status mark, its IdChip, its
+   * title (two lines at most; the whole title shows on hover), its agent (AgentChip: it closes the view and opens the job drawer or the
+   * agent's thread), the first sentence of its note (a click shows the whole note, `firstSentence`) and its requirement lines. Done and
+   * dropped steps stay hidden until "Show done" is on; one control folds or unfolds every parent. `focus` is the item the view opened on: its
    * parents unfold, done items show when it is one, and the row scrolls into view and lights up for 2 s. The board prop is live.
    */
   let { chat, board, agents, focus, narrow, onjob, onagent, previewJob, onclose }: {
@@ -96,7 +97,8 @@
               <div class="line">
                 {@render foldButton(item, view.open(item.id))}
                 <PlanMark status={item.status} />
-                <span class="text" title="{item.text} ({item.id})">{item.text}</span>
+                <IdChip {chat} id={item.id} />
+                <span class="text" title={item.text}>{item.text}</span>
                 {#if progress}<span class="progress">{progress.done} of {progress.total} done</span>{/if}
                 {#if parts.agent}<AgentChip {chat} {item} {agents} {onagent} {onjob} {previewJob} onopen={onclose} />{/if}
                 {#if needsGo(item) && !stepGo(board ?? { todos: [] }, item)}<span class="go-mark" use:tooltip={"This step waits for your go in For you"}>needs your go</span>{/if}
@@ -136,6 +138,7 @@
   .line { display: flex; align-items: flex-start; gap: 4px; padding: 4px 6px 4px 0; line-height: 20px; }
   .line > :global(*) { flex: none; }
   .line :global(.status) { height: 20px; }
+  .line :global(.id-chip) { height: 20px; line-height: 20px; }
   .line > .text { flex: 0 1 auto; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
   .fold { display: inline-flex; vertical-align: top; width: 18px; height: 20px; align-items: center; justify-content: center; color: var(--text-faint); border-radius: 4px; }
   button.fold:hover { background: var(--bg-hover); color: var(--text); }
