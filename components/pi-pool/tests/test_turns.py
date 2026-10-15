@@ -410,7 +410,7 @@ class Governor(unittest.TestCase):
 
     def test_a_held_turn_waits_at_most_hold_max_s_then_queues_like_any_other(self):
         t, read = turns.empty(), Readings(THRASH)
-        fill(t, 16)
+        fill(t, 12)
         self.assertEqual(self.ask(t, "duty", 0, read, tree="duty:c1:checkin", klass="low")["state"], "queued")
         self.assertEqual(turns.view(t, turns.HOLD_MAX_S - 1, self.CFG, self.SESSIONS)["pressure"]["held"], 1)
         self.assertEqual(turns.view(t, turns.HOLD_MAX_S, self.CFG, self.SESSIONS)["pressure"]["held"], 0)
@@ -419,13 +419,13 @@ class Governor(unittest.TestCase):
         self.assertEqual(turns.step(t, self.SESSIONS, turns.HOLD_MAX_S + 1, self.CFG, read)[2], [("duty", "slot")],
                          "past its hold the duty has aged to high and waited longest")
         self.assertEqual(turns.HOLD_MAX_S, 141)
-    def test_the_limit_drops_to_16_when_high_or_critical(self):
+    def test_the_limit_drops_to_16_when_high_and_12_when_critical(self):
         t, read = turns.empty(), Readings(CALM)
         fill(t, 16, tree="high-chat")
         self.assertEqual(self.ask(t, "a", 0, read, tree="high-chat", klass="high")["state"], "admitted", "17 of 30")
         read.reading = THRASH
-        self.assertEqual(self.ask(t, "b", 31, read, tree="high-chat", klass="high")["state"], "queued", "17 of 16")
-        self.assertEqual((t["pressure"]["level"], t["pressure"]["limit"]), ("critical", 16))
+        self.assertEqual(self.ask(t, "b", 31, read, tree="high-chat", klass="high")["state"], "queued", "17 of 12")
+        self.assertEqual((t["pressure"]["level"], t["pressure"]["limit"]), ("critical", 12))
         del t["working"]["w0"], t["working"]["w1"]
         read.reading = WARN
         self.assertEqual(turns.step(t, self.SESSIONS, 62, self.CFG, read)[2], [("b", "slot")], "16 of 16")
@@ -435,29 +435,30 @@ class Governor(unittest.TestCase):
         """ops guy's review of db7b8bf: a normal job's parent that waits on its child in a cell
         would hold its slot for the whole pressure spell if the held child could not borrow."""
         t, read = turns.empty(), Readings(THRASH)
-        fill(t, 15)
+        fill(t, 11)
         t["working"]["parent"] = dict(entry(tree="normal-job"), kind="slot")
         kid = self.ask(t, "kid", 0, read, tree="normal-job", parent="parent")
-        self.assertEqual((t["pressure"]["level"], kid["state"]), ("critical", "admitted"), "16 of 16 and no borrow yet")
-        self.assertEqual(t["working"]["kid"]["kind"], "borrow", "16 of 16 in use, and the held child adds no slot")
-        self.assertEqual(len(turns.in_slots(t["working"])), 16)
+        self.assertEqual((t["pressure"]["level"], kid["state"]), ("critical", "admitted"), "12 of 12 and no borrow yet")
+        self.assertEqual(t["working"]["kid"]["kind"], "borrow", "12 of 12 in use, and the held child adds no slot")
+        self.assertEqual(len(turns.in_slots(t["working"])), 12)
         self.assertEqual(self.ask(t, "kid2", 1, read, tree="normal-job", parent="parent")["state"], "queued", "a parent lends one slot")
         self.assertEqual(self.ask(t, "orphan", 2, read, tree="normal-job", parent="gone")["state"], "queued", "no parent in flight, no borrow")
         self.assertEqual(sorted(t["queued"]), ["kid2", "orphan"])
 
-    def test_at_critical_borrows_put_at_most_critical_borrows_turns_over_the_limit(self):
+    def test_at_critical_borrows_put_at_most_pressure_borrows_turns_over_the_limit(self):
         """10-15 08:15Z: the governor read critical with 16 slots and 6 borrows in use, and
-        kernel_task read 152.3%. At high every in-flight parent still lends its slot."""
+        kernel_task read 152.3%. At high the cap is the same 2 over high's limit."""
         t, read = turns.empty(), Readings(THRASH)
-        for i in range(16):
+        for i in range(12):
             t["working"][f"p{i}"] = dict(entry(tree=f"T{i}"), kind="slot")
         states = [self.ask(t, f"kid{i}", i, read, tree=f"T{i}", parent=f"p{i}")["state"] for i in range(6)]
-        self.assertEqual(states, ["admitted"] * turns.CRITICAL_BORROWS + ["queued"] * (6 - turns.CRITICAL_BORROWS))
-        self.assertEqual(len(t["working"]), 16 + turns.CRITICAL_BORROWS)
+        self.assertEqual(states, ["admitted"] * turns.PRESSURE_BORROWS + ["queued"] * (6 - turns.PRESSURE_BORROWS))
+        self.assertEqual(len(t["working"]), 12 + turns.PRESSURE_BORROWS)
         del t["working"]["kid0"]
         self.assertEqual(turns.step(t, self.SESSIONS, 7, self.CFG, read)[2], [("kid2", "borrow")], "an ended borrow passes its place on")
         read.reading = WARN
-        self.assertEqual(turns.step(t, self.SESSIONS, 40, self.CFG, read)[2], [("kid3", "borrow"), ("kid4", "borrow"), ("kid5", "borrow")])
+        self.assertEqual(turns.step(t, self.SESSIONS, 40, self.CFG, read)[2], [("kid3", "slot"), ("kid4", "slot"), ("kid5", "slot")],
+                         "at high the limit climbs to 16 and the children take free slots")
         turns.mark_owner(t, "boss", 41, 1800)
         read.reading = THRASH
         self.assertEqual(self.ask(t, "boss", 80, read, tree="boss")["kind"], "owner", "an owner turn never waits")
@@ -748,21 +749,39 @@ class CriticalMinutes(unittest.TestCase):
     """The feed minutes the governor read critical from 10-14 20:31Z to 10-15 08:25Z, with the
     most slots, borrows and working turns pi-pool.log shows in each."""
 
-    def test_no_minute_at_the_limit_plus_critical_borrows_read_over_a_core(self):
+    def test_no_minute_at_the_limit_plus_pressure_borrows_read_over_a_core(self):
         with open(os.path.join(os.path.dirname(__file__), "critical_minutes_1014_1015.json")) as f:
             rows = json.load(f)["minutes"]
-        top = base.DEFAULTS["pressure_working_max"]["critical"] + turns.CRITICAL_BORROWS
+        top = base.DEFAULTS["pressure_working_max"]["critical"] + turns.PRESSURE_BORROWS
         within = [r for r in rows if r["total"] <= top]
         hot = [r for r in rows if r["kernel_task_pct"] >= 100]
-        self.assertEqual((len(rows), len(within), len(hot)), (101, 39, 22))
-        self.assertEqual(max(r["kernel_task_pct"] for r in within), 92.2)
+        self.assertEqual((len(rows), len(within), len(hot)), (101, 13, 22))
+        self.assertEqual(max(r["kernel_task_pct"] for r in within), 84.8)
         self.assertTrue(all(r["total"] > top and r["slots"] >= 15 and r["borrows"] >= 2 for r in hot))
         self.assertIn({"at": "2026-10-15T08:15", "kernel_task_pct": 152.3, "slots": 16, "borrows": 6, "total": 22}, rows)
 
 
+
+class UsableMinutes(unittest.TestCase):
+    """The Mac usable watch minutes from 10-14 20:31Z to 10-15 08:51Z with pi-pool's level and
+    working turns: at the limit plus PRESSURE_BORROWS for its level or under, no minute was unusable."""
+
+    def test_no_minute_at_or_under_its_levels_top_was_unusable(self):
+        with open(os.path.join(os.path.dirname(__file__), "usable_minutes_1014_1015.json")) as f:
+            rows = json.load(f)["minutes"]
+        cfg = dict(base.DEFAULTS, mac_working_max=30)
+        top = {level: turns.working_limit(cfg, level) + (0 if level == "ok" else turns.PRESSURE_BORROWS) for level in ("ok", "high", "critical")}
+        self.assertEqual((top["high"], top["critical"]), (18, 14))
+        within = [r for r in rows if r["level"] != "ok" and r["working"] <= top[r["level"]]]
+        over = [r for r in rows if r["level"] != "ok" and r["working"] > top[r["level"]]]
+        self.assertEqual((len(rows), len(within), len(over)), (721, 124, 88))
+        self.assertEqual([r for r in within if r["unusable"]], [])
+        self.assertEqual(sum(r["unusable"] for r in over), 30)
+
 class Replay1014Evening(unittest.TestCase):
     """The governor against the turns pi-pool logged on 10-14 from 21:07 to 22:48 KST, while
-    the Mac read critical: under the old rule 21 low turns sat held, the oldest 2,541 s."""
+    the Mac read critical: under the old rule 21 low turns sat held, the oldest 2,541 s. At the
+    critical limit of 12 the 90th percentile turn waits about 5 min, the cost of a usable Mac."""
 
     def test_held_turns_wait_about_hold_max_s_and_every_tree_with_one_gets_through(self):
         with open(os.path.join(os.path.dirname(__file__), "live_1014_2107_2248kst.json")) as f:
@@ -795,8 +814,10 @@ class Replay1014Evening(unittest.TestCase):
         p90 = lambda xs: xs[int(0.9 * (len(xs) - 1))]
         self.assertEqual((len(waits), len(t["queued"])), (len(arrivals), 0), "every turn ran")
         self.assertEqual(len(held), 113)
-        self.assertLessEqual(p90(held), 150, "the 90th percentile held turn waits about HOLD_MAX_S")
-        self.assertLessEqual(p90(everyone), 60)
+        p99 = lambda xs: xs[int(0.99 * (len(xs) - 1))]
+        print(f"\n10-14 evening replay at {limit}: p90 wait held {p90(held)} s, all {p90(everyone)} s, p99 all {p99(everyone)} s", file=sys.stderr)
+        self.assertLessEqual(p90(held), 260, "at 16 this was 150 s; 12 is what keeps critical minutes usable (UsableMinutes)")
+        self.assertLessEqual(p90(everyone), 310, "at 16 this was 60 s")
         self.assertEqual({tree for _, h, tree in waits.values() if h}, {a["tree"] for a in arrivals if a["holdable"]})
 
 
@@ -854,20 +875,20 @@ class Replay1015Flap(unittest.TestCase):
         self.assertGreaterEqual(max(old[s] for s in at_0917), 11, "the old rule starts the 09:17:28 burst again")
         self.assertEqual(max(old_limits[s] for s in at_0917), 30)
         self.assertLessEqual(max(new.values()), turns.LIMIT_STEP + 1, "the most queued turns any one second starts")
-        self.assertEqual(max(new_limits[s] for s in at_0917), 20)
+        self.assertEqual(max(new_limits[s] for s in at_0917), 12 + turns.LIMIT_STEP)
         print(f"\n10-15 flap replay: the most queued turns started in one second, old {max(old.values())}, new {max(new.values())}", file=sys.stderr)
 
-    def test_a_calm_mac_reaches_the_owners_30_in_four_reads(self):
+    def test_a_calm_mac_reaches_the_owners_30_in_five_reads(self):
         t, read = turns.empty(), Readings(THRASH)
         cfg = dict(base.DEFAULTS, mac_working_max=30)
         turns.step(t, {}, 0, cfg, read)
         read.reading = CALM
-        climb = [(turns.step(t, {}, now, cfg, read), t["pressure"]["limit"])[1] for now in range(30, 150, 30)]
-        self.assertEqual(climb, [20, 24, 28, 30])
-        self.assertEqual(turns.step(t, {}, 150, cfg, read)[3], [], "a limit at the ceiling logs nothing")
+        climb = [(turns.step(t, {}, now, cfg, read), t["pressure"]["limit"])[1] for now in range(30, 180, 30)]
+        self.assertEqual(climb, [16, 20, 24, 28, 30])
+        self.assertEqual(turns.step(t, {}, 180, cfg, read)[3], [], "a limit at the ceiling logs nothing")
         read.reading = THRASH
-        turns.step(t, {}, 180, cfg, read)
-        self.assertEqual(t["pressure"]["limit"], 16, "a pressured read drops the limit at once")
+        turns.step(t, {}, 210, cfg, read)
+        self.assertEqual(t["pressure"]["limit"], 12, "a pressured read drops the limit at once")
 
 
 if __name__ == "__main__":

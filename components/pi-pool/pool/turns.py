@@ -16,8 +16,8 @@ turn keeps its place and takes a free slot under the lower limit only after ever
 is not held, and only one per tree each admit pass, so every chat's check-in still runs; a
 turn held HOLD_MAX_S queues like any other. A held child may still borrow its in-flight
 parent's lent slot, so a parent waiting on it in a cell does not sit on its slot. While the
-level is critical, a borrow starts only while slots and borrows in use are under the limit
-plus CRITICAL_BORROWS, so borrows put at most that many turns over the limit. The level is
+level is high or critical, a borrow starts only while slots and borrows in use are under the
+limit plus PRESSURE_BORROWS, so borrows put at most that many turns over the limit. The level is
 read again every PRESSURE_TTL_SEC, and the record holds only what the next read recomputes. A read at high
 or critical drops the limit at once, and each ok read raises it by at most LIMIT_STEP.
 
@@ -76,13 +76,15 @@ PRESSURE_TTL_SEC = 30
 # working turns grew by 3 to 8 peaked at 83.5% kernel_task, and the one that grew by 12 read
 # 146% (browser-chat/mac-usable/2026-10-1{4,5}.jsonl). Two reads a minute at 4 is 8.
 LIMIT_STEP = 4
-# While the level is critical, borrows start only while slots and borrows in use are under the
-# limit plus this many. Over the 101 feed minutes the governor read critical from 10-14 20:31Z
+# While the level is high or critical, borrows start only while slots and borrows in use are
+# under the limit plus this many. Over the 721 Mac usable watch minutes from 10-14 20:31Z to
+# 10-15 08:51Z, none of the 100 high minutes with 18 or fewer turns working (16 plus 2) was
+# unusable and 6 of the 28 with more were (tests/usable_minutes_1014_1015.json). Over the 101 feed minutes the governor read critical from 10-14 20:31Z
 # to 10-15 08:25Z, the 39 with at most 18 turns working peaked at 92.2% kernel_task, and 22 of
 # the 62 with 19 or more read over 100%, each with 15 or more slots and 2 to 8 borrows. 08:15Z
 # on 10-15 held 16 slots and 6 borrows and read 152.3% while a job fanned out 26 children
 # (tests/critical_minutes_1014_1015.json, from sessions/2026/10/15/1721-spawn-burst-admission/critical_borrows.py).
-CRITICAL_BORROWS = 2
+PRESSURE_BORROWS = 2
 
 
 def limits(cfg):
@@ -279,12 +281,12 @@ def held_for_memory(turns, session, entry):
 
 def governed(turns, sessions, now, cfg, read=pressure.read, trees=pressure.read_tree_memory):
     """(working limit, hold rule or None, firm hold rule or None, borrow top or None, refreshed, events) under
-    the current pressure. The borrow top is the limit plus CRITICAL_BORROWS while the level is critical."""
+    the current pressure. The borrow top is the limit plus PRESSURE_BORROWS while the level is high or critical."""
     refreshed, events = governor(turns, now, cfg, read, trees)
     rec = turns["pressure"]
     hold = None if rec["level"] == "ok" else (lambda entry: holds(entry, sessions, now))
     firm = (lambda session, entry: held_for_memory(turns, session, entry)) if rec.get("memory_trees") else None
-    top = rec["limit"] + CRITICAL_BORROWS if rec["level"] == "critical" else None
+    top = None if rec["level"] == "ok" else rec["limit"] + PRESSURE_BORROWS
     return rec["limit"], hold, firm, top, refreshed, events
 
 
