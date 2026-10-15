@@ -134,6 +134,7 @@ export function buildRequest(op: string, operation: Operation, ids: Record<strin
  * (apps/api-portal/src/lib/server/gateway.ts), so the fix is in the crawler's reader fleet, not the portal.
  */
 const CRAWLER_CAPACITY = "capacity_exhausted";
+const JOB_FINISHED = "job_finished";
 
 /** The error code of a portal error body, if any. */
 export function errorCode(body: unknown): string | undefined {
@@ -149,6 +150,8 @@ export function errorCode(body: unknown): string | undefined {
 export function classify(status: number, body: unknown): { verdict: Verdict; code?: string | undefined } {
   const code = errorCode(body);
   if (status >= 200 && status < 300) return { verdict: "ok" };
+  // A cancel of a job that already ended answers 409 job_finished with the job's real state, which is the route working.
+  if (status === 409 && code === JOB_FINISHED) return { verdict: "ok", code };
   if (status === 0 || status === 429 || status === 402) return { verdict: "unprobed", code };
   if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY) return { verdict: "crawler", code };
   return { verdict: "portal", code };
@@ -314,6 +317,12 @@ async function probe(base: string, extra: Record<string, string>, org: Org, op: 
   }
 }
 
+/** Cancels one job this run started, so it stops holding one of the org's 5 open job slots. A failed cancel only costs that slot. The staging cancel answered in 756 ms on 10-15. */
+async function cancelJob(base: string, extra: Record<string, string>, org: Org, id: string): Promise<void> {
+  await fetch(`${base}/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: { authorization: `Bearer ${org.key}`, ...extra }, signal: AbortSignal.timeout(10_000) })
+    .then(response => response.body?.cancel()).catch(() => undefined);
+}
+
 interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; perMinute?: number; budget?: { capUsd: number; spent: number } }
 
 /**
@@ -342,13 +351,24 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[], start: nu
   const later: [string, Operation][] = [];
   const first = ops.filter(([op, operation]) => { if (CHAINED.test(op)) { later.push([op, operation]); return false; } return true; });
   const jobOps = [...new Set(routes.flatMap(route => route.portal).filter(op => op.endsWith(JOB)))];
-  const jobsRun = Promise.all(jobOps.map(async (op, index) => {
-    if (skip.has(baseOp(op))) return skipped(op);
-    const operation = all.get(baseOp(op));
-    const request = operation && buildRequest(baseOp(op), operation);
-    if (!request || "missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request ? request.missing : `not in the ${env} openapi`, body: null };
-    return call(orgs[index % orgs.length]!, op, jobRequest(request), start + PHASE1_MS, "docs example in job mode");
-  }));
+  // The portal allows an org 5 open crawl jobs (the 429 rate_limited message, measured on staging 10-12 and prod 10-15), and a run has more
+  // job-mode entries than that. So job calls go one at a time, and every job after the first, which the chained calls read, is cancelled
+  // as soon as its receipt comes back.
+  const jobsRun = (async () => {
+    const results: (ProbeResult & { body: unknown })[] = [];
+    for (const [index, op] of jobOps.entries()) {
+      if (skip.has(baseOp(op))) { results.push(skipped(op)); continue; }
+      const operation = all.get(baseOp(op));
+      const request = operation && buildRequest(baseOp(op), operation);
+      if (!request || "missing" in request) { results.push({ op, verdict: "unprobed" as const, status: 0, ms: 0, note: request ? request.missing : `not in the ${env} openapi`, body: null }); continue; }
+      const org = orgs[index % orgs.length]!;
+      const result = await call(org, op, jobRequest(request), start + PHASE1_MS, "docs example in job mode");
+      const id = chainIds([result.body]).job_id?.value;
+      if (id && results.some(earlier => chainIds([earlier.body]).job_id)) await cancelJob(base, target.headers, org, id);
+      results.push(result);
+    }
+    return results;
+  })();
   const phase1Run = Promise.all(first.map(async ([op, operation], index) => {
     if (skip.has(op)) return skipped(op);
     const request = buildRequest(op, operation);

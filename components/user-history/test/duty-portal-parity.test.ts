@@ -33,6 +33,8 @@ test("portal parity: 2xx works, upstream_* blames the crawler, our own limits ar
   assert.equal(classify(504, { error: { code: "upstream_timeout" } }).verdict, "crawler");
   assert.equal(classify(503, { error: { code: "capacity_exhausted" } }).verdict, "crawler");
   assert.equal(classify(429, { error: { code: "rate_limited" } }).verdict, "unprobed");
+  assert.equal(classify(409, { error: { code: "job_finished" } }).verdict, "ok");
+  assert.equal(classify(409, { error: { code: "conflict" } }).verdict, "portal");
   assert.equal(classify(0, null).verdict, "unprobed");
   assert.deepEqual(classify(503, { error: { code: "batch_unavailable" } }), { verdict: "portal", code: "batch_unavailable" });
   assert.equal(classify(400, { error: { code: "invalid_request" } }).verdict, "portal");
