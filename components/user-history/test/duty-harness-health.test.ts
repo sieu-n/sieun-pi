@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { description, measureHarness, overlaps, readSkills, type Skill, type SkillRoot, type View } from "../scripts/duties/harness-health.ts";
+import { description, measureHarness, overlaps, READS_FILE, readSkills, type Skill, type SkillRoot, type View } from "../scripts/duties/harness-health.ts";
 import { declaredScripts, namedPaths, SMOKE_SESSION, smokeSkills } from "../scripts/duties/skill-smoke.ts";
 import { measureCache, MIN_CALLS, readTranscript, type Call, type SessionCalls } from "../scripts/duties/cache-ratio.ts";
 
@@ -16,7 +16,7 @@ const chat = (id: string) => ({ id, name: `chat ${id}` });
 const TARGETS = { cache_read_ratio_1h: 90, cache_read_ratio_24h: 94 };
 /** No transcripts with model calls; in chat c the owner wrote the words of c1's repeat, and nothing else. No fixture skill is a Python skill. */
 const stubs = { sessions: async () => [], cacheTargets: TARGETS, ownerTexts: async (id: string) => id === "c" ? ["ok, again, the same thing. fix it"] : [],
-  smoke: { python: "/nonexistent/python" } };
+  transcripts: async () => [], smoke: { python: "/nonexistent/python" } };
 
 async function tree(): Promise<{ dir: string; roots: SkillRoot[]; dataDir: string }> {
   const dir = await mkdtemp(join(tmpdir(), "harness-health-"));
@@ -63,8 +63,8 @@ test("harness health: outcomes only; every skill passes its smoke check, repeat 
     assert.equal(byId.get("prime:why")!.lastRead, undefined, "a root with no view events is untracked, not unread");
     assert.equal(byId.get("prime:why")!.dir.endsWith("/source/why"), true);
 
-    assert.deepEqual(result.metrics, { skill_smoke_failures: 0, repeat_corrections_7d: 1, unread_14d: 1, overlapping_pairs: 1, cache_read_ratio_1h: 100, cache_read_ratio_24h: 100 },
-      "no size counts");
+    assert.deepEqual(result.metrics, { skills_to_prune: 2, skill_smoke_failures: 0, unread_14d: 1, overlapping_pairs: 1, cache_read_ratio_1h: 100, cache_read_ratio_24h: 100,
+      repeat_corrections_7d: 1 }, "no size counts; the unread skill and the overlapping pair are two skills to prune");
     const kinds = result.flagged!.map(slice => slice.kind);
     assert.deepEqual([...new Set(kinds)], ["cache_read_ratio_1h", "cache_read_ratio_24h", "repeat_corrections_7d", "unread_14d", "overlap", "untracked"]);
     assert.deepEqual(result.smoke.map(row => [row.skill, row.pass]), result.skills.map(skill => [skill.id, true]), "the smoke check ran on every skill, and each passed");
@@ -140,6 +140,52 @@ test("skill smoke: the paths a markdown file names, and the CLIs a pyproject.tom
   assert.deepEqual(declaredScripts("[project]\nname = \"board\"\n"), []);
 });
 
+test("harness health: Prime skills count as read from tool calls and /skill loads in transcripts, and a later run reads only the appended bytes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "harness-reads-"));
+  try {
+    const prime = join(dir, "prime"), dataDir = join(dir, "data"), log = join(dir, "s.jsonl");
+    await put(join(prime, "why/SKILL.md"), skillMd("why", "Use for design rationale questions."));
+    await put(join(prime, "unused/SKILL.md"), skillMd("unused", "Use for nothing anyone asks about."));
+    await put(join(prime, "board/SKILL.md"), skillMd("board", "Use to read the chat board from Python."));
+    await put(join(prime, "board/pyproject.toml"), pyproject("board", "board"));
+    await put(join(prime, "board/src/board/__init__.py"), "def wake(**_):\n    return 1\n");
+    await mkdir(dataDir, { recursive: true });
+    const line = (ago: number, role: string, content: unknown[]) => JSON.stringify({ type: "message", timestamp: iso(ago), message: { role, content } });
+    const tool = (code: string) => ({ type: "toolCall", id: "t", name: "ipython", arguments: { code } });
+    await writeFile(log, [
+      JSON.stringify({ type: "session", id: "s" }),
+      line(20 * DAY, "assistant", [tool("open('/h/.prime/agent/skills/unused/SKILL.md').read()")]),
+      line(3 * DAY, "user", [{ type: "text", text: "Read /h/.prime/agent/skills/unused/SKILL.md first." }]),
+      line(3 * DAY, "assistant", [{ type: "text", text: "I will read skills/unused/SKILL.md" }, tool("x = 1\nboard.wake(at='10:00')")]),
+      line(2 * DAY, "assistant", [tool("open('/h/sieun-pi/skills/why/SKILL.md').read(); ls skills/unused-extra/")]),
+      line(2 * DAY, "toolResult", [{ type: "text", text: "see skills/unused/SKILL.md" }]),
+      line(DAY, "user", [{ type: "text", text: '<skill name="why" location="/h/.prime/agent/skills/why/SKILL.md">' }]),
+    ].join("\n") + "\n");
+    await put(join(dir, "venv/bin/python"), SH("exit 0"), 0o755);
+    await put(join(dir, "venv/bin/board"), SH("exit 0"), 0o755);
+    const roots: SkillRoot[] = [{ name: "prime", dir: prime, transcripts: true }];
+    let asked = 0;
+    const measure = () => measureHarness({ roots, views: async () => [], dataDir, now: NOW, ...stubs, smoke: { python: join(dir, "venv/bin/python") },
+      transcripts: async since => { asked = since; return [log]; } });
+    const first = await measure();
+    assert.equal(asked, NOW - 14 * DAY);
+    assert.deepEqual(first.skills.map(skill => [skill.id, skill.lastRead]), [["prime:board", iso(3 * DAY)], ["prime:unused", null], ["prime:why", iso(DAY)]],
+      "a brief, a reply text, a tool result, a longer name and a read 20 days ago are no reads");
+    assert.equal(first.metrics.skills_to_prune, 1);
+    assert.equal(first.flagged!.find(slice => slice.kind === "unread_14d")!.excerpt,
+      `prime:unused (${first.skills[1]!.dir}) has no agent read in a Prime transcript since 2026-09-26`);
+    assert.equal(first.flagged!.some(slice => slice.kind === "untracked"), false);
+    const state = JSON.parse(await readFile(join(dataDir, READS_FILE), "utf8"));
+    assert.equal(state.offsets[log], (await readFile(log)).length, "the next run starts at the end of what this run read");
+
+    await writeFile(log, (await readFile(log, "utf8")).replace("skills/unused-extra/", "skills/unused/ xxxxx") + line(DAY / 2, "assistant", [tool("cat skills/unused/SKILL.md")]) + "\n");
+    const second = await measure();
+    assert.deepEqual(second.skills.map(skill => [skill.id, skill.lastRead]), [["prime:board", iso(3 * DAY)], ["prime:unused", iso(DAY / 2)], ["prime:why", iso(DAY)]],
+      "only the appended line is read: the earlier line edited in place is not read again");
+    assert.equal(second.metrics.skills_to_prune, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("harness health: overlap ignores stop words and empty descriptions", () => {
   const skill = (id: string, about: string) => ({ id, description: about }) as Skill;
   assert.deepEqual(overlaps([skill("a", "When using the skill for this repo"), skill("b", "When using the skill for this repo"), skill("c", "")]), []);
@@ -154,7 +200,9 @@ test("Skills and harness duty file parses, measures outcomes, and every metric i
   const dataDir = await mkdtemp(join(tmpdir(), "harness-keys-"));
   try {
     const written = Object.keys((await measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...stubs })).metrics);
-    assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), [...written].sort());
+    assert.deepEqual(duty.metrics.map(metric => metric.key), ["skills_to_prune", "cache_read_ratio_1h", "cache_read_ratio_24h"], "repeat corrections are judged in Chat system");
+    assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["skills_to_prune"]);
+    for (const metric of duty.metrics) assert.ok(written.includes(metric.key), `${metric.key} is a key the precheck writes`);
   } finally { await rm(dataDir, { recursive: true, force: true }); }
   assert.doesNotMatch(duty.goal + duty.onMiss, /\b\d+ (?:words|lines)\b|words and lines/, "no word or line targets (owner 10-10, c39)");
   assert.match(duty.onMiss, /never trim a skill for its size/);

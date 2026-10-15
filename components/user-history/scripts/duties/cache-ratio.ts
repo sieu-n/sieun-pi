@@ -160,16 +160,24 @@ async function transcripts(dir: string, accepts: (path: string) => boolean, subO
   return found;
 }
 
-/** Every Prime Agent transcript the Usage page reads that changed since `since`, read for calls since then. */
-export async function readSessions(home: string, since: number): Promise<SessionCalls[]> {
-  const sessions: SessionCalls[] = [];
+/** Every Prime Agent transcript the Usage page reads that changed since `since`. */
+export async function primeTranscripts(home: string, since: number): Promise<string[]> {
+  const found: string[] = [];
   for (const root of fileRoots(home).filter(root => root.source === "prime-agent")) {
     for (const path of await transcripts(root.root, root.accepts, basename(root.root) === "session-artifacts")) {
       const info = await stat(path).catch(() => null);
-      if (!info || info.mtimeMs < since) continue;
-      const session = await readTranscript(path, since);
-      if (session?.calls.length) sessions.push(session);
+      if (info && info.mtimeMs >= since) found.push(path);
     }
+  }
+  return found;
+}
+
+/** Every Prime Agent transcript the Usage page reads that changed since `since`, read for calls since then. */
+export async function readSessions(home: string, since: number): Promise<SessionCalls[]> {
+  const sessions: SessionCalls[] = [];
+  for (const path of await primeTranscripts(home, since)) {
+    const session = await readTranscript(path, since);
+    if (session?.calls.length) sessions.push(session);
   }
   return sessions;
 }

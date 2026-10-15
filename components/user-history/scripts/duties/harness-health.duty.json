@@ -1,42 +1,25 @@
 {
   "name": "Skills and harness",
-  "ownerWords": "one more duty for Harness health, i want you to prune bloated skills, .. every day.\n\nSkills over 5000 words / SKILL.md files over 500 lines / 이런거좀 보지좀 마 의미없는거",
-  "goal": "Skills work and agents use them right: every skill passes its smoke check, the owner never gives the same correction twice, every tracked skill is read by an agent within 14 days, no two skills do one job, and the prompt cache read share stays high hour by hour and day by day. Tell the owner only what was fixed and anything that needs his call.",
+  "ownerWords": "one more duty for Harness health, i want you to prune bloated skills, .. every day.\n\nSkills over 5000 words / SKILL.md files over 500 lines / 이런거좀 보지좀 마 의미없는거\n\n(10-10, c41) another of your duty in Skills and harness is to ensure no rogue plugin/bug is breaking the caching. the cache read ratio of hour/day should stay high.",
+  "goal": "Every day no skill is left to prune: each passes its smoke check, an agent read it in 14 days, and no two do one job. Cache read share stays at 90% or more per hour and 94% or more per day; the 10-10 cache bug gave 82 to 89% hours and a 90 to 92% day, and 10-13 to 10-15 days read 95 to 97%.",
   "metrics": [
     {
-      "key": "skill_smoke_failures",
-      "label": "Skills that fail their smoke check",
+      "key": "skills_to_prune",
+      "label": "Skills to prune or fix: broken, unread for 14 days, or a duplicate",
       "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "repeat_corrections_7d",
-      "label": "Owner corrections given again in 7 days (ledger repeats)",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "unread_14d",
-      "label": "Tracked skills no agent read in 14 days",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "overlapping_pairs",
-      "label": "Skill pairs whose descriptions overlap 20% or more",
-      "op": "<=",
-      "target": 0
+      "target": 0,
+      "headline": true
     },
     {
       "key": "cache_read_ratio_1h",
-      "label": "Prompt cache read share, last hour",
+      "label": "Prompt cache read share, last hour (10-10 cache bug: 82 to 89%)",
       "op": ">=",
       "target": 90,
       "unit": "%"
     },
     {
       "key": "cache_read_ratio_24h",
-      "label": "Prompt cache read share, last day",
+      "label": "Prompt cache read share, last day (10-10 cache bug: 90 to 92%)",
       "op": ">=",
       "target": 94,
       "unit": "%"
@@ -56,6 +39,6 @@
     "cwd": "../..",
     "timeoutMs": 120000
   },
-  "onMiss": "Fix skills that fail or that agents keep getting wrong; never trim a skill for its size. One subagent per skill or cache drop. skill_smoke_failures: fix the skill or its script, or skill-smoke.ts if the check is wrong, and rerun. repeat_corrections_7d: make the rule hold, with a check or test, in the skill, script or memory agents should have followed; a repeat no skill owns stays with Chat system. unread_14d: fix the description so agents load it, or delete it if unneeded. Overlapping pair: merge into one owner. cache_read_ratio: find the session and the plugin or entry that broke the cache (see flagged lines), fix it at the root, and add a test that fails when caching breaks. In auto-sns-agent read skills with `node scripts/skills/read-skill.mjs <skill>` and commit with `node scripts/repo/agent/commit.mjs`; commit sieun-pi/skills locally, no push. Report each fix with the check that now passes. Ask the owner before deleting a skill agents still read or moving ownership in a merge.",
+  "onMiss": "Push each miss to a shipped fix and rerun the precheck until it is green; never stop at a report, and never trim a skill for its size. One subagent per skill or cache drop. The precheck output names each skill in skills_to_prune and why. A skill that fails its smoke check: reproduce it, fix the skill or its script (or skill-smoke.ts if the check is wrong), and rerun until it passes. A skill no agent read in 14 days: fix its description or the brief that should load it, or delete it if nothing needs it. Two skills doing one job: merge them into one and update every reference. cache_read_ratio: find the session and the plugin or entry that broke the cache (see the flagged lines), fix it at the root, and add a test that fails when caching breaks. In auto-sns-agent read skills with `node scripts/skills/read-skill.mjs <skill>` and follow its AGENTS.md commit rules; commit sieun-pi/skills locally, no push. Report each fix with the check that now passes.",
   "boardGoal": "p215"
 }
