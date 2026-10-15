@@ -1,42 +1,32 @@
 {
   "name": "Portal matches crawler",
   "ownerWords": "is all apis working that work in crawler api work for api portal?\n\nall working in prod? can you make a spec that calls the api for local-staging-prod?",
-  "goal": "Every customer crawler route has a /v1 route on api.virev.ai, and every documented /v1 route works on staging with its own docs example, page 2 included. A board decision (s5, s7) is the only reason a route stays out. DM routes are left out while p12 builds reader sends.",
+  "goal": "Every customer crawler route works through the api portal on prod (api.virev.ai) and on staging, each called with its own docs example, page 2 included. A board decision (s5, s7) is the only reason a route stays out; DM routes wait for p12.",
   "metrics": [
     {
-      "key": "routes_working_pct",
-      "label": "Customer crawler routes whose /v1 route works on staging",
+      "key": "prod_working_pct",
+      "label": "Crawler routes that work through api.virev.ai (prod)",
+      "op": ">=",
+      "target": 100,
+      "unit": "%",
+      "headline": true
+    },
+    {
+      "key": "staging_working_pct",
+      "label": "Crawler routes that work through staging-api.virev.ai",
       "op": ">=",
       "target": 100,
       "unit": "%"
     },
     {
-      "key": "routes_missing_v1",
-      "label": "Customer crawler routes with no /v1 route on api.virev.ai",
+      "key": "routes_failing_portal",
+      "label": "Routes failing on prod or staging because of the portal",
       "op": "<=",
       "target": 0
     },
     {
-      "key": "routes_broken_portal",
-      "label": "Documented /v1 routes that fail on staging for a portal cause",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "routes_broken_crawler",
-      "label": "Documented /v1 routes that fail on staging with an upstream crawler error",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "routes_unprobed",
-      "label": "Documented /v1 routes the precheck could not call or judge",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "source_errors",
-      "label": "Sources the precheck could not read (openapi files, keys, test org seed)",
+      "key": "routes_failing_crawler",
+      "label": "Routes failing on prod or staging because the crawler errors",
       "op": "<=",
       "target": 0
     }
@@ -52,8 +42,9 @@
       "tsx",
       "scripts/duties/portal-parity.ts"
     ],
-    "cwd": "../.."
+    "cwd": "../..",
+    "timeoutMs": 120000
   },
-  "onMiss": "Read the flagged rows. Match each failing group to its board item: p7 page 2, p8 crawler routes, p9 batch, p10 missing routes, p11 differing bodies. A group with no live job gets one fix job named for it, which fixes on staging (c50) and asks the chat only for the prod promote. A regression row (worked yesterday, fails now) goes to the chat with the route, status and error. broken_crawler rows go to the crawler-v3 owner as a note; do not patch the crawler from the portal side. A new /v1 route for a crawler route goes into sieun-pi scripts/duties/portal-parity.routes.json in the same job. If crawler-staging is down, say so once instead of chasing each route. No outside sends (c37), no merges (c49). All on target: end the turn with no message.",
+  "onMiss": "Read the flagged rows. Each missed metric gets one live fix job this run unless one is live; name it on the board. missing_prod rows with a staging route wait only for the next promote: name the promote, and ask the chat for it. missing_staging and broken_portal rows are portal fixes in apps/api-portal, shipped to staging (c50). broken_crawler rows are crawler fixes in apps/crawler-v3: check the crawler chat 01a115e2 board first and name its job if one owns the cause, else start one. unprobed and skipped rows are gaps in the measure itself: fix the precheck or its docs example. A regression row goes to the chat with the route, status and error. A new /v1 route for a crawler route goes into portal-parity.routes.json in the same job. No outside sends (c37), no merges or prod promotes without the owner's go (c49). All on target: end the turn with no message.",
   "boardGoal": "p1"
 }

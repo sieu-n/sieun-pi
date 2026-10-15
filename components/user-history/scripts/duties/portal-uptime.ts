@@ -12,7 +12,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * from job api-portal-health with the label env="production" (labels checked on 2026-10-12: env, instance, job, target).
  * It also makes one free signed-out GET of https://api.virev.ai/openapi.json as a second view that does not depend on Convex.
  * The note's dm_senders_prod metric is left out: the owner chose reader accounts that send (board p12) over buying aiograpi senders (p6 dropped).
- * A source it cannot read gives 999999 for its metrics, a source_errors count and a flagged slice, never a good-looking value.
+ * A source it cannot read gives 999999 for its counts and -1 for its share, a source_errors count and a flagged slice, never a good-looking value.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -21,6 +21,8 @@ const PROM_UID = "estate_prometheus";
 const PORTAL_OPENAPI = "https://api.virev.ai/openapi.json";
 /** The "could not measure" value, the same one auto-sns-agent scripts/duties/ci/ci-guarantees.mjs prints, so a missing source can never look on target. */
 export const UNMEASURED = 999999;
+/** The "could not measure" value of a share: below any target, so an unread uptime never looks on target the way 999999% would. */
+export const UNMEASURED_PCT = -1;
 export const TARGETS = ["crawler_health", "crawler_schema", "portal_openapi"] as const;
 const SEL = 'env="production",job="api-portal-health"';
 /** The PromQL per measure. `age` adds the time since the last scrape, so a scrape that stopped still ages the probe. */
@@ -41,7 +43,7 @@ export type Answers = Record<QueryName, Series[] | { error: string }>;
  * - probes_down_now <= 0 and probe_uptime_24h_pct >= 100: the Grafana rule api-portal-probe-down (auto-sns-agent apps/infra/grafana/alerts.yaml)
  *   treats any api_probe_up below 1 as a failing target. No measurement or vendor limit allows a lower share; the portal's Terms give no uptime figure.
  * - probe_age_min <= 15: the rule api-portal-probe-stale fires when api_probe_age_seconds is over 900 s (the cron probes every 300 s).
- * - source_errors <= 0: a query with no answer means the precheck measured nothing for it.
+ * source_errors goes to the run detail: a query with no answer already fails the metric that needed it.
  * The note's portal_openapi_p90_ms <= 2000 is printed for the job but not scored, because no measurement or incident backs 2000 ms
  * (measured p90 on 2026-10-12 was 360 ms). The note's dm_senders_prod is left out, see the header.
  */
@@ -89,7 +91,7 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   for (const series of up ?? []) if (series.value < 1) flagged.push({ at, kind: "down", excerpt: `prod api probe ${series.labels.target} fails now (api_probe_up 0)` });
 
   const uptime = read("uptime", TARGETS);
-  metrics.probe_uptime_24h_pct = uptime ? round(100 * uptime.reduce((sum, series) => sum + series.value, 0) / uptime.length, 2) : UNMEASURED;
+  metrics.probe_uptime_24h_pct = uptime ? round(100 * uptime.reduce((sum, series) => sum + series.value, 0) / uptime.length, 2) : UNMEASURED_PCT;
   for (const series of uptime ?? []) if (series.value < 1) flagged.push({ at, kind: "uptime", excerpt: `prod api probe ${series.labels.target} passed ${round(100 * series.value, 2)}% of scrapes over 24 h` });
 
   const age = read("age", TARGETS);

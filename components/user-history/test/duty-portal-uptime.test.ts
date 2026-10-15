@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { judge, parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type Answers, framesToSeries, QUERIES, type Series, TARGETS, UNMEASURED, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
+import { type Answers, framesToSeries, QUERIES, type Series, TARGETS, UNMEASURED, UNMEASURED_PCT, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const AT = Date.parse("2026-10-12T14:00:00Z");
 const each = (value: number): Series[] => TARGETS.map(target => ({ labels: { env: "production", job: "api-portal-health", target }, value }));
@@ -36,11 +36,13 @@ test("portal uptime: a down target, a lost 24 h share and a stale probe are flag
   assert.deepEqual(output.flagged?.map(item => item.kind), ["down", "uptime", "uptime", "uptime", "stale"]);
 });
 
-test("portal uptime: Grafana errors and a missing target series give 999999 and source_errors, never a good value", async () => {
+test("portal uptime: Grafana errors and a missing target series give 999999, -1 for the share and source_errors, never a good value", async () => {
   const output = uptimeMetrics(answers({ up: { error: "HTTP 401: unauthorized" }, age: each(60).slice(1) }), OK, AT);
   assert.equal(output.metrics.probes_down_now, UNMEASURED);
   assert.equal(output.metrics.probe_age_min, UNMEASURED);
   assert.equal(output.metrics.source_errors, 2);
+  const unread = uptimeMetrics(answers({ uptime: { error: "HTTP 502" } }), OK, AT);
+  assert.equal(unread.metrics.probe_uptime_24h_pct, UNMEASURED_PCT);
   assert.match(output.flagged![0]!.excerpt, new RegExp(QUERIES.up.replace(/[{}()[\]]/g, "\\$&")));
   assert.match(output.flagged![1]!.excerpt, /no series for crawler_health/);
   const duty = parseDutyInput(JSON.parse(await readFile("scripts/duties/portal-uptime.duty.json", "utf8")), "d1", AT);
@@ -56,5 +58,6 @@ test("portal uptime: the duty JSON passes parseDutyInput with the targets the sc
   const duty = parseDutyInput(JSON.parse(await readFile("scripts/duties/portal-uptime.duty.json", "utf8")), "d1", AT);
   assert.equal(duty.name, "Portal stays up");
   assert.deepEqual(duty.schedule, { kind: "daily", at: "07:29" });
-  assert.deepEqual(duty.metrics.map(m => [m.key, m.op, m.target]), [["probes_down_now", "<=", 0], ["probe_uptime_24h_pct", ">=", 100], ["probe_age_min", "<=", 15], ["source_errors", "<=", 0]]);
+  assert.deepEqual(duty.metrics.map(m => [m.key, m.op, m.target]), [["probe_uptime_24h_pct", ">=", 100], ["probes_down_now", "<=", 0], ["probe_age_min", "<=", 15]]);
+  assert.equal(duty.metrics.find(m => m.headline)?.key, "probe_uptime_24h_pct");
 });
