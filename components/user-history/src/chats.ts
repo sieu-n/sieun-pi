@@ -251,16 +251,15 @@ export class Chats {
    * Each catalog refresh: the subagents the daemon lists under each chat (`rosterChildren`) become the chat's children while the hub holds no
    * attach of it, so the no-report notice and the check-in read them even when every attach fails (frontend bro 10-13: its worker answered
    * no root-session request, while the daemon's list answered in 540 ms). The brief check still needs the transcript the hub holds. An attached
-   * chat keeps the hub's children, with each one's clock and running turn from its row (`withRoster`).
+   * chat keeps the hub's children, with each one's clock and running turn from its row (`withRoster`). A chat the hub opened whose attach has
+   * not given its children yet reads the roster too (VP of CI 10-15 13:50Z: right after a restart that gap left 22 steps owned by nobody).
    */
   async roster(byChat: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> {
     this.subagents = byChat;
     await this.load();
     for (const id of this.chatIds) {
       const before = this.children.get(id);
-      const live = this.threads.isLive?.(id) ?? false;
-      const attached = live ? this.attachedChildren.get(id) : undefined;
-      if (live && !attached) continue;
+      const attached = this.threads.isLive?.(id) ? this.attachedChildren.get(id) : undefined;
       const children = attached ? withRoster(attached, byChat.get(id) ?? []) : followUps(before, byChat.get(id) ?? []);
       if (before && JSON.stringify(before) === JSON.stringify(children)) continue;
       this.childrenChanged(id, children);
