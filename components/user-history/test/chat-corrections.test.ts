@@ -17,7 +17,7 @@ const VP: ChatRef = { id: "vp", name: "dev VP" };
 const CI: ChatRef = { id: "ci", name: "VP of CI" };
 const add = (words: string, theme: string, rule = "A rule.", enforcedBy = "brief", ref = "abc1234") => parseCorrectionCall({ words, rule, theme, enforcedBy, ref });
 
-test("theme: key words drop stop words and fold plurals; a match shares two key words and half the shorter theme", () => {
+test("theme: key words drop stop words and fold plurals; a match shares two key words past the generic ones and half the shorter theme", () => {
   assert.deepEqual(themeTokens("Job reports stay folded in the feed, with links"), ["job", "report", "stay", "folded", "feed", "link"]);
   assert.deepEqual(themeTokens(["replies", "Class"]), ["reply", "class"]);
   const cases: [string, string, boolean][] = [
@@ -27,9 +27,11 @@ test("theme: key words drop stop words and fold plurals; a match shares two key 
     ["job report folded feed link", "name job thread mention link", false],
     ["job goal subagent output item split", "checkin fan out parallel checks", false],
     ["ui variant pick screenshot inline", "explanation article link todo", false],
-    ["aside", "aside", true],
-    ["aside login", "aside", true],
+    ["aside", "aside", false],
+    ["aside login", "aside", false],
     ["aside login", "browser login", false],
+    ["board", "board title plain readable", false],
+    ["board plan scratchpad note", "board plan title note", false],
   ];
   for (const [a, b, same] of cases) assert.equal(themeOverlap(themeTokens(a), themeTokens(b)) > 0, same, `${a} / ${b}`);
 });
@@ -42,7 +44,7 @@ test("ledger: a new correction is c1 and active; the same words again change not
     ref: "abc1234", status: "active", theme: ["article", "link", "todo"], repeats: [] });
   assert.equal(applyCorrection(ledger, add("where  is the link ", "other words"), VP, "2026-10-09T11:00:00.000Z").kind, "known", "a retried call records nothing");
   assert.equal(applyCorrection(ledger, add("ops guy owns the Macs", "mac load ops guy"), VP, "2026-10-09T10:30:00.000Z").kind, "added");
-  const again = applyCorrection(ledger, add("where the hell is the link?", "explanation article link"), VP, "2026-10-09T12:00:00.000Z");
+  const again = applyCorrection(ledger, add("where the hell is the link?", "explanation article link", "An explanation article gets a link."), VP, "2026-10-09T12:00:00.000Z");
   assert.equal(again.kind, "repeat");
   assert.equal(again.entry.id, "c1");
   assert.equal(ledger.corrections.length, 2);
@@ -55,7 +57,7 @@ test("ledger: a new correction is c1 and active; the same words again change not
   assert.deepEqual([fixed.entry.status, fixed.entry.enforcedBy, fixed.entry.ref], ["active", "test", "test/x.test.ts"]);
   applyCorrection(ledger, parseCorrectionCall({ id: "c2", status: "retired" }), VP, "2026-10-09T13:00:00.000Z");
   assert.equal(ledger.corrections[1]!.status, "retired");
-  assert.equal(matchCorrection(ledger, themeTokens("mac load ops guy"))?.id, "c2", "a retired entry still catches a repeat");
+  assert.equal(matchCorrection(ledger, themeTokens("mac load ops guy"), "Mac load goes to ops guy.")?.id, "c2", "a retired entry still catches a repeat");
   assert.equal(applyCorrection(ledger, add("new one", "brand fresh theme"), VP, "2026-10-09T14:00:00.000Z").entry.id, "c3");
   assert.throws(() => applyCorrection(ledger, parseCorrectionCall({ id: "c9", status: "retired" }), VP, ""), /No correction c9/);
   assert.throws(() => parseCorrectionCall({ words: "x", rule: "r", theme: "t", enforcedBy: "memory", ref: "r" }), /enforcedBy is one of brief, code, test/);
@@ -68,25 +70,30 @@ test("ledger: one owner message that repeats two corrections records a repeat on
   applyCorrection(ledger, add("talk plain, no slop", "reply plain text slop"), VP, "2026-10-09T08:00:00.000Z");
   const words = "unslop, you are talking so much slop. where the hell is the link?";
   assert.equal(applyCorrection(ledger, add(words, "explanation article link todo"), CI, "2026-10-09T10:00:00.000Z").kind, "added");
-  const slop = applyCorrection(ledger, add(words, "reply plain text slop"), CI, "2026-10-09T10:00:00.000Z");
+  const slop = applyCorrection(ledger, add(words, "reply plain text slop", "Replies are plain text with no slop."), CI, "2026-10-09T10:00:00.000Z");
   assert.equal(slop.kind, "repeat", "the same words repeat c1 too");
   assert.equal(slop.entry.id, "c1");
-  assert.equal(applyCorrection(ledger, add(words, "reply plain text slop"), CI, "2026-10-09T10:01:00.000Z").kind, "known", "a retried call records nothing");
+  assert.equal(applyCorrection(ledger, add(words, "reply plain text slop", "Replies are plain text with no slop."), CI, "2026-10-09T10:01:00.000Z").kind, "known", "a retried call records nothing");
   assert.equal((await repeatsBetween(ledger, Date.parse("2026-10-09T00:00:00Z"), Date.parse("2026-10-10T00:00:00Z"), async () => [words])).length, 1);
 });
 
 test("repeatsBetween counts a repeat only when the owner wrote its words in that chat: ops guy's own notes on c59 and c4 (10-12) are no repeats", async () => {
   const OPS: ChatRef = { id: "ops", name: "ops guy (+observability)" };
   const ledger: Ledger = { corrections: [] };
-  applyCorrection(ledger, add("Your brief for blog batches live check breaks the Jobs rule", "job brief word verbatim"), VP, "2026-10-12T14:27:59.460Z");
-  applyCorrection(ledger, add("ran vercel login, next time for these can you consult Aside and login auth yourself?", "cli login aside oauth browser"), OPS, "2026-10-09T10:12:31.466Z");
-  applyCorrection(ledger, add("stop making up these bullshit rules on waiting", "invented waiting rule overly careful gate"), CI, "2026-10-12T06:01:43.213Z");
+  applyCorrection(ledger, add("Your brief for blog batches live check breaks the Jobs rule", "job brief word verbatim",
+    "A job brief quotes only owner messages sent to this chat, word for word."), VP, "2026-10-12T14:27:59.460Z");
+  applyCorrection(ledger, add("ran vercel login, next time for these can you consult Aside and login auth yourself?", "cli login aside oauth browser",
+    "A CLI or service login, GitHub included, is finished in the owner's Aside browser with Google or GitHub sign-in."), OPS, "2026-10-09T10:12:31.466Z");
+  applyCorrection(ledger, add("stop making up these bullshit rules on waiting", "invented waiting rule overly careful gate",
+    "Do not invent waiting rules, extra review rounds or safety gates; act directly and ship."), CI, "2026-10-12T06:01:43.213Z");
   const note59 = "(brief check, twice on 10-12) \"have it your duty to have usable mac.\" is not in any owner message.";
   const note4 = "(owner rule recalled by the release owner and the global harness note: agents never do a GitHub sign-in in Aside)";
   const owner47 = "look, be fucking aggressive. it's ok to break things. just make it work. NEVER wait for something, or ask for my permission to push to Github etc.";
-  assert.equal(applyCorrection(ledger, add(note59, "brief owner words duty alert"), OPS, "2026-10-12T20:38:04.615Z").kind, "repeat");
-  assert.equal(applyCorrection(ledger, add(note4, "github sign in aside login"), OPS, "2026-10-12T17:53:56.511Z").kind, "repeat");
-  assert.equal(applyCorrection(ledger, add(owner47, "invented waiting rule overly"), CI, "2026-10-12T14:12:31.885Z").kind, "repeat");
+  assert.equal(applyCorrection(ledger, add(note59, "brief owner words duty alert", "The brief check matches owner quotes only against recent owner messages."),
+    OPS, "2026-10-12T20:38:04.615Z").kind, "repeat");
+  assert.equal(applyCorrection(ledger, add(note4, "github sign in aside login", "Never sign in to GitHub in Aside; use CI job tokens."), OPS, "2026-10-12T17:53:56.511Z").kind, "repeat");
+  assert.equal(applyCorrection(ledger, add(owner47, "invented waiting rule overly",
+    "The VP of CI acts aggressively on CI speed: it pushes its own fixes to GitHub without waiting for another thread's go."), CI, "2026-10-12T14:12:31.885Z").kind, "repeat");
   const said: Record<string, string[]> = {
     ops: ["have it your duty to have usable mac.", "[brief check] Your brief for [wiki down at five](job:wiki down at five) breaks the Jobs rule"],
     ci: ["then are you working actively on it?", `${owner47.replace("fucking", "Fucking")}\n`],
@@ -106,7 +113,7 @@ test("ledger prompt: active and reopened rules, reopened first then newest, capp
   for (let i = 1; i <= LEDGER_PROMPT_LINES + 3; i++) {
     applyCorrection(ledger, add(`words ${i}`, `theme${i} unique${i}`, `Rule ${i}.`), VP, new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString());
   }
-  applyCorrection(ledger, add("again", "theme2 unique2"), VP, "2026-10-01T00:00:30.000Z");
+  applyCorrection(ledger, add("again", "theme2 unique2", "Rule 2 on theme2 and unique2."), VP, "2026-10-01T00:00:30.000Z");
   applyCorrection(ledger, parseCorrectionCall({ id: "c43", status: "retired" }), VP, "");
   const lines = ledgerPrompt(ledger, new Set())!.split("\n");
   assert.match(lines[0]!, /^\[corrections\] The owner's corrections in force, live from the ledger\./);
@@ -126,7 +133,7 @@ test("ledger prompt: a rule the brief holds is its id and one landed code or a t
   applyCorrection(ledger, add("w3", "cache ratio drop test", "A cache fix ships with a test.", "test", "pending cache job"), VP, at(3));
   applyCorrection(ledger, add("w4", "frontend split time loop", "Frontend work is 70% build."), VP, at(4));
   applyCorrection(ledger, add("w5", "staging deploy confirm ask merge", "Staging needs no ok.", "code", "abc1234"), VP, at(5));
-  applyCorrection(ledger, add("w6", "staging deploy confirm", "x"), VP, at(6));
+  applyCorrection(ledger, add("w6", "staging deploy confirm", "Staging deploys need no confirm."), VP, at(6));
   assert.deepEqual(ledgerPrompt(ledger, briefCorrections(["Nothing goes outside without his ok (c1)."]))!.split("\n").slice(1), [
     "- c5 (reopened: the owner repeated it 1x; fix it in code or a test) Staging needs no ok.",
     "- c4 Frontend work is 70% build.",
@@ -152,8 +159,8 @@ test("ledger file: apply writes corrections.json under the lock and reads back; 
     const store = new CorrectionLedger(dir);
     assert.deepEqual(await store.read(), { corrections: [] });
     await store.apply(add("first", "mac load ops guy"), VP, "2026-10-09T10:00:00.000Z");
-    await store.apply(add("second", "mac load delegate"), CI, "2026-10-09T12:00:00.000Z");
-    await store.apply(add("third", "mac load ops"), CI, "2026-10-07T12:00:00.000Z");
+    await store.apply(add("second", "mac load delegate", "Mac load goes to ops guy."), CI, "2026-10-09T12:00:00.000Z");
+    await store.apply(add("third", "mac load ops", "Mac load goes to ops guy."), CI, "2026-10-07T12:00:00.000Z");
     const ledger = await store.read();
     assert.deepEqual(JSON.parse(await readFile(join(dir, "corrections.json"), "utf8")), ledger);
     assert.deepEqual((await repeatsBetween(ledger, Date.parse("2026-10-08T12:00:00Z"), Date.parse("2026-10-09T12:00:00Z"), async () => ["second"]))
@@ -196,10 +203,11 @@ test("extension: correction_add is registered only in a chat; it records a new c
     const tool = chat.tools.get(CORRECTION_TOOL)!;
     const schema = JSON.stringify({ name: tool.name, description: (tool as unknown as { description: string }).description, parameters: (tool as unknown as { parameters: unknown }).parameters });
     assert.ok(schema.length <= 700, `correction_add schema is ${schema.length} chars; keep tool texts lean`);
-    const first = await tool.execute("t1", { words: "wipe it from our plan", rule: "A handed-off step leaves the plan.", theme: "handoff step plan", enforcedBy: "brief", ref: "9953e20" },
+    const first = await tool.execute("t1", { words: "wipe it from our plan", rule: "A handed-off step leaves the plan.", theme: "handoff step leaves plan", enforcedBy: "brief", ref: "9953e20" },
       undefined, undefined, chat.ctx(true));
     assert.equal(first.content[0]!.text, "Recorded c1: A handed-off step leaves the plan. (enforced by brief: 9953e20). Every chat reads it from its next model call.");
-    const repeat = await tool.execute("t2", { words: "why is it still on the plan", rule: "same", theme: "handoff plan", enforcedBy: "brief", ref: "x" }, undefined, undefined, chat.ctx(true));
+    const repeat = await tool.execute("t2", { words: "why is it still on the plan", rule: "A handed-off step leaves the plan at once.", theme: "handoff plan leave", enforcedBy: "brief", ref: "x" },
+      undefined, undefined, chat.ctx(true));
     assert.match(repeat.content[0]!.text, /^Repeat of c1 .* A repeat is a sev: .*Fix it in code or a test/);
     const ledger = await new CorrectionLedger(dataDir).read();
     assert.deepEqual(ledger.corrections.map(entry => [entry.id, entry.status, entry.chat, entry.repeats.length]), [["c1", "reopened", { id: "chat-1", name: "dev VP" }, 1]]);
@@ -250,10 +258,10 @@ test("extension: correction_add takes the owner's exact words with other whitesp
     const chat = loadExtension(dataDir, { name: "Crawler VP", branch: [...crawlerVp(), owner("never say \"done\" before the CI run is green, unblock CI hourly")] });
     await chat.run("session_start", {}, true);
     const tool = chat.tools.get(CORRECTION_TOOL)!;
-    const call = (words: string, theme: string) => tool.execute("t", { words, rule: "A rule.", theme, enforcedBy: "brief", ref: "x" }, undefined, undefined, chat.ctx(true));
+    const call = (words: string, theme: string, rule = "A rule.") => tool.execute("t", { words, rule, theme, enforcedBy: "brief", ref: "x" }, undefined, undefined, chat.ctx(true));
     const added = await call("It\u2019s totally ok to ramp up\n  things!!!", "ramp up testing stage");
     assert.match(added.content[0]!.text, /^Recorded c54: /);
-    const repeat = await call("Never say \u201cdone\u201d before the CI run is green, UNBLOCK CI hourly", "unblock ci hourly");
+    const repeat = await call("Never say \u201cdone\u201d before the CI run is green, UNBLOCK CI hourly", "unblock ci hourly", "The VP of CI unblocks CI every hour.");
     assert.match(repeat.content[0]!.text, /^Repeat of c53 /);
     const ledger = await new CorrectionLedger(dataDir).read();
     assert.deepEqual(ledger.corrections.map(entry => [entry.id, entry.status, entry.repeats.length]), [["c53", "reopened", 1], ["c54", "active", 0]]);
@@ -440,9 +448,9 @@ test("chat health: repeat_corrections counts ledger repeats in the last 24 h and
     ].join("\n") + "\n");
     const store = new CorrectionLedger(dir);
     await store.apply(add("ops guy owns it", "mac load ops guy", "Mac load goes to ops guy."), VP, "2026-10-07T10:00:00.000Z");
-    await store.apply(add("didn't i tell you", "mac load delegate"), VP, "2026-10-09T13:06:51.000Z");
-    await store.apply(add("long ago", "mac load ops"), CI, "2026-10-07T11:00:00.000Z");
-    await store.apply(add("(my own note) the owner said this before", "mac load ops guy"), VP, "2026-10-09T13:30:00.000Z");
+    await store.apply(add("didn't i tell you", "mac load delegate", "Mac load goes to ops guy."), VP, "2026-10-09T13:06:51.000Z");
+    await store.apply(add("long ago", "mac load ops", "Mac load goes to ops guy."), CI, "2026-10-07T11:00:00.000Z");
+    await store.apply(add("(my own note) the owner said this before", "mac load ops guy", "Mac load goes to ops guy."), VP, "2026-10-09T13:30:00.000Z");
     const output = join(dir, "health.json");
     const result = spawnSync(process.execPath, ["--import", "tsx", join(import.meta.dirname, "..", "scripts", "duties", "chat-health.ts")], { cwd: join(import.meta.dirname, ".."),
       encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", CHAT_HEALTH_GIT_DIR: "/nonexistent", OUTPUT_FILE: output, CHAT_HEALTH_NOW: String(NOW),

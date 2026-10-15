@@ -37,12 +37,14 @@ export interface Handoff { to: string; topics: string[]; with?: string[] }
 export interface Ledger { corrections: Correction[] }
 
 /** A new correction from the owner. */
-export interface CorrectionInput { words: string; rule: string; theme: string[]; enforcedBy: Enforcement; ref: string; handoff?: Handoff }
+/** `notRepeatOf`: ids the calling chat says this is no repeat of; the match skips them. */
+export interface CorrectionInput { words: string; rule: string; theme: string[]; enforcedBy: Enforcement; ref: string; handoff?: Handoff; notRepeatOf?: string[] }
 /** A fix that landed, a retired rule or a reworded rule: the entry's rule, enforcement, ref, status or handoff change; an absent field stays as it is. */
 export interface CorrectionFix { id: string; rule?: string; enforcedBy?: Enforcement; ref?: string; status?: CorrectionStatus; handoff?: Handoff }
-export type CorrectionCall = { kind: "add"; input: CorrectionInput } | { kind: "fix"; fix: CorrectionFix };
+/** A merge folds entry `id` into `into` as a repeat: the chat's call when a rule it filed as new was the same rule after all. */
+export type CorrectionCall = { kind: "add"; input: CorrectionInput } | { kind: "fix"; fix: CorrectionFix } | { kind: "merge"; id: string; into: string };
 export type CorrectionOutcome =
-  | { kind: "added"; entry: Correction }
+  | { kind: "added"; entry: Correction; closest?: Correction }
   | { kind: "repeat"; entry: Correction; repeat: CorrectionRepeat }
   | { kind: "known"; entry: Correction }
   | { kind: "fixed"; entry: Correction };
@@ -59,23 +61,53 @@ export function themeTokens(theme: string | readonly string[]): string[] {
 }
 
 /**
- * Whether two themes name the same thing: they share at least two key words (one when the shorter theme has one), and at least half of the
- * shorter theme. Returns the shared count, 0 for no match.
+ * Words that name the surfaces every kind of rule touches, so sharing one says nothing about meaning. On 10-15 ops guy filed "each decision goes
+ * into the board scratchpad as a dated note" with theme "board", and the ledger reopened c61 (plain board titles).
+ */
+const GENERIC = new Set(["board", "plan", "title", "note", "step", "goal", "todo", "thread", "job", "rule", "agent", "ci", "repo", "code"]);
+const FILLER = new Set(["like", "use", "one", "you", "his", "him", "he", "they", "them", "their", "then", "than", "so", "but", "if", "all", "any", "also"]);
+const keyWords = (words: readonly string[]): string[] => words.filter(word => !GENERIC.has(word));
+const shared = (a: readonly string[], b: readonly string[]): number => { const other = new Set(b); return a.filter(word => other.has(word)).length; };
+
+/**
+ * Whether two themes name the same thing: past the generic words, they share at least two key words and at least half of the shorter theme.
+ * A one-word theme matches nothing. Returns the shared count, 0 for no match.
  */
 export function themeOverlap(a: readonly string[], b: readonly string[]): number {
-  const other = new Set(b);
-  const shared = a.filter(word => other.has(word)).length;
-  const shorter = Math.min(a.length, b.length);
-  return shorter > 0 && shared >= Math.min(2, shorter) && shared * 2 >= shorter ? shared : 0;
+  const [left, right] = [keyWords(a), keyWords(b)];
+  const count = shared(left, right);
+  return count >= 2 && count * 2 >= Math.min(left.length, right.length) ? count : 0;
 }
 
-/** The entry a theme repeats, any status: the one sharing the most key words, the newest on a tie. */
-export function matchCorrection(ledger: Ledger, theme: readonly string[]): Correction | undefined {
+/** The key words of a rule line: theme tokens past the generic and filler words and one-letter scraps. */
+const ruleWords = (rule: string): string[] => keyWords(themeTokens(rule)).filter(word => word.length > 1 && !FILLER.has(word));
+/** The key words a new rule line shares with an entry's rule and theme; a repeat shares at least two. */
+export const ruleOverlap = (rule: string, entry: Correction): number => shared(ruleWords(rule), [...ruleWords(entry.rule), ...keyWords(entry.theme)]);
+
+/**
+ * The entry a new rule repeats, any status: its theme matches (`themeOverlap`) and its rule line shares two key words with that entry's rule
+ * and theme (`ruleOverlap`). Of those, the one sharing the most theme words, the newest on a tie. `skip` holds ids the chat said it is no
+ * repeat of.
+ */
+export function matchCorrection(ledger: Ledger, theme: readonly string[], rule: string, skip: ReadonlySet<string> = new Set()): Correction | undefined {
   let best: Correction | undefined;
   let bestShared = 0;
   for (const entry of ledger.corrections) {
-    const shared = themeOverlap(theme, entry.theme);
-    if (shared > 0 && shared >= bestShared) { best = entry; bestShared = shared; }
+    if (skip.has(entry.id)) continue;
+    const count = themeOverlap(theme, entry.theme);
+    if (count > 0 && ruleOverlap(rule, entry) >= 2 && count >= bestShared) { best = entry; bestShared = count; }
+  }
+  return best;
+}
+
+/** The nearest entry a new rule did not repeat, for the chat to judge: the most shared theme words, generic ones too, then rule words. */
+export function closestCorrection(ledger: Ledger, theme: readonly string[], rule: string, skip: ReadonlySet<string> = new Set()): Correction | undefined {
+  let best: Correction | undefined;
+  let bestScore: [number, number] = [0, 0];
+  for (const entry of ledger.corrections) {
+    if (skip.has(entry.id)) continue;
+    const score: [number, number] = [shared(theme, entry.theme), ruleOverlap(rule, entry)];
+    if (score[0] + score[1] > 0 && (score[0] > bestScore[0] || (score[0] === bestScore[0] && score[1] >= bestScore[1]))) { best = entry; bestScore = score; }
   }
   return best;
 }
@@ -95,7 +127,7 @@ export function ownerSaid(words: string, owner: readonly string[]): boolean {
  * branch name tonight." and the ledger reopened c53 as an owner repeat. A fix call names no words and passes.
  */
 export function ownerWordsRefusal(call: CorrectionCall, owner: readonly string[]): string | null {
-  if (call.kind === "fix" || ownerSaid(call.input.words, owner)) return null;
+  if (call.kind !== "add" || ownerSaid(call.input.words, owner)) return null;
   return `"${call.input.words}" is not in any owner message of this chat. Quote the owner exactly, or do not record it: words from another agent, ` +
     "a job or a check-in are no owner correction.";
 }
@@ -108,6 +140,7 @@ const nextId = (ledger: Ledger): string => `c${1 + Math.max(0, ...ledger.correct
  * matches an entry records a repeat on it and reopens it; otherwise a new active entry.
  */
 export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: ChatRef, at: string): CorrectionOutcome {
+  if (call.kind === "merge") return mergeCorrection(ledger, call.id, call.into);
   if (call.kind === "fix") {
     const entry = ledger.corrections.find(item => item.id === call.fix.id);
     if (!entry) throw new Error(`No correction ${call.fix.id}`);
@@ -119,9 +152,17 @@ export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: Chat
     return { kind: "fixed", entry };
   }
   const { input } = call;
+  const skip = new Set(input.notRepeatOf ?? []);
   // One owner message can repeat two corrections ("unslop ... where is the link?"): the same words count once per entry their theme matches.
-  const recorded = (entry: Correction) => sameWords(entry.words, input.words) || entry.repeats.some(repeat => sameWords(repeat.words, input.words));
-  const earlier = matchCorrection(ledger, input.theme);
+  const recorded = (entry: Correction) => !skip.has(entry.id) && (sameWords(entry.words, input.words) || entry.repeats.some(repeat => sameWords(repeat.words, input.words)));
+  // A retry that says "not a repeat of cN" takes back the repeat the first call put on cN, and cN with no repeat left is active again.
+  for (const entry of ledger.corrections.filter(item => skip.has(item.id))) {
+    const kept = entry.repeats.filter(repeat => !sameWords(repeat.words, input.words));
+    if (kept.length === entry.repeats.length) continue;
+    entry.repeats = kept;
+    if (!kept.length && entry.status === "reopened") entry.status = "active";
+  }
+  const earlier = matchCorrection(ledger, input.theme, input.rule, skip);
   const known = earlier ? (recorded(earlier) ? earlier : undefined) : ledger.corrections.find(recorded);
   if (known) return { kind: "known", entry: known };
   if (earlier) {
@@ -133,8 +174,22 @@ export function applyCorrection(ledger: Ledger, call: CorrectionCall, chat: Chat
   }
   const entry: Correction = { id: nextId(ledger), at, chat, words: input.words, rule: input.rule, enforcedBy: input.enforcedBy, ref: input.ref,
     status: "active", theme: input.theme, repeats: [], ...(input.handoff ? { handoff: input.handoff } : {}) };
+  const closest = closestCorrection(ledger, input.theme, input.rule, skip);
   ledger.corrections.push(entry);
-  return { kind: "added", entry };
+  return { kind: "added", entry, ...(closest ? { closest } : {}) };
+}
+
+/** Folds entry `id` into `into`: its words and repeats become repeats of `into`, which reopens, and `id` leaves the ledger. */
+function mergeCorrection(ledger: Ledger, id: string, into: string): CorrectionOutcome {
+  const from = ledger.corrections.find(entry => entry.id === id);
+  const target = ledger.corrections.find(entry => entry.id === into);
+  if (!from) throw new Error(`No correction ${id}`);
+  if (!target || target === from) throw new Error(`No other correction ${into} to merge ${id} into`);
+  const repeat = { at: from.at, chat: from.chat, words: from.words };
+  target.repeats.push(repeat, ...from.repeats);
+  target.status = "reopened";
+  ledger.corrections.splice(ledger.corrections.indexOf(from), 1);
+  return { kind: "repeat", entry: target, repeat };
 }
 
 const text = (value: unknown, field: string): string => {
@@ -157,16 +212,22 @@ export function parseHandoff(value: unknown): Handoff {
   return { to: text(record.to, "handoff.to"), topics, ...(withWords.length ? { with: withWords } : {}) };
 }
 
+const correctionId = (value: unknown, field: string): string => {
+  const id = text(value, field);
+  if (!/^c\d+$/.test(id)) throw new Error(`${field} is a correction id like c3, not ${id}`);
+  return id;
+};
 /**
- * The tool's arguments: `id` marks a fix (rule, enforcedBy, ref, status, handoff), else a new correction (words, rule, theme, enforcedBy, ref, and an
- * optional handoff). A fix that names enforcedBy or ref and no status sets the entry active: the fix landed.
+ * The tool's arguments: `id` with `mergeInto` folds that entry into another as a repeat; `id` alone marks a fix (rule, enforcedBy, ref, status,
+ * handoff); else a new correction (words, rule, theme, enforcedBy, ref, an optional handoff, and an optional `notRepeatOf`, ids or a
+ * comma-separated string of them). A fix that names enforcedBy or ref and no status sets the entry active: the fix landed.
  */
 export function parseCorrectionCall(value: unknown): CorrectionCall {
   const input = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
   const handoff = input.handoff === undefined ? {} : { handoff: parseHandoff(input.handoff) };
   if (input.id !== undefined) {
-    const id = text(input.id, "id");
-    if (!/^c\d+$/.test(id)) throw new Error(`id is a correction id like c3, not ${id}`);
+    const id = correctionId(input.id, "id");
+    if (input.mergeInto !== undefined) return { kind: "merge", id, into: correctionId(input.mergeInto, "mergeInto") };
     const landed = input.enforcedBy !== undefined || input.ref !== undefined;
     const status = input.status !== undefined ? oneOf(input.status, CORRECTION_STATUSES, "status") : landed ? "active" : undefined;
     if (!status && !landed && input.handoff === undefined && input.rule === undefined) throw new Error("a fix gives rule, enforcedBy, ref, status or handoff");
@@ -176,22 +237,27 @@ export function parseCorrectionCall(value: unknown): CorrectionCall {
   }
   const theme = themeTokens(Array.isArray(input.theme) ? input.theme.filter((word): word is string => typeof word === "string") : text(input.theme, "theme"));
   if (!theme.length) throw new Error("theme needs key words");
+  const notRepeatOf = (Array.isArray(input.notRepeatOf) ? input.notRepeatOf : typeof input.notRepeatOf === "string" ? input.notRepeatOf.split(",").filter(id => id.trim()) : [])
+    .map(id => correctionId(id, "notRepeatOf"));
   return { kind: "add", input: { words: text(input.words, "words"), rule: text(input.rule, "rule").replace(/\s+/g, " "), theme,
-    enforcedBy: oneOf(input.enforcedBy, ENFORCEMENTS, "enforcedBy"), ref: text(input.ref, "ref"), ...handoff } };
+    enforcedBy: oneOf(input.enforcedBy, ENFORCEMENTS, "enforcedBy"), ref: text(input.ref, "ref"), ...handoff, ...(notRepeatOf.length ? { notRepeatOf } : {}) } };
 }
 
 /** What the tool tells the chat. A repeat says it is a sev and that the fix must be code or a test. */
 export function correctionResult(outcome: CorrectionOutcome): string {
   const { entry } = outcome;
   switch (outcome.kind) {
-    case "added": return `Recorded ${entry.id}: ${entry.rule} (enforced by ${entry.enforcedBy}: ${entry.ref}). Every chat reads it from its next model call.`;
+    case "added": return `Recorded ${entry.id}: ${entry.rule} (enforced by ${entry.enforcedBy}: ${entry.ref}). Every chat reads it from its next model call.` +
+      (outcome.closest ? ` The closest earlier rule is ${outcome.closest.id} "${outcome.closest.rule}". If the owner repeated that rule, call ${CORRECTION_TOOL} ` +
+        `with id "${entry.id}" and mergeInto "${outcome.closest.id}".` : "");
     case "known": return `Already recorded as ${entry.id}: ${entry.rule}. Nothing changed.`;
     case "fixed": return `Updated ${entry.id}: enforced by ${entry.enforcedBy} (${entry.ref}), ${entry.status}` +
       `${entry.handoff ? `; steps on ${entry.handoff.topics.join(", ")} go to ${entry.handoff.to}` : ""}.`;
     case "repeat": return `Repeat of ${entry.id} "${entry.rule}", first given ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}; ` +
       `the owner has now repeated it ${entry.repeats.length} time${entry.repeats.length === 1 ? "" : "s"}, so ${entry.id} is reopened. ` +
       `A repeat is a sev: the earlier fix (${entry.enforcedBy}: ${entry.ref}) did not hold. Fix it in code or a test, not only more prompt text: ` +
-      `start a job for it now, and when the fix lands call ${CORRECTION_TOOL} with id "${entry.id}", enforcedBy "code" or "test" and the ref.`;
+      `start a job for it now, and when the fix lands call ${CORRECTION_TOOL} with id "${entry.id}", enforcedBy "code" or "test" and the ref. ` +
+      `If the owner gave a different rule, call ${CORRECTION_TOOL} again with notRepeatOf "${entry.id}", which takes this repeat back.`;
   }
 }
 

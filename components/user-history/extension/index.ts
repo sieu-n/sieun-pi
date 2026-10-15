@@ -148,7 +148,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
         properties: {
           words: { type: "string", description: "His words, verbatim." }, rule: { type: "string" }, theme: { type: "string" },
           enforcedBy: { type: "string", enum: [...ENFORCEMENTS] }, ref: { type: "string" }, id: { type: "string" },
-          status: { type: "string", enum: ["active", "retired"] }, handoff: { type: "object" },
+          status: { type: "string", enum: ["active", "retired"] }, handoff: { type: "object" }, notRepeatOf: { type: "string" }, mergeInto: { type: "string" },
         },
       },
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
