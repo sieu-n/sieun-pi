@@ -7,6 +7,7 @@ agent_end. state.json keeps the queue under the pool flock in state["turns"]:
     queued   {session: {tree, parent, class, since, pid, waiter}}
     owner    {session: epoch sec of the owner-turn mark}
     pressure {level, at, since, reading, limit, changed, memory_trees}: the governor's last read
+    prod     {at, trees, sessions}: the trees and sessions on prod work now (pool/prod.py)
 
 The governor: while memory pressure is high or critical (pool/pressure.py), the Mac
 limit drops to pressure_working_max[level] and a queued turn whose own class and whose
@@ -27,7 +28,9 @@ queued turn of the tree but its root session's own waits, with no HOLD_MAX_S rel
 one-per-tree pass and no borrow, until the tree leaves the file or the level is ok. The root
 runs so the chat can read the service's notice and stop its job.
 
-Order: an owner turn runs at once and never waits. Then queued turns take free slots
+Order: an owner turn runs at once and never waits, and so does a prod turn: one of a tree that
+owns a running prod deploy, or of a chat session the alert bridge woke for a firing prod alert
+(pool/prod.py). Then queued turns take free slots
 by class, a chat's check-in key (CHECKIN) first and never held, then high before normal before low, longest wait first inside a class, while the
 Mac has under mac_working_max slots in use and the tree under tree_working_max. A
 queued entry moves up one class for every queue_aging_s it has waited. A child whose
@@ -53,7 +56,7 @@ cannot hold a slot.
 """
 import json, os, re, sys, time
 
-from . import base, pressure, registry
+from . import base, pressure, prod, registry
 
 CLASSES = ("low", "normal", "high")
 # A chat's check-in run waits in the queue under the key `duty:<chat id>:checkin` before its job's
@@ -185,7 +188,8 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None, firm
     are under it. Returns [(session, kind)] in admission order."""
     lease = lease or base.DEFAULTS["lease_s"]
     admitted = []
-    ordered = [s for s in order(turns["queued"], now, aging) if not (firm and firm(s, turns["queued"][s]))]
+    rush = {s: prod.why(turns.get("prod"), s, turns["queued"][s]) for s in order(turns["queued"], now, aging)}
+    ordered = [s for s in rush if not rush[s] and not (firm and firm(s, turns["queued"][s]))]
     held_ids = {s for s in ordered if hold and hold(turns["queued"][s])}
     queue = [s for s in ordered if s not in held_ids]
     trees = {}
@@ -204,6 +208,9 @@ def admit_pass(turns, now, mac_max, tree_max, aging, lease=None, hold=None, firm
             used += 1
         admitted.append((session, kind))
 
+    for session, why in rush.items():
+        if why:
+            start(session, "prod", why=why)
     for session in queue:
         if used >= mac_max:
             break
@@ -295,10 +302,34 @@ def held_for_memory(turns, session, entry):
     return rec.get("level", "ok") != "ok" and entry["tree"] != session and entry["tree"] in (rec.get("memory_trees") or [])
 
 
-def governed(turns, sessions, now, cfg, read=pressure.read, trees=pressure.read_tree_memory):
+def prod_watch(turns, now, cfg, read=prod.read):
+    """Refresh turns["prod"] once it is PRESSURE_TTL_SEC old, and drop it while prod_turns_on is 0.
+    Returns (refreshed, events); a change in the prod trees or sessions logs prod_turns."""
+    last = turns.get("prod")
+    if not int(cfg["prod_turns_on"]):
+        turns.pop("prod", None)
+        return last is not None, []
+    if last and 0 <= now - last.get("at", -1e18) < PRESSURE_TTL_SEC:
+        return False, []
+    rec = read(cfg, now)
+    turns["prod"] = rec
+    was = (last or {}).get("trees", {}), (last or {}).get("sessions", {})
+    return True, [] if (rec["trees"], rec["sessions"]) == was else [("prod_turns", {"trees": rec["trees"], "sessions": rec["sessions"]})]
+
+
+def held_prod(snapshot):
+    """A waiter's prod reader: the record state.json holds. A lock holder (admit, release, settle) reads
+    the files every PRESSURE_TTL_SEC, so 60 waiters never each read the 72 MB runs cache (80 ms a read)."""
+    return lambda cfg, now: snapshot.get("prod") or {"at": now, "trees": {}, "sessions": {}}
+
+
+def governed(turns, sessions, now, cfg, read=pressure.read, trees=pressure.read_tree_memory, prods=prod.read):
     """(working limit, hold rule or None, firm hold rule or None, borrow top or None, refreshed, events) under
-    the current pressure. The borrow top is the limit plus PRESSURE_BORROWS while the level is high or critical."""
+    the current pressure. The borrow top is the limit plus PRESSURE_BORROWS while the level is high or critical.
+    It refreshes the prod record too (prod_watch), which admit_pass reads."""
     refreshed, events = governor(turns, now, cfg, read, trees)
+    prod_refreshed, prod_events = prod_watch(turns, now, cfg, prods)
+    refreshed, events = refreshed or prod_refreshed, events + prod_events
     rec = turns["pressure"]
     hold = None if rec["level"] == "ok" else (lambda entry: holds(entry, sessions, now))
     firm = (lambda session, entry: held_for_memory(turns, session, entry)) if rec.get("memory_trees") else None
@@ -333,7 +364,8 @@ def view(turns, now, cfg, sessions=None):
     return {"enabled": mac is not None, "mac_working_max": int(cfg["mac_working_max"]),
             "mac_working_max_set": last_set("mac_working_max"),
             "tree_working_max": int(cfg["tree_working_max"]), "slots_used": len(in_slots(turns["working"])),
-            "working": working, "queued": queued, "pressure": pressure_view(turns, sessions or {}, now)}
+            "working": working, "queued": queued, "pressure": pressure_view(turns, sessions or {}, now),
+            "prod": {k: (turns.get("prod") or {}).get(k, {}) for k in ("trees", "sessions")}}
 
 
 def pressure_view(turns, sessions, now=None):
@@ -525,7 +557,7 @@ def wait(session, pid, last):
             snapshot, sessions = of(whole), whole.get("sessions") or {}
         trial = json.loads(json.dumps(snapshot))
         sweep(trial, now)
-        limit, hold, firm, top, refreshed, _ = governed(trial, sessions, now, cfg)
+        limit, hold, firm, top, refreshed, _ = governed(trial, sessions, now, cfg, prods=held_prod(snapshot))
         if refreshed:
             snapshot["pressure"] = trial["pressure"]
         admit_pass(trial, now, limit, tree_max, aging, int(cfg["lease_s"]), hold, firm, top)
