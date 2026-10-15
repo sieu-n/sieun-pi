@@ -55,7 +55,8 @@ export interface CheckInDutyState { createdAt: number; runCount: number; lastRun
 export interface DutyFile { version: 1; duties: Duty[]; checkIn?: CheckInDutyState }
 
 /** What started a run: its schedule, a catch-up, or the owner's Run now. */
-export type DutyTrigger = "schedule" | "catch-up" | "owner";
+/** `verify`: a re-measure after a fix step linked to one of the duty's metrics closed (src/shared/duty-streak.ts). */
+export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
 export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean }
 /** A duty job the server started: its session id and name. */
@@ -70,7 +71,15 @@ export interface DutyRunRecord {
   duty: string; at: number; slot?: number; trigger: DutyTrigger; ms: number; verdict: DutyVerdict;
   metrics: Record<string, MetricResult>; summary: string; detail?: string; error?: string;
   classes?: Record<string, number>; flagged?: FlaggedSlice[]; job?: DutyJobRef;
+  /** Per missed metric, the fix step the run found on the chat's board for it (a plan step whose `duty` is `<dutyId>/<metricKey>`). */
+  fixes?: Record<string, FixLink>;
+  /** The measure taken after this run's own job ended: the run's verdict once its fixes are in (`effectiveRun`). */
+  after?: AfterMeasure;
 }
+/** A fix step on the board for one missed metric: its plan step id, the job that owns it, and whether that job was live when the run looked. */
+export interface FixLink { step: string; job?: string; live: boolean }
+/** A run's re-measure after its own job ended. */
+export interface AfterMeasure { at: number; verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string }
 /** The part of a duty the card shows; the check-in duty has the same fields. */
 export type DutyCard = Pick<Duty, "id" | "name" | "ownerWords" | "goal" | "metrics" | "status"> & { boardGoal?: string };
 /**
