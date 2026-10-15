@@ -7,41 +7,47 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 import { footprintMb, treePids } from "./local-dev-uptime.ts";
 
 /**
- * The Demo sandbox works duty's precheck (`node --import tsx scripts/duties/demo-sandbox.ts`) for the frontend chat: whether the 5180 demo
- * (apps/virev-demo in auto-sns-agent) answers, how long /configure takes, its dev tree memory, the dev-guard memory restarts and SSR
- * "transport invoke timed out" errors in its pm2 error log, and the outside requests in the last offline walk. No model call, no browser.
- * The offline walk (tests/e2e/offline.spec.ts) is a browser check, so the duty job runs it behind the load gate and writes Playwright's JSON
- * report to WALK_FILE; this script only reads that report. Pages with no `?line=` render the default line, Staging, so the walk covers Staging.
- * A source it cannot read adds 1 to source_errors and a flagged slice; its own metrics then read 0, and source_errors carries the miss.
+ * The Demo sandbox works duty's precheck (`node --import tsx scripts/duties/demo-sandbox.ts`) for the frontend chat: the 5180 demo
+ * (apps/virev-demo in auto-sns-agent). No model call, no browser. Its judged metrics (owner c75, 10-15: one headline plus at most 3):
+ * - walk_problems, the headline: problems in the last offline walk of the 6 apps (tests/e2e/offline.spec.ts walks search, discover,
+ *   analytics, campaigns, inbox and connections in two scenarios, plus the marketing pages). Each outside request counts 1, each test that
+ *   failed for another reason counts 1, and a missing walk or one over a day old counts 1. The owner: "no external connection should work
+ *   off of internal fake database". The walk is a browser check, so the duty job runs it behind the load gate and writes Playwright's JSON
+ *   report to WALK_FILE; this script only reads that report.
+ * - health_ms: how long 5180 /health took to answer 200, at most 3 s. No answer or a non-200 reads as the full 30 s wait.
+ * - restarts_24h: times the dev server went down and restarted in 24 h (crashes, dev-guard memory kills, pm2 restarts by hand), from
+ *   pm2.log. A crash loop counts once. A restart that a vite config edit asks for ("config changed, exiting so pm2 starts a fresh dev
+ *   server") is development, so it is run detail.
+ * - ssr_timeouts_24h: times in 24 h a page hung on "transport invoke timed out", from the pm2 error log. Error lines less than
+ *   EVENT_GAP_MS apart are one event, since one hung request logs 3 to 20 lines.
+ * Run detail, written to the output but not judged: configure_ms, dev_tree_mb, guard_restarts_24h, config_restarts_24h,
+ * outside_requests and source_errors. A source this check cannot read adds 1 to the metric it feeds, because an unread source cannot
+ * show a clean day, plus 1 to source_errors and a flagged slice.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 export const BASE_URL = "http://localhost:5180";
-/**
- * How long a probe waits for an answer. Measured 2026-10-10 (sessions/2026/10/10/0344-demo-5180-speed/data/measurements.json, entry_chain_curl):
- * a warm /app page answered 200 in 1155 ms with the Mac at load average 257 to 357. Incident 2026-10-12 22:38 to 22:40 KST (duty proposals page,
- * section 5): /health, /__demo/health and /configure gave no answer in 60 s while vite listened. 10 s is the proposal's limit, about 8 times the
- * measured answer, so a slow but working server answers and a hung one reads as down. Without a limit a hung server would hold the precheck
- * until the runner kills it, and the run would record no metrics.
- */
-export const ANSWER_TIMEOUT_MS = 10_000;
-/** The configure_ms target, from the same measurement: 1155 ms for a warm page under load 257 to 357, and the owner's "switching between tabs/apps/views is infuriatingly slow". */
-export const CONFIGURE_TARGET_MS = 3000;
-/**
- * The dev_tree_mb target. Board steps p79 and p85 (frontend chat, 2026-10-12) measured 2.9 GB as the warm size after a restart and 3.0 GB
- * within 5 minutes; dev-guard restarts the tree over 4096 MB (memCapMb in scripts/dev/dev-apps.cjs). A reading over 3000 MB means the tree
- * grows past its warm size toward the guard's restart, which is what step p86 fixes.
- */
-export const MEMORY_TARGET_MB = 3000;
+/** How long a probe waits for an answer: the 30 s timeout every 5180 health check uses. The health_ms target is 3 s inside it. */
+export const ANSWER_TIMEOUT_MS = 30_000;
+/** The health_ms target: 5180 /health answers within 3 s (the duty brief, 10-15). A warm /configure answered in 58 ms on 10-15 09:20Z. */
+export const HEALTH_TARGET_MS = 3000;
+/** Above this, /configure is flagged as slow in the run detail (10-13 measure: 1155 ms for a warm page under load 257 to 357). */
+export const CONFIGURE_SLOW_MS = 3000;
+/** Above this, the dev tree is flagged in the run detail: 2.9 GB warm size after a restart (p79, p85); dev-guard kills it over 4096 MB. */
+export const MEMORY_FLAG_MB = 3000;
 /** A fixed world id (`<scenario>.<12 hex>`, lib/demo-env/world.ts), so the probe reuses one demo world instead of seeding a new one each run. */
 export const PROBE_WORLD = "kbeauty-brand.000000000000";
 export const PM2_NAME = "virev-demo";
 /** Where the duty job saves the offline walk's Playwright JSON report, relative to the repo. */
 export const WALK_FILE = ".cache/duties/virev-demo-offline.json";
-/** The proposal runs the offline walk once a day, so a report older than a day is stale. */
+/** The duty runs the offline walk once a day, so a report older than a day is stale. */
 export const WALK_STALE_MS = 24 * 3_600_000;
-/** The window for guard restarts and SSR timeouts in the pm2 log: the duty runs daily, so each run counts the whole day. */
+/** The window for restarts and SSR timeouts: the duty runs daily (c66), so each run counts the whole day. */
 const DAY_MS = 24 * 3_600_000;
+/** Log lines of one kind closer than this are one event: a crash loop restarts every 1 to 2 s, and one hung request logs for up to a minute. */
+export const EVENT_GAP_MS = 120_000;
+/** The file changes the out log shows in this window before a hang go into its flagged line, to tell an edit burst from memory pressure. */
+const EDITS_WINDOW_MS = 180_000;
 
 export type Exec = (file: string, args: readonly string[], env?: Record<string, string>) => Promise<string>;
 export interface SandboxDeps {
@@ -73,25 +79,76 @@ export function logTime(line: string): number | null {
   return match ? new Date(match[1]!).getTime() : null;
 }
 
-/**
- * dev-guard memory restarts and SSR transport timeouts over the last 24 h, from the pm2 error log. The metrics are guard_restarts_24h
- * (target at most 1) and ssr_timeouts_24h (target 0). Both windows are 24 h because the duty runs once a day (owner c66, 10-14), so one run
- * covers the whole day since the last one. Incident: this log shows 7 dev-guard restarts on 2026-10-12 (11:32 to 20:51 KST) and the SSR
- * timeouts of the 22:38 hang; step p86's goal is that the guard stops restarting 5180.
- */
-export function countLog(text: string, now: number): { guardRestarts: string[]; ssrTimeouts: string[] } {
-  const guardRestarts: string[] = [];
-  const ssrTimeouts: string[] = [];
+/** The timed lines of a pm2 log within the last 24 h that pass `keep`. */
+function recentLines(text: string, now: number, keep: (line: string) => boolean): { at: number; line: string }[] {
+  const lines: { at: number; line: string }[] = [];
   for (const line of text.split("\n")) {
-    const guard = line.includes(`[dev-guard] ${PM2_NAME}: dev tree memory`);
-    const timeout = !guard && line.includes("transport invoke timed out");
-    if (!guard && !timeout) continue;
+    if (!keep(line)) continue;
     const at = logTime(line);
-    if (at === null || at > now) continue;
-    if (now - at > DAY_MS) continue;
-    (guard ? guardRestarts : ssrTimeouts).push(line);
+    if (at === null || at > now || now - at > DAY_MS) continue;
+    lines.push({ at, line });
   }
-  return { guardRestarts, ssrTimeouts };
+  return lines;
+}
+
+/** Groups times (ascending) into events whose members are less than EVENT_GAP_MS apart. */
+function group<T extends { at: number }>(items: T[]): T[][] {
+  const events: T[][] = [];
+  for (const item of items) {
+    const last = events.at(-1);
+    if (last && item.at - last.at(-1)!.at < EVENT_GAP_MS) last.push(item);
+    else events.push([item]);
+  }
+  return events;
+}
+
+export interface TimeoutEvent { first: number; last: number; lines: number; sample: string }
+/** SSR "transport invoke timed out" events over the last 24 h in the pm2 error log, oldest first. */
+export function ssrTimeouts(errorLog: string, now: number): TimeoutEvent[] {
+  return group(recentLines(errorLog, now, line => line.includes("transport invoke timed out")))
+    .map(lines => ({ first: lines[0]!.at, last: lines.at(-1)!.at, lines: lines.length, sample: lines.at(-1)!.line.slice(0, 300) }));
+}
+
+/** dev-guard memory kill lines over the last 24 h in the pm2 error log. */
+export function guardKills(errorLog: string, now: number): string[] {
+  return recentLines(errorLog, now, line => line.includes(`[dev-guard] ${PM2_NAME}: dev tree memory`)).map(entry => entry.line);
+}
+
+/** File changes vite logged in the out log in the EDITS_WINDOW_MS before `at`. */
+export function editsBefore(outLog: string, at: number): number {
+  let count = 0;
+  for (const line of outLog.split("\n")) {
+    if (!/\] \((?:ssr|client)\) (?:page reload|hmr update) /.test(line)) continue;
+    const time = logTime(line);
+    if (time !== null && time <= at && at - time <= EDITS_WINDOW_MS) count++;
+  }
+  return count;
+}
+
+export type ExitKind = "guard" | "command" | "config" | "crash";
+export interface Exit { at: number; code: number; kind: ExitKind }
+export interface RestartEvent { at: number; exits: Exit[]; kinds: ExitKind[] }
+/**
+ * The dev server's exits over the last 24 h from pm2.log (`App [virev-demo:4] exited with code [97] via signal [SIGINT]`; pm2 starts it again
+ * after each). Code 97 is a dev-guard memory kill (scripts/dev/dev-guard.mjs); a `Stopping app:virev-demo` up to 15 s before is a pm2 restart by
+ * hand; a code 0 exit with vite's `config changed, exiting so pm2 starts a fresh dev server` in the out log up to 5 s before is a config edit
+ * (outLog undefined: unknown, so it counts); anything else is a crash. Restarts are the non-config exits grouped into events, so the crash loop
+ * of 10-15 04:26 KST (about 30 exits with code 2 in 40 s, materialize refusing hand edits) counts once.
+ */
+export function restarts(pm2Log: string, outLog: string | undefined, now: number): { events: RestartEvent[]; config: Exit[] } {
+  const stops = recentLines(pm2Log, now, line => line.includes(`Stopping app:${PM2_NAME} `)).map(entry => entry.at);
+  const configs = outLog === undefined ? [] : recentLines(outLog, now, line => line.includes("config changed, exiting so pm2 starts a fresh dev server")).map(entry => entry.at);
+  const exits: Exit[] = recentLines(pm2Log, now, line => line.includes(`App [${PM2_NAME}:`) && line.includes("] exited with code [")).map(({ at, line }) => {
+    const code = Number(/exited with code \[(-?\d+)\]/.exec(line)?.[1] ?? NaN);
+    const kind: ExitKind = code === 97 ? "guard"
+      : stops.some(stop => stop <= at && at - stop <= 15_000) ? "command"
+      : code === 0 && configs.some(config => config <= at && at - config <= 5_000) ? "config"
+      : "crash";
+    return { at, code, kind };
+  });
+  const events = group(exits.filter(exit => exit.kind !== "config"))
+    .map(members => ({ at: members[0]!.at, exits: members, kinds: [...new Set(members.map(exit => exit.kind))] }));
+  return { events, config: exits.filter(exit => exit.kind === "config") };
 }
 
 interface WalkResult { status?: string; errors?: { message?: string }[]; error?: { message?: string } }
@@ -121,32 +178,59 @@ export function readWalk(report: WalkReport): { at: number; tests: number; outsi
   return { at, tests: specs.length, outside: [...outside], otherFailures };
 }
 
+const iso = (at: number) => new Date(at).toISOString().slice(0, 19) + "Z";
+
 export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput> {
   const at = deps.now();
   const flagged: FlaggedSlice[] = [];
-  // Targets in demo-sandbox.duty.json and their sources: health_ok at least 1 and configure_ms at most CONFIGURE_TARGET_MS (see ANSWER_TIMEOUT_MS),
-  // guard_restarts_24h at most 1 and ssr_timeouts_24h 0 (see countLog), dev_tree_mb at most MEMORY_TARGET_MB, outside_requests 0 (the owner:
-  // "no external connection should work off of internal fake database"; offline.spec.ts fails on any), source_errors 0 (an unread source is a miss).
-  const metrics: Record<string, number> = { health_ok: 0, configure_ms: 0, guard_restarts_24h: 0, ssr_timeouts_24h: 0, dev_tree_mb: 0, outside_requests: 0, source_errors: 0 };
-  const sourceError = (kind: string, excerpt: string) => { metrics.source_errors = (metrics.source_errors ?? 0) + 1; flagged.push({ at, kind, excerpt }); };
+  const metrics = { walk_problems: 0, health_ms: 0, restarts_24h: 0, ssr_timeouts_24h: 0,
+    configure_ms: 0, dev_tree_mb: 0, guard_restarts_24h: 0, config_restarts_24h: 0, outside_requests: 0, source_errors: 0 };
+  const sourceError = (kind: string, excerpt: string) => { metrics.source_errors++; flagged.push({ at, kind, excerpt }); };
+  const readOrError = async (path: string): Promise<string | Error> => { try { return await deps.read(path); } catch (error) { return error instanceof Error ? error : new Error(String(error)); } };
 
+  // health_ms (judged) and configure_ms (detail).
   const configureUrl = `${BASE_URL}/configure?world=${PROBE_WORLD}`;
   const [health, configure] = await Promise.all([probe(deps, `${BASE_URL}/health`), probe(deps, configureUrl)]);
-  metrics.health_ok = health.status === 200 ? 1 : 0;
-  metrics.configure_ms = configure.ms;
+  metrics.health_ms = health.status === 200 ? health.ms : ANSWER_TIMEOUT_MS;
+  metrics.configure_ms = configure.status === 200 ? configure.ms : ANSWER_TIMEOUT_MS;
   if (health.status !== 200) flagged.push({ at, kind: "down", excerpt: `GET ${BASE_URL}/health gave ${health.error ?? `HTTP ${health.status}`} after ${health.ms} ms` });
+  else flagged.push({ at, kind: health.ms > HEALTH_TARGET_MS ? "slow" : "answer", excerpt: `GET ${BASE_URL}/health gave 200 in ${health.ms} ms` });
   if (configure.status !== 200) flagged.push({ at, kind: "down", excerpt: `GET ${configureUrl} gave ${configure.error ?? `HTTP ${configure.status}`} after ${configure.ms} ms` });
-  else if (configure.ms > CONFIGURE_TARGET_MS) flagged.push({ at, kind: "slow", excerpt: `GET ${configureUrl} answered 200 in ${configure.ms} ms` });
+  else flagged.push({ at, kind: configure.ms > CONFIGURE_SLOW_MS ? "slow" : "answer", excerpt: `GET ${configureUrl} gave 200 in ${configure.ms} ms` });
 
-  const logPath = join(deps.pm2.home, "logs", `${PM2_NAME}-error.log`);
-  try {
-    const { guardRestarts, ssrTimeouts } = countLog(await deps.read(logPath), at);
-    metrics.guard_restarts_24h = guardRestarts.length;
-    metrics.ssr_timeouts_24h = ssrTimeouts.length;
-    if (guardRestarts.length) flagged.push({ at, kind: "guard_restarts", excerpt: `${guardRestarts.length} dev-guard restarts in 24 h, last: ${guardRestarts.at(-1)}` });
-    if (ssrTimeouts.length) flagged.push({ at, kind: "ssr_timeouts", excerpt: `${ssrTimeouts.length} SSR timeout errors in 24 h, last: ${ssrTimeouts.at(-1)}` });
-  } catch (error) { sourceError("source", `${logPath}: ${error instanceof Error ? error.message : String(error)}`); }
+  // ssr_timeouts_24h (judged) and guard_restarts_24h (detail) from the error log; restarts_24h (judged) from pm2.log and the out log.
+  const logs = join(deps.pm2.home, "logs");
+  const [errorLog, outLog, pm2Log] = await Promise.all([readOrError(join(logs, `${PM2_NAME}-error.log`)), readOrError(join(logs, `${PM2_NAME}-out.log`)), readOrError(join(deps.pm2.home, "pm2.log"))]);
+  if (outLog instanceof Error) sourceError("source", `${PM2_NAME}-out.log: ${outLog.message}; config restarts count as restarts and hangs show no edit count`);
+  if (errorLog instanceof Error) {
+    metrics.ssr_timeouts_24h = 1;
+    sourceError("source", `${PM2_NAME}-error.log: ${errorLog.message}; ssr_timeouts_24h reads 1 because an unread log cannot show a clean day`);
+  } else {
+    const events = ssrTimeouts(errorLog, at);
+    metrics.ssr_timeouts_24h = events.length;
+    for (const event of events) {
+      const edits = typeof outLog === "string" ? `, ${editsBefore(outLog, event.first)} file changes in the 3 min before` : "";
+      flagged.push({ at, kind: "ssr_timeout", excerpt: `${event.lines} timeout lines ${iso(event.first)} to ${iso(event.last)}${edits}; last: ${event.sample}` });
+    }
+    const kills = guardKills(errorLog, at);
+    metrics.guard_restarts_24h = kills.length;
+    for (const kill of kills) flagged.push({ at, kind: "guard_restart", excerpt: kill });
+  }
+  if (pm2Log instanceof Error) {
+    metrics.restarts_24h = 1;
+    sourceError("source", `pm2.log: ${pm2Log.message}; restarts_24h reads 1 because an unread log cannot show a clean day`);
+  } else {
+    const { events, config } = restarts(pm2Log, typeof outLog === "string" ? outLog : undefined, at);
+    metrics.restarts_24h = events.length;
+    metrics.config_restarts_24h = config.length;
+    for (const event of events) {
+      const codes = [...new Set(event.exits.map(exit => exit.code))].join(", ");
+      flagged.push({ at, kind: "restart", excerpt: `${iso(event.at)}: ${event.kinds.join(" and ")}, ${event.exits.length} exit${event.exits.length === 1 ? "" : "s"} (code ${codes})` });
+    }
+    if (config.length) flagged.push({ at, kind: "config_restart", excerpt: `${config.length} restarts asked for by vite config edits (not counted): ${config.map(exit => iso(exit.at)).join(", ")}` });
+  }
 
+  // dev_tree_mb (detail).
   try {
     const text = await deps.exec(deps.pm2.bin, ["jlist"], { PM2_HOME: deps.pm2.home });
     const proc = (JSON.parse(text.slice(text.indexOf("["))) as Pm2Process[]).find(candidate => candidate.name === PM2_NAME);
@@ -154,21 +238,28 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     else {
       const pids = treePids(await deps.exec("ps", ["-axo", "pid=,ppid="]), proc.pid);
       metrics.dev_tree_mb = footprintMb(await deps.exec("footprint", ["--noCategories", "-f", "bytes", ...pids.flatMap(pid => ["-p", String(pid)])]));
-      if (metrics.dev_tree_mb > MEMORY_TARGET_MB) flagged.push({ at, kind: "memory", excerpt: `${PM2_NAME} dev tree (pids ${pids.join(", ")}) holds ${metrics.dev_tree_mb} MB` });
+      flagged.push({ at, kind: metrics.dev_tree_mb > MEMORY_FLAG_MB ? "memory" : "memory_ok", excerpt: `${PM2_NAME} dev tree (pids ${pids.join(", ")}) holds ${metrics.dev_tree_mb} MB` });
     }
   } catch (error) { sourceError("source", `pm2 or footprint (PM2_HOME ${deps.pm2.home}): ${error instanceof Error ? error.message : String(error)}`); }
 
-  const walkPath = join(deps.repo, WALK_FILE);
+  // walk_problems (the headline) and outside_requests (detail).
+  const walkText = await readOrError(join(deps.repo, WALK_FILE));
   try {
-    const walk = readWalk(JSON.parse(await deps.read(walkPath)) as WalkReport);
+    if (walkText instanceof Error) throw walkText;
+    const walk = readWalk(JSON.parse(walkText) as WalkReport);
     metrics.outside_requests = walk.outside.length;
-    if (!walk.tests) sourceError("walk", `${WALK_FILE} has no offline.spec.ts result`);
-    else if (!Number.isFinite(walk.at) || at - walk.at > WALK_STALE_MS) sourceError("walk_stale", `the last offline walk in ${WALK_FILE} started ${Number.isFinite(walk.at) ? new Date(walk.at).toISOString() : "at an unknown time"}, over 24 h ago`);
+    metrics.walk_problems = walk.outside.length + walk.otherFailures.length;
     for (const entry of walk.outside) flagged.push({ at, kind: "outside_request", excerpt: entry });
-    for (const failure of walk.otherFailures) sourceError("walk_failed", `offline walk failed before its outside check: ${failure}`);
+    for (const failure of walk.otherFailures) flagged.push({ at, kind: "walk_failed", excerpt: `offline walk failed before its outside check: ${failure}` });
+    if (!walk.tests) { metrics.walk_problems++; flagged.push({ at, kind: "walk_missing", excerpt: `${WALK_FILE} has no offline.spec.ts result` }); }
+    else if (!Number.isFinite(walk.at) || at - walk.at > WALK_STALE_MS) {
+      metrics.walk_problems++;
+      flagged.push({ at, kind: "walk_stale", excerpt: `the last offline walk in ${WALK_FILE} started ${Number.isFinite(walk.at) ? iso(walk.at) : "at an unknown time"}, over 24 h ago` });
+    } else flagged.push({ at, kind: "walk", excerpt: `offline walk started ${iso(walk.at)}: ${walk.tests} tests, ${walk.outside.length} outside requests, ${walk.otherFailures.length} other failures` });
   } catch (error) {
+    metrics.walk_problems++;
     const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
-    sourceError("walk", missing ? `no offline walk result yet at ${WALK_FILE}` : `${WALK_FILE}: ${error instanceof Error ? error.message : String(error)}`);
+    flagged.push({ at, kind: "walk_missing", excerpt: missing ? `no offline walk result yet at ${WALK_FILE}` : `${WALK_FILE}: ${error instanceof Error ? error.message : String(error)}` });
   }
   return { metrics, flagged };
 }

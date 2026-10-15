@@ -1,49 +1,31 @@
 {
   "name": "Demo sandbox works",
   "ownerWords": "is http://localhost:5180/ working properly? so it's half for demoing, half for development (like Claude design, you mock here and discuss with user).\n\nhonestly it doesn't seem like it's working, achieve this goal.\n\nand switching between tabs/apps/views is infuriatingly slow. it's just demo app why the fuck\n\nno external connection should work off of internal fake database",
-  "goal": "The 5180 demo answers every time the owner opens it: /health within 10 s and /configure within 3 s, no SSR timeouts, no more than one dev-guard memory restart a day, its dev tree under 3000 MB, and 0 outside requests on the offline walk of the Staging pages. Tell the owner only when 5180 stays down for over an hour.",
+  "goal": "The 5180 demo works offline and answers every time the owner opens it: the daily offline walk of the 6 apps passes with 0 outside requests, /health answers within 3 s, the dev server goes down and restarts at most once a day (restarts a vite config edit asks for do not count), and no page hangs on an SSR timeout. Tell the owner only when 5180 stays down for over an hour.",
   "metrics": [
     {
-      "key": "health_ok",
-      "label": "5180 /health answered 200 within 10 s (1 yes, 0 no)",
-      "op": ">=",
-      "target": 1
+      "key": "walk_problems",
+      "label": "Problems in the offline walk of the 6 apps (outside calls, fails, no walk 24 h)",
+      "op": "<=",
+      "target": 0,
+      "headline": true
     },
     {
-      "key": "configure_ms",
-      "label": "Time for 5180 /configure to answer",
+      "key": "health_ms",
+      "label": "Time for 5180 /health to answer 200 (30000 means no answer)",
       "op": "<=",
       "target": 3000,
       "unit": " ms"
     },
     {
-      "key": "guard_restarts_24h",
-      "label": "dev-guard memory restarts of 5180 over 24 h",
+      "key": "restarts_24h",
+      "label": "Times the 5180 dev server went down and restarted in 24 h",
       "op": "<=",
       "target": 1
     },
     {
       "key": "ssr_timeouts_24h",
-      "label": "SSR timeouts (\"transport invoke timed out\" errors) in the last 24 h",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "dev_tree_mb",
-      "label": "Memory of the 5180 dev tree now",
-      "op": "<=",
-      "target": 3000,
-      "unit": " MB"
-    },
-    {
-      "key": "outside_requests",
-      "label": "Requests to a host other than localhost in the last offline walk",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "source_errors",
-      "label": "Sources this check could not read, or a stale or failed walk",
+      "label": "Times in 24 h a 5180 page hung on an SSR timeout",
       "op": "<=",
       "target": 0
     }
@@ -61,6 +43,6 @@
     ],
     "cwd": "../.."
   },
-  "onMiss": "Work in auto-sns-agent and read the flagged items. Down, slow or SSR timeouts: read the tail of .cache/pm2-dev/logs/virev-demo-error.log, restart virev-demo once with `PM2_HOME=.cache/pm2-dev node_modules/.bin/pm2 restart virev-demo`, then GET /health again. Memory or guard restarts: carry on p86 (data in apps/llm-wiki/content/sessions/2026/10/12/1612-virev-demo-vite-memory/data/) and send the readings to ops guy. Walk missing, stale or failed: once /health answers, run the walk behind the load gate: in apps/virev-demo, `PLAYWRIGHT_JSON_OUTPUT_FILE=$PWD/../../.cache/duties/virev-demo-offline.json ../../node_modules/.bin/playwright test tests/e2e/offline.spec.ts --reporter=json`. Outside requests: fix the leak in apps/virev-demo so the fake database answers. Fixes are one commit on the local sieun/dev tip under the VP of CI git rules. Never deploy to staging or prod, never move anything to 5174. Tell the owner only when 5180 is down over an hour. All on target: no message.",
+  "onMiss": "Every run, once /health answers, run the offline walk behind the load gate (apps/virev-demo: `PLAYWRIGHT_JSON_OUTPUT_FILE=$PWD/../../.cache/duties/virev-demo-offline.json ../../node_modules/.bin/playwright test tests/e2e/offline.spec.ts --reporter=json`). Each missed metric gets one fix job, or a steer to its live one. walk_problems: a job that makes the fake database answer each outside request, or fixes the failed page. health_ms: read virev-demo-error.log; with no 200 in 30 s, `pm2 restart virev-demo` once (PM2_HOME=.cache/pm2-dev) and start a job on the cause. restarts_24h: a job on the cause each restart line names (crash, guard or command). ssr_timeouts_24h: steer or start \"5180 SSR hang fix\", which reproduces the hang on a :5199 probe copy and fixes the wait that never ends. Fixes ship as `commit.mjs --object-only --push-ci ci/<name>` objects that land on their own green run; no deploy, nothing to 5174. Tell the owner only when 5180 is down over an hour.",
   "boardGoal": "p1"
 }
