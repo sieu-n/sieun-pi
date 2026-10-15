@@ -16,12 +16,16 @@ export const pathLike = (token: string): boolean => token.includes("/") || /^\d{
  * "built from Shipped": frontend bro 10-12, p84, p92 and p96). A word joined to it by a hyphen, a slash or a dot is part of a path or a
  * name ("2030-email-from-shipped/assets"). Parts merged into one version are one build, not a merged PR (frontend bro 10-13, p92). A released
  * queue, hold or lock frees other work and ships nothing ("Fable released the queue": AI harness 10-13, p319). A quoted ship word, or one
- * after "after" and another actor's name, is someone else's act ("After Fable's 'released' at 09:43Z": AI harness 10-13, p357).
+ * after "after" and another actor's name, is someone else's act ("After Fable's 'released' at 09:43Z": AI harness 10-13, p357). A check
+ * verb before it names a check ("checks each fix job is live"), and a job, session, worker or thread that is live is running, not shipped
+ * (AI harness 10-15, p456).
  */
-const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on|nothing|no|never|without|yet|pending)\s+(?:[\w'’]+\s+){0,3})` +
+const SAYS_SHIPPED = new RegExp(String.raw`(?<!\b(?:not|until|after|once|before|when|if|be|awaiting|for|on|nothing|no|never|without|yet|pending|` +
+  String.raw`checks?|checking|verify|verifies|verifying|confirms?|confirming|whether)\s+(?:[\w'’]+\s+){0,3})` +
   String.raw`(?<![-/.'"‘“])\b(?:(?<!\b(?:the|this|that|these|those|our|its|their|from|of)\s+)(?:shipped|merged|deployed|landed|released)\b(?![-/.]\w)` +
   String.raw`(?!(?<=merged)\s+into\s+(?:one|a|a\s+single)\b)(?!(?<=released)\s+(?:the\s+|its\s+|their\s+|a\s+)?(?:\w+\s+)?(?:queue|hold|lock)s?\b)|` +
-  String.raw`(?:is|are|now|went|already)\s+live|live\s+on\s+(?:prod|production|staging|main))\b`, "i");
+  String.raw`(?<!\b(?:jobs?|sessions?|workers?|agents?|child|children|threads?|process(?:es)?)\s+)(?:is|are|now|went|already)\s+live|` +
+  String.raw`live\s+on\s+(?:prod|production|staging|main))\b`, "i");
 /** A step that measures or checks something "after X landed": X shipping is where the step starts, not its own work. The capture is X (VP of CI
  * 10-14: p150 "Re-measure heavy-runner demand a day after the queue cuts landed", flagged in 3 check-ins for "the 4 queue cuts landed"). */
 const CHECKS_AFTER = /^\s*(?:re-?)?(?:measure|check|verify|watch|compare)\b.*?\bafter\s+((?:[\w'’-]+\s+){1,6}?)(?:shipped|merged|deployed|landed|released|(?:is|are|went)\s+live)\b/i;
@@ -33,8 +37,9 @@ const SHIP_WAIT = /\b(?:land(?:s|ed|ing)?|deploy\w*|releas\w*|merg\w*|promot\w*|
  * AI harness 10-13: p319's run "is rerunning with its same id"). */
 const IN_FLIGHT = /\b(?:(?:re-?)?(?:dispatched|queued|running)|in\s+flight|in\s+progress)\b/i;
 /** A line in the note that lists the work still to do or says the item is not done (launch main bro 10-12: p54 "Board 39 is live ... Left to do: ...";
- * frontend bro 10-13: p92 "Not done yet. ... Next the job fixes ..."). */
-const LEFT_TO_DO = /\bleft(?:\s+to\s+do\b|\s*:)|\bnot\s+(?:yet\s+)?(?:done|finished)\b|(?:^|[.;!?]\s+)next\s+the\s+job\b/i;
+ * frontend bro 10-13: p92 "Not done yet. ... Next the job fixes ..."), or names work still red, missed or open (AI harness 10-15: p454 "Parts 1 to
+ * 5 shipped, but 16 duties ... still missed 3+ runs", p455 "d1, d4 and d6 are still red"). */
+const LEFT_TO_DO = /\bleft(?:\s+to\s+do\b|\s*:)|\bnot\s+(?:yet\s+)?(?:done|finished)\b|(?:^|[.;!?]\s+)next\s+the\s+job\b|\bstill\s+(?:red|open|miss(?:ed|es|ing)?|broken|stuck|unfixed|not)\b/i;
 /** The words that name what a ship claim or a wait is about: 3 letters or more, without the ship words and small words. */
 const SUBJECT_SKIP = new Set(["the", "and", "then", "with", "for", "from", "after", "about", "its", "his", "her", "our", "this", "that", "their", "is", "are", "now", "went",
   "already", "live", "shipped", "merged", "deployed", "landed", "released", "staging", "prod", "production", "main", "run", "until", "once", "when"]);

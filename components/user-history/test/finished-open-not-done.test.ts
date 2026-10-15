@@ -84,3 +84,32 @@ test("looks done: a step before its waitUntil, or a ship claim about what its ti
   assert.equal(looksDone({ ...p150(P150_NOTE), text: "Ship the queue cuts" }, Date.parse("2026-10-14T23:00:00Z")), 'its note says "landed"',
     "a step whose own work is the cuts still counts");
 });
+
+/*
+ * AI harness 10-15: the 21:02 KST check-in counted finished_open 2 on p454 "shipped" and p456 "is live", and p455 "shipped" joined them by
+ * 22:40. All three are open: p454 and p455 name what is still missed or red, and p456's "is live" is a fix job being alive, which its owner
+ * checks. The notes are the board's own at 22:40 KST. p25 from the 10-15 SEO board is a real ship whose note names a failure handed to another step.
+ */
+const P454_NOTE = "Parts 1 to 5 shipped, but 16 duties in 9 chats still missed 3+ runs with no live fix job and every sampled run record has fixes null, " +
+  "so the send-back gate does not hold in practice. Job 'stuck duties gate' (01a13f21) reproduces why a missed run ends with no fix step and lands the root fix with a test.";
+const P455_NOTE = "d3 Skills and harness is green (09:44:55Z) and d5 Skills and tools is green (12:38:11Z). d1, d4 and d6 are still red. d1's headline is the " +
+  "fleet green share, d6 is usable minutes and needs p449. The duty system part shipped: all five parts plus check-in fix 1e9537b are live in release-c16c66c.";
+const P456_NOTE = "The 11:00Z chase time passed. At 19:30 the 8 other chats hold 13 stuck duties with no linked fix step. 'duties green fleet' messages " +
+  "each owning chat and checks each fix job is live.";
+const goal = (id: string, text: string, job: string, note: string): PlanItem => ({ id, status: "doing", children: [], job, note, text });
+
+test("looks done: a note that says what is still missed or red, or that a job is live, is not done (AI harness 10-15, p454, p455, p456)", () => {
+  const p454 = goal("p454", "The duty system holds each duty to a few readable metrics and keeps fixing every miss until green", "stuck duties gate", P454_NOTE);
+  const p455 = goal("p455", "This chat's five duties are reshaped and green", "duties reshape", P455_NOTE);
+  const p456 = goal("p456", "The 8 other chats with duties reshape theirs and start a fix job for every miss", "duties green fleet", P456_NOTE);
+  assert.equal(looksDone(p454), null, "16 duties still missed 3+ runs");
+  assert.equal(looksDone(p455), null, "d1, d4 and d6 are still red");
+  assert.equal(looksDone(p456), null, "a fix job that is live is a job running, and checks names a check");
+  assert.equal(looksDone({ ...p454, note: "Parts 1 to 5 shipped to staging at 1e9537b." }), 'its note says "shipped"', "the ship claim alone still counts");
+  assert.equal(looksDone({ ...p455, note: "All five duties are green, and check-in fix 1e9537b is live in release-c16c66c." }), 'its note says "is live"',
+    "a fix that is live still counts");
+  assert.equal(looksDone({ ...p456, note: "The job verified each fix is live on staging." }), 'its note says "is live"', "a verified fix still counts");
+  assert.equal(looksDone(goal("p25", "Set the public tools daily live reads to 500, 100 of them for transcripts, after the GeoNode cutover", "tools live reads",
+    "Live on production after promote 7: env-var verify exits 0 for both limits, and the crawler now makes live reads for the tools. A live check found " +
+    "the lookup page still fails visitors; that fix is its own step.")), 'its note says "Live on production"', "a failure handed to another step");
+});
