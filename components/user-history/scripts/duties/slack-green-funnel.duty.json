@@ -1,8 +1,16 @@
 {
   "name": "Visitors become paying users",
   "ownerWords": "conversion funnel-this is pretty bad right? have a goal to improve this and lets go wild\n\nalso keep doing experiments on the landing page. in the main My App Dashboard can you setup weekly conversion funnel metrics over time too\n\ni also want onboarding tests. the signup -> add workspace is also super important funnel.",
-  "goal": "Over the last 28 full days, 2% of on-topic real visitors sign up, 60% of signups connect a Slack workspace, and 10% of signups start Pro or buy the CLI. A home page test runs on real traffic every day, so the home page keeps getting better.",
+  "goal": "1% of on-topic real visitors start Pro or buy the CLI within 28 days of their first visit, about double the best month so far. On the way, over the last 28 full days 2% of on-topic real visitors sign up and 60% of signups connect a Slack workspace, and a home page test runs on real traffic every day.",
   "metrics": [
+    {
+      "key": "on_topic_visit_to_paid_pct",
+      "label": "On-topic real visitors who start paying within 28 days",
+      "op": ">=",
+      "target": 1,
+      "unit": "%",
+      "headline": true
+    },
     {
       "key": "on_topic_visit_to_signup_pct",
       "label": "On-topic real visitors who sign up, 28 days",
@@ -18,24 +26,11 @@
       "unit": "%"
     },
     {
-      "key": "signup_to_paid_pct",
-      "label": "Signups who start Pro or buy the CLI, 28 days",
-      "op": ">=",
-      "target": 10,
-      "unit": "%"
-    },
-    {
       "key": "home_test_people_24h",
       "label": "Real people who got a home page test flag, last 24 h",
       "op": ">=",
       "target": 20,
       "unit": " people"
-    },
-    {
-      "key": "source_errors",
-      "label": "Data sources that failed in this check",
-      "op": "<=",
-      "target": 0
     }
   ],
   "schedule": {
@@ -49,8 +44,9 @@
       "tsx",
       "scripts/duties/slack-green-funnel.ts"
     ],
-    "cwd": "../.."
+    "cwd": "../..",
+    "timeoutMs": 120000
   },
-  "onMiss": "source_errors: fix the precheck or the key first. Else read the flagged window and entry_class rows; for weekly rows run `node --import tsx scripts/duties/slack-green-funnel.ts --weeks 4` in sieun-pi components/user-history. Pick the step with the widest gap. If a live job already targets it, write the new numbers on p48 or p25 and send nothing. Open PRs waiting on the owner do not count as work on the gap. If no live job does, even when every open step waits on the owner, start one build job for one experiment or fix on that step, as a PR behind a PostHog flag at 0%, and put its merge and launch on the owner's For you todo. home_test_people_24h low: build the next home test (p54) or put the ready one on that todo. Never merge, launch a flag, deploy prod or email users.",
+  "onMiss": "If a source_error slice shows up, fix the precheck or the PostHog key first, then the rest. Else find the step with the widest gap to its target: visit to signup, signup to workspace, or signup to paid (signup_to_paid_pct and the cohort slice in the detail). Weekly rows come from `node --import tsx scripts/duties/slack-green-funnel.ts --weeks 4` in sieun-pi components/user-history. If a live job already works that gap, message it the new numbers and what to try next. Else start one build job for the next experiment or fix on that step, as a PR behind a PostHog flag at 0%, with its merge and launch on the owner's For you todo. Open PRs that wait on the owner are not work on the gap, and no run ends without a job on it. If home_test_people_24h misses, build the next home test (p54) or put the ready one on that todo. Never merge, launch a flag, deploy prod or email users.",
   "boardGoal": "p48"
 }
