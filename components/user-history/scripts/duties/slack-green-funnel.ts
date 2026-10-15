@@ -33,9 +33,12 @@ export const DAYS = 28;
  *   1% is about double the best one. The owner's p48 goals multiply to 0.2% (2% signup times 10% paid), which this cohort already passes.
  * - on_topic_visit_to_signup_pct >= 2 and signup_to_workspace_pct >= 60 are the owner's p48 goal on the chat's board over the last 28 full
  *   days, the same TARGETS as conversion_targets.py; they move within days of a change, the headline only 4 to 8 weeks later.
- * - home_test_people_24h >= 20: a home test flag is called for every real home page visitor, and PostHog measured 44 real home visitors in
- *   24 h on 2026-10-12 (duty-slackgreen.md) and 37 on this precheck's first run (2026-10-12 23:07 KST); 20 is about half the lower count, so
- *   a quiet day with a live test still passes and a day with no test (0 or 1 person, as measured on both days) misses.
+ * - home_test_reach_pct >= 90: the share of real people who opened the English home page signed out in the last 24 h (the visitors the
+ *   home test is for: landing-ab-wrapper.tsx sends the exposure only on locale en and never on ?noredirect=true, the signed-in path) who got an
+ *   sg-exp-home exposure. A count failed on quiet days: PostHog shows 7 to 11 real home visitors a day on the weekends of 09-26, 10-03 and
+ *   10-10, so 20 a day missed even with every visitor in the test, while a share holds on any traffic. sg-exp-home-1 went live 10-14 22:51 KST
+ *   and about 21 of 24 eligible visitors got it since, so 90% passes a working test and misses one that drops visitors.
+ *   The 24 h people count and the 7-day eligible and exposed counts stay in the detail as home_test_people_24h and the home_test slice.
  * signup_to_paid_pct and source_errors stay in the output for the run's detail file and are not declared. A source that fails sets the
  * headline to 0, a miss, with a source_error slice that says to fix the precheck first.
  * The duty JSON sets timeoutMs 120000, the runner's own cap PRECHECK_TIMEOUT_MS; the first cold run took 74.6 s (2026-10-12, PostHog query
@@ -50,7 +53,7 @@ export interface WindowReport {
   on_topic_visit_to_signup: number | null; visit_to_signup: number | null; signup_to_workspace: number | null; signup_to_pro_or_cli: number | null;
   entry_classes: Record<string, { visitors: number; signed_up: number; workspace_added: number; pro_or_cli: number; visit_to_signup: number | null }>;
 }
-export interface HomeTest { exposed: number; home_visitors: number; flags: string[] }
+export interface HomeTest { eligible: number; eligible_exposed: number; exposed: number; eligible_7d: number; eligible_exposed_7d: number; home_visitors: number; flags: string[] }
 /** The headline cohort: real visitors who entered from `start` to `end` (exclusive), followed to `follow_end` for `follow_days`. */
 export interface CohortReport {
   start: string; end: string; follow_end: string; follow_days: number; on_topic_visitors: number; on_topic_signed_up: number; on_topic_paid: number;
@@ -78,7 +81,7 @@ const SOURCES = 3;
  * signups, a real 0.
  */
 export function funnelMetrics(report: FunnelReport | null, at: number, sourceError?: string): { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
-  const metrics: Record<string, number> = { [HEADLINE]: 0, on_topic_visit_to_signup_pct: 0, signup_to_workspace_pct: 0, home_test_people_24h: 0, signup_to_paid_pct: 0, source_errors: 0 };
+  const metrics: Record<string, number> = { [HEADLINE]: 0, on_topic_visit_to_signup_pct: 0, signup_to_workspace_pct: 0, home_test_reach_pct: 0, home_test_people_24h: 0, signup_to_paid_pct: 0, source_errors: 0 };
   const flagged: FlaggedSlice[] = [];
   const fail = (excerpt: string, item = "p48") => {
     metrics.source_errors! += 1;
@@ -115,11 +118,15 @@ export function funnelMetrics(report: FunnelReport | null, at: number, sourceErr
         `${row.workspace_added} workspaces, ${row.pro_or_cli} Pro or CLI` });
     }
   }
-  if (!report.home || report.home_error) fail(`the 24 h home test query failed: ${report.home_error ?? "no rows"}`, "p54");
+  const home = report.home;
+  if (!home || report.home_error) fail(`the 24 h home test query failed: ${report.home_error ?? "no rows"}`, "p54");
+  else if (!home.eligible) fail("PostHog gave 0 real signed-out English home visitors in 24 h, so the pageview tracking or the query is broken", "p54");
   else {
-    metrics.home_test_people_24h = report.home.exposed;
-    flagged.push({ at, kind: "home_test", item: "p54", excerpt: `last 24 h: ${report.home.exposed} real people got a home test flag ` +
-      `(${report.home.flags.length ? report.home.flags.join(", ") : "no sg-exp-home flag was called"}) out of ${report.home.home_visitors} real home page visitors` });
+    metrics.home_test_reach_pct = pct(home.eligible_exposed, home.eligible);
+    metrics.home_test_people_24h = home.exposed;
+    flagged.push({ at, kind: "home_test", item: "p54", excerpt: `last 24 h: ${home.eligible_exposed} of ${home.eligible} real signed-out English home visitors got a home test ` +
+      `exposure (${home.flags.length ? home.flags.join(", ") : "no sg-exp-home flag was called"}); ${home.exposed} real people got one anywhere, out of ` +
+      `${home.home_visitors} real home visitors in any locale; last 7 days: ${home.eligible_exposed_7d} of ${home.eligible_7d}` });
   }
   metrics[HEADLINE] = metrics.source_errors ? 0 : headline;
   return { metrics, flagged };

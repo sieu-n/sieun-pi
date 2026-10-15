@@ -20,15 +20,15 @@ const COHORT: CohortReport = {
   start: "2026-08-20", end: "2026-09-17", follow_end: "2026-10-15", follow_days: 28, on_topic_visitors: 1426, on_topic_signed_up: 65, on_topic_paid: 8,
   entry_classes: { home: { visitors: 334, signed_up: 43, paid: 5 }, blog_on_topic: { visitors: 975, signed_up: 18, paid: 3 }, blog_off_topic: { visitors: 47, signed_up: 0, paid: 0 } },
 };
-const REPORT: FunnelReport = { window: WINDOW, window_error: null, home: { exposed: 0, home_visitors: 37, flags: [] }, home_error: null, cohort: COHORT, cohort_error: null };
+const REPORT: FunnelReport = { window: WINDOW, window_error: null, home: { eligible: 30, eligible_exposed: 27, exposed: 28, eligible_7d: 180, eligible_exposed_7d: 23, home_visitors: 37, flags: ["sg-exp-home-1"] }, home_error: null, cohort: COHORT, cohort_error: null };
 const sliceKinds = (flagged: { kind: string }[] | undefined) => (flagged ?? []).map(item => item.kind);
 
 test("funnel: the cohort's paid share is the headline, the report's rates the rest, with the cohort, window, every entry class and the home test as context", () => {
   const { metrics, flagged } = funnelMetrics(REPORT, NOW);
-  assert.deepEqual(metrics, { [HEADLINE]: 0.56, on_topic_visit_to_signup_pct: 1.38, signup_to_workspace_pct: 33.33, home_test_people_24h: 0, signup_to_paid_pct: 6.67, source_errors: 0 });
+  assert.deepEqual(metrics, { [HEADLINE]: 0.56, on_topic_visit_to_signup_pct: 1.38, signup_to_workspace_pct: 33.33, home_test_reach_pct: 90, home_test_people_24h: 28, signup_to_paid_pct: 6.67, source_errors: 0 });
   assert.deepEqual(sliceKinds(flagged), ["cohort", "window", "entry_class", "entry_class", "entry_class", "entry_class", "entry_class", "home_test"]);
   assert.match(flagged[0]!.excerpt, /entered 2026-08-20 to 2026-09-17 .* 1426 visitors, 65 signed up, 8 started Pro or bought the CLI within 28 days/);
-  assert.match(flagged.at(-1)!.excerpt, /0 real people .*no sg-exp-home flag was called.* 37 real home page visitors/);
+  assert.match(flagged.at(-1)!.excerpt, /27 of 30 real signed-out English home visitors got a home test exposure \(sg-exp-home-1\); 28 real people .* 37 real home visitors in any locale; last 7 days: 23 of 180$/);
 });
 
 test("funnel: a failed query or a window with no visitors is a source error, and any source error makes the headline a miss", () => {
@@ -40,6 +40,9 @@ test("funnel: a failed query or a window with no visitors is a source error, and
   const homeDown = funnelMetrics({ ...REPORT, home: null, home_error: "timeout" }, NOW);
   assert.equal(homeDown.metrics[HEADLINE], 0);
   assert.equal(homeDown.metrics.on_topic_visit_to_signup_pct, 1.38);
+  const noHomeVisitors = funnelMetrics({ ...REPORT, home: { ...REPORT.home!, eligible: 0, eligible_exposed: 0 } }, NOW);
+  assert.equal(noHomeVisitors.metrics.source_errors, 1, "0 signed-out English home visitors in a day means broken tracking");
+  assert.equal(noHomeVisitors.metrics.home_test_reach_pct, 0);
   const noCohort = funnelMetrics({ ...REPORT, cohort: null, cohort_error: null }, NOW);
   assert.equal(noCohort.metrics.source_errors, 1);
   const emptyCohort = funnelMetrics({ ...REPORT, cohort: { ...COHORT, on_topic_visitors: 0 } }, NOW);
@@ -107,7 +110,7 @@ test("funnel: a failed fetch keeps the last ref; no key or no script is a source
   const missing: Exec = async (file, args) => { if (args[2] === "cat-file") throw new Error("missing"); return ""; };
   const nothing = await measureFunnel(deps(missing), undefined);
   assert.equal(nothing.output.metrics.source_errors, 3);
-  assert.equal(Object.keys(nothing.output.metrics).length, 6);
+  assert.equal(Object.keys(nothing.output.metrics).length, 7);
 });
 
 test("funnel duty file parses with one headline and at most 3 supporting metrics, each a key the precheck writes, and today's numbers judge as missed", async () => {
