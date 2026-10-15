@@ -67,7 +67,7 @@ export function readHeartbeats(file: string): ScheduledJob[] {
 /** One land or promote run of the release train as the CI cache last read it: `key` is the land it carries ("33", "32b") or "promote". */
 export interface TrainRun { id: string; key: string; running: boolean; conclusion: string | null; createdAt: number; updatedAt: number }
 /** One run of any workflow as the CI cache last read it, with the branch it ran on (`ref`). */
-export interface CiRun { id: string; running: boolean; conclusion: string | null; updatedAt: number; ref?: string }
+export interface CiRun { id: string; running: boolean; conclusion: string | null; updatedAt: number; ref?: string; sha?: string; workflow?: string; event?: string; createdAt?: number }
 /**
  * The release train's runs in the CI cache, and when the cache last read GitHub (`fetchedAt`). `all` is every run the cache has by id, the
  * verify-dev runs of ci/ branches too, for the steps that wait on one (`namedRuns`).
@@ -87,7 +87,8 @@ export function parseTrain(cache: unknown): Train | undefined {
   const readAt = Date.parse(fetchedAt ?? "");
   if (!runs || !Number.isFinite(readAt)) return undefined;
   const all = new Map(Object.values(runs).flatMap(({ run }) => run?.id === undefined ? [] : [[String(run.id), { id: String(run.id), running: run.status !== "completed",
-    conclusion: typeof run.conclusion === "string" ? run.conclusion : null, updatedAt: Date.parse(String(run.updated_at)), ref: String(run.head_branch ?? "") }] as const]));
+    conclusion: typeof run.conclusion === "string" ? run.conclusion : null, updatedAt: Date.parse(String(run.updated_at)), ref: String(run.head_branch ?? ""),
+    sha: String(run.head_sha ?? ""), workflow: String(run.name ?? ""), event: String(run.event ?? ""), createdAt: Date.parse(String(run.created_at)) }] as const]));
   return { readAt, all, runs: Object.values(runs).flatMap(({ run }) => {
     const path = String(run?.path ?? "");
     const branch = LAND_BRANCH.exec(String(run?.head_branch ?? ""));

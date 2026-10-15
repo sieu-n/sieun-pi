@@ -160,9 +160,44 @@ export const DEAD_RUN_MS = 30 * 60_000;
 export function deadRunWaits(views: readonly StepView[], train: Train | undefined, now: number): WaitMet[] {
   return views.flatMap(view => {
     if (view.owner?.state === "working") return [];
+    const green = greenLater(view.item, train);
+    if (green) return [{ view, over: [green] }];
     const run = deadRun(view.item, train);
     return run && now - run.updatedAt > DEAD_RUN_MS ? [{ view, run, over: [`run ${run.id} was cancelled ${ago(now - run.updatedAt)} ago and nothing reruns it`] }] : [];
   });
+}
+
+const COMMIT = /\b[0-9a-f]{7,40}\b/g;
+/**
+ * Why a step that waits for a commit's run to go green is over, from the CI cache: each commit its waitFor names has a green run of the workflow
+ * the waitFor names (every run of the commit when it names none) is green, or was cancelled while a later push run of the same workflow on the
+ * same branch went green, which holds the commit since nobody force-pushes. Undefined while a run is going, a run failed, or a clause names something else.
+ * VP of CI 10-15: p192 and p194 waited from 11:07Z for "origin 2d6cdcaec0's push verify-dev run green"; a newer push cancelled run 38725138542
+ * at 13:35Z, run 38743107248 on a43b35a24b went green at 15:09Z, and the 15:00Z check-in still read p192 as stalled for 11 h.
+ */
+export function greenLater(item: Pick<PlanItem, "waitFor">, train: Train | undefined): string | undefined {
+  const clauses = (item.waitFor ?? "").split(/[,;]|\bthen\b/).map(clause => clause.trim()).filter(Boolean);
+  const runs = [...train?.all?.values() ?? []];
+  if (!clauses.length || !runs.length) return undefined;
+  const found: string[] = [];
+  for (const clause of clauses) {
+    const shas = clause.match(COMMIT) ?? [];
+    if (!shas.length || !AWAITED_GREEN.test(clause)) return undefined;
+    for (const sha of shas) {
+      const own = runs.filter(run => run.sha?.startsWith(sha));
+      const named = own.filter(run => run.workflow && new RegExp(`\\b${run.workflow.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(clause));
+      const watched = named.length ? named : own;
+      if (!watched.length) return undefined;
+      for (const run of watched) {
+        if (run.conclusion === "success") { found.push(`run ${run.id} on ${sha} is green`); continue; }
+        const later = run.conclusion === "cancelled" && run.event === "push" ? runs.filter(other => other.workflow === run.workflow && other.ref === run.ref &&
+          other.event === "push" && (other.createdAt ?? 0) > (run.createdAt ?? Infinity) && other.conclusion === "success").sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))[0] : undefined;
+        if (!later) return undefined;
+        found.push(`run ${run.id} on ${sha} was cancelled, and the later push run ${later.id} on ${later.ref} at ${later.sha?.slice(0, 10)}, which holds it, is green`);
+      }
+    }
+  }
+  return found.join(" and ");
 }
 
 /** The fields of a chat duty (`<data dir>/duties/<chat>.json`) the fold reads. */
@@ -481,7 +516,8 @@ export function stalledSteps(views: readonly StepView[], memos: Readonly<Record<
   return views.flatMap(view => {
     const { item } = view;
     const waits = item.waitFor !== undefined || item.waitUntil !== undefined || view.owner?.key.startsWith("thread:") === true;
-    if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked" || heldRun(item)) return [];
+    // A wait the CI cache shows over (`greenLater`) is wait_met's to act on, so the step gets one finding.
+    if (!waits || view.cls === "live" || view.cls === "foryou" || view.cls === "parked" || heldRun(item) || greenLater(item, train)) return [];
     if (movesOnPath(item, train, rows, self, now)) return [];
     const memo = memos[item.id];
     const untils = memo?.untils ?? [];
