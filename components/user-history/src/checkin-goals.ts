@@ -53,7 +53,7 @@ export interface GoalPush {
   words: string[];
 }
 
-/** The number of a goal: its target, else the newest measured run of a duty metric a step under it fixes; undefined for neither. */
+/** The number of a goal: its target, else the newest measured run of a duty metric it or a step under it fixes; undefined for neither. */
 export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap<string, MetricFact>): GoalNumber | undefined {
   const target = goal.target;
   if (target) {
@@ -62,7 +62,8 @@ export function goalNumber(goal: PlanItem, everyMs: number, metrics: ReadonlyMap
       ...(Number.isFinite(at) ? { measuredAt: at } : {}), source: target.source ?? "the goal's target", staleMs: targetStaleMs(target, everyMs) };
   }
   let found: GoalNumber | undefined;
-  walk(goal.children, item => {
+  // The goal itself first: slack green guy p151 is a top-level fix step of d1/signup_to_workspace_pct and read as having no number on 10-16.
+  walk([goal], item => {
     if (found || !item.duty || item.duty === GOAL_PUSH_LINK) return;
     const fact = metrics.get(item.duty);
     if (fact?.value === undefined || fact.target === undefined) return;
@@ -101,12 +102,14 @@ export const offPace = (trend: GoalTrend, stale: boolean): boolean =>
 
 /**
  * The live job that owns a goal's number, with the check-in's liveness (`JobFact.state`, a job asleep on a board.wake included): the job of
- * the goal's push step (`GOAL_PUSH_LINK`), which is also the fix step of `goal_gaps`, so the duty runner sees the goal owned. A job at work on
+ * the goal's push step (`GOAL_PUSH_LINK`), which is also the fix step of `goal_gaps`, so the duty runner sees the goal owned, or the job of a
+ * goal that is itself a duty fix step with no steps under it (slack green guy p151). A job at work on
  * some other step under the goal does not own the number: on 10-15 Crawler VP's crawler ops train slept on 17 CI runs for p71's steps while
  * p71 sat at 14.9% and no job worked on its biggest blocker.
  */
 export function goalOwner(goal: PlanItem, views: readonly StepView[]): JobFact | undefined {
-  return views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK && view.owner?.state === "working")?.owner;
+  return views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK && view.owner?.state === "working")?.owner ??
+    views.find(view => view.item.id === goal.id && view.item.duty !== undefined && view.owner?.state === "working")?.owner;
 }
 
 /** The owner's words for a goal: its requirement lines still open or unmet, else the goal's own text. */

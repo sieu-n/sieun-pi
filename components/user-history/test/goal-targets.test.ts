@@ -108,3 +108,15 @@ test("goal pushes: staleness is 2 check-in intervals, or 24 h for a daily metric
   assert.deepEqual(goalPushes(boardOf([step("p1", "Goal", "doing", { target: { ...PROXY, current: 200 } })]), [], undefined, EVERY, NOW).pushes.map(push => push.act), ["on_pace"],
     "a measurement at target is on pace");
 });
+
+test("goal pushes: a goal that is itself a duty fix step reads its number from that metric (slack green guy p151, 10-16)", () => {
+  const p151 = step("p151", "Signups who connect a Slack workspace, 28 days in the Visitors become paying users duty reaches at least 60%, from 31.82% on the last run", "doing",
+    { duty: "d1/signup_to_workspace_pct", job: "fix visitors become paying users slack green guy 08:16" });
+  const metrics = new Map([["d1/signup_to_workspace_pct", { met: false, at: NOW - HOUR, value: 34.3, target: 60, op: ">=" as const }]]);
+  const [push] = goalPushes(boardOf([p151]), [], undefined, EVERY, NOW, metrics).pushes;
+  assert.equal(push!.act, "start", "its job is not at work");
+  assert.equal(push!.number?.value, 34.3);
+  const precheck = checkInPrecheck(undefined, [{ key: "k1", name: "fix visitors become paying users slack green guy 08:16", state: "working", activityAt: NOW }], boardOf([p151]),
+    NOW, { everyMs: EVERY, doneFacts: { metrics, prs: new Map() } });
+  assert.deepEqual(precheck.goals.map(entry => [entry.act, entry.owner?.name]), [["steer", "fix visitors become paying users slack green guy 08:16"]], "its own fix job owns the number");
+});
