@@ -7,12 +7,14 @@ import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TIMEOUT_MS } from "../
 
 /**
  * The slack green guy's Slack green deploys duty's precheck (`node --import tsx scripts/duties/slack-green-deploys.ts`). No model call.
- * It checks that the Railway worker and Vercel production run the latest slack-green main commit within DEPLOY_MINUTES of its push.
- * The Railway service waits for GitHub's CI check suites (source.checkSuites true) and skips the deploy when one fails. That is how #233
- * (4222b4b, 2026-10-14 01:22Z) never reached the worker: GitHub-hosted CI failed on the Actions billing hold, Railway recorded "SKIPPED,
- * CI check suite failed", and nothing told anyone. On such a skip this precheck deploys main's head to the worker once, through the same
- * serviceInstanceDeployV2 call the approved merges job used by hand at 01:50Z, and flags it. Every other way off main is flagged for the chat.
- * A "No changes to watched files" skip is normal: that commit does not touch packages/backend, so the worker stays on an older commit.
+ * Its headline, commits_not_live, counts slack-green main commits pushed over DEPLOY_MINUTES ago that are not live on the Railway worker
+ * (when the commit changes a railway.toml watch path) or on Vercel production. A commit is live on a side when the commit that side runs
+ * contains it, so the count reads the real state whoever deployed: Railway's GitHub trigger, the CI Backend job's deploy_worker.py
+ * (slack-green #253), or this precheck. GitHub's compare API lists the main commits the live commit lacks, which also covers a live commit
+ * that is not on main. A source that fails makes the headline at least 1, because an unmeasured state is not a good one.
+ * When the worker misses a commit past DEPLOY_MINUTES, this precheck deploys main's head to it once per head commit, through the same
+ * serviceInstanceDeployV2 call the approved merges job used by hand for #233 (4222b4b, 2026-10-14), and flags it. Vercel is never redeployed
+ * here: a missing Vercel deployment means GitHub sent no push event, which the duty job fixes with an empty commit through a PR.
  */
 
 export const REPO = "sieu-n/slack-green";
@@ -21,122 +23,94 @@ export const RAILWAY = { environmentId: "c10f04dd-8694-406f-aeb3-3872b3c3ab36", 
 const VERCEL_TEAM = "team_HkFeqFbbJa5UAIjN0IYINUS0";
 const VERCEL_PROJECT = "prj_Fg9XulbXkvMu6jmDIeGK8tb2DsvG";
 /**
- * How long a push may take to reach production before it counts as stuck. The owner's brief asked for 20 minutes (2026-10-14). Measured:
+ * How long a push may take to reach production before it counts as not live. The owner's brief asked for 20 minutes (2026-10-14). Measured:
  * the main CI run on the M1 Air took 9.4 and 10.2 min (runs 38287317331, 38289995168), and Railway waits for it before it builds; 40 Vercel
  * production builds took 1.3 min median and 1.8 min at most.
  */
 export const DEPLOY_MINUTES = 20;
-export const WATCHED_SKIP = /No changes to watched files/i;
 const RAILWAY_LIVE = ["SUCCESS", "SLEEPING"];
-const RAILWAY_DOWN = ["FAILED", "CRASHED", "REMOVED", "REMOVING"];
-const VERCEL_DOWN = ["ERROR", "CANCELED"];
+/** A worker deployment on its way: the precheck does not start a second one of the same commit. WAITING (Railway's CI wait) is not in it. */
+const RAILWAY_BUILDING = ["QUEUED", "INITIALIZING", "BUILDING", "DEPLOYING"];
 const MINUTE = 60_000;
 /** A redeploy is remembered this long, so the state file stays small. */
 const REMEMBER_MS = 14 * 24 * 60 * MINUTE;
+/** GitHub lists at most 300 files per commit; a commit at the cap counts as changing a watched path. */
+const COMMIT_FILE_LIMIT = 300;
 
-/** A slack-green main commit, newest first, with its committer time (the merge time for a squash merge on GitHub). */
-export interface Commit { sha: string; at: number }
-/** One deployment as the platform lists it, newest first; `reason` is Railway's skippedReason. */
+/** A slack-green main commit with its committer time (the merge time for a squash merge). `watched`: it changes a railway.toml watch path. */
+export interface Commit { sha: string; at: number; watched?: boolean | undefined }
+/** One deployment as the platform lists it; `reason` is Railway's skippedReason. */
 export interface Deploy { status: string; at: number; sha?: string | undefined; reason?: string | undefined }
-export interface Sources { commits?: Commit[]; railway?: Deploy[]; vercel?: { production?: string | undefined; deploys: Deploy[] }; errors: string[] }
-
-/**
- * Where one platform stands against main. `ok`: it runs every commit it should. `pending`: the newest commit it should run is under
- * DEPLOY_MINUTES old and still on its way. The rest are misses: `skipped` (Railway's CI wait), `failed`, `stuck` past DEPLOY_MINUTES, and
- * `missing`, no deployment at all for a commit past DEPLOY_MINUTES (GitHub sent no push event, as for #153 on 2026-09-29).
- */
-export type Standing =
-  | { kind: "ok"; live?: string | undefined }
-  | { kind: "pending" | "stuck"; sha: string; status: string; minutes: number; live?: string | undefined }
-  | { kind: "skipped" | "failed"; sha: string; status: string; live?: string | undefined }
-  | { kind: "missing"; sha: string; minutes: number; live?: string | undefined };
-export const MISSES: readonly Standing["kind"][] = ["skipped", "failed", "stuck", "missing"];
+/** One side of production: the commit it runs, its recent deployments, and the main commits that commit lacks, oldest first. */
+export interface Side { live: string; deploys: Deploy[]; behind: Commit[] }
+export interface Sources { railway?: Side; vercel?: Side; errors: string[] }
 
 const short = (sha: string | undefined) => sha ? sha.slice(0, 7) : "none";
-const forSha = (deploys: Deploy[], sha: string) => deploys.filter(deploy => deploy.sha === sha).sort((a, b) => b.at - a.at);
+const age = (commit: Commit, now: number) => Math.floor((now - commit.at) / MINUTE);
+const latestFor = (deploys: readonly Deploy[], sha: string) => deploys.filter(deploy => deploy.sha === sha).sort((a, b) => b.at - a.at)[0];
 
-/** In flight or stuck: the clock runs from the push, or from a later redeploy of the same commit. */
-function waiting(sha: string, status: string, since: number, now: number, live: string | undefined): Standing {
-  const minutes = Math.floor((now - since) / MINUTE);
-  return { kind: minutes < DEPLOY_MINUTES ? "pending" : "stuck", sha, status, minutes, live };
+/** The commits a side should run: all for Vercel, only those that change a watch path for the worker. Unknown counts as watched. */
+const owed = (side: "railway" | "vercel", behind: readonly Commit[]) => side === "vercel" ? [...behind] : behind.filter(commit => commit.watched !== false);
+
+/** The owed commits split by age: `late` are past DEPLOY_MINUTES and count against the headline, `pending` are still on their way. */
+export function standing(side: "railway" | "vercel", behind: readonly Commit[], now: number): { late: Commit[]; pending: Commit[] } {
+  const commits = owed(side, behind);
+  return { late: commits.filter(commit => age(commit, now) >= DEPLOY_MINUTES), pending: commits.filter(commit => age(commit, now) < DEPLOY_MINUTES) };
 }
 
-/**
- * The Railway worker against main. The commits it should run are those newer than its live deployment whose newest deployment is not a
- * watched-files skip; a later commit with a watched-files skip does not cover an earlier skipped one, so every newer commit is checked,
- * not only the head. Commits older than the oldest deployment Railway listed are out of view.
- */
-export function railwayStanding(commits: Commit[], deploys: Deploy[], now: number): Standing {
-  const live = [...deploys].sort((a, b) => b.at - a.at).find(deploy => RAILWAY_LIVE.includes(deploy.status));
-  const liveIndex = live?.sha ? commits.findIndex(commit => commit.sha === live.sha) : -1;
-  const oldest = Math.min(...deploys.map(deploy => deploy.at));
-  const newer = liveIndex >= 0 ? commits.slice(0, liveIndex) : commits.filter(commit => commit.at >= oldest - DEPLOY_MINUTES * MINUTE);
-  for (const commit of newer) {
-    const [latest] = forSha(deploys, commit.sha);
-    if (latest?.status === "SKIPPED" && WATCHED_SKIP.test(latest.reason ?? "")) continue;
-    const at = live?.sha;
-    if (!latest) {
-      const minutes = Math.floor((now - commit.at) / MINUTE);
-      return minutes < DEPLOY_MINUTES ? { kind: "pending", sha: commit.sha, status: "no deployment yet", minutes, live: at } : { kind: "missing", sha: commit.sha, minutes, live: at };
-    }
-    if (latest.status === "SKIPPED") return { kind: "skipped", sha: commit.sha, status: `SKIPPED (${latest.reason ?? "no reason given"})`, live: at };
-    if (RAILWAY_DOWN.includes(latest.status)) return { kind: "failed", sha: commit.sha, status: latest.status, live: at };
-    if (RAILWAY_LIVE.includes(latest.status)) return { kind: "ok", live: at };
-    return waiting(commit.sha, latest.status, Math.max(commit.at, latest.at), now, at);
-  }
-  return live ? { kind: "ok", live: live.sha } : { kind: "failed", sha: commits[0]?.sha ?? "?", status: "no running deployment" };
-}
-
-/** Vercel production against main: every main commit builds the whole frontend, so production should be on the head. */
-export function vercelStanding(commits: Commit[], production: string | undefined, deploys: Deploy[], now: number): Standing {
-  const head = commits[0];
-  if (!head || production === head.sha) return { kind: "ok", live: production };
-  const [latest] = forSha(deploys, head.sha);
-  if (!latest) {
-    const minutes = Math.floor((now - head.at) / MINUTE);
-    return minutes < DEPLOY_MINUTES ? { kind: "pending", sha: head.sha, status: "no deployment yet", minutes, live: production } : { kind: "missing", sha: head.sha, minutes, live: production };
-  }
-  if (VERCEL_DOWN.includes(latest.status)) return { kind: "failed", sha: head.sha, status: latest.status, live: production };
-  return waiting(head.sha, latest.status === "READY" ? "READY but not production" : latest.status, Math.max(head.at, latest.at), now, production);
-}
-
-export const describe = (platform: string, standing: Standing): string => {
-  const live = `${platform} runs ${short(standing.live)}`;
-  switch (standing.kind) {
-    case "ok": return `${live}, up to date with main`;
-    case "pending": return `${live}; ${short(standing.sha)} is ${standing.status}, ${standing.minutes} min after its push`;
-    case "stuck": return `${live}; ${short(standing.sha)} is still ${standing.status} ${standing.minutes} min after its push, over ${DEPLOY_MINUTES} min`;
-    case "skipped": case "failed": return `${live}; ${short(standing.sha)} ended ${standing.status}`;
-    case "missing": return `${live}; ${short(standing.sha)} has no ${platform} deployment ${standing.minutes} min after its push (no push event?)`;
-  }
+/** What the platform did with one commit: its newest deployment's status and Railway's skip reason, or that it has none. */
+const fate = (deploys: readonly Deploy[], sha: string): string => {
+  const deploy = latestFor(deploys, sha);
+  return !deploy ? "no deployment" : deploy.reason ? `${deploy.status}: ${deploy.reason}` : deploy.status;
 };
 
-/** Run to run memory: the skipped commits this precheck already redeployed, with when. */
+const PLATFORM = { railway: "the Railway worker", vercel: "Vercel production" } as const;
+const LISTED = 8;
+
+export function describe(side: "railway" | "vercel", state: Side, commits: readonly Commit[], now: number): string {
+  const listed = commits.slice(0, LISTED).map(commit => `${short(commit.sha)} (${age(commit, now)} min after its push, ${fate(state.deploys, commit.sha)})`);
+  const more = commits.length > LISTED ? ` and ${commits.length - LISTED} more` : "";
+  return `${PLATFORM[side]} runs ${short(state.live)}, which lacks ${listed.join(", ")}${more}`;
+}
+
+/** Run to run memory: the main heads this precheck already deployed to the worker, with when. */
 export interface DeployState { redeployed: Record<string, number> }
 
-/** The one fix this precheck makes: deploy main's head to the worker, once per skipped commit. */
-export const redeployFor = (railway: Standing, state: DeployState): string | null =>
-  railway.kind === "skipped" && state.redeployed[railway.sha] === undefined ? railway.sha : null;
+/**
+ * The one fix this precheck makes: deploy main's head to the worker when it lacks a commit past DEPLOY_MINUTES, once per head, and not while a
+ * deployment of the head is already building.
+ */
+export function redeployFor(railway: Side | undefined, now: number, state: DeployState): string | null {
+  if (!railway || !standing("railway", railway.behind, now).late.length) return null;
+  const head = railway.behind.at(-1)!.sha;
+  if (state.redeployed[head] !== undefined || RAILWAY_BUILDING.includes(latestFor(railway.deploys, head)?.status ?? "")) return null;
+  return head;
+}
 
-export function deployMetrics(sources: Sources, now: number, redeploy?: { skipped: string; head: string; error?: string }):
-  { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
-  const metrics: Record<string, number> = { railway_off_main: 0, vercel_off_main: 0, source_errors: sources.errors.length };
-  const flagged: FlaggedSlice[] = sources.errors.map(excerpt => ({ at: now, kind: "source_error", excerpt }));
-  const commits = sources.commits;
-  if (commits && sources.railway) {
-    const standing = railwayStanding(commits, sources.railway, now);
-    metrics.railway_off_main = MISSES.includes(standing.kind) ? 1 : 0;
-    flagged.push({ at: now, kind: `railway_${standing.kind}`, excerpt: describe("the Railway worker", standing) });
-  }
-  if (commits && sources.vercel) {
-    const standing = vercelStanding(commits, sources.vercel.production, sources.vercel.deploys, now);
-    metrics.vercel_off_main = MISSES.includes(standing.kind) ? 1 : 0;
-    flagged.push({ at: now, kind: `vercel_${standing.kind}`, excerpt: describe("Vercel production", standing) });
+export type Redeploy = { head: string; error?: string };
+
+export function deployMetrics(sources: Sources, now: number, redeploy?: Redeploy): { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
+  const flagged: FlaggedSlice[] = sources.errors.map(error => ({ at: now, kind: "source_error",
+    excerpt: `${error}. The headline counts this run as a miss until the precheck or its login is fixed.` }));
+  const notLive = new Set<string>();
+  const counts = { railway: 0, vercel: 0 };
+  for (const side of ["railway", "vercel"] as const) {
+    const state = sources[side];
+    if (!state) continue;
+    const { late, pending } = standing(side, state.behind, now);
+    counts[side] = late.length;
+    for (const commit of late) notLive.add(commit.sha);
+    flagged.push(late.length
+      ? { at: now, kind: `${side}_not_live`, excerpt: describe(side, state, late, now) }
+      : { at: now, kind: `${side}_ok`, excerpt: `${PLATFORM[side]} runs ${short(state.live)}, which has every main commit over ${DEPLOY_MINUTES} min old it should run` });
+    if (pending.length) flagged.push({ at: now, kind: `${side}_pending`, excerpt: describe(side, state, pending, now) });
   }
   if (redeploy) flagged.push({ at: now, kind: redeploy.error ? "redeploy_error" : "redeploy", excerpt: redeploy.error
-    ? `deploying main's head ${short(redeploy.head)} to the Railway worker after the ${short(redeploy.skipped)} skip failed: ${redeploy.error}`
-    : `Railway skipped ${short(redeploy.skipped)}, so this check deployed main's head ${short(redeploy.head)} to the worker once; the next run shows whether it went live` });
-  return { metrics, flagged };
+    ? `deploying main's head ${short(redeploy.head)} to the Railway worker failed: ${redeploy.error}`
+    : `this check deployed main's head ${short(redeploy.head)} to the Railway worker once; the next run shows whether it went live` });
+  const errors = sources.errors.length;
+  return { metrics: { commits_not_live: errors ? Math.max(notLive.size, 1) : notLive.size, railway_not_live: counts.railway, vercel_not_live: counts.vercel,
+    source_errors: errors }, flagged };
 }
 
 /** Runs a program with no shell and gives its stdout. */
@@ -145,10 +119,29 @@ export interface DeployDeps { exec: Exec; fetch: typeof fetch; now: () => number
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/(Bearer\s+)\S+/g, "$1***");
 
-export async function readCommits(deps: DeployDeps): Promise<Commit[]> {
-  const out = await deps.exec("gh", ["api", `repos/${REPO}/commits?sha=main&per_page=30`, "--jq", "[.[] | {sha, at: .commit.committer.date}]"]);
+/** The main commits `live` lacks, oldest first: GitHub's compare of live...main, which also handles a live commit that is not on main. */
+export async function readBehind(deps: DeployDeps, live: string): Promise<Commit[]> {
+  const out = await deps.exec("gh", ["api", `repos/${REPO}/compare/${live}...main`, "--jq", "[.commits[] | {sha, at: .commit.committer.date}]"]);
   return (JSON.parse(out) as { sha: string; at: string }[]).map(commit => ({ sha: commit.sha, at: Date.parse(commit.at) }));
 }
+
+const globRegex = (glob: string): RegExp => new RegExp(`^${glob.split("**").map(part =>
+  part.replace(/[.+^$|()[\]{}\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")).join(".*")}$`);
+
+/** railway.toml's watchPatterns on main as path regexes; `**` crosses folders, `*` and `?` do not. */
+export async function readWatchPatterns(deps: DeployDeps): Promise<RegExp[]> {
+  const toml = await deps.exec("gh", ["api", `repos/${REPO}/contents/packages/backend/railway.toml?ref=main`, "-H", "Accept: application/vnd.github.raw"]);
+  const list = /watchPatterns\s*=\s*\[([^\]]*)\]/.exec(toml)?.[1];
+  if (!list) throw new Error("packages/backend/railway.toml on main has no watchPatterns");
+  return [...list.matchAll(/"([^"]+)"/g)].map(([, pattern]) => globRegex(pattern!.replace(/^\//, "")));
+}
+
+export async function readFiles(deps: DeployDeps, sha: string): Promise<string[]> {
+  return JSON.parse(await deps.exec("gh", ["api", `repos/${REPO}/commits/${sha}`, "--jq", "[.files[].filename]"])) as string[];
+}
+
+export const touchesWatched = (files: readonly string[], patterns: readonly RegExp[]): boolean =>
+  files.length >= COMMIT_FILE_LIMIT || files.some(file => patterns.some(pattern => pattern.test(file)));
 
 interface RailwayRow { status: string; createdAt: string; meta?: { branch?: string; commitHash?: string; skippedReason?: string } }
 
@@ -157,13 +150,20 @@ export async function readRailway(deps: DeployDeps): Promise<Deploy[]> {
   const dir = await mkdtemp(join(tmpdir(), "sg-deploys-"));
   try {
     await deps.exec("railway", ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], { cwd: dir });
-    const list = await deps.exec("railway", ["deployment", "list", "--json", "--limit", "50"], { cwd: dir });
+    const list = await deps.exec("railway", ["deployment", "list", "--json", "--limit", "100"], { cwd: dir });
     return (JSON.parse(list.slice(list.indexOf("["))) as RailwayRow[]).map(row => ({ status: row.status, at: Date.parse(row.createdAt), sha: row.meta?.commitHash,
       reason: row.meta?.skippedReason }));
   } finally {
     await deps.exec("railway", ["unlink", "-y"], { cwd: dir }).catch(() => "");
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/** The commit the worker runs: its newest SUCCESS or SLEEPING deployment. */
+export function railwayLive(deploys: readonly Deploy[]): string {
+  const live = [...deploys].sort((a, b) => b.at - a.at).find(deploy => RAILWAY_LIVE.includes(deploy.status) && deploy.sha);
+  if (!live?.sha) throw new Error(`no SUCCESS or SLEEPING deployment with a commit among the worker's newest ${deploys.length}`);
+  return live.sha;
 }
 
 async function vercelGet<T>(deps: DeployDeps, path: string): Promise<T> {
@@ -175,11 +175,12 @@ async function vercelGet<T>(deps: DeployDeps, path: string): Promise<T> {
 
 interface VercelRow { state?: string; readyState?: string; created: number; meta?: { githubCommitSha?: string } }
 
-export async function readVercel(deps: DeployDeps): Promise<NonNullable<Sources["vercel"]>> {
+export async function readVercel(deps: DeployDeps): Promise<{ live: string; deploys: Deploy[] }> {
   const project = await vercelGet<{ targets?: { production?: { meta?: { githubCommitSha?: string } } } }>(deps, `/v9/projects/${VERCEL_PROJECT}`);
   const list = await vercelGet<{ deployments: VercelRow[] }>(deps, `/v6/deployments?projectId=${VERCEL_PROJECT}&target=production&limit=20`);
-  return { production: project.targets?.production?.meta?.githubCommitSha,
-    deploys: list.deployments.map(row => ({ status: row.state ?? row.readyState ?? "?", at: row.created, sha: row.meta?.githubCommitSha })) };
+  const live = project.targets?.production?.meta?.githubCommitSha;
+  if (!live) throw new Error("Vercel production has no GitHub commit");
+  return { live, deploys: list.deployments.map(row => ({ status: row.state ?? row.readyState ?? "?", at: row.created, sha: row.meta?.githubCommitSha })) };
 }
 
 /** Deploys a commit to the worker without waiting for CI, the call the dashboard's deploy button makes. */
@@ -192,21 +193,39 @@ export async function deployWorker(deps: DeployDeps, sha: string): Promise<void>
   if (!response.ok || /"errors"/.test(body)) throw new Error(`Railway serviceInstanceDeployV2 gave HTTP ${response.status}: ${body.slice(0, 200)}`);
 }
 
+/** Marks each worker commit past DEPLOY_MINUTES with whether it changes a watch path; a failed read leaves it unknown, which counts as watched. */
+async function markWatched(deps: DeployDeps, behind: Commit[], now: number, fail: (what: string) => (error: unknown) => undefined): Promise<void> {
+  const due = behind.filter(commit => age(commit, now) >= DEPLOY_MINUTES);
+  if (!due.length) return;
+  const patterns = await readWatchPatterns(deps).catch(fail("railway.toml watchPatterns on main"));
+  if (!patterns) return;
+  await Promise.all(due.map(async commit => {
+    const files = await readFiles(deps, commit.sha).catch(fail(`GitHub files of ${short(commit.sha)}`));
+    if (files) commit.watched = touchesWatched(files, patterns);
+  }));
+}
+
 export async function measureDeploys(deps: DeployDeps, previous: DeployState): Promise<{ output: PrecheckOutput; state: DeployState }> {
   const now = deps.now();
   const sources: Sources = { errors: [] };
-  const fail = (what: string) => (error: unknown) => { sources.errors.push(`${what}: ${message(error)}`); return undefined; };
-  const [commits, railway, vercel] = await Promise.all([readCommits(deps).catch(fail("GitHub main commits")), readRailway(deps).catch(fail("Railway deployments")),
-    readVercel(deps).catch(fail("Vercel production"))]);
-  if (commits) sources.commits = commits;
-  if (railway) sources.railway = railway;
+  const fail = (what: string) => (error: unknown): undefined => { sources.errors.push(`${what}: ${message(error)}`); return undefined; };
+  const side = async (name: string, read: () => Promise<{ live: string; deploys: Deploy[] }>): Promise<Side | undefined> => {
+    const platform = await read().catch(fail(name));
+    const behind = platform && await readBehind(deps, platform.live).catch(fail(`GitHub main commits missing from ${name}'s ${short(platform.live)}`));
+    return platform && behind ? { ...platform, behind } : undefined;
+  };
+  const [railway, vercel] = await Promise.all([
+    side("Railway deployments", async () => { const deploys = await readRailway(deps); return { live: railwayLive(deploys), deploys }; }),
+    side("Vercel production", () => readVercel(deps)),
+  ]);
+  if (railway) { await markWatched(deps, railway.behind, now, fail); sources.railway = railway; }
   if (vercel) sources.vercel = vercel;
   const state: DeployState = { redeployed: Object.fromEntries(Object.entries(previous.redeployed).filter(([, at]) => at > now - REMEMBER_MS)) };
-  let redeploy: { skipped: string; head: string; error?: string } | undefined;
-  const skipped = commits && railway ? redeployFor(railwayStanding(commits, railway, now), state) : null;
-  if (skipped && commits?.[0]) {
-    redeploy = { skipped, head: commits[0].sha };
-    try { await deployWorker(deps, commits[0].sha); state.redeployed[skipped] = now; }
+  let redeploy: Redeploy | undefined;
+  const head = redeployFor(railway, now, state);
+  if (head) {
+    redeploy = { head };
+    try { await deployWorker(deps, head); state.redeployed[head] = now; }
     catch (error) { redeploy.error = message(error); }
   }
   return { output: deployMetrics(sources, now, redeploy), state };
