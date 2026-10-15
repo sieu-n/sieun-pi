@@ -26,6 +26,7 @@ import type { ChatAgent, ChatBoard, ChatBriefState, CheckInState, CheckInView, C
 import { briefNote, chatBrief, type LoadRecord, reloadAction } from "./chat-brief.ts";
 import { BRIEF_CHECK_MAX_AGE_MS, type ChatLinks, type ChatSummary, type ChatThreads, type CheckInSource, REPLY_CHECK_MAX_AGE_MS, type SubagentDelete } from "./chat-sources.ts";
 import { chatName, fileHasChatMarker } from "./chat-guard.ts";
+import { type RawProcess, strayLine } from "./mac-usable-watch.ts";
 
 export { TELL_OWNER_LIMIT, TELL_OWNER_TOOL };
 
@@ -510,11 +511,17 @@ export class Chats {
         this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: its session runs a tool call or a background bash`);
         return "kept";
       }
+      const strays = current.sessionId !== undefined ? await this.strays(id, current.sessionId) : [];
       const result = await this.threads.deleteSubagent(id, child.id);
       if (result === "running") {
         this.deletedJobs.delete(child.id);
         this.log(`chat ${id.slice(0, 8)}: kept job ${childName(child)}: the daemon shows it running`);
         return result;
+      }
+      if (result === "deleted" && strays.length) {
+        await this.threads.notice(id, `${JOB_NOTICE_PREFIX}${childName(child)} was deleted.${strayLine(strays)}`)
+          .catch(error => this.log(`chat ${id.slice(0, 8)}: stray notice for ${childName(child)}: ${error instanceof Error ? error.message : String(error)}`));
+        this.log(`chat ${id.slice(0, 8)}: deleted job ${childName(child)} left detached processes running: ${strays.map(stray => stray.pid).join(", ")}`);
       }
       await this.source.deletedJobs?.add(id, child.id, now, listed);
       if (result === "not_held") this.log(`chat ${id.slice(0, 8)}: finished job ${childName(child)} is no longer a subagent of the chat (the daemon still lists its session); recorded, not tried again`);
@@ -640,9 +647,10 @@ export class Chats {
         const quiet = Math.round((now - Date.parse(agent.lastActivityAt!)) / 60_000);
         const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
           report: jobReport(messages, agent.sender), endedAt: now });
+        const strays = await this.strays(row.id, id);
         await this.threads.archive(id);
         await this.threads.notice(row.id, `${JOB_NOTICE_PREFIX}${agent.name} was archived after ${quiet} min quiet with its report in and no open step naming it, so its worker ended. ` +
-          `Its brief and last report are saved in ${path}; to send it more work, spawn a fresh job from that file.`);
+          `Its brief and last report are saved in ${path}; to send it more work, spawn a fresh job from that file.${strayLine(strays)}`);
         this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}`);
       } catch (error) {
         this.rootsEnded.delete(id);
@@ -697,6 +705,15 @@ export class Chats {
       if (gone) { this.jobGone.set(threadId, stamp); this.jobWakes.delete(threadId); this.jobQuiet.delete(threadId); }
       this.log(`job ${threadId.slice(0, 8)}: ${gone ? "gone, not woken again" : "wake"}: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** The processes a job's kernel left detached (`CheckInSource.strays`); none when the read fails, which is logged. */
+  private async strays(chat: string, session: string): Promise<readonly RawProcess[]> {
+    if (!this.source.strays) return [];
+    return this.source.strays(session).catch(error => {
+      this.log(`chat ${chat.slice(0, 8)}: detached processes of ${session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
   }
 
   private messages(id: string): readonly ThreadMessage[] | undefined { return this.threads.state?.(id)?.messages; }

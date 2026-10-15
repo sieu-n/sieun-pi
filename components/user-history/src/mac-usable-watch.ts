@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { homedir, totalmem } from "node:os";
+import { dirname, join } from "node:path";
 import { JOB_NOTICE_PREFIX } from "./shared/chat-feed.ts";
 import type { AgentQueueReading } from "./shared/types.ts";
 
@@ -87,6 +87,10 @@ export interface WatchLine {
   queue: QueueLine | null;
   /** Background waiters in job kernels that board.wake would replace: gh run watch, ci-run-status --wait and long sleeps, and any bash() handle of a session in `idleOver`; absent on older lines. */
   waiters?: WaiterLine[];
+  /** The chat trees with the largest footprint, kernel subtrees plus orphans, at most 5; absent on older lines. */
+  trees?: TreeLine[];
+  /** Processes the tree guard stopped this minute; absent when none. */
+  stops?: StopLine[];
   /** Context only, from sysctl: swap in use and kern.memorystatus_vm_pressure_level (1 normal, 2 warn, 4 critical). */
   mac: { swapGb: number | null; pressureLevel: number | null };
   /** CPU this sample cost: the service's own work plus the footprint helper's. */
@@ -106,7 +110,18 @@ function parseRow(value: unknown): Row | null {
 }
 
 /** What the footprint helper (src/worker-footprint.py) prints. */
-export interface Footprints { workers: Record<string, { pids: number; bytes: number }>; waiters?: RawWaiter[]; handles?: RawWaiter[]; swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
+export interface Footprints { workers: Record<string, { pids: number; bytes: number }>; waiters?: RawWaiter[]; handles?: RawWaiter[]; kernels?: RawKernel[]; orphans?: RawOrphan[];
+  swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
+/** One process the helper names: its footprint, its start time in epoch seconds (null when unreadable) and its command's first 200 characters. */
+export interface RawProcess { pid: number; bytes: number; started: number | null; command: string }
+/** A `python -m rlm.repl` kernel with the root and session its RLM_HARNESS_STATE_DIR names, its subtree, and its largest descendant that is no Prime process. */
+export interface RawKernel { pid: number; root: string; session: string; pids: number; bytes: number; biggest: RawProcess | null }
+/** A process with RLM_HARNESS_STATE_DIR under no kernel and no Prime process (a deleted job's nohup'd runner), with the root and session the path names. */
+export interface RawOrphan extends RawProcess { root: string; session: string }
+/** A chat tree's footprint (its kernels' subtrees and its orphans) and its largest process that is no Prime process, `started` kept to catch pid reuse. */
+export interface TreeLine { root: string; tree: string; gb: number; biggest: { pid: number; gb: number; started: number | null; command: string } | null }
+/** A process the tree guard stopped (`guardTrees`), with the signal it sent first. */
+export interface StopLine { root: string; tree: string; pid: number; gb: number; command: string; signal: "SIGTERM" }
 /** A command that only waits on CI or a clock under a job's kernel (worker-footprint.py `WAITER`), or the command of a bash() handle (`HANDLE`), with the session its kernel serves. */
 export interface RawWaiter { pid: number; kernel: number; session: string; command: string; age_s: number | null }
 /** A waiter with the job and chat tree that own it; `quietMin`, set on a held bash() handle, is how long ago its session's turn ended. */
@@ -164,6 +179,12 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     return row ? tree(row).tree : input.title(id) ?? id.slice(0, 8);
   });
   const chatsLive = live.filter(row => input.chats.has(row.id)).length;
+  const owner = (session: string, root: string): { root: string; tree: string } => {
+    const row = byId.get(session) ?? byId.get(root);
+    if (row) return tree(row);
+    const id = root || session;
+    return { root: id, tree: input.title(id) ?? id.slice(0, 8) };
+  };
   const quietIds = new Set(idleOver.map(row => row.id));
   const waitKernels = new Set((input.footprints.waiters ?? []).map(waiter => waiter.kernel));
   const held = (input.footprints.handles ?? []).filter(handle => quietIds.has(handle.session) && !waitKernels.has(handle.kernel));
@@ -183,9 +204,26 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
       return { pid: waiter.pid, kernel: waiter.kernel, command: waiter.command, ageMin: waiter.age_s === null ? null : Math.round(waiter.age_s / 60), session: waiter.session,
         job: row?.name ?? input.title(waiter.session) ?? waiter.session.slice(0, 8), root: owner.root, tree: owner.tree, ...quietMin };
     }),
+    trees: treeLines(input.footprints, owner).slice(0, 5),
     mac: { swapGb: input.footprints.swap_used_bytes === null ? null : round(input.footprints.swap_used_bytes / GB, 1), pressureLevel: input.footprints.pressure_level },
     cpuMs: Math.round(input.cpuMs + input.footprints.cpu_s * 1000),
   };
+}
+
+/** Each chat tree's footprint from the helper's kernels and orphans, largest first; `owner` maps a session and the root its env names to the chat tree. */
+function treeLines(footprints: Footprints, owner: (session: string, root: string) => { root: string; tree: string }): TreeLine[] {
+  const trees = new Map<string, { root: string; tree: string; bytes: number; biggest: RawProcess | null }>();
+  const add = (session: string, root: string, bytes: number, biggest: RawProcess | null) => {
+    const found = owner(session, root);
+    const entry = trees.get(found.root) ?? { ...found, bytes: 0, biggest: null };
+    entry.bytes += bytes;
+    if (biggest && (!entry.biggest || biggest.bytes > entry.biggest.bytes)) entry.biggest = biggest;
+    trees.set(found.root, entry);
+  };
+  for (const kernel of footprints.kernels ?? []) add(kernel.session, kernel.root, kernel.bytes, kernel.biggest);
+  for (const orphan of footprints.orphans ?? []) add(orphan.session, orphan.root, orphan.bytes, orphan);
+  return [...trees.values()].sort((a, b) => b.bytes - a.bytes).map(({ root, tree, bytes, biggest }) => ({ root, tree, gb: round(bytes / GB),
+    biggest: biggest && { pid: biggest.pid, gb: round(biggest.bytes / GB), started: biggest.started, command: biggest.command } }));
 }
 
 /** The queue reading the watch needs; `governor` is pi-pool's memory governor record, absent from a pi-pool without one. */
@@ -232,15 +270,32 @@ export async function readWatch(dataDir: string, since: number, now: number): Pr
 }
 
 const HELPER = join(import.meta.dirname, "worker-footprint.py");
-/** Runs the footprint helper with the worker pids on stdin. */
-export function readFootprints(pids: readonly number[]): Promise<Footprints> {
+function runHelper(args: readonly string[], input: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const child = execFile("/usr/bin/python3", ["-B", HELPER], { timeout: 30_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+    const child = execFile("/usr/bin/python3", ["-B", HELPER, ...args], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
       if (error) { reject(error); return; }
-      try { resolve(JSON.parse(stdout) as Footprints); } catch (failure) { reject(failure); }
+      try { resolve(JSON.parse(stdout) as unknown); } catch (failure) { reject(failure); }
     });
-    child.stdin?.end(pids.join("\n") + "\n");
+    child.stdin?.end(input);
   });
+}
+/** Runs the footprint helper with the worker pids on stdin. */
+export const readFootprints = async (pids: readonly number[]): Promise<Footprints> => await runHelper([], pids.join("\n") + "\n") as Footprints;
+/** The processes a session's kernel left detached (worker-footprint.py `strays`): its RLM_HARNESS_STATE_DIR names the session, or it sits in the kernel's process group, and no kernel or Prime process is above it. */
+export async function readStrays(session: string): Promise<RawProcess[]> {
+  const answer = await runHelper(["--session", session], "");
+  return isRecord(answer) && Array.isArray(answer.strays) ? answer.strays as RawProcess[] : [];
+}
+/** A process's start time in epoch seconds, or null when it is gone. */
+export async function processStart(pid: number): Promise<number | null> {
+  const answer = await runHelper(["--started", String(pid)], "");
+  return typeof answer === "number" ? answer : null;
+}
+/** The line that names a session's detached processes in the notice of its deleted or archived job; empty when there are none. */
+export function strayLine(strays: readonly RawProcess[]): string {
+  if (!strays.length) return "";
+  return ` Processes its kernel started detached still run: ${strays.map(stray => `pid ${stray.pid} \`${stray.command}\` (${(stray.bytes / GB).toFixed(1)} GiB)`).join(", ")}. ` +
+    "Stop them if its work is done.";
 }
 
 export interface WatchSource {
@@ -260,6 +315,16 @@ export interface WatchSource {
   notify?: (chat: string, line: string) => Promise<void>;
   /** Sends a root that is not a chat (a plain thread) the line as a message through the daemon; absent, no thread is asked. */
   message?: (root: string, line: string) => Promise<void>;
+  /** Where each sample writes `treeMemory` for pi-pool (TREE_MEMORY_FILE in the service); absent, nothing is written. */
+  treeMemoryFile?: string;
+  /** The Mac's RAM in bytes; absent, os.totalmem(). */
+  ramBytes?: number;
+  /** Signals a process (process.kill in the service); absent, the tree guard asks but stops nothing. */
+  kill?: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+  /** A process's start time in epoch seconds, null when it is gone; absent, `processStart`. */
+  processStart?: (pid: number) => Promise<number | null>;
+  /** Runs `run` after `ms` without holding the minute timer; absent, an unref'd setTimeout. */
+  later?: (run: () => void, ms: number) => void;
 }
 
 /** Waiter pids whose ask failed and was logged, so a retry each minute logs nothing new. */
@@ -313,6 +378,152 @@ export async function askWaiters(source: Pick<WatchSource, "dataDir" | "notify" 
   return sent;
 }
 
+/**
+ * A chat tree may hold this share of the Mac's RAM (8 GiB of 32) before its root is asked to cut it and the stop rule counts its minutes. Of the
+ * 1,600 per-worker footprints the watch logged from 10-14 19:30Z into 10-15, normal trees peaked at a median 1.3 GiB and a p90 of 2.2 GiB, the
+ * highest normal ones at 5.76 (ops guy) and 5.58 (metal box owner), with one minute of land 36 item read-back at 8.14 and 0 swapouts. Both
+ * thrash events sat above it: search visits grow SEO guy at 9.29 GiB with 11,824 swapouts a second (10-15 00:11Z), and VP of SEO at 16 to 25.5
+ * GiB with 5,790 to 25,873 (00:37 to 00:53Z), where old_analysis.py (pid 77405) peaked at 30.26 GB. pi-pool reads the same share from TREE_MEMORY_FILE.
+ */
+export const TREE_SHARE = 0.25;
+/**
+ * The stop rule: a tree over TREE_SHARE in at least `hits` of its last `of` one-minute samples while the feed read USABLE.swapoutsPerS or more
+ * swapouts. On the VP of SEO series of 10-15 it fires at 00:44Z (00:40, 00:41 and 00:44), 8 minutes before the manual stop at 00:52Z; on the
+ * 09:11 KST series it never fires (1 of 5), and that script ended on its own. A SIGTERM gets `killAfterMs` before the SIGKILL.
+ */
+export const STOP_RULE = { hits: 3, of: 5, killAfterMs: 10_000 } as const;
+/** The file pi-pool reads, rewritten each minute (`treeMemory`); a reader holds nothing once its `ts` is 180 s old, three missed writes. */
+export const TREE_MEMORY_FILE = join(homedir(), ".cache", "virev", "tree-memory.json");
+
+/** The tree-memory file's format, v1, set by the tree guard contract between the chat service and pi-pool. */
+export interface TreeMemory { v: 1; ts: string; ram_gb: number; share: number; over: { root: string; tree: string; gb: number; pid: number | null; process_gb: number | null; command: string | null }[] }
+/** The tree-memory file for a line: the trees over TREE_SHARE of `ramBytes` this minute, whatever the pressure; `over` is [] when none. */
+export function treeMemory(line: Pick<WatchLine, "at" | "trees">, ramBytes: number): TreeMemory {
+  return { v: 1, ts: line.at, ram_gb: round(ramBytes / GB, 1), share: TREE_SHARE,
+    over: (line.trees ?? []).filter(tree => tree.gb * GB > TREE_SHARE * ramBytes).map(tree => ({ root: tree.root, tree: tree.tree, gb: tree.gb,
+      pid: tree.biggest?.pid ?? null, process_gb: tree.biggest?.gb ?? null, command: tree.biggest?.command ?? null })) };
+}
+
+async function writeAtomic(file: string, text: string): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file + ".tmp", text);
+  await rename(file + ".tmp", file);
+}
+
+/** Prime's own processes, never stopped even if the helper named one: a kernel, a prime-agent binary (the daemon, a worker), pi-pool's token helper. */
+const PRIME_PROCESS = /rlm\.repl|(^|\/)prime-agent( |$)|pi-pool-token/;
+type GuardSource = Pick<WatchSource, "dataDir" | "notify" | "message" | "log" | "ramBytes" | "kill" | "processStart" | "later">;
+interface GuardState { history: Record<string, { at: number; hit: boolean }[]>; asked: Record<string, { asked: number; seen: number }>; stopped: Record<string, number> }
+
+function guardState(value: unknown): GuardState {
+  const record = (key: string): Record<string, unknown> => isRecord(value) && isRecord(value[key]) ? value[key] : {};
+  const history = Object.fromEntries(Object.entries(record("history")).flatMap(([root, samples]): [string, { at: number; hit: boolean }[]][] => Array.isArray(samples)
+    ? [[root, samples.filter((entry): entry is { at: number; hit: boolean } => isRecord(entry) && typeof entry.at === "number" && typeof entry.hit === "boolean")]] : []));
+  const asked = Object.fromEntries(Object.entries(record("asked")).flatMap(([key, entry]): [string, { asked: number; seen: number }][] =>
+    isRecord(entry) && typeof entry.asked === "number" && typeof entry.seen === "number" ? [[key, { asked: entry.asked, seen: entry.seen }]] : []));
+  const stopped = Object.fromEntries(Object.entries(record("stopped")).filter((entry): entry is [string, number] => typeof entry[1] === "number"));
+  return { history, asked, stopped };
+}
+
+const gib = (gb: number): string => gb.toFixed(1);
+/** The line that asks a tree's root to cut a tree over TREE_SHARE while the Mac is under pressure. */
+export function treeAskLine(tree: TreeLine & { biggest: NonNullable<TreeLine["biggest"]> }, shareGb: number, reading: { level: number; swapoutsPerS: number }): string {
+  return `${JOB_NOTICE_PREFIX}The ${tree.tree} tree holds ${gib(tree.gb)} GiB, over the ${gib(shareGb)} GiB a tree may hold (a quarter of the Mac's RAM), while the Mac is ` +
+    `under memory pressure (level ${reading.level}, ${Math.round(reading.swapoutsPerS)} swapouts a second). Its biggest process is pid ${tree.biggest.pid} \`${tree.biggest.command}\` ` +
+    `at ${gib(tree.biggest.gb)} GiB. Stop it or run it in chunks that fit the share; if the tree stays over while the Mac swaps, the service stops it.`;
+}
+/** The line that tells a tree's root which process the guard stopped. */
+export function treeStopLine(tree: TreeLine & { biggest: NonNullable<TreeLine["biggest"]> }, shareGb: number): string {
+  return `${JOB_NOTICE_PREFIX}The service stopped pid ${tree.biggest.pid} \`${tree.biggest.command}\` (${gib(tree.biggest.gb)} GiB) in the ${tree.tree} tree: the tree held ` +
+    `${gib(tree.gb)} GiB, over its ${gib(shareGb)} GiB share, while the Mac swapped ${USABLE.swapoutsPerS} or more pages a second in ${STOP_RULE.hits} of the last ${STOP_RULE.of} minutes. ` +
+    "A runner that started it may start more, so stop that runner or run the work in chunks.";
+}
+
+/** Tree keys whose ask or stop line failed and was logged, so a retry each minute logs nothing new. */
+const failedTreeSends = new Set<string>();
+
+/**
+ * The per-tree memory guard, after each sample, with its state in `<dataDir>/mac-usable/tree-guard.json` so a service restart keeps it: each
+ * tree's last STOP_RULE.of samples, the asks and the stops. A tree over TREE_SHARE while the feed reads high or critical (pressure level 2 or
+ * more, or USABLE.swapoutsPerS swapouts) gets one line at its root per biggest process (`treeAskLine`). A tree that meets STOP_RULE has its
+ * biggest process stopped once: SIGTERM, then SIGKILL after STOP_RULE.killAfterMs if it still runs, each only while the pid's start time
+ * still matches; its root is told (`treeStopLine`) and the service log names it. A chat gets a notice (`notify`), a plain thread a message.
+ */
+export async function guardTrees(source: GuardSource, line: Pick<WatchLine, "trees" | "usable" | "mac">, chats: ReadonlySet<string>, now: number): Promise<StopLine[]> {
+  const file = join(source.dataDir, "mac-usable", "tree-guard.json");
+  const state = guardState(await readFile(file, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null));
+  const shareBytes = TREE_SHARE * (source.ramBytes ?? totalmem());
+  const swapouts = line.usable?.swapoutsPerS ?? 0;
+  const level = line.usable?.pressureLevel ?? line.mac.pressureLevel ?? 0;
+  const over = (line.trees ?? []).filter(tree => tree.gb * GB > shareBytes);
+  const overRoots = new Set(over.map(tree => tree.root));
+  for (const root of new Set([...Object.keys(state.history), ...overRoots])) {
+    const kept = [...state.history[root] ?? [], { at: now, hit: overRoots.has(root) && swapouts >= USABLE.swapoutsPerS }]
+      .filter(entry => now - entry.at < STOP_RULE.of * MINUTE).slice(-STOP_RULE.of);
+    if (kept.some(entry => entry.hit)) state.history[root] = kept;
+    else delete state.history[root];
+  }
+  const tell = async (key: string, root: string, text: string): Promise<boolean> => {
+    const send = chats.has(root) ? source.notify : source.message;
+    if (!send) return false;
+    try { await send(root, text); failedTreeSends.delete(key); return true; } catch (error) {
+      if (!failedTreeSends.has(key)) source.log(`mac usable watch: tell ${root.slice(0, 8)} about its tree: ${error instanceof Error ? error.message : String(error)}`);
+      failedTreeSends.add(key);
+      return false;
+    }
+  };
+  const stops: StopLine[] = [];
+  for (const tree of over) {
+    const biggest = tree.biggest;
+    if (!biggest) continue;
+    const named = { ...tree, biggest };
+    const key = `${tree.root}:${biggest.pid}`;
+    const hits = (state.history[tree.root] ?? []).filter(entry => entry.hit).length;
+    if (hits >= STOP_RULE.hits && source.kill && !(key in state.stopped)) {
+      state.stopped[key] = now;
+      if (await stopProcess(source, named)) {
+        stops.push({ root: tree.root, tree: tree.tree, pid: biggest.pid, gb: biggest.gb, command: biggest.command, signal: "SIGTERM" });
+        await tell(`stop ${key}`, tree.root, treeStopLine(named, shareBytes / GB));
+      }
+      continue;
+    }
+    const known = state.asked[key];
+    if (known) { known.seen = now; continue; }
+    if ((level >= 2 || swapouts >= USABLE.swapoutsPerS) && await tell(key, tree.root, treeAskLine(named, shareBytes / GB, { level, swapoutsPerS: swapouts }))) {
+      state.asked[key] = { asked: now, seen: now };
+    }
+  }
+  state.asked = Object.fromEntries(Object.entries(state.asked).filter(([, entry]) => now - entry.seen < ASKED_KEEP_MS));
+  state.stopped = Object.fromEntries(Object.entries(state.stopped).filter(([, at]) => now - at < ASKED_KEEP_MS));
+  await writeAtomic(file, JSON.stringify(state));
+  return stops;
+}
+
+/** SIGTERM to a tree's biggest process if its start time still matches, then SIGKILL after STOP_RULE.killAfterMs if the same process still runs. */
+async function stopProcess(source: GuardSource, tree: TreeLine & { biggest: NonNullable<TreeLine["biggest"]> }): Promise<boolean> {
+  const { pid, started, command, gb } = tree.biggest;
+  const kill = source.kill!;
+  const startOf = source.processStart ?? processStart;
+  const name = `pid ${pid} \`${command}\` (${gib(gb)} GiB) in the ${tree.tree} tree (${tree.root.slice(0, 8)}, ${gib(tree.gb)} GiB)`;
+  if (started === null || pid <= 1 || pid === process.pid || PRIME_PROCESS.test(command)) { source.log(`mac usable watch: tree guard: not stopping ${name}: no start time or a Prime process`); return false; }
+  try {
+    if (await startOf(pid) !== started) { source.log(`mac usable watch: tree guard: ${name} ended or its pid was reused before the stop`); return false; }
+    kill(pid, "SIGTERM");
+  } catch (error) {
+    source.log(`mac usable watch: tree guard: SIGTERM ${name}: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+  source.log(`mac usable watch: tree guard: SIGTERM ${name}, over the share while the Mac swapped in ${STOP_RULE.hits} of ${STOP_RULE.of} minutes`);
+  (source.later ?? ((run, ms) => { setTimeout(run, ms).unref(); }))(() => {
+    void (async () => {
+      if (await startOf(pid) !== started) { source.log(`mac usable watch: tree guard: ${name} ended after SIGTERM`); return; }
+      kill(pid, "SIGKILL");
+      source.log(`mac usable watch: tree guard: SIGKILL ${name}, still running ${STOP_RULE.killAfterMs / 1000} s after SIGTERM`);
+    })().catch(error => source.log(`mac usable watch: tree guard: SIGKILL ${name}: ${error instanceof Error ? error.message : String(error)}`));
+  }, STOP_RULE.killAfterMs);
+  return true;
+}
+
 /** Takes one sample and appends its line; null when the catalog holds no rows yet. */
 export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const now = source.now ?? Date.now;
@@ -330,9 +541,18 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const measured = { ...line, cpuMs: line.cpuMs + Math.round((own.user + own.system) / 1000) };
   const file = watchFile(source.dataDir, now());
   await mkdir(join(source.dataDir, "mac-usable"), { recursive: true });
-  await appendFile(file, JSON.stringify(measured) + "\n");
-  await askWaiters(source, measured.waiters ?? [], chats, now());
-  return measured;
+  if (source.treeMemoryFile) {
+    await writeAtomic(source.treeMemoryFile, JSON.stringify(treeMemory(measured, source.ramBytes ?? totalmem())))
+      .catch(error => source.log(`mac usable watch: tree memory file: ${error instanceof Error ? error.message : String(error)}`));
+  }
+  const stops = await guardTrees(source, measured, chats, now()).catch(error => {
+    source.log(`mac usable watch: tree guard: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  });
+  const written = stops.length ? { ...measured, stops } : measured;
+  await appendFile(file, JSON.stringify(written) + "\n");
+  await askWaiters(source, written.waiters ?? [], chats, now());
+  return written;
 }
 
 /** Samples once a minute until the returned stop is called; a sample still running when the next minute comes skips that minute. */

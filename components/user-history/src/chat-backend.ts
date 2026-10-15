@@ -14,7 +14,7 @@ import { checkInSettings } from "./checkin-settings.ts";
 import { CorrectionLedger } from "./chat-corrections.ts";
 import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
 import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
-import { startMacUsableWatch } from "./mac-usable-watch.ts";
+import { readStrays, startMacUsableWatch, TREE_MEMORY_FILE } from "./mac-usable-watch.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
@@ -161,6 +161,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
+      strays: readStrays,
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       settings, claude: claudeReader(), queue: queued,
@@ -183,7 +184,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const stopWatch = options.ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
-    queue: queueReading, log: dutyLog,
+    queue: queueReading, log: dutyLog, treeMemoryFile: TREE_MEMORY_FILE, kill: (pid, signal) => { process.kill(pid, signal); },
     notify: async (chat, line) => { if (!threads.isLive(chat)) throw new Error("the chat is not attached"); await threads.notice(chat, line); },
     message: async (root, line) => {
       const active = (await catalog.summary(root))?.activeSessionId;
