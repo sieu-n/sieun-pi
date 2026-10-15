@@ -39,9 +39,10 @@
       "title": "Guards that act on prod live inside agent sessions",
       "designs": [
         "01a115e2-9544-7204-b8db-8ce4d5319048/p173",
-        "branch:sieun/box-selfheal"
+        "branch:sieun/box-selfheal",
+        "commit:98c14dbd1a"
       ],
-      "owner": "metal (01a11d24) and each lane owner",
+      "owner": "metal (01a11d24) and each lane owner; the 10-14 20:19Z slice stop (s224) came from prod IO, which the census gauge Index Only Scan fix 98c14dbd1a removes",
       "match": {
         "config_reason_regex": "^watch_proxy abort|watch --act|box stop|left on with no owner",
         "mac_process_regex": "(guard|watch|stop_loop|monitor|back_\\d+_after).*\\.py",
@@ -54,7 +55,7 @@
       "designs": [
         "commit:dca86c9471"
       ],
-      "owner": "Instagram Main (01a10db0), acq-writer-autoscale (dca86c9471 on sieun/dev, rides land 37)",
+      "owner": "Instagram Main (01a10db0), acq-writer-autoscale (dca86c9471, in land 36 under pin b0edbbcd35 and on staging a8f85b4206; it reaches prod with promote 10 try 3, whose crawler-worker restart ends the hand-started prod writer)",
       "match": {
         "box_exec_regex": "acquisition-writer",
         "config_key_prefixes": [
@@ -222,7 +223,8 @@
   ],
   "exempt": {
     "config_reason_regex": "^owner: \"|A/B|^Owner order",
-    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix.",
-    "note_regex": "self-heal|hand fix audit|design job|Durable software"
+    "note": "An owner order quoted in the reason or opened with 'Owner order', or a named A/B experiment with its restore, is a decision, not a hand fix. The staging `.venv/bin/python - 3600 8` exec is the declared unit virev-b2-inventory.service (host.yml --tags b2-inventory, daily timer 02:30Z), so it is not a hand-started process. A board note on a d3 run reports this duty's own work, not a hand fix.",
+    "note_regex": "self-heal|hand fix audit|design job|Durable software|\\bd3('s)? (first )?run\\b",
+    "box_exec_regex": "\\.venv/bin/python - 3600 8$"
   }
 }

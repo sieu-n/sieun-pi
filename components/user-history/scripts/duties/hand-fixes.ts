@@ -50,7 +50,7 @@ export interface FaultMatch {
 export interface Fault { id: string; title: string; designs: string[]; owner: string; match: FaultMatch; done_at?: string }
 export interface Registry {
   automatic_writers: { config_actors: string[] };
-  exempt: { config_reason_regex: string; note_regex?: string };
+  exempt: { config_reason_regex: string; note_regex?: string; box_exec_regex?: string };
   faults: Fault[];
 }
 
@@ -93,6 +93,7 @@ export function parseRegistry(value: unknown): Registry {
     if (!/^F\d+$/.test(fault.id) || !fault.title || !fault.match || !Array.isArray(fault.designs)) throw new Error(`fault ${String(fault.id)}: id F<n>, title, designs and match`);
     if (fault.done_at !== undefined && Number.isNaN(Date.parse(fault.done_at))) throw new Error(`fault ${fault.id}: done_at ${fault.done_at} is not a time`);
     for (const ref of fault.designs) if (!/^(?:branch:\S+|commit:[0-9a-f]{7,40}|(?:[0-9a-f-]{36}\/)?p\d+)$/.test(ref)) throw new Error(`fault ${fault.id}: design ref ${ref} is not pN, <chat id>/pN, branch:<name> or commit:<sha>`);
+    if (registry.exempt.box_exec_regex) new RegExp(registry.exempt.box_exec_regex);
     for (const pattern of [fault.match.config_reason_regex, fault.match.note_regex, fault.match.mac_process_regex, fault.match.box_exec_regex, fault.match.box_container_regex])
       if (pattern) new RegExp(pattern);
   }
@@ -181,8 +182,9 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
 export const oneOffs = (containers: readonly BoxContainer[]): BoxContainer[] => containers.filter(container => !container.service);
 /** A one-shot script piped in on stdin (`python -`, `bash -s`), the way session tools read or set controls; session_loops_writing counts those tools. */
 const STDIN_SCRIPT = /\s(?:-|-s)$/;
-export const handExecs = (execs: readonly BoxExec[]): BoxExec[] =>
-  execs.filter(exec => exec.running && !DATA_SERVICES.has(exec.service) && !STDIN_SCRIPT.test(exec.command));
+/** `exempt` is the registry's exempt.box_exec_regex: an exec a declared unit on the box starts, so a restart does not lose it. */
+export const handExecs = (execs: readonly BoxExec[], exempt?: string): BoxExec[] =>
+  execs.filter(exec => exec.running && !DATA_SERVICES.has(exec.service) && !STDIN_SCRIPT.test(exec.command) && !(exempt && new RegExp(exempt).test(exec.command)));
 
 /** The script a session process runs: the first argument ending in .py, .mjs, .js, .ts or .sh. */
 export function scriptOf(command: string): string | null {
@@ -245,7 +247,7 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     if (writers.length) flagged.push({ at, kind: "session_loops", excerpt: `Agent session processes that write to prod or staging: ${writers.map(process => `pid ${process.pid} ${process.script ?? process.command.slice(0, 80)}`).join("; ")}`.slice(0, 1000) });
   }
   if (data.box) {
-    const execs = handExecs(data.box.execs);
+    const execs = handExecs(data.box.execs, registry?.exempt.box_exec_regex);
     const left = oneOffs(data.box.containers);
     metrics.unsupervised_box_processes = execs.length + left.length;
     for (const exec of execs) flagged.push({ at, kind: "box_exec", excerpt: `docker exec in ${exec.container}, gone at the next restart: ${exec.command}`.slice(0, 400) });

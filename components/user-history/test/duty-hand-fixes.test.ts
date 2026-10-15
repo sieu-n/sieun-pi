@@ -190,3 +190,15 @@ test("hand fixes: a fix before a fault's done_at is no repeat, and the 10-14 mis
   assert.equal(output.metrics.repeats_after_design, 1, "only the rerun after done_at is a repeat");
   assert.throws(() => parseRegistry({ ...reg, faults: [{ ...f6, done_at: "yesterday" }] }), /done_at/);
 });
+
+test("hand fixes: a declared box unit's exec and a d3 run note are exempt, while a hand-started writer still counts", async () => {
+  const reg = await registry();
+  const exec = (command: string) => ({ container: "virev-staging-crawler-api", service: "crawler-api", running: true, command });
+  const inventory = exec('sh -c cd /app/apps/crawler-v3 && nice -n 10 dotenvx run -q -f "$DOTENV_FILE" -- .venv/bin/python - 3600 8');
+  const writer = exec("sh -c exec dotenvx-start.sh uv run --no-sync python -m src.run.run acquisition-writer > /tmp/acq-writer-2.log 2>&1");
+  assert.deepEqual(handExecs([inventory, writer], reg.exempt.box_exec_regex), [writer]);
+  assert.deepEqual(handExecs([inventory, writer]), [inventory, writer]);
+  assert.deepEqual(classifyNote({ id: "s235", at: NOW, text: "d3 run 1 (sieun-pi 049b270): Live rerun: undesigned 0, repeats 0" }, reg), { kind: "exempt" });
+  assert.deepEqual(classifyNote({ id: "s236", at: NOW, text: "d3's first run fixed its precheck. A live rerun shows 0 undesigned" }, reg), { kind: "exempt" });
+  assert.ok(reg.faults.find(fault => fault.id === "F2")!.designs.includes("commit:98c14dbd1a"));
+});
