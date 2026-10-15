@@ -62,9 +62,14 @@ export function share(tokens: number, total: number): string {
   return (percent < 10 ? percent.toFixed(1) : Math.round(percent).toString()) + "%";
 }
 
-/** A part's text on one line, for its row in an open group. */
-export function preview(text: string, length = 240): string {
-  return text.slice(0, length * 4).replace(/\s+/g, " ").trim().slice(0, length);
+/**
+ * A part's text on one line, for its row in an open group. An injected part drops its opening tag, such as `[agent-message from ci bot]`, because
+ * the row's source kind and sender already name it.
+ */
+export function preview(part: Pick<PromptPart, "text" | "role" | "source">, length = 240): string {
+  const text = part.text.slice(0, length * 4);
+  const injected = part.role === "user" && !part.source.startsWith("the owner");
+  return (injected ? text.replace(/^\s*\[[^\]\n]{1,160}\]/, "") : text).replace(/\s+/g, " ").trim().slice(0, length);
 }
 
 /**

@@ -39,7 +39,8 @@
   let rows = $state<Record<string, boolean>>({});
   let parts = $state<Record<string, boolean>>({});
   let whole = $state<Record<string, boolean>>({});
-  function collapseAll(): void { rows = {}; parts = {}; whole = {}; }
+  let subagentsOpen = $state(false);
+  function collapseAll(): void { rows = {}; parts = {}; whole = {}; subagentsOpen = false; }
   function expandAll(): void { if (table) rows = Object.fromEntries([...table.rows, ...table.groups].map(row => [row.key, true])); }
   const flip = (record: Record<string, boolean>, key: string): Record<string, boolean> => ({ ...record, [key]: !record[key] });
 
@@ -71,7 +72,7 @@
   {@const detail = row.parts.length > 1 && row.key.startsWith("h:") ? part.label.replace(/^Tool: /, "") : labelDetail(part.label)}
   {@const who = speakerOf(part)}
   <button type="button" class="line" aria-expanded={open} onclick={() => { parts = flip(parts, part.id); }}>
-    <span class="lead"><span class="chev" class:open><Icon name="chevronDown" size={10} /></span>{#if number.get(part.id)}<span class="num">#{number.get(part.id)}</span>{/if}{#if detail}<span class="detail">{detail}</span>{/if}{#if SPEAKER[who] && row.speaker !== who}<span class="who {who}">{SPEAKER[who]}</span>{/if}<span class="gist">{preview(part.text)}</span></span>
+    <span class="lead"><span class="chev" class:open><Icon name="chevronDown" size={10} /></span>{#if number.get(part.id)}<span class="num">#{number.get(part.id)}</span>{/if}{#if detail}<span class="detail">{detail}</span>{/if}{#if SPEAKER[who] && row.speaker !== who}<span class="who {who}">{SPEAKER[who]}</span>{/if}<span class="gist">{preview(part)}</span></span>
     <span class="tok">{tokens(part.tokens)}</span>
     <span class="at">{part.at ? when(part.at) : ""}</span>
   </button>
@@ -120,8 +121,11 @@
           <div class="origin"><span class="rebuild">Rebuilt, not the captured payload.</span> {view.origin.reason}</div>
         {/if}
         {#if view.subagents?.length}
-          <div class="subagents">Spawned {view.subagents.length} {view.subagents.length === 1 ? "subagent" : "subagents"}:
-            {#each view.subagents as child (child.sessionId)}<button type="button" class="link-chip" title="Open its prompt" onclick={() => { below = [...below, { id: child.sessionId, name: child.name }]; }}><Icon name="layers" size={11} /><span class="chip-label">{child.name}</span></button>{/each}
+          <div class="subagents">
+            <button type="button" class="fold" aria-expanded={subagentsOpen} onclick={() => { subagentsOpen = !subagentsOpen; }}><span class="chev" class:open={subagentsOpen}><Icon name="chevronDown" size={11} /></span>Spawned {view.subagents.length} {view.subagents.length === 1 ? "subagent" : "subagents"}, each with its own prompt</button>
+            {#if subagentsOpen}
+              {#each view.subagents as child (child.sessionId)}<button type="button" class="link-chip" title="Open its prompt" onclick={() => { below = [...below, { id: child.sessionId, name: child.name }]; }}><Icon name="layers" size={11} /><span class="chip-label">{child.name}</span></button>{/each}
+            {/if}
           </div>
         {/if}
         <div class="path" title={view.sessionFile}>{view.sessionFile}</div>
@@ -149,6 +153,8 @@
   .facts strong { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
   .rebuild { font-weight: 600; color: var(--warning); }
   .subagents { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; }
+  .fold { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); }
+  .fold:hover { color: var(--text); }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
   .outline { display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 2fr) 64px 132px; column-gap: 12px; font-size: 12.5px; }
   .group-head, .row, .line { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
@@ -156,7 +162,8 @@
   .group-head > span:first-child { grid-column: 1 / 3; }
   .row { min-height: 24px; padding: 0 6px; border-radius: var(--radius-small); text-align: left; color: var(--text); }
   .row:hover, .line:hover { background: var(--bg-hover); }
-  .row[aria-expanded="true"] { font-weight: 500; }
+  .row[aria-expanded="true"] { position: sticky; top: 0; z-index: 1; font-weight: 500; background: var(--bg-elevated); }
+  .row[aria-expanded="true"]:hover { background: color-mix(in srgb, var(--bg-hover) 100%, var(--bg-elevated)); }
   .row.empty { color: var(--text-faint); }
   .row .label { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--text-faint); }

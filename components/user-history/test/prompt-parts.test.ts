@@ -65,10 +65,13 @@ test("labelDetail: what a part's label adds to its source kind", () => {
   assert.equal(labelDetail("[check-in]"), "");
 });
 
-test("preview: a part's text on one line, cut to its length", () => {
-  assert.equal(preview("→ ipython\nprint(1)\n\n  done"), "→ ipython print(1) done");
-  assert.equal(preview("x".repeat(500), 240).length, 240);
-  assert.equal(preview(""), "");
+test("preview: a part's text on one line, cut to its length, with an injected part's opening tag dropped", () => {
+  const text = (value: string, role?: PromptPart["role"], source = "model reply") => ({ text: value, source, ...(role ? { role } : {}) });
+  assert.equal(preview(text("→ ipython\nprint(1)\n\n  done", "assistant")), "→ ipython print(1) done");
+  assert.equal(preview(text("x".repeat(500)), 240).length, 240);
+  assert.equal(preview(text("")), "");
+  assert.equal(preview(text("[agent-message from ci bot]\n\nThe run is green.", "user", "agent_message (another session)")), "The run is green.");
+  assert.equal(preview(text("[x] owner typed this", "user", "the owner (or the parent's task text)")), "[x] owner typed this");
 });
 
 test("clip: a long text shows its first lines and counts the rest; a short one shows whole", () => {
