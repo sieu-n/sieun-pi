@@ -2,6 +2,7 @@ import { bridgeHolds, ESCALATE_MS } from "./alert-bridge.ts";
 import { coversStep, planJob } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import type { WakeWatch } from "./checkin-load.ts";
+import { dutyQueueKey } from "./chat-turn-queue.ts";
 import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
 /**
@@ -114,8 +115,11 @@ export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: Rea
 /**
  * Who moves a step that no working job of this chat holds: a session asleep on a board.wake (`wakeMover`), or a turn that waits for a working
  * slot in pi-pool's queue (its owner's, the session it stores, the chat's own for a step it owns, or the thread its wait names), or its job's
- * start or its owner's due wake waiting in the fleet budget. Each of those goes on by itself once its wake, slot or budget comes. launch main bro 10-15 19:16Z read 18
- * of 19 steps stuck while the budget held its starts and the queue held its jobs' turns, so the check-in asked for owners it could not start.
+ * start or its owner's due wake waiting in the fleet budget, or, for a duty's fix step whose job has no session yet, that duty's fix key
+ * waiting in pi-pool's queue (`dutyQueueKey`), where the fix job's create waits before it asks the fleet budget. At 21:13Z on 10-15 Crawler
+ * VP's d2-fix and d3-fix keys waited there and the check-in counted p504, p505, p506 and p512 stuck. Each of those goes on by itself once
+ * its wake, slot or budget comes. launch main bro 10-15 19:16Z read 18 of 19 steps stuck while the budget held its starts and the queue held
+ * its jobs' turns, so the check-in asked for owners it could not start.
  */
 export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, movers: Movers, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
   self: ReadonlySet<string>): string | undefined {
@@ -134,6 +138,10 @@ export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, mo
   if (job !== undefined && movers.starting?.has(job)) return `its job ${job} waits for the fleet budget to start`;
   const waking = [item.sessionId, stepOwner(item)].find(id => id !== undefined && movers.starting?.has(id));
   if (waking) return `its owner ${item.job ?? waking.slice(0, 8)} has a due wake in the fleet budget's line`;
+  const duty = item.duty?.split("/")[0];
+  if (duty && !item.sessionId && [...self].some(chat => queued.has(dutyQueueKey(chat, `${duty}-fix`)))) {
+    return `${item.job ? `its fix job ${item.job}` : "its fix job"}'s start ${slot}`;
+  }
   return undefined;
 }
 
