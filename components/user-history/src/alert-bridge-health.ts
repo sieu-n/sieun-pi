@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { GrafanaError, type FiringAlert } from "./alert-bridge.ts";
@@ -42,15 +43,23 @@ export class PollHealth {
 
 const lastWasOk = (record: PollRecord): boolean => record.lastOk !== null && (record.lastError === null || record.lastOk > record.lastError.at);
 
-export function outage(record: PollRecord, now: number): Outage | null {
+export function outage(record: PollRecord, now: number, wokeAt: number | null = null): Outage | null {
   if (record.configuredAt === null) return null;
   const since = record.lastOk ?? record.configuredAt;
   if (record.lastError?.status != null && REFUSED.has(record.lastError.status) && !lastWasOk(record)) return { cause: "refused", since };
-  return now - since >= STALE_MS ? { cause: "stale", since } : null;
+  return now - Math.max(since, wokeAt ?? since) >= STALE_MS ? { cause: "stale", since } : null;
 }
 
-export function healthOf(record: PollRecord, now: number): BridgeHealth {
-  const down = outage(record, now);
+export function macWokeAt(): Promise<number | null> {
+  if (process.platform !== "darwin") return Promise.resolve(null);
+  return new Promise(done => execFile("/usr/sbin/sysctl", ["-n", "kern.waketime"], (error, out) => {
+    const sec = error ? null : /sec = (\d+)/.exec(out)?.[1];
+    done(sec ? Number(sec) * 1000 : null);
+  }));
+}
+
+export function healthOf(record: PollRecord, now: number, wokeAt: number | null = null): BridgeHealth {
+  const down = outage(record, now, wokeAt);
   if (down) return down.cause;
   if (lastWasOk(record)) return "ok";
   return record.lastError ? "failing" : "starting";
@@ -74,8 +83,8 @@ export function recoveredText(record: PollRecord, alerting: Alerting): string {
   return `[alert-bridge-recovered] The alert bridge read Grafana's firing list again at ${minute(record.lastOk!)} (${record.firing} firing); it had no good poll from ${minute(alerting.since)}.`;
 }
 
-export function watchStep(record: PollRecord, alerting: Alerting | null, now: number, configFile: string): { send: string | null; alerting: Alerting | null } {
-  const down = outage(record, now);
+export function watchStep(record: PollRecord, alerting: Alerting | null, now: number, configFile: string, wokeAt: number | null = null): { send: string | null; alerting: Alerting | null } {
+  const down = outage(record, now, wokeAt);
   if (down) {
     if (alerting && now - alerting.sentAt < REPEAT_MS) return { send: null, alerting };
     return { send: downText(record, down, now, configFile), alerting: { since: alerting?.since ?? down.since, sentAt: now } };
@@ -97,8 +106,8 @@ export interface BridgeStatus {
   alert_sent_at: string | null;
 }
 
-export function statusOf(record: PollRecord, alerting: Alerting | null, now: number, pollMs: number): BridgeStatus {
-  return { v: 1, ts: iso(now), pid: process.pid, poll_every_s: pollMs / 1000, health: healthOf(record, now),
+export function statusOf(record: PollRecord, alerting: Alerting | null, now: number, pollMs: number, wokeAt: number | null = null): BridgeStatus {
+  return { v: 1, ts: iso(now), pid: process.pid, poll_every_s: pollMs / 1000, health: healthOf(record, now, wokeAt),
     last_ok: record.lastOk === null ? null : iso(record.lastOk),
     last_error: record.lastError && { at: iso(record.lastError.at), status: record.lastError.status, message: record.lastError.message },
     firing_count: record.firing, alert_since: alerting && iso(alerting.since), alert_sent_at: alerting && iso(alerting.sentAt) };
@@ -112,6 +121,7 @@ export interface BridgeWatchDeps {
   startRoot?: (root: string) => Promise<void>;
   pollMs?: number;
   now?: () => number;
+  wokeAt?: () => Promise<number | null>;
   log: (line: string) => void;
 }
 
@@ -125,15 +135,16 @@ export class BridgeWatch {
     if (record.configuredAt === null) return;
     this.alerting ??= await this.restore();
     const now = this.now();
-    const step = watchStep(record, this.alerting, now, this.deps.configFile);
+    const wokeAt = outage(record, now)?.cause === "stale" ? await (this.deps.wokeAt ?? macWokeAt)() : null;
+    const step = watchStep(record, this.alerting, now, this.deps.configFile, wokeAt);
     if (step.send) {
       try {
         await this.send(step.send);
         this.alerting = step.alerting;
-        this.deps.log(`alerts: watchdog told ops guy the bridge is ${step.alerting ? healthOf(record, now) : "polling again"}`);
+        this.deps.log(`alerts: watchdog told ops guy the bridge is ${step.alerting ? healthOf(record, now, wokeAt) : "polling again"}`);
       } catch (error) { this.deps.log(`alerts: watchdog: ${error instanceof Error ? error.message : String(error)}; tried again next tick`); }
     }
-    await this.write(statusOf(record, this.alerting, now, this.deps.pollMs ?? TICK_MS));
+    await this.write(statusOf(record, this.alerting, now, this.deps.pollMs ?? TICK_MS, wokeAt));
   }
 
   private async send(text: string): Promise<void> {

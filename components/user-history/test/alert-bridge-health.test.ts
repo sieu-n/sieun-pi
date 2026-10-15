@@ -17,14 +17,15 @@ async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "alert-watch-"));
   let now = NOW;
   let answer: () => Promise<FiringAlert[] | null> = async () => [];
+  let woke: number | null = null;
   const sent: { session: string; text: string }[] = [];
   const health = new PollHealth(() => now);
   const statusFile = join(dir, "cache", "alert-bridge-status.json");
   const configFile = join(dir, "grafana-alerts.json");
-  const watch = () => new BridgeWatch({ health, statusFile, configFile, now: () => now, log: () => {},
+  const watch = () => new BridgeWatch({ health, statusFile, configFile, now: () => now, wokeAt: async () => woke, log: () => {},
     deliver: async (session, text) => { sent.push({ session, text }); return "sent"; } });
   const poll = () => health.poll(answer).catch(() => null);
-  return { dir, health, sent, statusFile, configFile, watch, poll, answer: (next: typeof answer) => { answer = next; }, at: (ms: number) => { now = ms; },
+  return { dir, health, sent, statusFile, configFile, watch, poll, answer: (next: typeof answer) => { answer = next; }, at: (ms: number) => { now = ms; }, woke: (ms: number) => { woke = ms; },
     status: async () => JSON.parse(await readFile(statusFile, "utf8")) as BridgeStatus };
 }
 
@@ -57,6 +58,24 @@ test("a poll loop that stops calling Grafana alerts after 5 min from the watchdo
   await run(f, watch, NOW + TICK, NOW + STALE_MS, false);
   assert.equal(f.sent.length, 1);
   assert.match(f.sent[0]!.text, /no poll error, the poll loop stopped calling Grafana/);
+});
+
+test("polls that fail while the Mac sleeps with its lid closed page nobody, and 5 awake min after a wake still page", async () => {
+  const f = await fixture();
+  const watch = f.watch();
+  await run(f, watch, NOW, NOW);
+  f.answer(async () => { throw new Error("fetch failed"); });
+  for (const wake of [3, 5.5, 8, 10.5, 13]) {
+    f.woke(NOW + wake * 60_000);
+    await run(f, watch, NOW + wake * 60_000, NOW + wake * 60_000 + 10_000);
+  }
+  assert.equal(f.sent.length, 0);
+  f.woke(NOW + 15 * 60_000);
+  await run(f, watch, NOW + 15 * 60_000, NOW + 20 * 60_000 - TICK);
+  assert.equal(f.sent.length, 0);
+  await run(f, watch, NOW + 20 * 60_000, NOW + 20 * 60_000);
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0]!.text, /for 20 min, so .*\(last good poll 2026-10-15T06:00Z; last error at 2026-10-15T06:20Z: fetch failed\)/);
 });
 
 test("a throwaway config with a bad Viewer token gets 401, and the watchdog tells ops guy at once with the cause", async () => {
@@ -109,7 +128,7 @@ test("a chat service restart in an outage keeps the 30 min gap from the status f
   await run(f, f.watch(), NOW, NOW);
   assert.equal(f.sent.length, 1);
   const fresh = await fixture();
-  const again = new BridgeWatch({ health: fresh.health, statusFile: f.statusFile, configFile: f.configFile, now: () => NOW + 10 * 60_000, log: () => {},
+  const again = new BridgeWatch({ health: fresh.health, statusFile: f.statusFile, configFile: f.configFile, now: () => NOW + 10 * 60_000, wokeAt: async () => null, log: () => {},
     deliver: async (session, text) => { f.sent.push({ session, text }); return "sent"; } });
   fresh.answer(async () => { throw new GrafanaError(401); });
   fresh.at(NOW + 10 * 60_000);
@@ -138,7 +157,7 @@ test("a failed send to ops guy is tried again on the next tick", async () => {
   const f = await fixture();
   const sent: string[] = [];
   let down = true;
-  const watch = new BridgeWatch({ health: f.health, statusFile: f.statusFile, configFile: f.configFile, now: () => NOW, log: () => {},
+  const watch = new BridgeWatch({ health: f.health, statusFile: f.statusFile, configFile: f.configFile, now: () => NOW, wokeAt: async () => null, log: () => {},
     deliver: async (_session, text) => { if (down) throw new Error("Timed out waiting for daemon worker response"); sent.push(text); return "sent"; } });
   f.answer(async () => { throw new GrafanaError(401); });
   await f.poll();
