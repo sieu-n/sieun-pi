@@ -59,8 +59,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "thread. A `[board] ` message is the owner acting on the board: act on it.",
   "When the owner corrects how you work, apply it now and record it with `correction_add` in the same turn.",
   `Read on demand from \`${BOARD_SKILL}/\`: SKILL.md before a board write; references/jobs.md for jobs; references/check-ins.md for check-ins ` +
-    "and duties; references/git.md before a sieun-pi commit, a merge or a push; references/owner.md for todos, review asks, logins and reply " +
-    "links or images; references/corrections.md when corrected.",
+    "and duties; references/git.md before a sieun-pi commit, release, merge or push; references/owner.md for todos, review asks, " +
+    "logins and reply links or images; references/corrections.md when corrected.",
 ];
 /** The corrections the brief holds in full. */
 export const BRIEF_CORRECTIONS = briefCorrections(CHAT_BRIEF);

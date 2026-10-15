@@ -1,6 +1,6 @@
 # Git in a VP chat's work
 
-Read this before a sieun-pi commit, a merge, a push or a promote.
+Read this before a sieun-pi commit, a :5182 chat release, a merge, a push or a promote.
 
 ## sieun-pi commits
 
@@ -10,6 +10,22 @@ Read this before a sieun-pi commit, a merge, a push or a promote.
 4. Other jobs commit in the same sieun-pi checkout, so run `git add -- <new files>` first, then `git commit -m "..." -- <your files>`.
 5. If you commit through a private index, run `git add -- <your files>` on the shared index afterwards so it does not go stale.
 6. Never use --no-verify.
+
+## Releasing the :5182 chat
+
+Ship a sieun-pi commit to the live chat with one command from the sieun-pi checkout:
+
+```sh
+node scripts/release-chat.mjs <sha> [--test test/<file>.test.ts]... [--no-kickstart]
+```
+
+1. The command builds `~/.local/share/sieun-pi-chat/release-<sha7>` from `git archive`, links both node_modules folders to the checkout, and runs `npm run typecheck` and each `--test` file inside the release, niced.
+2. It points `current` at the release with one rename, runs `launchctl kickstart -k gui/$UID/com.sieun.agent-chat`, and prints the release id on its last line.
+3. It holds `~/.local/share/sieun-pi-chat/release.lock` from start to kickstart, so a second release waits for the first one.
+4. It refuses, with exit 3, a commit that does not descend from the live release's commit. On 10-15 at 18:32:56 KST one job flipped `current` back to release-81a0540 and another job flipped it to 476a86b 30 s later, because each ran the steps by hand.
+5. To go back on purpose, run `node scripts/release-chat.mjs <sha or release id> --rollback`, which reuses a built release folder.
+6. A release whose diff touches only scripts/duties or tests takes `--no-kickstart`, because duty prechecks read `current` at each run.
+7. Never run `ln -sfn` on `current` or kickstart the service by hand, because a hand step skips the lock and the newer-only check.
 
 ## Merges, pushes and promotes
 

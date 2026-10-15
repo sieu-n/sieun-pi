@@ -193,7 +193,7 @@ test("merge gate: while the c74 standing go is on, the brief, the job reply guid
   const git = await readFile(new URL("../../../skills/board/references/git.md", import.meta.url), "utf8");
   assert.ok(git.includes(MERGE_RULE), "the full rule sits in the git reference the brief points to");
   assert.ok(git.includes("Production needs his explicit approval of that specific PR or push in For you (c49)"), "git.md keeps the c49 rule that returns when the switch is off");
-  assert.ok(CHAT_BRIEF.some(line => line.includes("references/git.md before a sieun-pi commit, a merge or a push")));
+  assert.ok(CHAT_BRIEF.some(line => line.includes("references/git.md before a sieun-pi commit, release, merge or push")));
   assert.ok(jobReplyGuideline({ chat: "slack green guy", root: false }).includes(MERGE_RULE_SHORT), "job reply guideline");
   assert.equal(MERGE_RULE_SHORT, `Never ask the owner to confirm a staging land, a deploy, a merge, a push to main or master or a prod promote. ${preApprovalText(C74)}`);
   const duty = dutyJobBrief({ duty: { ...CHECK_IN_DUTY }, chat: { id: "c1", name: "slack green guy", board: "/b/c1.json" }, job: "check-in slack green guy 14:00", at: 0, measure: "m", findings: "f" });
