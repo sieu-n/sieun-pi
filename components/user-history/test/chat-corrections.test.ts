@@ -213,7 +213,8 @@ test("extension: correction_add is registered only in a chat; it records a new c
     assert.ok(schema.length <= 700, `correction_add schema is ${schema.length} chars; keep tool texts lean`);
     const first = await tool.execute("t1", { words: "wipe it from our plan", rule: "A handed-off step leaves the plan.", theme: "handoff step leaves plan", enforcedBy: "brief", ref: "9953e20" },
       undefined, undefined, chat.ctx(true));
-    assert.equal(first.content[0]!.text, "Recorded c1: A handed-off step leaves the plan. (enforced by brief: 9953e20). Every chat reads it from its next model call.");
+    assert.equal(first.content[0]!.text, "Recorded c1: A handed-off step leaves the plan. (enforced by brief: 9953e20). Every chat reads it from its next model call. " +
+      "When this turn ends the service refines the global harness on it with /refine, so do not call refine.run for it.");
     const repeat = await tool.execute("t2", { words: "why is it still on the plan", rule: "A handed-off step leaves the plan at once.", theme: "handoff plan leave", enforcedBy: "brief", ref: "x" },
       undefined, undefined, chat.ctx(true));
     assert.match(repeat.content[0]!.text, /^Repeat of c1 .* did not hold\. Make the smallest change .*\(c81\)/);

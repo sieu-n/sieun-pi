@@ -240,6 +240,8 @@ export interface CheckInSource {
   awake?: (working: boolean) => void;
   /** The last owner reply each chat's `[reply check]` looked at (`<data dir>/reply-checks.json`). */
   replyChecks: ReplyCheckRecord;
+  /** The newest correction each chat's `/refine` or `[correction check]` covered (`<data dir>/correction-checks.json`, keys `<chat>` and `<chat>:ask`). Absent: none is sent. */
+  correctionChecks?: ReplyCheckRecord;
   /** The jobs that got a `[brief check]` (`<data dir>/brief-checks.json`). Absent: no brief check runs. */
   briefChecks?: BriefCheckRecord;
   /** The finished jobs the cleanup deleted (`<data dir>/deleted-jobs.json`). Absent (tests): each serve remembers its own deletes only. */

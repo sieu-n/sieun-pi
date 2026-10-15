@@ -25,6 +25,7 @@ import { previousSpawn, spawnRecord } from "./spawn-record.ts";
 import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { JOB_NOTICE_PREFIX, TELL_OWNER_LIMIT, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { replyCheck } from "./shared/reply-lint.ts";
+import { correctionStep } from "./correction-refine.ts";
 import { briefCheckNote, ownerSaid, turnOwnerAt } from "./shared/brief-check.ts";
 import { briefCheckWithHistory } from "./owner-history.ts";
 import { type CheckInRun, runStamp } from "./chat-duty-run.ts";
@@ -221,7 +222,7 @@ export class Chats {
         this.queue(id, () => this.attached(id));
         this.queue(id, () => this.refreshExtension(id));
         // A reply sent just before a restart ended its turn on the old server; an idle chat gets its check when it attaches.
-        if (!this.threads.busy(id)) { this.queue(id, () => this.replyCheck(id)); this.queue(id, () => this.opsCheck(id)); }
+        if (!this.threads.busy(id)) { this.queue(id, () => this.replyCheck(id)); this.queue(id, () => this.opsCheck(id)); this.queue(id, () => this.correctionCheck(id)); }
       },
       children: (id, attached) => { this.attachedChildren.set(id, attached); this.childrenChanged(id, withRoster(attached, this.subagents.get(id) ?? [])); },
       idle: id => {
@@ -229,6 +230,7 @@ export class Chats {
         this.cleanSoon(id);
         this.queue(id, () => this.replyCheck(id));
         this.queue(id, () => this.opsCheck(id));
+        this.queue(id, () => this.correctionCheck(id));
       },
     });
     const tickMs = source.tickMs ?? CHECK_IN_TICK_MS;
@@ -1295,6 +1297,26 @@ export class Chats {
       if (!await this.source.replyChecks.claim(id, check.at)) return;
       await this.threads.prompt(id, { message: check.message, images: [], mode: "steer" });
     } catch (error) { this.log(`chat ${id.slice(0, 8)}: reply check: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  /**
+   * At a turn's end, and when an idle chat attaches: a correction the chat recorded since the owner's newest message gets one global `/refine`
+   * aimed at it, which Prime runs in the chat's session, and an owner message that reads as a correction with nothing recorded gets one
+   * `[correction check]` line (`correctionStep`). Each once across restarts (`correctionChecks`). The owner asked on 10-15 that every correction
+   * refines the harness without anyone remembering to (c86).
+   */
+  private async correctionCheck(id: string): Promise<void> {
+    const record = this.source.correctionChecks;
+    if (!record || !this.source.corrections) return;
+    await this.load();
+    const messages = this.chatIds.has(id) ? this.messages(id) : undefined;
+    if (!messages) return;
+    try {
+      const step = correctionStep(id, await this.source.corrections(), messages, this.now(), REPLY_CHECK_MAX_AGE_MS);
+      if (!step || !await record.claim(step.kind === "ask" ? `${id}:ask` : id, step.at)) return;
+      await this.threads.prompt(id, { message: step.message, images: [], mode: "steer" });
+      this.log(`chat ${id.slice(0, 8)}: correction ${step.kind === "ask" ? "check sent" : "refine started"}`);
+    } catch (error) { this.log(`chat ${id.slice(0, 8)}: correction check: ${error instanceof Error ? error.message : String(error)}`); }
   }
 
   /**

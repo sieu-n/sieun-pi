@@ -4,7 +4,7 @@ Read this when the owner corrects how you work, whether about board shape, tone 
 
 1. Change the brief or a skill, because a local note or a local memory alone does not count.
 2. For a brief or code change, send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., receiver_role="sibling", receiver_name="realtime layer")`.
-3. For a global skill or prompt entry, call `await refine.run()` aimed at it.
+3. Leave the harness refine to the service. When a turn that called `correction_add` ends, the chat service runs `/refine --global` in your session aimed at that correction, and when an owner message reads as a correction with nothing recorded, it sends one `[correction check]` line. Call `refine.run` yourself only for a lesson that is no owner correction.
 4. In the same turn, call `correction_add` with the owner's exact words, a one-line rule, 3 to 6 theme key words and what enforces it. Reuse an earlier entry's theme words for the same thing. Set `enforcedBy` to brief, code or test (brief when you leave it out), and `ref` to the brief bullet, file, commit or test, or `pending <job>`.
 5. When the work belongs to another thread, pass `handoff: {to, topics, with?}`, where `to` is that thread and `topics` are the words its steps name. A check-in then flags matching steps in other chats.
 6. When the tool says repeat, the earlier fix did not hold. Make the smallest change that gets agents to follow the rule, first a brief, skill or prompt line where agents read it before they act. When the owner says a rule should be enforced, he means agents follow it, and a code gate or refusal comes only when measured repeats show the text did not hold, with those repeats named in the fix (c81). Record the fix with its id.

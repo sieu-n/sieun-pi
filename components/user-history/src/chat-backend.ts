@@ -210,7 +210,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   } });
   chats = new Chats(index, serviceThreads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
-      replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")),
+      replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")), correctionChecks: replyCheckRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
       strays: readStrays,
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),

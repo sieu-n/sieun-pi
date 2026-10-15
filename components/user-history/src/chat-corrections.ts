@@ -250,17 +250,18 @@ export function parseCorrectionCall(value: unknown): CorrectionCall {
  * a code gate only when measured repeats show the text did not hold (c81, owner 10-15: "things like `enforced` here doesn't mean code-level
  * blocks").
  */
+export const AUTO_REFINE = "When this turn ends the service refines the global harness on it with /refine, so do not call refine.run for it.";
 export function correctionResult(outcome: CorrectionOutcome): string {
   const { entry } = outcome;
   switch (outcome.kind) {
-    case "added": return `Recorded ${entry.id}: ${entry.rule} (enforced by ${entry.enforcedBy}: ${entry.ref}). Every chat reads it from its next model call.` +
+    case "added": return `Recorded ${entry.id}: ${entry.rule} (enforced by ${entry.enforcedBy}: ${entry.ref}). Every chat reads it from its next model call. ${AUTO_REFINE}` +
       (outcome.closest ? ` The closest earlier rule is ${outcome.closest.id} "${outcome.closest.rule}". If the owner repeated that rule, call ${CORRECTION_TOOL} ` +
         `with id "${entry.id}" and mergeInto "${outcome.closest.id}".` : "");
     case "known": return `Already recorded as ${entry.id}: ${entry.rule}. Nothing changed.`;
     case "fixed": return `Updated ${entry.id}: enforced by ${entry.enforcedBy} (${entry.ref}), ${entry.status}` +
       `${entry.handoff ? `; steps on ${entry.handoff.topics.join(", ")} go to ${entry.handoff.to}` : ""}.`;
     case "repeat": return `Repeat of ${entry.id} "${entry.rule}", first given ${entry.at.slice(0, 10)} in ${entry.chat.name || entry.chat.id}; ` +
-      `the owner has now repeated it ${entry.repeats.length} time${entry.repeats.length === 1 ? "" : "s"}, so ${entry.id} is reopened. ` +
+      `the owner has now repeated it ${entry.repeats.length} time${entry.repeats.length === 1 ? "" : "s"}, so ${entry.id} is reopened. ${AUTO_REFINE} ` +
       `The earlier fix (${entry.enforcedBy}: ${entry.ref}) did not hold. Make the smallest change that gets agents to follow the rule: first a ` +
       `brief, skill or prompt line where agents read it before they act, and a code gate only when measured repeats show the text did not hold, ` +
       `with those repeats named in the fix (c81). When the fix lands call ${CORRECTION_TOOL} with id "${entry.id}", its enforcedBy and the ref. ` +
