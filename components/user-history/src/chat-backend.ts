@@ -43,6 +43,7 @@ import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 import { promptView } from "./prompt-view.ts";
 import { prStates } from "./pr-states.ts";
+import { heldStartsOf, readHeldStarts } from "./held-starts.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -210,7 +211,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
       strays: readStrays,
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-      starting: chat => startsOf(fleet.queued(), chat),
+      starting: async chat => [...startsOf(fleet.queued(), chat), ...await heldStartsOf(await readHeldStarts(dataDir), registry, chat)],
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       interrupted: (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet, owners, cut => writeResumePending(dataDir, cut, Date.now())),
       held: now => readHeldTurns(dataDir, now),

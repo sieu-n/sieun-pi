@@ -255,7 +255,7 @@ export interface CheckInSource {
   /** The board.wakes the service still owes at a time (`pendingWakes`); the check-in counts a job asleep on one as working. Absent: none. */
   wakes?: (now: number) => Promise<readonly Wake[]>;
   /** The job names of a chat whose start or send-back waits in the fleet budget (`FleetBudget.queued`); the check-in reads their steps as moving. Absent: none. */
-  starting?: (chat: string) => readonly string[];
+  starting?: (chat: string) => readonly string[] | Promise<readonly string[]>;
   /**
    * Where the cleanup saves a job it ends while the job waits on a board step (`JobResumes`, src/job-resume.ts), and how it writes that step's
    * note (the board store's apply). Absent: such a job is kept.

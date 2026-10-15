@@ -1066,7 +1066,7 @@ export class Chats {
     const train = await readTrain(trainFile(this.source.home));
     const doneFacts = await this.doneFacts(id, board, rows);
     const precheck = checkInPrecheck(previous, facts, board, at,
-      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, starting: this.source.starting?.(id) ?? [], ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
+      { self, rows, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), jobs, heartbeats, queued, asleep, wakes, starting: await this.source.starting?.(id) ?? [], ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         owner: ownerSaid(this.messages(id) ?? []) });
     return { precheck, output: convergenceMisses(id, precheck.steps, precheck, await this.source.memory.ends(id), everyMs, at) };
   }
