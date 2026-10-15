@@ -262,11 +262,12 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!response.success) throw new Error(response.error);
     },
   };
-  // A job's wake waits for the fleet budget and stays due until it opens; a chat's own wake goes at once.
+  // A job's wake takes a place in the fleet budget's line and stays due until that place comes up; a chat's own wake goes at once. Its label
+  // is the full session id, so the check-in reads a step owned by that session as moving (`outsideMover`).
   const wakeMessage = { ...agentMessage, deliver: async (session: string, text: string): Promise<"sent" | "gone"> => {
     await held("wake");
     if (!(await chats.ids()).has(session)) {
-      const done = await fleet.tryAdmit({ kind: "wake", label: session.slice(0, 8) });
+      const done = await fleet.place({ kind: "wake", label: session });
       if (!done) throw new Error(`held by the fleet budget: ${await fleet.held() ?? "starts wait"}`);
       done(session);
     }

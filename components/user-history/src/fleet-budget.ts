@@ -93,6 +93,7 @@ interface Waiter { ask: FleetAsk; at: number; resolve: (done: FleetDone) => void
  */
 export class FleetBudget {
   private readonly waiting: Waiter[] = [];
+  private readonly places = new Map<string, { done?: FleetDone }>();
   private readonly fixes = new Map<string, { at: number; pending: boolean; session?: string }>();
   private reading: { at: number; gb: number | null; long: string | null } | null = null;
   private sinceRead = 0;
@@ -139,6 +140,29 @@ export class FleetBudget {
     if (await this.closed() !== null) return null;
     if (!(await this.fixFree(ask))) return null;
     return this.grant(ask);
+  }
+
+  /**
+   * For a start its caller asks again on every tick, such as a job's due wake: it goes now when `tryAdmit` lets it, and otherwise it takes a
+   * place in line under its kind and label, and a later call returns the grant once that place came up. `tryAdmit` alone never let such a
+   * start go while any start waited, and starts always waited: from 18:55Z to 20:58Z on 10-15 the budget admitted check-ins, fix jobs and
+   * send-backs, and it held the due wakes of 38 jobs 3,374 times and delivered none. census canary run slept from its 19:20Z wake on, and
+   * the Crawler VP check-in counted its steps stuck (service.log). A place shows in `queued()`, so the check-in counts its owner as moving.
+   */
+  async place(ask: FleetAsk): Promise<FleetDone | null> {
+    const key = `${ask.kind}\n${ask.label}`;
+    const held = this.places.get(key);
+    if (held) {
+      if (!held.done) return null;
+      this.places.delete(key);
+      return held.done;
+    }
+    const now = await this.tryAdmit(ask);
+    if (now) return now;
+    const entry: { done?: FleetDone } = {};
+    this.places.set(key, entry);
+    void this.admit(ask).then(done => { entry.done = done; });
+    return null;
   }
 
   /** Why a start asked now would wait, or null when it would go at once. */

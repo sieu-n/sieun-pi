@@ -107,13 +107,14 @@ export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" |
 
 /**
  * What moves steps from outside this chat's job facts: the pending board.wakes (`wakeWatches`), pi-pool's queue places by session id (queued
- * turns), and the job names of this chat whose start or send-back waits in the fleet budget (`FleetBudget.queued`). Absent: none.
+ * turns), and the labels that wait in the fleet budget (`FleetBudget.queued`): the job names of this chat whose start or send-back waits
+ * there, and the session ids whose due wake has its place there (`FleetBudget.place`). Absent: none.
  */
 export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>; starting?: ReadonlySet<string> }
 /**
  * Who moves a step that no working job of this chat holds: a session asleep on a board.wake (`wakeMover`), or a turn that waits for a working
  * slot in pi-pool's queue (its owner's, the session it stores, the chat's own for a step it owns, or the thread its wait names), or its job's
- * start waiting in the fleet budget. Each of those goes on by itself once its wake, slot or budget comes. launch main bro 10-15 19:16Z read 18
+ * start or its owner's due wake waiting in the fleet budget. Each of those goes on by itself once its wake, slot or budget comes. launch main bro 10-15 19:16Z read 18
  * of 19 steps stuck while the budget held its starts and the queue held its jobs' turns, so the check-in asked for owners it could not start.
  */
 export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, movers: Movers, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[],
@@ -131,6 +132,8 @@ export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, mo
   if (target && queued.has(target.id)) return `its wait is on ${target.name}, whose turn ${slot}`;
   const job = planJob(item.job);
   if (job !== undefined && movers.starting?.has(job)) return `its job ${job} waits for the fleet budget to start`;
+  const waking = [item.sessionId, stepOwner(item)].find(id => id !== undefined && movers.starting?.has(id));
+  if (waking) return `its owner ${item.job ?? waking.slice(0, 8)} has a due wake in the fleet budget's line`;
   return undefined;
 }
 
