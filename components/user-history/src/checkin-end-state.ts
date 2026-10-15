@@ -1,3 +1,4 @@
+import { bridgeHolds, ESCALATE_MS } from "./alert-bridge.ts";
 import { coversStep } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { ago, clip, ownerLabel, quote, STEP_STALE_MS, type StepView, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
@@ -39,7 +40,8 @@ export interface EndStateView { view: StepView; state: EndState; reason: string 
 
 /**
  * The end state of one open leaf step, rules in order. A parked step (an owner correction in force) and a step whose owner is a working job or a
- * working thread are fine; a step the chat owns is moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you
+ * working thread are fine; a step the chat owns is moving when it changed within STEP_STALE_MS and waits on nothing, and so is a step the alert
+ * bridge just added (`bridgeHolds`). Next an explicit For you
  * link (`heldByTodo`). Every other step is stuck, by what it waits on: the owner with no todo, a release, a CI run, another thread, an event,
  * a time; else its job ended or is gone, else it has no owner.
  */
@@ -51,6 +53,7 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${owner.wake ? `sleeps on ${owner.wake}` : "works on it"}`);
   const wait = item.waitFor ?? "";
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
+  if (bridgeHolds(item, view.changedAt, now)) return out("moving", `the alert bridge added it ${ago(now - view.changedAt)} ago and escalates it at ${ESCALATE_MS / 60_000} min`);
   if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");
   if (wait ? OWNER_WAIT.test(firstClause(wait)) : waitsOnOwner(item)) return out("owner_no_todo", "waits on the owner and no open For you todo links it");
   const thread = owner?.key.startsWith("thread:") === true;

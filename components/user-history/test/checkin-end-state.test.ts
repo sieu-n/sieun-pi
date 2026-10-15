@@ -8,6 +8,7 @@ import { createdRootChat } from "../src/chat-brief.ts";
 import { checkInPrecheck, checkInPrecheckText, convergenceMisses } from "../src/chat-checkin.ts";
 import { CHECK_IN_FOCUS } from "../src/chat-duty-run.ts";
 import { dutyJobBrief } from "../src/chat-duty-job.ts";
+import { ESCALATE_MS, type FiringAlert, resolveOps, stepNote, stepTitle } from "../src/alert-bridge.ts";
 import { endState, endStateKpi, endStateLine } from "../src/checkin-end-state.ts";
 import { type JobFact, LIVE_GAP_MS, liveWindowMs, stepView } from "../src/checkin-steps.ts";
 import { headlineLabel, metricsHeadlineFirst } from "../src/client/duty-cadence.ts";
@@ -106,4 +107,22 @@ test("liveness: a job counts as working for the chat's interval capped at 30 min
   assert.equal(LIVE_GAP_MS, 30 * MIN);
   assert.equal(liveWindowMs(2 * 60 * MIN), 30 * MIN, "AI harness and ops guy check in every 2 h; a job idle 1 h 50 min read as working");
   assert.equal(liveWindowMs(15 * MIN), 15 * MIN);
+});
+
+test("end state: a step the alert bridge just added is moving until ESCALATE_MS, then stuck with no owner, and its resolve line ends the hold", () => {
+  const alert: FiringAlert = { fingerprint: "3a1f09c2d7e4b5a6", startsAt: "2026-10-14T02:56:00.000Z", alertname: "Enrichment output stalled", labels: { severity: "warning" },
+    summary: "Visual enrichment completed ZERO jobs in the last 2h while more than 1000 due jobs wait.", url: "https://obs.virev.ai/alerting/grafana/enrich/view" };
+  const added = step("p360", { status: "todo", text: stepTitle(alert), note: stepNote(alert) });
+  const fresh = state(added, [], [], NOW - 6 * MIN);
+  assert.equal(fresh.state, "moving", "the 18:58 KST Crawler VP check-in counted p360 stuck 6 min after the bridge added it");
+  assert.match(fresh.reason, /alert bridge added it 6 min ago and escalates it at 30 min/);
+  assert.equal(view(added, [], [], NOW - 6 * MIN).cls, "live", "the step classes agree, so the precheck lists no orphan either");
+  assert.equal(state(added, [], [], NOW - ESCALATE_MS).state, "no_owner", "past the bridge's escalation the step is stuck again");
+  assert.equal(view(added, [], [], NOW - ESCALATE_MS).cls, "orphan");
+  const board = { plan: [added] } as unknown as ChatBoard;
+  const [resolve] = resolveOps(board, { key: "k", chat: "chat-1", step: "p360", at: "2026-10-14T02:59:00.000Z" });
+  const resolved = { ...added, note: (resolve as { note: string }).note };
+  assert.equal(state(resolved, [], [], NOW - MIN).state, "no_owner", "a resolved alert step with no owner needs the chat to close it");
+  assert.equal(state(step("p361", { status: "todo", note: "Grafana alert came up in chat." }), [], [], NOW - MIN).state, "no_owner", "only the bridge's own mark counts");
+  assert.equal(state({ ...added, waitFor: "the alert clears by itself" }, [], [], NOW - MIN).state, "event", "a wait the chat set takes over from the bridge");
 });

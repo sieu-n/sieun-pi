@@ -145,6 +145,18 @@ export function resolved(state: BridgeState, key: string): BridgeState {
 }
 
 const mark = (alert: FiringAlert): string => `Grafana alert ${alert.fingerprint}, firing since ${alert.startsAt}.`;
+const MARK = /^Grafana alert [\w-]{1,64}, firing since \S+\.$/m;
+
+/**
+ * Whether the bridge still holds a step it added: the note keeps its mark and no resolve line, the step has no job, thread or wait, and it last
+ * changed within ESCALATE_MS. The bridge wakes the chat when it adds the step, wakes it again after REWAKE_MS and escalates it at ESCALATE_MS,
+ * so nobody else needs to act in that window. On 10-15 the Crawler VP set a job 4.8 min (p350, p351) and 7.8 min (p360) after the bridge added
+ * the step, and two check-ins in between counted those steps stuck with no owner.
+ */
+export function bridgeHolds(item: Pick<PlanItem, "job" | "sessionId" | "note" | "waitFor" | "waitUntil">, changedAt: number, now: number): boolean {
+  return !item.job && !item.sessionId && !item.waitFor && !item.waitUntil && MARK.test(item.note ?? "") && !item.note!.includes(RESOLVED) &&
+    now - changedAt < ESCALATE_MS;
+}
 
 export function stepTitle(alert: FiringAlert): string {
   const first = alert.summary.split(/(?<=\.)\s+/)[0]?.trim() ?? "";
