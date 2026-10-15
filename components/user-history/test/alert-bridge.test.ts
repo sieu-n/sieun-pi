@@ -10,7 +10,7 @@ import { ALERT_GOAL, AlertBridge, alertKey, ESCALATE_MS, OWNERS_PATH, ownerRoute
 import { ALERT_ROUTES, routeAlert } from "../src/alert-routes.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { walkItems } from "../src/shared/chat-board.ts";
-import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
+import type { BoardOp, ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const NOW = Date.parse("2026-10-14T01:30:00Z");
 const MIN = 60_000;
@@ -83,19 +83,60 @@ test("alert bridge: the same alert firing on later ticks adds no second step and
   assert.equal(f.sent.length, 1);
 });
 
-test("alert bridge: a crash after the board write and before the state write adopts the step on the next tick instead of adding a second", async () => {
+test("alert bridge: a send that fails after the board write keeps the step tracked, and the next tick re-wakes it instead of adding a second", async () => {
   const f = await fixture([ciAlert]);
   f.failing.add(CI);
   await f.bridge.tick();
-  assert.equal((await f.steps(CI)).length, 1);
-  assert.deepEqual((await f.state().catch(() => ({ alerts: {} }))).alerts, {});
+  const [placed, ...extra] = await f.steps(CI);
+  assert.equal(extra.length, 0);
+  const key = alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:00:00.000Z" });
+  assert.deepEqual((await f.state()).alerts[key], { chat: CI, step: placed!.id, alertname: "CI runner queue over 30 min", startsAt: "2026-10-14T01:00:00.000Z", wokeAt: 0, firstWokeAt: NOW });
   f.failing.clear();
+  f.at(NOW + 30_000);
+  await f.bridge.tick();
+  assert.deepEqual((await f.steps(CI)).map(step => step.id), [placed!.id]);
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0]!.text, new RegExp(`Still firing with no job on the step: ${placed!.id} "`));
+  assert.equal((await f.state()).alerts[key]!.wokeAt, NOW + 30_000);
+});
+
+test("alert bridge: a crash after the board write and before the state write adopts the step on the next tick instead of adding a second", async () => {
+  const f = await fixture([ciAlert]);
+  await f.bridge.tick();
+  await rm(join(f.dir, "alert-bridge.json"));
   f.at(NOW + 30_000);
   await f.bridge.tick();
   const steps = await f.steps(CI);
   assert.equal(steps.length, 1);
-  assert.equal(f.sent.length, 1);
   assert.equal((await f.state()).alerts[alertKey({ fingerprint: "aaaa000000000001", startsAt: "2026-10-14T01:00:00.000Z" })]!.step, steps[0]!.id);
+});
+
+test("alert bridge: replay of 10-15 12:41Z, the daemon times out every send and the Crawler VP rewrites each note, and each firing stays one step", async () => {
+  const at = Date.parse("2026-10-15T12:42:00Z");
+  const firing = (fingerprint: string, startsAt: string, labels: Record<string, string>, summary: string) =>
+    ({ ...raw(fingerprint, labels), startsAt, annotations: { summary } });
+  const walk = firing("9b275075b2c23fd0", "2026-10-15T12:41:10.000Z",
+    { alertname: "Production crawler health snapshot failing", __alert_rule_uid__: "crawler-prod-health-snapshot-down", job: "crawler-v3", snapshot: "engage_walk_sizes", world: "prod" },
+    "The engage_walk_sizes health snapshot has failed for 10 minutes, so its gauges hold stale values.");
+  const read = firing("4c1d2e3f40516273", "2026-10-15T12:41:10.000Z",
+    { alertname: "Staging crawler health read over 2 s", __alert_rule_uid__: "crawler-staging-health-slow", job: "crawler-v3", world: "staging" }, "");
+  const f = await fixture([walk, read]);
+  f.failing.add(CRAWLER);
+  for (let tick = 0; tick < 6; tick++) {
+    f.at(at + tick * 70_000);
+    await f.bridge.tick();
+    const board = (await f.boards.read(CRAWLER))!;
+    const ops: BoardOp[] = [];
+    walkItems(board.plan, item => {
+      if (item.note?.startsWith("Grafana alert ")) ops.push({ op: "plan_update", id: item.id, note: `Prod snapshot again (12:41Z). Land 37 fixes it.` });
+    });
+    if (ops.length) await f.boards.apply(CRAWLER, ops, "agent");
+  }
+  const ids: string[] = [];
+  walkItems((await f.boards.read(CRAWLER))!.plan, item => { if (/health (snapshot has failed|read over 2 s)/.test(item.text)) ids.push(item.id); });
+  assert.equal(ids.length, 2);
+  const state = await f.state();
+  assert.deepEqual(Object.values(state.alerts).map(tracked => tracked.step).sort(), [...ids].sort());
 });
 
 test("alert bridge: a re-wake goes out every REWAKE_MS while the step is open with no job, and stops once a job owns it", async () => {

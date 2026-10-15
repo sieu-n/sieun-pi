@@ -123,11 +123,17 @@ export function reconcile(alerts: readonly FiringAlert[], state: BridgeState, st
   return { notices: [...notices.values()], resolves, escalate };
 }
 
-export function noticed(state: BridgeState, notice: ChatNotice, placed: ReadonlyMap<string, string | null>, now: number): BridgeState {
+/**
+ * The state after `notice` went out at `now`. `wokeAt` 0 records the placed steps before the send, so a send that fails or times out leaves the
+ * alert tracked (no second step on the next tick) and its re-wake due at once. 10-15 12:41 to 13:46Z the daemon timed out send_message after
+ * 30 s on most ticks; the state was written only after the send, and the Crawler VP had rewritten each step's note without the bridge's mark,
+ * so every tick added a new step for each still-firing alert (p404 to p490, p500 to p502).
+ */
+export function noticed(state: BridgeState, notice: ChatNotice, placed: ReadonlyMap<string, string | null>, now: number, wokeAt = now): BridgeState {
   const alerts = { ...state.alerts };
   for (const alert of notice.add) {
     const step = placed.get(alertKey(alert));
-    if (step !== undefined) alerts[alertKey(alert)] = { chat: notice.chat, step, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now };
+    if (step !== undefined) alerts[alertKey(alert)] = { chat: notice.chat, step, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt, firstWokeAt: now };
   }
   for (const key of notice.rewake) if (alerts[key]) alerts[key] = { ...alerts[key], wokeAt: now };
   return { ...state, alerts };
@@ -269,7 +275,10 @@ export class AlertBridge {
       try {
         state = await this.notify(notice, state, steps, now);
         await this.write(state);
-      } catch (error) { this.deps.log(`alerts: notice to ${notice.chat.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`); }
+      } catch (error) {
+        state = await this.read().catch(() => state);
+        this.deps.log(`alerts: notice to ${notice.chat.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
+      }
     }
     if (escalate.length) {
       try {
@@ -323,6 +332,8 @@ export class AlertBridge {
         placed = plan.steps;
         return plan.ops;
       }, "agent");
+      state = noticed(state, { ...notice, rewake: [] }, placed, now, 0);
+      await this.write(state);
     }
     const added = notice.add.map(alert => ({ step: placed.get(alertKey(alert))!, title: stepTitle(alert), alertname: alert.alertname, startsAt: alert.startsAt }));
     const waiting = notice.rewake.map(key => {
