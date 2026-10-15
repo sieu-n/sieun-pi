@@ -17,6 +17,11 @@ const row = (email: string, extra: Record<string, unknown> = {}) => ({ email, us
 const PASSING: [RegExp, ExecResult][] = [
   [/^cua-driver permissions/, ok(JSON.stringify({ accessibility: true, screen_recording: true }))],
   [/^cua-driver check-update/, ok(JSON.stringify({ update_available: false, error: null, current_version: "0.34.1", latest_version: "0.34.1" }))],
+  [/^cua-driver status$/, ok("Cua Driver daemon is running\n  pid: 9\n")],
+  [/^cua-driver update --apply/, ok("Installed cua-driver 0.34.2.\n")],
+  [/^cua-driver stop/, ok("")],
+  [/^cua-driver --version/, ok("cua-driver 0.34.2\n")],
+  [/^open -n -g -a CuaDriver --args serve/, ok("")],
   [/^python -c import websearch/, ok("/src/websearch/src/websearch/__init__.py\n")],
   [/^python -c import asyncio/, ok("Result 1: Prime Intellect\nURL: https://www.primeintellect.ai/\ncost: 0.003 balance left: 9\n")],
   [/^aside account status/, ok("* u0  owner@example.com  signed in  profiles: Profile 0\n")],
@@ -107,7 +112,7 @@ function fakeDeps(fake: Fake = {}): Deps & { calls: string[] } {
     realpath: async path => path.endsWith("prime-agent/bin/prime-agent") ? `${RELEASE}/prime-agent` : path.endsWith(".prime/agent/skills/websearch") ? "/src/websearch" : path,
     list: async path => folders[path] ?? [],
     loadResolver: async () => async (_repo, id) => { fake.resolve?.(id); },
-    home: HOME, repo: REPO, scratchDir: "/scratch", now: () => NOW,
+    home: HOME, repo: REPO, scratchDir: "/scratch", now: () => NOW, sleep: async () => {},
   };
 }
 
@@ -118,7 +123,7 @@ async function run(fake: Fake = {}) {
 }
 const kindOf = (output: ReturnType<typeof toOutput>, id: string) => output.flagged?.find(item => item.item === id)?.kind;
 
-test("skills and tools: ids are unique, every group is used, and the duty file's metrics are the keys the precheck writes", async () => {
+test("skills and tools: ids are unique, every group is used, and the duty file has one headline and at most 3 more metrics, all written by the precheck", async () => {
   assert.equal(new Set(CHECKS.map(check => check.id)).size, CHECKS.length);
   assert.deepEqual([...new Set(CHECKS.map(check => check.group))].sort(),
     ["accounts", "browser", "computer use", "mcp", "peers", "prime skills", "repo skills", "service clis", "web search"]);
@@ -126,7 +131,9 @@ test("skills and tools: ids are unique, every group is used, and the duty file's
   assert.equal(duty.name, "Skills and tools");
   assert.deepEqual(duty.schedule, { kind: "daily", at: "04:30" });
   const { output } = await run();
-  assert.deepEqual(duty.metrics.map(metric => metric.key).sort(), Object.keys(output.metrics).sort());
+  assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["checks_failed"]);
+  assert.ok(duty.metrics.length <= 4);
+  for (const metric of duty.metrics) assert.ok(metric.key in output.metrics, metric.key);
 });
 
 test("skills and tools: with every tool answering its pass text, all 30 checks pass", async () => {
@@ -146,8 +153,9 @@ const cases: { name: string; fake: Fake; id: string; kind: string; metrics?: Rec
     fake: { mcp: { "cua-driver": { tools: ["health_report", "kill_app"], result: { structuredContent: { overall: "fail", checks: [{ name: "tcc_screen_recording", status: "fail", message: "not granted" }] } } } } } },
   { name: "a stale disabledTools name", id: "cua_mcp", kind: "fail_agent", excerpt: /kill_app/,
     fake: { mcp: { "cua-driver": { tools: ["health_report"], result: { structuredContent: { overall: "ok", checks: [] } } } } } },
-  { name: "cua update available", id: "cua_version", kind: "fail_owner", excerpt: /from 0\.31\.0 to 0\.34\.1/,
-    fake: { exec: [[/^cua-driver check-update/, ok(JSON.stringify({ update_available: true, error: null, current_version: "0.31.0", latest_version: "0.34.1" }))]] } },
+  { name: "cua update that does not install", id: "cua_version", kind: "fail_agent", metrics: { cua_failed: 1 }, excerpt: /update --apply from 0\.34\.1 to 0\.34\.2: exit 1: curl failed/,
+    fake: { exec: [[/^cua-driver check-update/, ok(JSON.stringify({ update_available: true, error: null, current_version: "0.34.1", latest_version: "0.34.2" }))],
+      [/^cua-driver update --apply/, ok("", 1, "curl failed")]] } },
   { name: "websearch kernel path under releases", id: "websearch_kernel", kind: "fail_agent", metrics: { websearch_failed: 1 }, excerpt: /prime-agent-skill-websearch/,
     fake: { exec: [[/^python -c import websearch/, ok(`${RELEASE}/skills/websearch/src/websearch/__init__.py\n`)]] } },
   { name: "Virev degraded NOTE", id: "websearch_query", kind: "fail_agent", metrics: { websearch_failed: 1 }, excerpt: /DuckDuckGo fallback/,
@@ -161,13 +169,13 @@ const cases: { name: string; fake: Fake; id: string; kind: string; metrics?: Rec
     fake: { exec: [[/^pi-pool ls --json --provider openai-codex/, ok(JSON.stringify({ rows: [row("c@example.com", { limited_until: NOW / 1000 + 3 * 86_400 })] }))]] } },
   { name: "skill folder whose name mismatches", id: "skill_files", kind: "fail_agent", excerpt: /frontmatter name "web-search" is not the folder name/,
     fake: { files: { [`${HOME}/.prime/agent/skills/websearch/SKILL.md`]: SKILL("web-search") } } },
-  { name: "a stale settings skills entry", id: "skill_files", kind: "fail_agent", excerpt: /-\/h\/gone/,
-    fake: { files: { [`${HOME}/.prime/agent/settings.json`]: JSON.stringify({ ...SETTINGS, skills: ["-/h/gone"] }) } } },
+  { name: "a settings skills entry that loads nothing", id: "skill_files", kind: "fail_agent", excerpt: /load nothing: \+\/h\/gone, ~\/gone-too/,
+    fake: { files: { [`${HOME}/.prime/agent/settings.json`]: JSON.stringify({ ...SETTINGS, skills: ["+/h/gone", "~/gone-too", "-/h/gone-off", "!old-*"] }) } } },
   { name: "a model the Mac cannot reach", id: "model_policy", kind: "fail_agent", excerpt: /openai-codex\/gpt-6-astra/,
     fake: { exec: [[/^prime-agent --offline model list/, ok("provider model\nanthropic claude-opus-5-5 1M\n")]] } },
   { name: "ssh key refused", id: "ssh_metal", kind: "fail_owner", fake: { exec: [[/^ssh /, ok("", 255, "root@203.0.113.10: Permission denied (publickey).")]] } },
-  { name: "wiki took no view", id: "skill_reader", kind: "fail_agent", excerpt: /did not take the view/,
-    fake: { exec: [[/^node scripts\/skills\/read-skill/, ok("---\nname: llm-wiki\n", 0, "[read-skill] tracked view recorded offline in wiki.db (connect ECONNREFUSED)")]] } },
+  { name: "a skill read that fails", id: "skill_reader", kind: "fail_agent", excerpt: /Cannot find module/,
+    fake: { exec: [[/^node scripts\/skills\/read-skill/, ok("", 1, "Error: Cannot find module 'yaml'")]] } },
   { name: "an id that does not resolve", id: "skill_ids", kind: "fail_agent", excerpt: /codex-in-claude \(Skill not found\)/,
     fake: { resolve: id => { if (id === "codex-in-claude") throw new Error("Skill not found"); } } },
   { name: "a link missing from HEAD", id: "claude_links_committed", kind: "fail_agent", excerpt: /links missing from HEAD: apps-llm-wiki/,
@@ -280,4 +288,55 @@ test("realMcp: initialize, tools/list and tools/call against a fake stdio server
     const missing = await mcp(join(folder, "no-such-server"), [], undefined, 2000);
     assert.match(missing.error ?? "", /ENOENT/);
   } finally { await rm(folder, { recursive: true, force: true }); }
+});
+
+test("skills and tools: a newer cua-driver is installed and its daemon restarted before the other computer use checks run", async () => {
+  const { outcome, deps, output } = await run({ exec: [
+    [/^cua-driver check-update/, ok(JSON.stringify({ update_available: true, error: null, current_version: "0.34.1", latest_version: "0.34.2" }))],
+    [/^cua-driver update --apply/, ok("Installed cua-driver 0.34.2.\n")],
+    [/^cua-driver status$/, ok("Cua Driver daemon is not running\n")],
+    [/^open -n -g/, ok("")],
+  ] });
+  assert.equal(outcome("cua_version").status, "fail");
+  assert.match(outcome("cua_version").detail, /daemon did not start within 15 s/);
+  assert.ok(deps.calls.indexOf("cua-driver update --apply") < deps.calls.indexOf("cua-driver stop"));
+  assert.equal(output.metrics.cua_failed, 1);
+
+  const ordered = fakeDeps({ exec: [[/^cua-driver check-update/, ok(JSON.stringify({ update_available: true, error: null, current_version: "0.34.1", latest_version: "0.34.2" }))]] });
+  const results = await runChecks(ordered);
+  assert.deepEqual(results.map(result => result.check.id), CHECKS.map(check => check.id));
+  assert.deepEqual(results.find(result => result.check.id === "cua_version")!.outcome, { status: "pass", detail: "updated 0.34.1 to 0.34.2 and restarted the daemon" });
+  const last = (call: RegExp) => ordered.calls.findLastIndex(item => call.test(item));
+  assert.ok(last(/^cua-driver --version/) < ordered.calls.indexOf("cua-driver permissions status --json"), ordered.calls.join("\n"));
+});
+
+test("skills and tools: a stopped cua daemon is started and the grants are read again", async () => {
+  const deps = fakeDeps();
+  let daemon = false;
+  const exec = deps.exec;
+  deps.exec = async (program, args, options) => {
+    const key = `${basename(program)} ${args.join(" ")}`;
+    if (key === "cua-driver permissions status --json") { deps.calls.push(key); return ok(JSON.stringify(daemon ? { accessibility: true, screen_recording: true } : { daemon_running: false, status: "unknown" })); }
+    if (key === "cua-driver status") { deps.calls.push(key); return ok(daemon ? "Cua Driver daemon is running\n" : "Cua Driver daemon is not running\n"); }
+    if (key.startsWith("open -n -g -a CuaDriver")) daemon = true;
+    return exec(program, args, options);
+  };
+  const [result] = await runChecks(deps, CHECKS.filter(check => check.id === "cua_permissions"));
+  assert.deepEqual(result!.outcome, { status: "pass", detail: "accessibility and screen recording granted (started the stopped daemon)" });
+
+  const stuck = fakeDeps({ exec: [[/^cua-driver permissions/, ok(JSON.stringify({ daemon_running: false, status: "unknown" }))], [/^cua-driver status$/, ok("Cua Driver daemon is not running\n")]] });
+  const [failed] = await runChecks(stuck, CHECKS.filter(check => check.id === "cua_permissions"));
+  assert.equal(failed!.outcome.status, "fail");
+  assert.match(failed!.outcome.detail, /did not start within 15 s/);
+  assert.equal(stuck.calls.filter(call => call === "cua-driver status").length, 16);
+});
+
+test("skills and tools: off-switches for removed skills pass, and a skill read the wiki did not log still passes", async () => {
+  const { outcome } = await run({
+    files: { [`${HOME}/.prime/agent/settings.json`]: JSON.stringify({ ...SETTINGS, skills: [...SETTINGS.skills, "-/h/.prime/agent/skills/interrogate", "-/h/.prime/agent/skills/principle-gone"] }) },
+    exec: [[/^node scripts\/skills\/read-skill/, ok("---\nname: llm-wiki\n", 0, "[read-skill] tracked view recorded offline in wiki.db (connect ECONNREFUSED)")]],
+  });
+  assert.deepEqual(outcome("skill_files"), { status: "pass", detail: "every skill folder and settings entry is valid (2 off-switches name skills that are gone)" });
+  assert.equal(outcome("skill_reader").status, "pass");
+  assert.match(outcome("skill_reader").detail, /the view waits in wiki\.db \(tracked view recorded offline/);
 });

@@ -1,37 +1,32 @@
 {
   "name": "Skills and tools",
   "ownerWords": "next to harness health can you put skills are configured correctly \ni think in particular\n- computer use (Cua)\n- search tool\nis there more? idk",
-  "goal": "Every skill and tool agents use on this Mac is installed, signed in and answers a real call: computer use (Cua), web search, the Aside browser, the MCP servers, the Prime skills, the Claude and Codex account sign-ins, the peer CLIs, the service CLIs and the repo skill reader. Tell the owner only what needs him.",
+  "goal": "Every skill and tool agents use on this Mac is installed, signed in and answers a real call, computer use (Cua) and web search first. The check fixes two things itself: it installs a new cua-driver and starts a stopped Cua daemon. Each target is 0 fails because the owner asked for every tool configured right.",
   "metrics": [
     {
       "key": "checks_failed",
       "label": "Skill and tool checks that fail",
       "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "owner_fixes",
-      "label": "Failed checks only the owner can fix",
-      "op": "<=",
-      "target": 0
+      "target": 0,
+      "headline": true
     },
     {
       "key": "cua_failed",
-      "label": "Failed computer use (Cua) checks",
+      "label": "Computer use (Cua) checks that fail",
       "op": "<=",
       "target": 0
     },
     {
       "key": "websearch_failed",
-      "label": "Failed web search checks",
+      "label": "Web search checks that fail",
       "op": "<=",
       "target": 0
     },
     {
-      "key": "checks_run",
-      "label": "Checks that ran",
-      "op": ">=",
-      "target": 25
+      "key": "owner_fixes",
+      "label": "Fails that only the owner can fix",
+      "op": "<=",
+      "target": 0
     }
   ],
   "schedule": {
@@ -48,6 +43,6 @@
     "cwd": "../..",
     "timeoutMs": 120000
   },
-  "onMiss": "Read each fail. Fix the agent ones yourself, one subagent per broken tool: config in ~/.prime/agent/settings.json, a stale skill text or link (commit auto-sns-agent skills with `node scripts/repo/agent/commit.mjs`; sieun-pi with a plain local commit), a CLI sign-in done in the owner's Aside browser, the websearch kernel copy. Re-check with `node --import tsx scripts/duties/skills-and-tools.ts --only <id>` in sieun-pi components/user-history. In your own kernel also run the read-only in-session calls: agent_observe.list_agents(), goal.get(), rlm_heartbeat.list(), compact.status(), mcp.list_connections(), aside_browser tabs, and await websearch(...) must not say \"not set up\". Put each owner fix (a password, a key, a macOS grant, approving a vendor install) in For you as one plain item with the exact step. off is not news. Never send anything outside.",
+  "onMiss": "Fix every fail until the run is green; never only report it. Read each fail's Fix line and change the cause: an entry in ~/.prime/agent/settings.json, a skill text or link (auto-sns-agent through `node scripts/repo/agent/commit.mjs`), a CLI or pi-pool sign-in in the owner's Aside browser, the websearch kernel install. If the check is wrong, or a tool breaks the same way twice, change scripts/duties/skills-and-tools.ts in sieun-pi with a test so the check heals it, then commit and release. Re-check with `node --import tsx scripts/duties/skills-and-tools.ts --only <id>` in sieun-pi components/user-history until it passes. Only a password, a 2FA prompt, a key or a macOS grant goes to the owner, as one For you item with the exact step. off is not a fail. Never send anything outside.",
   "boardGoal": "p254"
 }

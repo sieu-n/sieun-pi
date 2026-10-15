@@ -10,6 +10,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The Skills and tools duty's precheck (`node --import tsx scripts/duties/skills-and-tools.ts [--only id,id]`): whether every skill and tool agents
  * use on this Mac is installed, signed in and answers a real call. Each check runs a CLI with argv (no shell) or speaks raw MCP over stdio, all in
  * parallel with their own timeouts. No model call, nothing sent outside; the one paid call is a single Virev web search ($0.003 at most).
+ * It fixes two things itself, because agents did both by hand on every run that hit them: it installs a newer stable cua-driver (cua_version) and
+ * starts a stopped CuaDriver daemon (cua_permissions, cua_version).
  * The research behind each pass rule is in the auto-sns-agent session folder sessions/2026/10/10/1617-skills-and-tools-duty.
  * A `--only` run is the duty job's re-check after a fix; it is also appended to RECHECKS_FILE (RECHECKS_FILE env overrides the path).
  */
@@ -19,7 +21,8 @@ export type Group = "computer use" | "web search" | "browser" | "mcp" | "prime s
 export type Fixer = "agent" | "owner";
 /** pass; fail with who fixes it; off = installed but not running on purpose (Paper Desktop closed), never a failure. */
 export type Outcome = { status: "pass"; detail: string } | { status: "fail"; fixer: Fixer; detail: string; fix: string } | { status: "off"; detail: string };
-export interface Check { id: string; group: Group; tool: string; run: (deps: Deps) => Promise<Outcome> }
+/** `first` checks run before the rest, because they change what the others read (cua_version installs a new cua-driver and restarts its daemon). */
+export interface Check { id: string; group: Group; tool: string; first?: true; run: (deps: Deps) => Promise<Outcome> }
 
 export interface ExecResult { code: number; stdout: string; stderr: string; ms: number }
 export interface ExecOptions { cwd?: string; env?: Record<string, string>; timeoutMs: number; input?: string }
@@ -43,6 +46,8 @@ export interface Deps {
   repo: string;
   scratchDir: string;
   now: () => number;
+  /** Waits between polls; tests pass one that returns at once. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
@@ -76,6 +81,22 @@ async function mcpServer(deps: Deps, name: string): Promise<McpServer | string> 
   const server = settings.mcpServers?.[name];
   return server?.command ? server : `${paths(deps).settings} has no mcpServers["${name}"] entry with a command`;
 }
+/**
+ * Starts the CuaDriver daemon when it is down, the way `cua-driver permissions status` says to (`open -n -g -a CuaDriver --args serve`), and waits up
+ * to 15 s for `cua-driver status` to say it runs. Measured 10-15 08:52Z: `cua-driver update --apply` leaves no daemon, so every computer use call
+ * fails until something starts it again.
+ */
+async function ensureCuaDaemon(deps: Deps): Promise<boolean> {
+  const running = async () => /daemon is running/.test((await deps.exec(paths(deps).cua, ["status"], { timeoutMs: 10_000 })).stdout);
+  if (await running()) return true;
+  await deps.exec("open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"], { timeoutMs: 10_000 });
+  for (let tries = 0; tries < 15; tries++) {
+    if (await running()) return true;
+    await (deps.sleep ?? (ms => new Promise<void>(done => setTimeout(done, ms))))(1000);
+  }
+  return false;
+}
+
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);
 
 /** First `---` block of a SKILL.md: top-level `key: value` pairs, with quoted, folded (`>`/`|`) and indented continuation values joined. */
@@ -159,14 +180,21 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) 
 
 export const CHECKS: readonly Check[] = [
   { id: "cua_permissions", group: "computer use", tool: "cua-driver", run: async deps => {
-    const result = await deps.exec(paths(deps).cua, ["permissions", "status", "--json"], { timeoutMs: 10_000 });
-    if (result.code === 127) return FAIL("owner", "cua-driver is not installed", "approve installing cua-driver; it runs the vendor install script");
-    let status: { accessibility?: unknown; screen_recording?: unknown } = {};
-    try { status = parseJson(result.stdout) as typeof status; } catch { /* reported below */ }
-    if (status.accessibility === true && status.screen_recording === true) return PASS("accessibility and screen recording granted");
+    const ask = async () => {
+      const result = await deps.exec(paths(deps).cua, ["permissions", "status", "--json"], { timeoutMs: 10_000 });
+      let status: { accessibility?: unknown; screen_recording?: unknown; daemon_running?: unknown } = {};
+      try { status = parseJson(result.stdout) as typeof status; } catch { /* reported below */ }
+      return { result, status };
+    };
+    let { result, status } = await ask();
+    if (result.code === 127) return FAIL("agent", "cua-driver is not installed", "install it with `curl -fsSL https://cua.ai/driver/install.sh | bash`, then run `cua-driver permissions grant`");
+    const started = status.daemon_running === false && await ensureCuaDaemon(deps);
+    if (started) ({ result, status } = await ask());
+    if (status.accessibility === true && status.screen_recording === true) return PASS(`accessibility and screen recording granted${started ? " (started the stopped daemon)" : ""}`);
     if (status.accessibility === false || status.screen_recording === false)
       return FAIL("owner", `accessibility ${status.accessibility}, screen recording ${status.screen_recording}`, "run `cua-driver permissions grant` and click the macOS dialogs");
-    return FAIL("agent", `grant status unknown (${failText(result)})`, "start the daemon with `open -a CuaDriver` and re-check");
+    return FAIL("agent", `grant status unknown (${status.daemon_running === false ? "the daemon did not start within 15 s" : failText(result)})`,
+      "start the daemon with `open -n -g -a CuaDriver --args serve`, read `cua-driver doctor`, and re-check");
   } },
   { id: "cua_mcp", group: "computer use", tool: "cua-driver MCP", run: async deps => {
     const server = await mcpServer(deps, "cua-driver");
@@ -184,14 +212,25 @@ export const CHECKS: readonly Check[] = [
     if (stale.length) return FAIL("agent", `settings.json disabledTools names tools cua-driver no longer has: ${stale.join(", ")}`, "remove the stale names from mcpServers[\"cua-driver\"].disabledTools in ~/.prime/agent/settings.json");
     return PASS(`health ok, ${answer.tools.length} tools`);
   } },
-  { id: "cua_version", group: "computer use", tool: "cua-driver", run: async deps => {
+  /**
+   * A newer stable cua-driver is installed here, then the daemon restarts. Agents did this by hand on 10-14 (0.34.1 to 0.35.2) and 10-15 (0.35.2 to
+   * 0.35.4, 8 s): the macOS grants stayed, and the only break was the daemon left stopped. Releases came every 1 to 2 days (0.31.0 on 10-10, 0.35.4 on 10-15).
+   */
+  { id: "cua_version", group: "computer use", tool: "cua-driver", first: true, run: async deps => {
     const result = await deps.exec(paths(deps).cua, ["check-update", "--json"], { timeoutMs: 15_000 });
     let info: { update_available?: boolean; error?: unknown; current_version?: string; latest_version?: string } = {};
     try { info = parseJson(result.stdout) as typeof info; } catch { return FAIL("agent", `check-update gave no JSON (${failText(result)})`, "run `cua-driver check-update --json` and read the error"); }
     if (info.error) return FAIL("agent", `check-update error: ${brief(String(info.error), 200)}`, "run `cua-driver check-update --json` and read the error");
     if (info.update_available === false) return PASS(`latest ${info.current_version}`);
-    return FAIL("owner", `cua-driver ${info.current_version} is installed and ${info.latest_version} is out`,
-      `approve the cua-driver update from ${info.current_version} to ${info.latest_version}; it runs the vendor install script`);
+    const from = `${info.current_version} to ${info.latest_version}`;
+    const apply = await deps.exec(paths(deps).cua, ["update", "--apply"], { timeoutMs: 60_000 });
+    if (apply.code !== 0) return FAIL("agent", `cua-driver update --apply from ${from}: ${failText(apply)}`, "run `cua-driver update --apply` and read the installer error");
+    await deps.exec(paths(deps).cua, ["stop"], { timeoutMs: 10_000 });
+    const version = (await deps.exec(paths(deps).cua, ["--version"], { timeoutMs: 10_000 })).stdout.trim();
+    if (!await ensureCuaDaemon(deps)) return FAIL("agent", `updated ${from} but the daemon did not start within 15 s`, "run `open -n -g -a CuaDriver --args serve` and read `cua-driver doctor`");
+    if (info.latest_version && !version.includes(info.latest_version)) return FAIL("agent", `update --apply exited 0 but the binary says "${brief(version, 60)}", not ${info.latest_version}`,
+      "run `cua-driver update --apply` and read the installer output");
+    return PASS(`updated ${from} and restarted the daemon`);
   } },
   { id: "websearch_kernel", group: "web search", tool: "websearch skill", run: async deps => {
     const python = paths(deps).kernelPython;
@@ -292,16 +331,22 @@ export const CHECKS: readonly Check[] = [
         if (!fields.description?.trim()) problems.push(`${folder}: empty description`);
       }
     }
+    // `-path` turns a skill off and `!glob` hides a pattern, so either one naming a folder that is gone changes nothing today and keeps the owner's
+    // choice if the folder comes back (10-15: nine `-` entries for poteto skills the pack had removed). Only a `+path` or plain path must exist.
     const settings = JSON.parse(await deps.readFile(paths(deps).settings)) as { skills?: string[] };
     const stale: string[] = [];
+    let offForGone = 0;
     for (const raw of settings.skills ?? []) {
-      const entry = raw.replace(/^-/, "");
+      if (raw.startsWith("!")) continue;
+      const entry = raw.replace(/^[-+]/, "");
       const full = entry.startsWith("/") ? entry : entry.startsWith("~/") ? join(deps.home, entry.slice(2)) : join(releaseSkills, entry);
-      if (!await deps.exists(full)) stale.push(raw);
+      if (await deps.exists(full)) continue;
+      if (raw.startsWith("-")) offForGone++;
+      else stale.push(raw);
     }
-    if (stale.length) problems.push(`settings.json skills entries that point at nothing: ${stale.join(", ")}`);
-    return problems.length ? FAIL("agent", problems.join("; "), "fix the broken SKILL.md (commit in its repo) and delete stale skills entries from ~/.prime/agent/settings.json")
-      : PASS("every skill folder and settings entry is valid");
+    if (stale.length) problems.push(`settings.json skills entries that load nothing: ${stale.join(", ")}`);
+    return problems.length ? FAIL("agent", problems.join("; "), "fix the broken SKILL.md (commit in its repo) and delete the stale skills entries from ~/.prime/agent/settings.json")
+      : PASS(`every skill folder and settings entry is valid${offForGone ? ` (${offForGone} off-switches name skills that are gone)` : ""}`);
   } },
   { id: "model_policy", group: "prime skills", tool: "pstack model policy", run: async deps => {
     const policy = JSON.parse(await deps.readFile(paths(deps).pstack)) as { roles?: Record<string, unknown>; policy?: { allowed?: string[] } };
@@ -365,8 +410,11 @@ export const CHECKS: readonly Check[] = [
   } },
   { id: "skill_reader", group: "repo skills", tool: "read-skill.mjs", run: async deps => {
     const result = await deps.exec("node", ["scripts/skills/read-skill.mjs", "apps/llm-wiki"], { cwd: deps.repo, timeoutMs: 20_000 });
-    if (result.code === 0 && result.stdout.startsWith("---\nname: llm-wiki") && !result.stderr.trim()) return PASS("read apps/llm-wiki and recorded the view");
-    if (/recorded offline/.test(result.stderr)) return FAIL("agent", `the read worked but the wiki did not take the view: ${brief(result.stderr, 200)}`, "find why llm-wiki refused the view event (a down wiki belongs to the Local dev servers duty)");
+    const read = result.code === 0 && result.stdout.startsWith("---\nname: llm-wiki");
+    if (read && !result.stderr.trim()) return PASS("read apps/llm-wiki and recorded the view");
+    // The reader keeps the view in wiki.db when the llm-wiki server does not answer, so the skill read works and no view is lost (10-12 and 10-15 runs).
+    // The wiki server being down is the Local dev servers duty's miss, not a skill fault.
+    if (read && /recorded offline/.test(result.stderr)) return PASS(`read apps/llm-wiki; the view waits in wiki.db (${brief(result.stderr.replace(/^\[read-skill\]\s*/, ""), 120)})`);
     return FAIL("agent", `read-skill.mjs apps/llm-wiki: ${failText(result)}`, "fix the skill reader (a missing import usually needs `pnpm install`)");
   } },
   { id: "skill_ids", group: "repo skills", tool: "skill resolver", run: async deps => {
@@ -418,16 +466,20 @@ export const CHECKS: readonly Check[] = [
 
 export interface CheckResult { check: Check; outcome: Outcome; ms: number }
 
-/** Runs the checks in parallel; a thrown error or a check past its cap is that check's agent failure, never the run's. */
+/** Runs the `first` checks in parallel, then the rest in parallel, in CHECKS order; a thrown error or a check past its cap is that check's agent failure, never the run's. */
 export async function runChecks(deps: Deps, checks: readonly Check[] = CHECKS): Promise<CheckResult[]> {
-  return Promise.all(checks.map(async check => {
-    const start = deps.now();
-    let timer: NodeJS.Timeout | undefined;
-    const cap = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`the check ran past ${CHECK_TIMEOUT_MS} ms`)), CHECK_TIMEOUT_MS); });
-    const outcome = await Promise.race([check.run(deps), cap]).catch((error: unknown): Outcome =>
-      FAIL("agent", error instanceof Error ? error.message : String(error), "find why the check itself broke")).finally(() => clearTimeout(timer));
-    return { check, outcome, ms: deps.now() - start };
-  }));
+  const firsts = await Promise.all(checks.filter(check => check.first).map(check => runOne(deps, check)));
+  const rest = await Promise.all(checks.filter(check => !check.first).map(check => runOne(deps, check)));
+  return checks.map(check => (check.first ? firsts : rest).find(result => result.check === check)!);
+}
+
+async function runOne(deps: Deps, check: Check): Promise<CheckResult> {
+  const start = deps.now();
+  let timer: NodeJS.Timeout | undefined;
+  const cap = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`the check ran past ${CHECK_TIMEOUT_MS} ms`)), CHECK_TIMEOUT_MS); });
+  const outcome = await Promise.race([check.run(deps), cap]).catch((error: unknown): Outcome =>
+    FAIL("agent", error instanceof Error ? error.message : String(error), "find why the check itself broke")).finally(() => clearTimeout(timer));
+  return { check, outcome, ms: deps.now() - start };
 }
 
 /** Where a `--only` re-check is recorded, in the chat's duties folder, so Settings can show that a daily run's failures were fixed. */
