@@ -19,6 +19,8 @@ import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { linkableJobs, tellOwnerChecked } from "../src/tell-owner.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { loadWaitGuard } from "../src/load-wait.ts";
+import { FLEET_STATE_FILE } from "../src/fleet-budget.ts";
+import { fleetGuard, parseFleetState } from "../src/fleet-guard.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
 export default function historyExtension(pi: ExtensionAPI): void {
@@ -239,6 +241,12 @@ export default function historyExtension(pi: ExtensionAPI): void {
       if (marked || job || underChat) {
         const loadWait = loadWaitGuard(event.toolName, event.input);
         if (loadWait) return loadWait;
+        // A root job an agent starts itself waits for the fleet budget like the server's own (src/fleet-guard.ts).
+        if (event.toolName === "ipython") {
+          const state = parseFleetState(await readFile(join(dataDir(), FLEET_STATE_FILE), "utf8").catch(() => null));
+          const held = fleetGuard(event.toolName, event.input, state, Date.now());
+          if (held) return held;
+        }
       }
       const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
       if (rootChat && event.toolName === "ipython" && typeof event.input.code === "string") {
