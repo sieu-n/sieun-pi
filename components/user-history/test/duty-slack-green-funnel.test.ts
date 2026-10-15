@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -28,7 +28,27 @@ test("funnel: the cohort's paid share is the headline, the report's rates the re
   assert.deepEqual(metrics, { [HEADLINE]: 0.56, on_topic_visit_to_signup_pct: 1.38, signup_to_workspace_pct: 33.33, home_test_reach_pct: 90, home_test_people_24h: 28, signup_to_paid_pct: 6.67, source_errors: 0 });
   assert.deepEqual(sliceKinds(flagged), ["cohort", "window", "entry_class", "entry_class", "entry_class", "entry_class", "entry_class", "home_test"]);
   assert.match(flagged[0]!.excerpt, /entered 2026-08-20 to 2026-09-17 .* 1426 visitors, 65 signed up, 8 started Pro or bought the CLI within 28 days/);
-  assert.match(flagged.at(-1)!.excerpt, /27 of 30 real signed-out English home visitors got a home test exposure \(sg-exp-home-1\); 28 real people .* 37 real home visitors in any locale; last 7 days: 23 of 180$/);
+  assert.match(flagged.at(-1)!.excerpt, /27 of 30 real signed-out home visitors on any locale got a home test exposure \(sg-exp-home-1\); 28 real people .* 37 real home visitors signed in or out; last 7 days: 23 of 180$/);
+});
+
+test("funnel: slack-green-funnel.py counts a signed-out visit to the home page of every locale as a home test visitor, and no other page", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "funnel-py-"));
+  try {
+    const queries = join(dir, "queries.json");
+    await writeFile(join(dir, "conversion_targets.py"), "from datetime import timezone as _tz\nPROJECT_TZ = _tz.utc\nFILTERS = {}\nAPP_PATHS = ENTRY_CLASS = LIKELY_BOT = PURCHASES = \"1\"\n" +
+      "ON_TOPIC_CLASSES = []\ndef window_report(start, end):\n    return {}\n");
+    await writeFile(join(dir, "setup_acquisition_dashboard.py"), "LIKELY_BOT = \"0\"\nLOCALE = \"(/(en|ko|ja|zh-CN|es|fr|de|pt|ru|ar|hi))?\"\n");
+    await writeFile(join(dir, "posthog_blog.py"), `import json\ndef hogql(query, filters=None):\n    with open(${JSON.stringify(queries)}, "a") as out:\n        out.write(json.dumps(query) + "\\n")\n` +
+      "    return [[3, 2, 2, 5, 4, 4, []]] if 'eligible_exposed' in query else []\n");
+    const { stdout } = await promisify(execFile)("python3", [join(import.meta.dirname, "..", "scripts", "duties", "slack-green-funnel.py"), dir, "28"]);
+    assert.deepEqual(JSON.parse(stdout).home, { eligible: 3, eligible_exposed: 2, exposed: 2, eligible_7d: 5, eligible_exposed_7d: 4, home_visitors: 4, flags: [] });
+    const home = (await readFile(queries, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string).find(query => query.includes("eligible_exposed"))!;
+    const eligible = home.match(/countIf\((.*)\) > 0 AS home,/)![1]!;
+    const path = new RegExp(eligible.match(/match\(properties\.\$pathname, '([^']+)'\)/)![1]!);
+    for (const locale of ["en", "ko", "ja", "zh-CN", "es", "fr", "de", "pt", "ru", "ar", "hi"]) assert.ok(path.test(`/${locale}`) && path.test(`/${locale}/`), locale);
+    for (const other of ["/ko/blog", "/en/pricing", "/ko/home-test", "/xx"]) assert.ok(!path.test(other), other);
+    assert.match(eligible, /NOT match\(coalesce\(properties\.\$current_url, ''\), 'noredirect=true'\)/, "the signed-in path stays out");
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("funnel: a failed query or a window with no visitors is a source error, and any source error makes the headline a miss", () => {
@@ -41,7 +61,7 @@ test("funnel: a failed query or a window with no visitors is a source error, and
   assert.equal(homeDown.metrics[HEADLINE], 0);
   assert.equal(homeDown.metrics.on_topic_visit_to_signup_pct, 1.38);
   const noHomeVisitors = funnelMetrics({ ...REPORT, home: { ...REPORT.home!, eligible: 0, eligible_exposed: 0 } }, NOW);
-  assert.equal(noHomeVisitors.metrics.source_errors, 1, "0 signed-out English home visitors in a day means broken tracking");
+  assert.equal(noHomeVisitors.metrics.source_errors, 1, "0 signed-out home visitors in a day means broken tracking");
   assert.equal(noHomeVisitors.metrics.home_test_reach_pct, 0);
   const noCohort = funnelMetrics({ ...REPORT, cohort: null, cohort_error: null }, NOW);
   assert.equal(noCohort.metrics.source_errors, 1);

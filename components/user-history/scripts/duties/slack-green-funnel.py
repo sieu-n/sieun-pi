@@ -4,7 +4,7 @@ Usage: python3 slack-green-funnel.py <dir with slack-green's scripts/seo-agent> 
 
 slack-green-funnel.ts extracts slack-green's scripts/seo-agent and scripts/posthog from a git ref into a temp folder, so the 28-day numbers come
 from conversion_targets.py's own window_report (the funnel dashboard's definitions) without a checkout. It adds one query: real people (the
-dashboard's test, QA and likely-bot filters) who opened the English home page signed out (no ?noredirect=true, the signed-in path) in the
+dashboard's test, QA and likely-bot filters) who opened the home page of any locale signed out (no ?noredirect=true, the signed-in path) in the
 last 24 h and in the last 7 days, how many of them got an sg-exp-home exposure, and all real home visitors and flag callers in 24 h. It adds a second: the
 cohort of real visitors whose first real public page was 56 to 28 days ago, and how many of them signed up and then started Pro or bought
 the CLI within 28 days of that visit (the duty's headline). <weeks> adds one 7-day row per week before today, like conversion_targets.py --weeks.
@@ -23,8 +23,6 @@ weeks = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 sys.path.insert(0, str(seo_agent))
 
 HOME_TEST = "^sg-exp-home"
-# The locale the home test runs in, slack-green's HOME_EXPERIMENT_LOCALE (lib/home-experiment.ts); landing-ab-wrapper.tsx sends the exposure only there.
-HOME_TEST_LOCALE = "en"
 FOLLOW_DAYS = 28
 
 
@@ -51,10 +49,9 @@ def home_test():
 
     day = "timestamp >= now() - INTERVAL 24 HOUR"
     flag = f"event = '$feature_flag_called' AND match(properties.$feature_flag, '{HOME_TEST}')"
-    eligible = (
-        f"event = '$pageview' AND match(properties.$pathname, '^/{HOME_TEST_LOCALE}/?$') "
-        "AND NOT match(coalesce(properties.$current_url, ''), 'noredirect=true')"
-    )
+    # slack-green PR #256 (207d4d5, 10-15) runs the home test on the home page of all 11 locales, so a signed-out visit to any of them counts.
+    home = f"event = '$pageview' AND match(properties.$pathname, '^{LOCALE}/?$')"
+    eligible = f"{home} AND NOT match(coalesce(properties.$current_url, ''), 'noredirect=true')"
     rows = hogql(
         f"""
 SELECT countIf(home_24h) AS eligible, countIf(home_24h AND got) AS eligible_exposed, countIf(got_24h) AS exposed,
@@ -64,7 +61,7 @@ FROM (
     SELECT person_id,
            countIf({eligible}) > 0 AS home,
            countIf({eligible} AND {day}) > 0 AS home_24h,
-           countIf(event = '$pageview' AND match(properties.$pathname, '^{LOCALE}/?$') AND {day}) > 0 AS any_home_24h,
+           countIf({home} AND {day}) > 0 AS any_home_24h,
            countIf({flag}) > 0 AS got,
            countIf({flag} AND {day}) > 0 AS got_24h,
            groupUniqArrayIf(properties.$feature_flag, {flag} AND {day}) AS flags
