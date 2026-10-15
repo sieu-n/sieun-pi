@@ -100,3 +100,14 @@ test("prStates reads a folder's repo once, every asked PR in one GraphQL call, k
   const none = prStates(async () => { throw new Error("not a git repository"); }, () => now);
   assert.deepEqual(Object.fromEntries(await none("/tmp", ["5"])), {});
 });
+
+test("AI harness p490, p494 and p505 at 06:3xZ on 10-16: notes that say shipped or is live count for nothing, and only p505's met metric does", () => {
+  const live = JSON.parse(readFileSync(new URL("./fixtures/finished-open-ah-1016.json", import.meta.url), "utf8")) as { items: PlanItem[]; runs: DutyRunRecord[] };
+  assert.deepEqual(live.items.map(item => item.duty), ["d1/repeat_corrections", "d6/usable_pct_1h", "checkin/stalled_steps"]);
+  const metrics = metricFacts(live.runs);
+  // d1 repeat_corrections read 1 and d6 usable_pct_1h 77.8%; the check-in's after-job measure read stalled_steps 0.
+  assert.deepEqual(finishedOpen(board(live.items), facts({ metrics })).map(found => [found.item.id, found.reason]),
+    [["p505", "its metric checkin/stalled_steps is met on the duty's last run"]]);
+  const met = new Map([...metrics].map(([link, fact]) => [link, { ...fact, met: true }]));
+  assert.deepEqual(finishedOpen(board(live.items), facts({ metrics: met })).map(found => found.item.id), ["p490", "p494", "p505"], "each closes once its metric is met");
+});
