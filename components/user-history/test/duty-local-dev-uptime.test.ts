@@ -19,6 +19,7 @@ function deps(options: { answers?: Record<string, number | Error>; jlist?: strin
   const exec: Exec = async (file, args) => {
     if (file.endsWith("pm2")) { if (options.jlist === undefined) throw new Error("connect ENOENT rpc.sock"); return options.jlist; }
     if (file === "ps") return "  100 1\n  200 100\n";
+    if (file === "sysctl") return "{ 31.2 25.0 21.0 }\ntotal = 22528.00M  used = 22286.31M  free = 241.69M  (encrypted)\n";
     if (file === "footprint") return args.filter((_, index) => args[index - 1] === "-p").map(() => `phys_footprint: ${(options.footprintMb ?? 0) * 1024 * 1024 / 2} B\n`).join("");
     throw new Error(`unexpected ${file}`);
   };
@@ -49,7 +50,8 @@ test("local dev uptime: a non-200, a network error and repeated restarts are fla
   assert.deepEqual(output.metrics, { servers_not_answering: 2, wiki_footprint_mb: 5000, restarts: 5 });
   assert.ok(!run.urls.some(url => url.includes("crawler")));
   const kinds = output.flagged?.map(item => item.kind).sort();
-  assert.deepEqual(kinds, ["answer", "by_design", "down", "down", "memory", "restarts", "restarts"]);
+  assert.deepEqual(kinds, ["answer", "by_design", "down", "down", "mac", "memory", "restarts", "restarts"]);
+  assert.match(output.flagged!.find(item => item.kind === "mac")!.excerpt, /^Mac at the probe: load \{ 31\.2 25\.0 21\.0 \} total = 22528\.00M/);
 });
 
 test("local dev uptime: a 200 slower than 5 s counts as not answering", async () => {

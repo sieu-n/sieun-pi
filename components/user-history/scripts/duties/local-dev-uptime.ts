@@ -116,6 +116,10 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   }));
   metrics.servers_not_answering = answers.filter(answer => answer.kind === "down").length;
   flagged.push(...answers);
+  if (metrics.servers_not_answering) {
+    const mac = await deps.exec("sysctl", ["-n", "vm.loadavg", "vm.swapusage"]).catch((error: unknown) => `sysctl failed: ${String(error)}`);
+    flagged.push({ at, kind: "mac", excerpt: `Mac at the probe: load ${mac.replace(/\s+/g, " ").trim()}`.slice(0, 300) });
+  }
 
   let list: Pm2Process[];
   try {
