@@ -8,7 +8,7 @@ const { dutiesCount, lastLabel, VERDICT_WORDS } = await import("../src/client/du
 
 const NOW = Date.parse("2026-10-10T09:00:00Z");
 const run = (verdict: DutyRunRecord["verdict"], minutesAgo: number): DutyRunRecord => ({ at: NOW - minutesAgo * 60_000, verdict, metrics: {}, summary: "" } as unknown as DutyRunRecord);
-const view = (runs: DutyRunRecord[]): DutyView => ({ duty: { id: "d1", name: "Chat system" }, schedule: { kind: "every", minutes: 15 }, paused: false, nextAt: NOW, running: false, runs } as unknown as DutyView);
+const view = (runs: DutyRunRecord[]): DutyView => ({ duty: { id: "d1", name: "Chat system", metrics: [] }, schedule: { kind: "every", minutes: 15 }, paused: false, nextAt: NOW, running: false, runs } as unknown as DutyView);
 
 test("duty card words: a run whose numbers came up short is 'off target' with its streak; 'missed' is only a slot that did not run (owner 10-10, p256)", () => {
   assert.equal(VERDICT_WORDS.missed, "off target");

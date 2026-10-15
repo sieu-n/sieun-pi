@@ -1,12 +1,13 @@
-import type { DutyMetric, DutyRunRecord, DutyView, FixLink } from "../shared/chat-duties.ts";
+import { type DutyMetric, type DutyRunRecord, type DutyView, type FixLink, MAX_DUTY_METRICS, shapeNote, verdictMetrics } from "../shared/chat-duties.ts";
 import { effectiveRun, metricStreaks } from "../shared/duty-streak.ts";
 import type { ChatAgent } from "../shared/types.ts";
-import { headlineLabel, metricText, metricsHeadlineFirst } from "./duty-cadence.ts";
+import { headlineLabel, metricText } from "./duty-cadence.ts";
 
 /**
  * What a duty's card shows so the owner sees the system push (owner 10-15: "the duty system is actively pushing for code changes fixing and
  * trying to be green"): the headline metric first, one miss line per missed metric with its streak, whether it is stuck and its fix job, and the
- * labels of the metrics on target. Every verdict is the run's after-job measure when it has one (`effectiveRun`).
+ * labels of the metrics on target. Every verdict is the run's after-job measure when it has one (`effectiveRun`), over the duty's counted
+ * metrics only (`verdictMetrics`): runs from before the shape rule still hold all 38 Chat system numbers, and the rest stay in the run detail.
  */
 
 /** A missed metric's fix: its job and whether that job works now, or none, which is the gap the owner must see. */
@@ -33,6 +34,8 @@ export interface DutyCardModel {
   streak: number;
   /** The duty job the newest run started, and whether it works now. */
   job: { name: string; live: boolean } | null;
+  /** For a duty over the shape rule (`shapeNote`), the line that tells the owner its chat must rework it; else null. */
+  shape: string | null;
 }
 
 /**
@@ -51,20 +54,42 @@ const fixState = (fix: FixLink | undefined, agents: readonly ChatAgent[]): FixSt
   return { kind: "idle", ...(fix.job ? { job: fix.job } : {}), step: fix.step };
 };
 
+/**
+ * A run as the card judges it: its after-job measure (`effectiveRun`) over the counted metrics only. A measured run is missed when one of them
+ * missed; skipped and error runs keep their verdict.
+ */
+export function judgedRun(run: DutyRunRecord, metrics: readonly DutyMetric[]): Pick<DutyRunRecord, "verdict" | "metrics" | "summary"> {
+  const judged = effectiveRun(run);
+  if (judged.verdict !== "met" && judged.verdict !== "missed") return judged;
+  const counted = Object.fromEntries(verdictMetrics(metrics).flatMap(metric => judged.metrics[metric.key] ? [[metric.key, judged.metrics[metric.key]!] as const] : []));
+  const results = Object.values(counted);
+  if (!results.length) return judged;
+  return { verdict: results.some(result => !result.met) ? "missed" : "met", metrics: counted, summary: judged.summary };
+}
+
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
 
-/** Measured runs in a row whose verdict, after their job, was off target. */
-export const missStreak = (runs: readonly DutyRunRecord[]): number => {
+/** Measured runs in a row whose counted metrics, after their job, came up short. */
+export const missStreak = (runs: readonly DutyRunRecord[], metrics: readonly DutyMetric[]): number => {
   let count = 0;
-  for (const run of runs.filter(measured)) { if (effectiveRun(run).verdict !== "missed") break; count += 1; }
+  for (const run of runs.filter(measured)) { if (judgedRun(run, metrics).verdict !== "missed") break; count += 1; }
   return count;
 };
+
+/** "This duty has 38 metrics, over the limit of one headline and 3 more. The card counts only the first 4 until its chat reworks it." */
+function shapeLine(metrics: readonly DutyMetric[]): string | null {
+  if (!shapeNote(metrics)) return null;
+  const headlines = metrics.filter(metric => metric.headline).length;
+  const has = metrics.length > MAX_DUTY_METRICS ? `${metrics.length} metrics, over the limit of one headline and ${MAX_DUTY_METRICS - 1} more`
+    : headlines ? `${headlines} headline metrics, over the limit of one` : "no headline metric";
+  return `This duty has ${has}. The card counts only ${verdictMetrics(metrics).length === 1 ? "the first one" : `the first ${verdictMetrics(metrics).length}`} until its chat reworks it.`;
+}
 
 const missText = (metric: DutyMetric, value: number): string =>
   `${metric.label} ${metricText(value, metric.unit)}, target ${metric.op === "<=" ? "at most" : "at least"} ${metricText(metric.target, metric.unit)}`;
 
 export function dutyCard(view: DutyView, agents: readonly ChatAgent[]): DutyCardModel {
-  const metrics = metricsHeadlineFirst(view.duty.metrics);
+  const metrics = verdictMetrics(view.duty.metrics);
   const headlineMetric = metrics[0]?.headline ? metrics[0] : undefined;
   const streaks = new Map(metricStreaks(view.runs).map(streak => [streak.key, streak]));
   const last = view.runs.find(measured);
@@ -81,7 +106,8 @@ export function dutyCard(view: DutyView, agents: readonly ChatAgent[]): DutyCard
     headlineMiss: headlineMetric ? lines.get(headlineMetric.key) ?? null : null,
     misses: others.flatMap(metric => lines.get(metric.key) ?? []),
     onTarget: others.filter(metric => results[metric.key]?.met === true).map(metric => metric.label),
-    streak: missStreak(view.runs),
+    streak: missStreak(view.runs, view.duty.metrics),
     job: newestJob ? { name: newestJob.name, live: jobLive(newestJob.name, agents) } : null,
+    shape: shapeLine(view.duty.metrics),
   };
 }

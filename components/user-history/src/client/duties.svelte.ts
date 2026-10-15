@@ -1,8 +1,7 @@
 import { get, OWNER_UI_HEADERS, post } from "./api.ts";
 import { clockTime } from "./format.ts";
 import type { DutyRunRecord, DutySchedule, DutyView } from "../shared/chat-duties.ts";
-import { effectiveRun } from "../shared/duty-streak.ts";
-import { missStreak } from "./duty-card.ts";
+import { judgedRun, missStreak } from "./duty-card.ts";
 
 export type DutyAction = "run" | "pause" | "resume" | "schedule";
 const route = (id: string) => "api/threads/" + encodeURIComponent(id) + "/duties";
@@ -11,13 +10,13 @@ export const dutiesApi = {
   act: (id: string, duty: string, action: DutyAction, schedule?: DutySchedule) => post<{ duties: DutyView[] }>(route(id), { duty, action, ...(schedule ? { schedule } : {}) }, undefined, OWNER_UI_HEADERS),
 };
 
-/** The dot a duty row shows: its last verdict after its job (`effectiveRun`), or running, paused, or new before its first run. */
+/** The dot a duty row shows: its last verdict after its job over its counted metrics (`judgedRun`), or running, paused, or new before its first run. */
 export type DutyState = "met" | "missed" | "error" | "paused" | "running" | "new";
 export function dutyState(view: DutyView): DutyState {
   if (view.running) return "running";
   if (view.paused) return "paused";
   const last = view.runs.find(run => run.verdict !== "skipped");
-  return last ? effectiveRun(last).verdict as Exclude<DutyRunRecord["verdict"], "skipped"> : "new";
+  return last ? judgedRun(last, view.duty.metrics).verdict as Exclude<DutyRunRecord["verdict"], "skipped"> : "new";
 }
 
 /** "daily 23:07", "every 30 min". */
@@ -57,8 +56,8 @@ export function lastLabel(view: DutyView, now: number): string {
   const last = view.runs.find(run => run.verdict !== "skipped");
   if (newest && newest.verdict === "skipped" && (!last || newest.at > last.at)) return `${VERDICT_WORDS.skipped} · ${whenLabel(newest.at, now)}`;
   if (!last) return "no run yet";
-  const judged = effectiveRun(last);
-  const streak = judged.verdict === "missed" ? missStreak(view.runs) : 0;
+  const judged = judgedRun(last, view.duty.metrics);
+  const streak = judged.verdict === "missed" ? missStreak(view.runs, view.duty.metrics) : 0;
   const word = `${VERDICT_WORDS[judged.verdict]}${last.after ? " after its job" : ""}${streak > 1 ? ` ${streak} runs in a row` : ""}`;
   return `${word} · ${whenLabel(last.after?.at ?? last.at, now)}`;
 }

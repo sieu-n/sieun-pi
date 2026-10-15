@@ -1,9 +1,9 @@
 <script lang="ts">
-  import type { DutyView } from "../shared/chat-duties.ts";
+    import { type DutyView, verdictMetrics } from "../shared/chat-duties.ts";
   import { CHANGE_APPROACH_MISSES, effectiveRun } from "../shared/duty-streak.ts";
   import type { ChatAgent } from "../shared/types.ts";
-  import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel, metricsHeadlineFirst } from "./duty-cadence.ts";
-  import { dutyCard, type MissLine } from "./duty-card.ts";
+  import { type CadenceDraft, cadenceDraft, cadenceSchedule, classesLabel, flaggedLabel } from "./duty-cadence.ts";
+  import { dutyCard, judgedRun, type MissLine } from "./duty-card.ts";
   import { dutyState, history, lastLabel, metricValue, nextLabel, scheduleLabel, VERDICT_WORDS, type ChatDuties } from "./duties.svelte.ts";
   import Icon from "./Icon.svelte";
   import IdChip from "./IdChip.svelte";
@@ -18,7 +18,8 @@
    * tag and its last run's open steps per class and what it flagged, and its cadence and pause are the chat's check-in setting (the header's control).
    * Each row names the chat's priority, which picks a new duty's morning band. Under the row the headline metric comes first, then one line per
    * missed metric with its miss streak, a stuck mark when it must change approach, and its fix job as a link or a gap mark when no live job fixes
-   * it (`dutyCard`). Every verdict is the run's after-job measure when it has one; the detail keeps the measure from before the job.
+   * it (`dutyCard`). Every verdict is the run's after-job measure when it has one, over the duty's counted metrics (`verdictMetrics`); a duty
+   * over the shape rule says its chat must rework it. The detail keeps the measure from before the job.
    */
   let { chat, duties, now, agents }: { chat: string; duties: ChatDuties; now: number; agents: readonly ChatAgent[] } = $props();
 
@@ -34,7 +35,7 @@
 
   const runTitle = (view: DutyView, index: number): string => {
     const run = history(view)[index]!;
-    const judged = effectiveRun(run);
+    const judged = judgedRun(run, view.duty.metrics);
     return `${new Date(run.at).toLocaleString()}: ${VERDICT_WORDS[judged.verdict]}${run.after ? " after its job" : ""}. ${run.error ?? judged.summary}`;
   };
   const lastRun = (view: DutyView) => view.runs.find(run => run.verdict !== "skipped");
@@ -88,12 +89,13 @@
         <p class="duty-headline">{card.headline}{#if card.headlineMiss}{@render marks(card.headlineMiss)}{/if}</p>
       {/if}
       {#each card.misses as line (line.key)}<p class="duty-miss">{line.text}{@render marks(line)}</p>{/each}
+      {#if card.shape}<p class="duty-shape">{card.shape}</p>{/if}
       {#if card.onTarget.length}<p class="duty-ok" use:tooltip={card.onTarget.join("\n")}>On target: {card.onTarget.join(", ")}</p>{/if}
       <p class="duty-last">
         <span class="duty-verdict {state}">{lastLabel(view, now)}</span>
         {#if view.runs.length}
           <span class="history" aria-label="Last {view.runs.length} runs, oldest first">
-            {#each history(view) as run, index (run.at)}<span class="run {run.verdict}" use:tooltip={runTitle(view, index)}></span>{/each}
+            {#each history(view) as run, index (run.at)}<span class="run {judgedRun(run, duty.metrics).verdict}" use:tooltip={runTitle(view, index)}></span>{/each}
           </span>
         {/if}
       </p>
@@ -112,7 +114,7 @@
           <table class="metrics">
             <thead><tr><th>Metric</th><th>Target</th><th>Last</th><th>Runs</th></tr></thead>
             <tbody>
-              {#each metricsHeadlineFirst(duty.metrics) as metric (metric.key)}
+              {#each verdictMetrics(duty.metrics) as metric (metric.key)}
                 {@const result = last ? effectiveRun(last).metrics[metric.key] : undefined}
                 <tr>
                   <td title={metric.key}>{metric.label}</td>
@@ -211,6 +213,7 @@
   .miss-mark { display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px; line-height: 15px; font-weight: 400; white-space: nowrap; }
   .miss-mark.stuck { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); }
   .miss-mark.gap { color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); }
+  .duty-shape { margin: 0; padding: 0 0 0 18px; font-size: 12px; line-height: 18px; color: var(--danger); }
   .duty-ok { margin: 0; padding: 0 0 0 18px; font-size: 11.5px; line-height: 17px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .duty-found .link-chip { vertical-align: bottom; }
   .job-state { margin-left: 6px; font-size: 11px; color: var(--text-faint); }
