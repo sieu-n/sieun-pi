@@ -180,7 +180,7 @@ test("merge gate: the check-in lists a merge step done without the owner's go as
   const kept: ChatBoard = { ...board, todos: [...board.todos, { id: "t3", text: "PR #123 merged without your go. Keep it?", done: true, from: "agent", at: "", step: "p2",
     choices: ["Yes, keep it", "No, revert it"], reply: "Yes, keep it", answeredBy: "owner" }] };
   assert.deepEqual(gateFindings(kept, []).map(gate => gate.kind), ["go_waiting"], "the owner's answer on that PR clears it");
-  assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "merges_without_go" && metric.target === 0));
+  assert.equal(NO_MISSES.merges_without_go, 0, "the check-in measure counts merges_without_go");
 });
 
 test("merge gate: while the c74 standing go is on, the brief, the job reply guideline and the duty job brief carry it, and git.md holds the rule word for word", async () => {

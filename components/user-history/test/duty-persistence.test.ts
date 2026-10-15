@@ -53,8 +53,9 @@ async function runner(input: { board: () => ChatBoard; live?: ReadonlySet<string
   const values = Object.fromEntries(Object.entries(newest.metrics).map(([key, result]) => [key, result.value]));
   const now = { at: newest.at };
   await store.update(CHAT, duties => {
-    duties.push({ ...parseDutyInput({ ...fixture.duty, schedule: { kind: "every", minutes: 60 }, precheck: { command: ["node", "-e", output(values)], cwd: tmpdir() } }, "d6", newest.at),
-      lastRunAt: now.at });
+    // The stored d6 predates the shape rule (6 metrics), so it goes in as stored rather than through add.ts's parse.
+    duties.push({ ...parseDutyInput({ ...fixture.duty, metrics: fixture.duty.metrics.slice(0, 4), schedule: { kind: "every", minutes: 60 },
+      precheck: { command: ["node", "-e", output(values)], cwd: tmpdir() } }, "d6", newest.at), metrics: fixture.duty.metrics, lastRunAt: now.at });
   });
   const jobs = fakeJobs();
   const lines: string[] = [];

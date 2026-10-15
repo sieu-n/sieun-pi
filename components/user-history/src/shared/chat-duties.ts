@@ -18,6 +18,31 @@ export interface DutyMetric { key: string; label: string; op: "<=" | ">="; targe
 /** The duty's headline metric, or undefined when none is marked. */
 export const headlineMetric = <M extends Pick<DutyMetric, "headline">>(metrics: readonly M[]): M | undefined => metrics.find(metric => metric.headline);
 /**
+ * A duty's shape: one headline metric plus at most 3 supporting ones. The owner (10-15): "the Duties list should be reasonably set meaningful
+ * things that are semantically meaningful (user can understand, manage)". On 10-15 26 of 30 duties missed their latest run while carrying 2
+ * to 38 metrics each, and one missed metric of 38 made a duty off target. Any other number stays in the precheck output (the run detail).
+ */
+export const MAX_DUTY_METRICS = 4;
+const SHAPE_FIX = 'keep the one number the owner would ask about as the headline ("headline": true), keep up to 3 supporting numbers he can read, ' +
+  "and leave the rest in the precheck output, where the run detail shows them";
+/** Why a duty's metrics break the shape (more than MAX_DUTY_METRICS, or not exactly one headline), with what to do; null for a good shape. */
+export function dutyShapeProblem(metrics: readonly Pick<DutyMetric, "key" | "headline">[]): string | null {
+  const headlines = metrics.filter(metric => metric.headline).map(metric => metric.key);
+  const problem = metrics.length > MAX_DUTY_METRICS ? `${metrics.length} metrics, over the limit of ${MAX_DUTY_METRICS}`
+    : !headlines.length ? "no headline metric"
+    : headlines.length > 1 ? `${headlines.length} headlines, ${headlines.join(" and ")}`
+    : null;
+  return problem && `metrics: a duty has one headline metric and at most 3 supporting ones; this one has ${problem}. Fix it: ${SHAPE_FIX}.`;
+}
+/**
+ * The metrics a run's verdict counts: all of a duty of good shape. A stored duty from before the shape rule counts its headline (the first
+ * metric when none is marked) and the next 3 in file order, until its chat reworks it with scripts/duties/add.ts.
+ */
+export function verdictMetrics<M extends Pick<DutyMetric, "headline">>(metrics: readonly M[]): M[] {
+  const lead = headlineMetric(metrics) ?? metrics[0];
+  return lead ? [lead, ...metrics.filter(metric => metric !== lead).slice(0, MAX_DUTY_METRICS - 1)] : [];
+}
+/**
  * The precheck: `command` is an argv run in `cwd` with no shell (a first word `node` is this server's node). It gets the env STATE_FILE (its JSON
  * state, kept between runs, only when it exits 0), LAST_RUNS_FILE (the duty's last 10 run records) and OUTPUT_FILE, and writes a `PrecheckOutput`
  * to OUTPUT_FILE. A nonzero exit, a timeout or bad JSON is an error run.
@@ -175,24 +200,39 @@ const met = (metric: DutyMetric, value: number): boolean => metric.op === "<=" ?
 const show = (metric: DutyMetric, value: number): string => `${Math.round(value * 10) / 10}${metric.unit ?? ""}`;
 
 /**
- * The verdict of one precheck output against the duty's targets: met when every metric is on target, missed otherwise, error when the output
- * lacks a metric. The summary names each miss with its target, or says all are on target.
+ * The line a run of a duty over the shape rule ends its summary with, so the duty job (which reads the summary as its measure) tells the
+ * chat to rework the duty; null for a duty of good shape.
+ */
+export function shapeNote(metrics: readonly Pick<DutyMetric, "key" | "headline">[]): string | null {
+  if (!dutyShapeProblem(metrics)) return null;
+  const counted = verdictMetrics(metrics).map(metric => metric.key);
+  const headlines = metrics.filter(metric => metric.headline).length;
+  return `this duty is over the shape limit (${metrics.length} metrics, ${headlines === 1 ? "1 headline" : `${headlines} headlines`}), so the verdict counts only ` +
+    `${counted.join(", ")}; tell the chat to rework it with scripts/duties/add.ts: ${SHAPE_FIX}`;
+}
+
+/**
+ * The verdict of one precheck output against the duty's targets: met when every counted metric (`verdictMetrics`) is on target, missed
+ * otherwise, error when the output lacks one. Other numbers in the output never change it. The summary leads with the headline, names each
+ * miss with its target or says all are on target, and ends with the `shapeNote` of a duty over the shape rule.
  */
 export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput): { verdict: "met" | "missed" | "error"; metrics: Record<string, MetricResult>; summary: string } {
+  const note = shapeNote(metrics);
+  const counted = verdictMetrics(metrics);
   const results: Record<string, MetricResult> = {};
-  const absent = metrics.filter(metric => typeof output.metrics[metric.key] !== "number" || !Number.isFinite(output.metrics[metric.key]));
-  if (absent.length) return { verdict: "error", metrics: results, summary: `the precheck gave no value for ${absent.map(metric => metric.key).join(", ")}` };
+  const end = (summary: string): string => note ? `${summary}; ${note}` : summary;
+  const absent = counted.filter(metric => typeof output.metrics[metric.key] !== "number" || !Number.isFinite(output.metrics[metric.key]));
+  if (absent.length) return { verdict: "error", metrics: results, summary: end(`the precheck gave no value for ${absent.map(metric => metric.key).join(", ")}`) };
   const misses: string[] = [];
-  // The headline metric leads the summary, met or not; the other misses follow.
-  const headline = headlineMetric(metrics);
-  for (const metric of headline ? [headline, ...metrics.filter(other => other !== headline)] : metrics) {
+  const headline = headlineMetric(counted);
+  for (const metric of counted) {
     const value = output.metrics[metric.key]!;
     results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value) };
     if (!results[metric.key]!.met) misses.push(`${metric.key} ${show(metric, value)} (target ${metric.op === "<=" ? "at most" : "at least"} ${show(metric, metric.target)})`);
   }
   const lead = headline && results[headline.key]!.met ? `${headline.key} ${show(headline, results[headline.key]!.value)} (on target)` : undefined;
-  if (!misses.length) return { verdict: "met", metrics: results, summary: lead ? `${lead}; all ${metrics.length} on target` : `all ${metrics.length} on target` };
-  return { verdict: "missed", metrics: results, summary: (lead ? [lead, ...misses] : misses).join(", ") };
+  if (!misses.length) return { verdict: "met", metrics: results, summary: end(lead ? `${lead}; all ${counted.length} on target` : `all ${counted.length} on target`) };
+  return { verdict: "missed", metrics: results, summary: end((lead ? [lead, ...misses] : misses).join(", ")) };
 }
 
 /** The metrics that missed in this run and in the run before it. */
@@ -261,7 +301,7 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
   if (!str(goal, 400)) throw new Error("goal: what good means, in plain words.");
   if (!str(onMiss, 1000)) throw new Error("onMiss: what the duty job does about a miss.");
   if (boardGoal !== undefined && !(typeof boardGoal === "string" && /^p\d+$/.test(boardGoal))) throw new Error("boardGoal: a plan item id like p87.");
-  if (!Array.isArray(metrics) || !metrics.length || metrics.length > 40) throw new Error("metrics: 1 to 40.");
+  if (!Array.isArray(metrics) || !metrics.length) throw new Error(`metrics: 1 to ${MAX_DUTY_METRICS}, one of them the headline.`);
   const parsedMetrics = metrics.map((metric: unknown, index): DutyMetric => {
     if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label, 80) || (metric.op !== "<=" && metric.op !== ">=") ||
       typeof metric.target !== "number" || !Number.isFinite(metric.target) || (metric.unit !== undefined && typeof metric.unit !== "string")) throw new Error(`metrics[${index}]: key, label, op (<= or >=) and target.`);
@@ -271,6 +311,10 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
     if (sizeProblem) throw new Error(`metrics[${index}]: ${sizeProblem}`);
     return parsed;
   });
+  // A duty of one metric has nothing else to lead, so that metric is its headline.
+  if (parsedMetrics.length === 1) parsedMetrics[0]!.headline = true;
+  const shapeProblem = dutyShapeProblem(parsedMetrics);
+  if (shapeProblem) throw new Error(shapeProblem);
   const parsedSchedule = value.schedule === undefined && schedule ? schedule : parseSchedule(value.schedule);
   if (!isRecord(precheck) || !Array.isArray(precheck.command) || !precheck.command.length || !precheck.command.every(word => typeof word === "string" && word.length > 0) ||
     !str(precheck.cwd, 1024)) throw new Error("precheck: { command: [argv], cwd, timeoutMs? }.");
@@ -315,7 +359,9 @@ export const CHECK_IN_DUTY_ID = "checkin";
 /**
  * The built-in duty every chat has: the check-in. It runs on the chat's check-in setting (the header's control and this card edit the same
  * setting); its precheck sorts every open step into a class (src/chat-checkin.ts) and its run starts one check-in job with that as context.
- * The metrics are what a run measures, as information for that job.
+ * Its verdict is the headline, stuck_steps (the end state the owner asked for), plus one number for each half of the goal: finished_open for
+ * a plan that matches reality, and stalled_steps and no_progress for goals that keep moving. Every other count of the measure
+ * (`ConvergenceMisses`) stays in its output and its flagged items, which the check-in job reads in its findings.
  */
 export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
   id: CHECK_IN_DUTY_ID,
@@ -331,32 +377,9 @@ export const CHECK_IN_DUTY: Omit<DutyCard, "status"> = {
     "the whole status and messages, restarts or starts the jobs and threads that stalled, died or are missing. End state: every open step is done, " +
     "moved by a live owner, or blocked only by an open For you todo, and no goal stays open only to wait on another thread's work.",
   metrics: [
-    { key: "stuck_steps", label: "Open steps with no live owner, no linked For you todo and no park", op: "<=", target: 0, headline: true },
-    { key: "orphan_steps", label: "Open steps with no live owner, todo or wait", op: "<=", target: 0 },
-    { key: "due_late", label: "Steps due for more than one check-in", op: "<=", target: 0 },
-    { key: "stale_chase_24h", label: "Chases over 24 h with no For you todo", op: "<=", target: 0 },
-    { key: "job_end_unrecorded", label: "Steps whose job ended a check-in ago, not updated", op: "<=", target: 0 },
-    { key: "job_end_silent", label: "Steps whose job stopped on an error with no report, not updated", op: "<=", target: 0 },
-    { key: "scope_misses", label: "Open steps the owner gave to another thread", op: "<=", target: 0 },
-    { key: "idle_goals", label: "Open goals with no live job and an open step nobody owns", op: "<=", target: 0 },
-    { key: "stalled_steps", label: "Steps on the same wait for over 2 h, or with a waitUntil pushed later twice", op: "<=", target: 0 },
-    { key: "go_missing", label: "Steps that need the owner's go, at work without it", op: "<=", target: 0 },
-    { key: "requirements_missing", label: "Goals with a Build step at work and a missing or failing requirements check", op: "<=", target: 0 },
-    { key: "merges_without_go", label: "Merge steps done without the owner's go on that PR", op: "<=", target: 0 },
-    { key: "goal_gaps", label: "Goals more than 50% short of their target with no live job", op: "<=", target: 0 },
-    { key: "blocked_on_others", label: "Steps blocked on CI, a release or a thread over 1 h with no fix job", op: "<=", target: 0 },
-    { key: "finished_open", label: "Open goals or steps whose work looks finished", op: "<=", target: 0 },
-    { key: "loose_goals", label: "Top-level plan items with no steps under them", op: "<=", target: 0 },
-    { key: "extra_goals", label: "Open goals over the limit of 6", op: "<=", target: 0 },
-    { key: "open_under_closed", label: "Open steps under a closed goal", op: "<=", target: 0 },
-    { key: "stale_steps", label: "Steps with a waitUntil over 24 h past, or a job that ended with no update", op: "<=", target: 0 },
-    { key: "held_elsewhere", label: "Open goals whose every open step waits on another thread", op: "<=", target: 0 },
-    { key: "wait_met", label: "Open steps whose named wait is already over", op: "<=", target: 0 },
-    { key: "no_progress", label: "Nothing done in the last hour while open steps are not blocked", op: "<=", target: 0 },
-    { key: "goals_to_fold", label: "Open goals whose work runs as a duty or rides other goals' jobs", op: "<=", target: 0 },
-    { key: "one_session_load", label: "Goals with more than 3 (or over half) of their open steps on one other session", op: "<=", target: 0 },
-    { key: "redundant_heartbeats", label: "Active chat heartbeats whose work the check-in already does", op: "<=", target: 0 },
-    // Target 0: the duty proposals review of 10-12 found 5 chats with open goals and no duty, and nothing flagged them.
-    { key: "goals_without_duty", label: "Open goals while the chat has no active duty", op: "<=", target: 0 },
+    { key: "stuck_steps", label: "Open steps nobody is moving, with no For you todo or owner ruling holding them", op: "<=", target: 0, headline: true },
+    { key: "finished_open", label: "Goals or steps that look done but are still open", op: "<=", target: 0 },
+    { key: "stalled_steps", label: "Steps stuck on the same wait for over 2 hours", op: "<=", target: 0 },
+    { key: "no_progress", label: "Nothing got done in the last hour while work was open", op: "<=", target: 0 },
   ],
 };

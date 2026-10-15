@@ -13,13 +13,13 @@ import type { SessionRow } from "../src/shared/types.ts";
 import { CHECK_IN_FOCUS, type CheckInRun, Duties, STILL_GOING, STILL_WORKING, stuckAfterMs } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { CHECK_IN_DUTY, dailySlot, dutyDue, type DutyJobRef, dutyNameProblem, errorStreak, judge, nextDutyId, nextRunAt, parseDutyInput, parseSchedule, repeatMisses, type Duty,
-  type DutyRunRecord, metricSizeProblem } from "../src/shared/chat-duties.ts";
+  type DutyMetric, type DutyRunRecord, metricSizeProblem } from "../src/shared/chat-duties.ts";
 
 const run = promisify(execFile);
 const at = (day: number, hours: number, minutes = 0): number => new Date(2026, 9, day, hours, minutes).getTime();
 const input = (command: string[] = ["node", "-e", "0"]) => ({
   name: "Chat system", ownerWords: "keep it healthy", goal: "Chats never sit stopped.", onMiss: "Start a job that reads the details and proposes fixes.", boardGoal: "p87",
-  metrics: [{ key: "orphans", label: "Orphan steps", op: "<=", target: 0 }, { key: "long_replies", label: "Long replies", op: "<=", target: 10, unit: "%" }],
+  metrics: [{ key: "orphans", label: "Orphan steps", op: "<=", target: 0, headline: true }, { key: "long_replies", label: "Long replies", op: "<=", target: 10, unit: "%" }],
   schedule: { kind: "daily", at: "23:07" }, precheck: { command, cwd: tmpdir() },
 });
 const duty = (now: number, changes: Partial<Duty> = {}): Duty => ({ ...parseDutyInput(input(), "d1", now), ...changes });
@@ -76,6 +76,9 @@ Owner's words (verbatim):
 > keep it healthy
 
 What to do about a miss: Start a job that reads the details and proposes fixes. Fixes go under the plan item p87.
+
+## Headline KPI
+This run is judged on moving one number: Orphan steps (orphans <= 0). Spend the run on the work that moves it most; the other targets and the number of checks you run are detail.
 
 Targets: orphans <= 0 (Orphan steps); long_replies <= 10% (Long replies).
 
@@ -178,9 +181,10 @@ test("metricSizeProblem: a duty refuses size counts of text and takes outcomes, 
 });
 
 test("every shipped duty file passes the size check", async () => {
-  for (const file of ["chat-health", "harness-health", "local-dev-uptime"]) {
-    const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", `${file}.duty.json`), "utf8")), "d1", 0);
-    for (const metric of duty.metrics) assert.equal(metricSizeProblem(metric), null, `${file} ${metric.key}`);
+  const dir = join(import.meta.dirname, "..", "scripts", "duties");
+  for (const file of (await readdir(dir)).filter(name => name.endsWith(".duty.json"))) {
+    const { metrics } = JSON.parse(await readFile(join(dir, file), "utf8")) as { metrics: DutyMetric[] };
+    for (const metric of metrics) assert.equal(metricSizeProblem(metric), null, `${file} ${metric.key}`);
   }
 });
 
@@ -218,11 +222,11 @@ test("Duties: a met run still starts one duty job with the precheck in its brief
   await duties.settled();
   const [run] = await store.runs("chat1");
   assert.equal(run?.verdict, "met", JSON.stringify(run));
-  assert.equal(run.summary, "all 2 on target");
+  assert.equal(run.summary, "orphans 0 (on target); all 2 on target");
   assert.deepEqual(run.job, { id: "s1", name: "chat system dev VP 23:07" });
   assert.equal(run.slot, at(8, 23, 7));
   assert.deepEqual(jobs.calls, ["start chat1 chat system dev VP 23:07 s1"], "met is no reason to stay quiet: the job judges");
-  assert.match(jobs.briefs[0]!, /Measured against the targets: all 2 on target\. This is information, not a verdict/);
+  assert.match(jobs.briefs[0]!, /Measured against the targets: orphans 0 \(on target\); all 2 on target\. This is information, not a verdict/);
   assert.match(jobs.briefs[0]!, /The full precheck output is .*d1-261008-2307\.json\./);
   const [d1] = await store.list("chat1");
   assert.deepEqual([d1!.runCount, d1!.lastRunAt, d1!.lastSlotAt], [1, at(8, 23, 7), at(8, 23, 7)]);
@@ -269,7 +273,7 @@ test("Duties: while the last duty job still works a run still measures but start
   await duties.settled();
   const [waited] = await store.runs("chat1");
   assert.deepEqual([waited!.verdict, waited!.summary, waited!.job, waited!.metrics.orphans?.value],
-    ["met", `all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`, undefined, 0], "the precheck ran while the job worked (ops guy 10-12: 220 of 293 runs had none)");
+    ["met", `orphans 0 (on target); all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`, undefined, 0], "the precheck ran while the job worked (ops guy 10-12: 220 of 293 runs had none)");
   assert.equal((await store.list("chat1"))[0]!.lastRunAt, now.at, "the run covers the slot: the next tick does not retry it");
   await duties.tick();
   await duties.settled();
@@ -388,25 +392,25 @@ test("check-in duty: each run starts one check-in job with the findings; the sam
   assert.match(jobs.briefs[0]!, /^# check-in dev VP 18:00: the Check-in duty of the chat "dev VP"/);
   assert.match(jobs.briefs[0]!, /Goal: The check-in keeps two things true in every chat/);
   assert.match(jobs.briefs[0]!, /> YES\. it - checks and synchronizes the agent swarm with user intent/);
-  assert.match(jobs.briefs[0]!, /Measured against the targets: stuck_steps 0 \(on target\); all 26 on target\./);
+  assert.match(jobs.briefs[0]!, /Measured against the targets: stuck_steps 0 \(on target\); all 4 on target\./);
   assert.match(jobs.briefs[0]!, /### Every open step, oldest change first\n- p2 \(live\) "Build" doing/);
   assert.match(jobs.briefs[0]!, /When nothing needs work, end in one short turn and send nothing/);
   for (const line of CHECK_IN_FOCUS) assert.ok(jobs.briefs[0]!.includes(`- ${line}`), line);
   await Promise.all([duties.checkIn("chat1", run(0)), duties.checkIn("chat1", run(0))]);
   assert.equal(jobs.calls.length, 1, "the same slot again, even twice at once, starts no second job");
   jobs.working.add("s1");
-  await duties.checkIn("chat1", run(15, { ...quiet, orphan_steps: 1 }));
+  await duties.checkIn("chat1", run(15, { ...quiet, stuck_steps: 1 }));
   assert.equal(jobs.calls.length, 1);
   jobs.working.delete("s1");
-  await duties.checkIn("chat1", run(30, { ...quiet, orphan_steps: 1 }));
+  await duties.checkIn("chat1", run(30, { ...quiet, stuck_steps: 1 }));
   assert.deepEqual(jobs.calls, ["start chat1 check-in dev VP 18:00 s1", "retire s1", "start chat1 check-in dev VP 18:30 s2"]);
   const runs = (await store.runs("chat1")).reverse();
   assert.deepEqual(runs.map(entry => [(entry.at - now) / 60_000, entry.verdict, entry.job?.id ?? entry.summary]),
     [[0, "met", "s1"], [15, "skipped", `${STILL_WORKING} (job check-in dev VP 18:00)`], [30, "missed", "s2"]]);
-  assert.deepEqual(runs[2]!.metrics.orphan_steps, { value: 1, target: 0, op: "<=", met: false }, "the measure is kept as information");
+  assert.deepEqual(runs[2]!.metrics.stuck_steps, { value: 1, target: 0, op: "<=", met: false }, "the measure is kept as information");
   assert.deepEqual([(await store.read("chat1")).checkIn?.runCount, (await store.read("chat1")).duties], [3, []]);
   assert.deepEqual(runs[0]!.classes, { live: 2 });
-  assert.equal(CHECK_IN_DUTY.metrics.length, 26);
+  assert.equal(CHECK_IN_DUTY.metrics.length, 4);
   duties.close();
 });
 
@@ -467,8 +471,8 @@ test("Duties: a 10-minute duty measures but starts no job while its job works up
   assert.deepEqual(jobs.calls, ["start chat1 chat system dev VP 23:07 s1", "retire s1", "start chat1 chat system dev VP 00:47 s2"]);
   const runs = (await store.runs("chat1")).reverse();
   assert.deepEqual(runs.map(entry => [(entry.at - start) / 60_000, entry.verdict, entry.job?.id ?? entry.summary]), [
-    [0, "met", "s1"], [80, "met", `all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`],
-    [90, "met", `all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`], [100, "met", "s2"]]);
+    [0, "met", "s1"], [80, "met", `orphans 0 (on target); all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`],
+    [90, "met", `orphans 0 (on target); all 2 on target; ${STILL_WORKING} (job chat system dev VP 23:07)`], [100, "met", "s2"]]);
   assert.match(runs[3]!.summary, / \(replaced stuck job chat system dev VP 23:07, working 100 min\)$/);
   duties.close();
 });

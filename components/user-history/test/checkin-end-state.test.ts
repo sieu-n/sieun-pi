@@ -69,7 +69,7 @@ test("end state KPI: the check-in brief opens with the share and lists every stu
 });
 
 test("headline metric: the check-in is judged on stuck_steps first, the duty brief leads with it, and the card shows it first", () => {
-  assert.deepEqual(CHECK_IN_DUTY.metrics[0], { key: "stuck_steps", label: "Open steps with no live owner, no linked For you todo and no park", op: "<=", target: 0, headline: true });
+  assert.deepEqual(CHECK_IN_DUTY.metrics[0], { key: "stuck_steps", label: "Open steps nobody is moving, with no For you todo or owner ruling holding them", op: "<=", target: 0, headline: true });
   const metrics: DutyMetric[] = [{ key: "corrections", label: "Owner corrections", op: "<=", target: 1 },
     { key: "end_state_pct", label: "Open steps moving, in For you or parked, all chats", op: ">=", target: 100, unit: "%", headline: true }];
   assert.equal(judge(metrics, { metrics: { corrections: 3, end_state_pct: 43 } }).summary, "end_state_pct 43% (target at least 100%), corrections 3 (target at most 1)");

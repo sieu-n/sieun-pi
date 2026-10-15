@@ -52,7 +52,7 @@ test("one session load: a goal with more than 3 open steps on one other session 
   assert.deepEqual(checkInPrecheck(undefined, FACTS, three, NOW).load, [], "3 of 11 is neither more than 3 nor more than half");
   const half: ChatBoard = { ...three, plan: [{ ...three.plan[0]!, children: three.plan[0]!.children.filter(item => ["p14", "p28", "p33", "p57"].includes(item.id)) }] };
   assert.deepEqual(checkInPrecheck(undefined, FACTS, half, NOW).load.map(load => `${load.steps.length} of ${load.open}`), ["3 of 4"], "3 of 4 is more than half");
-  assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "one_session_load" && metric.target === 0));
+  assert.equal(NO_MISSES.one_session_load, 0, "the check-in measure counts one_session_load");
 });
 
 test("redundant heartbeats: the chat's active rlm heartbeats that watch, check in or report status are listed for deletion; a daily run is kept", async () => {
@@ -79,7 +79,7 @@ test("redundant heartbeats: the chat's active rlm heartbeats that watch, check i
   const text = checkInPrecheckText(precheck, [], output.flagged, NOW);
   assert.match(text, /### Heartbeats the check-in or a duty covers \(have the chat delete each\)\n- heartbeat "pipeline-guide" \(every 30m\), "HEARTBEAT[^"]*": the check-in covers this\. Ask the chat to delete it in its own REPL with `await rlm_heartbeat\.delete\("h1"\)`/);
   assert.equal(convergenceMisses("c1", precheck.steps, { ...precheck, heartbeats: [] }, {}, 15 * 60_000, NOW).metrics.redundant_heartbeats, 0);
-  assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "redundant_heartbeats" && metric.target === 0));
+  assert.equal(NO_MISSES.redundant_heartbeats, 0, "the check-in measure counts redundant_heartbeats");
 });
 
 test("c51: the brief and the duty job brief say map the work as a graph, one job per part, and delete heartbeats the check-in covers; Chat health counts both", async () => {

@@ -34,11 +34,12 @@ test("Skills and tools on 10-15: checks_failed missed 4 runs across a skipped sl
   assert.equal(card.streak, 4);
 });
 
-test("check-in on 10-15: loose_goals missed 3 runs at 1 with no move, so the next run must change approach", () => {
+test("check-in on 10-15: loose_goals missed 3 runs at 1, and it is no check-in metric now, so the card shows no miss line for it", () => {
   const card = dutyCard(view("checkin"), []);
-  const loose = card.misses.find(line => line.key === "loose_goals");
-  assert.deepEqual(loose && [loose.misses, loose.stuck], [3, true]);
-  assert.equal(card.streak, 3);
+  assert.deepEqual(fixture.runs.checkin!.slice(0, 3).map(run => Object.keys(run.metrics).filter(key => !run.metrics[key]!.met)), [["loose_goals"], ["loose_goals"], ["loose_goals"]]);
+  assert.deepEqual(card.misses, []);
+  assert.equal(card.headlineMiss, null);
+  assert.equal(card.streak, 3, "the streak reads the verdicts those runs recorded");
 });
 
 test("the after-job measure is the card's verdict: a run whose job fixed both misses reads met with no miss lines", () => {

@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { checkInPrecheck, checkInPrecheckText, checkInRecord, convergenceMisses } from "../src/chat-checkin.ts";
+import { checkInPrecheck, checkInPrecheckText, checkInRecord, convergenceMisses, NO_MISSES } from "../src/chat-checkin.ts";
 import { gateFindings, STALL_MS } from "../src/checkin-findings.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { dutyJobBrief } from "../src/chat-duty-job.ts";
@@ -158,8 +158,8 @@ test("check-in precheck: go-needed steps waiting for a go are facts; one at work
   const text = checkInPrecheckText(precheck, [working], output.flagged, NOW);
   assert.match(text, /### Hard gates broken \(the owner's go, the requirements check\): fix each now\n- p4 "Merge to main" is at work without the owner's go: stop its job/);
   assert.match(text, /- p1 "Ship the demo" has Build step p5 doing and has no requirements list/);
-  assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "go_missing" && metric.target === 0));
-  assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "requirements_missing" && metric.target === 0));
+  assert.equal(NO_MISSES.go_missing, 0, "the check-in measure counts go_missing");
+  assert.equal(NO_MISSES.requirements_missing, 0, "the check-in measure counts requirements_missing");
   const approved: ChatBoard = { ...plan, todos: [{ id: "t2", text: "Merge p4?", done: true, from: "agent", at: "", reply: "Go", answeredBy: "owner" }],
     plan: [{ ...plan.plan[0]!, requirements: [{ text: '"variants"', status: "met", evidence: "design doc" }] }] };
   assert.deepEqual(gateFindings(approved, [working]).map(gate => `${gate.kind} ${gate.item.id}`), ["go_waiting p2", "go_waiting p3"]);
@@ -181,7 +181,7 @@ test("check-in precheck: a step on the same wait past 2 h is stalled, one set 30
   const text = checkInPrecheckText(first, [], output.flagged, NOW);
   assert.match(text, /### Stalled waits \(take one action on each in this run: check whether what it waits for already happened, do the next action yourself, start or steer a job, or add a For you todo; "still waiting" and a later waitUntil are not answers\)/);
   assert.match(text, /- p3 "Merge after CI" waits for "the CI slot" and it has waited on the same thing for 3 h: act on it in this run/);
-  assert.ok(CHECK_IN_DUTY.metrics.some(metric => metric.key === "stalled_steps" && metric.target === 0));
+  assert.equal(NO_MISSES.stalled_steps, 0, "the check-in measure counts stalled_steps");
 
   const fresh = checkInPrecheck(undefined, [], boardOf(waiting.plan, [], new Date(NOW - 30 * 60_000).toISOString()), NOW);
   assert.deepEqual(fresh.stalled, [], "a wait set 30 min ago is not stalled");

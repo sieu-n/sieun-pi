@@ -12,6 +12,7 @@ import { agentScheduleProblem, morningTime, parseSchedule, upsertDuty } from "..
  * chat's duty with the same name and keeps its run state, so running it twice changes nothing. The server picks it up at its next 30 s tick.
  * A relative `precheck.cwd` is resolved against the duty file's folder, so a checked-in duty names no home path.
  * A duty is named by the system it looks after, in two to four plain words, like "Chat system"; parseDutyInput refuses "<something> health".
+ * It has one headline metric (`"headline": true`) and at most 3 supporting ones; parseDutyInput refuses more, and refuses zero or two headlines.
  * Leave out `schedule` and a new duty runs daily at a random free morning minute in its chat's priority band (`morningTime`; the chat's
  * sidebar label in labels.json, none is high), and an update keeps the duty's schedule. Agents run this, so `every N minutes` under a day is
  * refused (c66); `{ kind: daily, at: HH:MM }` and every 1440 or more pass. The owner's own ask passes too: `--owner-words "<his words>"
@@ -53,6 +54,9 @@ const name = (definition as { name?: string }).name;
 const { result, schedule } = await store.update(chatId, duties => {
   const result = upsertDuty(duties, definition, now, morningTime(taken, priority, Math.random));
   return { result, schedule: duties.find(duty => duty.name === name?.trim())!.schedule };
+}).catch((error: unknown) => {
+  process.stderr.write(`refused ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
 });
 const when = schedule.kind === "daily" ? `daily ${schedule.at}` : `every ${schedule.minutes} min`;
 process.stdout.write(`${result} "${name}" in ${chatId} ${when}, priority ${priority}${ok && asked && agentScheduleProblem(asked) ? `, the owner's ask ${ok.messageId}` : ""}\n`);
