@@ -1,7 +1,7 @@
 {
   "name": "Mac stays usable",
   "ownerWords": "look it's you and ops guys responsibility that this machine is usable.\n\nyou -harness side of bullshit, ops guy -app side of bullshit fixing monitoring\n\nsetup a 60min cadence duty",
-  "goal": "The Mac stays usable every minute: memory pressure stays under critical, swapouts stay under 6,000 a second, and kernel_task stays under one core, read from ops guy's pressure feed. On the harness side no working session sits quiet over 30 min and no queued turn waits over 706 s. The Prime worker footprint is a detail line with no target.",
+  "goal": "No minute of the hour reads unusable in ops guy's pressure feed (pressure critical, 6,000+ swapouts a second, or kernel_task over one core). A minute with more than 14 agent turns working is the harness's, else the apps' or owner's: at 14 or fewer, 0 of 567 minutes on 10-14 and 10-15 were unusable.",
   "metrics": [
     {
       "key": "usable_pct_1h",
@@ -12,36 +12,18 @@
       "headline": true
     },
     {
-      "key": "usable_pct_24h",
-      "label": "Share of the last 24 hours' minutes the Mac was usable",
-      "op": ">=",
-      "target": 100,
-      "unit": "%"
-    },
-    {
-      "key": "unusable_streak_max_1h",
-      "label": "Longest run of unusable minutes in the last hour",
+      "key": "harness_unusable_min_1h",
+      "label": "Unusable minutes this hour with over 14 agent turns working (harness side)",
       "op": "<=",
-      "target": 9,
+      "target": 0,
       "unit": " min"
     },
     {
-      "key": "idle_miss_min_1h",
-      "label": "Minutes in the last hour with a working session quiet over 30 min",
+      "key": "other_unusable_min_1h",
+      "label": "Unusable minutes this hour with 14 or fewer turns working (app or owner side)",
       "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "queue_miss_min_1h",
-      "label": "Minutes in the last hour with a queued turn waiting over 706 s",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "kernel_waiters_1h",
-      "label": "Background waiters in job kernels in the last hour",
-      "op": "<=",
-      "target": 0
+      "target": 0,
+      "unit": " min"
     }
   ],
   "schedule": {
@@ -58,5 +40,5 @@
     "cwd": "../..",
     "timeoutMs": 60000
   },
-  "onMiss": "Start one fix job for the top miss with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\"), or message the job an earlier run started on the same part if it still works. The brief names the part, its minutes off target, the chat trees behind it and the now numbers, and asks for a root fix in the harness with a test and a commit. Usable: find which harness load ran in the unusable minutes (the trees behind it, turns, worker reloads) and whether removing it would have kept those minutes usable; a part with no measured cost in usable minutes is reported, not fixed. Idle: find why those working sessions went quiet. Queue: find what holds the slots. Never kill a session mid-turn, restart the Prime daemon or the :5182 service, or message another chat. An alert flag: tell the chat in one line with the part, the minutes and the tree. All on target: end the turn with no message."
+  "onMiss": "Push until green; never only report. Read the detail's harness_side and other_side lines. Harness minutes: start one fix job (await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\")) or message the live one an earlier run started. It finds why pi-pool let over 14 turns work (level read, owner turns, limit step, borrows), fixes pi-pool or the chat service with a test, commits, releases, and presses Run now until it reads 0. Other-side minutes: a harness owner on top gets the same job; an app owner (pm2, docker, dev server) or the owner's own app: tell this chat one line with the minutes, the owner and its GB for ops guy. Never kill a session mid-turn, restart the Prime daemon or :5182, or message another chat. All on target: end with no message."
 }

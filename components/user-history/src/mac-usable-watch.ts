@@ -55,7 +55,15 @@ export const USABLE = { pressureLevel: 4, swapoutsPerS: 6000, kernelTaskPct: 100
 export const PRESSURE_FEED = join(homedir(), ".cache", "virev", "mac-pressure.json");
 const FEED_FRESH_MS = 30_000;
 /** One feed reading: the kernel's pressure level (1 normal, 2 warn, 4 critical), swapouts a second, and kernel_task CPU in % of a core. */
-export interface UsableReading { pressureLevel: number; swapoutsPerS: number; kernelTaskPct: number }
+export interface UsableReading { pressureLevel: number; swapoutsPerS: number; kernelTaskPct: number;
+  /** The feed's FEED_OWNERS largest owners by footprint, so a minute names the processes behind it; absent when the feed has none. */
+  owners?: FeedOwner[] }
+/** One feed owner: `chat:<root>`, `pm2:<app>`, `browser:<name>` or `other:<name>`, its label and its footprint. */
+export interface FeedOwner { owner: string; label: string; gb: number }
+/** Owners kept a minute: the feed lists about 50, and the largest 8 held 41 of its 57 GB at 08:52Z on 10-15. */
+export const FEED_OWNERS = 8;
+/** Owners on the harness side: chat trees, the Prime daemon and the chat service; every other owner is the apps' or the owner's own. */
+export const isHarnessOwner = (owner: string): boolean => owner.startsWith("chat:") || owner === "other:prime-agent-daemon" || owner === "other:chat-service-cli.mjs";
 export type UsableMiss = "pressure" | "swapouts" | "kernel_task";
 
 /** The feed reading in `value`, or null when it is not schema v1, is older than FEED_FRESH_MS at `now`, or lacks a number. */
@@ -63,7 +71,9 @@ export function parseFeed(value: unknown, now: number): UsableReading | null {
   if (!isRecord(value) || value.v !== 1 || typeof value.ts !== "string" || !(now - Date.parse(value.ts) < FEED_FRESH_MS)) return null;
   const { pressure_level: pressureLevel, swapouts_per_s: swapoutsPerS, kernel_task_cpu_pct: kernelTaskPct } = value;
   if (typeof pressureLevel !== "number" || typeof swapoutsPerS !== "number" || typeof kernelTaskPct !== "number") return null;
-  return { pressureLevel, swapoutsPerS, kernelTaskPct };
+  const owners = Array.isArray(value.owners) ? value.owners.flatMap(item => isRecord(item) && typeof item.owner === "string" && typeof item.mem_gb === "number"
+    ? [{ owner: item.owner, label: typeof item.label === "string" ? item.label : item.owner, gb: item.mem_gb }] : []).sort((a, b) => b.gb - a.gb).slice(0, FEED_OWNERS) : [];
+  return { pressureLevel, swapoutsPerS, kernelTaskPct, ...owners.length ? { owners } : {} };
 }
 export const readPressureFeed = async (now: number, path = PRESSURE_FEED): Promise<UsableReading | null> =>
   parseFeed(await readFile(path, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), now);

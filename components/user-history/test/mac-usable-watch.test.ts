@@ -8,7 +8,7 @@ import { parseAgentQueue } from "../src/chat-pool.ts";
 import { sharedQueueRead } from "../src/chat-turn-queue.ts";
 import { advanceMotion, askChats, asksOf, type Footprints, MOTION, parseNettop, openCall, quietFiles, misses, parseFeed, PRESSURE_FEED, readFootprints, readPressureFeed, readWatch, sample, TARGET, unusable, USABLE, watchFile, watchLine, type WatchLine } from "../src/mac-usable-watch.ts";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
+import { HARNESS_TURNS, longestOffStreak, measure, OFF_STREAK_ALERT } from "../scripts/duties/mac-stays-usable.ts";
 
 // The owner, 10-14 09:15Z: "look it's you and ops guys responsibility that this machine is usable." The watch records a line a minute with ops
 // guy's pressure feed and the harness numbers, and the hourly Mac stays usable duty judges each minute on USABLE; the worker footprint is a detail.
@@ -139,7 +139,8 @@ test("measure: the usable share over 1 h and 24 h of the minutes with a feed rea
       top: [{ pid: 22, gb: 6, sessions: 9, root: "chatB", tree: "VP of CI" }, { pid: 11, gb: 2, sessions: 4, root: "chatA", tree: "Crawler VP" }] })
     : minute < 30 ? watch(minute, { usable: null }) : watch(minute))];
   const { metrics, flagged } = measure(lines, NOW);
-  assert.deepEqual(metrics, { usable_pct_1h: 75, usable_pct_24h: 73.7, unusable_streak_max_1h: 14, idle_miss_min_1h: 12, queue_miss_min_1h: 0, kernel_waiters_1h: 0 },
+  assert.deepEqual(metrics, { usable_pct_1h: 75, usable_pct_24h: 73.7, harness_unusable_min_1h: 0, other_unusable_min_1h: 14, unusable_streak_max_1h: 14, idle_miss_min_1h: 12,
+    queue_miss_min_1h: 0, kernel_waiters_1h: 0 },
     "42 of 56 fed minutes in the hour; 42 of 57 over the day; the null lines count nowhere");
   assert.equal(flagged!.find(item => item.kind === "usable")!.excerpt,
     "The Mac was usable in 42 of the 56 minutes with a feed reading in the last hour (60 watched); unusable minutes by cause: swapouts 10, kernel_task 14.");
@@ -161,7 +162,7 @@ test("measure: an alert at 10 unusable minutes in a row and none at 9; a gap in 
   assert.equal(measure(ten, NOW).flagged!.filter(item => item.kind === "alert").length, 1);
   const gap = [...Array.from({ length: 5 }, (_, minute) => off(minute)), ...Array.from({ length: 5 }, (_, minute) => off(10 + minute))];
   assert.equal(longestOffStreak(gap).minutes, 5);
-  assert.deepEqual(measure([], NOW), { metrics: { unusable_streak_max_1h: 0, idle_miss_min_1h: 0, queue_miss_min_1h: 0, kernel_waiters_1h: 0 },
+  assert.deepEqual(measure([], NOW), { metrics: { harness_unusable_min_1h: 0, other_unusable_min_1h: 0, unusable_streak_max_1h: 0, idle_miss_min_1h: 0, queue_miss_min_1h: 0, kernel_waiters_1h: 0 },
     flagged: [{ kind: "no_watch", excerpt: "The Mac usable watch wrote no line in the last hour: the chat service is down or runs a release without the watch." }] });
   const { usable: _, ...older } = watch(58);
   const unfed = measure([older, watch(59, { usable: null })], NOW);
@@ -337,6 +338,23 @@ test("quiet sessions: each line names every session quiet past TARGET.idleMinute
   assert.match(flagged!.find(item => item.kind === "now")!.excerpt, /3 quiet over 30 min \(wp-engage-crawl \(01a0f7cb, .*\) quiet 58 min, open ipython call since 01:58Z; /);
 });
 
+test("measure: an unusable minute with more than 14 agent turns working is the harness's, one with 14 or fewer names the feed's largest owners", () => {
+  assert.equal(HARNESS_TURNS, 14);
+  const owners = [{ owner: "browser:chrome", label: "Google Chrome", gb: 6.5 }, { owner: "chat:01a1164b", label: "AI harness", gb: 2.2 }, { owner: "pm2:virev-demo", label: "virev-demo", gb: 2.1 }];
+  const queue = (working: number) => ({ working, queued: 30, held: 0, pressure: "critical", oldestWaitS: 60, oldestTree: null });
+  const lines = [watch(40, { usable: { ...thrash, owners }, queue: queue(22) }), watch(41, { usable: { ...thrash, owners }, queue: queue(15) }),
+    watch(42, { usable: { ...thrash, owners }, queue: queue(14) }), watch(43, { queue: queue(20) })];
+  const { metrics, flagged } = measure(lines, NOW);
+  assert.equal(metrics.harness_unusable_min_1h, 2, "22 and 15 turns; 20 turns on a usable minute counts nowhere");
+  assert.equal(metrics.other_unusable_min_1h, 1);
+  assert.equal(metrics.usable_pct_1h, 25);
+  assert.match(flagged!.find(item => item.kind === "harness_side")!.excerpt, /^2 unusable minutes had more than 14 agent turns working \(\d\d:\d\d 22 turns, pi-pool critical; \d\d:\d\d 15 turns, pi-pool critical\)/);
+  assert.equal(flagged!.find(item => item.kind === "other_side")!.excerpt,
+    "1 unusable minutes had 14 or fewer agent turns working; the feed's largest owners then: Google Chrome 6.5 GB (app or owner), AI harness 2.2 GB (harness), virev-demo 2.1 GB (app or owner).");
+  const feed = parseFeed({ ...FEED, owners: Array.from({ length: 12 }, (_, i) => ({ owner: `other:p${i}`, label: `p${i}`, mem_gb: i, cpu_pct: 0, procs: 1 })) }, NOW)!;
+  assert.deepEqual(feed.owners!.map(owner => owner.gb), [11, 10, 9, 8, 7, 6, 5, 4], "the feed's 8 largest owners, largest first");
+});
+
 test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics the precheck gives, with the owner's words verbatim", async () => {
   const value = JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/mac-stays-usable.duty.json"), "utf8"));
   const duty = parseDutyInput(value, "d1", 0);
@@ -345,6 +363,7 @@ test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics th
   const given = Object.keys(measure([watch(59)], NOW).metrics);
   for (const metric of duty.metrics) assert.ok(given.includes(metric.key), metric.key);
   assert.equal(duty.metrics.find(metric => metric.headline)?.key, "usable_pct_1h");
+  assert.deepEqual(duty.metrics.map(metric => [metric.key, metric.target]), [["usable_pct_1h", 100], ["harness_unusable_min_1h", 0], ["other_unusable_min_1h", 0]]);
   assert.equal(duty.metrics.some(metric => /gb|footprint|budget/.test(metric.key)), false, "the worker footprint has no target");
 });
 
