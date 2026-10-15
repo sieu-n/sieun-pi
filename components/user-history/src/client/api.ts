@@ -89,7 +89,8 @@ export const api = {
   commands: (id: string | null) => get<{ commands: Command[] }>(id ? "api/threads/" + encodeURIComponent(id) + "/commands" : "api/commands", 30000).then(body => body.commands),
   childUsage: (id: string) => get<{ children: ChildUsage[] }>("api/threads/" + encodeURIComponent(id) + "/child-usage").then(body => body.children),
   stats: (id: string) => get<ThreadStats>("api/threads/" + encodeURIComponent(id) + "/stats"),
-  promptView: (id: string) => get<PromptView>("api/threads/" + encodeURIComponent(id) + "/prompt", 60000),
+  promptView: (id: string, via: readonly string[] = []) =>
+    get<PromptView>("api/threads/" + encodeURIComponent(id) + "/prompt" + (via.length ? "?via=" + via.map(encodeURIComponent).join(",") : ""), 60000),
   toolOutput: (id: string, toolCallId: string) => get<{ toolCallId: string; toolName: string; arguments: unknown; output: string; isError: boolean | null }>(
     "api/threads/" + encodeURIComponent(id) + "/tool-output?toolCallId=" + encodeURIComponent(toolCallId)),
   part: (id: string, message: number, part: number) => get<{ text: string }>("api/threads/" + encodeURIComponent(id) + `/part?message=${message}&part=${part}`),

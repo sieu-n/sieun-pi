@@ -15,6 +15,7 @@
   import BookmarksDialog from "./BookmarksDialog.svelte";
   import { bookmarks } from "./bookmarks.svelte.ts";
   import Reader from "./Reader.svelte";
+  import PromptView from "./PromptView.svelte";
   import ReportCard from "./ReportCard.svelte";
   import Icon from "./Icon.svelte";
 
@@ -134,6 +135,9 @@
     {/if}
     {#if store.reader}
       <Reader view={store.reader} {narrow} onclose={() => { store.reader = null; }} />
+    {/if}
+    {#if store.prompt}
+      {#key store.prompt}<PromptView sessionId={store.prompt} {narrow} onclose={() => { store.prompt = null; }} />{/key}
     {/if}
     <ReportCard />
   </div>

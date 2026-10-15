@@ -97,6 +97,7 @@
     <div class="actions">
       {#if reports.length}<button type="button" class="button small" onclick={readReport}>Read report</button>{/if}
       {#if sessionId}<button type="button" class="button small" onclick={() => store.select(sessionId)}>Open full thread</button>{/if}
+      {#if sessionId}<button type="button" class="button small" onclick={() => { store.prompt = sessionId; }}><Icon name="layers" size={12} />Prompt</button>{/if}
       {#if active && sessionId}<button type="button" class="button small danger" disabled={stopping} onclick={() => void stop()}><Icon name="stop" size={12} />Stop</button>{/if}
     </div>
   </header>

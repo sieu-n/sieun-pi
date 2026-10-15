@@ -1,115 +1,139 @@
 <script lang="ts">
-  import { tick } from "svelte";
   import { api } from "./api.ts";
   import { compactNumber } from "./format.ts";
-  import { outline, share, speakerOf, groupName, textHeight, type Speaker } from "./prompt-parts.ts";
+  import { clip, labelDetail, outline, preview, share, speakerOf, type PromptRow, type Speaker } from "./prompt-parts.ts";
   import type { PromptPart, PromptView } from "../shared/prompt-view.ts";
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
 
-  let { threadId, narrow, onclose }: { threadId: string; narrow: boolean; onclose: () => void } = $props();
+  /**
+   * The prompt a session's model gets, as the summary table: the parts before the conversation, then the conversation by source kind. Each row
+   * opens in place: a source kind lists its parts in time order as one line each, and a part opens to its text. A job's subagents link to their
+   * own view, opened through `via` so an ended subagent the daemon no longer lists still opens.
+   */
+  let { sessionId, narrow, onclose }: { sessionId: string; narrow: boolean; onclose: () => void } = $props();
 
+  /** The subagents opened from this view, each below the one before; the view shows the last. */
+  let below = $state<{ id: string; name: string }[]>([]);
+  const trail = $derived<{ id: string; name?: string }[]>([{ id: sessionId }, ...below]);
+  const current = $derived(trail[trail.length - 1]!);
   let view = $state.raw<PromptView | null>(null);
   let error = $state<string | null>(null);
   $effect(() => {
-    const id = threadId;
+    const id = current.id;
+    const via = trail.slice(0, -1).map(step => step.id);
     let cancelled = false;
     view = null;
     error = null;
-    api.promptView(id).then(result => { if (!cancelled) view = result; }, failure => { if (!cancelled) error = failure instanceof Error ? failure.message : String(failure); });
+    collapseAll();
+    api.promptView(id, via).then(result => { if (cancelled) return; view = result; if (result.title) titles = { ...titles, [id]: result.title }; }, failure => { if (!cancelled) error = failure instanceof Error ? failure.message : String(failure); });
     return () => { cancelled = true; };
   });
 
-  const parts = $derived(view ? outline(view) : null);
+  const table = $derived(view ? outline(view) : null);
   const total = $derived(view?.totalTokens ?? 0);
-  const number = $derived(new Map(parts?.messages.map((part, index) => [part.id, index + 1]) ?? []));
-  let only = $state<string | null>(null);
-  const shown = $derived(parts ? (only ? parts.messages.filter(part => groupName(part.label) === only) : parts.messages) : []);
-  const SPEAKER: Record<Speaker, string> = { prompt: "", owner: "owner", injected: "injected", model: "model", tool: "tool" };
+  const number = $derived(new Map(view?.parts.filter(part => part.role).map((part, index) => [part.id, index + 1]) ?? []));
+  let titles = $state<Record<string, string>>({});
+  const nameOf = (step: { id: string; name?: string }): string => titles[step.id] ?? step.name ?? step.id.slice(0, 8);
 
-  let root: HTMLElement | undefined = $state();
-  async function jump(id: string): Promise<void> {
-    await tick();
-    const target = document.getElementById("prompt-" + id);
-    if (!target) return;
-    target.scrollIntoView({ block: "start" });
-    requestAnimationFrame(() => target.scrollIntoView({ block: "start" }));
-    target.classList.remove("flash");
-    void target.offsetWidth;
-    target.classList.add("flash");
-  }
-  function pick(name: string): void {
-    only = only === name ? null : name;
-    void jump("conversation");
-  }
+  let rows = $state<Record<string, boolean>>({});
+  let parts = $state<Record<string, boolean>>({});
+  let whole = $state<Record<string, boolean>>({});
+  function collapseAll(): void { rows = {}; parts = {}; whole = {}; }
+  function expandAll(): void { if (table) rows = Object.fromEntries([...table.rows, ...table.groups].map(row => [row.key, true])); }
+  const flip = (record: Record<string, boolean>, key: string): Record<string, boolean> => ({ ...record, [key]: !record[key] });
+
+  const SPEAKER: Record<Speaker, string> = { prompt: "", owner: "owner", injected: "injected", model: "model", tool: "tool" };
   const tokens = (value: number) => value.toLocaleString();
-  const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+  function when(iso: string, seconds = false): string {
+    const date = new Date(iso);
+    const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", ...(seconds ? { second: "2-digit" } : {}) });
+    return sameDay(date, new Date()) ? time : date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + time;
+  }
 </script>
 
 {#snippet bar(value: number)}
   <span class="share"><span class="track"><span class="fill" style:width="{total ? Math.max(1, value / total * 100) : 0}%"></span></span><span class="pct">{share(value, total)}</span></span>
 {/snippet}
 
-{#snippet block(part: PromptPart)}
+{#snippet text(part: PromptPart)}
+  {@const shown = whole[part.id] ? { text: part.text, more: 0 } : clip(part.text)}
+  <div class="text {speakerOf(part)}">
+    <pre>{shown.text}</pre>
+    {#if shown.more}<button type="button" class="more" onclick={() => { whole = flip(whole, part.id); }}>Show all, {shown.more.toLocaleString()} more {shown.more === 1 ? "line" : "lines"}</button>
+    {:else if whole[part.id]}<button type="button" class="more" onclick={() => { whole = flip(whole, part.id); }}>Show less</button>{/if}
+  </div>
+{/snippet}
+
+{#snippet partLine(part: PromptPart, row: PromptRow)}
+  {@const open = parts[part.id] === true}
+  {@const detail = row.parts.length > 1 && row.key.startsWith("h:") ? part.label.replace(/^Tool: /, "") : labelDetail(part.label)}
   {@const who = speakerOf(part)}
-  <section class="part {who}" id="prompt-{part.id}" style:contain-intrinsic-size="auto {textHeight(part.text) + 28}px">
-    <div class="part-head">
-      {#if part.role}<span class="num">#{number.get(part.id)}</span>{/if}
-      <span class="label" title={part.label}>{part.label}</span>
-      {#if SPEAKER[who]}<span class="who {who}">{SPEAKER[who]}</span>{/if}
-      <span class="source" title={part.source}>{part.source}</span>
-      <span class="tok">{tokens(part.tokens)}</span>
+  <button type="button" class="line" aria-expanded={open} onclick={() => { parts = flip(parts, part.id); }}>
+    <span class="lead"><span class="chev" class:open><Icon name="chevronDown" size={10} /></span>{#if number.get(part.id)}<span class="num">#{number.get(part.id)}</span>{/if}{#if detail}<span class="detail">{detail}</span>{/if}{#if SPEAKER[who] && row.speaker !== who}<span class="who {who}">{SPEAKER[who]}</span>{/if}<span class="gist">{preview(part.text)}</span></span>
+    <span class="tok">{tokens(part.tokens)}</span>
+    <span class="at">{part.at ? when(part.at) : ""}</span>
+  </button>
+  {#if open}{@render text(part)}{/if}
+{/snippet}
+
+{#snippet tableRow(row: PromptRow)}
+  {@const open = rows[row.key] === true}
+  <button type="button" class="row" aria-expanded={open} onclick={() => { rows = flip(rows, row.key); }}>
+    <span class="label" title={row.label}><span class="chev" class:open><Icon name="chevronDown" size={11} /></span>{#if row.speaker !== "prompt"}<span class="dot {row.speaker}"></span>{/if}{row.label}</span><span class="source" title={row.source}>{row.source}</span><span class="tok">{tokens(row.tokens)}</span>{@render bar(row.tokens)}
+  </button>
+  {#if open}
+    <div class="body">
+      {#if row.parts.length === 1 && !row.parts[0]!.role}{@render text(row.parts[0]!)}
+      {:else}{#each row.parts as part (part.id)}{@render partLine(part, row)}{/each}{/if}
     </div>
-    <pre class="text">{part.text}</pre>
-  </section>
+  {/if}
 {/snippet}
 
 <Modal title="Prompt" icon="layers" width="min(1120px, 94vw)" height="90vh" tall full={narrow} {onclose}>
   {#snippet header()}
-    {#if view}
-      <span class="summary">About {compactNumber(view.totalTokens)} tokens{#if view.measuredInputTokens !== undefined}, {compactNumber(view.measuredInputTokens)} measured{/if}, {view.origin.kind === "exact" ? "captured payload" : "rebuilt"}</span>
-      <button type="button" class="button small" onclick={() => root?.scrollIntoView({ block: "start" })}><Icon name="chevronUp" size={12} />Parts</button>
+    <span class="summary">{#if view}About {compactNumber(view.totalTokens)} tokens{#if view.measuredInputTokens !== undefined}, {compactNumber(view.measuredInputTokens)} measured{/if}, {view.origin.kind === "exact" ? "captured payload" : "rebuilt"}{/if}</span>
+    {#if table}
+      <button type="button" class="button small" onclick={expandAll}>Expand all</button>
+      <button type="button" class="button small" onclick={collapseAll}>Collapse all</button>
     {/if}
   {/snippet}
-  <div class="prompt" bind:this={root}>
+  <div class="prompt">
+    {#if trail.length > 1 || view?.title}
+      <div class="crumbs">
+        {#each trail as step, index (step.id)}
+          {#if index}<Icon name="chevronRight" size={11} />{/if}
+          {#if index === trail.length - 1}<span class="here">{nameOf(step)}</span>
+          {:else}<button type="button" class="link-chip" onclick={() => { below = below.slice(0, index); }}><span class="chip-label">{nameOf(step)}</span></button>{/if}
+        {/each}
+      </div>
+    {/if}
     {#if error}<p class="note error">{error}</p>
-    {:else if !view || !parts}<p class="note"><span class="spinner tiny"></span> Reading the prompt</p>
+    {:else if !view || !table}<p class="note"><span class="spinner tiny"></span> Reading the prompt</p>
     {:else}
       <div class="facts">
         <div>About <strong>{tokens(view.totalTokens)}</strong> tokens in {view.parts.length} parts, estimated as characters / 4{#if view.measuredInputTokens !== undefined}. The provider measured <strong>{tokens(view.measuredInputTokens)}</strong> input tokens on the last call{/if}. Every count below is the same estimate.</div>
         {#if view.origin.kind === "exact"}
-          <div class="origin">The exact payload sent to {view.origin.provider} {view.origin.model} at {when(view.origin.capturedAt)}.</div>
+          <div class="origin">The exact payload sent to {view.origin.provider} {view.origin.model} at {when(view.origin.capturedAt, true)}.</div>
         {:else}
           <div class="origin"><span class="rebuild">Rebuilt, not the captured payload.</span> {view.origin.reason}</div>
+        {/if}
+        {#if view.subagents?.length}
+          <div class="subagents">Spawned {view.subagents.length} {view.subagents.length === 1 ? "subagent" : "subagents"}:
+            {#each view.subagents as child (child.sessionId)}<button type="button" class="link-chip" title="Open its prompt" onclick={() => { below = [...below, { id: child.sessionId, name: child.name }]; }}><Icon name="layers" size={11} /><span class="chip-label">{child.name}</span></button>{/each}
+          </div>
         {/if}
         <div class="path" title={view.sessionFile}>{view.sessionFile}</div>
       </div>
 
       <nav class="outline" aria-label="Prompt parts">
-        <div class="group-head"><span>Before the conversation</span><span class="tok">{tokens(parts.headTokens)}</span>{@render bar(parts.headTokens)}</div>
-        {#each parts.rows as row (row.first.id)}
-          <button type="button" class="row" onclick={() => void jump(row.first.id)}>
-            <span class="label" title={row.label}>{row.label}</span><span class="source" title={row.source}>{row.source}</span><span class="tok">{tokens(row.tokens)}</span>{@render bar(row.tokens)}
-          </button>
-        {/each}
-        {#if !parts.head.length}<div class="row empty">None in this view.</div>{/if}
-        <div class="group-head"><span>Conversation, {parts.messages.length} parts</span><span class="tok">{tokens(parts.messageTokens)}</span>{@render bar(parts.messageTokens)}</div>
-        {#each parts.groups as group (group.name)}
-          <button type="button" class="row" class:on={only === group.name} aria-pressed={only === group.name} onclick={() => pick(group.name)}>
-            <span class="label"><span class="dot {group.speaker}"></span>{group.name}</span><span class="source">{group.count} {group.count === 1 ? "part" : "parts"}{only === group.name ? ", shown alone" : ""}</span><span class="tok">{tokens(group.tokens)}</span>{@render bar(group.tokens)}
-          </button>
-        {/each}
+        <div class="group-head"><span>Before the conversation</span><span class="tok">{tokens(table.headTokens)}</span>{@render bar(table.headTokens)}</div>
+        {#each table.rows as row (row.key)}{@render tableRow(row)}{/each}
+        {#if !table.rows.length}<div class="row empty">None in this view.</div>{/if}
+        <div class="group-head"><span>Conversation, {table.messageParts} parts</span><span class="tok">{tokens(table.messageTokens)}</span>{@render bar(table.messageTokens)}</div>
+        {#each table.groups as row (row.key)}{@render tableRow(row)}{/each}
       </nav>
-
-      {#each parts.head as part (part.id)}{@render block(part)}{/each}
-      <div class="convo" id="prompt-conversation">
-        <span>Conversation</span>
-        {#if only}
-          <span class="filter">{shown.length} of {parts.messages.length} parts, only {only}</span>
-          <button type="button" class="button small" onclick={() => { only = null; }}>Show all</button>
-        {/if}
-      </div>
-      {#each shown as part (part.id)}{@render block(part)}{/each}
     {/if}
   </div>
 </Modal>
@@ -117,56 +141,60 @@
 <style>
   .summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
   .prompt { padding: 12px 20px 40px; font-size: 13px; }
+  .crumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; font-size: 12.5px; color: var(--text-faint); }
+  .crumbs .here { font-weight: 600; color: var(--text); }
   .note { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 0; color: var(--text-faint); }
   .note.error { color: var(--danger); }
   .facts { display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px; color: var(--text-muted); line-height: 1.5; }
   .facts strong { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
   .rebuild { font-weight: 600; color: var(--warning); }
+  .subagents { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; }
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
-  .outline { display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 2fr) 64px 132px; column-gap: 12px; margin-bottom: 18px; font-size: 12.5px; }
-  .group-head, .row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
+  .outline { display: grid; grid-template-columns: minmax(140px, 1.1fr) minmax(0, 2fr) 64px 132px; column-gap: 12px; font-size: 12.5px; }
+  .group-head, .row, .line { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; }
   .group-head { padding: 8px 6px 3px; font-weight: 600; color: var(--text); }
   .group-head > span:first-child { grid-column: 1 / 3; }
   .row { min-height: 24px; padding: 0 6px; border-radius: var(--radius-small); text-align: left; color: var(--text); }
-  .row:hover { background: var(--bg-hover); }
-  .row.on { background: var(--accent-soft); }
+  .row:hover, .line:hover { background: var(--bg-hover); }
+  .row[aria-expanded="true"] { font-weight: 500; }
   .row.empty { color: var(--text-faint); }
   .row .label { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
-  .tok { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+  .row .source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--text-faint); }
+  .chev { display: inline-flex; flex: none; color: var(--text-faint); transform: rotate(-90deg); transition: transform 0.12s; }
+  .chev.open { transform: none; }
+  .tok { text-align: right; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--text-muted); }
   .share { display: flex; align-items: center; gap: 8px; }
   .track { flex: 1; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
   .fill { display: block; height: 100%; background: var(--accent); }
-  .pct { width: 40px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-faint); }
+  .pct { width: 40px; text-align: right; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--text-faint); }
   .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--border-strong); }
   .dot.owner { background: var(--accent); }
   .dot.injected { background: var(--warning); }
   .dot.model { background: var(--text-muted); }
-  .convo { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; min-height: 36px; margin-top: 18px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); font-weight: 600; }
-  .filter { font-weight: 400; color: var(--text-muted); }
-  .part { content-visibility: auto; padding: 10px 0 10px 12px; border-left: 2px solid transparent; scroll-margin-top: 44px; }
-  .part + .part { border-top: 1px solid var(--border); }
-  .part.owner { border-left-color: var(--accent); }
-  .part.injected { border-left-color: var(--warning); }
-  .part.tool { border-left-color: var(--border-strong); }
-  .part-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; font-size: 12.5px; }
-  .part-head .num { flex: none; font-variant-numeric: tabular-nums; color: var(--text-faint); }
-  .part-head .label { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-  .part-head .source { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
-  .part-head .tok { flex: none; }
+  .body { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; padding: 0 0 6px 22px; }
+  .line { min-height: 22px; padding: 0 6px; border-radius: var(--radius-small); text-align: left; color: var(--text-muted); }
+  .line .lead { grid-column: 1 / 3; display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+  .line .num { flex: none; font-variant-numeric: tabular-nums; color: var(--text-faint); }
+  .line .detail { flex: none; max-width: 30%; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+  .line .gist { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 11.5px; }
+  .line .at { font-variant-numeric: tabular-nums; text-align: right; color: var(--text-faint); white-space: nowrap; }
   .who { flex: none; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 17px; }
   .who.owner { color: var(--accent-bold); background: var(--accent-soft); }
   .who.injected { color: light-dark(#8a4b00, #fbbf24); background: color-mix(in srgb, var(--warning) 14%, transparent); }
   .who.model, .who.tool { color: var(--text-muted); background: var(--bg-hover); }
-  .text { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); tab-size: 4; }
-  .part.model .text, .part.tool .text { color: var(--text-muted); }
-  .part:global(.flash) { animation: flash 1.2s ease-out; }
-  @keyframes flash { from { background: var(--accent-soft); } to { background: transparent; } }
+  .text { grid-column: 1 / -1; margin: 2px 0 8px 6px; padding-left: 10px; border-left: 2px solid var(--border); }
+  .text.owner { border-left-color: var(--accent); }
+  .text.injected { border-left-color: var(--warning); }
+  .text pre { margin: 0; font-family: var(--mono); font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); tab-size: 4; }
+  .text.model pre, .text.tool pre { color: var(--text-muted); }
+  .more { margin-top: 2px; font-size: 12px; color: var(--accent); }
+  .more:hover { text-decoration: underline; }
   @container app (max-width: 899px) {
     .prompt { padding: 10px 12px 32px; }
     .outline { grid-template-columns: minmax(0, 1fr) 56px 84px; }
     .row .source { display: none; }
-    .group-head > span:first-child { grid-column: 1; }
-    .part-head .source { display: none; }
+    .group-head > span:first-child, .line .lead { grid-column: 1; }
+    .line .at { display: none; }
+    .body { padding-left: 10px; }
   }
 </style>

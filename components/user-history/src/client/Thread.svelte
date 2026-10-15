@@ -18,7 +18,6 @@
   import Icon from "./Icon.svelte";
   import SubagentList from "./SubagentList.svelte";
   import ThreadTitle from "./ThreadTitle.svelte";
-  import PromptView from "./PromptView.svelte";
   import { tooltip } from "./ui/tooltip.ts";
   import { labels } from "./labels.ts";
   import { clock } from "./clock.svelte.ts";
@@ -82,7 +81,6 @@
   });
 
   let agentsOpen = $state(false);
-  let promptOpen = $state(false);
   const MODAL_CHILDREN = 40;
   function archive(): void { void labels.archive([id]); }
   let catalog = $state<ModelCatalog | null>(null);
@@ -211,14 +209,13 @@
           </Popover>
         {/if}
       {/if}
-      <button type="button" class="icon-button" aria-label="Prompt" aria-haspopup="dialog" use:tooltip={"The prompt the model gets"} onclick={() => { promptOpen = !promptOpen; }}><Icon name="layers" size={16} /></button>
+      <button type="button" class="icon-button" aria-label="Prompt" aria-haspopup="dialog" use:tooltip={"The prompt the model gets"} onclick={() => { store.prompt = id; }}><Icon name="layers" size={16} /></button>
       {#if row && !row.archived}
         <button type="button" class="icon-button" aria-label="Archive thread" use:tooltip={busy ? "Stop and archive" : "Archive"} onclick={archive}><Icon name="archive" size={16} /></button>
       {/if}
       {/if}
     </div>
   </header>
-  {#if promptOpen}<PromptView threadId={id} {narrow} onclose={() => { promptOpen = false; }} />{/if}
   {#if thread?.connection === "reconnecting" || (entry?.loading && thread)}
     <div class="thin-bar">{entry?.loading ? "Refreshing" : "Reconnecting"}</div>
   {/if}

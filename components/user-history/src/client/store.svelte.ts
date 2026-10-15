@@ -42,6 +42,8 @@ class Store {
   replyQuote = $state.raw<{ chat: string; text: string } | null>(null);
   /** The reader modal: a job's report, a file, a wiki page or one message. Null when closed. */
   reader = $state.raw<ReaderView | null>(null);
+  /** The session whose Prompt view is open: a thread or chat from its header, a job from its drawer, report or duty run. Null when closed. */
+  prompt = $state.raw<string | null>(null);
   /** The plan view modal of a chat: its whole board as a tree, scrolled to `focus` (a plan step or note id) when set. Null when closed. */
   planView = $state.raw<{ chat: string; focus: string | null } | null>(null);
   /** The Slack bridge as the chat header and the new-chat screen show it; null when this instance runs none, undefined until read. */

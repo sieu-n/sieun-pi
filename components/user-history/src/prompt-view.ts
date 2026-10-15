@@ -1,6 +1,6 @@
-import { open } from "node:fs/promises";
+import { access, open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { buildSessionContext, convertToLlm, loadProjectContextFiles, SessionManager, type SessionEntry } from "prime-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, pinnedBrief } from "./chat-brief.ts";
@@ -8,9 +8,9 @@ import { withReplyCap } from "./chat-guard.ts";
 import { deliverCorrections } from "./correction-delivery.ts";
 import { shortNotices } from "./prime-notices.ts";
 import { readCapture } from "./prompt-capture.ts";
-import { readBranchTail } from "./session-tail.ts";
+import { type BranchTail, readBranchTail } from "./session-tail.ts";
 import { serverNote } from "./shared/chat-feed.ts";
-import type { PromptOrigin, PromptPart, PromptPartKind, PromptView } from "./shared/prompt-view.ts";
+import type { PromptOrigin, PromptPart, PromptPartKind, PromptSubagent, PromptView } from "./shared/prompt-view.ts";
 
 /**
  * `GET api/threads/<id>/prompt`: the prompt a thread's model gets, split into labelled parts in payload order. With a capture (the user-history
@@ -20,7 +20,11 @@ import type { PromptOrigin, PromptPart, PromptPartKind, PromptView } from "./sha
 
 const BRIEF: ReadonlySet<string> = new Set(CHAT_BRIEF.map(line => line.trim()));
 
-type Draft = { kind: PromptPartKind; label: string; source: string; role?: PromptPart["role"]; text: string; tokens?: number };
+/**
+ * `keys` find the session entry a payload part came from, for its time: tool call ids and the opening of each text (`entryTimes`). `message` is
+ * the index of the payload's user message that holds the part, so a block the context hook added to it takes its time.
+ */
+type Draft = { kind: PromptPartKind; label: string; source: string; role?: PromptPart["role"]; text: string; tokens?: number; keys?: readonly string[]; message?: number; at?: string };
 type Json = Record<string, unknown>;
 
 /** No tokenizer ships with this package, so a part counts characters / 4; `measuredInputTokens` is the provider's own count of the last call. */
@@ -32,24 +36,117 @@ const record = (value: unknown): Json | null => typeof value === "object" && val
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const str = (value: unknown): string => typeof value === "string" ? value : "";
 
-export async function promptView(threadId: string, options: { sessionFile: string; dataDir: string; chat: boolean; agentDir?: string }): Promise<PromptView> {
-  const [capture, measured] = await Promise.all([readCapture(options.dataDir, threadId), lastInputTokens(options.sessionFile)]);
+export async function promptView(sessionId: string, options: { sessionFile: string; dataDir: string; chat: boolean; agentDir?: string; title?: string }): Promise<PromptView> {
+  const [capture, tail, subagents] = await Promise.all([readCapture(options.dataDir, sessionId), branchOf(options.sessionFile, REBUILD_BYTES), subagentsOf(options.sessionFile, sessionId)]);
+  const measured = lastInputTokens(tail?.entries ?? []);
   let origin: PromptOrigin;
   let drafts: Draft[];
   if (capture) {
     origin = { kind: "exact", capturedAt: capture.capturedAt, provider: capture.provider, model: capture.model };
-    drafts = payloadParts(capture.payload);
+    drafts = withTimes(payloadParts(capture.payload), tail?.entries ?? []);
   } else {
-    const rebuilt = await rebuild(options.sessionFile, options.chat, options.agentDir ?? join(homedir(), ".prime", "agent"));
+    const rebuilt = await rebuild(options.sessionFile, options.chat, options.agentDir ?? join(homedir(), ".prime", "agent"), tail);
     origin = { kind: "rebuild", reason: rebuilt.reason };
     drafts = rebuilt.parts;
   }
   const parts = drafts.map((draft, index): PromptPart => ({ id: `p${index}`, kind: draft.kind, label: draft.label, source: draft.source,
-    ...(draft.role ? { role: draft.role } : {}), text: draft.text, tokens: draft.tokens ?? estimateTokens(draft.text) }));
-  return { threadId, sessionFile: options.sessionFile, origin, totalTokens: parts.reduce((sum, part) => sum + part.tokens, 0),
-    ...(measured !== undefined ? { measuredInputTokens: measured } : {}), parts };
+    ...(draft.role ? { role: draft.role } : {}), text: draft.text, tokens: draft.tokens ?? estimateTokens(draft.text), ...(draft.at ? { at: draft.at } : {}) }));
+  return { threadId: sessionId, ...(options.title ? { title: options.title } : {}), sessionFile: options.sessionFile, origin, totalTokens: parts.reduce((sum, part) => sum + part.tokens, 0),
+    ...(measured !== undefined ? { measuredInputTokens: measured } : {}), ...(subagents.length ? { subagents } : {}), parts };
 }
 
+/**
+ * The session file of any session the Prompt view opens: the daemon's listing (`listed`), else the file its capture names, else Prime's
+ * `<agentDir>/sessions/<id>.jsonl`, else, for a subagent opened from its parent's view, its file in the parent's subagent folder. `via` is
+ * the chain of parents, root first; the daemon stops listing a subagent once it ends, so an ended one is found through it. Null when none exists.
+ */
+export async function sessionFileFor(sessionId: string, options: { listed: (id: string) => Promise<string | undefined>; via?: readonly string[]; dataDir: string; agentDir: string }): Promise<string | null> {
+  const exists = (file: string | undefined | null): Promise<boolean> => file ? access(file).then(() => true, () => false) : Promise.resolve(false);
+  const find = async (id: string): Promise<string | null> => {
+    for (const file of [await options.listed(id), (await readCapture(options.dataDir, id))?.sessionFile, join(options.agentDir, "sessions", `${id}.jsonl`)]) if (await exists(file)) return file!;
+    return null;
+  };
+  let parent: { id: string; file: string } | null = null;
+  for (const id of [...options.via ?? [], sessionId]) {
+    let file = await find(id);
+    if (!file && parent) {
+      const child: string | undefined = (await spawned(parent.file, parent.id)).find(entry => entry.sessionId === id)?.sessionFile;
+      if (child && await exists(child)) file = child;
+    }
+    parent = file ? { id, file } : null;
+  }
+  return parent?.file ?? null;
+}
+
+/**
+ * The subagents a session spawned, oldest first: each `sub-*` folder with an rlm-subagent.json in its folder (a subagent's own folder, a root's
+ * `session-artifacts/<id>`), the same folders `spawnedSubagents` counts in src/chat-catalog.ts.
+ */
+async function spawned(sessionFile: string, sessionId: string): Promise<(PromptSubagent & { sessionFile: string })[]> {
+  const folder = basename(dirname(sessionFile)).startsWith("sub-") ? dirname(sessionFile) : join(dirname(dirname(sessionFile)), "session-artifacts", sessionId);
+  const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
+  const found = await Promise.all(entries.filter(entry => entry.isDirectory() && entry.name.startsWith("sub-")).map(async entry => {
+    try {
+      const value = record(JSON.parse(await readFile(join(folder, entry.name, "rlm-subagent.json"), "utf8")));
+      const file = str(value?.sessionFile);
+      return file ? [{ sessionId: basename(file, ".jsonl"), name: str(value?.sessionName) || entry.name, sessionFile: file }] : [];
+    } catch { return []; }
+  }));
+  return found.flat().sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+}
+
+export const subagentsOf = async (sessionFile: string, sessionId: string): Promise<PromptSubagent[]> =>
+  (await spawned(sessionFile, sessionId)).map(({ sessionId: id, name }) => ({ sessionId: id, name }));
+
+/** The opening of a text as a key: the same text in the payload and the session file shares it after the context hook appends or rewrites its end. */
+const head = (text: string): string => "t:" + text.replace(/\s+/g, " ").trim().slice(0, 80);
+
+/**
+ * Each key of the messages in the session's current context (Prime's buildSessionContext, so nothing from before the last compaction) with the
+ * times it occurs, oldest first: tool call ids, and the opening of each text, thinking and custom message.
+ */
+function entryTimes(entries: readonly SessionEntry[]): Map<string, string[]> {
+  const times = new Map<string, string[]>();
+  const add = (key: string, at: string) => { const list = times.get(key); if (list) list.push(at); else times.set(key, [at]); };
+  const texts = (content: unknown): string[] => typeof content === "string" ? [content]
+    : list(content).flatMap(block => { const value = record(block); return value ? [str(value.text) || str(value.thinking)].filter(Boolean) : []; });
+  for (const agentMessage of buildSessionContext([...entries]).messages) {
+    const message = agentMessage as unknown as Json;
+    if (typeof message.timestamp !== "number") continue;
+    const at = new Date(message.timestamp).toISOString();
+    const ids = (id: string) => { add("id:" + id, at); if (id.includes("|")) add("id:" + id.split("|")[0], at); };
+    if (message.role === "toolResult") { ids(str(message.toolCallId)); continue; }
+    for (const block of list(message.content)) { const value = record(block); if (value?.type === "toolCall") ids(str(value.id)); }
+    for (const text of texts(message.content)) add(head(text), at);
+  }
+  return times;
+}
+
+/**
+ * Payload parts with the time of the session message each came from. A key's times are taken oldest first, so a repeated notice gets each of its
+ * times in turn; parts of one assistant reply share one lookup. A block the context hook adds to a user message ([message id], [reply cap],
+ * [corrections]) or an image has no entry of its own and takes the time of the nearest block of the same message, the one before it first.
+ */
+function withTimes(drafts: Draft[], entries: readonly SessionEntry[]): Draft[] {
+  const times = entryTimes(entries);
+  const found = new Map<readonly string[], string | undefined>();
+  const timed = drafts.map(draft => {
+    const keys = draft.keys;
+    if (!keys) return draft;
+    if (!found.has(keys)) found.set(keys, keys.map(key => times.get(key)).find(list => list?.length)?.shift());
+    const at = found.get(keys);
+    return at ? { ...draft, at } : draft;
+  });
+  const sibling = (index: number, step: number): string | undefined => {
+    for (let at = index + step; timed[at] && timed[at]!.message === timed[index]!.message; at += step) if (timed[at]!.at) return timed[at]!.at;
+    return undefined;
+  };
+  return timed.map((draft, index) => {
+    if (draft.at || draft.message === undefined) return draft;
+    const at = sibling(index, -1) ?? sibling(index, 1);
+    return at ? { ...draft, at } : draft;
+  });
+}
 
 /** The parts of one provider payload: Anthropic Messages (system, tools, messages) or OpenAI Responses (instructions, tools, input). */
 export function payloadParts(payload: unknown, brief: ReadonlySet<string> = BRIEF): Draft[] {
@@ -71,13 +168,13 @@ export function payloadParts(payload: unknown, brief: ReadonlySet<string> = BRIE
   for (const message of systemMessages) parts.push(...systemParts(contentText(record(message)?.content), brief));
   parts.push(...toolParts(body.tools));
   const names = new Map<string, string>();
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
     const value = record(message);
     if (!value || systemMessages.includes(message)) continue;
     const role = str(value.role);
     if (role === "assistant") parts.push(...assistantParts(value, names));
-    else if (role === "tool") parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.tool_call_id)) ?? "tool"}`, source: "tool output", text: contentText(value.content) });
-    else parts.push(...userParts(value.content, names));
+    else if (role === "tool") parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.tool_call_id)) ?? "tool"}`, source: "tool output", text: contentText(value.content), keys: ["id:" + str(value.tool_call_id)] });
+    else parts.push(...userParts(value.content, names).map(part => ({ ...part, message: index })));
   }
   return parts;
 }
@@ -101,27 +198,31 @@ function toolParts(tools: unknown): Draft[] {
 
 function assistantParts(message: Json, names: Map<string, string>): Draft[] {
   const content = message.content;
-  if (typeof content === "string") return [{ kind: "message", role: "assistant", label: "Assistant", source: "model reply", text: content }];
+  if (typeof content === "string") return [{ kind: "message", role: "assistant", label: "Assistant", source: "model reply", text: content, keys: [head(content)] }];
   const thinking: string[] = [];
   const said: string[] = [];
+  const ids: string[] = [];
+  const texts: string[] = [];
   for (const block of list(content)) {
     const value = record(block);
     if (!value) continue;
     const type = str(value.type);
-    if (type === "thinking") thinking.push(str(value.thinking));
+    if (type === "thinking") { thinking.push(str(value.thinking)); texts.push(str(value.thinking)); }
     else if (type === "redacted_thinking") thinking.push("[redacted thinking]");
-    else if (type === "text") said.push(str(value.text));
-    else if (type === "tool_use") { names.set(str(value.id), str(value.name)); said.push(toolCall(str(value.name), value.input)); }
+    else if (type === "text") { said.push(str(value.text)); texts.push(str(value.text)); }
+    else if (type === "tool_use") { names.set(str(value.id), str(value.name)); ids.push(str(value.id)); said.push(toolCall(str(value.name), value.input)); }
   }
   for (const call of list(message.tool_calls)) {
     const value = record(call); const fn = record(value?.function);
     if (!value || !fn) continue;
     names.set(str(value.id), str(fn.name));
+    ids.push(str(value.id));
     said.push(toolCall(str(fn.name), parseArguments(fn.arguments)));
   }
+  const keys = [...ids.map(id => "id:" + id), ...texts.filter(Boolean).map(head)];
   const parts: Draft[] = [];
-  if (thinking.length) parts.push({ kind: "message", role: "assistant", label: "Assistant thinking", source: "model reply (signed thinking; the provider counts it only in the current tool loop)", text: thinking.join("\n\n") });
-  if (said.length) parts.push({ kind: "message", role: "assistant", label: said.some(line => line.startsWith("→ ")) ? "Assistant tool call" : "Assistant", source: "model reply", text: said.join("\n\n") });
+  if (thinking.length) parts.push({ kind: "message", role: "assistant", label: "Assistant thinking", source: "model reply (signed thinking; the provider counts it only in the current tool loop)", text: thinking.join("\n\n"), keys });
+  if (said.length) parts.push({ kind: "message", role: "assistant", label: said.some(line => line.startsWith("→ ")) ? "Assistant tool call" : "Assistant", source: "model reply", text: said.join("\n\n"), keys });
   return parts;
 }
 
@@ -149,7 +250,7 @@ function userParts(content: unknown, names: Map<string, string>): Draft[] {
       const inner = typeof value.content === "string" ? [{ type: "text", text: value.content }] : list(value.content);
       const images = inner.filter(item => str(record(item)?.type) === "image").length;
       parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.tool_use_id)) ?? "tool"}${value.is_error === true ? " (error)" : ""}`,
-        source: "tool output", text: contentText(inner), ...(images ? { tokens: estimateTokens(contentText(inner)) + images * IMAGE_TOKENS } : {}) });
+        source: "tool output", text: contentText(inner), keys: ["id:" + str(value.tool_use_id)], ...(images ? { tokens: estimateTokens(contentText(inner)) + images * IMAGE_TOKENS } : {}) });
     }
   }
   return parts;
@@ -165,10 +266,10 @@ function responsesInput(input: unknown, brief: ReadonlySet<string>): Draft[] {
     const type = str(value.type) || "message";
     const role = str(value.role);
     if (type === "message" && (role === "system" || role === "developer")) parts.push(...systemParts(contentText(value.content), brief));
-    else if (type === "message" && role === "assistant") parts.push({ kind: "message", role: "assistant", label: "Assistant", source: "model reply", text: contentText(value.content) });
+    else if (type === "message" && role === "assistant") parts.push({ kind: "message", role: "assistant", label: "Assistant", source: "model reply", text: contentText(value.content), keys: [head(contentText(value.content))] });
     else if (type === "message") parts.push(...splitDigest(contentText(value.content)).map(text => userText(text)));
-    else if (type === "function_call") { names.set(str(value.call_id), str(value.name)); parts.push({ kind: "message", role: "assistant", label: "Assistant tool call", source: "model reply", text: toolCall(str(value.name), parseArguments(value.arguments)) }); }
-    else if (type === "function_call_output") parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.call_id)) ?? "tool"}`, source: "tool output", text: contentText(value.output) });
+    else if (type === "function_call") { names.set(str(value.call_id), str(value.name)); parts.push({ kind: "message", role: "assistant", label: "Assistant tool call", source: "model reply", text: toolCall(str(value.name), parseArguments(value.arguments)), keys: ["id:" + str(value.call_id)] }); }
+    else if (type === "function_call_output") parts.push({ kind: "message", role: "toolResult", label: `Tool result: ${names.get(str(value.call_id)) ?? "tool"}`, source: "tool output", text: contentText(value.output), keys: ["id:" + str(value.call_id)] });
     else if (type === "reasoning") parts.push({ kind: "message", role: "assistant", label: "Assistant thinking", source: "model reply (reasoning summary; the encrypted part is not shown)", text: list(value.summary).map(entry => str(record(entry)?.text)).join("\n\n") || "[encrypted reasoning]" });
   }
   return parts;
@@ -219,7 +320,7 @@ export function userSource(text: string): Source {
 }
 
 function userText(text: string): Draft {
-  return { ...userSource(text), role: "user", text };
+  return { ...userSource(text), role: "user", text, keys: [head(text)] };
 }
 
 
@@ -272,8 +373,8 @@ const SYSTEM_LABELS: Record<string, Source> = {
 };
 
 /**
- * `# Additional Guidance` bullets in runs: the job lines, the poteto-mode line, and the rest. In a chat the rest is the chat brief (the chat_board
- * tool carries it and no other active tool has guidelines), so a brief pinned before an edit of CHAT_BRIEF still reads as the brief.
+ * `# Additional Guidance` bullets in runs: the job lines, and the rest. In a chat the rest is the chat brief (the chat_board tool carries it and
+ * no other active tool has guidelines), so a brief pinned before an edit of CHAT_BRIEF still reads as the brief.
  */
 function guidanceParts(body: string, brief: ReadonlySet<string>): Draft[] {
   const lines = body.split("\n");
@@ -289,8 +390,7 @@ function guidanceParts(body: string, brief: ReadonlySet<string>): Draft[] {
   const chat = bullets.some(bullet => brief.has(text(bullet)));
   const group = (bullet: string): string => {
     const line = text(bullet);
-    if (line.startsWith("You are a job of the chat")) return "job";
-    if (line.startsWith("Work in poteto-mode:")) return "persona";
+    if (line.startsWith("You are a job of the chat") || line.startsWith("Work in poteto-mode:")) return "job";
     return chat ? "brief" : "tools";
   };
   const runs: { group: string; lines: string[] }[] = [];
@@ -303,7 +403,6 @@ function guidanceParts(body: string, brief: ReadonlySet<string>): Draft[] {
   const labels: Record<string, Source> = {
     brief: { kind: "instructions", label: "Chat brief", source: "chat_board tool promptGuidelines (src/chat-brief.ts CHAT_BRIEF, as pinned at the chat's start or last compaction)" },
     job: { kind: "instructions", label: "Job report line", source: "job_reply tool promptGuidelines (src/chat-brief.ts)" },
-    persona: { kind: "instructions", label: "poteto-mode line", source: "poteto_mode tool promptGuidelines (src/chat-brief.ts personaGuideline)" },
     tools: { kind: "instructions", label: "Tool guidelines", source: "promptGuidelines of the active tools" },
   };
   return runs.map((run, index) => ({ ...labels[run.group]!, text: (index === 0 ? title + "\n" : "") + run.lines.join("\n") }));
@@ -323,14 +422,13 @@ function contextParts(body: string): Draft[] {
 }
 
 
-async function branchOf(sessionFile: string, bytes: number): Promise<SessionEntry[] | null> {
-  try { return (await readBranchTail(sessionFile, { messages: 1_000_000, bytes }))?.entries ?? null; } catch { return null; }
+async function branchOf(sessionFile: string, bytes: number): Promise<BranchTail | undefined> {
+  try { return await readBranchTail(sessionFile, { messages: 1_000_000, bytes }); } catch { return undefined; }
 }
 
 /** input + cacheRead + cacheWrite of the newest assistant reply that reached the provider. */
-export async function lastInputTokens(sessionFile: string): Promise<number | undefined> {
-  const branch = await branchOf(sessionFile, 4 * 1024 * 1024);
-  for (const entry of [...branch ?? []].reverse()) {
+export function lastInputTokens(branch: readonly SessionEntry[]): number | undefined {
+  for (const entry of [...branch].reverse()) {
     if (entry.type !== "message" || entry.message.role !== "assistant") continue;
     const usage = entry.message.usage;
     const total = (usage?.input ?? 0) + (usage?.cacheRead ?? 0) + (usage?.cacheWrite ?? 0);
@@ -339,6 +437,7 @@ export async function lastInputTokens(sessionFile: string): Promise<number | und
   return undefined;
 }
 
+/** The newest 48 MiB of the branch: the context since the last compaction and the times of its messages. On the AI harness chat's 148 MB file it read 7,308 entries back through 13 compactions in 233 ms (10-15). */
 const REBUILD_BYTES = 48 * 1024 * 1024;
 
 async function sessionCwd(sessionFile: string): Promise<string> {
@@ -357,8 +456,8 @@ async function sessionCwd(sessionFile: string): Promise<string> {
  * steps the user-history context hook runs (shortNotices, the chat reply cap, deliverCorrections from the checkpoints in the file), the
  * AGENTS.md files through Prime's loadProjectContextFiles, and a chat's pinned brief.
  */
-export async function rebuild(sessionFile: string, chat: boolean, agentDir: string): Promise<{ reason: string; parts: Draft[] }> {
-  const tail = await readBranchTail(sessionFile, { messages: 1_000_000, bytes: REBUILD_BYTES });
+export async function rebuild(sessionFile: string, chat: boolean, agentDir: string, read?: BranchTail): Promise<{ reason: string; parts: Draft[] }> {
+  const tail = read ?? await readBranchTail(sessionFile, { messages: 1_000_000, bytes: REBUILD_BYTES });
   const entries = tail?.entries ?? SessionManager.open(sessionFile).getBranch();
   const context = buildSessionContext(entries);
   let messages: AgentMessage[] = shortNotices(context.messages) ?? context.messages;
@@ -375,6 +474,8 @@ export async function rebuild(sessionFile: string, chat: boolean, agentDir: stri
   }
   const names = new Map<string, string>();
   for (const message of messages) {
+    const at = "timestamp" in message && typeof message.timestamp === "number" ? { at: new Date(message.timestamp).toISOString() } : {};
+    const start = parts.length;
     for (const llm of convertToLlm([message])) {
       if (llm.role === "assistant") {
         parts.push(...assistantParts({ content: llm.content.map(block => block.type === "toolCall" ? { type: "tool_use", id: block.id, name: block.name, input: block.arguments } : block) }, names));
@@ -394,6 +495,7 @@ export async function rebuild(sessionFile: string, chat: boolean, agentDir: stri
         }
       }
     }
+    for (let index = start; index < parts.length; index++) parts[index] = { ...parts[index]!, ...at };
   }
   const missing = "the base system prompt, the MCP and tool guideline sections, the skills list and the tool definitions";
   const reason = `No captured payload for this session yet: it records from its first model call after its worker loads the current user-history extension. ` +

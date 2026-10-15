@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { groupName, outline, share, speakerOf, textHeight } from "../src/client/prompt-parts.ts";
+import { clip, groupName, labelDetail, outline, preview, share, speakerOf } from "../src/client/prompt-parts.ts";
 import type { PromptPart, PromptView } from "../src/shared/prompt-view.ts";
 
 const part = (id: string, label: string, source: string, tokens: number, role?: PromptPart["role"]): PromptPart =>
@@ -41,19 +41,43 @@ test("groupName: a tool name, a sender or a target does not split a group", () =
   assert.equal(groupName("Assistant thinking"), "Assistant thinking");
 });
 
-test("outline: the parts before the conversation in order, then the conversation by group, biggest first", () => {
+test("outline: the parts before the conversation in order, then the conversation by source kind, biggest first, each with its parts in time order", () => {
   const result = outline(view);
-  assert.deepEqual(result.head.map(item => item.id), ["p0", "p1"]);
+  assert.deepEqual(result.rows.map(row => [row.key, row.label, row.parts.map(item => item.id)]), [["h:p0", "Base system prompt", ["p0"]], ["h:p1", "Chat brief", ["p1"]]]);
   assert.equal(result.headTokens, 400);
-  assert.equal(result.messages.length, 7);
+  assert.equal(result.headParts, 2);
+  assert.equal(result.messageParts, 7);
   assert.equal(result.messageTokens, 600);
-  assert.deepEqual(result.groups.map(group => [group.name, group.count, group.tokens, group.speaker]), [
-    ["Tool result", 2, 350, "tool"],
-    ["[check-in]", 2, 140, "injected"],
-    ["Assistant tool call", 1, 50, "model"],
-    ["Agent message", 1, 40, "injected"],
-    ["Owner", 1, 20, "owner"],
+  assert.deepEqual(result.groups.map(group => [group.label, group.source, group.tokens, group.speaker, group.parts.map(item => item.id)]), [
+    ["Tool result", "2 parts", 350, "tool", ["p5", "p6"]],
+    ["[check-in]", "2 parts", 140, "injected", ["p3", "p7"]],
+    ["Assistant tool call", "1 part", 50, "model", ["p4"]],
+    ["Agent message", "1 part", 40, "injected", ["p8"]],
+    ["Owner", "1 part", 20, "owner", ["p2"]],
   ]);
+  assert.equal(new Set([...result.rows, ...result.groups].map(row => row.key)).size, result.rows.length + result.groups.length, "every row has its own key for its open state");
+});
+
+test("labelDetail: what a part's label adds to its source kind", () => {
+  assert.equal(labelDetail("Tool result: ipython"), "ipython");
+  assert.equal(labelDetail("Agent message from prompt-source"), "prompt-source");
+  assert.equal(labelDetail("Nudge for frontend bro"), "frontend bro");
+  assert.equal(labelDetail("[check-in]"), "");
+});
+
+test("preview: a part's text on one line, cut to its length", () => {
+  assert.equal(preview("→ ipython\nprint(1)\n\n  done"), "→ ipython print(1) done");
+  assert.equal(preview("x".repeat(500), 240).length, 240);
+  assert.equal(preview(""), "");
+});
+
+test("clip: a long text shows its first lines and counts the rest; a short one shows whole", () => {
+  assert.deepEqual(clip("a\nb\nc", 2), { text: "a\nb", more: 1 });
+  assert.deepEqual(clip("a\nb\nc\nd\n", 2), { text: "a\nb", more: 2 });
+  assert.deepEqual(clip("a\nb", 2), { text: "a\nb", more: 0 });
+  assert.deepEqual(clip("a\nb\n", 2), { text: "a\nb\n", more: 0 });
+  const long = clip("y".repeat(10_000), 40, 6000);
+  assert.deepEqual([long.text.length, long.more], [6000, 1], "one line longer than the character cap is cut too");
 });
 
 test("share: whole percents from 10%, one decimal below, and <0.1% for a sliver", () => {
@@ -64,20 +88,14 @@ test("share: whole percents from 10%, one decimal below, and <0.1% for a sliver"
   assert.equal(share(5, 0), "0%");
 });
 
-test("textHeight: one line per newline, long lines wrap at the column count", () => {
-  assert.equal(textHeight("a\nb", 110, 18), 36);
-  assert.equal(textHeight("x".repeat(220), 110, 18), 36);
-  assert.equal(textHeight("", 110, 18), 18);
-});
-
-test("outline: consecutive tool definitions share one row that jumps to the first", () => {
+test("outline: consecutive tool definitions are one row that opens to each definition", () => {
   const tool = (id: string, name: string, tokens: number): PromptPart => ({ id, kind: "tools", label: "Tool: " + name, source: "tool definition", text: "x", tokens });
   const result = outline({ ...view, parts: [view.parts[0]!, tool("t1", "ipython", 50), tool("t2", "chat_board", 70), view.parts[1]!, tool("t3", "job_reply", 5), view.parts[2]!] });
-  assert.deepEqual(result.rows.map(row => [row.first.id, row.label, row.tokens]), [
-    ["p0", "Base system prompt", 300],
-    ["t1", "Tools, 2 definitions", 120],
-    ["p1", "Chat brief", 100],
-    ["t3", "Tool: job_reply", 5],
+  assert.deepEqual(result.rows.map(row => [row.key, row.label, row.tokens, row.parts.map(item => item.id)]), [
+    ["h:p0", "Base system prompt", 300, ["p0"]],
+    ["h:t1", "Tools, 2 definitions", 120, ["t1", "t2"]],
+    ["h:p1", "Chat brief", 100, ["p1"]],
+    ["h:t3", "Tool: job_reply", 5, ["t3"]],
   ]);
-  assert.equal(result.head.length, 5);
+  assert.equal(result.headParts, 5);
 });

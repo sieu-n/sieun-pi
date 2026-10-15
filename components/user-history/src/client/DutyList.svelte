@@ -54,6 +54,9 @@
 {#snippet jobLink(name: string)}
   <button type="button" class="link-chip job" data-preview-chat={chat} data-preview-job={name} onclick={() => store.openArtifact({ kind: "job", name }, chat)}><Icon name="briefcase" size={11} /><span class="chip-label">{name}</span></button>
 {/snippet}
+{#snippet promptLink(id: string)}
+  <button type="button" class="link-chip" onclick={() => { store.prompt = id; }}><Icon name="layers" size={11} /><span class="chip-label">Prompt</span></button>
+{/snippet}
 {#snippet marks(line: MissLine)}
   <span class="miss-runs" use:tooltip={streakTip(line)}>{line.misses} run{line.misses === 1 ? "" : "s"}</span>
   {#if line.stuck}<span class="miss-mark stuck" use:tooltip={STUCK_TIP}>stuck, change approach</span>{/if}
@@ -88,7 +91,11 @@
             <span class="duty-verdict {state}">{lastLabel(view, now)}</span>
             {#if view.runs.length}
               <span class="history" aria-label="Last {view.runs.length} runs, oldest first">
-                {#each history(view) as run, index (run.at)}<span class="run {judgedRun(run, duty.metrics).verdict}" use:tooltip={runTitle(view, index)}></span>{/each}
+                {#each history(view) as run, index (run.at)}
+                  {@const job = run.job}
+                  {#if job}<button type="button" class="run {judgedRun(run, duty.metrics).verdict}" aria-label="The prompt of {job.name}" use:tooltip={runTitle(view, index) + " Click for its prompt."} onclick={() => { store.prompt = job.id; }}></button>
+                  {:else}<span class="run {judgedRun(run, duty.metrics).verdict}" use:tooltip={runTitle(view, index)}></span>{/if}
+                {/each}
               </span>
             {/if}
           </p>
@@ -96,7 +103,7 @@
           {#if view.builtin && found}<p>The last check-in flagged {found}</p>{/if}
           {#if card.job}
             {@const job = card.job}
-            <p>Its last run started {@render jobLink(job.name)}, which {job.live ? "is working" : "has ended"}.</p>
+            <p>Its last run started {@render jobLink(job.name)}, which {job.live ? "is working" : "has ended"}. {@render promptLink(job.id)}</p>
           {/if}
           <p class="duty-when">
             <span>{nextLabel(view, now)}</span>
@@ -198,6 +205,8 @@
   .run.met { background: var(--success); }
   .run.missed { background: var(--warning); }
   .run.error { background: var(--danger); }
+  button.run { padding: 0; }
+  button.run:hover { outline: 1px solid var(--text-faint); outline-offset: 1px; }
   .duty-when { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; color: var(--text-faint); }
   .metrics { width: 100%; border-collapse: collapse; font-size: 12px; }
   .metrics th { text-align: left; font-weight: 500; color: var(--text-faint); padding: 1px 6px 1px 0; border-bottom: 1px solid var(--border); }

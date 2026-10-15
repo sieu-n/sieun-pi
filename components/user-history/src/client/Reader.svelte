@@ -175,14 +175,15 @@
   const fullThread = $derived.by((): Action | null => { const id = jobSession; return id ? { label: "Open full thread", run: () => { onclose(); store.select(id); } } : null; });
   const actions = $derived.by((): Action[] => {
     switch (view.kind) {
-      case "job": return fullThread ? [fullThread] : [];
+      case "job": { const id = jobSession; return fullThread && id ? [fullThread, { label: "Prompt", run: () => { store.prompt = id; } }] : []; }
       case "file": return [];
       case "wiki": { const path = view.path; return [{ label: "Open in wiki", run: () => openWiki(path) }]; }
       case "message": {
         const { thread: id, at } = view;
         const text = message && (message.kind === "user" || message.kind === "agent") ? message.text : null;
         const reply: Action[] = text === null ? [] : [{ label: "Reply", run: () => { onclose(); if (store.selectedId !== id) store.select(id); store.replyQuote = { chat: id, text: replyExcerpt(text) }; } }];
-        return [...(fullThread ? [fullThread] : []), ...reply, { label: "Go to message", run: () => { onclose(); store.select(id, at); } }];
+        const job = jobSession;
+        return [...(fullThread ? [fullThread] : []), ...(job ? [{ label: "Prompt", run: () => { store.prompt = job; } }] : []), ...reply, { label: "Go to message", run: () => { onclose(); store.select(id, at); } }];
       }
       case "updates": return [];
     }

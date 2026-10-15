@@ -32,8 +32,8 @@ export interface DutyCardModel {
   onTarget: string[];
   /** Measured runs in a row off target, newest first; skipped and error runs neither extend nor break it. */
   streak: number;
-  /** The duty job the newest run started, and whether it works now. */
-  job: { name: string; live: boolean } | null;
+  /** The duty job the newest run started (its session id and name), and whether it works now. */
+  job: { id: string; name: string; live: boolean } | null;
   /** For a duty over the shape rule (`shapeNote`), the line that tells the owner its chat must rework it; else null. */
   shape: string | null;
 }
@@ -116,7 +116,7 @@ export function dutyCard(view: DutyView, agents: readonly ChatAgent[]): DutyCard
     misses: others.flatMap(metric => lines.get(metric.key) ?? []),
     onTarget: others.filter(metric => results[metric.key]?.met === true).map(metric => metric.label),
     streak: missStreak(view.runs, view.duty.metrics),
-    job: newestJob ? { name: newestJob.name, live: jobLive(newestJob.name, agents) } : null,
+    job: newestJob ? { id: newestJob.id, name: newestJob.name, live: jobLive(newestJob.name, agents) } : null,
     shape: shapeLine(view.duty.metrics),
   };
 }

@@ -24,7 +24,7 @@ test("Mac stays usable on 10-15: the headline missed once, the 24 h share 11 run
   assert.deepEqual(card.onTarget, ["Longest run of unusable minutes in the last hour", "Minutes in the last hour with a working session quiet over 30 min"]);
   assert.equal(card.shape, "This duty has 6 metrics, over the limit of one headline and 3 more. The card counts only the first 4 until its chat reworks it.");
   assert.equal(card.streak, 11);
-  assert.deepEqual(card.job, { name: "mac stays usable AI harness developer environment 17:22", live: false });
+  assert.deepEqual(card.job, { id: "01a13ea7-b892-72aa-b15a-599401920db2", name: "mac stays usable AI harness developer environment 17:22", live: false }, "the card keeps the run job's session id for its Prompt link");
   assert.equal(dutyCard(view("d6"), [agent("mac stays usable AI harness developer environment 17:22", "working")]).job?.live, true);
 });
 
