@@ -192,22 +192,6 @@ test("harness health: overlap ignores stop words and empty descriptions", () => 
   assert.equal(overlaps([skill("a", "convex schema tables"), skill("b", "convex schema queries")])[0]!.score, 0.5);
 });
 
-test("Skills and harness duty file parses, measures outcomes, and every metric is a key the precheck writes", async () => {
-  const duty = parseDutyInput(JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "harness-health.duty.json"), "utf8")), "d", NOW);
-  assert.equal(duty.name, "Skills and harness");
-  assert.deepEqual(duty.schedule, { kind: "daily", at: "04:00" });
-  assert.equal(duty.boardGoal, "p215");
-  const dataDir = await mkdtemp(join(tmpdir(), "harness-keys-"));
-  try {
-    const written = Object.keys((await measureHarness({ roots: [], views: async () => [], dataDir, now: NOW, ...stubs })).metrics);
-    assert.deepEqual(duty.metrics.map(metric => metric.key), ["skills_to_prune", "cache_read_ratio_1h", "cache_read_ratio_24h"], "repeat corrections are judged in Chat system");
-    assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["skills_to_prune"]);
-    for (const metric of duty.metrics) assert.ok(written.includes(metric.key), `${metric.key} is a key the precheck writes`);
-  } finally { await rm(dataDir, { recursive: true, force: true }); }
-  assert.doesNotMatch(duty.goal + duty.onMiss, /\b\d+ (?:words|lines)\b|words and lines/, "no word or line targets (owner 10-10, c39)");
-  assert.match(duty.onMiss, /never trim a skill for its size/);
-});
-
 const MIN = 60_000;
 /** A call `ago` before NOW whose prompt is `read` cache reads, `write` cache writes and 10 fresh input tokens. */
 const call = (id: string, ago: number, read: number, write: number, before: string[] = [], model = "claude-opus-5-5"): Call =>

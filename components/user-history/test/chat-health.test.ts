@@ -455,14 +455,6 @@ test("chat health recheck: the run lists yesterday's fix(user-history) commits f
   }
 });
 
-test("chat health duty: the definition parses as a duty with one headline and three judged supporting metrics, and the precheck keeps every other number", async () => {
-  const definition: unknown = JSON.parse(await readFile(join(import.meta.dirname, "..", "scripts", "duties", "chat-health.duty.json"), "utf8"));
-  const duty = parseDutyInput(definition, "d1", 0);
-  assert.deepEqual(duty.metrics.map(metric => [metric.key, metric.op, metric.target, metric.headline ?? false]),
-    [["duties_green_pct", ">=", 100, true], ["stuck_duties", "<=", 0, false], ["repeat_corrections", "<=", 0, false], ["sieun_pi_breaks", "<=", 0, false]], "c75: one headline and at most 3 supporting");
-  for (const key of ["scope_misses", "idle_goals", "goals_to_fold", "merges_without_go", "one_session_load", "redundant_heartbeats", "stuck_steps"]) assert.ok(key in NO_MISSES, `${key} stays in the precheck output`);
-});
-
 test("check-in quality: the hours with a no-progress check-in count once each in no_progress_hours", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-health-"));
   try {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { CHECKS, type Deps, type Entry, type ExecResult, frontmatter, type McpResult, realMcp, runChecks, searchPath, toOutput } from "../scripts/duties/skills-and-tools.ts";
+import { CHECKS, type Deps, type Entry, type ExecResult, frontmatter, type McpResult, realMcp, runChecks, searchPath, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
 
 const NOW = Date.parse("2026-10-10T05:00:00Z");
 const HOME = "/h";
@@ -131,9 +131,16 @@ test("skills and tools: ids are unique, every group is used, and the duty file h
   assert.equal(duty.name, "Skills and tools");
   assert.deepEqual(duty.schedule, { kind: "daily", at: "04:30" });
   const { output } = await run();
-  assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["checks_failed"]);
+  assert.deepEqual(duty.metrics.filter(metric => metric.headline).map(metric => metric.key), ["skills_or_tools_to_fix"]);
   assert.ok(duty.metrics.length <= 4);
-  for (const metric of duty.metrics) assert.ok(metric.key in output.metrics, metric.key);
+  assert.deepEqual(duty.precheck.command.slice(-2), ["scripts/duties/skills-and-tools.ts", "--with-harness"]);
+  const harness = { metrics: { skills_to_prune: 2, cache_read_ratio_1h: 95, cache_read_ratio_24h: 96 }, flagged: [{ kind: "prune", item: "old-skill", excerpt: "unread 14 days" }] };
+  const merged = withHarness(output, harness);
+  for (const metric of duty.metrics) assert.ok(metric.key in merged.metrics, metric.key);
+  assert.equal(merged.metrics.skills_or_tools_to_fix, 2, "every tool check passes, and the 2 skills to prune count");
+  assert.equal(merged.flagged?.at(-1)?.item, "old-skill");
+  const broken = withHarness(output, new Error("exit 1: no wiki.db"));
+  assert.equal(broken.metrics.skills_or_tools_to_fix, 1, "a harness check that did not run is not green");
 });
 
 test("skills and tools: with every tool answering its pass text, all 30 checks pass", async () => {

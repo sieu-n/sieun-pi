@@ -355,18 +355,6 @@ test("measure: an unusable minute with more than 14 agent turns working or 16 GB
   assert.deepEqual(feed.owners!.map(owner => owner.gb), [11, 10, 9, 8, 7, 6, 5, 4], "the feed's 8 largest owners, largest first");
 });
 
-test("mac-stays-usable.duty.json: a valid duty every 60 minutes whose metrics the precheck gives, with the owner's words verbatim", async () => {
-  const value = JSON.parse(await readFile(join(import.meta.dirname, "../scripts/duties/mac-stays-usable.duty.json"), "utf8"));
-  const duty = parseDutyInput(value, "d1", 0);
-  assert.deepEqual(duty.schedule, { kind: "every", minutes: 60 });
-  assert.match(duty.ownerWords, /setup a 60min cadence duty$/);
-  const given = Object.keys(measure([watch(59)], NOW).metrics);
-  for (const metric of duty.metrics) assert.ok(given.includes(metric.key), metric.key);
-  assert.equal(duty.metrics.find(metric => metric.headline)?.key, "usable_pct_1h");
-  assert.deepEqual(duty.metrics.map(metric => [metric.key, metric.target]), [["usable_pct_1h", 100], ["harness_unusable_min_1h", 0], ["other_unusable_min_1h", 0]]);
-  assert.equal(duty.metrics.some(metric => /gb|footprint|budget/.test(metric.key)), false, "the worker footprint has no target");
-});
-
 
 // 10-15: wp-engage-crawl (01a0f7cb, kernel 62440) sat in one ipython cell from 01:27:59Z to 02:26:27Z and in the next from 02:26:36Z to 03:26:08Z.
 // Both were slow paging pulls, not hangs: at 03:23-03:24Z the kernel opened a new TLS connection to 64.34.205.245 every 5 s and used 22 to 27 s

@@ -619,6 +619,35 @@ export function realDeps(scratchDir: string): Deps {
   };
 }
 
+/**
+ * The Skills and tools duty's output with the harness check folded in (`--with-harness`): the owner merged Skills and harness into it on 10-16.
+ * `skills_or_tools_to_fix` is the headline, every tool check that fails plus every skill to prune; both outputs' other metrics and flagged
+ * items stay. A harness check that failed to run is one flagged item and counts as one to fix, so a broken check never reads green.
+ */
+export function withHarness(tools: PrecheckOutput, harness: PrecheckOutput | Error): PrecheckOutput {
+  if (harness instanceof Error) {
+    return { metrics: { ...tools.metrics, skills_or_tools_to_fix: (tools.metrics.checks_failed ?? 0) + 1 },
+      flagged: [...tools.flagged ?? [], { kind: "harness_error", excerpt: `The skills and cache check (harness-health.ts) did not run: ${harness.message}` }] };
+  }
+  return { metrics: { ...harness.metrics, ...tools.metrics, skills_or_tools_to_fix: (tools.metrics.checks_failed ?? 0) + (harness.metrics.skills_to_prune ?? 0) },
+    flagged: [...tools.flagged ?? [], ...harness.flagged ?? []] };
+}
+
+/** Runs harness-health.ts next to the tool checks, with its own output file, and reads what it wrote. */
+function runHarness(scratch: string): Promise<PrecheckOutput | Error> {
+  const output = join(scratch, `harness-${process.pid}.json`);
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, ["--import", "tsx", join(import.meta.dirname, "harness-health.ts")], { env: { ...process.env, OUTPUT_FILE: output }, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-500); });
+    child.on("error", error => resolve(error));
+    child.on("close", code => {
+      if (code !== 0) { resolve(new Error(`exit ${code}: ${stderr.trim()}`)); return; }
+      readFile(output, "utf8").then(text => { void rm(output, { force: true }); resolve(JSON.parse(text) as PrecheckOutput); }, error => resolve(error as Error));
+    });
+  });
+}
+
 async function main(): Promise<void> {
   const onlyAt = process.argv.indexOf("--only");
   const only = onlyAt >= 0 ? new Set((process.argv[onlyAt + 1] ?? "").split(",").map(id => id.trim()).filter(Boolean)) : undefined;
@@ -626,8 +655,9 @@ async function main(): Promise<void> {
   if (unknown.length) { process.stderr.write(`skills-and-tools: unknown check ids ${unknown.join(", ")}; known: ${CHECKS.map(check => check.id).join(", ")}\n`); process.exit(2); }
   const stateFile = process.env.STATE_FILE;
   const deps = realDeps(stateFile ? dirname(stateFile) : tmpdir());
+  const harness = !only && process.argv.includes("--with-harness") ? runHarness(deps.scratchDir) : null;
   const results = await runChecks(deps, only ? CHECKS.filter(check => only.has(check.id)) : CHECKS);
-  const output = toOutput(results, deps.now());
+  const output = harness ? withHarness(toOutput(results, deps.now()), await harness) : toOutput(results, deps.now());
   if (only) await appendFile(process.env.RECHECKS_FILE || join(deps.home, ".prime/agent/browser-chat/duties", RECHECKS_FILE), JSON.stringify(recheckRecord(results, deps.now())) + "\n", { mode: 0o600 });
   const text = JSON.stringify(output, null, 2) + "\n";
   if (process.env.OUTPUT_FILE) await writeFile(process.env.OUTPUT_FILE, text);

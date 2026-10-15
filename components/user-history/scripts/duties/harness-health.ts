@@ -262,7 +262,8 @@ async function main(): Promise<void> {
   ];
   const db = join(AUTO_SNS, "apps/llm-wiki/content/.wiki/wiki.db");
   const dataDir = process.env.HARNESS_DATA_DIR || join(homedir(), ".prime/agent/browser-chat");
-  const duty = JSON.parse(await readFile(join(import.meta.dirname, "harness-health.duty.json"), "utf8")) as { metrics: { key: string; target: number }[] };
+  // The cache targets live in the Skills and tools duty since Skills and harness merged into it on 10-16.
+  const duty = JSON.parse(await readFile(join(import.meta.dirname, "skills-and-tools.duty.json"), "utf8")) as { metrics: { key: string; target: number }[] };
   const cacheTargets = Object.fromEntries(Object.keys(WINDOWS).map(key => [key, duty.metrics.find(metric => metric.key === key)!.target])) as Record<CacheMetric, number>;
   const python = join(process.env.PRIME_AGENT_KERNEL_VENV || join(homedir(), ".prime/agent/kernel-venv"), "bin/python");
   const { skills, smoke, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), sessions: since => readSessions(homedir(), since), cacheTargets,
