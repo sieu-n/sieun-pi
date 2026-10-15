@@ -64,7 +64,7 @@ async function checkInFindings(chat: string, board: ChatBoard, rows: SessionRow[
     board: async () => board, rows: async () => rows,
     memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
     settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
-    duty: { async checkIn(_id, run) { findings.push(run.findings); } }, ...more,
+    duty: { async checkIn(_id, run) { findings.push(run.findings); }, async lastCheckIn() { return undefined; } }, ...more,
   } as CheckInSource;
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   await (chats as unknown as { roster(children: ReadonlyMap<string, readonly ChildAgent[]>): Promise<void> }).roster(roster);

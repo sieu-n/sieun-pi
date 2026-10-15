@@ -292,7 +292,7 @@ test("check-in of a chat that is not attached finds its subagent jobs through th
   const source: CheckInSource = {
     board: async () => board, rows: async () => [row], memory: checkInRecord(join(dir, "check-ins.json")), replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
     settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
-    duty: { async checkIn(_id, run) { runs.push(run); } },
+    duty: { async checkIn(_id, run) { runs.push(run); }, async lastCheckIn() { return runs.at(-1)?.at; } },
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   await chats.adopt();
@@ -325,7 +325,7 @@ test("check-in waits while the catalog has no rows and the hub has not attached 
   const source: CheckInSource = {
     board: async () => board, rows: async () => [], memory, replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
     settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => NOW, noReportGraceMs: 0,
-    duty: { async checkIn(_id, run) { runs.push(run); } },
+    duty: { async checkIn(_id, run) { runs.push(run); }, async lastCheckIn() { return runs.at(-1)?.at; } },
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   await chats.adopt();

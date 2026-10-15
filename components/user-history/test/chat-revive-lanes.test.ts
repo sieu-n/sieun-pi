@@ -80,7 +80,7 @@ test("chat revive: a check-in whose duty job start never ends does not hold the 
   const runs: string[] = [];
   let started: () => void = () => {};
   const startedOnce = new Promise<void>(resolve => { started = resolve; });
-  const hung = { checkIn: (id: string, _run: CheckInRun) => { runs.push(id); started(); return new Promise<never>(() => {}); } };
+  const hung = { checkIn: (id: string, _run: CheckInRun) => { runs.push(id); started(); return new Promise<never>(() => {}); }, lastCheckIn: async () => undefined };
   const { chats, run, calls } = await setup(hung);
   assert.deepEqual(await run(6, false), [5], "the restart comes 5 min after the abort, beside the check-in that still waits on its job start");
   await startedOnce;
@@ -91,7 +91,7 @@ test("chat revive: a check-in whose duty job start never ends does not hold the 
 
 test("chat revive: a daemon gate pause or the chat's own pause stops the check-in, not the failed-turn restart; the owner's pause stops both", async () => {
   const runs: string[] = [];
-  const sink = { async checkIn(id: string, _run: CheckInRun) { runs.push(id); } };
+  const sink = { async checkIn(id: string, _run: CheckInRun) { runs.push(id); }, async lastCheckIn() { return undefined; } };
   const gated = await setup(sink);
   await writeFile(gated.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" } }));
   assert.deepEqual(await gated.run(6), [5], "the gate paused the check-in of the chat; its failed turn still restarts at 5 min");
@@ -111,7 +111,7 @@ test("chat revive: a daemon gate pause or the chat's own pause stops the check-i
 
 test("chat check-in: a check-in that falls due while the daemon gate pauses it gets one held line, then runs at the resume with a line that says how late (VP of CI 10-12: no line for 13:15Z to 17:52Z)", async () => {
   const runs: string[] = [];
-  const sink = { async checkIn(id: string, _run: CheckInRun) { runs.push(id); } };
+  const sink = { async checkIn(id: string, _run: CheckInRun) { runs.push(id); }, async lastCheckIn() { return undefined; } };
   const gated = await setup(sink);
   await writeFile(gated.settingsFile, JSON.stringify({ c1: { everyMs: 900_000, pausedUntil: "forever", pausedBy: "daemon", setter: "gate" } }));
   await gated.run(20);

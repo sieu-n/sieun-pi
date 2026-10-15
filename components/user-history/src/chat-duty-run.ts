@@ -604,7 +604,10 @@ export class Duties {
   checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart> {
     const key = `${chatId}/${CHECK_IN_DUTY_ID}`;
     const going = this.running.get(key);
-    if (going) return going.then(() => "done" as const);
+    if (going) {
+      this.log(`duty ${chatId.slice(0, 8)}/${CHECK_IN_DUTY_ID}: a check-in run is still starting its job, so this check-in waits for it`);
+      return going.then(() => "done" as const);
+    }
     const task = this.checkInRun(chatId, run).catch((error): CheckInStart => { this.log(`duty ${chatId.slice(0, 8)}/${CHECK_IN_DUTY_ID}: ${message(error)}`); return "done"; })
       .finally(() => this.running.delete(key));
     this.running.set(key, task);
@@ -627,6 +630,11 @@ export class Duties {
       schedule: { kind: "every", minutes: run.everyMs / 60_000 }, measured: judged.verdict === "error" ? null : { at: run.at, ...judged },
       brief: { measure: judged.summary, findings: [run.findings, stuckFindings(misses)].filter(Boolean).join("\n\n"), focus: CHECK_IN_FOCUS, misses } });
     return started === "failed" ? "failed" : "done";
+  }
+
+  /** When the chat's newest check-in run was recorded; undefined when it has none. The scheduler reads it at start (`Chats.load`). */
+  async lastCheckIn(chatId: string): Promise<number | undefined> {
+    return (await this.store.runs(chatId)).find(run => run.duty === CHECK_IN_DUTY_ID)?.at;
   }
 
   private pendingFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.pending.json`); }

@@ -258,7 +258,7 @@ export interface CheckInSource {
    * The duty runner's side of the check-in duty (src/chat-duty-run.ts): each check-in run is recorded as a run of the built-in duty and starts
    * one check-in job with the precheck as context. Absent (tests): the precheck runs and nothing starts.
    */
-  duty?: { checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart | void> };
+  duty?: { checkIn(chatId: string, run: CheckInRun): Promise<CheckInStart | void>; lastCheckIn(chatId: string): Promise<number | undefined> };
   /** The chat's duties (`<data dir>/duties/<chat>.json`), for the goals they run (`goalsToFold`) and a chat with goals and no duty (`goalsWithoutDuty`). Absent: neither is counted. */
   duties?: (id: string) => Promise<readonly DutyRef[]>;
   /** The session ids of the chat's duty jobs (its duty run records, check-ins included), whose subagents may own its steps. Absent: none. */

@@ -69,7 +69,7 @@ export function fakeThreads(calls: string[]) {
 /** A duty runner fake for Chats: the check-in runs it was handed, by chat. */
 export function dutySink() {
   const runs: { id: string; run: CheckInRun }[] = [];
-  return { runs, duty: { async checkIn(id: string, run: CheckInRun) { runs.push({ id, run }); } } };
+  return { runs, duty: { async checkIn(id: string, run: CheckInRun) { runs.push({ id, run }); }, async lastCheckIn(id: string) { return runs.findLast(entry => entry.id === id)?.run.at; } } };
 }
 
 export const row = (id: string, lastActivityAt: string, extra: Partial<SessionRow> = {}): SessionRow => ({ id, name: id, cwd: "/repo", kind: "live", status: "idle", archived: false,

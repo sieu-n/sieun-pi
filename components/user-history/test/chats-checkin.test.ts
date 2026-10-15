@@ -165,7 +165,7 @@ test("chats: a check-in whose job could not start runs again 5 min later, not a 
     { id: "p2", text: "Build", status: "doing", children: [] }] }] };
   let now = 10 * 60 * 60_000;
   const starts: string[] = [];
-  const duty = { async checkIn(id: string, run: CheckInRun) { starts.push(`${id} ${(run.at - 10 * 60 * 60_000) / 60_000}`); return starts.length === 1 ? "failed" as const : "done" as const; } };
+  const duty = { async checkIn(id: string, run: CheckInRun) { starts.push(`${id} ${(run.at - 10 * 60 * 60_000) / 60_000}`); return starts.length === 1 ? "failed" as const : "done" as const; }, async lastCheckIn() { return undefined; } };
   const chats = new Chats(index, fakeThreads([]), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), { ...source(dir, { sg: board }, () => now), duty });
   await chats.setCheckIn("sg", { everyMs: 60 * 60_000 }, OWNER_UI);
   await chats.tick(); await chats.settled();

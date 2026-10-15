@@ -273,14 +273,16 @@ export class Chats {
   async settled(): Promise<void> { while (this.syncing.size) await Promise.all([...this.syncing.values()]); }
 
   /**
-   * The index, and each chat's last check-in from the check-in memory, so a service restart keeps every chat's schedule instead of starting it
-   * over (10-09: three restarts in 16 min kept a 15-min chat from any check-in).
+   * The index, and each chat's last check-in, so a service restart keeps every chat's schedule instead of starting it over (10-09: three
+   * restarts in 16 min kept a 15-min chat from any check-in). The last check-in is the duty runner's newest recorded run, and the check-in
+   * memory only without a duty runner: the memory is written when a run is measured, before its record, so a restart in between counted a run
+   * that never started (01a1164b 10-15: measured 10:09:38Z, cut off by the 10:12:28Z restart, next check-in set for 12:09Z, none logged).
    */
   private load(): Promise<void> {
     return this.loaded ??= this.index.ids().then(ids => this.mine(ids)).then(async ids => {
       for (const id of ids) {
         this.chatIds.add(id);
-        const at = (await this.source.memory.get(id).catch(() => undefined))?.at;
+        const at = this.source.duty ? await this.source.duty.lastCheckIn(id).catch(() => undefined) : (await this.source.memory.get(id).catch(() => undefined))?.at;
         if (at !== undefined && !this.lastCheckIn.has(id)) this.lastCheckIn.set(id, Math.min(at, this.now()));
       }
     });
@@ -914,7 +916,7 @@ export class Chats {
         return;
       }
       for (const fact of facts) if (fact.state === "failed" && fact.key.startsWith("thread:")) this.queue(fact.key, () => this.wakeOwner(fact.key.slice("thread:".length)));
-      if (!checkInDue(facts, board, boardError)) return;
+      if (!checkInDue(facts, board, boardError)) { this.log(`chat ${id.slice(0, 8)}: check-in: nothing to check (no job at work, no open plan step, no board error)`); return; }
       const at = this.now();
       const everyMs = (await this.source.settings.get(id)).everyMs;
       const previous = await this.source.memory.get(id);

@@ -100,7 +100,7 @@ test("check-in: a finding the last check-in flagged and the board did not fix he
     board: async id => boards[id] ?? null, rows: async () => sessionRows(sessions), memory, replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
     settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => now, noReportGraceMs: 0,
     corrections: () => new CorrectionLedger(dir).read(),
-    duty: { async checkIn(id, run) { runs.set(id, [...runs.get(id) ?? [], run]); } },
+    duty: { async checkIn(id, run) { runs.set(id, [...runs.get(id) ?? [], run]); }, async lastCheckIn(id) { return runs.get(id)?.at(-1)?.at; } },
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   await chats.adopt();

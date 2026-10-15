@@ -49,7 +49,7 @@ test("check-in precheck: one tick gives each chat's classes, misses and findings
     replyChecks: replyCheckRecord(join(dir, "reply-checks.json")),
     settings: checkInSettings(join(dir, "check-in-settings.json")), tickMs: 0, now: () => capturedAt + 16 * MIN, noReportGraceMs: 0,
     corrections: () => new CorrectionLedger(dir).read(),
-    duty: { async checkIn(id, run) { runs.set(id, [...runs.get(id) ?? [], run]); } },
+    duty: { async checkIn(id, run) { runs.set(id, [...runs.get(id) ?? [], run]); }, async lastCheckIn(id) { return runs.get(id)?.at(-1)?.at; } },
   };
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), source);
   await chats.adopt();
