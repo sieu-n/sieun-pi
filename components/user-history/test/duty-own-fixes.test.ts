@@ -27,7 +27,7 @@ const run = (date: number, values: [number, number], job: string): DutyRunRecord
     job: { id: job, name: `ci system VP of CI ${date}` } };
 };
 
-async function setup(input: { runs: DutyRunRecord[]; working?: Set<string> }) {
+async function setup(input: { runs: DutyRunRecord[]; working?: Set<string>; steerError?: string }) {
   const dir = await mkdtemp(join(tmpdir(), "duty-own-fixes-"));
   const store = new DutyStore(dir);
   for (const record of input.runs) await store.appendRun(CHAT, record);
@@ -53,7 +53,7 @@ async function setup(input: { runs: DutyRunRecord[]; working?: Set<string> }) {
     async retire() {},
     async ended(last, older = []) { return [...last, ...older].filter(job => ended.has(job.id)); },
     async stop() {},
-    async steer(job, text) { steers.push({ job: job.id, text }); ended.delete(job.id); working.add(job.id); },
+    async steer(job, text) { if (input.steerError) throw new Error(input.steerError); steers.push({ job: job.id, text }); ended.delete(job.id); working.add(job.id); },
   };
   const lines: string[] = [];
   const now = { at: day(15, 20, 25) };
@@ -120,4 +120,16 @@ test("a duty under 3 misses, a duty whose last job still works, and a met duty g
   const met = await setup({ runs: [run(13, [130, 57], "j13"), run(14, [294, 50], "j14"), run(15, [9, 90], "j15")] });
   await met.duties.tick();
   assert.equal(met.starts.length, 0);
+});
+
+test("a fix job Prime cannot resume gets a new fix job on its steps in the same tick (frontend bro p148, 10-15 16:13Z)", async () => {
+  const { duties, state, starts, steers, end, lines } = await setup({ runs: [run(13, [130, 57], "j13"), run(14, [294, 50], "j14"), run(15, [110, 28], "j15")],
+    steerError: "Prime Agent did not resume this thread." });
+  await duties.tick();
+  end("fix1");
+  await duties.tick();
+  assert.equal(steers.length, 0);
+  assert.equal(starts.length, 2, lines.join("\n"));
+  assert.deepEqual(steps(state.board).map(item => item.sessionId), ["fix2", "fix2"], "the new job takes the open steps");
+  assert.ok(lines.some(line => line.includes("could not be sent back (Prime Agent did not resume this thread.)")), lines.join("\n"));
 });

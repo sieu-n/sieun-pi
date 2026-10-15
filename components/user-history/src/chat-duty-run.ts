@@ -427,10 +427,15 @@ export class Duties {
     const back = jobs.steer ? idle.find(job => this.fixSentBack.get(job.id) !== rev) : undefined;
     if (back && jobs.steer) {
       const steps = held.get(back.id)?.steps ?? [];
-      await jobs.steer(back, fixMessage(duty.name, steps, misses));
-      this.fixSentBack.set(back.id, rev);
-      this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: fix job ${back.name} ended with ${steps.join(", ")} still missing; sent it back`);
-      return;
+      // A job Prime cannot resume gets a new one on its steps: on 10-15 at 16:13Z frontend bro's p148 job answered "Prime Agent did not resume
+      // this thread", the throw ended the open, and the check-in duty stayed stuck with no live fix.
+      const sent = await jobs.steer(back, fixMessage(duty.name, steps, misses)).then(() => true,
+        error => { this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: fix job ${back.name} could not be sent back (${message(error)}); a new one takes ${steps.join(", ")}`); return false; });
+      if (sent) {
+        this.fixSentBack.set(back.id, rev);
+        this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: fix job ${back.name} ended with ${steps.join(", ")} still missing; sent it back`);
+        return;
+      }
     }
     const chat = await jobs.chat(chatId);
     if (!chat) return;

@@ -31,6 +31,8 @@ export interface FleetDuty {
   metric?: MetricStreak;
   /** The plan step of a live fix job for a missed metric: the run's `fixes`, or a board step linked `<dutyId>/<metricKey>` whose job works now. */
   fix?: string;
+  /** The duty's own job, at work now, that owns the misses of this run. */
+  working?: string;
   stuck: boolean;
 }
 export interface DutyFleet { metrics: { duties_green_pct: number; stuck_duties: number }; flagged: FlaggedSlice[]; duties: FleetDuty[] }
@@ -106,7 +108,11 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
             fix = candidates.find(live)?.id;
           }
         }
-        if (fix === undefined) entry.stuck = true;
+        // The duty's own job still at work owns its misses this run, as the server reads it (`Duties.ownFixes` opens a fix job only once the
+        // last duty job ended): on 10-15 at 16:29Z ops guy's check-in read stuck 20 min into its 01:08 job.
+        const job = fix === undefined ? runs.find(run => run.duty === duty.id && run.job)?.job : undefined;
+        if (job && sessionRows(roster()).some(row => row.id === job.id && row.working)) entry.working = job.name;
+        else if (fix === undefined) entry.stuck = true;
         else entry.fix = fix;
       }
       duties.push(entry);

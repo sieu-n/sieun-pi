@@ -72,6 +72,21 @@ test("duty fleet: a live fix the run recorded keeps a duty off the stuck list", 
   assert.deepEqual([duty.stuck, duty.fix, duty.misses], [false, "p40", 4]);
 });
 
+test("duty fleet: a duty whose own run job is still at work is not stuck, and is once that job ended (ops guy check-in, 10-15 16:29Z)", async () => {
+  const dir = await copy();
+  const file = join(dir, "duties", `${FRONTEND}.runs.jsonl`);
+  const runs = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line) as DutyRunRecord);
+  const newest = runs.filter(run => run.duty === "d2").at(-1)!;
+  const job = { id: "01a14053-87bc-7357-99c7-c0c95bd2641c", name: "apps reach staging frontend bro 01:08" };
+  await appendFile(file, JSON.stringify({ ...newest, at: NOW - 60_000, job }) + "\n");
+  const session = (activity: string): DaemonSession => ({ sessionId: job.id, sessionName: job.name, lifecycle: "live", activity, lastActivityAt: new Date(NOW).toISOString() });
+  const read = async (activity: string) => (await dutyFleet({ dataDir: dir, now: NOW, sessions: () => [...SESSIONS, session(activity)] })).duties.find(entry => entry.chat === FRONTEND && entry.duty === "d2")!;
+  const busy = await read("working");
+  assert.deepEqual([busy.stuck, busy.working], [false, job.name]);
+  const ended = await read("idle");
+  assert.deepEqual([ended.stuck, ended.working], [true, undefined]);
+});
+
 test("duty fleet: a run whose after-measure is met counts green and ends the streak", async () => {
   const dir = await copy();
   const file = join(dir, "duties", `${SLACK}.runs.jsonl`);
