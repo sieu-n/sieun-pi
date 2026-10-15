@@ -125,6 +125,28 @@ test("wakes: a failed send keeps the wake for the next tick, a session the daemo
   assert.deepEqual(await f.files(), []);
 });
 
+test("wakes: replay of 10-15 12:29 to 12:31Z, five sends that each time out after 30 s keep TICKED under 2 min old while the tick runs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wakes-ticked-"));
+  const sessions = ["01a10db8", "01a12faa", "01a13ec4", "01a13ed2", "01a13ed9"].map(prefix => `${prefix}-0000-7000-8000-000000000000`);
+  for (const session of sessions) await writeFile(join(dir, `${session}-time.json`), JSON.stringify({ session, on: { kind: "time", at: NOW - MIN }, note: "", since: NOW - 15 * MIN }));
+  let now = NOW;
+  const ages: number[] = [];
+  let calls = 0;
+  let done: () => void = () => {};
+  const finished = new Promise<void>(resolve => { done = resolve; });
+  const stop = startWakes({ dir, now: () => now, runState: async () => ({ done: false }), log: () => {},
+    deliver: async () => {
+      ages.push(now - Date.parse(await readFile(join(dir, TICKED), "utf8")));
+      now += 30_000;
+      if (++calls === sessions.length) setTimeout(done, 20);
+      throw new Error('Timed out after 30000ms waiting for the Prime Agent daemon response to "send_message".');
+    } }, 5);
+  await finished;
+  stop();
+  const first = ages.slice(0, sessions.length);
+  assert.ok(Math.max(...first) <= 30_000, `TICKED ages ${first.join(", ")} ms`);
+});
+
 test("wakes: board.wake refuses while no service ticks, then writes the wake file this service reads, with the session id of a subagent or a root", async () => {
   const root = await mkdtemp(join(tmpdir(), "wake-skill-"));
   const child = join(root, "session-artifacts", SESSION_B, "sub-1b2103cc");

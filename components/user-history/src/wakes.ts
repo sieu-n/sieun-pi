@@ -63,6 +63,11 @@ export interface WakeDeps {
    * same message reached it at 13:45Z once a wake had restarted the root). Absent: such a wake is dropped.
    */
   startRoot?: (root: string) => Promise<void>;
+  /**
+   * Called after each run read and each send, so TICKED shows a tick that is still moving. 10-15 12:16 to 12:35Z each send timed out after
+   * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
+   */
+  progress?: () => Promise<void>;
   log: (line: string) => void;
 }
 
@@ -89,7 +94,10 @@ export class Wakes {
       if (!wake) { this.deps.log(`wakes: ${name} is not a wake; removed`); await rm(file, { force: true }); continue; }
       let state: RunState | null = null;
       if (wake.on.kind === "run") {
-        if (!states.has(wake.on.run)) states.set(wake.on.run, await this.look(wake.on, now));
+        if (!states.has(wake.on.run)) {
+          states.set(wake.on.run, await this.look(wake.on, now));
+          await this.moved();
+        }
         state = states.get(wake.on.run) ?? null;
         if (!state || !("done" in state) || !state.done) continue;
       } else if (wake.on.at > now) continue;
@@ -112,9 +120,14 @@ export class Wakes {
       } catch (error) {
         this.deps.log(`wakes: wake ${session.slice(0, 8)} for ${what}: ${error instanceof Error ? error.message : String(error)}; tried again next tick`);
       }
+      await this.moved();
     }
     for (const run of this.looked.keys()) if (!states.has(run)) this.looked.delete(run);
     return sent;
+  }
+
+  private async moved(): Promise<void> {
+    await this.deps.progress?.().catch(error => this.deps.log(`wakes: ${TICKED}: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   /** The run's state, or null when its stamp did not move and it was read less than RUN_LOOK_MS ago. */
@@ -200,18 +213,18 @@ export async function waking(dir: string, session: string): Promise<boolean> {
 
 /**
  * Ticks the wakes every TICK_MS until the returned stop is called; a tick still running when the next comes skips it. TICKED is stamped when a
- * tick starts and when it ends, so it ages only while no tick runs. 10-15: a tick took 30 s to over 2 min (a run read under load, a send held
+ * tick starts, after each run read and send, and when it ends, so it ages only while no tick runs or one step hangs. 10-15: a tick took 30 s to over 2 min (a run read under load, a send held
  * up to 30 s by a slow daemon), and the 19:32 KST release killed one mid-tick; its restarted service's first tick reads every run afresh. At
  * the 10:33:18Z VP of CI check-in the stamp was the old service's last finished tick, past WAKE_LATE_MS, so `pendingWakes` owed nothing and
  * "ci release driver", asleep on run 38708750431 since 10:16Z and woken at 10:38:14Z, read idle and p96 stuck.
  */
 export function startWakes(deps: WakeDeps, everyMs = TICK_MS): () => void {
-  const wakes = new Wakes(deps);
+  const stamp = () => writeFile(join(deps.dir, TICKED), new Date((deps.now ?? Date.now)()).toISOString());
+  const wakes = new Wakes({ ...deps, progress: stamp });
   let running = false;
   const timer = setInterval(() => {
     if (running) return;
     running = true;
-    const stamp = () => writeFile(join(deps.dir, TICKED), new Date((deps.now ?? Date.now)()).toISOString());
     void mkdir(deps.dir, { recursive: true, mode: 0o700 }).then(stamp).then(() => wakes.tick()).then(stamp)
       .catch(error => deps.log(`wakes: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { running = false; });
   }, everyMs);
