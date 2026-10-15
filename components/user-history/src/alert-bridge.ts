@@ -16,7 +16,7 @@ export const ALERT_GOAL = "Firing prod alerts";
 export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts";
 const RESOLVED = "The alert resolved at";
 
-export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string }
+export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
 export interface Tracked { chat: string; step: string | null; alertname: string; startsAt: string; wokeAt: number; firstWokeAt: number; escalatedAt?: number; resolvedAt?: number }
 export interface BridgeState { v: 1; alerts: Record<string, Tracked> }
 export interface StepView { text: string; open: boolean; owned: boolean }
@@ -72,6 +72,13 @@ export async function readOwners(repo: string, refs: readonly string[]): Promise
   return text === null ? null : parseOwners(JSON.parse(text));
 }
 
+function alertValues(text: string | undefined): string {
+  try {
+    const values: unknown = JSON.parse(text ?? "");
+    return isRecord(values) ? Object.entries(values).map(([name, value]) => `${name}=${String(value)}`).join(", ") : "";
+  } catch { return ""; }
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const strings = (value: unknown): Record<string, string> =>
   isRecord(value) ? Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
@@ -83,8 +90,9 @@ export function parseAlerts(value: unknown): FiringAlert[] {
     const at = typeof item.startsAt === "string" ? Date.parse(item.startsAt) : NaN;
     if (typeof item.fingerprint !== "string" || !/^[\w-]{1,64}$/.test(item.fingerprint) || !Number.isFinite(at)) return [];
     const labels = strings(item.labels);
+    const annotations = strings(item.annotations);
     return [{ fingerprint: item.fingerprint, startsAt: new Date(at).toISOString(), alertname: labels.alertname ?? labels.__alert_rule_uid__ ?? item.fingerprint, labels,
-      summary: strings(item.annotations).summary ?? "", url: typeof item.generatorURL === "string" ? item.generatorURL : "" }];
+      summary: annotations.summary ?? "", url: typeof item.generatorURL === "string" ? item.generatorURL : "", values: alertValues(annotations.__values__) }];
   });
 }
 
@@ -186,16 +194,30 @@ export function bridgeHolds(item: Pick<PlanItem, "job" | "sessionId" | "note" | 
     now - changedAt < ESCALATE_MS;
 }
 
+const ENVS: readonly [RegExp, string][] = [[/^prod/i, "Production"], [/^stag/i, "Staging"]];
+const NAMES_ENV = /\b(prod|production|staging|stage|dev)\b/i;
+
+/**
+ * The step title is the Grafana rule title (the alertname label), with the env in front when the title does not name one. The summary holds
+ * metric values and stream names, such as "crawl_profile:youtube group crawl_profile:youtube holds an entry 68053.971 s old", and crawler ops
+ * renamed 28 such steps by hand on 10-15, so it goes in the note (c61).
+ */
 export function stepTitle(alert: FiringAlert): string {
-  const first = alert.summary.split(/(?<=\.)\s+/)[0]?.trim() ?? "";
-  return [first, alert.alertname].find(text => text && text.length <= BOARD_LIMITS.text && !titleDetail(text)) ?? "A Grafana alert is firing";
+  const env = alert.labels.env ?? alert.labels.environment ?? alert.labels.world ?? "";
+  const prefix = ENVS.find(([pattern]) => pattern.test(env))?.[1];
+  const titled = (text: string) => prefix && !NAMES_ENV.test(text) ? `${prefix} ${text}` : text;
+  const rule = alert.labels.alertname ?? "";
+  return [titled(rule), prefix ? `A ${prefix.toLowerCase()} Grafana alert is firing` : ""].find(text => text.trim() && text.length <= BOARD_LIMITS.text && !titleDetail(text)) ??
+    "A Grafana alert is firing";
 }
 
 export function stepNote(alert: FiringAlert): string {
   const labels = Object.entries(alert.labels).filter(([name]) => name !== "alertname").map(([name, value]) => `${name}=${value}`).join(", ");
-  return [mark(alert), `Alert: ${alert.alertname}.`, alert.summary ? `Summary: ${alert.summary}` : "", `Labels: ${labels}.`, alert.url ? `Grafana: ${alert.url}` : ""]
-    .filter(Boolean).join("\n").slice(0, BOARD_LIMITS.note);
+  return [mark(alert), `Alert: ${alert.alertname}.`, alert.summary ? `Summary: ${alert.summary}` : "", alert.values ? `Values: ${alert.values}.` : "", `Labels: ${labels}.`,
+    alert.url ? `Grafana: ${alert.url}` : ""].filter(Boolean).join("\n").slice(0, BOARD_LIMITS.note);
 }
+
+const ruleIn = (title: string, alertname: string): string => title.includes(alertname) ? "" : `${alertname}, `;
 
 function markedStep(plan: readonly PlanItem[], alert: FiringAlert): PlanItem | undefined {
   let hit: PlanItem | undefined;
@@ -241,7 +263,7 @@ export function resolveOps(board: ChatBoard, resolve: Resolve): BoardOp[] {
 }
 
 export function alertText(added: readonly StepLine[], waiting: readonly StepLine[]): string {
-  const line = (step: StepLine) => `${step.step} "${step.title}" (${step.alertname}, firing since ${step.startsAt.slice(0, 16)}Z)`;
+  const line = (step: StepLine) => `${step.step} "${step.title}" (${ruleIn(step.title, step.alertname)}firing since ${step.startsAt.slice(0, 16)}Z)`;
   const parts: string[] = [];
   if (added.length) {
     parts.push(`${added.length === 1 ? "A Grafana alert" : `${added.length} Grafana alerts`} started firing, and the alert bridge put ${added.length === 1 ? "a step" : "one step each"} ` +
@@ -253,14 +275,14 @@ export function alertText(added: readonly StepLine[], waiting: readonly StepLine
 }
 
 export function boardlessText(alerts: readonly FiringAlert[]): string {
-  const one = (alert: FiringAlert) => `"${stepTitle(alert)}" (${alert.alertname}, firing since ${alert.startsAt.slice(0, 16)}Z, labels ` +
+  const one = (alert: FiringAlert) => `"${stepTitle(alert)}" (${ruleIn(stepTitle(alert), alert.alertname)}firing since ${alert.startsAt.slice(0, 16)}Z, labels ` +
     `${Object.entries(alert.labels).filter(([name]) => name !== "alertname").map(([name, value]) => `${name}=${value}`).join(", ")}${alert.url ? `, ${alert.url}` : ""})`;
   return `[alert] ${alerts.length === 1 ? "A Grafana alert you own" : `${alerts.length} Grafana alerts you own`} started firing: ${alerts.map(one).join("; ")}. ` +
     `Act on ${alerts.length === 1 ? "it" : "each one"} now: start a job, or say why it needs nothing.`;
 }
 
 export function escalationText(steps: readonly (StepLine & { chat: string })[]): string {
-  const line = (step: StepLine & { chat: string }) => `${step.step} "${step.title}" on ${step.chat} (${step.alertname}, firing since ${step.startsAt.slice(0, 16)}Z)`;
+  const line = (step: StepLine & { chat: string }) => `${step.step} "${step.title}" on ${step.chat} (${ruleIn(step.title, step.alertname)}firing since ${step.startsAt.slice(0, 16)}Z)`;
   return `[alert-escalation] ${steps.length === 1 ? "An alert step is" : `${steps.length} alert steps are`} still open with no job ${ESCALATE_MS / 60_000} min after the alert bridge ` +
     `first woke the chat that owns ${steps.length === 1 ? "it" : "them"}: ${steps.map(line).join("; ")}. Check why the chat has not acted, and start a job or get that chat to.`;
 }

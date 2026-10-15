@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
 import { rm, writeFile } from "node:fs/promises";
-import { ALERT_GOAL, AlertBridge, alertKey, ESCALATE_MS, OWNERS_PATH, ownerRoute, parseAlerts, parseOwners, readOwners, REWAKE_MS, routerFor, type FiringAlert, type OwnerMap } from "../src/alert-bridge.ts";
+import { ALERT_GOAL, AlertBridge, alertKey, ESCALATE_MS, OWNERS_PATH, ownerRoute, parseAlerts, parseOwners, readOwners, REWAKE_MS, routerFor, stepNote, stepTitle, type FiringAlert, type OwnerMap } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES, routeAlert } from "../src/alert-routes.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { walkItems } from "../src/shared/chat-board.ts";
@@ -61,7 +61,7 @@ test("alert bridge: a new firing alert adds exactly one board step in the chat t
   const [step, ...more] = await f.steps(CI);
   assert.ok(step);
   assert.equal(more.length, 0);
-  assert.equal(step.text, "CI runner queue over 30 min is firing.");
+  assert.equal(step.text, "Production CI runner queue over 30 min");
   assert.equal(step.status, "todo");
   assert.match(step.note!, /^Grafana alert aaaa000000000001, firing since 2026-10-14T01:00:00\.000Z\.$/m);
   assert.match(step.note!, /__alert_rule_uid__=ci-queue-wait, environment=production/);
@@ -71,7 +71,7 @@ test("alert bridge: a new firing alert adds exactly one board step in the chat t
   for (const other of [CRAWLER, LAUNCH, OPS]) assert.equal(await f.boards.read(other), null);
   assert.equal(f.sent.length, 1);
   assert.equal(f.sent[0]!.session, CI);
-  assert.match(f.sent[0]!.text, new RegExp(`^\\[alert\\] A Grafana alert started firing.*${step.id} "CI runner queue over 30 min is firing\\." \\(CI runner queue over 30 min, firing since 2026-10-14T01:00Z\\)`));
+  assert.match(f.sent[0]!.text, new RegExp(`^\\[alert\\] A Grafana alert started firing.*${step.id} "Production CI runner queue over 30 min" \\(firing since 2026-10-14T01:00Z\\)`));
   assert.match(f.sent[0]!.text, /start a job and set it on the step, or close the step with a reason/);
 });
 
@@ -133,7 +133,7 @@ test("alert bridge: replay of 10-15 12:41Z, the daemon times out every send and 
     if (ops.length) await f.boards.apply(CRAWLER, ops, "agent");
   }
   const ids: string[] = [];
-  walkItems((await f.boards.read(CRAWLER))!.plan, item => { if (/health (snapshot has failed|read over 2 s)/.test(item.text)) ids.push(item.id); });
+  walkItems((await f.boards.read(CRAWLER))!.plan, item => { if (/health (snapshot failing|read over 2 s)/.test(item.text)) ids.push(item.id); });
   assert.equal(ids.length, 2);
   const state = await f.state();
   assert.deepEqual(Object.values(state.alerts).map(tracked => tracked.step).sort(), [...ids].sort());
@@ -149,7 +149,7 @@ test("alert bridge: a re-wake goes out every REWAKE_MS while the step is open wi
   f.at(NOW + REWAKE_MS);
   await f.bridge.tick();
   assert.equal(f.sent.length, 2);
-  assert.match(f.sent[1]!.text, new RegExp(`^\\[alert\\] Still firing with no job on the step: ${step!.id} "CI runner queue over 30 min is firing\\."`));
+  assert.match(f.sent[1]!.text, new RegExp(`^\\[alert\\] Still firing with no job on the step: ${step!.id} "Production CI runner queue over 30 min"`));
   f.at(NOW + REWAKE_MS + 30_000);
   await f.bridge.tick();
   assert.equal(f.sent.length, 2);
@@ -298,7 +298,7 @@ test("alert bridge: a replay of crawler-prod-health-snapshot-down from 2026-10-1
   const board: ChatBoard = (await f.boards.read(CRAWLER))!;
   const [step] = await f.steps(CRAWLER);
   assert.equal(board.plan.find(goal => goal.text.startsWith("Crawler ops:"))!.children[0]!.id, step!.id);
-  assert.equal(step!.text, "The instagram_census health snapshot has failed for 10 minutes, so its gauges hold stale values.");
+  assert.equal(step!.text, "Production crawler health snapshot failing");
   assert.match(step!.note!, /^Grafana alert 60a82f58f945d61a, firing since 2026-10-14T01:29:10\.000Z\.\nAlert: Production crawler health snapshot failing\./);
   assert.match(step!.note!, /snapshot=instagram_census/);
   assert.match(step!.note!, /Grafana: https:\/\/obs\.virev\.ai\/alerting\/grafana\/crawler-prod-health-snapshot-down\/view$/);
@@ -353,13 +353,48 @@ test("alert owners: owners.json is read fresh from the checkout, and from a git 
   assert.equal((await readOwners(repo, [ref]))!.fallback, "metal box owner");
 });
 
+const YOUTUBE = readFileSync(new URL("./fixtures/alert-youtube-stream-wait-20261015.json", import.meta.url), "utf8");
+
+test("alert bridge: the youtube stream-wait firing from 10-15 gets the rule title, and its summary, values and labels go in the note", async () => {
+  const f = await fixture(JSON.parse(YOUTUBE) as unknown[]);
+  await f.bridge.tick();
+  const [step, ...more] = await f.steps(CRAWLER);
+  assert.equal(more.length, 0);
+  assert.equal(step!.text, "Production stream entry waiting over 1 hour");
+  assert.match(step!.note!, /^Summary: crawl_profile:youtube group crawl_profile:youtube holds an entry 101632\.242 s old/m);
+  assert.match(step!.note!, /^Values: A=101632\.242, C=1\.$/m);
+  assert.match(step!.note!, /stream=crawl_profile:youtube/);
+  assert.match(f.sent[0]!.text, new RegExp(`${step!.id} "Production stream entry waiting over 1 hour" \\(firing since 2026-10-15T10:35Z\\)`));
+});
+
+test("alert bridge: a title with no env gets the env label in front, and a title that names one stays as it is", () => {
+  const title = (alertname: string, labels: Record<string, string>) => stepTitle(parseAlerts([raw("abcd000000000001", { alertname, ...labels })])[0]!);
+  assert.equal(title("Instagram posts missing from content search", { world: "staging" }), "Staging Instagram posts missing from content search");
+  assert.equal(title("Media backlog above baseline (production)", { env: "production" }), "Media backlog above baseline (production)");
+  assert.equal(title("B2 influencer-dev inventory missing", { environment: "staging" }), "B2 influencer-dev inventory missing");
+  assert.equal(title("Backup too old", { box: "us-metal01" }), "Backup too old");
+  assert.equal(title("Queue wait in apps/crawler-v3/src/queue.ts", { env: "production" }), "A production Grafana alert is firing");
+});
+
+test("alert bridge: a step placed under the old summary title keeps its title when the same firing is seen again", async () => {
+  const [alert] = JSON.parse(YOUTUBE) as unknown[];
+  const parsed = parseAlerts([alert])[0]!;
+  const f = await fixture([alert]);
+  await f.boards.apply(CRAWLER, [{ op: "plan_add", text: "Firing prod alerts" }, { op: "plan_add", parent: "p1", text: "Prod YouTube job queue holds an entry stuck over a day" },
+    { op: "plan_update", id: "p2", note: stepNote(parsed) }], "agent");
+  await f.bridge.tick();
+  const [step, ...more] = await f.steps(CRAWLER);
+  assert.equal(more.length, 0);
+  assert.equal(step!.text, "Prod YouTube job queue holds an entry stuck over a day");
+});
+
 test("alert bridge: an owner with no board, such as metal box owner, gets one message with the alert's labels and link and no step, re-wake or escalation", async () => {
   const backup = raw("ffff000000000001", { alertname: "Backup too old", __alert_rule_uid__: "metal-backup-ch-redis-age", box: "us-metal01" });
   const f = await fixture([backup], { owners: OWNERS, boardless: [METAL] });
   await f.bridge.tick();
   assert.equal(await f.boards.read(METAL), null);
   assert.deepEqual(f.sent.map(({ session }) => session), [METAL]);
-  assert.match(f.sent[0]!.text, /^\[alert\] A Grafana alert you own started firing: "Backup too old is firing\." \(Backup too old, firing since 2026-10-14T01:00Z, labels __alert_rule_uid__=metal-backup-ch-redis-age, box=us-metal01, https:\/\/obs\.virev\.ai\/alerting\/grafana\/metal-backup-ch-redis-age\/view\)/);
+  assert.match(f.sent[0]!.text, /^\[alert\] A Grafana alert you own started firing: "Backup too old" \(firing since 2026-10-14T01:00Z, labels __alert_rule_uid__=metal-backup-ch-redis-age, box=us-metal01, https:\/\/obs\.virev\.ai\/alerting\/grafana\/metal-backup-ch-redis-age\/view\)/);
   for (const at of [REWAKE_MS, ESCALATE_MS, 3 * REWAKE_MS]) { f.at(NOW + at); await f.bridge.tick(); }
   assert.equal(f.sent.length, 1);
   f.set([]);
@@ -382,7 +417,7 @@ test("alert bridge: a step still open with no job 30 min after its first wake se
   const escalations = f.sent.filter(({ text }) => text.startsWith("[alert-escalation]"));
   assert.equal(escalations.length, 1);
   assert.equal(escalations[0]!.session, OPS);
-  assert.match(escalations[0]!.text, new RegExp(`^\\[alert-escalation\\] An alert step is still open with no job 30 min after the alert bridge first woke the chat that owns it: ${step!.id} "CI runner queue over 30 min is firing\\." on VP of CI`));
+  assert.match(escalations[0]!.text, new RegExp(`^\\[alert-escalation\\] An alert step is still open with no job 30 min after the alert bridge first woke the chat that owns it: ${step!.id} "Production CI runner queue over 30 min" on VP of CI`));
   for (const at of [2, 3, 4]) { f.at(NOW + at * ESCALATE_MS); await f.bridge.tick(); }
   assert.equal(f.sent.filter(({ text }) => text.startsWith("[alert-escalation]")).length, 1);
 

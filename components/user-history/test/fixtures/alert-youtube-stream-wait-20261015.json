@@ -1,0 +1,44 @@
+[
+  {
+    "annotations": {
+      "__orgId__": "1",
+      "__value_string__": "[ var='A' labels={__name__=crawler_v3_stream_group_oldest_pending_age_seconds, group=crawl_profile:youtube, instance=crawler-api:8787, job=crawler-v3, stream=crawl_profile:youtube} value=101632.242 ], [ var='C' labels={__name__=crawler_v3_stream_group_oldest_pending_age_seconds, group=crawl_profile:youtube, instance=crawler-api:8787, job=crawler-v3, stream=crawl_profile:youtube} value=1 ]",
+      "__values__": "{\"A\":101632.242,\"C\":1}",
+      "check": "SPEC-37 criterion 2, golden flow jobs-health",
+      "runbook": "apps/llm-wiki/content/apps/crawler-v3/architecture/ops-controls/index.html",
+      "summary": "crawl_profile:youtube group crawl_profile:youtube holds an entry 101632.242 s old, unacked or unread, over the 1 hour line (SPEC-37)."
+    },
+    "endsAt": "2026-10-15T20:30:10.000Z",
+    "fingerprint": "306d6849149fe7e7",
+    "receivers": [
+      {
+        "name": "ops-webhook"
+      },
+      {
+        "name": "slack-prod"
+      }
+    ],
+    "startsAt": "2026-10-15T10:35:10.000Z",
+    "status": {
+      "inhibitedBy": [],
+      "silencedBy": [],
+      "state": "active"
+    },
+    "updatedAt": "2026-10-15T20:26:15.204Z",
+    "generatorURL": "https://obs.virev.ai/alerting/grafana/crawler-prod-stream-wait/view",
+    "labels": {
+      "__alert_rule_uid__": "crawler-prod-stream-wait",
+      "__name__": "crawler_v3_stream_group_oldest_pending_age_seconds",
+      "alertname": "Production stream entry waiting over 1 hour",
+      "box": "us-metal01",
+      "env": "production",
+      "environment": "production",
+      "grafana_folder": "metal",
+      "group": "crawl_profile:youtube",
+      "instance": "crawler-api:8787",
+      "job": "crawler-v3",
+      "severity": "warning",
+      "stream": "crawl_profile:youtube"
+    }
+  }
+]
