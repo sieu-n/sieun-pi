@@ -94,11 +94,15 @@ def _format_results(body: dict, query: str) -> str:
     return "\n\n---\n\n".join(sections)
 
 
-def _friendly_http_error(status: int, body_text: str, engine: str) -> str:
+def _error_message(body_text: str) -> str:
     try:
-        message = json.loads(body_text)["error"]["message"]
+        return str(json.loads(body_text)["error"]["message"])
     except (ValueError, KeyError, TypeError):
-        message = body_text[:300]
+        return body_text[:300]
+
+
+def _friendly_http_error(status: int, body_text: str, engine: str) -> str:
+    message = _error_message(body_text)
     if status in (401, 403):
         return (
             f"Virev API rejected the key ({status}): {message}\n"
@@ -219,21 +223,25 @@ async def run(
     try:
         resp = await _search(engine)
         if engine == "google" and resp.status_code in (429, 502, 504):
-            # Google refuses the crawler's exit pool at its IP-reputation wall
-            # (429 since the crawler learned to fail fast; 502/504 were the older
-            # render-gate and timeout shapes). Bing-over-plain-HTTP serves
-            # anti-bot decoy SERPs and does so through a real rendered browser
-            # too (verified 2026-08-26), so fall back to DuckDuckGo Lite
-            # (keyless, correct results) — explicitly labelled.
+            # A 429 is Google refusing the crawler's exits. A 502 or 504 can also
+            # be the crawler itself being down: on 2026-10-15 a prod deploy hold
+            # stopped it from 09:16Z to 10:24Z and every call came back as
+            # 502 "Upstream error". The note quotes the API instead of guessing.
+            # Bing over plain HTTP serves decoy SERPs (verified 2026-08-26), so
+            # the fallback is DuckDuckGo Lite, which throttles one IP with a 202
+            # after about 10 searches in a row (measured 2026-10-15).
             ddg = await _ddg_lite(query, timeout=timeout, num_results=num_results)
             if ddg:
                 result = (
                     "NOTE: google is unavailable on the Virev search backend right now "
-                    "(the engine refuses the crawler's exit pool; no charge was taken). "
+                    f"(HTTP {resp.status_code}: {_error_message(resp.text)}; no charge was taken). "
                     "These are DuckDuckGo results instead:\n\n" + ddg
                 )
             else:
-                result = _friendly_http_error(resp.status_code, resp.text, engine)
+                result = (
+                    _friendly_http_error(resp.status_code, resp.text, engine)
+                    + "\nThe DuckDuckGo fallback returned no results either."
+                )
         elif resp.status_code != 200:
             result = _friendly_http_error(resp.status_code, resp.text, engine)
         else:

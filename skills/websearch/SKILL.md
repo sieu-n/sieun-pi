@@ -34,6 +34,6 @@ The call returns one string and never raises, so errors arrive as text. Optional
 
 ## Google refusals and Bing decoys
 
-Google often refuses the crawler. On a Google 429, 502 or 504, the call returns DuckDuckGo results under a `NOTE:` line and takes no charge.
+On a Google 429, 502 or 504, the call returns DuckDuckGo results under a `NOTE:` line that quotes the API's status and message, and takes no charge. A 429 means Google refused the crawler, and a 502 `Upstream error` usually means the crawler itself is down, as during the 2026-10-15 prod deploy hold. DuckDuckGo throttles one IP after about 10 searches in a row, and then the call returns the API error alone.
 
 Do not use `engine="bing"`, because Bing serves decoy results that look valid but do not match the query (checked 2026-08-26). The 429 error text still says "try engine='bing'", so ignore that hint.
