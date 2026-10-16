@@ -10,7 +10,7 @@ import { readSession, readSessionFile, type RunState, type Scenario, type Verdic
  * SIGKILLs the chat's own worker before the child's first prompt reaches its file or the worker's journal shows its agent start. Nobody tells
  * the chat or the job anything. The criteria live in the run folder's criteria.md.
  */
-export const TASK = "have a job count the .ts files under components/pi-pool/src and tell me how many there are";
+export const TASK = "have a job count the .ts files under components/user-history/src and tell me how many there are";
 const HOME = homedir();
 const DATA = process.env.AGENT_CHAT_DATA_DIR ?? join(HOME, ".prime/agent/browser-chat");
 const WORKERS = join(HOME, ".prime/agent/daemon-workers");
