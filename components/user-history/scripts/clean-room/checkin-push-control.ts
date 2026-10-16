@@ -1,0 +1,219 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import { readSession, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
+import { flagHits, names, reportShape, stepIdLists } from "./text-checks.ts";
+
+/**
+ * The check-in push against a control (owner 10-16: "so error i 1) check in logic of their session 2) incompetance in our check in logic that
+ * didn't push the coordinator job"). Two chats open at the same minute with ordinary research tasks that carry a number; the control's
+ * check-in is paused. The criteria live in the run folder's criteria.md, written before the run.
+ */
+export const TASK = "research which of our instagram index gaps matter most and keep a page with the top 10 updated. measure each gap's size " +
+  "from real data, i want all 10 measured by tomorrow";
+export const CONTROL_TASK = "research which of our tiktok shop index gaps matter most and keep a page with the top 10 updated. measure each gap's " +
+  "size from real data, i want all 10 measured by tomorrow";
+const SLOT_START_MS = 5 * 60_000;
+
+const OPEN = new Set(["todo", "doing", "blocked"]);
+const iso = (at: number): string => new Date(at).toISOString().slice(11, 19) + "Z";
+const clip = (text: string, length = 300): string => (text.length > length ? text.slice(0, length - 1) + "…" : text).replace(/\s+/g, " ");
+const amount = (value: number): string => value.toLocaleString("en-US", { maximumFractionDigits: 2, useGrouping: false });
+const walk = (items: readonly PlanItem[], visit: (item: PlanItem, goal: PlanItem) => void, goal?: PlanItem): void => {
+  for (const item of items) { visit(item, goal ?? item); walk(item.children, visit, goal ?? item); }
+};
+const readJson = <T>(path: string): T => JSON.parse(readFileSync(path, "utf8")) as T;
+const listJson = <T>(dir: string): { at: number; value: T }[] => existsSync(dir)
+  ? readdirSync(dir).sort().map(file => ({ at: Number(file.replace(".json", "")), value: readJson<T>(join(dir, file)) })) : [];
+
+interface Snapshot { at: number; board: ChatBoard }
+const snapshots = (dir: string): Snapshot[] => listJson<ChatBoard>(dir).map(({ value }) => ({ at: Date.parse(value.updatedAt) || 0, board: value })).sort((a, b) => a.at - b.at);
+const boardAt = (all: readonly Snapshot[], at: number): ChatBoard | undefined => all.filter(snap => snap.at <= at).at(-1)?.board;
+const goalsOf = (board: ChatBoard | undefined): PlanItem[] => (board?.plan ?? []).filter(goal => OPEN.has(goal.status) && goal.target);
+/** The goal's number for the comparison: the first goal with a target, as a share of its target. */
+const progress = (board: ChatBoard | undefined): number | null => {
+  const goal = (board?.plan ?? []).find(item => item.target);
+  return goal?.target?.current === undefined ? null : goal.target.current / (goal.target.target || 1);
+};
+const short = (goal: PlanItem): boolean => goal.target!.current === undefined || goal.target!.current < goal.target!.target;
+function numberWords(goal: PlanItem): { need: string[]; any: string[]; text: string } {
+  const target = goal.target!;
+  if (target.current === undefined) return { need: [amount(target.target)], any: [], text: `target ${amount(target.target)}, not measured yet` };
+  const gap = Math.abs(target.target - target.current);
+  return { need: [amount(target.current), amount(target.target)], any: [amount(gap), String(Math.round(gap))], text: `${amount(target.current)} of ${amount(target.target)} ${target.unit}` };
+}
+const carries = (text: string, goal: PlanItem): boolean => {
+  const words = numberWords(goal);
+  return words.need.every(word => names(text, word)) && (!words.any.length || words.any.some(word => names(text, word)));
+};
+type Sent = Extract<SessionEvent, { kind: "sent" }>;
+type Call = Extract<SessionEvent, { kind: "call" }>;
+type Text = Extract<SessionEvent, { kind: "text" }>;
+const STARTS = /create_session\(|rlm\.spawn\(/;
+const BOARD_OP = /"op"\s*:\s*"(plan_|todo_)/;
+
+export const checkinPushControl: Scenario = {
+  name: "checkin-push-control",
+  headMessage: () => TASK,
+  control: { name: "TikTok Shop gaps", message: CONTROL_TASK },
+  fixtures: [],
+  setupNotes: state => [
+    `# Run setup: ${state.chat.name} and ${state.control?.name}`, "",
+    `Both chats were opened through POST api/threads in ${state.sandbox} on ${state.release} at the same minute, each with one owner-style first message and no seeded board, todo or fixture.`,
+    `"${state.chat.name}" (${state.chat.id}) runs its check-in every ${state.everyMs / 60_000} min on the server's clock. "${state.control?.name}" (${state.control?.id}) is the control: the script paused its check-in right after it opened, through POST api/threads/<id>/check-in, as this job's session.`,
+    "The owner asked on 10-16 for a run the system does alone (c84) and for a control without the check-in; no other chat's interval changed.", "",
+    `## First messages`, "", `1. ${state.chat.name}: "${TASK}"`, `2. ${state.control?.name}: "${CONTROL_TASK}"`, "",
+  ].join("\n"),
+  evaluate: (run, state) => judge(run, state),
+  baseline: () => { throw new Error("this scenario has no baseline"); },
+};
+
+interface Check { id: string; ok: boolean | null; detail: string }
+const yes = (ok: boolean | null): string => ok === null ? "for the reader" : ok ? "met" : "not met";
+interface Agent { sessionId?: string; name: string; state: string; key: string }
+
+/** The jobs a chat's Agents card listed over the run, apart from its check-in duty jobs. */
+function agentsOf(dir: string): { jobs: Map<string, string>; duty: Map<string, string>; first: Map<string, number> } {
+  const jobs = new Map<string, string>(); const duty = new Map<string, string>(); const first = new Map<string, number>();
+  for (const { at, value } of listJson<Agent[]>(dir)) for (const agent of value) {
+    if (!agent.sessionId) continue;
+    if (!first.has(agent.sessionId)) first.set(agent.sessionId, at);
+    (/^check-in /.test(agent.name) ? duty : jobs).set(agent.sessionId, agent.name);
+  }
+  return { jobs, duty, first };
+}
+function firstReply(events: readonly SessionEvent[], since: number): Check {
+  const reply = events.find((event): event is Extract<SessionEvent, { kind: "assistant" }> => event.kind === "assistant" && event.at >= since)?.text ?? "";
+  const measured = reply.replace(/\b\d{4}-\d{2}-\d{2}\b|\btop 10\b|\b10 gaps\b|\ball 10\b|\b\d+ of 10\b/gi, "").match(/\b\d[\d,.]*\s*(%|k|m|accounts?|profiles?|rows?|posts?|reads?|shops?|products?|days?|h|hours?)\b/gi) ?? [];
+  const defers = reply.match(/nothing is measured yet|i started|will (find|measure|send|check)|once (it|the job)|when it is ready/gi) ?? [];
+  return { id: "i", ok: reply ? measured.length > 0 && defers.length === 0 : false, detail: reply
+    ? `numbers ${measured.join(", ") || "none"}; put-off words ${defers.map(word => `"${word}"`).join(", ") || "none"}; "${clip(reply, 500)}"` : "no reply" };
+}
+
+function judge(run: string, state: RunState): { verdict: Verdict; text: string } {
+  const roots = [state.chat.id, ...(state.control ? [state.control.id] : [])];
+  const read = (id: string): SessionEvent[] => readSession(id, roots);
+  const end = Date.now();
+  const runs = existsSync(join(run, "runs.jsonl")) ? readFileSync(join(run, "runs.jsonl"), "utf8").split("\n").filter(Boolean)
+    .map(line => JSON.parse(line) as { at: number; trigger: string; duty: string; summary?: string }).filter(entry => entry.duty === "checkin" && entry.at >= state.windowStart) : [];
+  const slots = runs.filter(entry => entry.trigger === "schedule");
+  const boards = snapshots(join(run, "boards"));
+  const controlBoards = snapshots(join(run, "control", "boards"));
+  const { jobs, duty, first } = agentsOf(join(run, "agents"));
+  const control = agentsOf(join(run, "control", "agents"));
+  const clock = (at: number): string => { const date = new Date(at); return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`; };
+  const head = read(state.chat.id);
+  const checks: Check[] = [];
+  const actions: string[] = [];
+
+  const slotLines: string[] = []; const pushLines: string[] = []; const coordLines: string[] = []; const reportLines: string[] = [];
+  let pushOk = slots.length > 0; let coordOk = true; let reportOk: boolean | null = null;
+  slots.forEach((slot, index) => {
+    const next = slots[index + 1]?.at ?? end;
+    const dutyId = [...duty].find(([, name]) => name.endsWith(` ${clock(slot.at)}`))?.[0];
+    const events = dutyId ? read(dutyId) : [];
+    const started = events[0]?.at;
+    if (!dutyId || started === undefined || started - slot.at > SLOT_START_MS) {
+      pushOk = false;
+      slotLines.push(`slot ${iso(slot.at)}: ${dutyId ? `its duty job started ${started === undefined ? "never" : `${Math.round((started - slot.at) / 1000)} s late`}` : "no duty job"} (${clip(slot.summary ?? "", 120)})`);
+      if (!dutyId) return;
+    } else slotLines.push(`slot ${iso(slot.at)}: duty job ${duty.get(dutyId)} started after ${Math.round((started - slot.at) / 1000)} s`);
+    const sent = events.filter((event): event is Sent => event.kind === "sent");
+    const calls = events.filter((event): event is Call => event.kind === "call");
+    for (const event of sent) actions.push(`${iso(event.at)} ${duty.get(dutyId)} messaged ${event.toName || event.to}: "${clip(event.text, 220)}"`);
+    for (const event of calls) if (STARTS.test(event.input) || BOARD_OP.test(event.input)) actions.push(`${iso(event.at)} ${duty.get(dutyId)} ${STARTS.test(event.input) ? "started a job" : "changed the board"}: ${clip(event.input, 220)}`);
+    const board = boardAt(boards, slot.at);
+    for (const goal of goalsOf(board).filter(short)) {
+      const pushed = sent.some(event => carries(event.text, goal)) || calls.some(event => STARTS.test(event.input) && carries(event.input, goal));
+      if (!pushed) pushOk = false;
+      pushLines.push(`slot ${iso(slot.at)}, ${goal.id} at ${numberWords(goal).text}: ${pushed ? "pushed with its number" : "no message or start carried its number"}`);
+    }
+    for (const [job, name] of jobs) {
+      const at = first.get(job) ?? Infinity;
+      if (at > slot.at) continue;
+      const own = read(job);
+      const lastAt = Math.max(at, ...own.filter(event => event.at <= slot.at).map(event => event.at));
+      const failed = head.some(event => event.kind === "text" && event.at <= slot.at && event.at >= lastAt - 60_000 && new RegExp(`(child-failed|ended|stopped)[^\\n]*${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*(ended|stopped|failed)`, "i").test(event.text));
+      const quietFor = slot.at - lastAt;
+      if (!failed && quietFor < state.everyMs) continue;
+      const toJob = sent.find(event => event.to === job);
+      const tookTurn = own.some(event => event.kind === "assistant" && toJob !== undefined && event.at > toJob.at && event.at < next + state.everyMs);
+      const before = boardAt(boards, slot.at); const after = boardAt(boards, next + state.everyMs) ?? boards.at(-1)?.board;
+      const ownedBefore = new Set<string>(); walk(before?.plan ?? [], item => { if (item.sessionId === job || item.job === name) ownedBefore.add(item.id); });
+      let replaced = false; walk(after?.plan ?? [], item => { if (ownedBefore.has(item.id) && item.sessionId !== job && item.job !== name && !!item.job) replaced = true; });
+      const toldChat = sent.some(event => event.to === state.chat.id && event.text.toLowerCase().includes(name.toLowerCase()));
+      const heavy = failed || quietFor >= 2 * state.everyMs;
+      const ok = heavy ? ((toJob !== undefined && tookTurn) || replaced) && toldChat : toJob !== undefined;
+      if (!ok) coordOk = false;
+      coordLines.push(`slot ${iso(slot.at)}, job ${name}: ${failed ? "dead" : `quiet ${Math.round(quietFor / 60_000)} min`}; ${toJob ? `got "${clip(toJob.text, 160)}"` : "got no message"}${heavy ? `; ${tookTurn ? "took a turn after it" : replaced ? "a new job was started" : "was not restarted or replaced"}; the chat was ${toldChat ? "" : "not "}told` : ""}`);
+    }
+    for (const event of sent.filter(event => event.to === state.chat.id)) {
+      const goal = goalsOf(board)[0];
+      const shape = reportShape(event.text, goal?.target?.current !== undefined ? amount(goal.target.current) : goal ? amount(goal.target!.target) : "");
+      reportOk = (reportOk ?? true) && shape.ok && shape.namesGoal;
+      reportLines.push(`${iso(event.at)}: ${shape.lines} lines, number ${shape.namesGoal ? "named" : "missing"}: "${clip(event.text, 300)}"`);
+    }
+  });
+  checks.push({ id: "1", ok: pushOk, detail: [...slotLines, ...pushLines].join("\n    ") || "no slot in the window" });
+  checks.push({ id: "2", ok: coordOk, detail: coordLines.join("\n    ") || "no job of the chat was quiet or dead at a slot" });
+  checks.push({ ...firstReply(head, state.windowStart), detail: `${state.chat.name}: ${firstReply(head, state.windowStart).detail}` });
+  if (state.control) {
+    const reply = firstReply(read(state.control.id), state.windowStart);
+    const own = checks.find(check => check.id === "i")!;
+    own.ok = !!own.ok && !!reply.ok;
+    own.detail += `\n    ${state.control.name}: ${reply.detail}`;
+  }
+
+  const ledgerFile = join(process.env.AGENT_CHAT_DATA_DIR ?? join(process.env.HOME ?? "", ".prime/agent/browser-chat"), "corrections.json");
+  const ledger = existsSync(ledgerFile) ? readFileSync(ledgerFile, "utf8") : "";
+  const leaks = [[state.chat, boards] as const, ...(state.control ? [[state.control, controlBoards] as const] : [])].flatMap(([chat, all]) =>
+    [...(all.at(-1)?.board.todos ?? []).map(todo => `${chat.name} todo ${todo.id} "${clip(todo.text, 90)}"`), ...(ledger.includes(chat.id) ? [`corrections.json names ${chat.name}`] : [])]);
+  checks.push({ id: "j", ok: leaks.length === 0, detail: leaks.join("; ") || "no todo on either board, and corrections.json names neither chat" });
+
+  const mine = progress(boards.at(-1)?.board); const theirs = progress(controlBoards.at(-1)?.board);
+  const series = slots.map(slot => `${iso(slot.at)} ${progress(boardAt(boards, slot.at)) ?? "-"} vs ${progress(boardAt(controlBoards, slot.at)) ?? "-"}`);
+  checks.push({ id: "k", ok: mine !== null && (theirs === null || (mine >= theirs && mine > (theirs ?? 0))), detail:
+    `share of target at the end: ${state.chat.name} ${mine ?? "not measured"}, ${state.control?.name} ${theirs ?? "not measured"}; at each slot (with vs without): ${series.join("; ") || "none"}` });
+  checks.push({ id: "l", ok: null, detail: `${actions.length} actions by the duty jobs, listed below for the reader` });
+
+  const family = new Set([state.chat.id, ...duty.keys(), ...jobs.keys(), ...(state.control ? [state.control.id, ...control.jobs.keys()] : [])]);
+  const hits: string[] = []; const outside: string[] = []; let scanned = 0;
+  for (const id of family) for (const event of read(id)) {
+    if (event.kind !== "text" || event.at < state.windowStart) continue;
+    if (["harness_digest", "refinement_notice", "refinement_outcome", "ipython_state", "ipython_state_restored"].includes(event.customType ?? "")) continue;
+    if (event.role === "user" && [TASK, CONTROL_TASK].includes(event.text.trim())) continue;
+    scanned++;
+    const flags = flagHits(event.text); const lists = stepIdLists(event.text);
+    if (flags.length || lists.length) hits.push(`${id.slice(0, 8)} from ${event.from ?? event.customType ?? event.role} at ${iso(event.at)}: ${[flags.join(", "), lists.map(ids => ids.join(" ")).join(" / ")].filter(Boolean).join("; ")}`);
+    if ((id === state.chat.id || id === state.control?.id) && event.role === "user" && !event.text.trimStart().startsWith("[")) outside.push(`typed into ${id.slice(0, 8)} at ${iso(event.at)}: "${clip(event.text, 100)}"`);
+    const text = event as Text;
+    if (text.customType === "agent_message" && text.fromId && !family.has(text.fromId) && text.relation !== "child" && text.relation !== "parent") outside.push(`${text.from ?? text.fromId} messaged ${id.slice(0, 8)} at ${iso(event.at)}`);
+  }
+  checks.push({ id: "c", ok: hits.length === 0, detail: `${scanned} system texts scanned; ${hits.length} with hits${hits.length ? `:\n${hits.slice(0, 12).map(hit => `    - ${hit}`).join("\n")}` : ""}` });
+
+  const churn: string[] = [];
+  for (const goal of goalsOf(boards.at(-1)?.board)) {
+    const on = [...jobs].filter(([id, name]) => boards.some(snap => { let hit = false; walk(snap.board.plan, (item, top) => { if (top.id === goal.id && item !== top && (item.sessionId === id || item.job === name)) hit = true; }); return hit; }))
+      .map(([id, name]) => { const events = read(id); return { name, first: first.get(id) ?? 0, end: Math.max(first.get(id) ?? 0, ...events.map(event => event.at)) }; }).sort((a, b) => a.first - b.first);
+    for (let i = 1; i < on.length; i++) { const alive = on.slice(0, i).filter(job => job.end + 30 * 60_000 > on[i]!.first); if (alive.length) churn.push(`${goal.id}: ${on[i]!.name} started at ${iso(on[i]!.first)} while ${alive.map(job => job.name).join(", ")} was alive`); }
+  }
+  checks.push({ id: "d", ok: churn.length === 0, detail: churn.join("; ") || "no root job started for a goal while another on it was alive" });
+  checks.push({ id: "e", ok: reportOk, detail: reportLines.join("\n    ") || "no duty job sent the chat a message" });
+  checks.push({ id: "f", ok: slots.length >= 2, detail: `${slots.length} slots in the window` });
+  const controlSetting = existsSync(join(run, "control", "check-in-setting.json")) ? readJson<{ pausedUntil?: unknown } | null>(join(run, "control", "check-in-setting.json")) : null;
+  const controlRuns = existsSync(join(run, "control", "runs.jsonl")) ? readFileSync(join(run, "control", "runs.jsonl"), "utf8").split("\n").filter(Boolean).length : 0;
+  if (state.control && (controlSetting?.pausedUntil !== "forever" || controlRuns > 0)) outside.push(`the control's check-in is ${controlSetting?.pausedUntil === "forever" ? "paused" : "not paused"} and ran ${controlRuns} times`);
+  checks.push({ id: "h", ok: outside.length === 0, detail: outside.join("; ") || "nobody typed into either chat after the first message, no outside session messaged them, and the control's check-in stayed paused" });
+
+  const get = (id: string) => checks.find(check => check.id === id)!;
+  const verdict: Verdict = get("h").ok === false ? "void" : checks.some(check => check.ok === false) ? "fail" : get("f").ok ? "pass" : "open";
+  const text = [
+    `# Clean-room run ${run.split("/").at(-1)}: ${verdict}`, "",
+    `"${state.chat.name}" (${state.chat.id}, check-in every ${state.everyMs / 60_000} min) and the control "${state.control?.name}" (${state.control?.id}, check-in paused) ran on ${state.release} from ${new Date(state.windowStart).toISOString()} to ${new Date(end).toISOString()}. Judged by \`clean-room.ts evaluate\`; criterion (l) is marked by the reader below the list.`,
+    `Criteria: ${join(run, "criteria.md")}. Setup: ${join(run, "setup.md")}. Evidence: ${run} (boards, control/boards, agents, runs.jsonl, service.log) and the session files named here.`, "",
+    "## Verdict per criterion", "", ...checks.map(check => `- (${check.id}) ${yes(check.ok)}: ${check.detail}`), "",
+    "## Every action of the check-in, for (l)", "", ...(actions.length ? actions.map(line => `- ${line}`) : ["- none"]), "",
+    `Jobs of ${state.chat.name}: ${[...jobs].map(([id, name]) => `${name} ${id}`).join(", ") || "none"}. Duty jobs: ${[...duty].map(([id, name]) => `${name} ${id}`).join(", ") || "none"}. Jobs of the control: ${[...control.jobs].map(([id, name]) => `${name} ${id}`).join(", ") || "none"}.`, "",
+  ].join("\n");
+  return { verdict, text };
+}

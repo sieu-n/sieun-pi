@@ -24,6 +24,7 @@ import { transactJsonFile } from "../../src/locked-json.ts";
 import { parseBoard } from "../../src/shared/chat-board.ts";
 import type { ChatBoard } from "../../src/shared/types.ts";
 import { checkinGoalPush } from "./checkin-goal-push.ts";
+import { checkinPushControl } from "./checkin-push-control.ts";
 import { checkinRealTask } from "./checkin-real-task.ts";
 import { correctionRefine } from "./correction-refine.ts";
 import type { RunState, Scenario } from "./session-read.ts";
@@ -61,7 +62,8 @@ export async function server(): Promise<Server> {
   return { base: url, origin: new URL(url).origin, token };
 }
 async function call(srv: Server, method: "GET" | "POST", route: string, body?: unknown): Promise<unknown> {
-  const response = await fetch(srv.base + route, { method, headers: { "content-type": "application/json", "x-chat-token": srv.token, origin: srv.origin },
+  const response = await fetch(srv.base + route, { method, headers: { "content-type": "application/json", "x-chat-token": srv.token, origin: srv.origin,
+    ...(SELF ? { "x-chat-agent-session": SELF } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(180_000) });
   const text = await response.text();
   if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${text.slice(0, 300)}`);
@@ -76,6 +78,8 @@ async function createThread(srv: Server, kind: "chat" | "thread", name: string, 
   return result.id;
 }
 const setCheckIn = (srv: Server, chat: string, body: Record<string, unknown>) => call(srv, "POST", `api/threads/${chat}/check-in`, body);
+/** This job's session id, sent as the agent that changes a check-in, so the setting names who paused it. */
+const SELF = process.env.CLEAN_ROOM_SESSION ?? "";
 
 /** Replaces a board file under the board store's lock, so no chat_board write interleaves. */
 async function seedBoard(chat: string, board: ChatBoard): Promise<void> {
@@ -105,14 +109,21 @@ async function setup(flags: Record<string, string>): Promise<void> {
   const name = need(flags, "name");
   const srv = await server();
   const headMessage = scenario.headMessage(name);
-  const chat = await createThread(srv, "chat", name, sandbox, headMessage);
-  await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(chat);
+  const control = scenario.control;
+  const [chat, controlId] = await Promise.all([createThread(srv, "chat", name, sandbox, headMessage),
+    control ? createThread(srv, "chat", control.name, sandbox, control.message) : Promise.resolve(undefined)]);
+  for (const id of [chat, ...(controlId ? [controlId] : [])]) await new IdIndex(join(DATA, CLEAN_ROOM_CHATS_FILE), "Clean-room chat index").add(id);
   log(run, `created chat ${chat} "${name}" in ${sandbox}, filed in ${CLEAN_ROOM_CHATS_FILE} so its corrections go to the scratch ledger`);
+  if (control && controlId) {
+    await setCheckIn(srv, controlId, { pause: "forever" });
+    log(run, `created control chat ${controlId} "${control.name}", filed the same way, and paused its check-in`);
+  }
   const fixtures: Record<string, string> = {};
   const fixtureBriefs: string[] = [];
   let changes: string[] = [];
   const state: RunState = { scenario: scenario.name, chat: { id: chat, name }, fixtures, sandbox, everyMs: everyMin * 60_000, release: liveRelease(),
-    board: flags.board ?? "", seeds: [headMessage], setupAt: Date.now(), windowStart: 0 };
+    board: flags.board ?? "", seeds: [headMessage], setupAt: Date.now(), windowStart: 0,
+    ...(control && controlId ? { control: { id: controlId, name: control.name } } : {}) };
   if (scenario.board) {
     await setCheckIn(srv, chat, { pause: "forever" });
     log(run, "paused its check-in while the board is seeded");
@@ -159,9 +170,10 @@ async function reseed(flags: Record<string, string>): Promise<void> {
 
 /** Every session id the run knows: the chat, its fixtures, its agents, the board's step sessions and its duty jobs. */
 function knownSessions(run: string, state: RunState): Set<string> {
-  const ids = new Set<string>([state.chat.id, ...Object.values(state.fixtures)]);
-  const agents = join(run, "agents");
-  if (existsSync(agents)) for (const file of readdirSync(agents)) for (const agent of readJson<{ sessionId?: string }[]>(join(agents, file))) if (agent.sessionId) ids.add(agent.sessionId);
+  const ids = new Set<string>([state.chat.id, ...Object.values(state.fixtures), ...(state.control ? [state.control.id] : [])]);
+  for (const agents of [join(run, "agents"), join(run, "control", "agents")]) {
+    if (existsSync(agents)) for (const file of readdirSync(agents)) for (const agent of readJson<{ sessionId?: string }[]>(join(agents, file))) if (agent.sessionId) ids.add(agent.sessionId);
+  }
   const runs = join(run, "runs.jsonl");
   if (existsSync(runs)) for (const line of readFileSync(runs, "utf8").split("\n")) if (line.trim()) { const id = (JSON.parse(line) as { job?: { id?: string } }).job?.id; if (id) ids.add(id); }
   const boardFile = join(DATA, "boards", `${state.chat.id}.json`);
@@ -192,6 +204,25 @@ async function collectOnce(run: string, state: RunState, srv: Server, logOffset:
   } catch (error) { log(run, `agents: ${error instanceof Error ? error.message : String(error)}`); }
   const runs = join(DATA, "duties", `${state.chat.id}.runs.jsonl`);
   if (existsSync(runs)) copyFileSync(runs, join(run, "runs.jsonl"));
+  if (state.control) {
+    const controlBoard = join(DATA, "boards", `${state.control.id}.json`);
+    if (existsSync(controlBoard)) {
+      const board = readJson<ChatBoard>(controlBoard);
+      const out = join(run, "control", "boards", `${String(board.rev).padStart(6, "0")}.json`);
+      if (!existsSync(out)) writeJson(out, board);
+    }
+    const controlRuns = join(DATA, "duties", `${state.control.id}.runs.jsonl`);
+    if (existsSync(controlRuns)) copyFileSync(controlRuns, join(run, "control", "runs.jsonl"));
+    writeJson(join(run, "control", "check-in-setting.json"), readJson<Record<string, unknown>>(join(DATA, "check-in-settings.json"))[state.control.id] ?? null);
+    try {
+      const { agents } = await call(srv, "GET", `api/threads/${state.control.id}/agents`) as { agents: unknown[] };
+      const dir = join(run, "control", "agents");
+      mkdirSync(dir, { recursive: true });
+      const text = JSON.stringify(agents);
+      const last = readdirSync(dir).sort().at(-1);
+      if (!last || readFileSync(join(dir, last), "utf8") !== text) writeFileSync(join(dir, `${Date.now()}.json`), text);
+    } catch (error) { log(run, `control agents: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   const settings = readJson<Record<string, unknown>>(join(DATA, "check-in-settings.json"))[state.chat.id];
   writeJson(join(run, "check-in-setting.json"), settings ?? null);
   for (const id of knownSessions(run, state)) {
@@ -260,13 +291,16 @@ async function teardown(flags: Record<string, string>): Promise<void> {
   for (const id of jobs) {
     await call(srv, "POST", `api/threads/${id}/archive`, {}).then(() => log(run, `archived job ${id}`), error => log(run, `archive ${id}: ${error instanceof Error ? error.message : String(error)}`));
   }
-  const boardFile = join(DATA, "boards", `${state.chat.id}.json`);
-  if (existsSync(boardFile)) {
+  for (const id of [state.chat.id, ...(state.control ? [state.control.id] : [])]) {
+    const boardFile = join(DATA, "boards", `${id}.json`);
+    if (!existsSync(boardFile)) continue;
     await transactJsonFile({ path: boardFile, label: "Chat board", parse: parseBoard, initial: () => { throw new Error("no board"); } }, board => { board.todos = []; });
-    log(run, "removed the test chat's todos, so the owner's For you does not count them");
+    log(run, `removed the todos of ${id}, so the owner's For you does not count them`);
   }
-  await call(srv, "POST", `api/threads/${state.chat.id}/archive`, {});
-  log(run, `archived test chat ${state.chat.id}`);
+  for (const id of [state.chat.id, ...(state.control ? [state.control.id] : [])]) {
+    await call(srv, "POST", `api/threads/${id}/archive`, {});
+    log(run, `archived chat ${id}`);
+  }
   await transactJsonFile({ path: join(DATA, CLEAN_ROOM_CORRECTIONS_FILE), label: "Corrections ledger", parse: parseLedger, initial: () => ({ corrections: [] }) },
     ledger => { ledger.corrections = ledger.corrections.filter(entry => entry.chat.id !== state.chat.id); });
   await jobRegistry(join(DATA, "chat-jobs.json")).remove(Object.keys(state.fixtures).concat(Object.values(state.fixtures)));

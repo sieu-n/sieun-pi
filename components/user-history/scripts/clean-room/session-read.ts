@@ -7,6 +7,8 @@ import type { ChatBoard } from "../../src/shared/types.ts";
 export interface RunState {
   scenario: string; chat: { id: string; name: string }; fixtures: Record<string, string>; sandbox: string; everyMs: number; release: string;
   board: string; seeds: string[]; setupAt: number; windowStart: number;
+  /** A second chat opened at the same time with its check-in paused, to compare against. */
+  control?: { id: string; name: string };
 }
 /** A clean-room scenario: how it seeds the test chat, and how it judges the evidence against the criteria written before the run. */
 export interface Scenario {
@@ -14,6 +16,8 @@ export interface Scenario {
   /** The AGENTS.md of a sandbox folder the chat works in; absent: the chat works in `--cwd` like a chat the owner opens there. */
   agentsMd?(sandbox: string): string;
   headMessage(chatName: string): string;
+  /** A control chat with its own ordinary first message, opened with the chat and kept without a check-in. */
+  control?: { name: string; message: string };
   fixtures: { name: string; brief(context: { chat: string; chatName: string; logFile: string; sandbox: string }): string }[];
   /** The board seeded from `--board`; absent: the chat makes its own board. */
   board?(copy: ChatBoard, context: { fixtures: Record<string, string>; sandbox: string }): { board: ChatBoard; changes: string[] };
