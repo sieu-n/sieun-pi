@@ -37,6 +37,7 @@ import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./sh
 import { UsageService } from "./usage/service.ts";
 import { startUsagePublisher } from "./usage/publish.ts";
 import { pendingWakes, readRunState, runStamp, startWakes, waking } from "./wakes.ts";
+import { BRIEFS_DIR, socketEpoch, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
 import { readGrafanaAlerts, readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
 import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
@@ -191,6 +192,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()])),
       held: now => readHeldTurns(dataDir, now),
+      unstarted: now => unstartedJobs(join(dataDir, BRIEFS_DIR), now),
       settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
       cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => duties.store.list(id),
@@ -233,6 +235,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     },
   };
   const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
+  const stopBriefs = options.ownChatsOnly ? () => {} : startBriefKeeper({ dir: join(dataDir, BRIEFS_DIR), daemonEpoch: () => socketEpoch(socketPath), log: dutyLog, ...agentMessage });
   const grafanaConfig = join(dataDir, "grafana-alerts.json");
   const pollHealth = new PollHealth();
   const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"), alerts: () => pollHealth.poll(() => readGrafanaAlerts(grafanaConfig)),
@@ -277,6 +280,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (unloader) clearInterval(unloader);
       stopWatch();
       stopWakes();
+      stopBriefs();
       stopAlerts();
       stopBridgeWatch();
       unwatchBoards();

@@ -15,6 +15,7 @@ import { type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, 
 import { jobBrief, savedStateNote, sessionBrief, waitText } from "./job-resume.ts";
 import { resumeChatJobs } from "./chat-resume.ts";
 import { withHeldTurns } from "./held-turns.ts";
+import { withUnstarted } from "./brief-keeper.ts";
 import { BOARD_LIMITS } from "./shared/chat-board.ts";
 import { noticeStands } from "./no-report.ts";
 import { statusAsks } from "./status-ask.ts";
@@ -1079,8 +1080,10 @@ export class Chats {
     const live = liveJobs([...children, ...nested], this.subagents, this.now(), liveWindowMs((await this.source.settings.get(id)).everyMs), asleep);
     // A cut owner the resume pass continues is the service's to give back (`readHeldTurns`).
     const held = await this.source.held?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in held turns: ${error instanceof Error ? error.message : String(error)}`); return undefined; });
-    const threads = withHeldTurns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
-      wakes, key => sessions.get(key)), held?.sessions ?? new Map(), key => sessions.get(key));
+    // A job Prime admitted whose session never got its first prompt reads as not started, whatever its RLM status says (`withUnstarted`).
+    const unstarted = await this.source.unstarted?.(this.now()).catch(error => { this.log(`chat ${id.slice(0, 8)}: check-in unstarted jobs: ${error instanceof Error ? error.message : String(error)}`); return []; }) ?? [];
+    const threads = withUnstarted(withHeldTurns(withWakes(liveThreads(jobFacts(children, board, rows, id, nested, live), session => readHeartbeats(heartbeatsFile(session, this.source.home)), this.now()),
+      wakes, key => sessions.get(key)), held?.sessions ?? new Map(), key => sessions.get(key)), unstarted);
     const queued = await this.source.queue?.().catch(() => undefined) ?? new Map<string, QueuePlace>();
     const facts = withQueuePlaces(threads.map(fact => {
       const lastMessage = fact.key.startsWith("thread:") ? undefined : said.get(fact.name);

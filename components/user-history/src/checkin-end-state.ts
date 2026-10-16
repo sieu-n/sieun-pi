@@ -3,6 +3,7 @@ import { coversStep, planJob } from "./shared/chat-board.ts";
 import type { OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import type { WakeWatch } from "./checkin-load.ts";
 import { dutyQueueKey } from "./chat-turn-queue.ts";
+import { zTime } from "./checkin-goals.ts";
 import { ago, clip, firstClause, type JobFact, ownerLabel, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget } from "./checkin-steps.ts";
 
 /**
@@ -54,6 +55,8 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
   if (cls === "parked") return out("parked", `parked by ${view.parked ?? "an owner correction"}`);
   if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${owner.wake ? `sleeps on ${owner.wake}` : "works on it"}`);
+  if (owner?.state === "unstarted" && owner.unstarted) return out("job_ended", `${ownerLabel(owner)} never started: Prime admitted it at ${zTime(owner.unstarted.at)} and its ` +
+    `session has no first prompt${owner.unstarted.sentAt !== undefined ? `, though the chat service sent its brief at ${zTime(owner.unstarted.sentAt)}` : ""}`);
   const wait = item.waitFor ?? "";
   const carrier = waitCarrier(wait, facts);
   if (carrier) return out("moving", `its wait is on ${ownerLabel(carrier)}, which ${carrier.wake ? `sleeps on ${carrier.wake}` : "works on it"}`);

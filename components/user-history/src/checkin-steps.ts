@@ -21,7 +21,8 @@ export const STEP_STALE_MS = 2 * 60 * 60_000;
 const WAITS_ON_OWNER = /\b(?:wait(?:s|ing)?\s+(?:on|for)\s+(?:the\s+)?(?:owner|you|your)|needs?\s+(?:the\s+)?(?:owner|you|your)|(?:owner|you)\s+(?:must|has\s+to|have\s+to|needs?\s+to|should)|(?:owner|your)'?s?\s+(?:go|approval|decision|answer|choice|login|sign[ -]?in|ok)\b)/i;
 const STOP_WORDS = new Set(["about", "after", "again", "before", "could", "every", "first", "other", "owner", "should", "still", "their", "there", "these", "think", "those", "under", "until", "which", "while", "would"]);
 
-export type JobState = "working" | "ended" | "failed";
+/** `unstarted`: Prime admitted the job but its session never got its first prompt (brief-keeper.ts `withUnstarted`). */
+export type JobState = "working" | "ended" | "failed" | "unstarted";
 /**
  * One owner as the check-in sees it now: a subagent of the chat, or a thread a step names. `key` is stable across ticks: the child id, or
  * `thread:<sessionId>` for a thread. `messages` is a thread's message count.
@@ -40,6 +41,8 @@ export interface JobFact {
   queued?: QueuePlace;
   /** The pending board.wake its session sleeps on (`wakeLabel`): it ended its turn and counts as working until the wake is due (`withWakes`). */
   wake?: string;
+  /** Its session has no first prompt (state `unstarted`): when it was spawned, and when the chat service last sent its brief. */
+  unstarted?: { at: number; sentAt?: number };
 }
 /**
  * One agent message a job sent the chat: when, and its first line; `factsAt` is when the job last sent one carrying a fact (`noteFacts`), such as a
@@ -317,7 +320,7 @@ export const quote = (text: string) => `"${clip(text)}"`;
 export const ownerLabel = (fact: JobFact) => fact.key.startsWith("thread:") ? `${clip(fact.name, 40)} thread` : `job ${fact.name}`;
 /** "p7 (usage backend thread)" for an owner with a plan item, else "job api-audit" or "usage backend thread". */
 const factLabel = (fact: JobFact) => fact.item ? `${fact.item.id} (${ownerLabel(fact)})` : ownerLabel(fact);
-export const STATE_WORD: Record<JobState, string> = { working: "working", ended: "idle", failed: "failed" };
+export const STATE_WORD: Record<JobState, string> = { working: "working", ended: "idle", failed: "failed", unstarted: "not started" };
 /** An owner's state as a precheck line names it: "ended" when cancelled, "asleep on a board.wake at 14:40Z" while it sleeps on a wake. */
 export const ownerState = (fact: JobFact): string => fact.cancelled ? "ended" : fact.wake ? `asleep on ${fact.wake}` : STATE_WORD[fact.state];
 export function ago(ms: number): string {

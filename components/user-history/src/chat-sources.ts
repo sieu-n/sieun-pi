@@ -8,6 +8,7 @@ import type { DutyRef } from "./checkin-findings.ts";
 import type { PrState } from "./checkin-done.ts";
 import type { DutyRunRecord } from "./shared/chat-duties.ts";
 import type { HeldTurns } from "./held-turns.ts";
+import type { Unstarted } from "./brief-keeper.ts";
 import type { ClaudeState } from "./chat-recovery.ts";
 import type { CheckInRun, CheckInStart } from "./chat-duty-run.ts";
 import type { JobResumes } from "./job-resume.ts";
@@ -264,6 +265,8 @@ export interface CheckInSource {
   interrupted?: (isJob: (run: InterruptedRun) => boolean, owners: ReadonlySet<string>) => Promise<InterruptedReport | null>;
   /** The turns the service holds and gives back itself (`readHeldTurns`), which the check-in reads as moving; absent or failing: none. */
   held?: (now: number) => Promise<HeldTurns>;
+  /** The jobs whose session never got its first prompt (`unstartedJobs`, src/brief-keeper.ts), which the check-in reads as not started; absent or failing: none. */
+  unstarted?: (now: number) => Promise<readonly Unstarted[]>;
   /** The owner's corrections ledger, for its handoffs (`handoffRules`). Absent: no step gets a scope line. */
   corrections?: () => Promise<Ledger>;
   /** A clean-room chat's scratch ledger (CLEAN_ROOM_CORRECTIONS_FILE), null for any other chat. Absent: every chat reads the real one. */
