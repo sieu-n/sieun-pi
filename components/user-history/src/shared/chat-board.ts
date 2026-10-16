@@ -16,15 +16,14 @@ export const BOARD_OP_NAMES: readonly BoardOp["op"][] = ["plan_set", "plan_add",
 export const SCRATCHPAD_REMOVED = "The board has no scratchpad any more; the owner removed it on 2026-10-15. Put the decision in the note of the step it concerns " +
   "(plan_update {id, note}).";
 /**
- * `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. `openGoals` caps the open goals (c44,
- * owner 10-12: "a few area goals with their open steps under them"): past it new work goes under the goal it belongs to.
+ * `openAsks` caps the agent's open todos: past it the agent decides for itself or removes an ask first. `openGoals` is the number of open goals
+ * past which the check-in asks the chat to fold goals of one area (c44, owner 10-12: "a few area goals with their open steps under them").
  */
 export const BOARD_LIMITS = { text: 500, note: 2000, reply: 4000, waitFor: 200, planItems: 500, todos: 100, openAsks: 3, openGoals: 6, links: 5, label: 120,
   requirements: 30, choices: { min: 2, max: 4, text: 80 }, ops: 50 } as const;
 const OPEN_STATUSES: ReadonlySet<PlanStatus> = new Set(["todo", "doing", "blocked"]);
 /** The open goals: top-level plan items that are todo, doing or blocked. */
 export const openGoals = (plan: readonly PlanItem[]): PlanItem[] => plan.filter(item => OPEN_STATUSES.has(item.status));
-export const GOAL_LIMIT_ERROR = `The plan holds at most ${BOARD_LIMITS.openGoals} open goals. Add this under the goal it belongs to (parent), or close or fold a finished goal first.`;
 
 export type BoardErrorKind = "invalid" | "forbidden" | "unknown";
 export class BoardError extends Error {
@@ -208,7 +207,6 @@ function goalTarget(value: unknown): GoalTarget {
   return out;
 }
 
-const GOAL_ONLY = "Only a goal (a top-level plan item) carries a target.";
 /** A measurement from the future would never go stale: measuredAt may be at most 5 minutes after now. */
 function measuredBy(target: GoalTarget | undefined, now: string): void {
   if (target?.measuredAt && Date.parse(target.measuredAt) > Date.parse(now) + 5 * 60_000) invalid("target.measuredAt is in the future; give the time the measurement was taken.");
@@ -307,7 +305,6 @@ export function todoJargon(text: string): string | null {
 }
 function checkAgentTodo(todo: OwnerTodo): void {
   if (placeholderTodo(todo)) invalid(PLACEHOLDER_TODO_ERROR);
-  if (releaseGo.preapproval && preApprovedAsk(todo)) throw new BoardError("forbidden", preApprovedAskError(releaseGo.preapproval));
   if (leaveAsk(todo)) throw new BoardError("forbidden", LEAVE_ASK_ERROR);
   const jargon = todoJargon(todo.text);
   if (jargon) invalid(jargon);
@@ -340,12 +337,6 @@ export function titleDetail(text: string): string | null {
   for (const word of words) if (/^ci\/\S/i.test(word) || (word.includes("/") && slashPath(word))) return word;
   for (const word of words) { const file = word.match(FILE_NAME)?.[0]; if (file && !PRODUCT_JS.test(file)) return file; }
   return text.match(GIT_SHA)?.[0] ?? text.match(RUN_ID)?.[0] ?? null;
-}
-export const titleDetailError = (detail: string) => `Refused, nothing changed. Keep the title a plain outcome, like "Fix a bug in the chat board", and move ` +
-  `"${detail}" to the note with plan_update note (c61). File names, paths, git shas, CI run ids and ci/ refs belong in the note.`;
-function plainTitle(text: string): void {
-  const detail = titleDetail(text);
-  if (detail) invalid(titleDetailError(detail));
 }
 
 /** Parses one untrusted op (an HTTP body or a tool call). The reducer trusts its input after this. */
@@ -425,8 +416,6 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       const closed = reclose(next.plan);
       if (closed.ids.length) { next = { ...next, plan: closed.plan }; summary += `, closed ${closed.ids.join(", ")} again now that no open step is left under ${closed.ids.length === 1 ? "it" : "them"}`; }
     }
-    // A board that already holds more open goals than the limit (from before it) may keep them, but no change adds one.
-    if (next.plan && openGoals(next.plan).length > Math.max(BOARD_LIMITS.openGoals, openGoals(board.plan).length)) invalid(GOAL_LIMIT_ERROR);
     if (actor === "agent" && next.plan) { checkGates(board, next.plan); checkGoWaits(board, next.plan); next = { ...next, plan: markMerges(next.plan) }; }
     return { board: { ...board, ...next, rev: board.rev + 1, updatedAt: now }, summary: voice(summary) };
   };
@@ -438,7 +427,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       walkInputs(op.items, input => { if (input.id) claimed.add(input.id); });
       const used = new Set<string>();
       const fresh = () => { let next = newId("p"); while (claimed.has(next)) next = newId("p"); claimed.add(next); return next; };
-      const build = (input: PlanItemInput, goal: boolean): PlanItem => {
+      const build = (input: PlanItemInput): PlanItem => {
         const itemId = input.id && !used.has(input.id) ? input.id : fresh();
         used.add(itemId);
         // An item that keeps its id keeps the gate fields and the target its input leaves out: plan_set never drops a go, a requirements check or a target.
@@ -446,24 +435,22 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         const kept = itemId === input.id ? find(board.plan, itemId)?.item : undefined;
         const job = planJob(input.job);
         const session = input.sessionId ?? jobSession(input.job) ?? (job && job === kept?.job ? kept.sessionId : undefined);
-        if (input.target && !goal) invalid(GOAL_ONLY);
-        const target = goal ? input.target ?? kept?.target : undefined;
+        const target = input.target ?? kept?.target;
         const duty = input.duty ?? kept?.duty;
         if (input.target) measuredBy(input.target, now);
         return { id: itemId, text: input.text, status: input.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...(input.note ? { note: input.note } : {}), ...waits(input),
           ...gateFields({ go: input.go ?? kept?.go, kind: input.kind ?? kept?.kind, requirements: input.requirements ?? kept?.requirements }), ...(target ? { target } : {}), ...(duty ? { duty } : {}),
-          children: (input.children ?? []).map(child => build(child, false)) };
+          children: (input.children ?? []).map(build) };
       };
-      const plan = op.items.map(input => build(input, true));
+      const plan = op.items.map(build);
       if (count(plan) > BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
       return done({ plan }, `Set the plan: ${count(plan)} items`);
     }
     case "plan_add": {
-      if (actor === "agent") plainTitle(op.text);
       if (count(board.plan) >= BOARD_LIMITS.planItems) invalid(`The plan holds at most ${BOARD_LIMITS.planItems} items.`);
       const job = planJob(op.job);
       const session = op.sessionId ?? jobSession(op.job);
-      if (op.target) { if (op.parent !== undefined) invalid(GOAL_ONLY); measuredBy(op.target, now); }
+      if (op.target) measuredBy(op.target, now);
       const item: PlanItem = { id: newId("p"), text: op.text, status: op.status ?? "todo", ...(job ? { job } : {}), ...(session ? { sessionId: session } : {}), ...waits(op), ...gateFields(op), ...(op.target ? { target: op.target } : {}),
         ...(op.duty ? { duty: op.duty } : {}), children: [] };
       if (op.parent === undefined) {
@@ -480,12 +467,9 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     }
     case "plan_update": {
       const { item, ancestors } = find(board.plan, op.id) ?? unknown("plan item", op.id);
-      // Only a new title is checked: a step saved before c61 keeps its title through a status or note change.
-      if (actor === "agent" && op.text !== undefined && op.text !== item.text) plainTitle(op.text);
       const from = ancestors.at(-1)?.id ?? null;
       const to = op.parent === undefined || op.parent === from ? undefined : op.parent === null ? null : find(board.plan, op.parent) ?? unknown("plan item", op.parent);
       if (to && (to.item.id === item.id || to.ancestors.some(above => above.id === item.id))) invalid(`${item.id} cannot move under itself or under one of its own steps.`);
-      const goal = to === undefined ? from === null : to === null;
       const next: PlanItem = { ...item };
       const parts: string[] = [];
       if (op.text !== undefined && op.text !== item.text) { next.text = op.text; parts.push(`renamed it ${quote(op.text)}`); }
@@ -516,12 +500,10 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       else if (op.duty && op.duty !== item.duty) { next.duty = op.duty; parts.push(`linked duty metric ${op.duty}`); }
       if (op.target === null) { delete next.target; if (item.target) parts.push("cleared its target"); }
       else if (op.target && JSON.stringify(op.target) !== JSON.stringify(item.target)) {
-        if (!goal) invalid(GOAL_ONLY);
         measuredBy(op.target, now);
         next.target = op.target; parts.push(`set its target: ${targetText(op.target)}`);
       }
       if (to === undefined) return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
-      if (next.target && !goal) invalid(GOAL_ONLY);
       // The item moves with its steps and keeps its id; an open item under a finished goal reopens it and every finished goal above it, as plan_add does.
       const rest = map(board.plan, op.id, () => null);
       if (to === null) return done({ plan: [...rest, next] }, `updated ${item.id} ${quote(item.text)}: ${[...parts, "moved it to the top level"].join(", ")}`);
@@ -834,16 +816,6 @@ export const LEAVE_ASK_ERROR = `This todo asks the owner for leave on a non-prod
  */
 export const preApproved = (text: string, preapproval: PreApproval | null = releaseGo.preapproval): boolean =>
   !!preapproval && !KEEPS_OWNER_OK.test(text) && (mergeStep(text) || PRODUCTION.test(text) || PR_MERGE(text));
-/**
- * Whether an agent's todo asks the owner for a go the standing go already gives (c74: "Never put a promote, merge or push go on For you"): it
- * offers a go choice ("Go", "Merge it", "Push it"), and a question that asks for a go merges, pushes to main or master or promotes, with no outside
- * send in that question.
- */
-export const preApprovedAsk = (todo: Pick<OwnerTodo, "text" | "choices">, preapproval: PreApproval | null = releaseGo.preapproval): boolean =>
-  !!preapproval && !!todo.choices?.some(choice => APPROVE.test(choice) || /^\s*(?:merge|push|promote|land|deploy)\b/i.test(choice)) &&
-  todo.text.split(/(?<=[.!?;])\s+|\n+/).some(sentence => sentence.trim().endsWith("?") && LEAVE_ASK.test(sentence) && preApproved(sentence, preapproval));
-export const preApprovedAskError = (preapproval: PreApproval): string => "This todo asks the owner for a go on a merge, a push to main or master " +
-  `or a promote, which he already gave: ${preApprovalText(preapproval)} Do it, and tell the owner what shipped in a chat message.`;
 /**
  * Whether a step needs the owner's go: the chat marked it, or it is a merge step, its target is not staging only, and the owner's standing go
  * (`preApproved`, c74) does not cover it.

@@ -34,8 +34,8 @@ export const underClosedLine = ({ item, parent }: { item: PlanItem; parent: Plan
   `${item.id} ${quote(item.text)} is open under closed ${parent.id}: close it, or reopen ${parent.id} if the work is real`;
 export const lookDoneLine = ({ item, reason }: { item: PlanItem; reason: string }): string => `${item.id} ${quote(item.text)} ${item.status}, looks done: ${reason}; close it with a note that names this`;
 /**
- * A goal with a target never moves under another item, since board-apply refuses a target below the top level (`GOAL_ONLY`): launch main bro
- * 10-15 14:08Z was told to move p125 and p126, its top-level d1 and d2 duty metric items, "with plan_update parent", and p126 carries d2's target.
+ * A goal with a target gets a step under it rather than a move, so its target stays at the top level where the check-in reads it: launch main
+ * bro 10-15 14:08Z was told to move p125 and p126, its top-level d1 and d2 duty metric items, "with plan_update parent", and p126 carries d2's target.
  */
 export const looseGoalLine = (goal: PlanItem): string => goal.target
   ? `${goal.id} ${quote(goal.text)} is a goal with a target and no steps: add a step under it (plan_add with parent ${goal.id}) whose job moves ` +

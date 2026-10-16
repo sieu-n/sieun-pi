@@ -34,7 +34,7 @@ test("goal target: the reducer sets, keeps, updates and clears a goal's target",
   assert.equal(run(board, [{ op: "plan_update", id: "p1", target: null }]).plan[0]!.target, undefined);
 });
 
-test("goal target: the reducer refuses a bad target and a target on a step", () => {
+test("goal target: the reducer refuses a bad target", () => {
   const board = run(emptyBoard(iso(NOW - HOUR)), [{ op: "plan_add", text: "Use the whole proxy plan" }, { op: "plan_add", parent: "p1", text: "Raise crawler concurrency" }]);
   invalid(board, [{ op: "plan_update", id: "p1", target: { ...PROXY, target: 0 } }], /target\.target must be a positive number/);
   invalid(board, [{ op: "plan_update", id: "p1", target: { ...PROXY, current: -1 } }], /target\.current must be a non-negative number/);
@@ -43,9 +43,6 @@ test("goal target: the reducer refuses a bad target and a target on a step", () 
   invalid(board, [{ op: "plan_update", id: "p1", target: { ...PROXY, measuredAt: iso(NOW + HOUR) } }], /in the future/);
   invalid(board, [{ op: "plan_update", id: "p1", target: { ...PROXY, cadence: "weekly" } }], /cadence must be "daily"/);
   invalid(board, [{ op: "plan_update", id: "p1", target: "200 Mbps" }], /target must be \{metric, target, unit/);
-  invalid(board, [{ op: "plan_update", id: "p2", target: PROXY }], /Only a goal \(a top-level plan item\) carries a target/);
-  invalid(board, [{ op: "plan_add", parent: "p1", text: "Step", target: PROXY }], /Only a goal/);
-  invalid(board, [{ op: "plan_set", items: [{ text: "Goal", children: [{ text: "Step", target: PROXY }] }] }], /Only a goal/);
 });
 
 const step = (id: string, text: string, status: PlanItem["status"], extra: Partial<PlanItem> = {}): PlanItem => ({ id, text, status, children: [], ...extra });

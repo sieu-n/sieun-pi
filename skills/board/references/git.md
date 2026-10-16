@@ -33,7 +33,7 @@ The chat brief, the job reply guideline and the duty job brief all state the mer
 
 > Never ask the owner to confirm a staging land, merge or deploy: do it on your own (owner 10-12). Owner rule c74 (2026-10-15): Until the proper launch, the owner pre-approves every prod promote, merge or push to main. Never put a promote, merge or push go on For you and never wait for one; the release owner promotes as soon as staging checks out. The board gate and the global-rules merge guard pass a merge, a push to main or master and a promote with no For you todo and no OWNER_OK. An outside send (an email, a ticket or support reply, a customer message, a post) still needs the owner's ok on a For you todo first (c37).
 
-Do the merge, push or promote yourself, and tell the owner what shipped in a chat message. The board refuses a For you todo that asks for a merge, push or promote go. An open todo that asks for one can be checked off with a note that c74 covers it.
+Do the merge, push or promote yourself, and tell the owner what shipped in a chat message. An open todo that asks for a merge, push or promote go can be checked off with a note that c74 covers it.
 
 The switch is `releaseGo.preapproval` in `components/user-history/src/shared/release-go.ts`, which holds the c74 words and date. The board gate, the global-rules merge guard and the briefs all read it. When an owner rule after launch takes the standing go back, that one field becomes null and the old rule (c49) returns everywhere:
 

@@ -9,7 +9,7 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 3. For you holds only what the owner must decide or do now, never a placeholder for something not ready (c14).
 4. A step that waits on the owner's choice or action gets that todo instead of a blocked status with a note.
 5. If the owner says talk first, reply with your proposal and the default you start at your next wake-up (a job report, a check-in job's report) unless he objects. At that wake-up, start it.
-6. Never ask for a go on a merge, a push to main or master or a prod promote, because the owner pre-approves them all until the proper launch (c74, 2026-10-15) and the board refuses that todo.
+6. Never ask for a go on a merge, a push to main or master or a prod promote, because the owner pre-approves them all until the proper launch (c74, 2026-10-15).
 
 ## Review asks and logins
 

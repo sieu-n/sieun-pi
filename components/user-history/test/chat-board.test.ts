@@ -317,15 +317,7 @@ test("planCounts: every non-dropped step at any depth, and the done ones, for th
   assert.deepEqual(countPlan([]), { done: 0, total: 0 });
 });
 
-test("c44: the board refuses a seventh open goal and moves an item under its goal with plan_update parent", () => {
-  const goals: BoardOp[] = Array.from({ length: BOARD_LIMITS.openGoals }, (_, i) => ({ op: "plan_add", text: `Area ${i + 1}` }));
-  const six = run(emptyBoard(T0), [...goals, { op: "plan_add", parent: "p6", text: "Step", status: "doing" }, { op: "plan_add", text: "Shipped area", status: "done" }]).board;
-  assert.throws(() => run(six, [{ op: "plan_add", text: "Agents send nothing outside without the owner's ok", status: "doing" }]),
-    (error: unknown) => error instanceof BoardError && error.kind === "invalid" && error.message === "The plan holds at most 6 open goals. Add this under the goal it belongs to (parent), " +
-      "or close or fold a finished goal first.");
-  const added = run(six, [{ op: "plan_add", parent: "p1", text: "A step under its goal" }]).board;
-  assert.equal(added.plan[0]!.children[0]!.text, "A step under its goal");
-
+test("c44: plan_update parent moves an item under its goal", () => {
   // p253 sits at the top level with a step of its own; p254 is the goal it belongs to.
   const loose = { ...emptyBoard(T0), plan: [{ id: "p253", text: "Agents send nothing outside without the owner's ok", status: "doing" as const,
     children: [{ id: "p255", text: "Gate", status: "done" as const, children: [] }] }, { id: "p254", text: "AI harness works", status: "doing" as const, children: [] }] };
@@ -339,16 +331,10 @@ test("c44: the board refuses a seventh open goal and moves an item under its goa
   const back = run(moved.board, [{ op: "plan_update", id: "p253", parent: null }]);
   assert.deepEqual(back.board.plan.map(item => item.id), ["p254", "p253"]);
   assert.deepEqual(back.summaries, ['Updated p253 "Agents send nothing outside without the owner\'s ok": moved it to the top level']);
-  throwsKind(() => run(six, [{ op: "plan_update", id: "p7", parent: null }]), "invalid");
-  const closed = run(six, [{ op: "plan_update", id: "p7", status: "done" }, { op: "plan_update", id: "p7", parent: null }]).board;
-  assert.deepEqual(closed.plan.map(item => item.id), ["p1", "p2", "p3", "p4", "p5", "p6", "p8", "p7"], "a closed item may move to the top level at the limit");
 
-  // An open step moved under a finished goal reopens it, which counts as an open goal.
-  throwsKind(() => run(six, [{ op: "plan_update", id: "p7", parent: "p8" }]), "invalid");
-  const open = run(run(six, [{ op: "plan_update", id: "p6", status: "done" }]).board, [{ op: "plan_update", id: "p7", parent: "p8" }]);
-  assert.equal(open.board.plan.find(item => item.id === "p8")!.status, "todo");
-  assert.match(open.summaries[0]!, /moved it under p8, reopened p8$/);
-
-  const targeted = run(emptyBoard(T0), [{ op: "plan_add", text: "Proxy", target: { metric: "bandwidth", target: 200, unit: "Mbps" } }, { op: "plan_add", text: "Other" }]).board;
-  throwsKind(() => run(targeted, [{ op: "plan_update", id: "p1", parent: "p2" }]), "invalid");
+  // An open step moved under a finished goal reopens it.
+  const two = run(emptyBoard(T0), [{ op: "plan_add", text: "Area" }, { op: "plan_add", parent: "p1", text: "Step", status: "doing" }, { op: "plan_add", text: "Shipped area", status: "done" }]).board;
+  const open = run(two, [{ op: "plan_update", id: "p2", parent: "p3" }]);
+  assert.equal(open.board.plan.find(item => item.id === "p3")!.status, "todo");
+  assert.match(open.summaries[0]!, /moved it under p3, reopened p3$/);
 });

@@ -70,15 +70,6 @@ test("c74: with the switch off the same move is refused until the owner answers 
   });
 });
 
-test("c74: a todo that asks for a merge, push or promote go is refused; with the switch off it is the ask c49 wants", () => {
-  const board = slackGreen();
-  refused(board, [{ op: "todo_add", text: T21, choices: ["Go: merge all six", "Not yet"], step: "p2" }], /asks the owner for a go on a merge, a push to main or master or a promote, which he already gave: Owner rule c74 \(2026-10-15\)/);
-  refused(board, [{ op: "todo_add", text: "Promote staging to prod?", choices: ["Go", "Not yet"] }], /which he already gave/);
-  refused(board, [{ op: "todo_add", text: "Push slack-green main to GitHub?", choices: ["Push it", "Not yet"] }], /which he already gave/);
-  assert.equal(run(board, [{ op: "todo_add", text: "Which pricing page do you want, A or B?", choices: ["A", "B"] }]).todos.length, 1, "a product choice stays");
-  assert.equal(withSwitch(null, () => run(board, [{ op: "todo_add", text: T21, choices: ["Go: merge all six", "Not yet"], step: "p2" }])).todos.length, 1);
-});
-
 test("c74 control: a step that sends an email still needs its todo, and an email ask stays allowed", () => {
   const board = slackGreen();
   assert.equal(preApproved(RESEND), false);

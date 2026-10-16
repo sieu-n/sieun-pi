@@ -81,7 +81,7 @@ The chat brief keeps one line per rule and points here for the detail of one kin
 Ops apply in order, all or none. A refused op returns the reason and the fix.
 
 1. `plan_set {items:[{text,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?,children?}]}` replaces the plan. An item that keeps its id keeps its go, kind, requirements, target and duty when you leave them out.
-2. `plan_add {text,parent?,status?,job?,sessionId?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` adds a goal, or a step under `parent`. The plan holds at most 6 open goals, so new work goes under the goal it belongs to.
+2. `plan_add {text,parent?,status?,job?,sessionId?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` adds a goal, or a step under `parent`. New work goes under the goal it belongs to.
 3. `plan_update {id,parent?,text?,status?,job?,sessionId?,note?,waitUntil?,waitFor?,go?,kind?,requirements?,target?,duty?}` changes an item. `null` clears job, sessionId, note, waitUntil, waitFor, kind, requirements, target or duty. `parent` moves the item with its steps to the end of that item's steps, and `parent: null` moves it to the top level.
 4. `plan_remove {id}` removes an item and its steps.
 5. `todo_add {text,choices?,step?,links?}` asks the owner one short question in plain words. Give 2 to 4 short choices, your recommendation first. `step` is the plan step it asks about. A todo that asks him to review, look at or pick something needs `links` to each exact page, or the URL in its text, and the board refuses it otherwise (c32).
@@ -97,7 +97,7 @@ A step keeps its agent's thread id in `sessionId`, so the link survives when the
 
 `go: "needed"` marks a step that ships, ports, deploys, merges into a shared app, or moves work from a demo or preview to a real app or production. That step and its children move to doing or done only after the owner answers a todo linked to it with a go. The mark never clears.
 
-Until the proper launch the owner pre-approves every prod promote, merge or push to main (c74, 2026-10-15). While that standing go is on, a step that merges, pushes to main or master, promotes or names another production target moves with no todo, even when marked. Never put a promote, merge or push go on For you and never wait for one, because the board refuses a todo that asks for one. A step that sends something outside or publishes to a web store still needs the owner's answer on its todo (c37).
+Until the proper launch the owner pre-approves every prod promote, merge or push to main (c74, 2026-10-15). While that standing go is on, a step that merges, pushes to main or master, promotes or names another production target moves with no todo, even when marked. Never put a promote, merge or push go on For you and never wait for one. A step that sends something outside or publishes to a web store still needs the owner's answer on its todo (c37).
 
 A step whose only target is staging never needs a go, even when marked. Such a step names staging, sieun/dev or a dev branch, or lands with no PR number, and it names no prod, production, promote, main, master or real app (owner 10-12).
 
