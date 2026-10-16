@@ -3,12 +3,11 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseHeldSpawns } from "../src/chat-pool.ts";
 import { stuckFindings } from "../src/chat-duty-run.ts";
 import { endState } from "../src/checkin-end-state.ts";
 import { blockedOnOthers, goalsToFold, looseGoalLine } from "../src/checkin-findings.ts";
 import { withWakes } from "../src/checkin-load.ts";
-import { type JobFact, jobFacts, stepView, withHeldSpawns } from "../src/checkin-steps.ts";
+import { type JobFact, jobFacts, stepView } from "../src/checkin-steps.ts";
 import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 import { metricStreaks } from "../src/shared/duty-streak.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../src/shared/types.ts";
@@ -62,21 +61,6 @@ test("Crawler VP 13:41:51Z: the index land and lab window threads, asleep on boa
   assert.deepEqual(steps.map(view => [view.item.id, endState(view, [], rows, self, at("13:41:51"), facts).state]),
     ["p92", "p107", "p110", "p178", "p185", "p18"].map(id => [id, "moving"]));
   assert.deepEqual(blockedOnOthers(steps, rows, self, at("13:41:51"), undefined, new Map(), new Set(owed.map(entry => entry.session))), []);
-});
-
-test("Crawler VP 12:58Z: steps on a job whose rlm.spawn the spawn gate holds read as queued, not gone", () => {
-  const p410 = fixture.crawlerVp.p410;
-  const self = new Set([CRAWLER, "Crawler VP"]);
-  const spawns = parseHeldSpawns({ hold: true, workers_gb: 40.87, queued: [{ ticket: "a1", parent: "01a1180e-6567-747f-bf44-452520ebdd1b", name: "ci playground", wait_s: 900 },
-    fixture.crawlerVp.heldSpawn] }, at("12:58:07"));
-  assert.deepEqual(spawns[1], { ticket: "3762062247d5", parent: CRAWLER, name: "alert bridge dedupe", since: at("12:47:07"), position: 2, total: 2 });
-  const before = jobFacts([], board([p410]), [], CRAWLER);
-  assert.equal(endState(views([p410], before, [], self, at("12:58:07"))[0]!, [], [], self, at("12:58:07"), before).state, "job_ended");
-  const facts = withHeldSpawns(before, board([p410]), spawns, new Set([CRAWLER]));
-  const view = views([p410], facts, [], self, at("12:58:07"))[0]!;
-  assert.equal(view.owner?.key, "queued-3762062247d5");
-  assert.equal(endState(view, [], [], self, at("12:58:07"), facts).state, "moving");
-  assert.equal(withHeldSpawns(before, board([p410]), spawns, new Set(["01a1180e-6567-747f-bf44-452520ebdd1b"])).length, 0, "another chat's held spawn owns nothing here");
 });
 
 test("Crawler VP 13:51Z: a job started again under its name owns its steps over its ended first run", () => {

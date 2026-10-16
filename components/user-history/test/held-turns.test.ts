@@ -8,7 +8,7 @@ import { InterruptedRuns } from "../src/chat-resume.ts";
 import { Chats } from "../src/chats.ts";
 import { endState } from "../src/checkin-end-state.ts";
 import { type JobFact, stepView } from "../src/checkin-steps.ts";
-import { QUEUE_PARKED_FILE, readHeldTurns, RESUME_PENDING_FILE, RESUME_PENDING_FRESH_MS, withHeldTurns, writeResumePending } from "../src/held-turns.ts";
+import { readHeldTurns, RESUME_PENDING_FILE, RESUME_PENDING_FRESH_MS, withHeldTurns, writeResumePending } from "../src/held-turns.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { InterruptedRun } from "../src/shared/interrupted.ts";
 import type { ChatAgent, ChatBoard, PlanItem, SessionRow } from "../src/shared/types.ts";
@@ -27,22 +27,17 @@ const self = new Set([CHAT, "frontend bro"]);
 const step = (id: string, extra: Partial<PlanItem>): PlanItem => ({ id, text: `step ${id}`, status: "doing", children: [], ...extra });
 const end = (item: PlanItem, facts: readonly JobFact[]) => endState(stepView(item, NOW - 30 * 60_000, self, facts, [], [], NOW), [], [], self, NOW, facts);
 
-test("a job cut by a worker stop reads moving while the resume pass holds its continue, and a parked root while queue-park holds it", async () => {
+test("a job cut by a worker stop reads moving while the resume pass holds its continue", async () => {
   const dir = await mkdtemp(join(tmpdir(), "held-turns-"));
   const toast = "01a14019-8e78-7157-a686-a5a77af356da";
-  const root = "01a14075-ec87-74e6-a080-109665a0941d";
-  const facts: JobFact[] = [{ key: "sub-b1e2c400", name: "toast round border fix", state: "ended", activityAt: NOW - 13 * 60_000 },
-    { key: "thread:" + root, name: "stuck steps root cause", state: "ended", activityAt: NOW - 30 * 60_000 }];
+  const facts: JobFact[] = [{ key: "sub-b1e2c400", name: "toast round border fix", state: "ended", activityAt: NOW - 13 * 60_000 }];
   const p150 = step("p150", { job: "toast round border fix" });
-  const p158 = step("p158", { job: "stuck steps root cause", sessionId: root });
-  assert.deepEqual([end(p150, facts).state, end(p158, facts).state], ["job_ended", "thread"], "the old reading: ended, and an idle thread");
+  assert.equal(end(p150, facts).state, "job_ended", "the old reading: ended");
   await writeResumePending(dir, [{ session_id: toast, reason: "worker_stopped" }], NOW);
-  await writeFile(join(dir, QUEUE_PARKED_FILE), JSON.stringify([{ session: root, at: NOW - 60_000, position: 14 }]));
   const held = await readHeldTurns(dir, NOW);
   const marked = withHeldTurns(facts, held.sessions, key => key === "sub-b1e2c400" ? toast : undefined);
-  assert.deepEqual([end(p150, marked).state, end(p158, marked).state], ["moving", "moving"]);
+  assert.equal(end(p150, marked).state, "moving");
   assert.equal(end(p150, marked).reason, "job toast round border fix sleeps on the chat service's continue after its cut turn (worker_stopped)");
-  assert.deepEqual([...held.parked], [root]);
   const stale = await readHeldTurns(dir, NOW + RESUME_PENDING_FRESH_MS + 1);
   assert.equal(stale.sessions.has(toast), false, "a resume list two sweeps old holds nothing");
   await writeFile(join(dir, RESUME_PENDING_FILE), "{");
@@ -54,7 +49,7 @@ test("resumeJobs names the step owners to the script and records the cut runs it
   const cut: InterruptedRun = { id: "e005db", name: "watchlist viewers and scroll", reason: "never_started", session_id: "w1", error: "x", errored_at: "t", head: "w1", head_session_id: "w1" };
   const runs = new InterruptedRuns(async args => { calls.push([...args]); return { paused: [cut], heads: [], checked_at: "now" }; });
   const found: string[][] = [];
-  await runs.resumeJobs(run => run.session_id === "w1", async () => {}, undefined, new Set(["w1", "d1"]), async list => { found.push(list.map(run => run.session_id!)); });
+  await runs.resumeJobs(run => run.session_id === "w1", async () => {}, new Set(["w1", "d1"]), async list => { found.push(list.map(run => run.session_id!)); });
   assert.deepEqual(calls, [["--dry-run", "--direct", "--owners", "w1,d1"], ["--direct", "--only", "w1", "--owners", "w1,d1"]]);
   assert.deepEqual(found, [["w1"]]);
 });
@@ -78,12 +73,11 @@ test("the job sweep passes every open step's owner to the resume pass, a job los
     errored_at: at, head: session, head_session_id: session }));
   const chats = new Chats(index, fakeThreads([]), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
     { ...source(dir, { [CHAT]: board }, () => NOW, rows),
-      held: async () => ({ sessions: new Map([["pk1", "a parked turn"]]), parked: new Set(["pk1"]) }),
       interrupted: async (isJob, named) => { owners.push([...named].sort()); kept.push(paused.filter(isJob).map(run => run.session_id!)); return null; } }, () => {});
   await chats.adopt();
   await chats.tick();
   await chats.settled();
-  assert.deepEqual(owners, [["d1", "w1"]], "open leaf steps only, never the parked root or a done step's job");
-  assert.deepEqual(kept, [["w1", "d1"]], "a step owner counts as the chat's job wherever its session sits");
+  assert.deepEqual(owners, [["d1", "pk1", "w1"]], "open leaf steps only, never a done step's job");
+  assert.deepEqual(kept, [["w1", "d1", "pk1"]], "a step owner counts as the chat's job wherever its session sits");
   chats.close();
 });

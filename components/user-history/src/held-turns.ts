@@ -5,23 +5,18 @@ import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
 import type { InterruptedRun } from "./shared/interrupted.ts";
 
 /**
- * Turns the chat service holds and gives back itself, so the check-in reads their steps as moving: a root parked out of pi-pool's queue
- * (src/queue-park.ts), and a cut step owner the resume pass continues (`InterruptedRuns.resumeJobs`). On 10-15 the four frontend bro jobs cut
- * at 16:07Z read job_ended until their continue at 16:32Z. A start that waits in the fleet budget is the check-in's `starting` (`outsideMover`).
+ * Turns the chat service gives back itself, so the check-in reads their steps as moving: a cut step owner the resume pass continues
+ * (`InterruptedRuns.resumeJobs`). On 10-15 the four frontend bro jobs cut at 16:07Z read job_ended until their continue at 16:32Z.
  */
 
 /** The cut step owners the last resume pass found, with why each is held: `{ at, runs: [{ session, reason }] }`. */
 export const RESUME_PENDING_FILE = "resume-pending.json";
-/** The parked roots (src/queue-park.ts writes it). */
-export const QUEUE_PARKED_FILE = "queue-parked.json";
 /** A resume list older than two job sweeps is from a service that stopped running its pass. */
 export const RESUME_PENDING_FRESH_MS = 2 * JOB_CLEANUP_EVERY_MS + 60_000;
 
 export interface HeldTurns {
   /** Held sessions by session id, with what holds them, worded to follow "sleeps on" (`JobFact.wake`). */
   sessions: ReadonlyMap<string, string>;
-  /** The parked roots, which the resume pass leaves to queue-park. */
-  parked: ReadonlySet<string>;
 }
 
 const readJson = async (file: string): Promise<unknown> => { try { return JSON.parse(await readFile(file, "utf8")); } catch { return undefined; } };
@@ -29,21 +24,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 /** What the service holds now, from its data folder; a missing, broken or stale file holds nothing. */
 export async function readHeldTurns(dataDir: string, now: number): Promise<HeldTurns> {
-  const [parkedFile, pendingFile] = await Promise.all([QUEUE_PARKED_FILE, RESUME_PENDING_FILE].map(name => readJson(join(dataDir, name))));
+  const pendingFile = await readJson(join(dataDir, RESUME_PENDING_FILE));
   const sessions = new Map<string, string>();
-  const parked = new Set<string>();
-  for (const entry of Array.isArray(parkedFile) ? parkedFile : []) {
-    if (!isRecord(entry) || typeof entry.session !== "string") continue;
-    parked.add(entry.session);
-    sessions.set(entry.session, "a parked turn that the chat service resumes once pi-pool has a free slot");
-  }
   if (isRecord(pendingFile) && typeof pendingFile.at === "number" && now - pendingFile.at <= RESUME_PENDING_FRESH_MS && Array.isArray(pendingFile.runs)) {
     for (const run of pendingFile.runs) {
-      if (isRecord(run) && typeof run.session === "string" && !sessions.has(run.session))
+      if (isRecord(run) && typeof run.session === "string")
         sessions.set(run.session, `the chat service's continue after its cut turn (${typeof run.reason === "string" ? run.reason : "cut"})`);
     }
   }
-  return { sessions, parked };
+  return { sessions };
 }
 
 /** The facts with each job whose session the service holds marked working, and what holds it named as its wake (`JobFact.wake`). */

@@ -31,7 +31,7 @@ const ROWS = [
 ];
 const FOOTPRINTS: Footprints = { workers: { 11: { pids: 4, bytes: 6 * GB }, 22: { pids: 2, bytes: 1.5 * GB } }, swap_used_bytes: 41.5 * GB, pressure_level: 2, cpu_s: 0.21 };
 const QUEUE = { working: [{ session: "chatA", tree: "chatA", parent: null, priority: "high" as const, kind: "slot" as const, since: NOW - 60_000 }],
-  queued: [{ session: "jobB1", tree: "chatB", parent: "chatB", priority: "low" as const, basePriority: "low" as const, since: NOW - 800_000, position: 1, total: 1, waitMs: 800_000 }], governor: { level: "high", held: 2 } };
+  queued: [{ session: "jobB1", tree: "chatB", parent: "chatB", priority: "low" as const, basePriority: "low" as const, since: NOW - 800_000, position: 1, total: 1, waitMs: 800_000 }] };
 
 test("watchLine: worker footprint and the top workers with their chat tree, quiet and finished sessions by tree, the queue, and the Mac as context", () => {
   const line = watchLine({ now: NOW, rows: ROWS, footprints: FOOTPRINTS, queue: QUEUE, chats: new Set(["chatA", "chatB"]), title: id => id === "chatB" ? "VP of CI (title)" : null, cpuMs: 4,
@@ -43,7 +43,7 @@ test("watchLine: worker footprint and the top workers with their chat tree, quie
   assert.deepEqual([line.live, line.working, line.idle15, line.idleOver], [6, 3, 2, 1], "the archived row, the saved row with no worker and the passivated row with no active session count nowhere");
   assert.deepEqual(line.idleTrees, [{ root: "chatA", tree: "Crawler VP", count: 1 }]);
   assert.deepEqual([line.finished, line.finishedTrees.map(tree => [tree.tree, tree.count])], [2, [["Crawler VP", 1], ["VP of CI (title)", 1]]], "a chat is no finished job");
-  assert.deepEqual(line.queue, { working: 1, queued: 1, held: 2, pressure: "high", oldestWaitS: 800, oldestTree: "VP of CI (title)" });
+  assert.deepEqual(line.queue, { working: 1, queued: 1, oldestWaitS: 800, oldestTree: "VP of CI (title)" });
   assert.deepEqual(line.mac, { swapGb: 41.5, pressureLevel: 2 });
   assert.equal(line.cpuMs, 214, "the service's own CPU plus the helper's");
   assert.deepEqual(misses(line), ["usable", "idle", "queue"]);
@@ -76,7 +76,7 @@ test("usable: a minute is unusable at pressure critical, 6,000 swapouts a second
 
 test("misses: a minute is on target only when every part holds; the worker footprint is never a part, and a line with no feed reading misses no usable part", () => {
   const on = { usable: { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 17.7 }, idleOver: 0,
-    queue: { working: 3, queued: 1, held: null, pressure: null, oldestWaitS: TARGET.queueWaitS, oldestTree: null } };
+    queue: { working: 3, queued: 1, oldestWaitS: TARGET.queueWaitS, oldestTree: null } };
   assert.deepEqual(misses(on), []);
   assert.deepEqual(misses({ ...on, usable: { ...on.usable, kernelTaskPct: 132.8 } }), ["usable"]);
   assert.deepEqual(misses({ ...on, usable: null }), []);
@@ -129,7 +129,7 @@ test("sharedQueueRead: one pi-pool read serves every reader for its ttl, and a f
 const at = (minute: number) => new Date(NOW - 59 * MIN + minute * MIN).toISOString();
 const watch = (minute: number, extra: Partial<WatchLine> = {}): WatchLine => ({ at: at(minute), workers: 2, workerGb: 4, top: [{ pid: 11, gb: 3, sessions: 4, root: "chatA", tree: "Crawler VP" }],
   usable: { pressureLevel: 2, swapoutsPerS: 0, kernelTaskPct: 17.7 }, chatsLive: 9, live: 10, working: 3, idle15: 0, idleOver: 0, idleTrees: [], finished: 1, finishedTrees: [{ root: "chatA", tree: "Crawler VP", count: 1 }],
-  queue: { working: 3, queued: 0, held: null, pressure: null, oldestWaitS: 0, oldestTree: null }, mac: { swapGb: 40, pressureLevel: 2 }, cpuMs: 210, ...extra });
+  queue: { working: 3, queued: 0, oldestWaitS: 0, oldestTree: null }, mac: { swapGb: 40, pressureLevel: 2 }, cpuMs: 210, ...extra });
 
 const thrash = { pressureLevel: 2, swapoutsPerS: 12633.8, kernelTaskPct: 124.2 };
 
@@ -292,14 +292,14 @@ test("quiet sessions: each line names every session quiet past TARGET.idleMinute
 test("measure: an unusable minute with more than 14 agent turns working or 16 GB in Prime workers is the harness's, one under both names the feed's largest owners", () => {
   assert.deepEqual([HARNESS_TURNS, HARNESS_GB], [14, 16]);
   const owners = [{ owner: "browser:chrome", label: "Google Chrome", gb: 6.5 }, { owner: "chat:01a1164b", label: "AI harness", gb: 2.2 }, { owner: "pm2:virev-demo", label: "virev-demo", gb: 2.1 }];
-  const queue = (working: number) => ({ working, queued: 30, held: 0, pressure: "critical", oldestWaitS: 60, oldestTree: null });
+  const queue = (working: number) => ({ working, queued: 30, oldestWaitS: 60, oldestTree: null });
   const lines = [watch(40, { usable: { ...thrash, owners }, queue: queue(22) }), watch(41, { usable: { ...thrash, owners }, queue: queue(15) }),
     watch(42, { usable: { ...thrash, owners }, queue: queue(14) }), watch(43, { queue: queue(20) }), watch(44, { usable: thrash, queue: queue(3), workerGb: 25.9 })];
   const { metrics, flagged } = measure(lines, NOW);
   assert.equal(metrics.harness_unusable_min_1h, 3, "22 and 15 turns, and 25.9 GB of workers at 3 turns; 20 turns on a usable minute counts nowhere");
   assert.equal(metrics.other_unusable_min_1h, 1);
   assert.equal(metrics.usable_pct_1h, 20);
-  assert.match(flagged!.find(item => item.kind === "harness_side")!.excerpt, /^3 unusable minutes had more than 14 agent turns working or more than 16 GB in Prime workers \(\d\d:\d\d 22 turns, pi-pool critical, 2 workers 4 GB, 10 live sessions; .*\d\d:\d\d 3 turns, pi-pool critical, 2 workers 25\.9 GB/);
+  assert.match(flagged!.find(item => item.kind === "harness_side")!.excerpt, /^3 unusable minutes had more than 14 agent turns working or more than 16 GB in Prime workers \(\d\d:\d\d 22 turns, 2 workers 4 GB, 10 live sessions; .*\d\d:\d\d 3 turns, 2 workers 25\.9 GB/);
   assert.equal(flagged!.find(item => item.kind === "other_side")!.excerpt,
     "1 unusable minutes had 14 or fewer agent turns working and 16 GB or less in Prime workers; the feed's largest owners then: Google Chrome 6.5 GB (app or owner), AI harness 2.2 GB (harness), virev-demo 2.1 GB (app or owner).");
   const feed = parseFeed({ ...FEED, owners: Array.from({ length: 12 }, (_, i) => ({ owner: `other:p${i}`, label: `p${i}`, mem_gb: i, cpu_pct: 0, procs: 1 })) }, NOW)!;

@@ -50,24 +50,6 @@ export function queueReader(read: () => Promise<AgentQueueReading> = readAgentQu
   };
 }
 
-/**
- * A new turn would only wait once the queue holds this many turns per working slot: over the 2,529 turns pi-pool queued and admitted on 10-15
- * (pi-pool.log, the queue length each `turn_queued` logged against the governor's limit then), the median wait was 504 s at 3 to 3.5 queued
- * per slot and 456 s at 3.5 to 4, and 738 s at 4 to 4.5, 637 s at 4.5 to 5, 741 s at 5 to 6 and 1,757 s above 6. Past 600 s a session that
- * waits holds a worker Prime's idle sweep would have stopped (idleEvictionMinutes is 10 in ~/.prime/agent/settings.json), and Prime counts a
- * session whose run waits in the queue as running, so it never evicts it: at 15:2xZ on 10-15, 80 of 118 live sessions waited in the queue and
- * 47 of 72 workers held nothing else.
- */
-export const QUEUE_LONG_PER_SLOT = 4;
-
-/** Why a turn started now would only wait (`QUEUE_LONG_PER_SLOT`), or null when the queue is off, unread or shorter. */
-export function queueLong(reading: AgentQueueReading | null): string | null {
-  if (!reading?.enabled) return null;
-  const limit = reading.governor?.limit ?? reading.macWorkingMax;
-  if (reading.queued.length < QUEUE_LONG_PER_SLOT * limit) return null;
-  return `the turn queue holds ${reading.queued.length} turns for ${limit} slots`;
-}
-
 /** A duty run's key in the turn queue before its job's session exists: one per chat and duty, as a duty runs one run at a time. */
 export const dutyQueueKey = (chatId: string, dutyId: string): string => `duty:${chatId}:${dutyId}`;
 

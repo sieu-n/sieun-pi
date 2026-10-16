@@ -4,8 +4,6 @@ import { checkInPrecheck } from "../src/chat-checkin.ts";
 import { endState } from "../src/checkin-end-state.ts";
 import { stalledSteps } from "../src/checkin-findings.ts";
 import { type JobFact, type StepMemo, stepView } from "../src/checkin-steps.ts";
-import { startsOf } from "../src/fleet-budget.ts";
-import { parseFleetState } from "../src/fleet-guard.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 /**
@@ -54,12 +52,4 @@ test("check-in precheck: the queue places and the fleet budget's waiting starts 
   const board: ChatBoard = { v: 2, rev: 1, todos: [], updatedAt: "2026-10-15T17:00:00.000Z", plan: [step("p0", { text: "Launch", children: Object.values(items) })] };
   const run = checkInPrecheck(undefined, facts, board, NOW, { self: [...self], rows: [], queued, starting: ["fix check-in launch main bro 05:26"] });
   assert.deepEqual(run.end.filter(entry => entry.state !== "moving").map(entry => entry.view.item.id), ["p130"]);
-});
-
-test("fleet-state.json carries the waiting starts, so a precheck run outside the service reads a chat's held starts", () => {
-  const state = parseFleetState(JSON.stringify({ at: NOW, closed: "the Prime workers hold 20.2 GB (budget 16 GB)", waiting: [
-    { kind: "fix", label: "fix check-in launch main bro 05:26", chat: CHAT }, { kind: "fix", label: "fix check-in VP of CI 05:26", chat: "01a1180e-6567-747f-bf44-452520ebdd1b" },
-    { kind: "sendback", label: "watchlist last fixes" }, { kind: 7, label: "bad" }] }));
-  assert.deepEqual(startsOf(state?.waiting ?? [], CHAT), ["fix check-in launch main bro 05:26", "watchlist last fixes"]);
-  assert.deepEqual(parseFleetState(JSON.stringify({ at: NOW, closed: null })), { at: NOW, closed: null }, "an old state with no waiting list still reads");
 });

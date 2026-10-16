@@ -11,19 +11,17 @@ import { IdleSleepHold } from "./chat-awake.ts";
 import { checkInRecord } from "./chat-checkin.ts";
 import { checkInSettings } from "./checkin-settings.ts";
 import { CLEAN_ROOM_CHATS_FILE, CLEAN_ROOM_CORRECTIONS_FILE, CorrectionLedger } from "./chat-corrections.ts";
-import { claudeReader, markOwnerTurn, readHeldSpawns, setPoolPriority } from "./chat-pool.ts";
-import { dutyAdmitter, queueLong, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
-import { startMacUsableWatch, TREE_MEMORY_FILE } from "./mac-usable-watch.ts";
+import { claudeReader, markOwnerTurn, setPoolPriority } from "./chat-pool.ts";
+import { dutyAdmitter, queueReader, sharedQueueRead } from "./chat-turn-queue.ts";
+import { startMacUsableWatch } from "./mac-usable-watch.ts";
 import { endLeftovers, leftoverSource } from "./job-leftovers.ts";
 import { chatPoolPriority, dutyJobIds, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { briefCheckRecord, deletedJobRecord, jobRegistry, replyCheckRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { interruptedRuns } from "./chat-resume.ts";
-import { FLEET_STOP_FILE, FleetBudget, isProdAlert, readFleetStop, readWorkersGb, startsOf } from "./fleet-budget.ts";
-import { parkTick, queueView } from "./queue-park.ts";
 import { unloadPlan } from "./idle-unload.ts";
-import { QUEUE_PARKED_FILE, readHeldTurns, writeResumePending } from "./held-turns.ts";
+import { readHeldTurns, writeResumePending } from "./held-turns.ts";
 import { Chats, UNKNOWN_ACTIVE } from "./chats.ts";
 import { extensionBuild, loadRecord } from "./chat-brief.ts";
 import { Duties } from "./chat-duty-run.ts";
@@ -44,7 +42,6 @@ import { PollHealth, startBridgeWatch } from "./alert-bridge-health.ts";
 import { DAEMON_WORKER_START_MS } from "./daemon-worker-start.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
 import { prStates } from "./pr-states.ts";
-import { heldStartsOf, readHeldStarts } from "./held-starts.ts";
 import type { PromptView } from "./shared/prompt-view.ts";
 
 /** The Prime Agent defaults for new sessions. The only reader and writer of settings.json in this service. */
@@ -165,25 +162,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const turns = dutyAdmitter({ log: dutyLog });
   const queueReading = sharedQueueRead();
   const queued = queueReader(queueReading);
-  // Every non-owner start the service makes waits for the fleet budget: duty, check-in and fix jobs, send-backs, cut-turn continues and a job's
-  // wake. Owner sends, a chat's own wake and alert wakes never ask it.
   const poolWaiting = async (): Promise<Set<string>> => {
     const pool = await queueReading().catch(() => null);
     return new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
   };
-  const fleet = new FleetBudget({ gb: () => readWorkersGb(), queue: () => queueReading().catch(() => null), log: dutyLog, stopFile: join(dataDir, FLEET_STOP_FILE),
-    live: async session => (await catalog.rows()).some(row => row.id === session && row.working) || (await poolWaiting()).has(session),
-    fixLive: async chat => {
-      const rows = await catalog.rows();
-      const name = rows.find(row => row.id === chat)?.name.trim();
-      if (!name) return false;
-      const waiting = await poolWaiting();
-      for (const row of rows) {
-        if (!row.name.startsWith("fix ") || row.archived || !(row.working || waiting.has(row.id))) continue;
-        if (await registry.chatOf(row.id) === name) return true;
-      }
-      return false;
-    } });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
     board: id => boards.read(id),
     applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
@@ -194,36 +176,21 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const waiting = new Set([...pool?.working ?? [], ...pool?.queued ?? []].map(entry => entry.session));
       return fixJobLive(item, id, await catalog.rows(), asleep, waiting, now);
     },
-    queueLong: async () => queueLong(await queueReading().catch(() => null)),
-    stopped: () => fleet.switchedOff(),
     priority: async id => chatPoolPriority((await labels.snapshot()).threads[id]?.priority ?? 0),
-    jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog, fleet,
+    jobs: dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry, board: id => join(boards.dir, id + ".json"), log: dutyLog,
       started: id => poolPriorities.set(id, "low"), handoff: id => markOwnerTurn(id) }),
     checkIn: { view: id => chats.checkInView(id), run: (id, trigger) => chats.runCheckIn(id, trigger), measure: id => chats.measureCheckIn(id),
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
-  // While the fleet stop switch is on, the service's own prompts and restarts (job notices, status asks, continues of stalled runs) are held;
-  // the owner's sends go through `threads` directly and never through this.
-  const held = async (what: string): Promise<void> => { const stop = await fleet.switchedOff(); if (stop) throw new Error(`${what} held: ${stop}`); };
-  const serviceThreads = new Proxy(threads, { get(target, prop, receiver) {
-    const value: unknown = Reflect.get(target, prop, receiver);
-    if (typeof value !== "function") return value;
-    if (prop === "prompt" || prop === "restart") return async (...args: unknown[]) => { await held(String(prop)); return (value as (...a: unknown[]) => unknown).apply(target, args); };
-    return (value as (...a: unknown[]) => unknown).bind(target);
-  } });
-  chats = new Chats(index, serviceThreads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
+  chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       replyChecks: replyCheckRecord(join(dataDir, "reply-checks.json")), correctionChecks: replyCheckRecord(join(dataDir, "correction-checks.json")),
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")),
       leftovers: (dir, session) => endLeftovers(leftoverSource, dir, session),
       waking: session => waking(join(dataDir, "wakes"), session), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-      starting: async chat => {
-        const name = (await catalog.rows()).find(row => row.id === chat)?.name.trim();
-        return [...startsOf(fleet.queued(), chat), ...await heldStartsOf(await readHeldStarts(dataDir), registry, name ? [chat, name] : [chat])];
-      },
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
-      interrupted: (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, fleet, owners, cut => writeResumePending(dataDir, cut, Date.now())),
-      held: now => readHeldTurns(dataDir, now), fleetStop: () => readFleetStop(dataDir),
-      settings, claude: claudeReader(), queue: queued, spawns: () => readHeldSpawns(),
+      interrupted: (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now())),
+      held: now => readHeldTurns(dataDir, now),
+      settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
       cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => duties.store.list(id),
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
@@ -248,16 +215,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // Publishes usage aggregates to virev.ai/sieun when ~/Library/Application Support/sieun-usage-push/config.json exists.
   const stopPublish = await startUsagePublisher(usage, line => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const stopWatch = options.ownChatsOnly ? () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
-    queue: queueReading, log: dutyLog, treeMemoryFile: TREE_MEMORY_FILE, kill: (pid, signal) => { process.kill(pid, signal); },
-    notify: async (chat, line) => { if (!threads.isLive(chat)) throw new Error("the chat is not attached"); await threads.notice(chat, line); },
-    message: async (root, line) => {
-      await held("mac usable ask");
-      const active = (await catalog.summary(root))?.activeSessionId;
-      if (!active) throw new Error("the thread is not loaded");
-      await catalog.connect();
-      const response = await catalog.client.request({ type: "send_message", targetActiveSessionId: active, message: line }, 30_000, { recoverable: false });
-      if (!response.success) throw new Error(response.error);
-    } });
+    queue: queueReading, log: dutyLog });
   const agentMessage = {
     deliver: async (session: string, text: string): Promise<"sent" | "gone"> => {
       await catalog.connect();
@@ -273,34 +231,14 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (!response.success) throw new Error(response.error);
     },
   };
-  // A job's wake takes a place in the fleet budget's line and stays due until that place comes up; a chat's own wake goes at once. Its label
-  // is the full session id, so the check-in reads a step owned by that session as moving (`outsideMover`).
-  const wakeMessage = { ...agentMessage, deliver: async (session: string, text: string): Promise<"sent" | "gone"> => {
-    await held("wake");
-    if (!(await chats.ids()).has(session)) {
-      const done = await fleet.place({ kind: "wake", label: session });
-      if (!done) throw new Error(`held by the fleet budget: ${await fleet.held() ?? "starts wait"}`);
-      done(session);
-    }
-    return agentMessage.deliver(session, text);
-  } };
-  const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog,
-    hold: async () => queueLong(await queueReading().catch(() => null)), ...wakeMessage });
-  // A prod alert always goes; any other alert waits while the fleet stop switch is on, and the bridge sends it on a later tick.
-  const alertMessage = { ...agentMessage, deliver: async (session: string, text: string): Promise<"sent" | "gone"> => {
-    if (!isProdAlert(text)) await held("alert");
-    return agentMessage.deliver(session, text);
-  } };
+  const stopWakes = options.ownChatsOnly ? () => {} : startWakes({ dir: join(dataDir, "wakes"), runState: readRunState, stamp: runStamp, log: dutyLog, ...agentMessage });
   const grafanaConfig = join(dataDir, "grafana-alerts.json");
   const pollHealth = new PollHealth();
   const stopAlerts = options.ownChatsOnly ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"), alerts: () => pollHealth.poll(() => readGrafanaAlerts(grafanaConfig)),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
-    boards, log: dutyLog, ...alertMessage });
+    boards, log: dutyLog, ...agentMessage });
   const stopBridgeWatch = options.ownChatsOnly ? () => {} : startBridgeWatch({ health: pollHealth, statusFile: join(homedir(), ".cache/virev/alert-bridge-status.json"),
-    configFile: grafanaConfig, log: dutyLog, ...alertMessage });
-  // A root job whose turn only waits in pi-pool's queue is parked so Prime can unload its worker, and goes back through the fleet budget once a
-  // slot is free (src/queue-park.ts).
-  let parking = false;
+    configFile: grafanaConfig, log: dutyLog, ...agentMessage });
   // An idle root job's worker stops a minute after its last activity rather than at Prime's idle sweep (src/idle-unload.ts).
   const unloadIdle = async (): Promise<void> => {
     const stopped: string[] = [];
@@ -311,28 +249,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     }
     if (stopped.length) dutyLog(`idle unload: stopped the workers of ${stopped.length} idle root jobs: ${stopped.join(", ")}`);
   };
-  const parker = options.ownChatsOnly ? undefined : setInterval(() => {
-    if (parking) return;
-    parking = true;
-    void parkTick({ file: join(dataDir, QUEUE_PARKED_FILE), queue: async () => queueView(await queueReading().catch(() => null)), chats: () => chats.ids(), fleet, log: dutyLog,
-      abort: async session => {
-        const active = (await catalog.summary(session))?.activeSessionId;
-        if (!active) throw new Error("the session is not loaded");
-        await catalog.connect();
-        const response = await catalog.client.request({ type: "abort", activeSessionId: active }, 30_000, { recoverable: false });
-        if (!response.success) throw new Error(response.error);
-      },
-      unload: async session => {
-        const active = (await catalog.summary(session))?.activeSessionId;
-        if (!active) return;
-        const response = await catalog.client.request({ type: "kill", activeSessionId: active }, 30_000, { recoverable: false });
-        if (!response.success) throw new Error(response.error);
-      },
-      resume: (session, text) => threads.restart(session, text, false) })
-      .then(unloadIdle)
-      .catch(error => dutyLog(`queue park: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { parking = false; });
+  let unloading = false;
+  const unloader = options.ownChatsOnly ? undefined : setInterval(() => {
+    if (unloading) return;
+    unloading = true;
+    void unloadIdle().catch(error => dutyLog(`idle unload: ${error instanceof Error ? error.message : String(error)}`)).finally(() => { unloading = false; });
   }, 60_000);
-  parker?.unref();
+  unloader?.unref();
   const prioritySync = setInterval(() => { void poolPriorities.sync(); }, 30_000);
   prioritySync.unref();
   void poolPriorities.sync();
@@ -350,7 +273,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       if (closed) return;
       closed = true;
       clearInterval(prioritySync);
-      if (parker) clearInterval(parker);
+      if (unloader) clearInterval(unloader);
       stopWatch();
       stopWakes();
       stopAlerts();

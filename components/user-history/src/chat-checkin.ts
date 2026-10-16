@@ -14,8 +14,7 @@ import { ago, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type 
 import { blockedLine, blockedOnOthers, type BlockedStep, deadRunWaits, type DutyRef, extraGoals, extraGoalsLine, type FoldGoal, foldLine, type GateFinding,
   gateFindings, gateLine, goalsToFold, goalsWithoutDuty, heldElsewhere, type HeldGoal, heldLine, idleGoalLine, idleGoals,
   lookDoneLine, looseGoalLine, looseGoals, noDutyLine, noProgress, type NoProgress, noProgressLine, openUnderClosed, scopeLine, type ScopeMiss, scopeMisses,
-  staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, stopWaits, underClosedLine, type WaitMet, waitMetLine, waitsMet } from "./checkin-findings.ts";
-import type { FleetStop } from "./fleet-budget.ts";
+  staleLine, type StaleStep, staleSteps, stalledLine, type StalledStep, stalledSteps, underClosedLine, type WaitMet, waitMetLine, waitsMet } from "./checkin-findings.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, OK_STATES, stuckLine } from "./checkin-end-state.ts";
 import { goalDueLine, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded } from "./checkin-goals.ts";
@@ -77,8 +76,6 @@ export interface CheckInContext { self?: readonly string[]; boardError?: string;
   wakes?: readonly Wake[];
   /** The job names of this chat whose start or send-back waits in the fleet budget (`FleetBudget.queued`): their steps are moving. Not given: none. */
   starting?: readonly string[];
-  /** The fleet stop switch (`readFleetStop`): once it is off, a wait for its lift is over (`stopWaits`). Not given: no such wait is read as over. */
-  stop?: FleetStop;
   /** What the owner wrote in the chat (`ownerSaid`), for when he last ruled on a review (`readyReviews`); none when not given. */
   owner?: readonly OwnerMessage[];
   /** The duty metric verdicts and PR states that say an item is done (`looksDone`) and that a merge moved work (`noProgress`). Not given: nothing looks done. */
@@ -167,7 +164,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     loose: context.boardError ? [] : looseGoals(board), extra: context.boardError ? [] : extraGoals(board), underClosed: context.boardError ? [] : openUnderClosed(board),
     held: context.boardError ? [] : heldElsewhere(goaled, board, context.rows ?? [], self, context.jobs),
     noProgress: context.boardError ? null : noProgress(board, goaled, steps, since, context.rows ?? [], self, now, context.train, queued, { done, prs: doneFacts.prs }),
-    waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now), ...stopWaits(goaled, context.stop)],
+    waitsMet: context.boardError ? [] : [...waitsMet(goaled, board, context.rows ?? [], self), ...deadRunWaits(goaled, context.train, now)],
     stale: context.boardError ? [] : staleSteps(board, facts, item => steps[item.id] ? recordedAt(steps[item.id]!) : now, self, context.everyMs ?? CHECK_IN_MS, now,
       context.rows ?? [], context.train),
     fold, load: oneSessionLoad(goaled, context.jobs),

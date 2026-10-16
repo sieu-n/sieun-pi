@@ -3,9 +3,8 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ClaudeState } from "./chat-recovery.ts";
-import type { HeldSpawn } from "./checkin-steps.ts";
-import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueGovernor, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
-  type PressureChange, type PressureLevel, type PressureReading, type PoolResolution, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
+import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AgentQueueTimers, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
+  type PoolResolution, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount } from "./shared/types.ts";
 
 /**
  * The installed pi-pool CLI (`~/.local/bin/pi-pool`, a link into ~/.local/share/pi-pool/current), never the copy in this checkout: the chat
@@ -197,7 +196,6 @@ export const poolCommand = {
   admit: (sessionId: string, tree: string, priority: TurnClass) => ["admit", sessionId, "--tree", tree, "--class", priority, "--wait"],
   release: (sessionId: string) => ["release", sessionId],
   ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
-  spawnGate: () => ["spawn-gate", "status"],
 };
 
 /** `pi-pool queue --json`, parsed at the boundary: the Mac-wide turn queue. Throws on a shape that does not match, so the pane says the pool did not answer. */
@@ -231,35 +229,7 @@ export function parseAgentQueue(value: unknown): AgentQueueReading {
     if (position === null || total === null || wait === null) throw new Error("pi-pool returned an invalid queue entry");
     return { ...session, basePriority, position, total, waitMs: wait * 1000 };
   }).sort((a, b) => a.position - b.position);
-  return { enabled: value.enabled, macWorkingMax, macWorkingMaxSet: setRecord(value.mac_working_max_set), treeWorkingMax, working: value.working.map(workingSession), queued,
-    governor: parseGovernor(value.pressure) };
-}
-
-const PRESSURE_LEVELS: ReadonlySet<unknown> = new Set<PressureLevel>(["ok", "high", "critical"]);
-const whole = (value: unknown): number | null => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
-
-function pressureReading(value: unknown): PressureReading | null {
-  if (value === null) return null;
-  const v = isRecord(value) ? value : {};
-  const kernel = whole(v.kernel), swapUsedBytes = whole(v.swap_used), swapTotalBytes = whole(v.swap_total), compressorBytes = whole(v.compressor), ramBytes = whole(v.ram);
-  if (kernel === null || swapUsedBytes === null || swapTotalBytes === null || compressorBytes === null || ramBytes === null) throw new Error("pi-pool returned an invalid pressure reading");
-  return { kernel, swapUsedBytes, swapTotalBytes, compressorBytes, ramBytes };
-}
-
-/** `queue --json`'s `pressure`, the memory governor's record (pi-pool turns.py); null from a pi-pool with no governor or before its first read. */
-export function parseGovernor(value: unknown): AgentQueueGovernor | null {
-  if (value === null || value === undefined) return null;
-  const v = isRecord(value) ? value : {};
-  const limit = count(v.limit), held = whole(v.held), since = epochMs(v.since);
-  if (typeof v.on !== "boolean" || !PRESSURE_LEVELS.has(v.level) || limit === null || held === null || since === null) throw new Error("pi-pool returned an invalid pressure record");
-  const c = v.changed;
-  let changed: PressureChange | null = null;
-  if (c !== null && c !== undefined) {
-    const at = isRecord(c) ? epochMs(c.at) : null, limitFrom = isRecord(c) ? count(c.limit_from) : null, limitTo = isRecord(c) ? count(c.limit_to) : null;
-    if (!isRecord(c) || !PRESSURE_LEVELS.has(c.from) || !PRESSURE_LEVELS.has(c.to) || at === null || limitFrom === null || limitTo === null) throw new Error("pi-pool returned an invalid pressure change");
-    changed = { from: c.from as PressureLevel, to: c.to as PressureLevel, at, limitFrom, limitTo, reading: pressureReading(c.reading) };
-  }
-  return { on: v.on, level: v.level as PressureLevel, limit, held, since, reading: pressureReading(v.reading), changed };
+  return { enabled: value.enabled, macWorkingMax, macWorkingMaxSet: setRecord(value.mac_working_max_set), treeWorkingMax, working: value.working.map(workingSession), queued };
 }
 
 function setRecord(value: unknown): PoolSetRecord | null {
@@ -271,20 +241,6 @@ function setRecord(value: unknown): PoolSetRecord | null {
 
 export async function readAgentQueue(): Promise<AgentQueueReading> {
   return parseAgentQueue(JSON.parse(await run(poolCommand.queue())));
-}
-
-/** The spawns the gate holds, from `spawn-gate status` (pool/spawns.py `view`); an entry with no parent, name or ticket is left out. */
-export function parseHeldSpawns(value: unknown, now: number): HeldSpawn[] {
-  const queued = isRecord(value) && Array.isArray(value.queued) ? value.queued : [];
-  const entries = queued.filter(isRecord).flatMap(entry => {
-    const ticket = text(entry.ticket), parent = text(entry.parent), name = text(entry.name);
-    const wait = typeof entry.wait_s === "number" && Number.isFinite(entry.wait_s) ? entry.wait_s : 0;
-    return ticket && parent && name ? [{ ticket, parent, name, since: now - wait * 1000 }] : [];
-  });
-  return entries.map((entry, index) => ({ ...entry, position: index + 1, total: entries.length }));
-}
-export async function readHeldSpawns(now = Date.now()): Promise<HeldSpawn[]> {
-  return parseHeldSpawns(JSON.parse(await run(poolCommand.spawnGate())), now);
 }
 
 /** One `pi-pool set`; the value goes over as text, the way the CLI takes it. */

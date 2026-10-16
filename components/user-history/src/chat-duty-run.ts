@@ -59,18 +59,6 @@ export interface DutyHost {
   fixLive?: (chatId: string, item: PlanItem) => Promise<boolean>;
   /** Applies board ops built from the board inside the write's lock, as an agent; absent: the server opens no fix job (`ownFixes`). */
   applyBoard?: (chatId: string, ops: (board: ChatBoard) => readonly BoardOp[]) => Promise<unknown>;
-  /**
-   * Why a turn started now would only wait in the turn queue (`queueLong`), or null. While it says why, the server sends no job back: the
-   * message would start a turn that waits with the job's worker loaded. An ended duty job is then stopped like any other, and an idle fix job
-   * waits for a later tick. Absent: never held.
-   */
-  queueLong?: () => Promise<string | null>;
-  /**
-   * Why the fleet stop switch holds every server-started job (src/fleet-budget.ts FLEET_STOP_FILE), or null. While it says why, a due run
-   * records its measure with no job, no fix job opens or replaces a stopped one, and no ended job is sent back; ended jobs still get archived.
-   * On 10-16 the owner had every job stopped, and the server opened slack green guy d1's fix again at 03:55 and 03:58 KST on p150 and p151.
-   */
-  stopped?: () => Promise<string | null>;
 }
 
 /** The part of a duty, the check-in included, its fix job needs. */
@@ -241,10 +229,6 @@ export class Duties {
   private readonly owning = new Set<string>();
   /** The board rev each fix job was sent back at (`ownFixes`); a fix job that ends again with no board change since gets a new fix job in its place. */
   private readonly fixSentBack = new Map<string, number>();
-  /** Fix jobs whose send-back waits for a shorter turn queue, so each logs the hold once. */
-  private readonly fixHeld = new Set<string>();
-  /** The stop switch's reason at the last tick (`DutyHost.stopped`), so its change is logged once. */
-  private stopWhy: string | null = null;
   /** The last board each chat's watch showed, to find the fix steps a change closed (`boardChanged`). */
   private readonly boards = new Map<string, ChatBoard>();
   /** Each ended last job's after-job measure and then its archive (`stopEnded`), kept off the tick so a slow precheck holds up no due duty. */
@@ -290,10 +274,7 @@ export class Duties {
     const runs = new Map<string, DutyRunRecord[]>();
     for (const chatId of chats) runs.set(chatId, await this.store.runs(chatId));
     await this.stopEnded(runs);
-    const stop = await this.host.stopped?.().catch(() => null) ?? null;
-    if (stop !== this.stopWhy) this.log(stop ? `duties: no fix job opens or goes back while ${stop}` : "duties: the fleet stop switch is off; fix jobs open again");
-    this.stopWhy = stop;
-    if (!stop) await this.ownFixes(runs);
+    await this.ownFixes(runs);
   }
 
   /**
@@ -402,11 +383,6 @@ export class Duties {
       this.log(`duty job ${job.name}: ended again with ${misses.map(miss => miss.key).join(", ")} unowned and no board change since it was sent back`);
       return false;
     }
-    const long = await this.host.stopped?.().catch(() => null) ?? await this.host.queueLong?.().catch(() => null) ?? null;
-    if (long) {
-      this.log(`duty job ${job.name}: ended with ${misses.map(miss => miss.key).join(", ")} unowned; not sent back, because ${long}, so it stops like any ended job`);
-      return false;
-    }
     try { await steer(job, unownedMessage(duty.name, own.duty, misses)); }
     catch (error) { this.log(`duty job ${job.name}: send it back: ${message(error)}`); return false; }
     this.sentBack.set(job.id, rev);
@@ -473,13 +449,6 @@ export class Duties {
     visit(board?.plan ?? []);
     const idle = held.size && jobs.ended ? await jobs.ended([...held.values()].map(entry => entry.job)) : [];
     const back = jobs.steer ? idle.find(job => this.fixSentBack.get(job.id) !== rev) : undefined;
-    const long = back ? await this.host.queueLong?.().catch(() => null) ?? null : null;
-    if (back && long) {
-      if (!this.fixHeld.has(back.id)) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: fix job ${back.name} ended; it goes back on a later tick, because ${long}`);
-      this.fixHeld.add(back.id);
-      return;
-    }
-    if (back) this.fixHeld.delete(back.id);
     if (back && jobs.steer) {
       const steps = held.get(back.id)?.steps ?? [];
       // A job Prime cannot resume gets a new one on its steps: on 10-15 at 16:13Z frontend bro's p148 job answered "Prime Agent did not resume
@@ -824,8 +793,6 @@ export class Duties {
       await this.store.updateRun(chatId, dutyId, lastRun.at, record => { record.after ??= measured; })
         .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: after-job measure of ${lastRun.job?.name ?? "the last run"}: ${message(error)}`));
     }
-    const stop = await this.host.stopped?.().catch(() => null);
-    if (stop) return { skipped: `skipped: ${stop}` };
     const name = dutyJobName(brief.duty.name, chat.name, at);
     // The wait runs here, outside the job host's one start lane, so a queued duty never holds up another chat's start.
     const key = `${chatId}/${dutyId}`;

@@ -4,8 +4,6 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
-import { FLEET_STATE_FILE } from "../../src/fleet-budget.ts";
-import { parseFleetState } from "../../src/fleet-guard.ts";
 import { readWatch, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -15,7 +13,7 @@ import { isHarnessMinute } from "./mac-stays-usable.ts";
 /**
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
- * makes no daemon call: the Mac usable watch, service.log, pi-pool.log and its config, fleet-state.json, queue-parked.json and every chat's duty
+ * makes no daemon call: the Mac usable watch, service.log, pi-pool.log and its config, and every chat's duty
  * runs. The headline is how many of the last 30 minutes ran clean: a minute is clean when the watch read the Mac usable, no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had FREE_SLOTS free slots. Supporting: queue holds, fix jobs that ended
  * within CHURN_MS of their open with their metric still missing, and open steps nobody moves in all chats. The rest is detail.
@@ -172,7 +170,7 @@ export const limitAt = (changes: readonly LimitChange[], at: number, fallback: n
 
 /** Whether a watch line shows a queued turn while pi-pool had FREE_SLOTS or more free slots. */
 export const queuedWithFreeSlots = (line: WatchLine, limit: number): boolean =>
-  !!line.queue && line.queue.queued > (line.queue.held ?? 0) && line.queue.oldestWaitS >= QUEUED_WAIT_S && line.queue.working <= limit - FREE_SLOTS;
+  !!line.queue && line.queue.queued > 0 && line.queue.oldestWaitS >= QUEUED_WAIT_S && line.queue.working <= limit - FREE_SLOTS;
 
 export interface Inputs {
   now: number;
@@ -181,9 +179,6 @@ export interface Inputs {
   limits: readonly LimitChange[];
   /** pi-pool's limit when the Mac reads ok (`mac_working_max`). */
   okLimit: number;
-  /** Starts waiting in the fleet budget now, with the time each asked when the service publishes it. */
-  waiting: readonly { kind: string; label: string; since?: number }[];
-  parked: readonly { session: string; at: number; resumedAt?: number }[];
   /** Every chat's duty runs, newest first, with its active duty ids (the check-in included unless paused). */
   chats: readonly { id: string; name: string; duties: readonly { id: string; name: string }[]; runs: readonly DutyRunRecord[] }[];
   /** Jobs in live chats whose last turn was cut and that got no input since (`cutEnd`). */
@@ -199,8 +194,6 @@ export function measure(input: Inputs): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   const queueHolds: Hold[] = [
     ...input.log.holds,
-    ...input.waiting.flatMap(ask => ask.since === undefined ? [] : [{ what: `${ask.kind} ${ask.label} (still waiting)`, from: ask.since, to: now }]),
-    ...input.parked.filter(entry => entry.resumedAt === undefined).map(entry => ({ what: `parked job ${entry.session.slice(0, 8)} (not resumed)`, from: entry.at, to: now })),
     ...(input.cut ?? []).map(job => ({ what: `cut job ${job.name} (${job.session})`, from: job.at, to: now })),
   ].filter(hold => hold.to - hold.from > HOLD_MS && hold.to >= start);
   const cutHeld = (input.cut ?? []).filter(job => now - job.at > HOLD_MS);
@@ -253,8 +246,6 @@ export function measure(input: Inputs): PrecheckOutput {
     fix_opened_30: opened.length,
     step_scan_notices_30: scans.length,
     stuck_duties: redDuties.length,
-    starts_waiting: input.waiting.length,
-    parked_now: input.parked.filter(entry => entry.resumedAt === undefined).length,
     cut_jobs_held: cutHeld.length,
   };
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean. The Mac read usable in ${usable} of ${fed} minutes with a pressure reading ` +
@@ -264,8 +255,6 @@ export function measure(input: Inputs): PrecheckOutput {
   for (const hold of queueHolds.sort((a, b) => a.from - b.from).slice(0, 12)) {
     flagged.push({ kind: "queue_hold", item: hold.what, excerpt: `${hold.what} waited ${minutes(hold.to - hold.from)} min${hold.from - (input.log.firstAt ?? -Infinity) < MINUTE ? " or more (held when the log read starts)" : ""}, ${clock(hold.from)} to ${clock(hold.to)}.` });
   }
-  if (input.waiting.length) flagged.push({ kind: "waiting_now", excerpt: `${input.waiting.length} starts wait in the fleet budget now` +
-    `${input.waiting.some(ask => ask.since !== undefined) ? "" : " (the service does not publish when each asked yet, so only the log's holds count)"}.` });
   for (const fix of churn) flagged.push({ kind: "fix_churn", chat: fix.chat, item: fix.job,
     excerpt: `${fix.job} (${fix.chat}/${fix.duty}) opened ${clock(fix.at)} and ended ${minutes(fix.died!.at - fix.at)} min later: ${fix.died!.why}.` });
   const reopened = new Map<string, number>();
@@ -343,8 +332,6 @@ async function main(): Promise<void> {
   const names = new Map<string, string>();
   for (const line of watch) for (const tree of [...line.top, ...line.trees ?? []]) if (tree.root && tree.tree) names.set(tree.root, tree.tree);
   const config = await readJson(join(poolDir, "config.json")) as { mac_working_max?: number } | null;
-  const fleet = parseFleetState(await readFile(join(dataDir, FLEET_STATE_FILE), "utf8").catch(() => null));
-  const parked = await readJson(join(dataDir, "queue-parked.json"));
   const listed = await readJson(join(dataDir, "chats.json")) as { ids?: unknown } | null;
   const ids = (Array.isArray(listed?.ids) ? listed.ids : []).filter((id): id is string => typeof id === "string" && /^[\w-]+$/.test(id));
   const archivedFile = await readJson(join(dataDir, "archived-chats.json")) as { ids?: unknown } | null;
@@ -363,8 +350,6 @@ async function main(): Promise<void> {
     log: readServiceLog(await tailLines(join(dataDir, "service.log"), LOG_TAIL_BYTES)),
     limits: readLimits(await tailLines(join(poolDir, "pi-pool.log"), LOG_TAIL_BYTES / 2)),
     okLimit: typeof config?.mac_working_max === "number" ? config.mac_working_max : 15,
-    waiting: (fleet?.waiting ?? []) as Inputs["waiting"],
-    parked: Array.isArray(parked) ? parked as Inputs["parked"] : [],
     chats,
     cut: await findCutJobs(join(dataDir, "..", "session-artifacts"), ids.filter(id => !archived.has(id)),
       (await readJson(join(dataDir, "deleted-jobs.json")) ?? {}) as Record<string, Record<string, number>>, now),

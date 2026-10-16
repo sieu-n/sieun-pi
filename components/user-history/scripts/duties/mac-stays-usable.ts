@@ -122,7 +122,7 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
       `(${hour.length} watched)${missMinutes.usable.length ? `; unusable minutes by cause: ${why.filter(([, count]) => count).map(([miss, count]) => `${USABLE_WORDS[miss]} ${count}`).join(", ")}` : ""}.` });
     const harness = missMinutes.usable.filter(isHarnessMinute), other = missMinutes.usable.filter(line => !isHarnessMinute(line));
     if (harness.length) flagged.push({ kind: "harness_side", excerpt: `${harness.length} unusable minutes had more than ${HARNESS_TURNS} agent turns working or more than ` +
-      `${HARNESS_GB} GB in Prime workers (${harness.map(line => `${clock(line.at)} ${line.queue?.working ?? "?"} turns, pi-pool ${line.queue?.pressure ?? "level unread"}, ` +
+      `${HARNESS_GB} GB in Prime workers (${harness.map(line => `${clock(line.at)} ${line.queue?.working ?? "?"} turns, ` +
       `${line.workers} workers ${line.workerGb} GB, ${line.live} live sessions`).join("; ")}): the harness side. Workers behind them: ${treesBehind("usable", harness) || "none named"}.` });
     if (other.length) flagged.push({ kind: "other_side", excerpt: `${other.length} unusable minutes had ${HARNESS_TURNS} or fewer agent turns working and ${HARNESS_GB} GB or less in Prime workers; the feed's largest owners then: ` +
       `${ownersBehind(other) || "the feed named no owners"}.` });

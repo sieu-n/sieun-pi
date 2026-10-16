@@ -22,7 +22,7 @@ process.env.PI_POOL_BIN = fake;
 const { parseAgentQueue, readAgentQueue, readQueueTimers, setPoolKey } = await import("../src/chat-pool.ts");
 const { agentQueue, parseAgentQueueInput } = await import("../src/chat-agent-queue.ts");
 const { chatDefaultsStore } = await import("../src/chat-backend.ts");
-const { pressureChangeLine, pressureLine, setLine, statusLine, whyLines, POOL_SILENT } = await import("../src/client/agent-queue.ts");
+const { setLine, statusLine, whyLines, POOL_SILENT } = await import("../src/client/agent-queue.ts");
 const { queueRows, rowNames } = await import("../src/chat-agent-queue.ts");
 
 test.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -60,25 +60,6 @@ test("the Mac limit carries who last set it and when, and the Settings row says 
   assert.equal(setLine(30, { by: "the Settings pane", at: 1791942343000 }, 16), "The Mac limit was set to 30 by the Settings pane at 10-14 10:45 KST.");
   assert.equal(setLine(30, { by: null, at: 1791942343000 }, 16),
     "The Mac limit was set to 30 at 10-14 10:45 KST, the file time of config.json, by a writer pi-pool did not record then.");
-});
-
-test("the memory governor's record parses, and the Settings row shows its level, its limit, its held turns and its last limit change with the reading", () => {
-  const governor = parseAgentQueue(raw()).governor;
-  const reading = { kernel: 2, swapUsedBytes: 45661159424, swapTotalBytes: 46170898432, compressorBytes: 8000000000, ramBytes: 34359738368 };
-  assert.deepEqual(governor, { on: true, level: "high", limit: 16, held: 2, since: 1792000290000, reading,
-    changed: { from: "ok", to: "high", at: 1792000290000, limitFrom: 30, limitTo: 16, reading } });
-  assert.equal(parseAgentQueue({ ...raw(), pressure: undefined }).governor, null, "a pi-pool with no governor");
-  assert.throws(() => parseAgentQueue({ ...raw(), pressure: { ...raw().pressure as object, level: "warn" } }));
-  assert.throws(() => parseAgentQueue({ ...raw(), pressure: { ...raw().pressure as object, reading: { kernel: 2 } } }));
-  assert.equal(pressureLine(governor, 30),
-    "Memory pressure is high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB), so up to 16 of 30 work and 2 waiting turns are held.");
-  assert.equal(pressureChangeLine(governor!.changed),
-    "At 10-15 02:51 KST memory pressure went high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB), and the limit went from 30 to 16.");
-  assert.equal(pressureChangeLine({ ...governor!.changed!, from: "high", to: "ok", limitFrom: 16, limitTo: 30, reading: null }), "At 10-15 02:51 KST memory pressure went ok, and the limit went from 16 to 30.");
-  assert.equal(pressureChangeLine({ ...governor!.changed!, limitFrom: 12, limitTo: 12, reading: null }), "At 10-15 02:51 KST memory pressure went high, and the limit stayed 12.");
-  assert.equal(pressureLine({ ...governor!, level: "ok", limit: 30, held: 0, reading: null }, 30), "Memory pressure is ok.");
-  assert.equal(pressureLine({ ...governor!, on: false }, 30), "The memory governor is off, so the limit holds under any memory pressure.");
-  assert.equal(pressureLine(null, 30), null);
 });
 
 test("pool writes go through pi-pool set with the value as text", async () => {
@@ -131,17 +112,14 @@ test("the per-chat limit, the two timers and the idle unload time are their own 
   assert.deepEqual(writes, [["tree_working_max", 6], ["queue_aging_s", 30], ["lease_s", 900], ["idleEvictionMinutes", 45]]);
 });
 
-test("the status line counts working and waiting agents and says when memory holds some back", async () => {
+test("the status line counts working and waiting agents", async () => {
   const { queue, fail } = harness(parseAgentQueue(raw()));
   const view = await queue.view();
   const { pool } = view;
   assert.equal(pool.state, "read");
   if (pool.state !== "read") return;
-  assert.equal(statusLine(pool), "2 agents working, 2 waiting. Memory is tight, so jobs of normal and low chats wait.");
-  assert.equal(statusLine({ ...pool, macWorkingMax: 30 }), "2 agents working, 2 waiting. Memory is tight, so fewer run at once.");
-  assert.equal(statusLine({ ...pool, governor: { ...pool.governor!, level: "ok" } }), "2 agents working, 2 waiting.");
-  assert.equal(statusLine({ ...pool, governor: { ...pool.governor!, on: false } }), "2 agents working, 2 waiting.");
-  assert.equal(statusLine({ ...pool, working: pool.working.slice(0, 1), queued: [], governor: { ...pool.governor!, level: "ok" } }), "1 agent working, 0 waiting.");
+  assert.equal(statusLine(pool), "2 agents working, 2 waiting.");
+  assert.equal(statusLine({ ...pool, working: pool.working.slice(0, 1), queued: [] }), "1 agent working, 0 waiting.");
   assert.equal(statusLine({ ...pool, enabled: false }), "The queue is off, so every agent starts at once.");
   assert.deepEqual(view.history, [{ at: 1792000000000, finished: 40, medianWaitS: 12 }]);
   fail();
@@ -167,9 +145,8 @@ test("the queue rows name each turn's chat and job, working longest first, then 
 test("why these numbers carries the live reading, who set the limit and every measured default", async () => {
   const { queue } = harness(parseAgentQueue(raw()));
   const lines = whyLines(await queue.view());
-  assert.equal(lines[0], "Memory pressure is high (kernel warn, compressor 8.0 of 34.4 GB, swap 45.7 of 46.2 GB), so up to 16 of 16 work and 2 waiting turns are held.");
-  assert.ok(lines.includes("The Mac limit holds the default 16, and nobody has set it."));
-  assert.ok(lines.some(line => line.includes("never goes above that number")));
+  assert.equal(lines[0], "The Mac limit holds the default 16, and nobody has set it.");
+  assert.ok(!lines.some(line => /memory pressure/i.test(line)), "the queue holds nothing back for memory (c88)");
   for (const line of lines) assert.ok(!line.includes("\u2014"), line);
 });
 

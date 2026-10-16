@@ -209,29 +209,6 @@ export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | un
     (owner === undefined ? undefined : facts.find(fact => owns(fact, owner) && fact.state === "working") ?? facts.find(fact => owns(fact, owner)));
 };
 
-/** An rlm.spawn that pi-pool's spawn gate holds (`pi-pool spawn-gate status`): the session that called it, the name it gave, and its place. */
-export interface HeldSpawn { ticket: string; parent: string; name: string; position: number; total: number; since: number }
-/**
- * The facts plus one working fact, with its queue place, for each open step whose job no fact owns and that names a spawn the gate holds for
- * `parents` (the chat and its duty jobs): the spawn starts by itself in order. Crawler VP 10-15: the chat called rlm.spawn("alert bridge
- * dedupe") at 12:47Z, the gate held it at 40.87 GiB as 4th in line, and the chat linked 80 alert steps to that job. A check-in in that window
- * read each one as "alert bridge dedupe not found" and its job gone.
- */
-export function withHeldSpawns(facts: readonly JobFact[], board: ChatBoard | null, spawns: readonly HeldSpawn[], parents: ReadonlySet<string>): JobFact[] {
-  const held = spawns.filter(spawn => parents.has(spawn.parent));
-  if (!held.length) return [...facts];
-  const out = [...facts];
-  walk(board?.plan ?? [], item => {
-    const owner = planJob(item.job);
-    if (owner === undefined || !OPEN.has(item.status) || ownerOf(item, out)) return;
-    const spawn = held.find(candidate => candidate.name === owner);
-    if (!spawn) return;
-    out.push({ key: `queued-${spawn.ticket}`, name: spawn.name, state: "working", queued: { position: spawn.position, total: spawn.total, since: spawn.since },
-      item: { id: item.id, text: item.text, status: item.status } });
-  });
-  return out;
-}
-
 /**
  * The chat's jobs now: every subagent directly under it (one whose parent is not another listed subagent), plus every thread an open plan step
  * names as its owner (`stepOwner`) that is not one of them. An owner that names nothing known, or the chat itself (`self`, its session id), is

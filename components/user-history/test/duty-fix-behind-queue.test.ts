@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +8,7 @@ import { Duties } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import { jobRegistry } from "../src/chat-sources.ts";
 import { applyBoardOp, emptyBoard, nextIds } from "../src/shared/chat-board.ts";
-import { type DutyJobRef, type DutyMetric, type DutyRunRecord, parseDutyInput } from "../src/shared/chat-duties.ts";
+import { type DutyJobRef, type DutyRunRecord, parseDutyInput } from "../src/shared/chat-duties.ts";
 import { fixJobLive } from "../src/shared/duty-fixes.ts";
 import type { BoardOp, ChatAgent, ChatBoard, PlanItem, SessionRow } from "../src/shared/types.ts";
 
@@ -29,7 +28,7 @@ const missed = (h: number): DutyRunRecord => ({ duty: "d2", at: at(h, 0), slot: 
   metrics: { retry_extra_s: { value: 41, target: 5, op: "<=", met: false }, supply_hold_minutes: { value: 38, target: 0, op: "<=", met: false },
     working_exits_dropped: { value: 7, target: 0, op: "<=", met: false } }, job: { id: `d2-${h}`, name: `geonode proxy use Crawler VP ${h}:00` } });
 
-async function setup(input: { admit?: (chat: string, duty: string) => Promise<(() => Promise<void>) | null>; queueLong?: () => Promise<string | null>; stopped?: () => Promise<string | null> } = {}) {
+async function setup(input: { admit?: (chat: string, duty: string) => Promise<(() => Promise<void>) | null> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "duty-fix-behind-queue-"));
   const store = new DutyStore(dir);
   for (const record of [missed(9), missed(11), missed(13)]) await store.appendRun(CHAT, record);
@@ -64,7 +63,7 @@ async function setup(input: { admit?: (chat: string, duty: string) => Promise<((
   };
   const lines: string[] = [];
   const duties = new Duties(store, { isChat: async id => id === CHAT, jobs, now: () => now.at, tickMs: 0, log: line => lines.push(line),
-    ...(input.admit ? { admit: input.admit } : {}), ...(input.queueLong ? { queueLong: input.queueLong } : {}), ...(input.stopped ? { stopped: input.stopped } : {}),
+    ...(input.admit ? { admit: input.admit } : {}),
     board: async () => state.board,
     applyBoard: async (_chat, ops: (board: ChatBoard) => readonly BoardOp[]) => {
       let board = state.board;
@@ -100,85 +99,6 @@ test("a fix job's create waits in the turn queue under the duty's fix key, and i
   assert.equal(starts[0]!.admitted, true, "the job's first turn runs on the key's admission");
   order.unshift("start");
   assert.deepEqual(order, ["start", "release"], "the key holds its slot until the session exists");
-});
-
-test("an idle fix job is not sent back while the turn queue is long, and goes back the first tick it is short", async () => {
-  let long: string | null = "the turn queue holds 90 turns for 12 slots";
-  const { starts, steers, ended, now, settle, lines } = await setup({ queueLong: async () => long });
-  await settle();
-  now.at = at(15, 9, 0);
-  ended.add("fix1");
-  await settle();
-  now.at = at(15, 9, 30);
-  await settle();
-  assert.deepEqual(steers, []);
-  assert.equal(starts.length, 1, "a held send-back opens no second job either");
-  assert.equal(lines.filter(line => line.includes("goes back on a later tick")).length, 1, lines.join("\n"));
-  long = null;
-  now.at = at(15, 10, 0);
-  await settle();
-  assert.deepEqual(steers, ["fix1"]);
-});
-
-// 10-16 about 04:00 KST: the owner had every job stopped, and the server opened slack green guy d1's fix again at 03:55 and 03:58 KST on p150
-// and p151, each one minutes after the one before was stopped. While the fleet stop switch is on no fix job opens, replaces a stopped one, or
-// goes back, and no step gets a new job name.
-test("while the fleet stop switch is on no fix job opens or goes back, and a stopped one is not replaced", async () => {
-  let stop: string | null = null;
-  const { starts, steers, ended, now, settle, lines } = await setup({ stopped: async () => stop });
-  await settle();
-  assert.equal(starts.length, 1, "the switch off: the miss streak opens one fix job");
-  stop = "the fleet stop switch is on";
-  ended.add("fix1");
-  for (const minute of [9, 10, 12, 20, 40]) { now.at = at(15, minute, 0); await settle(); }
-  assert.equal(starts.length, 1, "no replacement for the stopped job");
-  assert.deepEqual(steers, [], "and no send-back");
-  assert.equal(lines.filter(line => line.startsWith("duties: no fix job opens")).length, 1, lines.join("\n"));
-  stop = null;
-  now.at = at(15, 41, 0);
-  await settle();
-  assert.deepEqual(steers, ["fix1"], "the switch off: the stopped job goes back on its steps");
-});
-
-// The AI harness chat's d6 fixture of duty-persistence.test.ts: its job ends with 2 unowned misses, which sends it back while the queue is short.
-const fixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures/duty-fixes-ai-harness-1015.json"), "utf8")) as {
-  chat: string; duty: { id: string; name: string; ownerWords: string; goal: string; metrics: DutyMetric[]; onMiss: string }; runs: DutyRunRecord[]; board: ChatBoard };
-
-test("a duty job that ends with an unowned miss while the turn queue is long is stopped, not sent back", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "duty-queue-long-"));
-  const store = new DutyStore(dir);
-  const newest = fixture.runs[0]!;
-  for (const run of fixture.runs.slice(1).reverse()) await store.appendRun(fixture.chat, run);
-  const values = Object.fromEntries(Object.entries(newest.metrics).map(([key, result]) => [key, result.value]));
-  const output = `require("fs").writeFileSync(process.env.OUTPUT_FILE, ${JSON.stringify(JSON.stringify({ metrics: values, flagged: [] }))})`;
-  await store.update(fixture.chat, duties => {
-    duties.push({ ...parseDutyInput({ ...fixture.duty, metrics: fixture.duty.metrics.slice(0, 4), schedule: { kind: "every", minutes: 60 },
-      precheck: { command: ["node", "-e", output], cwd: tmpdir() } }, "d6", newest.at), metrics: fixture.duty.metrics, lastRunAt: newest.at });
-  });
-  const steers: string[] = [];
-  const stops: string[] = [];
-  const ended = new Set<string>();
-  const jobs: DutyJobHost = {
-    async chat(chatId): Promise<DutyChat> { return { id: chatId, name: "AI harness developer environment", cwd: "/repo", board: `/boards/${chatId}.json` }; },
-    async working(job) { return job.id === "s1" && !ended.has(job.id); },
-    async start(_chat, name): Promise<DutyJobRef> { return { id: "s1", name }; },
-    async retire() {},
-    async ended(last, older = []) { return [...last, ...older].filter(job => ended.has(job.id)); },
-    async stop(job) { stops.push(job.id); },
-    async steer(job) { steers.push(job.id); ended.delete(job.id); },
-  };
-  const now = { at: newest.at };
-  const lines: string[] = [];
-  const duties = new Duties(store, { isChat: async id => id === fixture.chat, jobs, now: () => now.at, tickMs: 0, log: line => lines.push(line),
-    board: async () => ({ ...fixture.board }), fixLive: async () => false, queueLong: async () => "the turn queue holds 90 turns for 12 slots" });
-  await duties.runNow(fixture.chat, "d6");
-  await duties.settled();
-  ended.add("s1");
-  now.at += 60_000;
-  await duties.tick();
-  assert.deepEqual(steers, [], "a message now would start a turn that waits with the job's worker loaded");
-  assert.deepEqual(stops, ["s1"], lines.join("\n"));
-  assert.ok(lines.some(line => line.includes("not sent back, because the turn queue holds 90 turns for 12 slots")), lines.join("\n"));
 });
 
 test("a job whose run the queue admitted marks its first turn before its brief goes, and a job with no admission does not", async () => {

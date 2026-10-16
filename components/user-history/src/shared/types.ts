@@ -497,21 +497,13 @@ export const TURN_KINDS = ["slot", "borrow", "owner", "prod", "ahead"] as const;
 export type TurnKind = (typeof TURN_KINDS)[number];
 export interface AgentQueueWorking extends AgentQueueSession { kind: TurnKind }
 export interface AgentQueuedSession extends AgentQueueSession { basePriority: PoolPriority; position: number; total: number; waitMs: number }
-/** The pi-pool memory governor's level: ok, or high and critical, which lower the working limit and hold low turns. */
-export type PressureLevel = "ok" | "high" | "critical";
-/** One memory reading behind a level, in bytes but `kernel`, which is kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical. */
-export interface PressureReading { kernel: number; swapUsedBytes: number; swapTotalBytes: number; compressorBytes: number; ramBytes: number }
-/** A level change and the working limits before and after it, with the reading that made it; `at` in epoch ms. */
-export interface PressureChange { from: PressureLevel; to: PressureLevel; at: number; limitFrom: number; limitTo: number; reading: PressureReading | null }
-/** `queue --json`'s `pressure`: `limit` is the working limit the level allows and `held` the queued turns it holds. `on` is false when `memory_governor_on` is 0. */
-export interface AgentQueueGovernor { on: boolean; level: PressureLevel; limit: number; held: number; since: number; reading: PressureReading | null; changed: PressureChange | null }
 /** Who last ran `pi-pool set` on a key and when, in epoch ms. `by` is null for a value written before pi-pool recorded writers; `at` is then config.json's file time. */
 export interface PoolSetRecord { by: string | null; at: number }
 /**
  * `pi-pool queue --json` as parsed. `enabled` is the `agent_queue_on` switch; the two limits keep their numbers while it is off.
  * `macWorkingMaxSet` is null while the Mac limit holds pi-pool's default.
  */
-export interface AgentQueueReading { enabled: boolean; macWorkingMax: number; macWorkingMaxSet: PoolSetRecord | null; treeWorkingMax: number; working: AgentQueueWorking[]; queued: AgentQueuedSession[]; governor: AgentQueueGovernor | null }
+export interface AgentQueueReading { enabled: boolean; macWorkingMax: number; macWorkingMaxSet: PoolSetRecord | null; treeWorkingMax: number; working: AgentQueueWorking[]; queued: AgentQueuedSession[] }
 export type IdleEvictionMinutes = number | "off";
 
 /**

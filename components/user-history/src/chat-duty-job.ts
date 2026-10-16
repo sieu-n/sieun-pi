@@ -4,7 +4,6 @@ import type { JobRegistry } from "./chat-sources.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
-import type { FleetAsk, FleetDone, FleetKind } from "./fleet-budget.ts";
 import { type DutyCard, type DutyJobRef, headlineMetric, verdictMetrics } from "./shared/chat-duties.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
 import { CHANGE_APPROACH_MISSES, type MetricStreak } from "./shared/duty-streak.ts";
@@ -227,8 +226,6 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
 /** A fix job's name: `fix <duty>` with the chat and start time, like `fix ci system VP of CI 20:41`. */
 export const fixJobName = (duty: string, chat: string, at: number): string => dutyJobName(`fix ${duty}`, chat, at);
 
-/** The fleet budget's kind of a duty job, from its name (`dutyJobName`, `fixJobName`). */
-export const dutyJobKind = (name: string): FleetKind => name.startsWith("fix ") ? "fix" : name.startsWith("check-in ") ? "checkin" : "duty";
 
 /** What the brief of a fix job the server opens holds: the duty, the chat, the job, and each missed metric with no live fix job. */
 export interface FixJobInput {
@@ -330,11 +327,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    * with its worker loaded (pi-pool.log, 21:28 and 22:03 KST); the low duty jobs that started from 22:49 KST waited 1,212 s at p50 for their first turn.
    */
   handoff?: (id: string) => Promise<void>;
-  /**
-   * The fleet budget (src/fleet-budget.ts): each create and each send-back waits for it, outside the one start lane, so a fix job held for its
-   * chat's live fix holds up no other chat's start. Absent: no wait.
-   */
-  fleet?: { admit(ask: FleetAsk): Promise<FleetDone> };
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -360,11 +352,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     }
     return undefined;
   };
-  const budgeted = async <T extends { id: string }>(ask: FleetAsk, work: () => Promise<T>): Promise<T> => {
-    const done = await input.fleet?.admit(ask);
-    try { const result = await work(); done?.(result.id); return result; }
-    catch (error) { done?.(); throw error; }
-  };
   const createOrAdopt = async (chat: DutyChat, first: string): Promise<{ id: string; name: string }> => {
     let cause = "";
     let name = first;
@@ -389,7 +376,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       return found ? { id: chatId, name: found.name.trim() || chatId, cwd: found.cwd, board: input.board(chatId) } : null;
     },
     async working(job) { return (await row(job.id))?.working === true; },
-    start: (chat, planned, brief, admitted = false) => budgeted({ kind: dutyJobKind(planned), label: planned, chat: chat.id }, () => serial(async () => {
+    start: (chat, planned, brief, admitted = false) => serial(async () => {
       const { id, name } = await createOrAdopt(chat, planned);
       try {
         await input.registry.add([id], chat.name);
@@ -402,7 +389,7 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         throw new Error(`session ${id} could not be registered and briefed (${reason(error)}); ${archived}`);
       }
       return { id, name };
-    })),
+    }),
     async retire(job) {
       await input.registry.remove([job.id]);
       await input.archives.add(job);
@@ -415,6 +402,6 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         ...older.filter(job => idle(job) !== undefined)];
     },
     stop: job => input.archives.add(job),
-    steer: (job, text) => budgeted({ kind: "sendback", label: job.name }, async () => { await input.threads.prompt(job.id, { message: text, images: [], mode: "steer" }); return job; }).then(() => {}),
+    steer: async (job, text) => { await input.threads.prompt(job.id, { message: text, images: [], mode: "steer" }); },
   };
 }

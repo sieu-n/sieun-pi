@@ -68,18 +68,12 @@ export interface WakeDeps {
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
    */
   progress?: () => Promise<void>;
-  /**
-   * Why due wakes wait this tick, or null to send them. The chat service holds them while the turn queue is long (`queueLong`): a woken job's
-   * turn would wait there with its worker loaded, and its wake file costs nothing. Absent: never held.
-   */
-  hold?: () => Promise<string | null>;
   log: (line: string) => void;
 }
 
 /** The wake files, one tick at a time; it remembers each run's last stamp and look so a quiet run costs one stat a tick. */
 export class Wakes {
   private readonly looked = new Map<number, { stamp: string | null; at: number }>();
-  private held: string | null = null;
   private readonly now: () => number;
   constructor(private readonly deps: WakeDeps) { this.now = deps.now ?? Date.now; }
 
@@ -108,12 +102,6 @@ export class Wakes {
         if (!state || !("done" in state) || !state.done) continue;
       } else if (wake.on.at > now) continue;
       due.set(wake.session, [...due.get(wake.session) ?? [], { file, wake, state }]);
-    }
-    if (due.size && this.deps.hold) {
-      const hold = await this.deps.hold().catch(() => null);
-      if (!hold !== !this.held) this.deps.log(hold ? `wakes: ${due.size} sessions due, held while ${hold}` : "wakes: the turn queue is short again; due wakes go out");
-      this.held = hold;
-      if (hold) return 0;
     }
     let sent = 0;
     for (const [session, wakes] of due) {

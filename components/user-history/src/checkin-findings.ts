@@ -9,7 +9,6 @@ import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState,
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
 import { type Movers, outsideMover } from "./checkin-end-state.ts";
 import { localTime } from "./checkin-settings.ts";
-import type { FleetStop } from "./fleet-budget.ts";
 
 /** The check-in's board findings: the plan's shape, goals to fold, held and stalled steps, scope misses and owner gates, each with the line the duty job reads (goals: src/checkin-goals.ts). */
 
@@ -152,21 +151,6 @@ export const waitMetLine = ({ view, over, run }: WaitMet): string =>
   `${view.item.id} ${quote(view.item.text)} waits for ${quote(view.item.waitFor ?? "")}, and ${over.join(" and ")}: the wait is over, act on it now ` +
   (run ? "(a cancelled run never turns green: rerun it, or push fresh and put the new run in waitFor, or wait on the hold that cancelled it)"
     : "(start it, or close it if the wait made it moot)");
-/**
- * An open step that waits for the owner to lift the fleet stop, once the stop is off (`readFleetStop`): every clause of its waitFor names the
- * stop, so nothing else is left to wait on. slack green guy 10-16: p150 and p151 waited for "The owner lifts the stop on background work", the
- * stop went off at 19:13:56Z on 10-15, and the 04:55 KST check-in still counted p150 stuck on an event for the second run in a row.
- */
-const STOP_WAIT = /\b(?:lift(?:s|ed|ing)?|ends?|ended|clears?|cleared|turns?\s+off|turned\s+off)\s+(?:the\s+|his\s+|its\s+)?(?:fleet[\s-]+|owner['\u2019]?s\s+)?stop\b|\bstop\s+(?:switch\s+)?(?:lifts?|is\s+lifted|goes\s+off|is\s+off|ends?)\b|\bfleet[\s-]+stop\b/i;
-export function stopWaits(views: readonly StepView[], stop: FleetStop | undefined): WaitMet[] {
-  if (!stop || stop.on) return [];
-  const lifted = stop.liftedAt !== undefined ? `the fleet stop lifted at ${localTime(stop.liftedAt)}` : "the fleet stop is off";
-  return views.flatMap(view => {
-    const clauses = (view.item.waitFor ?? "").split(/[,;]|\bthen\b|\band\b/).map(clause => clause.trim()).filter(Boolean);
-    return clauses.length && clauses.every(clause => STOP_WAIT.test(clause)) ? [{ view, over: [lifted] }] : [];
-  });
-}
-
 /**
  * How long a step may still name a cancelled run before the check-in flags it: the chat repoints the wait when the job reports the cancel (api
  * portal vp 10-13: Fable's land-34 loop cancelled p9's run 38408618643 at 13:55:56Z, the job reported it at 13:57Z, and the chat set p9 to wait
@@ -545,7 +529,7 @@ export const STALL_MS = 2 * 60 * 60_000;
  * release `train` that moves (`trainMoves`, no thread named) is not stalled, as it is not blocked_on_others (Crawler VP 10-13, p47 "land 34 on
  * staging ..." read "act on it in this run" at 19:38, 20:12 and 20:59 while land 33 and promote 9 ran). The check-in precheck also drops each
  * step `blockedOnOthers` flags: that line names the blocker and the action, and one step gets one finding. A step that someone moves from
- * outside the chat's jobs (`outsideMover`: a board.wake, a turn in pi-pool's queue, a start in the fleet budget) is not stalled either.
+ * outside the chat's jobs (`outsideMover`: a board.wake or a turn in pi-pool's queue) is not stalled either.
  */
 export interface StalledStep { view: StepView; why: string }
 /**

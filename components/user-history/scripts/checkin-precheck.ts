@@ -7,7 +7,7 @@
  * `--roster` reads only the daemon's live sessions (about 1 MB, under a second); the default full list is what the service reads, and can take
  * a minute under load. The chat's messages are the tail of its session file. Prints the step classes, the flagged items and the findings markdown.
  */
-import { copyFile, mkdtemp, readFile } from "node:fs/promises";
+import { copyFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient, defaultDaemonSocketPath, getAgentDir } from "prime-agent";
@@ -15,7 +15,6 @@ import { loadRecord } from "../src/chat-brief.ts";
 import { BoardStore } from "../src/chat-board-store.ts";
 import { childrenByParent, isListed, isTopLevel, parseSummaries, projectRow, rosterChildren, subtreeOf } from "../src/chat-catalog.ts";
 import { checkInRecord } from "../src/chat-checkin.ts";
-import { readHeldSpawns } from "../src/chat-pool.ts";
 import { historyMessages } from "../src/chat-threads.ts";
 import { CorrectionLedger } from "../src/chat-corrections.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
@@ -27,10 +26,7 @@ import { IdIndex } from "../src/id-index.ts";
 import { readBranchTail } from "../src/session-tail.ts";
 import { pendingWakes } from "../src/wakes.ts";
 import { prStates } from "../src/pr-states.ts";
-import { heldStartsOf, readHeldStarts } from "../src/held-starts.ts";
 import { queueReader } from "../src/chat-turn-queue.ts";
-import { FLEET_STATE_FILE, readFleetStop, startsOf } from "../src/fleet-budget.ts";
-import { FLEET_STATE_FRESH_MS, parseFleetState } from "../src/fleet-guard.ts";
 
 const chat = process.argv[2];
 if (!chat || chat.startsWith("-")) { process.stderr.write("usage: node --import tsx scripts/checkin-precheck.ts <chat id> [--roster]\n"); process.exit(2); }
@@ -66,18 +62,16 @@ const threads = {
 const boards = new BoardStore(dataDir);
 const duties = new DutyStore(dataDir);
 const corrections = new CorrectionLedger(dataDir);
-const fleet = parseFleetState(await readFile(join(dataDir, FLEET_STATE_FILE), "utf8").catch(() => null));
 let printed = false;
 const source: CheckInSource = {
   board: id => boards.read(id), rows: async () => rows, registry: jobRegistry(join(dataDir, "chat-jobs.json")),
   memory: checkInRecord(await copy("check-ins.json")), replyChecks: replyCheckRecord(await copy("reply-checks.json")),
   settings: checkInSettings(await copy("check-in-settings.json")), tickMs: 0, noReportGraceMs: 60 * 60_000,
   corrections: () => corrections.read(), duties: id => duties.list(id), wakes: now => pendingWakes(join(dataDir, "wakes"), now),
-  dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []), spawns: () => readHeldSpawns(),
-  dutyRuns: id => duties.runs(id), prs: prStates(), held: now => readHeldTurns(dataDir, now), fleetStop: () => readFleetStop(dataDir),
-  // pi-pool's queue and the starts the service's fleet budget holds (its fleet-state.json), as the service's check-in reads them.
-  queue: queueReader(), starting: async id => [...fleet && Date.now() - fleet.at <= FLEET_STATE_FRESH_MS ? startsOf(fleet.waiting ?? [], id) : [],
-    ...await heldStartsOf(await readHeldStarts(dataDir), jobRegistry(join(dataDir, "chat-jobs.json")), [id, rows.find(row => row.id === id)?.name.trim() ?? ""].filter(Boolean))],
+  dutyJobs: async id => (await duties.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
+  dutyRuns: id => duties.runs(id), prs: prStates(), held: now => readHeldTurns(dataDir, now),
+  // pi-pool's queue, as the service's check-in reads it.
+  queue: queueReader(),
   duty: { async lastCheckIn() { return undefined; }, async checkIn(_id, run) {
     printed = true;
     process.stdout.write(`classes ${JSON.stringify(run.classes)}\n`);

@@ -18,8 +18,6 @@ import { CORRECTION_CHECKPOINT, deliverCorrections } from "../src/correction-del
 import { lastOwnerText } from "../src/shared/reply-lint.ts";
 import { withMessageCheck } from "../src/message-limit-check.ts";
 import { loadWaitGuard } from "../src/load-wait.ts";
-import { FLEET_STOP_FILE } from "../src/fleet-budget.ts";
-import { fleetStopGuard } from "../src/fleet-guard.ts";
 import { recordPrompt } from "../src/prompt-capture.ts";
 import { REQUIREMENT_STATUSES, type ChatAgent, type ThreadMessage } from "../src/shared/types.ts";
 
@@ -265,14 +263,6 @@ export default function historyExtension(pi: ExtensionAPI): void {
       if (marked || job || underChat) {
         const loadWait = loadWaitGuard(event.toolName, event.input);
         if (loadWait) return loadWait;
-        // A root job an agent starts itself while the fleet budget is closed waits in the kernel and starts later (src/message-limit-check.py).
-        if (event.toolName === "ipython") {
-          if (dutyJob) {
-            const stop = await readFile(join(dataDir(), FLEET_STOP_FILE), "utf8").then(() => "the fleet stop switch is on", () => null);
-            const stopped = fleetStopGuard(event.toolName, event.input, stop, dutyJob);
-            if (stopped) return stopped;
-          }
-        }
       }
       const rootChat = createdRootChat({ marked, self: ctx.sessionManager.getSessionName()?.trim() || ctx.sessionManager.getSessionId(), job, dutyJob });
       if (rootChat && event.toolName === "ipython" && typeof event.input.code === "string") {
