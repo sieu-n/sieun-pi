@@ -26,6 +26,13 @@ export const TASKS: Record<string, { message: string; counts: RegExp; section: R
     section: /\b(admin|anything|anything-be|api-portal|blog|crawler-v3|dm-extension|infra|llm-wiki|research-agent-be|research-app|search|vent|virev-demo)\b/i,
     drop: /\b(the|top|all) 10\b|\b10 files\b|\b7 days\b|\b\d{4}-\d{2}-\d{2}\b/gi,
   },
+  "sieun-pi main commits": {
+    message: "how many commits landed on sieun-pi main in the last 3 days, and which component got the most of them? then find the 10 biggest " +
+      "commits and what each one changed, and keep a report with that list updated. i want all 10 explained by tonight",
+    counts: /\b\d[\d,]*\s+(commits?|changes?|files?|lines?)\b/gi,
+    section: /\b(user-history|pi-pool|global-rules|skills|scripts|docs|tests|deploy|config)\b/i,
+    drop: /\b(the|top|all) 10\b|\b10 (biggest )?commits\b|\b3 days\b|\b\d{4}-\d{2}-\d{2}\b/gi,
+  },
   "dev branch commits": {
     message: "how many commits landed on auto-sns-agent's sieun/dev in the last 7 days, and which app got the most of them? then find the 10 " +
       "biggest commits and what each one changed, and keep a report with that list updated. i want all 10 explained by tonight",
@@ -54,7 +61,14 @@ const REMOVED: readonly [string, RegExp][] = [
   ["[duty] send-back", /^\[duty\] (Your .+? run is not done:|.+? still misses)/],
 ];
 /** Refusals the cuts removed, read from tool results other than ipython and bash, so an agent reading the code is not counted. */
-const REFUSALS: readonly string[] = ["is a Build step and cannot move to", "c66: the owner keeps duties daily"];
+const REFUSALS: readonly string[] = ["is a Build step and cannot move to", "c66: the owner keeps duties daily", "it needs the owner's go. Add one For you todo",
+  "This todo holds the owner's answer on a step that needs the owner's go", "This todo holds a place for something not ready"];
+/**
+ * Refusals the cuts removed that reach an ipython or bash result: a guard's block opens the result, and a CLI's refusal (pi-pool set, duties
+ * add.ts) shows anywhere in it. Their source lines are gone at HEAD, so code an agent reads cannot carry them.
+ */
+const GUARD_REFUSALS: readonly string[] = ["global-rules grep guard:", "global-rules merge guard:", "repo guard (guard-error)"];
+const CLI_REFUSALS: readonly string[] = ["refused: an agent may lower", "refused: an agent may not switch", "counts the size of text ("];
 /** A duty fix job the duty fix opener used to start: a root named "fix <duty> <chat> HH:MM". */
 const FIX_JOB = /^fix .+ \d{1,2}:\d{2}$/;
 const SKIP = new Set(["harness_digest", "refinement_outcome", "ipython_state", "ipython_state_restored"]);
@@ -78,18 +92,21 @@ function customs(file: string): Custom[] {
   });
 }
 
-/** Tool results (not ipython or bash) in a session file at or after `since` that carry a removed refusal. */
+/** Tool results in a session file at or after `since` that carry a removed refusal. */
 function refusals(file: string, since: number): { at: number; tool: string; text: string }[] {
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8").split("\n").flatMap(line => {
-    if (!line.includes('"toolResult"') || !REFUSALS.some(words => line.includes(words))) return [];
+    if (!line.includes('"toolResult"') || ![...REFUSALS, ...GUARD_REFUSALS, ...CLI_REFUSALS].some(words => line.includes(words))) return [];
     try {
       const entry = JSON.parse(line) as { timestamp?: string; message?: { role?: string; toolName?: string; content?: unknown } };
       const at = Date.parse(entry.timestamp ?? "") || 0;
       const tool = entry.message?.toolName ?? "";
-      if (entry.message?.role !== "toolResult" || at < since || tool === "ipython" || tool === "bash") return [];
+      if (entry.message?.role !== "toolResult" || at < since) return [];
       const text = JSON.stringify(entry.message.content ?? "");
-      const words = REFUSALS.find(candidate => text.includes(candidate));
+      const first = Array.isArray(entry.message.content) ? String((entry.message.content[0] as { text?: unknown } | undefined)?.text ?? "") : "";
+      const shell = tool === "ipython" || tool === "bash";
+      const words = shell ? GUARD_REFUSALS.find(candidate => first.startsWith(candidate)) ?? CLI_REFUSALS.find(candidate => text.includes(candidate))
+        : REFUSALS.find(candidate => text.includes(candidate));
       return words ? [{ at, tool, text: text.slice(Math.max(0, text.indexOf(words) - 120), text.indexOf(words) + 120) }] : [];
     } catch { return []; }
   });
