@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-// The grep rule is the trigger here; these tests cover how commands are found in bash and ipython calls.
+// The send rule is the trigger here; these tests cover how commands are found in bash and ipython calls.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-guard-")));
 const home = join(root, "home");
 mkdirSync(join(home, ".prime/agent"), { recursive: true });
@@ -20,7 +21,8 @@ test.after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const BAD = "grep -r foo ~/.prime";
+const BAD = "curl -sS -X POST https://acme.zendesk.com/api/v2/tickets/1.json -d x";
+const REPO = fileURLToPath(new URL("..", import.meta.url));
 const event = (toolName, text) => ({ type: "tool_call", toolCallId: "t", toolName, input: toolName === "bash" ? { command: text } : { code: text } });
 const call = (toolName, text, ctx = { cwd: root }) => guard.onToolCall(event(toolName, text), ctx);
 
@@ -32,7 +34,7 @@ test("Python invocation forms are guarded", async () => {
   for (const code of [
     `%%bash\n${BAD}`,
     `!${BAD}`,
-    `subprocess.run(["grep", "-r", "foo", "${home}/.prime"])`,
+    `subprocess.run(["curl", "-sS", "-X", "POST", "https://acme.zendesk.com/api/v2/tickets/1.json", "-d", "x"])`,
     `subprocess.run("${BAD}", shell=True)`,
     `os.system("${BAD}")`,
     `await bash(command="${BAD}")`,
@@ -61,11 +63,12 @@ test("other tools and non-string input pass through", async () => {
 });
 
 test("missing context cwd uses the process cwd", async () => {
-  assert.equal((await call("bash", "grep -r foo .", {}))?.block, undefined);
   const cwd = process.cwd();
-  process.chdir(home);
+  process.chdir(root);
   try {
-    assert.equal((await call("bash", "grep -r foo .prime", {}))?.block, true);
+    assert.equal((await call("bash", "git reset --hard", {}))?.block, undefined);
+    process.chdir(REPO);
+    assert.equal((await call("bash", "git reset --hard", {}))?.block, true);
   } finally {
     process.chdir(cwd);
   }

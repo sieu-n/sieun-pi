@@ -23,7 +23,7 @@ test("Prime's own loader discovers the global link, reloads edited modules, and 
   writeFileSync(logPath, "");
   const env = {
     HOME: home, PRIME_AGENT_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: agentDir,
-    PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", GLOBAL_RULES_LOG: logPath,
+    PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", GLOBAL_RULES_LOG: logPath, GLOBAL_RULES_AUTO_SNS_AGENT: join(temp, "no-auto-sns-agent"),
   };
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
@@ -53,24 +53,25 @@ test("Prime's own loader discovers the global link, reloads edited modules, and 
     return extension;
   }
   const ctx = { cwd: project, hasUI: false };
-  const blocked = { type: "tool_call", toolCallId: "native", toolName: "bash", input: { command: "grep -r foo ~/.prime" } };
+  const send = "curl -sS -X POST https://acme.zendesk.com/api/v2/tickets/1.json -d x";
+  const blocked = { type: "tool_call", toolCallId: "native", toolName: "bash", input: { command: send } };
 
   let extension = await load();
   assert.deepEqual([...extension.handlers.keys()].sort(), ["tool_call"]);
   const toolCall = () => extension.handlers.get("tool_call")[0](blocked, ctx);
-  assert.match((await toolCall()).reason, /^global-rules grep guard/);
-  const ipython = { ...blocked, toolName: "ipython", input: { code: 'bash("grep -r foo ~/.prime")' } };
+  assert.match((await toolCall()).reason, /^global-rules send guard/);
+  const ipython = { ...blocked, toolName: "ipython", input: { code: `bash("${send}")` } };
   assert.equal((await extension.handlers.get("tool_call")[0](ipython, ctx))?.block, true);
   assert.equal(await extension.handlers.get("tool_call")[0]({ ...blocked, input: { command: "git status" } }, ctx), undefined);
   assert.deepEqual([...extension.tools.keys()], [], "global-rules adds no tool and no prompt text");
 
-  const grepGuard = join(component, "grep-guard.ts");
-  const original = readFileSync(grepGuard, "utf8");
-  writeFileSync(grepGuard, original.replace("global-rules grep guard:", "edited grep guard:"));
+  const sendGuard = join(component, "send-guard.ts");
+  const original = readFileSync(sendGuard, "utf8");
+  writeFileSync(sendGuard, original.replace("global-rules send guard:", "edited send guard:"));
   extension = await load();
-  assert.match((await toolCall()).reason, /^edited grep guard/, "a reload re-reads nested modules");
+  assert.match((await toolCall()).reason, /^edited send guard/, "a reload re-reads nested modules");
 
-  writeFileSync(grepGuard, "invalid javascript !!!");
+  writeFileSync(sendGuard, "invalid javascript !!!");
   extension = await load();
   assert.equal(extension.handlers.get("tool_call").length, 2, "only kernel-guard.ts and rlm-delete.ts stay registered");
   assert.equal(await toolCall(), undefined);
@@ -79,7 +80,7 @@ test("Prime's own loader discovers the global link, reloads edited modules, and 
   assert.match(notes[0], /could not load guard\.ts/);
   assert.match(readFileSync(logPath, "utf8"), /\[load\] guard\.ts failed/);
 
-  writeFileSync(grepGuard, original);
+  writeFileSync(sendGuard, original);
   extension = await load();
-  assert.match((await toolCall()).reason, /^global-rules grep guard/);
+  assert.match((await toolCall()).reason, /^global-rules send guard/);
 });

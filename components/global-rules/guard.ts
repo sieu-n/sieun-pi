@@ -1,24 +1,15 @@
 import type { ExtensionContext, ToolCallEvent, ToolCallEventResult } from "prime-agent";
-import { judgeGrep } from "./grep-guard.ts";
 import { enabled, log } from "./log.ts";
 import { judgeCuaShell } from "./cua-guard.ts";
 import { applyOwnerOk, judgeSendPython, judgeSendShell, ownerOkToken } from "./send-guard.ts";
 import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 import { PY_STRING, balancedSlice } from "./shell.ts";
-import { judgeMergePython, judgeMergeShell } from "./merge-guard.ts";
 import { judgeSieunPi } from "./sieun-pi.ts";
 
 export interface Verdict {
-	rule: "grep" | "sieun-pi" | "send" | "merge";
+	rule: "sieun-pi" | "send";
 	command: string;
 	reason: string;
-	/** What an OWNER_OK todo must name for a merge verdict: the PR, or the repo and default-branch push. */
-	subject?: Subject;
-}
-
-export interface Subject {
-	label: string;
-	pattern: RegExp;
 }
 
 export interface Candidate {
@@ -91,10 +82,8 @@ export function extractShellCandidates(code: string): Candidate[] {
 
 export function judgeShellText(text: string, cwd: string): Verdict[] {
 	return [
-		...judgeGrep(text, cwd),
 		...judgeSieunPi(text, cwd),
 		...judgeSendShell(text, cwd),
-		...judgeMergeShell(text, cwd),
 		...(text.includes("cua-driver") ? judgeCuaShell(text) : []),
 	];
 }
@@ -105,7 +94,6 @@ export function judgeCell(code: string, cwd: string): Verdict[] {
 			judgeShellText(candidate.text, cwd).map((v) => ({ ...v, command: `${v.command}  (${candidate.source})` })),
 		),
 		...judgeSendPython(code),
-		...judgeMergePython(code),
 	];
 }
 

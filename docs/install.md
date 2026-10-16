@@ -243,7 +243,7 @@ Then remove the `anthropic` and `openai-codex` entries whose `apiKey` names `pi-
 
 - Each skill root and the auxiliary `skills/skills` directory go under `~/.prime/agent/skills`.
 - `config/AGENTS.md` and `config/pstack-models.json` go under `~/.prime/agent`.
-- One global entry links `~/.prime/agent/extensions/global-rules.ts` to `components/global-rules/index.ts`. It refuses a recursive grep of `~/.prime/agent` and history rewrites in the sieun-pi checkout.
+- One global entry links `~/.prime/agent/extensions/global-rules.ts` to `components/global-rules/index.ts`. It refuses history rewrites in the sieun-pi checkout and outside sends without the owner's ok.
 - One global link points `~/.prime/agent/extensions/user-history` at the whole `components/user-history` package. Its `pi.extensions` declaration loads `./extension/index.ts`.
 - The pool is not in the manifest. `components/pi-pool/install.py` owns its links. `~/.config/pi-pool` stays a real directory. See [the pool README](../components/pi-pool/README.md#install-update-and-roll-back).
 
@@ -293,7 +293,7 @@ node "$(sieun-pi source)/scripts/prove_runtime.mjs" --home "$PROFILE/home" --cwd
 ```
 
 The proof uses the installed package's locked Prime SDK. It checks every custom skill, the pool, global-rules and chat extension entry points,
-all three command registrations and the history flag. It reloads twice. It exercises the global-rules grep guard from two working directories.
+all three command registrations and the history flag. It reloads twice. It exercises the global-rules send guard from two working directories.
 It runs no model, account or MCP calls and opens no browser.
 
 From a development checkout, `npm run test:package` packs and installs with production dependencies into two isolated prefixes.

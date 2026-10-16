@@ -131,7 +131,6 @@ test("the rule follows the target checkout, not the session cwd", async () => {
   assert.equal((await verdict("git rebase -i HEAD~3", "bash", checkout))?.block, true);
 });
 
-// A push to main is the merge guard's rule (c49), so these force pushes name a feature branch.
 test("other repos get no verdict from this rule", async () => {
   for (const command of ["git rebase -i origin/main", "git reset --hard", "git push --force origin feature", "git stash"]) {
     assert.equal(await verdict(command, "bash", other), undefined, command);

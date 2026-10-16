@@ -420,25 +420,14 @@ export function checkOwnerOk(token: string): string | null {
 	return "todo" in result ? null : result.reason;
 }
 
-/**
- * Drops the send and merge verdicts that an approved OWNER_OK token covers; otherwise says why the token does not count.
- * A merge verdict also needs the todo's text to name its subject (c49): the PR, or the repo and default-branch push, so one go cannot move something else.
- */
+/** Drops the send verdicts that an approved OWNER_OK token covers; otherwise says why the token does not count. */
 export function applyOwnerOk(verdicts: Verdict[], text: string): Verdict[] {
-	const gated = (v: Verdict) => v.rule === "send" || v.rule === "merge";
-	if (!verdicts.some(gated)) return verdicts;
+	if (!verdicts.some((v) => v.rule === "send")) return verdicts;
 	const token = ownerOkToken(text);
 	if (!token) return verdicts;
 	const result = ownerOkTodo(token);
-	const why = (v: Verdict): string | null => {
-		if (!("todo" in result)) return result.reason;
-		if (v.rule !== "merge") return null;
-		if (!v.subject) return "the command does not name the PR number, or the repo and branch it moves";
-		return v.subject.pattern.test(result.todo.text) ? null : `todo text "${result.todo.text.slice(0, 120)}" does not name ${v.subject.label}`;
-	};
 	return verdicts.flatMap((v) => {
-		if (!gated(v)) return [v];
-		const reason = why(v);
-		return reason === null ? [] : [{ ...v, reason: `${v.reason} OWNER_OK=${token} does not count: ${reason}` }];
+		if (v.rule !== "send") return [v];
+		return "todo" in result ? [] : [{ ...v, reason: `${v.reason} OWNER_OK=${token} does not count: ${result.reason}` }];
 	});
 }

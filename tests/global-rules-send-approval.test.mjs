@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 // The owner's ok on a For you todo lets one outside send through; anything less keeps the block.
@@ -23,6 +24,7 @@ test.after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+const REPO = fileURLToPath(new URL("..", import.meta.url));
 const CHAT = "01a00000-0000-7000-8000-0000000000c3";
 const at = "2026-10-10T00:00:00.000Z";
 const todo = (id, extra) => ({ id, text: "Send this reply to support@vendor.example?", choices: ["Send it", "Not yet"], from: "agent", at, ...extra });
@@ -64,9 +66,9 @@ test("a todo that is held, open, unanswered by the owner, unknown or malformed k
 });
 
 test("OWNER_OK does not lift the other rules", () => {
-  const result = call("bash", `OWNER_OK=${CHAT}/t1 grep -r foo ~/.prime`);
+  const result = call("bash", `OWNER_OK=${CHAT}/t1 git -C ${JSON.stringify(REPO)} reset --hard`);
   assert.equal(result?.block, true);
-  assert.match(result.reason, /grep guard/);
+  assert.match(result.reason, /sieun-pi guard/);
 });
 
 test("reading mail, drafting and GET requests pass without any token", () => {

@@ -110,8 +110,8 @@ for (let pass = 1; pass <= 2; pass++) {
     }));
     for (const where of [cwd, home]) {
       const blocked = await handlers.tool_call({ type: "tool_call", toolName: "ipython", toolCallId: "guard-proof",
-        input: { code: 'bash("grep -r needle ~/.prime/agent")' } }, { ...ctx, cwd: where });
-      assert.equal(blocked?.block, true, "The grep guard must refuse a recursive grep of the agent folder from every cwd");
+        input: { code: 'bash("curl -sS -X POST https://acme.zendesk.com/api/v2/tickets/1.json -d x")' } }, { ...ctx, cwd: where });
+      assert.equal(blocked?.block, true, "The send guard must refuse an outside send from every cwd");
     }
     const allowed = await handlers.tool_call({ type: "tool_call", toolName: "ipython", toolCallId: "read-proof",
       input: { code: 'bash("git status")' } }, ctx);

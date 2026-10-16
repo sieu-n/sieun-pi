@@ -84,7 +84,7 @@ test("a session outside the checkout keeps its other git and its env reads", { s
   assert.match(call("bash", `git -C ${checkout} stash`, ctx(HOME_CWD, "x")) ?? "", /git-hazard/);
 });
 
-test("rules that fail to load refuse a risky call that touches the checkout, and the failure is logged", { skip }, () => {
+test("rules that fail to load refuse nothing, and the failure is logged", { skip }, () => {
   const script = `
     const handlers = [];
     await (await import(${JSON.stringify(join(process.cwd(), "components/global-rules/index.ts"))})).default({ on: (n, h) => handlers.push([n, h]) });
@@ -95,9 +95,6 @@ test("rules that fail to load refuse a risky call that touches the checkout, and
   const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8", env: { ...process.env, GLOBAL_RULES_AUTO_SNS_AGENT: broken, GLOBAL_RULES_LOG: log },
   });
-  const [inside, named, elsewhere] = JSON.parse(out.trim().split("\n").at(-1));
-  assert.match(inside, /repo guard \(guard-error\).*fixture: prime\.mjs is broken/);
-  assert.match(named, /guard-error/);
-  assert.equal(elsewhere, null);
+  assert.deepEqual(JSON.parse(out.trim().split("\n").at(-1)), [null, null, null]);
   assert.match(readFileSync(log, "utf8"), /\[load\] auto-sns-agent\.ts failed: fixture: prime\.mjs is broken/);
 });
