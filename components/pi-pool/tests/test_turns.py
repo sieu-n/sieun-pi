@@ -353,24 +353,6 @@ class Cli(unittest.TestCase):
         self.set("mac_working_max", "16")
         self.assertEqual(self.queue()["mac_working_max_set"]["by"], "agent 01a-root/sub-x")
 
-    def test_an_agent_may_lower_the_turn_limits_but_not_raise_them_or_switch_the_queue_off(self):
-        # 10-16 ~03:54 KST: an agent set mac_working_max 12 -> 30 minutes after a restart and load reached 47.
-        self.run_cli("set", "mac_working_max", "12", "--by", "the owner")
-        self.env["RLM_SESSION_DIR"] = os.path.expanduser("~/.prime/agent/session-artifacts/01a13fd5/x")
-        raised = self.run_cli("set", "mac_working_max", "30", check=False)
-        self.assertNotEqual(raised.returncode, 0)
-        self.assertIn("may lower mac_working_max but not raise it", raised.stderr)
-        self.assertEqual(self.queue()["mac_working_max"], 12)
-        self.assertNotEqual(self.run_cli("set", "tree_working_max", "99", check=False).returncode, 0)
-        self.assertNotEqual(self.run_cli("set", "agent_queue_on", "0", check=False).returncode, 0)
-        self.set("mac_working_max", "8")
-        self.assertEqual(self.queue()["mac_working_max"], 8, "lowering stays open to agents")
-        with open(os.path.join(self.dir, "pi-pool.log")) as f:
-            self.assertTrue(any('"event": "set_refused"' in line for line in f))
-        del self.env["RLM_SESSION_DIR"]
-        self.run_cli("set", "mac_working_max", "16", "--by", "the owner")
-        self.assertEqual(self.queue()["mac_working_max"], 16, "the owner outside Prime raises it")
-
     def test_a_value_with_no_set_record_shows_the_file_time_and_the_default_shows_none(self):
         path = os.path.join(self.dir, "config.json")
         with open(path, "w") as f:

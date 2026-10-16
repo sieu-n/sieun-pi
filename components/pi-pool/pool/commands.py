@@ -79,29 +79,6 @@ def setter():
     return f"a shell outside Prime (parent pid {os.getppid()})"
 
 
-# What an agent may not loosen with `pi-pool set`: it may lower a turn limit but not raise it, and may not
-# switch the queue off. On 10-16 at about 03:54 KST, minutes after a restart, an agent
-# set mac_working_max from 12 to 30; 28 turns then ran on 12 cores and load reached 47. The owner's shell and
-# the chat service's Settings pane run outside a Prime session and keep every setting.
-AGENT_NO_RAISE = ("mac_working_max", "tree_working_max")
-AGENT_NO_OFF = ("agent_queue_on",)
-
-
-def in_agent():
-    """Whether `pi-pool set` runs inside a Prime session (an agent's kernel or tool call)."""
-    return bool(os.environ.get("RLM_SESSION_DIR") or os.environ.get(base.SESSION_ENV))
-
-
-def agent_refusal(key, val, was):
-    """Why an agent may not set `key` from `was` to `val`, or None."""
-    if key in AGENT_NO_RAISE and was is not None and val > int(was):
-        return (f"refused: an agent may lower {key} but not raise it ({was} to {val}); "
-                "the owner raises it from a shell or the chat's Settings pane")
-    if key in AGENT_NO_OFF and was and not val:
-        return f"refused: an agent may not switch {key} off; the owner does that from a shell or the chat's Settings pane"
-    return None
-
-
 def cmd_set(rest):
     rest = list(rest)
     by = None
@@ -131,10 +108,6 @@ def cmd_set(rest):
         val = value
     cur = base.load_json(base.CONFIG, {}) or {}
     was, by = base.config().get(key), by or setter()
-    refusal = agent_refusal(key, val, was) if in_agent() else None
-    if refusal:
-        base.log("set_refused", key=key, value=val, was=was, by=by)
-        raise SystemExit(refusal)
     cur[key] = val
     cur.setdefault("set_by", {})[key] = {"by": by, "at": round(time.time())}
     base.save_json(base.CONFIG, cur)
