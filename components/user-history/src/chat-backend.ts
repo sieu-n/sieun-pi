@@ -191,7 +191,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()])),
       held: now => readHeldTurns(dataDir, now),
-      unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, await socketEpoch(socketPath)),
+      unstarted: now => unstartedJobs(join(dataDir, BRIEFS_DIR), now),
       settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
       cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => duties.store.list(id),
