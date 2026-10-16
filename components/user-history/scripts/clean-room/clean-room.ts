@@ -282,12 +282,38 @@ async function evaluate(flags: Record<string, string>): Promise<void> {
   log(run, `verdict ${verdict}: ${out}`);
 }
 
+/**
+ * The sessions the test chat owns, which teardown archives: its fixtures, duty jobs and subagents, and a root only when chat-jobs.json files it
+ * under the chat. A thread the chat only messaged or named as a step owner is not its own: run-2 of correction-refine on 10-16 listed
+ * the realtime layer thread among its agents, and teardown archived it.
+ */
+async function ownSessions(run: string, state: RunState): Promise<string[]> {
+  const registry = jobRegistry(join(DATA, "chat-jobs.json"));
+  const agents = join(run, "agents");
+  const listed = new Map<string, { key: string; name: string }>();
+  if (existsSync(agents)) for (const file of readdirSync(agents)) for (const agent of readJson<{ sessionId?: string; key?: string; name?: string }[]>(join(agents, file))) {
+    if (agent.sessionId) listed.set(agent.sessionId, { key: agent.key ?? "", name: agent.name ?? "" });
+  }
+  const fixtures = new Set(Object.values(state.fixtures));
+  const runs = join(run, "runs.jsonl");
+  const duty = new Set(existsSync(runs) ? readFileSync(runs, "utf8").split("\n").filter(line => line.trim()).flatMap(line => { const id = (JSON.parse(line) as { job?: { id?: string } }).job?.id; return id ? [id] : []; }) : []);
+  const own: string[] = [];
+  for (const id of knownSessions(run, state)) {
+    if (id === state.chat.id) continue;
+    const agent = listed.get(id);
+    const filed = await registry.chatOf(id) ?? (agent?.name ? await registry.chatOf(agent.name) : undefined);
+    if (fixtures.has(id) || duty.has(id) || agent?.key.startsWith("child:") || filed === state.chat.name || filed === state.chat.id) own.push(id);
+    else log(run, `kept ${id}${agent ? ` (${agent.name})` : ""}: not a session of the test chat`);
+  }
+  return own;
+}
+
 async function teardown(flags: Record<string, string>): Promise<void> {
   const run = need(flags, "run");
   const state = readJson<RunState>(join(run, "run.json"));
   const srv = await server();
   await collectOnce(run, state, srv, { at: 0 }).catch(() => {});
-  const jobs = [...knownSessions(run, state)].filter(id => id !== state.chat.id);
+  const jobs = await ownSessions(run, state);
   for (const id of jobs) {
     await call(srv, "POST", `api/threads/${id}/archive`, {}).then(() => log(run, `archived job ${id}`), error => log(run, `archive ${id}: ${error instanceof Error ? error.message : String(error)}`));
   }

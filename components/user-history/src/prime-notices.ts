@@ -1,7 +1,7 @@
 /**
  * Prime's own notices, shortened for the model. `[python-state]` lists every name left in the kernel after a compaction (4,000 characters in a
  * busy chat), `[python-state-restored]` every name a revive brought back, and a `[<source>-refinement]` notice carries every edit's text. The model
- * needs the count and the refinement's title and id; `dir()` and the harness hold the rest. Each replacement depends only on the message itself,
+ * needs the count and the refinement's title, id and the entries it saved (kind:id); `dir()` and the harness hold the rest. Each replacement depends only on the message itself,
  * so every model call sends the same bytes and the cached prompt prefix stays valid.
  */
 
@@ -20,10 +20,15 @@ function shortState(content: string): string | null {
 function shortRefinement(content: string, details: unknown): string | null {
   const header = /^\[[a-z]+-refinement\]/.exec(content)?.[0];
   if (!header) return null;
-  const info = typeof details === "object" && details !== null ? details as { refinementId?: unknown; summary?: unknown } : {};
+  const info = typeof details === "object" && details !== null ? details as { refinementId?: unknown; summary?: unknown; edits?: unknown } : {};
   const title = typeof info.summary === "string" && info.summary ? info.summary : content.slice(header.length).trim().split("\n")[0] ?? "";
   const id = typeof info.refinementId === "string" ? ` (${info.refinementId})` : "";
-  return `${header} Refinement saved: ${title}${id}`;
+  // The entries it saved, so the next turn knows which note or memory to follow or read in full (clean room 10-16: the title alone named none).
+  const saved = (Array.isArray(info.edits) ? info.edits : []).flatMap(edit => {
+    const { action, kind, id } = (typeof edit === "object" && edit !== null ? edit : {}) as { action?: unknown; kind?: unknown; id?: unknown };
+    return typeof kind === "string" && typeof id === "string" ? [`${action === "delete" ? "deleted " : ""}${kind}:${id}`] : [];
+  });
+  return `${header} Refinement saved: ${title}${id}${saved.length ? `; entries: ${saved.join(", ")}` : ""}`;
 }
 
 /** The short text for one Prime notice, or null when the message is no notice this shortens. */

@@ -18,8 +18,10 @@ test("prime notices: python-state keeps the pruned list and replaces the names w
   assert.equal(shortNotice({ role: "custom", customType: "ipython_state", content: "[python-state]\n\nYou have not defined any names yet." }), null);
 });
 
-test("prime notices: a refinement notice becomes its title and id", () => {
+test("prime notices: a refinement notice becomes its title, id and the entries it saved", () => {
   assert.equal(shortNotice(REFINE), "[auto-refinement] Refinement saved: Add a memory. (refine_1)");
+  assert.equal(shortNotice({ ...REFINE, details: { ...REFINE.details, edits: [{ action: "create", kind: "prompt", id: "no_bold_in_owner_replies" }, { action: "delete", kind: "memory", id: "old" }] } }),
+    "[auto-refinement] Refinement saved: Add a memory. (refine_1); entries: prompt:no_bold_in_owner_replies, deleted memory:old");
   assert.equal(shortNotice({ ...REFINE, details: undefined }), "[auto-refinement] Refinement saved: Add a memory.");
 });
 
