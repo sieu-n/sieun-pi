@@ -123,8 +123,6 @@ export interface DutyView {
  * should kind of default to daily at some random morning time", then "also remember the priority system?".
  */
 export const MORNING_BANDS: Readonly<Record<PoolPriority, readonly [number, number]>> = { high: [360, 459], normal: [460, 559], low: [560, 659] };
-/** An agent's duty runs at most this often: `every N minutes` under a day is refused for agents (c66). The check-in keeps its own cadence. */
-export const AGENT_EVERY_MIN_MINUTES = 24 * 60;
 
 /** A missed daily slot still runs once after the Mac wakes if it is at most this late; later it is recorded as skipped. */
 export const CATCH_UP_MS = 6 * 60 * 60_000;
@@ -161,16 +159,6 @@ export function morningTime(taken: ReadonlySet<string>, priority: PoolPriority, 
   if (free.length) return clock(free[Math.min(free.length - 1, Math.floor(random() * free.length))]!);
   const after = minutes(last + 1, MORNING_BANDS.low[1]).find(minute => !taken.has(clock(minute)));
   return clock(after ?? first + Math.min(last - first, Math.floor(random() * (last - first + 1))));
-}
-
-/**
- * Why an agent may not give a duty this schedule, or null: `every N minutes` under AGENT_EVERY_MIN_MINUTES runs more often than daily. The
- * owner's own page may still set it.
- */
-export function agentScheduleProblem(schedule: DutySchedule): string | null {
-  if (schedule.kind !== "every" || schedule.minutes >= AGENT_EVERY_MIN_MINUTES) return null;
-  return `c66: the owner keeps duties daily ("we're gonna keep these ops stuff a daily duty"), so every ${schedule.minutes} minutes is refused; ` +
-    "leave out schedule for a random morning time, or give { kind: daily, at: HH:MM }.";
 }
 
 /** Whether the duty runs now, and why; or a slot that is too late to run and is recorded as skipped. A paused duty is never due. */

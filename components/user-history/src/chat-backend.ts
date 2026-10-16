@@ -169,7 +169,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   };
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, daemon: gate, admit: turns.admit,
     board: id => boards.read(id),
-    applyBoard: (id, ops) => boards.apply(id, ops, "agent"),
     fixLive: async (id, item) => {
       const now = Date.now();
       const asleep = new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session));
@@ -192,7 +191,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       interrupted: async (isJob, owners) => interruptedRuns.resumeJobs(isJob, async id => { await threads.resume(id); }, owners, cut => writeResumePending(dataDir, cut, Date.now()),
         await cutJobs(dataDir, [...await chats.ids()])),
       held: now => readHeldTurns(dataDir, now),
-      unstarted: now => unstartedJobs(join(dataDir, BRIEFS_DIR), now),
+      unstarted: async now => unstartedJobs(join(dataDir, BRIEFS_DIR), now, await socketEpoch(socketPath)),
       settings, claude: claudeReader(), queue: queued,
       awake: working => awake.update(working), corrections: () => corrections.read(), duty: duties,
       cleanRoom: async id => (await cleanRoomChats.ids()).includes(id) ? new CorrectionLedger(dataDir, CLEAN_ROOM_CORRECTIONS_FILE).read() : null, duties: id => duties.store.list(id),

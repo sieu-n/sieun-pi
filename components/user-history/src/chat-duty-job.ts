@@ -49,8 +49,6 @@ export interface DutyJobHost {
   ended?(last: readonly DutyJobRef[], older?: readonly DutyJobRef[]): Promise<DutyJobRef[]>;
   /** Queues the archive of an ended duty job, so its worker and Python kernel stop; it stays registered until the next run retires it. */
   stop?(job: DutyJobRef): Promise<void>;
-  /** Sends a duty job a message that starts a new turn: the server sends a job back while its run's misses have no fix step with a live job. */
-  steer?(job: DutyJobRef, text: string): Promise<void>;
 }
 
 /**
@@ -188,9 +186,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
     ...(shown.length ? [`## Missed metrics: each one needs a fix step with a live job\n` +
       shown.map(streak => { const metric = counted.find(entry => entry.key === streak.key); return `- ${missLine(duty.id ?? "<dutyId>", streak, metric?.label ?? streak.key, metric?.unit)}`; }).join("\n") +
       "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `<dutyId>/<metricKey>` and `job` set to a job that " +
-      "works on a code change, not a note or a later wait. When your turn ends, the server reads the board: a missed metric with no fix step whose " +
-      "job is live sends you back with its name, so the run cannot end on an unowned miss. When a fix step closes, the server runs this duty again " +
-      "at once to check the number moved."] : []),
+      "works on a code change, not a note or a later wait. When a fix step closes, the server runs this duty again at once to check the number moved."] : []),
     "## How to work",
     [
       `The chat's board is the JSON file ${chat.board}: the plan with its step notes and the For you todos with the owner's answers. Read it, then ` +
@@ -221,62 +217,6 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         `Send it with \`${send}\`.`,
     ].map(line => `- ${line}`).join("\n"),
   ].filter(part => part !== "").join("\n\n") + "\n";
-}
-
-/** A fix job's name: `fix <duty>` with the chat and start time, like `fix ci system VP of CI 20:41`. */
-export const fixJobName = (duty: string, chat: string, at: number): string => dutyJobName(`fix ${duty}`, chat, at);
-
-
-/** What the brief of a fix job the server opens holds: the duty, the chat, the job, and each missed metric with no live fix job. */
-export interface FixJobInput {
-  duty: Pick<DutyCard, "name" | "goal" | "metrics"> & { id: string };
-  chat: Pick<DutyChat, "id" | "name" | "board">;
-  job: string; at: number; misses: readonly MetricStreak[];
-}
-
-const bound = (op: string, value: number, unit = ""): string => `${op === "<=" ? "at most" : "at least"} ${value}${unit}`;
-
-/**
- * The brief of the fix job the server opens for a duty that missed CHANGE_APPROACH_MISSES runs in a row while some missed metric had no fix step
- * with a live job (`Duties.ownFixes`): the job is the root-cause owner of those metrics, and the server links it on their plan steps.
- */
-export function fixJobBrief({ duty, chat, job, at, misses }: FixJobInput): string {
-  const metric = (key: string) => duty.metrics.find(entry => entry.key === key);
-  const lines = misses.map(streak => {
-    const found = metric(streak.key);
-    const unit = found?.unit ?? "";
-    return `- ${streak.key} (${found?.label ?? streak.key}) is ${streak.value}${unit}, target ${bound(streak.op, streak.target, unit)}, missed ${streak.misses} ` +
-      `${streak.misses === 1 ? "run" : "runs"} in a row${streak.misses > 1 ? streak.moved ? ", moving toward the target" : ", not moving toward the target" : ""}` +
-      `${streak.fix ? `. The last fix step ${streak.fix.step}${streak.fix.job ? ` (${streak.fix.job})` : ""} has no live job` : ""}. Its step: duty ${JSON.stringify(dutyLink(duty.id, streak.key))}.`;
-  });
-  return [
-    `# ${job}: the root-cause fix for the ${duty.name} duty of the chat "${chat.name}"`,
-    `You are the fix job "${job}" of the chat "${chat.name}" (session id ${chat.id}), started ${localTime(at)}. The chat server opened you because ` +
-      `the ${duty.name} duty missed ${CHANGE_APPROACH_MISSES} or more runs in a row and these metrics had no fix step with a live job. The server ` +
-      "set you as the job of each metric's plan step on the chat's board (the step whose `duty` field is named below), so you own them now.",
-    `Duty goal: ${duty.goal}`,
-    `## Missed metrics\n${lines.join("\n")}`,
-    "## Your task",
-    [
-      "Find why each number misses: read the duty's precheck output and the code behind the number, and check the real state. A note, a later " +
-        "wait or a lower target is not a fix, and an off-target metric is never fine as it stands (c75).",
-      "Land the code change that moves the number, ship it the way the repo ships, and measure the number again. Close the step only on that " +
-        "evidence, named in its note; the close starts a verify run of the duty.",
-      "While you wait for a CI run or a time, set `board.wake(run=<id>)` or `board.wake(at=<time>)` before your turn ends, so the server reads you " +
-        "as live. A turn that ends with no wake while a metric still misses brings a message back from the server.",
-      `Apply each board change with \`import json, shlex\` and \`${boardApplyCall(chat)}\`, where ops is a list of chat_board ops.`,
-      ...chatJobRules(),
-      `Send the chat one report when the number moved or you are blocked, with the commit, the release and the number before and after. Send it with \`${reportCall(chat)}\`.`,
-    ].map(line => `- ${line}`).join("\n"),
-  ].join("\n\n") + "\n";
-}
-
-/** What the server sends a fix job whose turn ended with no wake while its metrics still miss and no other job works on them (`Duties.ownFixes`). */
-export function fixMessage(duty: string, steps: readonly string[], misses: readonly MetricStreak[]): string {
-  return `[duty] ${duty} still misses ${misses.map(streak => `${streak.key} (${streak.value}, target ${bound(streak.op, streak.target)})`).join(", ")}, ` +
-    `and your step${steps.length === 1 ? "" : "s"} ${steps.join(", ")} ${steps.length === 1 ? "has" : "have"} no live job. Go on with the root cause and the code ` +
-    "fix. While you wait for a CI run or a time, set board.wake before your turn ends. If your turn ends again with no board change, the server " +
-    "opens a new fix job for these steps.";
 }
 
 /** The parts of the thread hub a duty job host uses. */
@@ -402,6 +342,5 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
         ...older.filter(job => idle(job) !== undefined)];
     },
     stop: job => input.archives.add(job),
-    steer: async (job, text) => { await input.threads.prompt(job.id, { message: text, images: [], mode: "steer" }); },
   };
 }

@@ -359,9 +359,8 @@ test("cadence: a standing duty takes every N minutes or a daily time (a moved da
   await assert.rejects(duties.setSchedule("chat1", "d1", { kind: "daily", at: "25:00" }, OWNER_UI), /schedule/);
   assert.equal(await duties.setSchedule("chat1", "d9", { kind: "every", minutes: 45 }, OWNER_UI), false);
   const agent = { by: "agent", setter: "s-agent" } as const;
-  await assert.rejects(duties.setSchedule("chat1", "d1", { kind: "every", minutes: 60 }, agent), /c66: the owner keeps duties daily/, "c66: an agent keeps a duty daily");
-  assert.deepEqual((await store.list("chat1"))[0]!.schedule, { kind: "every", minutes: 45 });
-  assert.equal(await duties.setSchedule("chat1", "d1", { kind: "every", minutes: 10080 }, agent), true, "weekly is fine");
+  assert.equal(await duties.setSchedule("chat1", "d1", { kind: "every", minutes: 60 }, agent), true, "an agent's cadence is taken; c66 is text");
+  assert.deepEqual((await store.list("chat1"))[0]!.schedule, { kind: "every", minutes: 60 });
   assert.equal(await duties.setSchedule("chat1", "checkin", { kind: "every", minutes: 20 }, agent), true, "the check-in keeps its own cadence");
   assert.deepEqual(changes.at(-1), { everyMs: 20 * 60_000 });
   now = at(9, 19);

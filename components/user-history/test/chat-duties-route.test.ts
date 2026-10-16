@@ -54,7 +54,7 @@ test("api/threads/:id/duties: GET lists a chat's duties; POST runs, pauses, resu
   } finally { await server.close(); }
 });
 
-test("api/threads/:id/duties: an agent may not reschedule a duty more often than daily (c66); weekly and daily pass, and the owner's page still sets every 45", async () => {
+test("api/threads/:id/duties: an agent and the owner's page both set any cadence; c66 is brief text, not a refusal", async () => {
   const dir = await mkdtemp(join(tmpdir(), "duties-route-c66-"));
   const store = new DutyStore(dir);
   const now = new Date(2026, 9, 14, 11, 0).getTime();
@@ -74,14 +74,10 @@ test("api/threads/:id/duties: an agent may not reschedule a duty more often than
     return { status: res.status, body: await res.json() as Body };
   };
   try {
-    for (const minutes of [10, 60, 120]) {
-      for (const headers of [{}, { "X-Chat-Agent-Session": "s-agent" }]) {
-        const refused = await post({ kind: "every", minutes }, headers);
-        assert.equal(refused.status, 400, `every ${minutes}`);
-        assert.match(refused.body.error ?? "", /^c66: the owner keeps duties daily \("we're gonna keep these ops stuff a daily duty"\)/);
-      }
+    for (const headers of [{}, { "X-Chat-Agent-Session": "s-agent" }]) {
+      const hourly = await post({ kind: "every", minutes: 60 }, headers);
+      assert.deepEqual([hourly.status, hourly.body.duties[0]!.schedule], [200, { kind: "every", minutes: 60 }]);
     }
-    assert.deepEqual((await store.list("chat1"))[0]!.schedule, { kind: "daily", at: "07:12" }, "a refused change leaves the schedule");
     const weekly = await post({ kind: "every", minutes: 10080 });
     assert.deepEqual([weekly.status, weekly.body.duties[0]!.schedule, weekly.body.duties[0]!.priority], [200, { kind: "every", minutes: 10080 }, "normal"]);
     assert.equal((await post({ kind: "daily", at: "08:01" })).status, 200);

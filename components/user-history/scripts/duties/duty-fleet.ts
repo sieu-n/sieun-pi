@@ -108,8 +108,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
             fix = candidates.find(live)?.id;
           }
         }
-        // The duty's own job still at work owns its misses this run, as the server reads it (`Duties.ownFixes` opens a fix job only once the
-        // last duty job ended): on 10-15 at 16:29Z ops guy's check-in read stuck 20 min into its 01:08 job.
+        // The duty's own job still at work owns its misses this run: on 10-15 at 16:29Z ops guy's check-in read stuck 20 min into its 01:08 job.
         const job = fix === undefined ? runs.find(run => run.duty === duty.id && run.job)?.job : undefined;
         if (job && sessionRows(roster()).some(row => row.id === job.id && row.working)) entry.working = job.name;
         else if (fix === undefined) entry.stuck = true;

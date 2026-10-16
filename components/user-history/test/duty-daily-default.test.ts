@@ -11,12 +11,12 @@ import { DutyStore } from "../src/chat-duty-store.ts";
 import { chatPoolPriority, poolPriorities } from "../src/chat-pool-priority.ts";
 import type { TurnClass } from "../src/chat-pool.ts";
 import { dutyAdmitter } from "../src/chat-turn-queue.ts";
-import { AGENT_EVERY_MIN_MINUTES, agentScheduleProblem, type Duty, type DutyJobRef, MORNING_BANDS, morningTime, parseDutyInput, upsertDuty } from "../src/shared/chat-duties.ts";
+import { type Duty, type DutyJobRef, MORNING_BANDS, morningTime, parseDutyInput, upsertDuty } from "../src/shared/chat-duties.ts";
 import type { ChatAgent, PoolPriority, Priority, SessionRow } from "../src/shared/types.ts";
 
 // c66 (owner, 2026-10-14 02:20Z): "when creating duty it should kind of default to daily at some random morning time ... we're gonna keep these
 // ops stuff a daily duty", then "also remember the priority system?". A duty with no schedule gets a free morning minute in its chat's band,
-// an agent may not run a duty more often than daily, and the card shows each duty's priority.
+// and the card shows each duty's priority. Keeping a duty daily is text in the board skill (c81), not a refusal.
 
 const component = join(import.meta.dirname, "..");
 const clock = (minute: number): string => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
@@ -24,10 +24,9 @@ const minuteOf = (at: string): number => Number(at.slice(0, 2)) * 60 + Number(at
 const definition = (extra: Record<string, unknown> = {}) => ({ name: "CI system", ownerWords: "keep CI green", goal: "CI stays green.", onMiss: "Fix the red check.",
   metrics: [{ key: "red_runs", label: "Red runs", op: "<=", target: 0 }], precheck: { command: ["node", "-e", "0"], cwd: "." }, ...extra });
 
-test("morning bands: high 06:00-07:39, normal 07:40-09:19, low 09:20-10:59, and the agent limit is one day", () => {
+test("morning bands: high 06:00-07:39, normal 07:40-09:19, low 09:20-10:59", () => {
   assert.deepEqual(Object.fromEntries(Object.entries(MORNING_BANDS).map(([priority, [start, end]]) => [priority, `${clock(start)}-${clock(end)}`])),
     { high: "06:00-07:39", normal: "07:40-09:19", low: "09:20-10:59" });
-  assert.equal(AGENT_EVERY_MIN_MINUTES, 1440);
 });
 
 test("morningTime: a uniformly random free minute in the priority's band, never a taken one", () => {
@@ -65,12 +64,6 @@ test("upsertDuty: a duty with no schedule is daily at the morning time; an updat
   assert.throws(() => parseDutyInput(definition(), "d1", 0), /schedule/);
 });
 
-test("agentScheduleProblem: every N minutes under a day is refused with c66 in plain words; weekly and daily pass", () => {
-  for (const minutes of [10, 60, 120, 1439]) assert.match(agentScheduleProblem({ kind: "every", minutes }) ?? "", /^c66: the owner keeps duties daily \("we're gonna keep these ops stuff a daily duty"\)/);
-  assert.match(agentScheduleProblem({ kind: "every", minutes: 10 })!, /leave out schedule for a random morning time, or give \{ kind: daily, at: HH:MM \}/);
-  for (const schedule of [{ kind: "every", minutes: 1440 }, { kind: "every", minutes: 10080 }, { kind: "daily", at: "06:00" }] as const) assert.equal(agentScheduleProblem(schedule), null);
-});
-
 async function dataDir(labels: Record<string, Priority>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "duty-daily-"));
   await writeFile(join(dir, "labels.json"), JSON.stringify({ tags: [], threads: Object.fromEntries(Object.entries(labels).map(([id, priority]) => [id, { tags: [], priority, progress: "none" }])) }));
@@ -88,7 +81,7 @@ async function add(dir: string, chatId: string, value: unknown): Promise<{ code:
   }
 }
 
-test("add.ts: no schedule gets a free morning minute in the chat's band and prints it with the priority; every under a day is refused, weekly is fine", async () => {
+test("add.ts: no schedule gets a free morning minute in the chat's band and prints it with the priority; a schedule the file gives is kept", async () => {
   const dir = await dataDir({ lowchat: 1, highchat: 3, normalchat: 2 });
   const store = new DutyStore(dir);
   const taken: string[] = [];
@@ -108,14 +101,8 @@ test("add.ts: no schedule gets a free morning minute in the chat's band and prin
   const again = await add(dir, "normalchat", definition());
   assert.equal(again.out.trim(), normal.out.trim().replace("added", "unchanged"), "a second add keeps the time");
 
-  for (const minutes of [10, 60, 120]) {
-    const refused = await add(dir, "normalchat", definition({ name: "Crawler system", schedule: { kind: "every", minutes } }));
-    assert.equal(refused.code, 1, `every ${minutes}`);
-    assert.match(refused.out, /c66: the owner keeps duties daily/);
-  }
-  assert.equal((await store.list("normalchat")).length, 1, "a refused duty is not stored");
-  const weekly = await add(dir, "normalchat", definition({ name: "Crawler system", schedule: { kind: "every", minutes: 10080 } }));
-  assert.equal(weekly.out.trim(), `added d2 "Crawler system" in normalchat every 10080 min, priority normal`);
+  const hourly = await add(dir, "normalchat", definition({ name: "Crawler system", schedule: { kind: "every", minutes: 60 } }));
+  assert.equal(hourly.out.trim(), `added d2 "Crawler system" in normalchat every 60 min, priority normal`);
 });
 
 const fakeJobs = (): DutyJobHost => ({

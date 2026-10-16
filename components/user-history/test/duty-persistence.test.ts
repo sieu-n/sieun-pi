@@ -29,7 +29,6 @@ const output = (metrics: Record<string, number>) => `require("fs").writeFileSync
 
 function fakeJobs() {
   const briefs: string[] = [];
-  const steers: { job: string; text: string }[] = [];
   const stops: string[] = [];
   const ended = new Set<string>();
   let next = 0;
@@ -40,9 +39,8 @@ function fakeJobs() {
     async retire() {},
     async ended(last, older = []) { return [...last, ...older].filter(job => ended.has(job.id)); },
     async stop(job) { stops.push(job.id); },
-    async steer(job, text) { steers.push({ job: job.id, text }); ended.delete(job.id); },
   };
-  return { host, briefs, steers, stops, ended };
+  return { host, briefs, stops, ended };
 }
 
 /** A Duties runner over a store seeded with the d6 runs before 17:22, whose precheck measures the 17:22 run's values, so its run stands for that one. */
@@ -74,7 +72,8 @@ test("a run with 2 missed metrics lists both with their streaks in the brief, an
   assert.match(brief, /- usable_pct_1h \(Share of the last hour's minutes the Mac was usable\) is 93\.2%, target >= 100%, missed 1 run in a row\. No plan step fixes it\. Start a fix job with rlm\.create_session/);
   assert.match(brief, /add a plan step with duty "d6\/usable_pct_1h" and that job\./);
   assert.match(brief, /- usable_pct_24h \(.*\) is 96\.7%, target >= 100%, missed 11 runs in a row, not moving toward the target\./);
-  assert.match(brief, /sends you back with its name, so the run cannot end on an unowned miss/);
+  assert.match(brief, /When a fix step closes, the server runs this duty again at once/);
+  assert.doesNotMatch(brief, /sends you back/);
   const record = (await store.runs(CHAT))[0]!;
   assert.equal(record.trigger, "owner");
   assert.deepEqual(record.fixes, { usable_pct_24h: { step: "p445", job: "hung cell interrupt", live: false } });
@@ -118,42 +117,14 @@ test("fixJobLive reads the chat's agent that owns the step, its session row, and
   assert.equal(fixJobLive(p445, CHAT, rows, new Set()), false);
 });
 
-test("a duty job whose turn ends with an unowned miss is sent back with a message naming each metric, and stopped once it ends again with no board change", async () => {
+test("a duty job whose turn ends with an unowned miss gets no message back and is stopped", async () => {
   const current = { board: board({}) };
-  const { duties, jobs, lines, now } = await runner({ board: () => current.board, live: new Set(["spawn burst admission", "mac usable root cause"]) });
+  const { duties, jobs, now } = await runner({ board: () => current.board, live: new Set(["spawn burst admission", "mac usable root cause"]) });
   await duties.runNow(CHAT, "d6");
   await duties.settled();
   jobs.ended.add("s1");
   now.at += 60_000;
   await duties.tick();
-  assert.equal(jobs.steers.length, 1);
-  const text = jobs.steers[0]!.text;
-  assert.match(text, /^\[duty\] Your Mac stays usable run is not done: 2 missed metrics have no fix step with a live job\./);
-  assert.match(text, /- usable_pct_1h: no plan step fixes it\. Start a fix job with rlm\.create_session and add a plan step for it with duty "d6\/usable_pct_1h" and that job\./);
-  assert.match(text, /- usable_pct_24h: missed 3 or more runs with no move\. Start a new root-cause job/);
-  assert.deepEqual(jobs.stops, [], "a job sent back is not archived");
-  jobs.ended.add("s1");
-  now.at += 60_000;
-  await duties.tick();
-  assert.deepEqual(jobs.stops, ["s1"], "a job that ends again with the board unchanged is stopped");
-  assert.equal(jobs.steers.length, 1);
-  assert.ok(lines.some(line => line.includes("ended again with usable_pct_1h, usable_pct_24h unowned and no board change")), lines.join("\n"));
-});
-
-test("a duty job that links a fix step with a live job for every miss ends its run normally", async () => {
-  const current = { board: board({}) };
-  const { duties, jobs, now } = await runner({ board: () => current.board, live: new Set(["spawn burst admission", "yesterday work and tokens"]) });
-  await duties.runNow(CHAT, "d6");
-  await duties.settled();
-  jobs.ended.add("s1");
-  now.at += 60_000;
-  await duties.tick();
-  assert.equal(jobs.steers.length, 1);
-  current.board = board({ p449: "d6/usable_pct_1h", p452: "d6/usable_pct_24h" }, {}, fixture.board.rev + 2);
-  jobs.ended.add("s1");
-  now.at += 60_000;
-  await duties.tick();
-  assert.equal(jobs.steers.length, 1, "no second message");
   assert.deepEqual(jobs.stops, ["s1"]);
 });
 
@@ -195,8 +166,8 @@ test("chat_board: plan_add and plan_update set, change and clear a step's duty l
   assert.throws(() => parseBoardOp({ op: "plan_update", id: "p449", duty: "Mac stays usable" }), /duty must be "<dutyId>\/<metricKey>"/);
 });
 
-test("an old duty with 6 metrics briefs, records and sends back only its verdict metrics, the headline and 3 more", async () => {
-  const { store, duties, jobs, now } = await runner({ board: () => board({}), values: { kernel_waiters_1h: 2 } });
+test("an old duty with 6 metrics briefs and records only its verdict metrics, the headline and 3 more", async () => {
+  const { store, duties, jobs } = await runner({ board: () => board({}), values: { kernel_waiters_1h: 2 } });
   await duties.runNow(CHAT, "d6");
   await duties.settled();
   const brief = jobs.briefs[0]!;
@@ -204,10 +175,4 @@ test("an old duty with 6 metrics briefs, records and sends back only its verdict
   assert.doesNotMatch(brief, /Targets: [^\n]*kernel_waiters_1h/);
   assert.doesNotMatch(brief, /- kernel_waiters_1h \(/, "a metric outside the verdict gets no fix line");
   assert.deepEqual(Object.keys((await store.runs(CHAT))[0]!.fixes ?? {}), []);
-  jobs.ended.add("s1");
-  now.at += 60_000;
-  await duties.tick();
-  assert.equal(jobs.steers.length, 1);
-  assert.doesNotMatch(jobs.steers[0]!.text, /kernel_waiters_1h/);
-  assert.match(jobs.steers[0]!.text, /2 missed metrics have no fix step/);
 });
