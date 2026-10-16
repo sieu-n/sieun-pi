@@ -36,9 +36,9 @@ board.wake(at="2026-10-14T22:30:00Z", note="remeasure") # a time, instead of bas
 
 Never end a turn with `bash("ci-run-status <id> --wait")`, `gh run watch`, or a `sleep` still running. Prime counts a session with a running bash handle as busy, so the session keeps its Python kernel and its worker for the whole wait. On 10-14, 125 of 152 working sessions waited that way and held 8.69 GB of kernels. A wait inside one turn that ends in under a minute can still use `await bash(...)`.
 
-The same holds for any `bash()` handle that outlives its turn, such as a 3 h sampler. Run that command detached with `nohup <command> > <file> 2>&1 &` and set `board.wake(at=<its end>)`. The Mac usable watch asks the chat about every handle still held 30 min after its job's turn ended.
+The same holds for any `bash()` handle that outlives its turn, such as a 3 h sampler. Run that command detached with `nohup <command> > <file> 2>&1 &` and set `board.wake(at=<its end>)`.
 
-A single cell that pages an API or awaits a command for 30 min holds the kernel and worker the same way, and the job takes no message until it ends. On 10-15 wp-engage-crawl sat 32 min in one cell that paged the staging crawler API and lost the pull to a 502 at the end. Run such a pull as a detached script that writes its result to a file, set `board.wake(at=<its end>)`, and read the file when the wake comes. The Mac usable watch asks the chat about every session that has sat 30 min in one open tool call. A call whose kernel used no CPU, started no process and moved no socket bytes for 30 min counts as hung: the watch tells the chat, and one minute later it interrupts the call and tells the job to rerun the work detached. Give every network call a timeout.
+A single cell that pages an API or awaits a command for 30 min holds the kernel and worker the same way, and the job takes no message until it ends. On 10-15 wp-engage-crawl sat 32 min in one cell that paged the staging crawler API and lost the pull to a 502 at the end. Run such a pull as a detached script that writes its result to a file, set `board.wake(at=<its end>)`, and read the file when the wake comes. Give every network call a timeout.
 
 A chat and every job under it find the chat from `RLM_SESSION_DIR`. A root job that a chat started with `rlm.create_session` has its own id, so it passes `chat="<chat session id>"`.
 

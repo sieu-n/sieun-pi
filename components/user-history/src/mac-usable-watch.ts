@@ -13,7 +13,7 @@ import type { AgentQueueReading } from "./shared/types.ts";
  * 09:15Z): "look it's you and ops guys responsibility that this machine is usable", so a minute is judged on the Mac being usable (`USABLE`), and the worker footprint is a detail with no target (c67, the VP's ask of 10-14 20:2xZ).
  * The hourly "Mac stays usable" duty (scripts/duties/mac-stays-usable.ts) reads these lines and judges each minute with `misses`.
  * A quiet session whose kernel moved (MOTION) since the last sample works and counts in `active`, not `idleOver`; one whose kernel stayed still
- * for HUNG_MINUTES is hung, and the watch tells its chat, then interrupts the call a sample later (`interruptHung`).
+ * for HUNG_MINUTES is hung (`isHung`), which the Mac stays usable duty reads.
  */
 
 const GB = 1024 ** 3;
@@ -39,8 +39,7 @@ export const MOTION = { cpuMs: 10, freshMs: 3 * MINUTE } as const;
 /**
  * A session is hung when it has made no model call for over TARGET.idleMinutes and its kernel has not moved (MOTION) in any sample for
  * TARGET.idleMinutes. 30 min is past the p99.9 of ipython cells: 372,332 calls in the session files of 10-08 to 10-15 ran a median under 0.1 s,
- * p99 1.9 min and p99.9 19.1 min. Its chat is told when the service will interrupt the call, and the next sample interrupts it if the kernel
- * still has not moved: main dev thread acted on the watch's 02:56:58Z ask on 10-15 at 02:57:03Z, 5 s later.
+ * p99 1.9 min and p99.9 19.1 min.
  */
 export const HUNG_MINUTES = TARGET.idleMinutes;
 
@@ -463,142 +462,16 @@ export interface WatchSource {
   processStart?: (pid: number) => Promise<number | null>;
   /** Runs `run` after `ms` without holding the minute timer; absent, an unref'd setTimeout. */
   later?: (run: () => void, ms: number) => void;
-  /** Aborts a job session's turn, which interrupts its running cell, and starts a new turn with `line`; absent, no hung call is interrupted. */
-  interrupt?: (session: string, line: string) => Promise<void>;
   /** Each pid's open sockets with byte counts; absent, `readSockets`. */
   sockets?: (pids: readonly number[]) => Promise<Map<number, string[]>>;
-}
-
-/** Ask keys whose ask failed and was logged, so a retry each minute logs nothing new. */
-const failedAsks = new Set<string>();
-
-/** The line that asks a chat or thread to move its job's background wait, or its held bash() handle, to board.wake. */
-export function waiterLine(waiter: WaiterLine): string {
-  const age = waiter.ageMin === null ? "" : ` for ${waiter.ageMin} min`;
-  if (waiter.quietMin !== undefined) {
-    return `${JOB_NOTICE_PREFIX}${waiter.job} (session ${waiter.session.slice(0, 8)}) ended its turn ${waiter.quietMin} min ago and still holds its kernel and worker in a bash() handle ` +
-      `running \`${waiter.command}\` (pid ${waiter.pid})${age}. Tell it to run a command that outlives its turn detached (nohup <command> > <file> 2>&1 &) ` +
-      "and set board.wake(at=<its end>), so the service wakes it and its worker can rest.";
-  }
-  return `${JOB_NOTICE_PREFIX}${waiter.job} (session ${waiter.session.slice(0, 8)}) holds its kernel and worker in \`${waiter.command}\` (pid ${waiter.pid})${age}. ` +
-    "Tell it to end that wait and set board.wake for the CI run or time instead, so the service wakes it and its worker can rest.";
-}
-
-/** The line that asks a chat or thread to have a job run the tool call it has been quiet in for over TARGET.idleMinutes as a detached script with board.wake. */
-export function openCallLine(quiet: QuietLine & { call: OpenCall }): string {
-  const since = `${quiet.call.at.slice(11, 16)}Z`;
-  const waits = quiet.handle ? ` The call waits on a bash() handle running \`${quiet.handle}\`.` : "";
-  return `${JOB_NOTICE_PREFIX}${quiet.job} (session ${quiet.session.slice(0, 8)}) has been in one ${quiet.call.tool} call since ${since} with no model call for ${quiet.quietMin} min ` +
-    `(\`${quiet.call.code}\`), so it counts as working and holds its kernel and worker.${waits} Do not interrupt the call. Tell the job to run a pull or wait this long ` +
-    "as a detached script that writes its result to a file (nohup <command> > <file> 2>&1 &) and set board.wake(at=<its end>), so it ends its turn and its worker can rest.";
 }
 
 /** Whether a quiet session is hung: an open call, a kernel, and no motion (MOTION) for HUNG_MINUTES. */
 export const isHung = (quiet: QuietLine): quiet is QuietLine & { call: OpenCall; kernel: number } =>
   quiet.call !== null && quiet.kernel !== null && (quiet.stillMin ?? 0) >= HUNG_MINUTES;
 
-const clock = (at: number): string => `${new Date(at).toISOString().slice(11, 16)}Z`;
-
-/** The line that tells a chat or thread its job's call is hung and when the service interrupts it: the next sample, one minute after the line's `at`. */
-export function hungLine(quiet: QuietLine & { call: OpenCall; kernel: number }, at: number): string {
-  return `${JOB_NOTICE_PREFIX}${quiet.job} (session ${quiet.session.slice(0, 8)}) has been in one ${quiet.call.tool} call since ${quiet.call.at.slice(11, 16)}Z ` +
-    `(\`${quiet.call.code}\`) with no model call for ${quiet.quietMin} min, and its kernel (pid ${quiet.kernel}) has used no CPU, started or ended no process and ` +
-    `moved no socket bytes for ${quiet.stillMin} min, so the call is hung. The service interrupts it at ${clock(at + MINUTE)} if the kernel still has not moved, ` +
-    "and tells the job to rerun the work as a detached script with board.wake.";
-}
-
-/** The message the service sends a job whose hung call it interrupted. */
-export function interruptLine(quiet: QuietLine & { call: OpenCall; kernel: number }): string {
-  return `The chat service interrupted your ${quiet.call.tool} call from ${quiet.call.at.slice(11, 16)}Z (\`${quiet.call.code}\`): for ${quiet.stillMin} min your kernel ` +
-    "used no CPU, started or ended no process and moved no socket bytes, so it was hung, most likely on a network read with no timeout. " +
-    "Rerun that work as a detached script that writes its result to a file (nohup <command> > <file> 2>&1 &), with a timeout on every network call, " +
-    "and set board.wake(at=<its end>), so your turn ends and your worker can rest while it runs.";
-}
-
-/** One line to send a tree's root once: `key` marks it asked in waiters-asked.json, `pid` names it in a failure log. */
-export interface Ask { key: string; root: string; pid: number | null; line: string }
-
-/**
- * The asks a watch line holds: each background waiter or held bash() handle once per kernel, and each tool call a quiet session left open once
- * per call (`call:<id>`) unless a waiter of the same session is asked already. A cell is keyed by its call, not its kernel, since the next long
- * cell in the same kernel is a new ask: wp-engage-crawl ran one cell from 00:55 to 01:27Z on 10-15 and sat in the next from 01:27:59Z on.
- */
-export function asksOf(line: Pick<WatchLine, "waiters" | "quiet" | "active"> & { at?: string }): Ask[] {
-  const waiters = line.waiters ?? [];
-  const waiting = new Set(waiters.map(waiter => waiter.session));
-  return [...waiters.map(waiter => ({ key: String(waiter.kernel ?? waiter.pid), root: waiter.root, pid: waiter.pid, line: waiterLine(waiter) })),
-    ...[...line.quiet ?? [], ...line.active ?? []].flatMap((quiet): Ask[] => {
-      if (!quiet.call || waiting.has(quiet.session)) return [];
-      if (isHung(quiet)) return [{ key: `hung:${quiet.call.id}`, root: quiet.root, pid: quiet.kernel, line: hungLine(quiet, line.at ? Date.parse(line.at) : Date.now()) }];
-      return [{ key: `call:${quiet.call.id}`, root: quiet.root, pid: quiet.kernel, line: openCallLine({ ...quiet, call: quiet.call }) }];
-    })];
-}
-
-/** How long an asked key stays asked after its last sighting: a sleep loop starts a new pid each round and can miss a minute's sample. */
+/** How long an asked tree key stays asked after its last sighting. */
 const ASKED_KEEP_MS = 60 * MINUTE;
-
-/**
- * Sends each ask's root its line once (`<dataDir>/mac-usable/waiters-asked.json`, `{ [key]: { asked, seen } }`, kept ASKED_KEEP_MS past the
- * key's last sighting): a chat by a notice line (`notify`), a plain thread's root by a daemon message (`message`), since its job pins its worker
- * the same. An ask that fails is sent again next minute, and its failure is logged once.
- */
-export async function askChats(source: Pick<WatchSource, "dataDir" | "notify" | "message" | "log">, asks: readonly Ask[], chats: ReadonlySet<string>, now: number): Promise<string[]> {
-  if (!source.notify && !source.message) return [];
-  const file = join(source.dataDir, "mac-usable", "waiters-asked.json");
-  const read: unknown = JSON.parse(await readFile(file, "utf8").catch(() => "{}"));
-  const asked = new Map(Object.entries(typeof read === "object" && read !== null ? read : {}).flatMap(([key, value]): [string, { asked: number; seen: number }][] =>
-    typeof value === "object" && value !== null && typeof value.asked === "number" && typeof value.seen === "number" ? [[key, { asked: value.asked, seen: value.seen }]] : []));
-  const sent: string[] = [];
-  for (const ask of asks) {
-    const known = asked.get(ask.key);
-    if (known) { known.seen = now; continue; }
-    const send = chats.has(ask.root) ? source.notify : source.message;
-    if (!send) continue;
-    try {
-      await send(ask.root, ask.line);
-      asked.set(ask.key, { asked: now, seen: now });
-      sent.push(ask.key);
-    } catch (error) {
-      if (!failedAsks.has(ask.key)) source.log(`mac usable watch: ask ${ask.root.slice(0, 8)} about ${ask.pid === null ? ask.key : `pid ${ask.pid}`}: ${error instanceof Error ? error.message : String(error)}`);
-      failedAsks.add(ask.key);
-    }
-  }
-  const kept = Object.fromEntries([...asked].filter(([, value]) => now - value.seen < ASKED_KEEP_MS));
-  await writeFile(file + ".tmp", JSON.stringify(kept));
-  await rename(file + ".tmp", file);
-  return sent;
-}
-
-/**
- * Interrupts each hung call (`isHung`) whose `hung:<call id>` line went out in an earlier sample, once per call (`stop:<call id>` in
- * waiters-asked.json): `interrupt` aborts the job's turn, which sends its kernel an interrupt request, and starts a new turn with
- * `interruptLine`. A raw SIGINT does nothing here, since rlm.repl's handler drops a signal its worker did not request. A failed interrupt is
- * logged once and tried again next sample.
- */
-export async function interruptHung(source: Pick<WatchSource, "dataDir" | "interrupt" | "log">, line: Pick<WatchLine, "at" | "quiet">): Promise<string[]> {
-  if (!source.interrupt) return [];
-  const file = join(source.dataDir, "mac-usable", "waiters-asked.json");
-  const asked: Record<string, { asked: number; seen: number }> = await readFile(file, "utf8").then(text => JSON.parse(text) as Record<string, { asked: number; seen: number }>).catch(() => ({}));
-  const at = Date.parse(line.at);
-  const stopped: string[] = [];
-  for (const quiet of line.quiet ?? []) {
-    if (!isHung(quiet)) continue;
-    const told = asked[`hung:${quiet.call.id}`];
-    const key = `stop:${quiet.call.id}`;
-    if (!told || told.asked >= at || asked[key]) continue;
-    try {
-      await source.interrupt(quiet.session, interruptLine(quiet));
-      asked[key] = { asked: at, seen: at };
-      stopped.push(quiet.session);
-      source.log(`mac usable watch: interrupted ${quiet.job} (${quiet.session.slice(0, 8)}): its ${quiet.call.tool} call since ${quiet.call.at.slice(11, 16)}Z, kernel ${quiet.kernel} still ${quiet.stillMin} min`);
-    } catch (error) {
-      if (!failedAsks.has(key)) source.log(`mac usable watch: interrupt ${quiet.session.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`);
-      failedAsks.add(key);
-    }
-  }
-  if (stopped.length) await writeAtomic(file, JSON.stringify(asked));
-  return stopped;
-}
 
 /**
  * A chat tree may hold this share of the Mac's RAM (8 GiB of 32) before its root is asked to cut it and the stop rule counts its minutes. Of the
@@ -781,8 +654,6 @@ export async function sample(source: WatchSource): Promise<WatchLine | null> {
   const written = stops.length ? { ...measured, stops } : measured;
   await appendFile(file, JSON.stringify(written) + "\n");
   await writeAtomic(motionFile, JSON.stringify(motion)).catch(error => source.log(`mac usable watch: kernel motion file: ${error instanceof Error ? error.message : String(error)}`));
-  await askChats(source, asksOf(written), chats, now());
-  await interruptHung(source, written);
   return written;
 }
 

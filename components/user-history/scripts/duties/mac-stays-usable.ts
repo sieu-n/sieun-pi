@@ -108,14 +108,13 @@ export function measure(lines: readonly WatchLine[], now: number): PrecheckOutpu
   const calls = new Map<string, QuietLine & { call: NonNullable<QuietLine["call"]> }>();
   for (const line of hour) for (const quiet of [...line.quiet ?? [], ...line.active ?? []]) if (quiet.call) calls.set(quiet.call.id, { ...quiet, call: quiet.call });
   for (const quiet of calls.values()) {
-    const what = isHung(quiet) ? `its kernel still ${quiet.stillMin} min, so the chat was told and the service interrupts the call` : "the chat was asked to run it detached with board.wake";
+    const hung = isHung(quiet) ? `; its kernel has not moved for ${quiet.stillMin} min` : "";
     flagged.push({ kind: "open_call", item: quiet.session, excerpt: `${quiet.tree}, job ${quiet.job} (session ${quiet.session.slice(0, 8)}): one ${quiet.call.tool} call since ` +
-      `${quiet.call.at.slice(11, 16)}Z with no model call for ${quiet.quietMin} min, \`${quiet.call.code}\`; ${what}.` });
+      `${quiet.call.at.slice(11, 16)}Z with no model call for ${quiet.quietMin} min, \`${quiet.call.code}\`${hung}.` });
   }
   for (const waiter of waiters.values()) {
     flagged.push({ kind: "kernel_waiter", item: String(waiter.pid), excerpt: `${waiter.tree}, job ${waiter.job}, pid ${waiter.pid}, \`${waiter.command}\`, ` +
-      `${waiter.ageMin ?? "?"} min: ${waiter.quietMin === undefined ? "a background wait in a kernel" : `a bash() handle held ${waiter.quietMin} min past its turn end`}; ` +
-      "the chat was asked to move it to board.wake." });
+      `${waiter.ageMin ?? "?"} min: ${waiter.quietMin === undefined ? "a background wait in a kernel" : `a bash() handle held ${waiter.quietMin} min past its turn end`}.` });
   }
   if (fed(hour).length) {
     const why = (["pressure", "swapouts", "kernel_task"] as const).map(miss => [miss, missMinutes.usable.filter(line => unusable(line.usable!).includes(miss)).length] as const);
