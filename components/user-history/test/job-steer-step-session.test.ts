@@ -39,7 +39,7 @@ async function chatWith(children: ChildAgent[]) {
 }
 
 test("a job the hub lists with no session id is steered in the session its board step holds, by name or by that id", async () => {
-  const child = { id: "k9", label: "blog", sessionName: "blog reader demo", status: "completed", lastActivityAt: NOW - 3_600_000, repliedSinceTask: true } as ChildAgent;
+  const child = { id: "k9", label: "blog", sessionName: "blog reader demo", status: "done", lastActivityAt: NOW - 3_600_000, repliedSinceTask: true } as unknown as ChildAgent;
   const { chats, calls } = await chatWith([child]);
   assert.deepEqual(await chats.steerJob("c1", "blog reader demo", "p166 reads 0.53%"), { session: SESSION, act: "steer" });
   assert.deepEqual(await chats.steerJob("c1", SESSION, "p166 reads 0.53%"), { session: SESSION, act: "steer" });
