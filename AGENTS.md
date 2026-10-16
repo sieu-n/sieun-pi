@@ -10,6 +10,8 @@ Workers own disjoint directories. Do not change another worker's files. Do not c
 
 The live chat on :5182 runs from `~/.local/share/sieun-pi-chat/current`. Release a commit to it only with `node scripts/release-chat.mjs <sha>`, which builds the release folder, takes a lock, refuses a commit older than the live one unless you pass `--rollback`, flips `current` and kickstarts `com.sieun.agent-chat`. `skills/board/references/git.md` has the flags.
 
+Never kill the Prime Agent supervisor (`prime-agent --mode daemon` on `daemon.sock`) or its workers, run `prime-agent shutdown`, or boot out `com.sieun.agent-chat` to free memory or unstick agents. Each one aborts every running turn and archives every live session, and that work waits until someone resumes it. On 10-15 a chat killed the supervisor with `kill -9` three times and a Claude Code session ran `prime-agent shutdown --force` twice, and every agent stopped each time. To free memory, stop only finished or idle sessions (owner rule c88). To restart one stuck agent, run `prime-agent stop <agent>`. A chat release restarts the chat service and leaves the daemon running.
+
 Target Prime Agent first. Do not claim upstream Pi compatibility without a separate real runtime check.
 
 Use the repository environment for Python and TypeScript checks. Keep source provenance and third-party notices. Do not publish this repository publicly or to npm without approval.

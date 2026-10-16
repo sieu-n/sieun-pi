@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
-import { daemonAnswers, daemonEnvironment, DaemonKeeper, launcherCandidates, loginEnvironment, parseEnvOutput } from "../src/chat-daemon.ts";
+import { daemonAnswers, daemonEnvironment, DaemonKeeper, launcherCandidates, loginEnvironment, officialLaunch, parseEnvOutput } from "../src/chat-daemon.ts";
 
 const MARK = "\0__SIEUN_PI_CHAT_ENV__\0";
 
@@ -116,4 +116,67 @@ test("a keeper that finds the daemon running only watches it", async () => {
     await rm(dir, { recursive: true, force: true });
   }
   assert.equal(await daemonAnswers(socketPath), false);
+});
+
+
+const until = async (check: () => boolean, label: string) => {
+  for (let i = 0; i < 300 && !check(); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert(check(), label);
+};
+
+test("the keeper says whether a closed daemon left its socket file, which tells a SIGKILL or crash from a shutdown", async () => {
+  // 10-15: kill -9 of the supervisor at 14:46, 16:07 and 17:43Z left daemon.sock; prime-agent shutdown --force at 18:25Z and 10-16 00:19Z removed it.
+  const dir = await mkdtemp(join("/tmp", "ck-"));
+  const socketPath = join(dir, "d.sock");
+  const daemon = await fakeDaemon(socketPath);
+  await daemon.up();
+  const lines: string[] = [];
+  const keeper = new DaemonKeeper({ socketPath, log: line => lines.push(line), restartDelayMs: 20, launch: async () => ({ ok: false, message: "held" }) });
+  try {
+    void keeper.start();
+    await until(() => keeper.status().state === "up", "the keeper watches the running daemon");
+    await daemon.down();
+    await until(() => lines.some(line => /closed the connection/.test(line)), "a shutdown is logged");
+    assert.match(lines.find(line => /closed the connection/.test(line))!, /removed its socket file, so it shut down/);
+    lines.length = 0;
+    await daemon.up();
+    await until(() => keeper.status().state === "up", "the keeper watches the daemon again");
+    await daemon.down();
+    await writeFile(socketPath, "");
+    await until(() => lines.some(line => /closed the connection/.test(line)), "a kill is logged");
+    assert.match(lines.find(line => /closed the connection/.test(line))!, /left its socket file, so it was killed \(SIGKILL\) or crashed/);
+  } finally {
+    keeper.close();
+    await daemon.down();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a daemon the chat starts writes its output to the stdio file, and its exit is logged with code and signal", async () => {
+  const dir = await mkdtemp(join("/tmp", "cl-"));
+  try {
+    const shell = join(dir, "fake-shell");
+    await writeFile(shell, `#!/bin/sh\nexec /bin/sh -c "$4"\n`);
+    await chmod(shell, 0o755);
+    await mkdir(join(dir, "install", "bin"), { recursive: true });
+    const launcher = join(dir, "install", "bin", "prime-agent");
+    // Listens on the socket it is given, prints to stderr, and exits 7 after a moment, as a supervisor that dies after startup.
+    await writeFile(launcher, `#!${process.execPath}
+const net = require("node:net");
+const server = net.createServer(() => {}).listen(process.argv[5], () => {
+  process.stderr.write("fake daemon up\\n");
+  setTimeout(() => { process.stderr.write("fake daemon dies\\n"); process.exit(7); }, 1500);
+});
+`);
+    await chmod(launcher, 0o755);
+    const stdioPath = join(dir, "logs", "daemon-stdio.log");
+    const lines: string[] = [];
+    const launch = officialLaunch({ HOME: dir, SHELL: shell, PATH: "/usr/bin:/bin", PRIME_AGENT_INSTALL_DIR: join(dir, "install") },
+      { stdioPath, log: line => lines.push(line), startupMs: 10_000 });
+    const result = await launch(join(dir, "d.sock"));
+    assert.equal(result.ok, true, result.message);
+    await until(() => lines.length > 0, "the exit is logged");
+    assert.match(lines[0]!, /the daemon this chat started \(pid \d+\) exited with code 7; its output is in .*daemon-stdio\.log/);
+    assert.match(await readFile(stdioPath, "utf8"), /fake daemon up\nfake daemon dies\n/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

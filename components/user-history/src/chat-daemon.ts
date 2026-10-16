@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
-import { access, constants } from "node:fs/promises";
-import { join } from "node:path";
+import { access, constants, mkdir, open } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { userInfo } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { DaemonClient } from "prime-agent";
@@ -113,13 +113,19 @@ type KeeperOptions = {
 const BACKOFF_MS = [2_000, 4_000, 8_000, 16_000, 32_000, 60_000] as const;
 const seconds = (ms: number) => `${Math.round(ms / 100) / 10}s`;
 
+/** Where a daemon this chat starts writes its stdout and stderr: what it prints when it crashes never reaches its own log. */
+export const daemonStdioPath = (env: NodeJS.ProcessEnv) => join(homeOf(env), ".prime", "agent", "logs", "daemon-stdio.log");
+
+type LaunchOptions = { startupMs?: number; graceMs?: number; stdioPath?: string; log?(line: string): void };
+
 /**
  * Starts `<launcher> --mode daemon --daemon-socket <socket>` the way the official CLI's `ensureDaemonRunning` does (cli/daemon-launch.js):
- * detached, no stdio (the daemon writes its own log), worker-internal variables dropped, then up to 30 s of socket probes; an early exit
- * gets a 2 s grace, because the child may have lost the socket lease to another starter whose daemon is still booting.
+ * detached, worker-internal variables dropped, then up to 30 s of socket probes; an early exit gets a 2 s grace, because the child may have
+ * lost the socket lease to another starter whose daemon is still booting. Its stdout and stderr go to `daemonStdioPath` instead of /dev/null,
+ * and its exit is logged with the code and signal: on 10-15 at 18:20:08Z a supervisor ended with no line in its own log.
  */
-export function officialLaunch(baseEnv: NodeJS.ProcessEnv, options: { startupMs?: number; graceMs?: number } = {}): Launch {
-  const startupMs = options.startupMs ?? 30_000, graceMs = options.graceMs ?? 2_000;
+export function officialLaunch(baseEnv: NodeJS.ProcessEnv, options: LaunchOptions = {}): Launch {
+  const startupMs = options.startupMs ?? 30_000, graceMs = options.graceMs ?? 2_000, stdioPath = options.stdioPath ?? daemonStdioPath(baseEnv);
   return async socketPath => {
     const launcher = await findLauncher(baseEnv);
     if (!launcher) return { ok: false, message: `no prime-agent launcher at ${launcherCandidates(baseEnv)[0]} or on PATH` };
@@ -128,14 +134,26 @@ export function officialLaunch(baseEnv: NodeJS.ProcessEnv, options: { startupMs?
     // The socket can start answering while the login shell ran; the daemon would refuse a socket in use, so do not start a second one.
     if (await daemonAnswers(socketPath)) return { ok: true, message: "the daemon was already answering" };
     let exited: string | undefined;
-    const child = spawn(launcher, ["--mode", "daemon", "--daemon-socket", socketPath], { cwd: homeOf(baseEnv), env, detached: true, stdio: "ignore" });
+    let started = false;
+    await mkdir(dirname(stdioPath), { recursive: true });
+    const output = await open(stdioPath, "a", 0o600);
+    let child: ReturnType<typeof spawn>;
+    try { child = spawn(launcher, ["--mode", "daemon", "--daemon-socket", socketPath], { cwd: homeOf(baseEnv), env, detached: true, stdio: ["ignore", output.fd, output.fd] }); }
+    finally { await output.close(); }
     child.once("error", error => { exited ??= `could not start ${launcher}: ${error.message}`; });
-    child.once("exit", (code, signal) => { exited ??= `${launcher} exited during startup (code ${code ?? "none"}${signal ? `, signal ${signal}` : ""})`; });
+    child.once("exit", (code, signal) => {
+      const how = `code ${code ?? "none"}${signal ? `, signal ${signal}` : ""}`;
+      if (started) options.log?.(`daemon: the daemon this chat started (pid ${child.pid}) exited with ${how}; its output is in ${stdioPath}`);
+      else exited ??= `${launcher} exited during startup (${how})`;
+    });
     child.unref();
     const deadline = Date.now() + startupMs;
     let exitDeadline: number | undefined;
     while (Date.now() < Math.min(deadline, exitDeadline ?? Infinity)) {
-      if (await daemonAnswers(socketPath, 250)) return { ok: true, message: `spawned ${launcher} --mode daemon (pid ${child.pid}) and the socket answers${note}` };
+      if (await daemonAnswers(socketPath, 250)) {
+        started = !exited;
+        return { ok: true, message: `spawned ${launcher} --mode daemon (pid ${child.pid}) and the socket answers${note}` };
+      }
       if (exited) exitDeadline ??= Date.now() + graceMs;
       await delay(100, undefined, { ref: false });
     }
@@ -157,7 +175,7 @@ export class DaemonKeeper {
   private readonly answers: (socketPath: string) => Promise<boolean>;
 
   constructor(private readonly options: KeeperOptions) {
-    this.launch = options.launch ?? officialLaunch(options.env ?? process.env);
+    this.launch = options.launch ?? officialLaunch(options.env ?? process.env, { log: options.log });
     this.answers = options.answers ?? (socketPath => daemonAnswers(socketPath));
   }
 
@@ -191,7 +209,11 @@ export class DaemonKeeper {
         await this.watch();
         if (this.closed) break;
         this.snapshot = { state: "down", attempts: this.snapshot.attempts, message: "The daemon closed its socket." };
-        this.options.log(`daemon: the daemon on ${this.options.socketPath} closed the connection. Checking again in ${seconds(this.options.restartDelayMs ?? 3_000)}.`);
+        // A daemon that shuts down (SIGTERM, `prime-agent shutdown`, its own exit) removes its socket file; a SIGKILL or a crash leaves it.
+        const left = await access(this.options.socketPath).then(() => true, () => false);
+        this.options.log(`daemon: the daemon on ${this.options.socketPath} closed the connection and ${left
+          ? "left its socket file, so it was killed (SIGKILL) or crashed"
+          : "removed its socket file, so it shut down (SIGTERM, prime-agent shutdown or its own exit)"}. Checking again in ${seconds(this.options.restartDelayMs ?? 3_000)}.`);
         await this.sleep(this.options.restartDelayMs ?? 3_000);
         continue;
       }
