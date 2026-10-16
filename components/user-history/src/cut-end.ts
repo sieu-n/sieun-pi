@@ -87,9 +87,22 @@ export async function tailLines(file: string, bytes: number): Promise<string[]> 
   } finally { await handle.close(); }
 }
 
-/** `cutEnd` of a session file: a short tail, and a long one to confirm a cut. Null when the file is gone. */
+/** Whether the lines hold the job's last input, so `cutEnd` saw the whole turn and a longer tail cannot change its answer. */
+const holdsInput = (lines: readonly string[]): boolean => lines.some(line => line.includes('"customType":"agent_message"') || line.includes('"role":"user"'));
+
+/**
+ * `cutEnd` of a session file: a short tail, then longer ones up to CUT_CONFIRM_BYTES only while the tail ends cut and holds no input yet. Most
+ * cuts sit right after their input, so one short read settles them: at 06:48Z on 10-16 reading 4 MB for each of 46 cut jobs helped push the
+ * Whole system precheck past its 60 s limit. Null when the file is gone.
+ */
 export async function readCut(file: string): Promise<Cut | null> {
-  return cutEnd(await tailLines(file, CUT_TAIL_BYTES)) && cutEnd(await tailLines(file, CUT_CONFIRM_BYTES));
+  let cut: Cut | null = null;
+  for (const bytes of [CUT_TAIL_BYTES, 1_000_000, CUT_CONFIRM_BYTES]) {
+    const lines = await tailLines(file, bytes);
+    cut = cutEnd(lines);
+    if (!cut || holdsInput(lines)) return cut;
+  }
+  return cut;
 }
 
 /** A session file to check and the key that changes when the session gets a new message (the daemon row's `modified` and message count). */

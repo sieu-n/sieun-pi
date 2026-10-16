@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
-import { cutJobsHoldingWork, measure, readLimits, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
+import { cutJobsHoldingWork, findCutJobs, measure, readLimits, readServiceLog, type CutJob, type Inputs } from "../scripts/duties/whole-system.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 import { cutEnd } from "../src/cut-end.ts";
 
@@ -137,4 +138,26 @@ test("a cut job holds work only while an open step names it or the chat's job ab
   assert.deepEqual(cutJobsHoldingWork(jobs, new Map([[chat, board]])).map(job => job.name), ["metal kit check", "new ci server"]);
   // A chat whose board could not be read keeps every cut job, so a read failure never hides a hold.
   assert.equal(cutJobsHoldingWork(jobs, new Map()).length, 4);
+});
+
+test("findCutJobs walks every job folder and leaves out a job its parent deleted, searching a large chat transcript once", async () => {
+  const home = await mkdtemp(join(tmpdir(), "cut-jobs-"));
+  try {
+    const artifacts = join(home, "session-artifacts");
+    const chat = "01a14210-4e7d-72c3-aa67-e3d476f4e728";
+    const job = async (folder: string, session: string, name: string) => {
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, `${session}.jsonl`), [task, queued, archived, aborted()].join("\n") + "\n");
+      await writeFile(join(folder, "rlm-subagent.json"), JSON.stringify({ sessionName: name }));
+    };
+    await job(join(artifacts, chat, "sub-a0b5b4ab"), "01a14211-72c8-718e-aa23-b49a735cb130", "local agents checks");
+    await job(join(artifacts, chat, "sub-a0b5b4ab", "sub-a650d9b9"), "01a14300-0000-7000-8000-000000000001", "failed label fix");
+    await job(join(artifacts, chat, "sub-26007170"), "01a14211-395a-736e-8840-ccd2529bb072", "local agents recovery");
+    await mkdir(join(home, "sessions"), { recursive: true });
+    const filler = JSON.stringify({ type: "message", message: { role: "assistant", content: "x".repeat(1000) } });
+    await writeFile(join(home, "sessions", `${chat}.jsonl`), [...Array.from({ length: 2000 }, () => filler),
+      JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", arguments: { code: "await rlm.delete_subagent('sub-26007170')" } }] } })].join("\n") + "\n");
+    const cut = await findCutJobs(artifacts, [chat], {}, Date.parse("2026-10-16T00:52:00.000Z"));
+    assert.deepEqual(cut.map(one => [one.name, one.root?.name]).sort(), [["failed label fix", "local agents checks"], ["local agents checks", "local agents checks"]]);
+  } finally { await rm(home, { recursive: true, force: true }); }
 });

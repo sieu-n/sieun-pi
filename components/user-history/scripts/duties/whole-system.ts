@@ -1,6 +1,6 @@
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { cutWords, readCut, tailLines, type CutCause } from "../../src/cut-end.ts";
@@ -39,6 +39,11 @@ export const FREE_SLOTS = 2;
 export const QUEUED_WAIT_S = 120;
 /** The resume rule's look-back (resume_paused.py --since-minutes defaults to 1440): a job cut longer ago than this is left to its chat. */
 export const CUT_LOOKBACK_MS = 24 * 60 * MINUTE;
+/**
+ * Job folders read at once by `findCutJobs`. At 06:48Z on 10-16 a one-at-a-time walk of 3,458 job folders, with each folder's rlm-subagent.json
+ * read before its age check, took 106 s under load and the precheck hit its 60 s limit.
+ */
+const WALK_AT_ONCE = 16;
 /** About 3 h of service.log at 10-16's rate (1.7 MB an hour, most of it held wakes), so a hold that began before the window is seen whole. */
 const LOG_TAIL_BYTES = 6_000_000;
 
@@ -238,25 +243,45 @@ export function measure(input: Inputs): PrecheckOutput {
  */
 export async function findCutJobs(artifacts: string, chats: readonly string[], deleted: Readonly<Record<string, Readonly<Record<string, number>>>>, now: number): Promise<CutJob[]> {
   const found: CutJob[] = [];
-  // `root` is the chat's own job (its direct child) above the folder the walk reads.
-  const walk = async (chat: string, folder: string, parentFile: string, root?: { session: string; name: string }): Promise<void> => {
-    const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries.filter(item => item.isDirectory() && item.name.startsWith("sub-"))) {
-      const child = join(folder, entry.name);
-      const file = (await readdir(child).catch(() => [] as string[])).find(name => SESSION_ID.test(name.replace(/\.jsonl$/, "")) && name.endsWith(".jsonl"));
-      if (!file) continue;
-      const path = join(child, file);
-      const meta = await readJson(join(child, "rlm-subagent.json")) as { sessionName?: unknown } | null;
-      const job = { session: file.slice(0, -".jsonl".length), name: typeof meta?.sessionName === "string" ? meta.sessionName : entry.name };
-      await walk(chat, child, path, root ?? job);
-      if (deleted[chat]?.[entry.name] !== undefined) continue;
-      const changed = (await stat(path).catch(() => null))?.mtimeMs ?? 0;
-      if (now - changed > CUT_LOOKBACK_MS) continue;
-      const end = await readCut(path);
-      if (!end || now - end.at > CUT_LOOKBACK_MS) continue;
-      const parent = await readFile(parentFile, "utf8").catch(() => "");
-      if (parent.split("\n").some(line => line.includes("delete_subagent") && line.includes(entry.name))) continue;
-      found.push({ ...job, chat, ...end, root: root ?? job });
+  // The lines of each parent transcript that call delete_subagent. A chat's transcript runs to 150 MB, so it is searched as bytes, once.
+  const parents = new Map<string, Promise<string[]>>();
+  const deleteLines = async (parentFile: string): Promise<string[]> => {
+    const bytes = await readFile(parentFile).catch(() => Buffer.alloc(0));
+    const lines: string[] = [];
+    for (let at = bytes.indexOf("delete_subagent"); at >= 0; at = bytes.indexOf("delete_subagent", at + 1)) {
+      const end = bytes.indexOf(10, at);
+      lines.push(bytes.subarray(bytes.lastIndexOf(10, at) + 1, end < 0 ? bytes.length : end).toString("utf8"));
+      if (end < 0) break;
+      at = end;
+    }
+    return lines;
+  };
+  const deletedBy = async (parentFile: string, child: string): Promise<boolean> => {
+    if (!parents.has(parentFile)) parents.set(parentFile, deleteLines(parentFile));
+    return (await parents.get(parentFile)!).some(line => line.includes(child));
+  };
+  const jobOf = async (child: string, file: string): Promise<{ session: string; name: string }> => {
+    const meta = await readJson(join(child, "rlm-subagent.json")) as { sessionName?: unknown } | null;
+    return { session: file.slice(0, -".jsonl".length), name: typeof meta?.sessionName === "string" ? meta.sessionName : basename(child) };
+  };
+  // `root` is the folder and file of the chat's own job (its direct child) above the folder the walk reads; its name is read only for a cut.
+  const walk = async (chat: string, folder: string, parentFile: string, root?: { child: string; file: string }): Promise<void> => {
+    const entries = (await readdir(folder, { withFileTypes: true }).catch(() => [])).filter(item => item.isDirectory() && item.name.startsWith("sub-"));
+    for (let index = 0; index < entries.length; index += WALK_AT_ONCE) {
+      await Promise.all(entries.slice(index, index + WALK_AT_ONCE).map(async entry => {
+        const child = join(folder, entry.name);
+        const file = (await readdir(child).catch(() => [] as string[])).find(name => SESSION_ID.test(name.replace(/\.jsonl$/, "")) && name.endsWith(".jsonl"));
+        if (!file) return;
+        const path = join(child, file);
+        await walk(chat, child, path, root ?? { child, file });
+        if (deleted[chat]?.[entry.name] !== undefined) return;
+        const changed = (await stat(path).catch(() => null))?.mtimeMs ?? 0;
+        if (now - changed > CUT_LOOKBACK_MS) return;
+        const end = await readCut(path);
+        if (!end || now - end.at > CUT_LOOKBACK_MS || await deletedBy(parentFile, entry.name)) return;
+        const job = await jobOf(child, file);
+        found.push({ ...job, chat, ...end, root: root ? await jobOf(root.child, root.file) : job });
+      }));
     }
   };
   for (const chat of chats) await walk(chat, join(artifacts, chat), join(artifacts, "..", "sessions", `${chat}.jsonl`));
